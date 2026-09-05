@@ -10,15 +10,15 @@
 // typed, checkable seams between these concerns).
 //
 // Typed WS contract (plan §9 Phase 2 item 2): ClientMessage/ServerMessage
-// and the history/session shapes are imported TYPE-ONLY from ../../pi-web
+// and the history/session shapes are imported TYPE-ONLY from ../../contracts/pi
 // so this module (and the whole bundle) contains zero server code — the
 // bundler errors on bun:ffi if a value import ever sneaks in here, which is
 // the intended guard (see scripts/build-web.ts).
 
 import type {
   ClientMessage, HistoryItem, ReadyGenDefaults, ServerMessage, SessionListItem,
-} from "../../pi-web";
-import type { Lane } from "../../serve/lane-registry";
+} from "../../contracts/pi";
+import type { Lane } from "../../contracts/pi";
 import {
   $, el, toast, currentRoute, closeDrawer,
   storedCodingToolsPreference, renderCodingToolsState, renderToolApprovals,

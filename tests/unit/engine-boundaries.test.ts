@@ -4,7 +4,8 @@ import { resolve, relative } from "node:path";
 
 test("portable contracts, engine, and inference import only their own dependency layers", async () => {
   const root = resolve(import.meta.dir, "../..");
-  const layers = ["src/contracts", "src/engine", "src/inference"];
+  const portable = ["src/contracts", "src/engine", "src/inference"];
+  const layers = [...portable, "src/web/src"];
   const violations: string[] = [];
   const options: ts.CompilerOptions = { moduleResolution: ts.ModuleResolutionKind.Bundler,
     module: ts.ModuleKind.Preserve, baseUrl: root };
@@ -21,7 +22,8 @@ test("portable contracts, engine, and inference import only their own dependency
         const target = ts.resolveModuleName(literal.text, absolute, options, ts.sys).resolvedModule;
         const rel = target && relative(root, target.resolvedFileName).replaceAll("\\", "/");
         const allowed = layer === "src/contracts" ? ["src/contracts"] :
-          layer === "src/inference" ? ["src/contracts", "src/inference"] : layers;
+          layer === "src/inference" ? ["src/contracts", "src/inference"] :
+          layer === "src/web/src" ? ["src/contracts", "src/web/src"] : portable;
         if (!rel || !allowed.some((prefix) => rel.startsWith(`${prefix}/`)))
           violations.push(`${relative(root, absolute)} -> ${literal.text} (${rel ?? "unresolved"})`);
       };

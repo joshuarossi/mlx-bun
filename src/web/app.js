@@ -2892,11 +2892,13 @@ function initMemoryPanel() {
   maybeShowConsentCard();
 }
 
+// src/contracts/pi.ts
+var APP_ROUTE_IDS = ["chat", "quantize", "finetune", "dataset", "status"];
+
 // src/web/src/ui-catalog.ts
-var ROUTE_IDS = ["chat", "quantize", "finetune", "dataset", "status"];
 var VIEW_IDS = ["memory-panel", "hub-panel", "settings", "adapters-panel"];
 function isRouteId(v) {
-  return ROUTE_IDS.includes(v);
+  return APP_ROUTE_IDS.includes(v);
 }
 function isViewId(v) {
   return VIEW_IDS.includes(v);

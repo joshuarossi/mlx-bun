@@ -1478,8 +1478,27 @@ Josh's current target quants. Target validation awaits access to those artifacts
 implementation continues independently. The test is a bounded smoke, not a full model oracle or the
 recorded turn-8 repro. Gemma compiled-decode checks are secondary coverage too.
 
-The session suite additionally covers final-only methods, bounded progress,
-abandoned readers, preparation cancellation, admission refusal, cleanup failure,
-and no-consumer settlement. R0's long Qwen cache-crash diagnosis and quiet-machine
-baseline remain open. R3–R10 are not implemented by these initial interfaces,
-and no speed/quality/size improvement is claimed yet.
+R1 is complete. Incremental and final-only producers run the same lifecycle
+cases for collection/streaming, blocked-consumer cancellation, partial failure,
+and no-consumer/pre-cancelled settlement. Additional tests cover preparation
+cancellation, admission refusal, metadata bounds, and cleanup failures.
+
+R5 now shares a portable prefill program between serial AR and solo batch
+admission. Its MLX executor preserves drain evaluation, KV maintenance, allocator
+clears, stable-boundary snapshots, and the separate final-token forward. Batch
+admission retains its short-tail scheduling behavior. Six native scheduler
+checks pass, including dynamic rows, prompt reuse, SSD restore and compiled B=1;
+the dedicated/generated same-session test also passes on the M1 Max 32 GB.
+Method-run/checkpoint ownership and the wider R5 abort matrix remain open.
+
+R8 now shares Pi/browser messages, history, sampling data and route IDs in
+`src/contracts/pi.ts`. Compatibility re-exports preserve server-side imports.
+The browser TypeScript project has no Bun ambient types; Bun UI tests remain
+covered by the root project. The resolved-import gate prevents browser modules
+from importing server implementations, including type-only imports.
+
+The Qwen replay now has a native exception diagnosis: Metal reports insufficient
+memory from its completion handler. Details remain in the existing turn-8 repro.
+Josh reports a possible fix on the other machine; reconcile it before changing
+the affected state path. Quiet-machine baselines remain open. Remaining R2–R10
+work is tracked in PLAN.md; no speed/quality/size improvement is claimed yet.

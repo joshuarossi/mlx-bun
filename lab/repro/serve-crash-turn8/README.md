@@ -12,8 +12,13 @@ sequence. Prompt lengths are 404, 4,158, 6,139, 11,958; reused prefixes are
 0, 403, 4,157, 6,138. The fourth request aborts with the same bare C++ exception.
 Reducing **every request to one generated token still reproduces it**; long
 decode runs and HTTP streaming are unnecessary. FFI call tracing reaches
-`mlx_eval` while evaluating the continuation prefill. Native debugger attachment
-was denied by macOS, so no native exception message/backtrace was recovered.
+`mlx_eval` while evaluating the continuation prefill. A temporary native terminate handler recovered the exception from the Metal
+completion thread: `[METAL] Command buffer execution failed: Insufficient Memory
+(00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)`. The backtrace reaches
+`mlx::core::gpu::check_error(MTL::CommandBuffer*)` from its completion handler.
+This establishes device allocation failure; it does not establish cache-state
+corruption. Josh reports a possible fix on the other machine; it was not present
+on fetched `origin/main` at `6d45ca1`. Reconcile that fix before further changes.
 The short aligned-prefix borrow test passes on this artifact; that does not
 cover this long continuation. Temporary investigation scripts were removed.
 

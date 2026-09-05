@@ -26,6 +26,9 @@ import {
   assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
   type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep,
 } from "./backends/mlx/autoregressive";
+import { nextPrefillStep } from "./inference/prefill";
+import { evalCacheState, executeMlxPrefillStep } from "./backends/mlx/prefill";
+export { evalCacheState } from "./backends/mlx/prefill";
 import type { TokenLogprobs } from "./contracts/generation";
 export type { TokenLogprobs } from "./contracts/generation";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
@@ -216,26 +219,6 @@ export function shouldUseFill(
     !options.kvBits &&
     !options.kvConfig?.length &&
     options.turboQuant === undefined;
-}
-
-/** Materialize every cache's state at a prefill chunk boundary. Unlike
- *  KVCache/QuantizedKVCache/RotatingKVCache, TurboQuantKVCache.state()
- *  allocates FRESH trimmed slice views on every call (required by its
- *  snapshotCache/cloneKvCaches callers in kv-store.ts, which already
- *  dispose them) rather than returning its own live-owned arrays — so
- *  this chokepoint must dispose that cache kind's state() output itself,
- *  or the views leak (unreferenced past this call, only reclaimed by the
- *  FinalizationRegistry backstop on GC of the tiny JS wrapper). */
-export function evalCacheState(cache: Cache[]): void {
-  const turboState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? c.state() : []));
-  try {
-    const liveState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? [] : c.state()));
-    ops.evalAll([...turboState, ...liveState]);
-  } finally {
-    // Disposed even when evalAll throws (Metal OOM / deferred graph error) —
-    // the whole reason this chokepoint exists is that these views are owned.
-    for (const a of turboState) a.dispose();
-  }
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
@@ -1053,105 +1036,31 @@ async function* generateInner(
       embedIds.dispose();
     } else {
       let pos = cachedTokens;
-      // Stable-boundary snapshot: prefill up to snapshotAt first (plain
-      // chunks, no logits), fire the hook while the caches hold exactly
-      // that prefix, then continue with the remainder below. Splitting here
-      // changes chunk shapes only for requests that opted in — the same
-      // numerics class as a prompt-cache-hit continuation prefill.
-      const snapAt = options.onPrefillDone && options.snapshotAt !== undefined
+      const snapshotAt = options.onPrefillDone && options.snapshotAt !== undefined
         ? Math.min(Math.max(options.snapshotAt, cachedTokens), promptTokens.length)
-        : promptTokens.length;
-      if (snapAt > pos && snapAt < promptTokens.length) {
-        while (pos < snapAt) {
-          options.signal?.throwIfAborted();
-          const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
-          const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
-            mechanism: diagnostics.mechanism ?? "serial",
-            startToken: pos,
-            tokens: chunk.length,
-          });
-          const ids = ops.fromInt32(chunk, [1, chunk.length]);
-          const h = await graph.forwardHidden(ids, cache);
-          ids.dispose();
-          h.dispose();
-          evalCacheState(cache);
-          maybeQuantizeKv(cache, options);
-          clearCache();
-          closeChunk?.();
-          pos += chunk.length;
-          // Macrotask yield between chunks (docs/reference/server-config.md Phase 1):
-          // each chunk is a synchronous multi-hundred-ms FFI eval; without
-          // this the event loop serves no I/O for the WHOLE prefill.
-          await new Promise<void>((r) => setImmediate(r));
-        }
-        options.onPrefillDone?.();
-      }
-      // Oracle prefill convention (mlx-lm 0.31.3 generate_step,
-      // generate.py:430-453): drain the prompt only to len-1 — chunks of
-      // min(prefillChunkSize, remaining-1) — then compute step-0 logits from
-      // a SEPARATE L=1 forward of the LAST prompt token (its server's
-      // batched engine shares the convention: insert_segments' forced final
-      // 1-token segment + GenerationBatch._step, generate.py:1645/1327).
-      // Forwarding the last token as the tail of an L=n GEMM instead is
-      // ulp-different in bf16 (qmm-vs-qmv + L-dependent SDPA dispatch) in
-      // BOTH the step-0 logits and that token's stored KV — near-tie greedy
-      // streams flip (2026-07-07 12B completion-probe ✗: first token flip at
-      // step 24). MLX_BUN_PREFILL_TAIL_SPLIT=0 restores the old
-      // full-final-chunk convention (A/B lever + kill switch).
+        : undefined;
       const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
-      const drainGate = tailSplit ? 1 : prefillChunkSize;
-      while (promptTokens.length - pos > drainGate) {
+      const forward = graph.forwardHidden.bind(graph);
+      const maintain = () => maybeQuantizeKv(cache, options);
+      while (true) {
         options.signal?.throwIfAborted();
-        const n = tailSplit
-          ? Math.min(prefillChunkSize, promptTokens.length - pos - 1)
-          : prefillChunkSize;
-        const chunk = promptTokens.slice(pos, pos + n);
+        const step = nextPrefillStep({ length: promptTokens.length, position: pos,
+          chunkSize: prefillChunkSize, tailSplit, snapshotAt });
+        if (step.kind === "final" && needsTokenHistory) stepSampler.seedHistory(promptTokens);
         const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
-          mechanism: diagnostics.mechanism ?? "serial",
-          startToken: pos,
-          tokens: chunk.length,
+          mechanism: diagnostics.mechanism ?? "serial", startToken: step.start,
+          tokens: step.end - step.start, ...(step.kind === "final" ? { final: true } : {}),
         });
-        const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = await graph.forwardHidden(ids, cache);
-        ids.dispose();
-        h.dispose(); // logits never computed for non-final chunks
-        evalCacheState(cache);
-        maybeQuantizeKv(cache, options);
-        // mlx-lm _prefill clears the allocator cache after every chunk;
-        // without this, prefill transients pile up in the buffer cache
-        // and the first decode step pays a one-shot reclaim stall that
-        // scales with prompt length (~800 ms after an 8k prefill —
-        // measured, scripts/decode-split.ts; the context-scaling decode
-        // gap's main term).
-        clearCache();
-        closeChunk?.();
-        pos += n;
+        let hidden: MlxArray | null;
+        try { hidden = await executeMlxPrefillStep(forward, cache, promptTokens, step, maintain); }
+        finally { closeChunk?.(); }
+        pos = step.end;
+        if (hidden) { h0 = hidden; break; }
         if (runtimeValue("MLX_BUN_PREFILL_MEM_LOG") === "1")
           console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
-        // Macrotask yield between chunks (docs/reference/server-config.md Phase 1).
-        await new Promise<void>((r) => setImmediate(r));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (step.snapshot) options.onPrefillDone?.();
       }
-      if (needsTokenHistory) {
-        stepSampler.seedHistory(promptTokens);
-      }
-      // Under tailSplit this is exactly [promptTokens[len-1]] — the L=1
-      // step-0 forward (uncompiled L=1 is bit-exact with compiled decode,
-      // tests/parity/compiled-decode.test.ts). The last prompt token's KV enters
-      // the cache HERE, so downstream bookkeeping (forwarded[], cacheTokens,
-      // PromptCache.put alignment) is unchanged: after step 0 the caches
-      // cover exactly the prompt, as before.
-      const lastChunk = promptTokens.slice(pos);
-      options.signal?.throwIfAborted();
-      const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
-        mechanism: diagnostics.mechanism ?? "serial",
-        startToken: pos,
-        tokens: lastChunk.length,
-        final: true,
-      });
-      const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
-      h0 = await graph.forwardHidden(ids0, cache);
-      ids0.dispose();
-      closeChunk?.();
     }
     if (options.snapshotAt === undefined || options.snapshotAt >= promptTokens.length)
       options.onPrefillDone?.();

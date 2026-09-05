@@ -39,6 +39,60 @@ function fixture(
 }
 const done = { finishReason: "stop" as const, metrics: { steps: 1 } };
 
+for (const mode of ["incremental", "final-only"] as const) {
+  describe(`shared method lifecycle: ${mode}`, () => {
+    const publish = async (output: Parameters<Awaited<ReturnType<InferenceMethod<Metrics>["createRun"]>>["execute"]>[0]) => {
+      if (mode === "incremental") for (const token of [1, 2, 3]) await output.commit([token]);
+      else { await output.progress(1, 1); await output.commit([1, 2, 3]); }
+    };
+    test("collect and stream have identical committed output and one cleanup", async () => {
+      const f = fixture(async (output) => { await publish(output); return done; }, { maxQueuedTokens: 1 });
+      for (const output of ["collect", "stream"] as const) {
+        const session = await f.engine.open(undefined, { output });
+        const tokens: number[] = [];
+        if (output === "stream") for await (const event of session.events)
+          if (event.type === "committed") tokens.push(...event.tokenIds);
+        const result = await session.result;
+        expect(result.status).toBe("completed");
+        expect(output === "collect" ? [...result.output!] : tokens).toEqual([1, 2, 3]);
+      }
+      expect(f.closed).toBe(2);
+      await f.engine.close();
+    });
+    test("abandoned output cancels blocked publication and closes once", async () => {
+      const f = fixture(async (output) => { await publish(output); return done; },
+        { maxQueuedTokens: 1, maxQueuedEvents: 1 });
+      const session = await f.engine.open(undefined, { output: "stream" });
+      await session.events[Symbol.asyncIterator]().next();
+      await tick();
+      f.timer.expire();
+      expect((await session.result).status).toBe("cancelled");
+      await session.close();
+      expect(f.closed).toBe(1);
+    });
+    test("execution failure preserves partial output and releases the method", async () => {
+      const f = fixture(async (output) => { await publish(output); throw new Error("method failure"); });
+      const session = await f.engine.open(undefined, { output: "collect" });
+      const result = await session.result;
+      expect(result).toMatchObject({ status: "failed", committedTokens: 3 });
+      expect([...result.output!]).toEqual([1, 2, 3]);
+      expect(f.closed).toBe(1);
+    });
+    test("unread and already-cancelled sessions allocate no method state", async () => {
+      const f = fixture(async (output) => { await publish(output); return done; });
+      const unread = await f.engine.open(undefined, { output: "stream" });
+      f.timer.expire();
+      expect((await unread.result).status).toBe("cancelled");
+      const cancellation = new CancellationSource();
+      cancellation.cancel("requested");
+      const cancelled = await f.engine.open(undefined, { output: "collect", cancellation });
+      expect((await cancelled.result).status).toBe("cancelled");
+      expect(f.created).toBe(0);
+      expect(f.closed).toBe(0);
+    });
+  });
+}
+
 describe("portable generation sessions", () => {
   test("streaming is demand-started; collecting needs no event reader", async () => {
     const f = fixture(async (output) => { await output.commit([3, 4]); return done; });

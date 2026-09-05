@@ -648,11 +648,11 @@ fused execution without extra copies, materialization, or synchronization.
 Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
 Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
 sessions, the text bridge, replaceable MLX AR bindings, and engine-owned implementation selection are implemented.
-R0 still owes the Qwen prefix-crash diagnosis and quiet-machine baseline;
-Dedicated/generated bindings pass the same-session gate; R1/R2 still owe full composition coverage.
+R1 complete: method-neutral lifecycle and import gates; details in architecture §12.13.
+Shared serial/batch prefill and portable Pi/web protocols are implemented.
+R0 still owes baseline capture and reconciliation of the other machine’s Metal OOM fix.
 
 - [ ] **R0** Fix/verify review findings; pin tools; freeze support, oracle and performance baselines.
-- [ ] **R1** Portable contracts and method-neutral session suite; legacy adapter and dependency gates.
 - [ ] **R2** Real graph/backend bindings; prove graph replacement and quant-specialized execution.
 - [ ] **R3** Explicit resource/state ownership, rollback facets, codecs and checkpoint identity.
 - [ ] **R4** One capability-aware execution plan, immutable configuration and preparation reservations.

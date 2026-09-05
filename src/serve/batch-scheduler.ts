@@ -1,3 +1,5 @@
+import { nextPrefillStep } from "../inference/prefill";
+import { executeMlxPrefillStep } from "../backends/mlx/prefill";
 // Continuous-batching scheduler for `--batch N` serving (phase S2, the engine
 // loop). Owns ONE running batch and drives it forward one decode step at a
 // time, admitting waiting requests and evicting finished ones between steps —
@@ -319,6 +321,7 @@ export class BatchScheduler {
   readonly #lock: ExclusiveLock | undefined;
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
+  readonly #prefillTailSplit: boolean;
   readonly #kvBudgetBytes: number | undefined;
   readonly #promptCache: RowPromptCache | undefined;
   /** Retain hook of the currently-ADOPTED row's cache entry (at most one:
@@ -344,6 +347,7 @@ export class BatchScheduler {
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
+    this.#prefillTailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     this.#kvBudgetBytes = opts.kvBudgetBytes;
     this.#promptCache = opts.promptCache;
     this.#kvScheme = opts.kvScheme;
@@ -684,82 +688,24 @@ export class BatchScheduler {
       startToken: chunkStart,
     });
     try {
-    // Boundary-snapshot chunking (mirrors generate.ts's snapshotAt split):
-    // chunk edges land EXACTLY on snapAt so the clone is taken while the
-    // caches hold precisely that prefix — slicing tokens against caches at
-    // any other offset would store corrupt entries. The extra split only
-    // changes chunk shapes for opted-in rows: the same numerics class as a
-    // prompt-cache-hit continuation prefill (GEMV/GEMM reduction order).
-    if (p.snapAt !== null && p.pos < p.snapAt) {
-      const end = Math.min(p.pos + this.#prefillChunkSize, p.snapAt);
-      const chunk = prompt.slice(p.pos, end);
-      const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = await this.#forwardHidden(ids, p.solo);
-      ids.dispose();
-      h.dispose();
-      ops.evalAll(p.solo.flatMap((c) => c.state()));
-      this.#quantizeSolo(p.solo, p.row.req.trace); // serial converts at every chunk boundary
-      clearCache();
-      p.pos = end;
-      if (p.pos === p.snapAt) {
-        try {
-          this.#promptCache!.put(prompt.slice(0, p.snapAt), cloneKvCaches(p.solo));
-        } catch (e) {
-          console.warn(`batch-lane boundary snapshot skipped: ${(e as Error).message}`);
-        }
+    let h: MlxArray;
+    while (true) {
+      p.row.req.signal?.throwIfAborted();
+      const step = nextPrefillStep({ length: prompt.length, position: p.pos,
+        chunkSize: this.#prefillChunkSize, tailSplit: this.#prefillTailSplit, snapshotAt: p.snapAt });
+      const hidden = await executeMlxPrefillStep(
+        (ids, caches) => this.#forwardHidden(ids, caches), p.solo, prompt, step,
+        () => this.#quantizeSolo(p.solo, p.row.req.trace),
+      );
+      p.pos = step.end;
+      if (hidden) { h = hidden; break; }
+      if (step.snapshot) {
+        try { this.#promptCache!.put(prompt.slice(0, step.end), cloneKvCaches(p.solo)); }
+        catch (error) { console.warn(`batch-lane boundary snapshot skipped: ${(error as Error).message}`); }
         p.snapAt = null;
       }
-      return false;
+      if (step.batchYield) return false;
     }
-    // Oracle prefill convention (see generate.ts prefill): drain only to
-    // len-1 in chunks, then step-0 logits from an L=1 forward of the LAST
-    // prompt token — mirrors mlx-lm's batched engine (insert_segments'
-    // forced final 1-token segment + GenerationBatch._step,
-    // generate.py:1645/1327) and keeps this lane bit-exact with the serial
-    // lane (unified == --batch 1 == oracle). The L=1 step runs on the solo
-    // caches BEFORE merge, so per-row serial equivalence is by construction.
-    // MLX_BUN_PREFILL_TAIL_SPLIT=0 restores the old convention.
-    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
-    if ((tailSplit ? prompt.length - p.pos - 1 : prompt.length - p.pos) >
-        this.#prefillChunkSize) {
-      const chunk = prompt.slice(p.pos, p.pos + this.#prefillChunkSize);
-      const ids = ops.fromInt32(chunk, [1, chunk.length]);
-      const h = await this.#forwardHidden(ids, p.solo);
-      ids.dispose();
-      h.dispose(); // logits never computed for non-final chunks
-      ops.evalAll(p.solo.flatMap((c) => c.state()));
-      this.#quantizeSolo(p.solo, p.row.req.trace); // serial converts at every chunk boundary
-      clearCache(); // serial prefill's per-chunk clear (generate.ts)
-      p.pos += this.#prefillChunkSize;
-      return false;
-    }
-
-    // Tail split: forward the remaining head [p.pos, len-1) as a plain chunk
-    // (serial chunk-boundary semantics: eval + quantize + clear), leaving
-    // exactly one token for the L=1 step-0 forward below. Head + step share
-    // this tick — same chunk-tick count as before, plus one L=1 dispatch
-    // (~a single decode step) in the admission tick's no-yield window.
-    if (tailSplit && p.pos < prompt.length - 1) {
-      const head = prompt.slice(p.pos, prompt.length - 1);
-      const ids = ops.fromInt32(head, [1, head.length]);
-      const h = await this.#forwardHidden(ids, p.solo);
-      ids.dispose();
-      h.dispose();
-      ops.evalAll(p.solo.flatMap((c) => c.state()));
-      this.#quantizeSolo(p.solo, p.row.req.trace);
-      clearCache();
-      p.pos = prompt.length - 1;
-    }
-
-    // Final chunk: slice the LAST hidden position BEFORE the lm_head — running
-    // logitsFromHidden on the whole [1,Lp,H] hidden materializes a [1,Lp,V]
-    // transient (~4.3 GB bf16 at Gemma V=262k, 8k prompt). Same reorder as the
-    // serial path (generate.ts prefill). Under tailSplit this chunk is exactly
-    // the last prompt token (L=1).
-    const chunk = prompt.slice(p.pos);
-    const ids = ops.fromInt32(chunk, [1, chunk.length]);
-    const h = await this.#forwardHidden(ids, p.solo);
-    ids.dispose();
     closeChunk?.();
     p.closePrefill?.();
     p.closePrefill = undefined;
