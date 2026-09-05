@@ -1438,8 +1438,6 @@ batch replay also honors it, with dynamic cache geometry still allowed to
 decline replay transactionally. A lazily created batch group inherits the
 gateway's runtime snapshot. Composition and snapshot tests cover later config
 changes, adapters, paged/media fallback, speculation, denoising and logprobs.
-Bindings must declare the MLX
-hidden-state ABI and legacy `Cache[]` ABI; mismatches fail before cache allocation.
 Rejected initial state releases owned caches while preserving borrowed caches.
 Decoder cleanup completes before cache disposal, including early iterator return.
 If execution and decoder cleanup both fail, the aggregate retains both errors.
@@ -1681,5 +1679,13 @@ oracle regenerated the mixed-KV manifest's exact hashes and an M1 extend-join
 trajectory identical to the implementation. The corrected batch suites pass
 15 tests with one unavailable e4b oracle skip. Tests now check blob hashes;
 the mixed-KV generator writes blobs and manifests to the same resolved output
-directory. Other opt-in families still require their explicit runs; a process
-that exits successfully without registering tests is not a passing matrix cell.
+directory. A second per-file run enables the local train/quantize/LoRA/generated
+and model-family gates. Two rotating-quantized continuation failures also
+reproduced on the baseline: the test compared `generate()`'s bf16-head/quantize/
+tail prefill with a fully quantized single-forward oracle. The generator now
+records both procedures separately. Existing mechanics, single-forward logits
+and trajectories regenerated unchanged; the matching serving trajectories pass
+the original prefix threshold. All six rotating tests pass. Missing new
+continuation fixtures skip explicitly on other machines until regeneration.
+A process that exits successfully without registering tests is not a passing
+matrix cell; absent large-model/drafter fixtures remain open.
