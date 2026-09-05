@@ -1,3 +1,4 @@
+import { cleanupFailure, disposeResources, ownResource } from "../../engine/resources";
 import { bindGeneration } from "../../generate";
 import type { RuntimeModel } from "../../model/factory";
 import { Qwen35Model } from "../../model/qwen3_5";
@@ -60,73 +61,87 @@ export interface MlxSerialServices {
 export function createMlxSerialExecutor(binding: MlxSerialBinding, services: MlxSerialServices): SerialRun {
   const { promptCache, checkpoints: ssdStore } = services;
   return (promptIds, options, onToken, vision, trace, execution) => withRuntimeConfig(binding.runtime, async () => {
-    if (!execution) throw new Error("serial execution requires a resolved plan");
-    if (execution.method === "speculative") {
-      if (!binding.speculate) throw new Error("resolved speculation requires a bound verifier");
-      return binding.speculate(promptIds, options, onToken);
-    }
-    // Cache entries are adapter-specific: KV computed under one adapter
-    // must never seed another's (or the base's) prefill.
-    const cacheNs = options.adapters?.length ? services.adapterNamespace(options.adapters) : "";
-    // Paged-KV request scope (docs/design/kv-cache.md): media
-    // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
-    // they run the PLAIN cache path even under --paged-kv (scope the flag
-    // per request, never 400). Effective value computed ONCE so the
-    // prompt-cache bypass below and the generate() options can't disagree.
-    const pagedKv = execution.pagedKv ? options.pagedKv : undefined;
-    // Paged requests bypass the prompt cache entirely (v1 non-goal:
-    // PagedKVCache has no cloneKvCaches/restore path — the vision
-    // precedent). Fresh caches per request, disposed on completion.
-    const skipPromptCache = !execution.promptCache;
-    const checkpointEvery = services.checkpointEveryTokens;
-    const checkpointEligible = execution.checkpoint;
-    const checkpointKey = checkpointEligible
-      ? generationCheckpointKey(promptIds, options, cacheNs, execution, services.identity)
-      : null;
-    // Both tiers in one call (Layer 0): take() prefers a strictly-longer
-    // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
-    const closeCacheLookup = trace?.begin("cache.lookup_restore", {
-      mechanism: "serial",
-      bypassed: skipPromptCache,
-    });
-    const checkpointEntry = checkpointKey
-      ? ssdStore!.findGenerationCheckpoint(promptIds, checkpointKey, cacheNs)
-      : null;
-    const restoredCheckpoint = checkpointEntry
-      ? ssdStore!.restore(checkpointEntry, binding)
-      : null;
-    const checkpoint = restoredCheckpoint?.header.generationCheckpoint;
-    const resuming = Boolean(restoredCheckpoint && checkpoint);
-    const generationPromptIds = resuming ? restoredCheckpoint!.tokens : promptIds;
-    const entry = skipPromptCache || resuming
-      ? null
-      : promptCache.take(promptIds, cacheNs);
-    closeCacheLookup?.();
-    const caches = restoredCheckpoint?.caches ?? entry?.caches ?? binding.makeCache();
-    // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
-    // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
-    // window (wrapped rings) and under quantized KV (mid-group), so any
-    // decode→encode roundtrip drift in the reply the client sends back
-    // turns the next turn into a total miss (measured: 12B turn-2 TTFT
-    // 8.9 s instead of ~0.2 s). A prompt-ONLY entry is always an exact
-    // prefix of the next turn's rendering regardless of reply drift.
-    // Zero-copy (cloneKvCaches = slice views); only for substantial cold
-    // prefills, where the re-prefill it saves is worth an extra entry.
-    // The oracle invariant (mlx-lm insert_segments): a trim-free STRICT
-    // prefix of the prompt exists for EVERY substantial request — cap the
-    // boundary at len-1 so even a stableLen == len prompt (e4b: the
-    // template tail survives the probe render) snapshots prompt[:-1]. An
-    // exact repeat then matches with trimNeeded == 0, bypassing
-    // isTrimmable() entirely — the only reuse path a wrapped ring has.
-    const boundary = Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1);
-    // Re-snapshot on EVERY substantial request whose stable boundary extends
-    // past the cached prefix; the clone is zero-copy views, so re-putting
-    // is ~free.
-    const snapshotBoundary =
-      !skipPromptCache && !resuming && boundary >= 256 &&
-      boundary > (entry?.tokens.length ?? 0);
+    let caches: Cache[] = [];
+    let retain: (() => void) | undefined;
     let closeMedia: (() => void) | undefined;
+    const cleanup = ownResource(null, () => disposeResources([
+      { dispose: () => disposeResources(caches) },
+      { dispose: () => retain?.() },
+      { dispose: () => closeMedia?.() },
+      ...[options.grammar, vision?.embeddings, vision?.imageMask,
+        vision?.multimodalMask, options.visionPixels].filter((value) => value != null),
+    ]));
     try {
+      options.signal?.throwIfAborted();
+      if (!execution) throw new Error("serial execution requires a resolved plan");
+      if (execution.method === "speculative") {
+        if (!binding.speculate) throw new Error("resolved speculation requires a bound verifier");
+        return await binding.speculate(promptIds, options, onToken);
+      }
+      // Cache entries are adapter-specific: KV computed under one adapter
+      // must never seed another's (or the base's) prefill.
+      const cacheNs = options.adapters?.length ? services.adapterNamespace(options.adapters) : "";
+      // Paged-KV request scope (docs/design/kv-cache.md): media
+      // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
+      // they run the PLAIN cache path even under --paged-kv (scope the flag
+      // per request, never 400). Effective value computed ONCE so the
+      // prompt-cache bypass below and the generate() options can't disagree.
+      const pagedKv = execution.pagedKv ? options.pagedKv : undefined;
+      // Paged requests bypass the prompt cache entirely (v1 non-goal:
+      // PagedKVCache has no cloneKvCaches/restore path — the vision
+      // precedent). Fresh caches per request, disposed on completion.
+      const skipPromptCache = !execution.promptCache;
+      const checkpointEvery = services.checkpointEveryTokens;
+      const checkpointEligible = execution.checkpoint;
+      const checkpointKey = checkpointEligible
+        ? generationCheckpointKey(promptIds, options, cacheNs, execution, services.identity)
+        : null;
+      // Both tiers in one call (Layer 0): take() prefers a strictly-longer
+      // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
+      const closeCacheLookup = trace?.begin("cache.lookup_restore", {
+        mechanism: "serial",
+        bypassed: skipPromptCache,
+      });
+      const checkpointEntry = checkpointKey
+        ? ssdStore!.findGenerationCheckpoint(promptIds, checkpointKey, cacheNs)
+        : null;
+      const restoredCheckpoint = checkpointEntry
+        ? ssdStore!.restore(checkpointEntry, binding)
+        : null;
+      caches = restoredCheckpoint?.caches ?? [];
+      const checkpoint = restoredCheckpoint?.header.generationCheckpoint;
+      if (restoredCheckpoint && !checkpoint)
+        throw new Error("restored generation checkpoint has no continuation metadata");
+      const resuming = Boolean(restoredCheckpoint && checkpoint);
+      const generationPromptIds = resuming ? restoredCheckpoint!.tokens : promptIds;
+      const entry = skipPromptCache || resuming
+        ? null
+        : promptCache.take(promptIds, cacheNs);
+      if (entry) { caches = entry.caches; retain = entry.retain; }
+      if (!restoredCheckpoint && !entry) caches = binding.makeCache();
+      closeCacheLookup?.();
+      // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
+      // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
+      // window (wrapped rings) and under quantized KV (mid-group), so any
+      // decode→encode roundtrip drift in the reply the client sends back
+      // turns the next turn into a total miss (measured: 12B turn-2 TTFT
+      // 8.9 s instead of ~0.2 s). A prompt-ONLY entry is always an exact
+      // prefix of the next turn's rendering regardless of reply drift.
+      // Zero-copy (cloneKvCaches = slice views); only for substantial cold
+      // prefills, where the re-prefill it saves is worth an extra entry.
+      // The oracle invariant (mlx-lm insert_segments): a trim-free STRICT
+      // prefix of the prompt exists for EVERY substantial request — cap the
+      // boundary at len-1 so even a stableLen == len prompt (e4b: the
+      // template tail survives the probe render) snapshots prompt[:-1]. An
+      // exact repeat then matches with trimNeeded == 0, bypassing
+      // isTrimmable() entirely — the only reuse path a wrapped ring has.
+      const boundary = Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1);
+      // Re-snapshot on EVERY substantial request whose stable boundary extends
+      // past the cached prefix; the clone is zero-copy views, so re-putting
+      // is ~free.
+      const snapshotBoundary =
+        !skipPromptCache && !resuming && boundary >= 256 &&
+        boundary > (entry?.tokens.length ?? 0);
       closeMedia = binding.enterMedia?.(vision);
       if (resuming) {
         const replay = generationPromptIds.slice(promptIds.length);
@@ -135,6 +150,7 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
           `${replay.length} emitted tokens`,
         );
         for (const token of replay) {
+          options.signal?.throwIfAborted();
           if ((await onToken(token)) === false)
             throw new Error("saved generation prefix triggered a terminal stop while replaying");
         }
@@ -212,31 +228,17 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       }
       const s = gen.stats!; // set on completion AND on early break
       if (checkpointKey) ssdStore!.removeGenerationCheckpoints(checkpointKey);
-      if (skipPromptCache) {
-        // Vision and paged-KV requests own their caches for exactly one
-        // generation (paged: v1 non-goal — no PromptCache integration).
-        for (const c of caches) c.dispose();
-      } else {
+      if (!skipPromptCache) {
         // put() fires onPut → the debounced write-behind SSD snapshot
         // (wired below), covering the batch lane's puts too.
-        promptCache.put(s.cacheTokens, caches, cacheNs, entry?.retain);
+        promptCache.put(s.cacheTokens, caches, cacheNs, retain);
+        caches = []; retain = undefined; // ownership returned to the prefix store
       }
       return s;
-    } catch (e) {
-      for (const c of caches) c.dispose();
-      entry?.retain?.();
-      // A throw BEFORE generate()/the gateway took ownership (promptCache
-      // take / makeCache) would leak the grammar's WASM matcher; dispose()
-      // is idempotent, so this is safe when the throw came from inside run
-      // (whose finally already disposed it).
-      options.grammar?.dispose();
-      throw e;
+    } catch (error) {
+      cleanupFailure(error, () => cleanup.close());
     } finally {
-      closeMedia?.();
-      vision?.embeddings.dispose();
-      vision?.imageMask?.dispose();
-      vision?.multimodalMask?.dispose();
-      options.visionPixels?.dispose();
+      cleanup.close();
     }
   });
 }

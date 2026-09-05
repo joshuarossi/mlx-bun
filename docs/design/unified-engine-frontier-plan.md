@@ -1483,6 +1483,11 @@ generator/verifier, cache constructor, prefix/checkpoint stores, clone function
 and adapter namespace service. Native Qwen media context is installed/restored
 by its compatibility binder. The executor has no concrete model dispatch;
 the existing gateway still owns scheduling and exclusive execution.
+Native input ownership starts before cache lookup/construction. A failed lookup,
+cache constructor or trace hook releases prepared grammar/media and any acquired
+cache state; one failed destructor does not skip sibling releases or replace
+the execution error. Checkpoint replay checks cancellation before each saved
+token and retains its durable checkpoint when interrupted.
 
 Model-free binding tests exercise an independent graph, a replacement fused
 decoder, declined steps, unrecovered errors, and unsupported ABI/media/adapter
