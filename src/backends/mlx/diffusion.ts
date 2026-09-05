@@ -4,8 +4,10 @@ import type { Cache } from "../../model/gemma4-base";
 import type { DiffusionGemmaModel } from "../../model/diffusion-gemma";
 import type { MlxModelMemory } from "./autoregressive";
 import { disposeResources } from "../../engine/resources";
+import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 
 export interface MlxDenoisingBinding<State = Cache[]> {
+  readonly runtime?: RuntimeConfig;
   readonly graph: DenoisingGraph<MlxArray, State>;
   readonly memory: MlxModelMemory;
   readonly adapters?: { active: string[] };
@@ -13,6 +15,7 @@ export interface MlxDenoisingBinding<State = Cache[]> {
 
 export function bindLegacyDenoisingModel(model: DiffusionGemmaModel): MlxDenoisingBinding {
   return {
+    runtime: runtimeConfig(),
     memory: model, adapters: model.loraState,
     graph: {
       descriptor: Object.freeze({ id: "legacy-diffusion-gemma", backend: "mlx",

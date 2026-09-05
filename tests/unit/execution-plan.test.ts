@@ -52,3 +52,32 @@ test("fill cannot run in another method, continuous group, or resumable checkpoi
   expect(Object.isFrozen(denoising)).toBe(true);
   expect(Object.isFrozen(denoising.reasons)).toBe(true);
 });
+
+test("compiled replay permission is fixed by graph capability and request composition", () => {
+  const features = { pagedKv: false, fill: false, compiledDecode: true };
+  const supported = { ...capabilities, compiledDecode: true };
+  expect(resolveExecution(request, supported, features).compiledDecode).toBe(true);
+  expect(resolveExecution(request, capabilities, features).compiledDecode).toBe(false);
+  expect(resolveExecution(request, supported).compiledDecode).toBe(false);
+  for (const incompatible of [{ hasAdapters: true }, { hasDraft: true }]) {
+    const plan = resolveExecution({ ...request, ...incompatible }, supported, features);
+    expect(plan.compiledDecode).toBe(false);
+    expect(plan.reasons).toContain("compiled-decode-unavailable-for-request");
+  }
+  expect(resolveExecution(request, supported, { ...features, pagedKv: true }).compiledDecode).toBe(false);
+  // Media bypasses paged KV and still uses the graph's ordinary decode path.
+  expect(resolveExecution({ ...request, hasVision: true }, supported, { ...features, pagedKv: true }).compiledDecode).toBe(true);
+});
+
+test("grammar jump belongs only to eligible serial AR requests", () => {
+  const features = { pagedKv: false, fill: false, grammarJump: true };
+  const grammar = { ...request, hasGrammar: true };
+  const serial = { ...capabilities, continuous: false };
+  expect(resolveExecution(grammar, serial, features).grammarJump).toBe(true);
+  expect(resolveExecution(grammar, capabilities, features).grammarJump).toBe(false);
+  expect(resolveExecution(grammar, serial).grammarJump).toBe(false);
+  expect(resolveExecution(request, serial, features).grammarJump).toBe(false);
+  for (const incompatible of [{ wantsLogprobs: true }, { hasDraft: true }])
+    expect(resolveExecution({ ...grammar, ...incompatible }, serial, features).grammarJump).toBe(false);
+  expect(resolveExecution(grammar, { ...serial, method: "denoising" }, features).grammarJump).toBe(false);
+});

@@ -117,7 +117,7 @@ function snapshotOptions(options: RequestPlanInput["options"]): RequestPlanInput
     Object.freeze(value);
   };
   for (const key of ["stopSequences", "eosTokenIds", "adapters", "xtcSpecialTokens", "logitBias",
-    "kvConfig", "turboQuant", "pagedKv", "hlg", "curve"] as const) {
+    "kvConfig", "turboQuant", "pagedKv", "hlg", "curve", "decodePolicy"] as const) {
     if (snapshot[key] === undefined) continue;
     const value = structuredClone(snapshot[key]);
     freeze(value);

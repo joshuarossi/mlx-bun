@@ -1,4 +1,5 @@
 import { generationCheckpointKey } from "./serve/checkpoint-identity";
+import { bindLegacySpeculativeModel } from "./backends/mlx/speculative";
 export { generationCheckpointKey } from "./serve/checkpoint-identity";
 // OpenAI-compatible HTTP server: /v1/chat/completions (+ SSE streaming)
 // and /v1/models. Phase 4 core — tool calling, vision, and the
@@ -22,7 +23,7 @@ import {
   GLM52_G5_MEASURED_WARM_DECODE_TPS,
 } from "./model/glm52-memory";
 import {
-  generate,
+  bindGeneration,
   type GenerateOptions,
   type TokenLogprobs,
   withModelUsageFlush,
@@ -562,6 +563,10 @@ export function createServer(
    *  Media (vision/audio embeddings-prefill) requests bypass the prompt
    *  cache: soft tokens are identical placeholder ids, so prefix matching
    *  across different images/clips would false-hit. */
+  const generateBound = bindGeneration(ctx.model);
+  const speculativeBinding = ctx.draft
+    ? bindLegacySpeculativeModel(ctx.model, ctx.draft.provider)
+    : null;
   const runGeneration = async (
     promptIds: number[],
     options: GenerateOptions,
@@ -577,9 +582,9 @@ export function createServer(
   ) => {
     if (!execution) throw new Error("serial execution requires a resolved plan");
     if (execution.method === "speculative") {
-      const { specServeRun } = await import("./spec/serve-loop");
+      const { specRun } = await import("./spec/serve-loop");
       return withModelWiredLimit(ctx.model, () => withModelUsageFlush(ctx.model,
-        () => specServeRun(ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
+        () => specRun(speculativeBinding!, ctx.draft!.numDraftTokens,
           promptIds, options, onToken)));
     }
     // Cache entries are adapter-specific: KV computed under one adapter
@@ -659,8 +664,9 @@ export function createServer(
             throw new Error("saved generation prefix triggered a terminal stop while replaying");
         }
       }
-      const gen = generate(ctx.model, generationPromptIds, {
+      const gen = generateBound(generationPromptIds, {
         ...options,
+        decodePolicy: execution,
         ...(resuming ? { seed: checkpoint!.seed } : {}),
         fill: execution.fill ? options.fill : undefined,
         pagedKv, // request-scoped (undefined strips the server-wide flag)

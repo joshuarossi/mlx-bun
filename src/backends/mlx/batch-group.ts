@@ -64,8 +64,9 @@ import { executeMlxPrefillStep } from "./prefill";
 import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../../mlx/ffi";
-import { runtimeConfig } from "../../runtime-config";
+import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { CompiledDecode } from "../../model/compiled-decode";
+import { legacyCompiledDecodeAvailable } from "./autoregressive";
 import type { Gemma4Model } from "../../model/gemma4";
 import {
   KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache,
@@ -131,6 +132,8 @@ export function stepTraceReport(): string {
 export type RowSampler = (logits1V: MlxArray, step: number) => MlxArray;
 
 export interface BatchRequest {
+  /** Resolved replay permission; standalone group callers retain auto mode. */
+  compiledDecode?: boolean;
   promptIds: number[];
   maxTokens: number;
   eosTokenIds: number[];
@@ -260,6 +263,7 @@ export interface ExclusiveLock {
 }
 
 export interface MlxBatchExecutionGroupOptions {
+  runtime?: RuntimeConfig;
   maxQueued?: number;
   stateCodecs?: import("../../kv-store").CacheCodecProvider;
   /** Max rows in the running batch (mlx-lm `--decode-concurrency`). */
@@ -304,9 +308,9 @@ type LayerInner =
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class MlxBatchExecutionGroup {
-  readonly #runtime = runtimeConfig();
-  readonly #noPipeline = this.#runtime.value("MLX_BUN_BATCH_NO_PIPELINE") === "1";
-  readonly #stepTrace = this.#runtime.value("MLX_BUN_BATCH_STEP_TRACE") === "1";
+  readonly #runtime: RuntimeConfig;
+  readonly #noPipeline: boolean;
+  readonly #stepTrace: boolean;
   readonly #stateCodecs: import("../../kv-store").CacheCodecProvider | undefined;
   readonly #maxQueued: number;
   #running: Row[] = [];
@@ -353,6 +357,9 @@ export class MlxBatchExecutionGroup {
   #compiled: CompiledDecode | null;
 
   constructor(private readonly model: RuntimeModel, opts: MlxBatchExecutionGroupOptions) {
+    this.#runtime = opts.runtime ?? runtimeConfig();
+    this.#noPipeline = this.#runtime.value("MLX_BUN_BATCH_NO_PIPELINE") === "1";
+    this.#stepTrace = this.#runtime.value("MLX_BUN_BATCH_STEP_TRACE") === "1";
     this.#maxQueued = opts.maxQueued ?? 64;
     if (!Number.isSafeInteger(this.#maxQueued) || this.#maxQueued < 1) throw new Error("invalid batch queue limit");
     this.#stateCodecs = opts.stateCodecs;
@@ -396,8 +403,7 @@ export class MlxBatchExecutionGroup {
     for (const c of proto) c.dispose();
     this.#compiled =
       this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true) &&
-      model.config.modelType.startsWith("gemma4") &&
-      !model.config.text.enableMoeBlock
+      legacyCompiledDecodeAvailable(model)
         ? CompiledDecode.for(model as Gemma4Model)
         : null;
   }
@@ -1110,7 +1116,7 @@ export class MlxBatchExecutionGroup {
       let lg: MlxArray | null = null;
       let evalWith: MlxArray[] = [];
       if (
-        this.#compiled && B === 1 && unpadded &&
+        this.#compiled && B === 1 && unpadded && this.#running[0]!.req.compiledDecode !== false &&
         (!this.#pendingToks || this.#pendingToks.dtype === Dtype.uint32) &&
         // A filtered-to-one BATCHED rot-quant cache subclasses the serial
         // class (so supports() passes) but carries batched ring state —

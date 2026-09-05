@@ -6,6 +6,11 @@ import { CompiledDecode } from "../../model/compiled-decode";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { bindMlxGraph } from "./graph";
 
+/** One declaration shared by planning and both native execution lanes. */
+export function legacyCompiledDecodeAvailable(model: RuntimeModel): boolean {
+  return model.config?.modelType?.startsWith("gemma4") === true && !model.config.text.enableMoeBlock;
+}
+
 export interface MlxModelMemory {
   readonly weightsBytes: number;
   readonly expertRuntime?: {
@@ -63,7 +68,7 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
       // Preserve the existing Gemma path and exclusions. MoE shapeless replay
       // retraces growing windows; adapters would bake residuals into the tape.
       if (!runtime.flag("MLX_BUN_COMPILED_DECODE", true) || policy.hasAdapters || policy.pagedKv ||
-          !model.config.modelType.startsWith("gemma4") || model.config.text.enableMoeBlock)
+          !legacyCompiledDecodeAvailable(model))
         return null;
       let compiled: CompiledDecode | null = CompiledDecode.for(model as Gemma4Model);
       return {

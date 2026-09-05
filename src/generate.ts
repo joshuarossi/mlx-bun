@@ -55,6 +55,9 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
+  /** Resolved host policy. Direct compatibility calls resolve from their
+   * captured binding when this is absent. */
+  decodePolicy?: Readonly<Pick<import("./contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;
   /** Cooperatively cancel at prefill/decode boundaries; pending native work
    *  finishes before owned resources are released. */
   signal?: AbortSignal;
@@ -495,12 +498,23 @@ export function generate(
   options: GenerateOptions = {},
   diagnostics: GenerateDiagnostics = {},
 ): Generation {
+  return bindGeneration(model)(promptTokens, options, diagnostics);
+}
+
+/** Resolve the compatibility model once at host construction. Every request
+ * borrows the same binding and immutable runtime snapshot. */
+export function bindGeneration(model: RuntimeModel): (
+  promptTokens: number[], options?: GenerateOptions, diagnostics?: GenerateDiagnostics,
+) => Generation {
   // DiffusionGemma is non-autoregressive: route to the denoising engine instead
   // of the AR decode loop. Same Generation/GenerateStats contract so the CLI and
   // server stream it through the existing token machinery.
-  if (!(model instanceof DiffusionGemmaModel))
-    return generateAutoregressive(bindLegacyAutoregressiveModel(model), promptTokens, options, diagnostics);
-  return generateDenoising(bindLegacyDenoisingModel(model), promptTokens, options);
+  if (!(model instanceof DiffusionGemmaModel)) {
+    const binding = bindLegacyAutoregressiveModel(model);
+    return (prompt, options, diagnostics) => generateAutoregressive(binding, prompt, options, diagnostics);
+  }
+  const binding = bindLegacyDenoisingModel(model);
+  return (prompt, options) => generateDenoising(binding, prompt, options);
 }
 
 /** Execute a supplied backend binding through the same AR loop and resource
@@ -521,7 +535,7 @@ export function generateAutoregressive(
   if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
     inner = usageScoped(binding.memory, inner);
   return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
-    (binding.runtime ?? runtimeConfig()).value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner);
+    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner);
 }
 
 /** Denoising bindings use their own state and feedback graph. Callers hold
@@ -534,7 +548,9 @@ export function generateDenoising<State>(
     inner = adapterScoped({ loraState: binding.adapters }, options.adapters, inner);
   if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
     inner = usageScoped(binding.memory, inner);
-  return new Generation(modelNeedsWiredLimit(binding.memory) ? wiredScoped(inner) : inner);
+  const runtime = binding.runtime ?? runtimeConfig();
+  return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
+    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner);
 }
 
 /** Non-autoregressive diffusion generation, adapted to the AR Generation
@@ -1107,7 +1123,7 @@ async function* generateInner(
 
     // ---- decode (pipelined) ----
     // Selection and transactional fallback belong to the graph's binding.
-    decoder = binding.createDecode?.({
+    decoder = options.decodePolicy?.compiledDecode === false ? null : binding.createDecode?.({
       hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
     }) ?? null;
     let stop = false;
@@ -1122,7 +1138,7 @@ async function* generateInner(
     // (see GrammarController.jumpForward for the contract + the fidelity
     // note on why this is opt-in). Excluded when logprobs are requested
     // (jumped tokens are never sampled, so they'd have no logprobs rows).
-    const grammarJump = shouldUseGrammarJump(options, runtime);
+    const grammarJump = options.decodePolicy?.grammarJump ?? shouldUseGrammarJump(options, runtime);
     while (!stop) {
       options.signal?.throwIfAborted();
       const cur = pending!;

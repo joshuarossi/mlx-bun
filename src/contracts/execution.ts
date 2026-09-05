@@ -18,11 +18,15 @@ export interface ExecutionCapabilities {
   readonly quantizedBatch: boolean;
   readonly grammarBatch: boolean;
   readonly checkpoints: boolean;
+  /** A graph-owned compiled step exists; cache geometry can still decline it. */
+  readonly compiledDecode?: boolean;
 }
 
 export interface ExecutionFeatures {
   readonly pagedKv: boolean;
   readonly fill: boolean;
+  readonly compiledDecode?: boolean;
+  readonly grammarJump?: boolean;
 }
 
 /** Selected once; consumers execute/report these values without reselecting. */
@@ -33,5 +37,9 @@ export interface ResolvedExecution {
   readonly promptCache: boolean;
   readonly checkpoint: boolean;
   readonly fill: boolean;
+  /** Permission to attempt the bound compiled step, never a promise that
+   * every dynamic row/state shape supports replay. */
+  readonly compiledDecode: boolean;
+  readonly grammarJump: boolean;
   readonly reasons: readonly string[];
 }

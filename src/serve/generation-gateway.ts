@@ -56,6 +56,7 @@ import { makeStepSampler } from "../sampler";
 import { MlxBatchExecutionGroup as BatchScheduler, type RowPromptCache } from "../backends/mlx/batch-group";
 import { runtimeConfig } from "../runtime-config";
 import { resolveExecution } from "../engine/execution-plan";
+import { legacyCompiledDecodeAvailable } from "../backends/mlx/autoregressive";
 import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
 import type { PromptResponseTrace } from "./prompt-response-trace";
 
@@ -194,6 +195,7 @@ export class GenerationGateway {
       promptCache?: RowPromptCache;
     } = {},
   ) {
+    this.opts = Object.freeze({ ...opts });
     this.#batch = Math.max(1, Math.floor(batch));
     this.#requests = new AdmissionPool(this.#batch);
   }
@@ -333,7 +335,12 @@ export class GenerationGateway {
       quantizedBatch: shape.kvQuant && this.#kvBatchable(),
       grammarBatch: this.#runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
       checkpoints: this.opts.checkpoints === true,
-    }, { pagedKv: !!options.pagedKv, fill: !!options.fill });
+      compiledDecode: legacyCompiledDecodeAvailable(this.model),
+    }, {
+      pagedKv: !!options.pagedKv, fill: !!options.fill,
+      compiledDecode: this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true),
+      grammarJump: this.#runtime.flag("MLX_BUN_GRAMMAR_JUMP", false),
+    });
     return Object.freeze({ shape: frozenShape, mechanism: execution.mechanism, execution });
   }
 
@@ -478,6 +485,7 @@ export class GenerationGateway {
     try {
       st = await this.#ensureScheduler().submit({
         promptIds,
+        compiledDecode: placement.execution?.compiledDecode,
         maxTokens: options.maxTokens ?? 512,
         eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
         sample,
@@ -516,6 +524,7 @@ export class GenerationGateway {
   #ensureScheduler(): BatchScheduler {
     if (!this.#scheduler)
       this.#scheduler = new BatchScheduler(this.model, {
+        runtime: this.#runtime,
         maxBatch: this.#batch,
         stateCodecs: this.opts.stateCodecs,
         kvBudgetBytes: this.opts.kvBudgetBytes,

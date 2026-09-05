@@ -82,6 +82,21 @@ describe("GenerationGateway.place", () => {
     expect(seen).toBe(placement.execution);
     expect(placement.execution?.method).toBe("autoregressive");
   });
+
+  test("compiled and grammar policy use the host snapshot across later configuration changes", () => {
+    const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_GRAMMAR_JUMP: "1" });
+    try {
+      const model = { ...stubModel, config: { ...stubModel.config, modelType: "gemma4" } } as RuntimeModel;
+      const first = new GenerationGateway(model, 1, stubSerial);
+      const changed = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0", MLX_BUN_GRAMMAR_JUMP: "0" });
+      try {
+        const shape = { ...batchable, hasGrammar: true };
+        expect(first.place(shape).execution).toMatchObject({ compiledDecode: true, grammarJump: true });
+        expect(new GenerationGateway(model, 1, stubSerial).place(shape).execution)
+          .toMatchObject({ compiledDecode: false, grammarJump: false });
+      } finally { changed(); }
+    } finally { restore(); }
+  });
   test("place freezes one shape and declares its scheduling mechanism", () => {
     const g = gateway(2);
     const shape = { ...batchable };

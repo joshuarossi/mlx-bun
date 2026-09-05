@@ -37,6 +37,14 @@ export function resolveExecution(
   const checkpoint = capabilities.checkpoints && method === "autoregressive" &&
     mechanism === "serial" && promptCache && !request.hasGrammar &&
     !features.fill && !request.wantsLogprobs;
+  const compiledDecode = features.compiledDecode === true && capabilities.compiledDecode === true &&
+    method === "autoregressive" && !request.hasAdapters && !pagedKv;
+  if (features.compiledDecode && !compiledDecode) reasons.push("compiled-decode-unavailable-for-request");
+  const grammarJump = features.grammarJump === true && request.hasGrammar &&
+    method === "autoregressive" && mechanism === "serial" && !request.wantsLogprobs;
+  if (features.grammarJump && request.hasGrammar && !grammarJump)
+    reasons.push("grammar-jump-incompatible-with-request");
   return Object.freeze({ method, mechanism, pagedKv, promptCache, checkpoint, fill,
+    compiledDecode, grammarJump,
     reasons: Object.freeze(reasons) });
 }

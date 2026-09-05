@@ -1430,6 +1430,16 @@ in the legacy binding. A replacement supplies its own decoder; the loop never
 infers one from the model family. A declined step must leave state unchanged.
 Unrecovered errors propagate without retry. Bindings must declare the MLX
 hidden-state ABI and legacy `Cache[]` ABI; mismatches fail before cache allocation.
+
+The host now captures AR/denoising and speculative bindings once. Compiled
+replay permission and grammar jumping are resolved alongside placement and
+included in checkpoint identity. Serial execution consumes that policy; B=1
+batch replay also honors it, with dynamic cache geometry still allowed to
+decline replay transactionally. A lazily created batch group inherits the
+gateway's runtime snapshot. Composition and snapshot tests cover later config
+changes, adapters, paged/media fallback, speculation, denoising and logprobs.
+Bindings must declare the MLX
+hidden-state ABI and legacy `Cache[]` ABI; mismatches fail before cache allocation.
 Rejected initial state releases owned caches while preserving borrowed caches.
 Decoder cleanup completes before cache disposal, including early iterator return.
 If execution and decoder cleanup both fail, the aggregate retains both errors.

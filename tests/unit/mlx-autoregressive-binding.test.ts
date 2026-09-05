@@ -84,6 +84,20 @@ test("a decoder can decline a step without advancing state", async () => {
   expect(seen.forwards).toBe(4);
 });
 
+test("a resolved disabled plan never constructs the bound compiled decoder", async () => {
+  const { binding, seen } = fixture();
+  const generation = generateAutoregressive({ ...binding,
+    createDecode() { throw new Error("disabled decoder was constructed"); },
+  }, [0, 1], {
+    temperature: 0, maxTokens: 3, prefillChunkSize: 1,
+    decodePolicy: { compiledDecode: false, grammarJump: false },
+  });
+  const tokens: number[] = [];
+  for await (const token of generation) tokens.push(token.token);
+  expect(tokens).toEqual([2, 3, 4]);
+  expect(seen.disposals).toBe(1);
+});
+
 test("a replacement decoder's error is not retried through an unrelated graph", async () => {
   const { binding, seen } = fixture();
   const failure = new Error("decode failed after a native write");
