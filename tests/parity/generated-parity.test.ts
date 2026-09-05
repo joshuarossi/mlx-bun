@@ -47,6 +47,45 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
     expect(configFingerprint(config)).toBe(g12b.FINGERPRINT);
   });
 
+  test("the same session consumes dedicated and generated graph bindings", async () => {
+    const { bindLegacyAutoregressiveModel } = await import("../../src/backends/mlx/autoregressive");
+    const { generateAutoregressive } = await import("../../src/generate");
+    const { GenerationGateway } = await import("../../src/serve/generation-gateway");
+    const { createLegacyInferenceEngine } = await import("../../src/backends/mlx/legacy-engine");
+    const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0" });
+    const options = { maxTokens: 8, temperature: 0, kvConfig: config.kvQuant!, quantizedKvStart: 0 };
+    const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
+      hasLogitsExtras: false, wantsLogprobs: false, userSeed: false, kvQuant: true,
+      turboQuant: false, hasGrammar: false, hasDraft: false };
+    // Only the binding changes. The method/session/gateway policy and consumer
+    // remain identical. mono supplies shared scheduling metadata for both.
+    const run = async (binding: ReturnType<typeof bindLegacyAutoregressiveModel>) => {
+      const gateway = new GenerationGateway(mono, 1, async (ids, options, emit) => {
+        const generation = generateAutoregressive(binding, ids, options);
+        for await (const token of generation)
+          if (await emit(token.token, token.logprobs) === false) break;
+        return generation.stats!;
+      });
+      const engine = createLegacyInferenceEngine(gateway);
+      try {
+        const session = await engine.open({ promptIds: prompt.slice(0, 64), options, shape }, { output: "collect" });
+        const outcome = await session.result;
+        expect(outcome.status).toBe("completed");
+        if (outcome.status !== "completed") throw new Error(JSON.stringify(outcome));
+        expect(gateway.busy).toBe(false);
+        return { tokens: [...outcome.output!], cacheTokens: outcome.result.metrics.cacheTokens };
+      } finally { await engine.close(); }
+    };
+    try {
+      const ordinary = await run(bindLegacyAutoregressiveModel(mono));
+      const before = g12b.generatedForwardUses;
+      const specialized = await run(bindLegacyAutoregressiveModel(gen));
+      expect(specialized).toEqual(ordinary);
+      expect(specialized.tokens.length).toBeGreaterThan(1);
+      expect(g12b.generatedForwardUses - before).toBeGreaterThan(0);
+    } finally { restore(); }
+  }, 120_000);
+
   const trajectory = async (
     model: InstanceType<typeof Gemma4Model>, compiled: boolean,
   ): Promise<number[]> => {

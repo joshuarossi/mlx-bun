@@ -17,13 +17,15 @@ import {
   synchronize,
 } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
-import { CompiledDecode } from "./model/compiled-decode";
-import { Gemma4Model, KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
+import { KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
 import { PagedKVCache } from "./lab/paged-kv/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { diffusionGenerate } from "./diffusion/diffusion-generate";
 import type { RuntimeModel } from "./model/factory";
-import { bindMlxGraph } from "./backends/mlx/graph";
+import {
+  assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
+  type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep,
+} from "./backends/mlx/autoregressive";
 import type { TokenLogprobs } from "./contracts/generation";
 export type { TokenLogprobs } from "./contracts/generation";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
@@ -460,14 +462,7 @@ const WIRE_THRESHOLD = 0.5;
 let wiredScopeDepth = 0;
 let wiredOldLimit = 0;
 
-type WiredModelMemory = {
-  readonly weightsBytes: number;
-  readonly expertRuntime?: {
-    readonly plan: { readonly plannedBytes: number };
-    flushUsage?: () => void;
-    finishUsage?: () => Promise<void>;
-  } | null;
-};
+type WiredModelMemory = MlxModelMemory;
 
 /** Bytes whose MLX graph must stay resident while a model executes. */
 export function wiredWorkingSetBytes(model: WiredModelMemory): number {
@@ -518,16 +513,34 @@ export function generate(
   // DiffusionGemma is non-autoregressive: route to the denoising engine instead
   // of the AR decode loop. Same Generation/GenerateStats contract so the CLI and
   // server stream it through the existing token machinery.
-  let inner =
-    model instanceof DiffusionGemmaModel
-      ? generateDiffusionInner(model, promptTokens, options)
-      : generateInner(model, promptTokens, options, diagnostics);
+  if (!(model instanceof DiffusionGemmaModel))
+    return generateAutoregressive(bindLegacyAutoregressiveModel(model), promptTokens, options, diagnostics);
+  let inner = generateDiffusionInner(model, promptTokens, options);
   if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
   const memoryModel: WiredModelMemory = model;
-  if (memoryModel.expertRuntime?.flushUsage)
+  if (memoryModel.expertRuntime?.finishUsage || memoryModel.expertRuntime?.flushUsage)
     inner = usageScoped(memoryModel, inner);
   const wire = modelNeedsWiredLimit(model);
   return new Generation(wire ? wiredScoped(inner) : inner);
+}
+
+/** Execute a supplied backend binding through the same AR loop and resource
+ * scopes as generate(). Callers serialize shared model/adapter access. Replacing
+ * this binding replaces graph, cache construction, media, and optional decode
+ * together; it never borrows another model's compiled execution implicitly. */
+export function generateAutoregressive(
+  binding: MlxAutoregressiveBinding,
+  promptTokens: number[],
+  options: GenerateOptions = {},
+  diagnostics: GenerateDiagnostics = {},
+): Generation {
+  let inner = generateInner(binding, promptTokens, options, diagnostics);
+  if (options.adapters?.length && binding.adapters) {
+    inner = adapterScoped({ loraState: binding.adapters }, options.adapters, inner);
+  }
+  if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
+    inner = usageScoped(binding.memory, inner);
+  return new Generation(modelNeedsWiredLimit(binding.memory) ? wiredScoped(inner) : inner);
 }
 
 /** Non-autoregressive diffusion generation, adapted to the AR Generation
@@ -578,7 +591,7 @@ async function* generateDiffusionInner(
 
 /** Hold the model's active-adapter list for exactly this generation. */
 async function* adapterScoped(
-  model: RuntimeModel,
+  model: { loraState: { active: string[] } },
   adapters: string[],
   inner: AsyncGenerator<GeneratedToken, GenerateStats>,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
@@ -647,7 +660,7 @@ export async function withModelUsageFlush<T>(
 }
 
 async function* generateInner(
-  model: RuntimeModel,
+  binding: MlxAutoregressiveBinding,
   promptTokens: number[],
   options: GenerateOptions,
   diagnostics: GenerateDiagnostics,
@@ -658,18 +671,21 @@ async function* generateInner(
   }
   const {
     maxTokens = 512,
-    eosTokenIds = model.config.eosTokenIds,
+    eosTokenIds = binding.eosTokenIds,
     prefillChunkSize = 2048,
   } = options;
 
-  // Bind the graph once per run. Generated, dedicated, and streamed model
-  // implementations share this structural adapter; their native kernels and
-  // lazy evaluation order remain inside the backend.
-  const graph = bindMlxGraph<Cache[]>(model, {
-    id: `legacy:${model.config.modelType}`,
-    artifact: "legacy-resident-model", // not a durable checkpoint identity
-    stateAbi: "legacy-cache-array-v1",
-  });
+  try {
+    assertMlxAutoregressiveBinding(binding);
+    if (options.promptEmbeddings && !binding.forwardEmbeddings)
+      throw new Error("AR binding does not support prompt embeddings");
+    if (options.adapters?.length && !binding.adapters)
+      throw new Error("AR binding does not support adapters");
+  } catch (error) {
+    options.grammar?.dispose();
+    throw error;
+  }
+  const graph = binding.graph;
 
   // logprobs capture (mlx_lm.server semantics — see GenerateOptions.logprobs).
   // Everything below is gated: when neither flag is set, no extra ops, evals,
@@ -695,21 +711,31 @@ async function* generateInner(
     mechanism: diagnostics.mechanism ?? "serial",
   });
   const ownsCache = !options.cache;
-  const cache = options.cache ?? model.makeCache();
-  const cachedTokens = cache[0]!.offset;
   const resuming = options.initialPendingToken !== undefined;
-  if ((!resuming && cachedTokens >= promptTokens.length) ||
-      (resuming && cachedTokens !== promptTokens.length))
-    throw new Error(
-      resuming
-        ? `resumed cache (${cachedTokens} tokens) must exactly cover the resume prefix (${promptTokens.length})`
-        : `pre-warmed cache (${cachedTokens} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
-    );
-  // Paged KV (default off): swap fresh full-attention caches for paged
-  // storage BEFORE prefill. Capacity is exact — the deepest write lands at
-  // prompt + maxTokens − 1 (step maxTokens−1's forward), so this bound
-  // makes pool exhaustion an accounting-bug tripwire, not a request limit.
-  maybePageKv(cache, options, promptTokens.length + maxTokens);
+  let cache: Cache[] = options.cache ?? [];
+  try {
+    if (ownsCache) cache = binding.makeCache();
+    if (!cache.length) throw new Error("AR binding returned an empty cache");
+    const cached = cache[0]!.offset;
+    if ((!resuming && cached >= promptTokens.length) ||
+        (resuming && cached !== promptTokens.length))
+      throw new Error(
+        resuming
+          ? `resumed cache (${cached} tokens) must exactly cover the resume prefix (${promptTokens.length})`
+          : `pre-warmed cache (${cached} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
+      );
+    // Replace fresh full-attention caches before any forward. The deepest
+    // write is prompt + maxTokens - 1, so capacity covers every decode step.
+    maybePageKv(cache, options, promptTokens.length + maxTokens);
+  } catch (error) {
+    if (ownsCache) for (const state of cache) state.dispose();
+    stepSampler.dispose();
+    options.grammar?.dispose();
+    closeBatchSetup?.();
+    closePrefill?.();
+    throw error;
+  }
+  const cachedTokens = cache[0]!.offset;
   // Token fast-forwarding gate (see shouldUseFill). RotatingKVCache (sliding
   // window) layers append multi-token writes through #updateConcat — O(window)
   // per append rather than the O(L) a plain ring pays — so v1 warns and skips
@@ -783,8 +809,10 @@ async function* generateInner(
   let nextPending: MlxArray | null = null;
   let pendingExtras: StepExtras | null = null;
   let nextExtras: StepExtras | null = null;
+  let decoder: MlxDecodeStep | null = null;
   let finished = false;
   let threw = false;
+  let executionError: unknown;
   let closeTokenZero: (() => void) | undefined;
   const makeStats = (): GenerateStats => ({
     promptTokens: options.originalPromptTokens ?? promptTokens.length,
@@ -1018,7 +1046,7 @@ async function* generateInner(
       // e2b/e4b need the spliced token ids to build per-layer inputs
       // (multimodal soft-token positions zeroed inside forwardEmbeddings).
       const embedIds = ops.fromInt32(promptTokens, [1, promptTokens.length]);
-      h0 = model.forwardEmbeddings(
+      h0 = binding.forwardEmbeddings!(
         options.promptEmbeddings, cache, options.imageMask ?? null, embedIds,
         options.multimodalMask ?? null,
       );
@@ -1156,28 +1184,10 @@ async function* generateInner(
     }
 
     // ---- decode (pipelined) ----
-    // Compiled decode (docs/archive/investigations/optimization_plan.md Phase A): replay the per-step
-    // graph in C++ instead of rebuilding it through bun:ffi every token.
-    // Bit-exact with the uncompiled path (tests/parity/compiled-decode.test.ts);
-    // MLX_BUN_COMPILED_DECODE=0 is the kill switch / A-B lever. LoRA
-    // generations stay uncompiled (adapter weights would bake into the
-    // trace as constants). Any unsupported cache state falls back for
-    // the rest of the generation.
-    // MoE models stay uncompiled: GatherQMM lacks output_shapes in mlx
-    // 0.6.0, and shapeless replay re-infers the whole tape whenever the
-    // growing attention windows change shape (= every step). Remove this
-    // when upstream implements GatherQMM::output_shapes.
-    let compiled =
-      flagOn("MLX_BUN_COMPILED_DECODE", true) &&
-      !options.adapters?.length &&
-      // Paged caches can't compile (data-dependent block-list length —
-      // the shapeless-replay hazard; CompiledDecode.supports() also
-      // excludes them per step, this just skips the setup).
-      !options.pagedKv &&
-      model.config.modelType.startsWith("gemma4") &&
-      !model.config.text.enableMoeBlock
-        ? CompiledDecode.for(model as Gemma4Model)
-        : null;
+    // Selection and transactional fallback belong to the graph's binding.
+    decoder = binding.createDecode?.({
+      hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
+    }) ?? null;
     let stop = false;
     /** Token id read eagerly at the top of the loop for grammar (reused for
      *  the yield, avoiding a second readback). -1 when grammar is off — the
@@ -1268,20 +1278,10 @@ async function* generateInner(
         pushHistory(cur);
         let logits: MlxArray | null = null;
         let evalWith: MlxArray[] = [];
-        if (compiled && CompiledDecode.supports(cache)) {
-          try {
-            const r = compiled.step(cur, cache);
-            logits = r.logits;
-            evalWith = r.evalWith;
-          } catch (e) {
-            // Safe to re-forward the SAME token below: a failed step is
-            // transactional — segmented mode stages ring adopts and rolls
-            // back committed js-layer writes on throw (see #stepSegmented),
-            // and buffer growth done by a partial prepare is benign for the
-            // uncompiled path (updateAndFetch re-checks capacity).
-            compiled = null;
-            console.warn(`compiled decode disabled for this generation: ${e}`);
-          }
+        const decoded = decoder?.tryStep(cur, cache);
+        if (decoded) {
+          logits = decoded.logits;
+          evalWith = decoded.evalWith;
         }
         if (!logits) {
           const ids = ops.reshape(cur, [1, 1]);
@@ -1411,6 +1411,7 @@ async function* generateInner(
     return makeStats();
   } catch (e) {
     threw = true;
+    executionError = e;
     throw e;
   } finally {
     if (!finished) {
@@ -1419,13 +1420,19 @@ async function* generateInner(
       disposeStepExtras(pendingExtras);
       disposeStepExtras(nextExtras);
     }
-    if (ownsCache) for (const c of cache) c.dispose();
-    // The grammar controller owns native WASM state (GrammarMatcher +
-    // TokenizerInfo cache) — dispose on every exit path (normal, early break,
-    // throw). TokenizerInfo itself is process-cached (vocab-structural), so
-    // only the per-request matcher/compiled are freed here.
-    options.grammar?.dispose();
-    stepSampler.dispose();
+    try {
+      const closing = decoder?.close();
+      if (closing) await closing;
+    } catch (error) {
+      if (threw) throw new AggregateError([executionError, error],
+        "AR execution and decoder cleanup failed", { cause: executionError });
+      throw error;
+    } finally {
+      if (ownsCache) for (const c of cache) c.dispose();
+      // TokenizerInfo is process-cached; this request owns the matcher.
+      options.grammar?.dispose();
+      stepSampler.dispose();
+    }
     if (!finished && !threw) {
       // forced early return (consumer break at a yield): still report
       // stats — `forwarded` only lists tokens whose KV actually entered

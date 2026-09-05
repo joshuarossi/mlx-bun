@@ -647,9 +647,9 @@ contracts and aggressive quant-specific specialization. Interfaces must permit
 fused execution without extra copies, materialization, or synchronization.
 Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
 Toolchain, stop-aware checkpoint keys, queue/prefill cancellation, portable
-sessions, the text bridge, MLX graph binding, and engine-owned implementation selection are implemented.
+sessions, the text bridge, replaceable MLX AR bindings, and engine-owned implementation selection are implemented.
 R0 still owes the Qwen prefix-crash diagnosis and quiet-machine baseline;
-R1/R2 still owe full composition coverage and real replacement gates.
+Dedicated/generated bindings pass the same-session gate; R1/R2 still owe full composition coverage.
 
 - [ ] **R0** Fix/verify review findings; pin tools; freeze support, oracle and performance baselines.
 - [ ] **R1** Portable contracts and method-neutral session suite; legacy adapter and dependency gates.

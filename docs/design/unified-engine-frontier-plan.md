@@ -1417,12 +1417,34 @@ refuses those requests. It is not the default HTTP path.
 
 `src/inference/graph.ts` declares the backend-bound graph ABI.
 `src/backends/mlx/graph.ts` binds synchronous/streamed forwards once and selects
-hidden positions before vocabulary projection. Serial `generate()` now uses
-that binding for ordinary forwards and head projection; existing compiled
-execution is retained. No tensor wrapper, device readback, or synchronization
-was introduced. The legacy descriptor is not a persistence identity. Typed
-media/tap/adapter contexts, complete state ABI validation, and native alternate
-graph conformance remain R2 work.
+hidden positions before vocabulary projection. `src/backends/mlx/autoregressive.ts`
+defines one `MlxAutoregressiveBinding` for the graph, cache construction, media
+forwarding, adapter state, memory accounting, and optional compiled/fused decode.
+`generateAutoregressive()` consumes that interface without requiring a
+`RuntimeModel`. The existing `generate()` API adapts AR models into it, preserving
+the serial loop's sampling, prefill chunks, lazy evaluation, and decode pipeline.
+No tensor wrapper, device readback, or synchronization was introduced.
+
+Concrete Gemma compiled-decode selection and rollback-based fallback now live
+in the legacy binding. A replacement supplies its own decoder; the loop never
+infers one from the model family. A declined step must leave state unchanged.
+Unrecovered errors propagate without retry. Bindings must declare the MLX
+hidden-state ABI and legacy `Cache[]` ABI; mismatches fail before cache allocation.
+Rejected initial state releases owned caches while preserving borrowed caches.
+Decoder cleanup completes before cache disposal, including early iterator return.
+If execution and decoder cleanup both fail, the aggregate retains both errors.
+The legacy descriptor is not a persistence identity. Rich media/tap contexts,
+provider-bound state validation, and migration beyond the legacy cache ABI remain
+R2/R3 work.
+
+Model-free binding tests exercise an independent graph, a replacement fused
+decoder, declined steps, unrecovered errors, and unsupported ABI/media/adapter
+requests. The native `generated-parity` gate runs dedicated and generated Gemma
+bindings through the same gateway method and portable session consumer. Tokens
+and cache coverage match, and its counter verifies the generated path executed.
+This is a compatibility gate using available weights, not a product speed claim.
+The binding migration also passes all eight compiled-decode parity/recovery
+checks and the Qwen3.8-27B TQ smoke below on the M1 Max 32 GB.
 
 `src/model/implementation.ts` defines the backend-parameterized
 `ModelImplementation` construction port and immutable registration table.
