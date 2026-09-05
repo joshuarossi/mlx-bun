@@ -63,7 +63,7 @@ import {
   withModelUsageFlush,
   withModelWiredLimit,
 } from "./generate";
-import { cloneKvCaches, SpillQueue } from "./kv-store";
+import { cloneKvCaches, legacyCacheCodecs, SpillQueue } from "./kv-store";
 import type { Cache } from "./model/gemma4";
 import { resolveKvScheme } from "./kv-scheme";
 import { runtimeValue } from "./runtime-config";
@@ -516,6 +516,8 @@ export function createServer(
   // entries still demote to SSD and LRU eviction bounds pressure.
   // --prompt-cache <GB> overrides; 0 disables.
   const promptCacheCap = serverOptions.promptCacheBytes ?? 8e9;
+  const stateCodecs = ctx.stateCodecs ?? legacyCacheCodecs;
+  const cloneState = (caches: Cache[]) => cloneKvCaches(caches, stateCodecs);
   let ssdStore: SsdCacheStore | null = null;
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
@@ -523,6 +525,7 @@ export function createServer(
     const schemeKey = resolvedKvScheme.cacheKey;
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
     ssdStore = new SsdCacheStore({
+      codecs: stateCodecs,
       dir: serverOptions.ssdCacheDir,
       maxBytes: serverOptions.ssdCacheMaxBytes ?? 32 * 2 ** 30,
       configFingerprint: `${configFingerprint(ctx.model.config)}-${schemeKey}`,
@@ -582,6 +585,7 @@ export function createServer(
         }
       : null,
     coldTier,
+    cloneState,
   );
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
@@ -620,7 +624,7 @@ export function createServer(
     }
     // Cache entries are adapter-specific: KV computed under one adapter
     // must never seed another's (or the base's) prefill.
-    const cacheNs = options.adapters?.join("+") ?? "";
+    const cacheNs = options.adapters?.length ? ctx.adapters.cacheNamespace(options.adapters) : "";
     // Paged-KV request scope (docs/design/kv-cache.md): media
     // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
     // they run the PLAIN cache path even under --paged-kv (scope the flag
@@ -636,7 +640,7 @@ export function createServer(
     const checkpointKey = checkpointEligible
       ? generationCheckpointKey(promptIds, options, cacheNs, execution, {
           artifact: ctx.profile.artifact, implementation: ctx.profile.profile.execution,
-          stateAbi: "legacy-cache-array-v1",
+          stateAbi: "legacy-cache-array-v1", codecs: stateCodecs.id,
         })
       : null;
     // Both tiers in one call (Layer 0): take() prefers a strictly-longer
@@ -747,7 +751,7 @@ export function createServer(
               snapshotAt: boundary,
               onPrefillDone: () => {
                 try {
-                  promptCache.put(promptIds.slice(0, boundary), cloneKvCaches(caches), cacheNs);
+                  promptCache.put(promptIds.slice(0, boundary), cloneState(caches), cacheNs);
                 } catch (e) {
                   console.warn(`prompt-boundary snapshot skipped: ${(e as Error).message}`);
                 }
@@ -851,6 +855,7 @@ export function createServer(
   const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
     checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
+    stateCodecs,
     kvScheme: resolvedKvScheme,
     promptCache,
   });
@@ -870,7 +875,7 @@ export function createServer(
         gateway,
         promptCache,
         spillQueue,
-        cloneKvCaches,
+        cloneState,
         (tokens, ns) => ssdStore.hasDurablePrefix(tokens, ns),
       )
     : null;

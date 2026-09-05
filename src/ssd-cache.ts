@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { commonPrefixLength } from "./prompt-cache";
 import {
   saveKvCache, saveKvCacheAsync, loadKvCache, readKvHeader,
-  cacheHeadersTrimmable,
+  cacheHeadersTrimmable, legacyCacheCodecs, type CacheCodecProvider,
   type KvSaveMeta, type KvLoadExpect, type LoadedKvCache,
 } from "./kv-store";
 import type { Cache } from "./model/gemma4-base";
@@ -43,6 +43,7 @@ export interface SsdIndexEntry {
 }
 
 export interface SsdStoreOptions {
+  codecs?: CacheCodecProvider;
   dir: string;
   maxBytes: number;
   /** Server identity — written into every file, enforced on scan/load. */
@@ -58,6 +59,7 @@ const nsHash = (ns: string): string =>
 
 export class SsdCacheStore {
   readonly #opts: SsdStoreOptions;
+  readonly #codecs: CacheCodecProvider;
   readonly #root: string; // <dir>/<configFingerprint>
   #index: SsdIndexEntry[] = [];
   #warnedWriteFailure = false;
@@ -65,6 +67,7 @@ export class SsdCacheStore {
 
   constructor(opts: SsdStoreOptions) {
     this.#opts = opts;
+    this.#codecs = opts.codecs ?? legacyCacheCodecs;
     this.#root = join(opts.dir, opts.configFingerprint);
   }
 
@@ -122,10 +125,11 @@ export class SsdCacheStore {
             h.tokenizerHash !== this.#opts.tokenizerHash
           )
             throw new Error("metadata mismatch");
+          if ((h.codecProvider ?? legacyCacheCodecs.id) !== this.#codecs.id) continue;
           const st = statSync(path);
           this.#index.push({
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
-            trimmable: cacheHeadersTrimmable(h.caches),
+            trimmable: cacheHeadersTrimmable(h.caches, this.#codecs),
             ...(h.generationCheckpoint
               ? { generationCheckpoint: h.generationCheckpoint }
               : {}),
@@ -175,7 +179,7 @@ export class SsdCacheStore {
         ns: entry.ns,
         verify: this.#opts.verify,
       };
-      const loaded = loadKvCache(entry.path, model, expect);
+      const loaded = loadKvCache(entry.path, model, expect, this.#codecs);
       const now = new Date();
       try { utimesSync(entry.path, now, now); entry.mtimeMs = now.getTime(); } catch {}
       this.stats.restores++;
@@ -202,7 +206,7 @@ export class SsdCacheStore {
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      saveKvCache(path, tokens, caches, this.#meta(ns));
+      saveKvCache(path, tokens, caches, this.#meta(ns), this.#codecs);
       return this.#indexStored(path, tokens, caches, ns);
     } catch (err) {
       return this.#storeFailed(path, err);
@@ -222,7 +226,7 @@ export class SsdCacheStore {
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns), waitTurn);
+      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns), waitTurn, this.#codecs);
       return this.#indexStored(path, tokens, caches, ns);
     } catch (err) {
       return this.#storeFailed(path, err);
@@ -261,7 +265,7 @@ export class SsdCacheStore {
       mkdirSync(dir, { recursive: true });
       await saveKvCacheAsync(path, tokens, caches, {
         ...this.#meta(ns), generationCheckpoint: checkpoint,
-      });
+      }, undefined, this.#codecs);
       const stored = this.#indexStored(path, tokens, caches, ns, checkpoint);
       if (stored) {
         for (const entry of [...this.#index]) {

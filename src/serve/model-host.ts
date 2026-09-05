@@ -29,6 +29,8 @@ import { sidecarShipsAudioTower } from "../registry";
 import { fit } from "../fit";
 
 export interface ServerContext {
+  /** State serialization supplied by this model/backend implementation. */
+  stateCodecs?: import("../kv-store").CacheCodecProvider;
   model: RuntimeModel;
   /** Declared external artifact/family profile that selected model
    * construction. Request-level methods are resolved separately. */

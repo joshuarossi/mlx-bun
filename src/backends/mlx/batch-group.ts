@@ -262,6 +262,7 @@ export interface ExclusiveLock {
 }
 
 export interface MlxBatchExecutionGroupOptions {
+  stateCodecs?: import("../../kv-store").CacheCodecProvider;
   /** Max rows in the running batch (mlx-lm `--decode-concurrency`). */
   maxBatch: number;
   lock?: ExclusiveLock;
@@ -305,6 +306,7 @@ type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class MlxBatchExecutionGroup {
   readonly #runtime = runtimeConfig();
+  readonly #stateCodecs: import("../../kv-store").CacheCodecProvider | undefined;
   #running: Row[] = [];
   #inners: LayerInner[] | null = null; // per-layer batched KV; null when empty
   #fullLeftPad: number[] = []; // per-row padding for FULL layers (rot self-tracks)
@@ -349,6 +351,7 @@ export class MlxBatchExecutionGroup {
   #compiled: CompiledDecode | null;
 
   constructor(private readonly model: RuntimeModel, opts: MlxBatchExecutionGroupOptions) {
+    this.#stateCodecs = opts.stateCodecs;
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
@@ -685,7 +688,7 @@ export class MlxBatchExecutionGroup {
       p.pos = step.end;
       if (hidden) { h = hidden; break; }
       if (step.snapshot) {
-        try { this.#promptCache!.put(prompt.slice(0, step.end), cloneKvCaches(p.solo)); }
+        try { this.#promptCache!.put(prompt.slice(0, step.end), cloneKvCaches(p.solo, this.#stateCodecs)); }
         catch (error) { console.warn(`batch-lane boundary snapshot skipped: ${(error as Error).message}`); }
         p.snapAt = null;
       }

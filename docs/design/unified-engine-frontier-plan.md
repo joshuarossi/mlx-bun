@@ -1509,8 +1509,23 @@ order is ignored; array order remains meaningful. Version-2 generation keys do
 not resume through this version; ordinary prefix-store format is unchanged.
 Nine native scheduling gates pass after planner integration, including rotating
 dynamic joins, row failure containment, serial drain, prefix sharing, SSD restore
-and compiled B=1. Adapter content revisions, preparation memory reservations,
-and provider-bound codecs are still required for R3/R4 closure.
+and compiled B=1. Preparation memory reservations remain required for R4 closure.
+
+R3 state persistence now uses `CacheCodecProvider`, bound through the server's
+model context, RAM cloner, batch snapshots and SSD store. A provider supplies
+clone/snapshot/restore/trimmability together; ambiguous matches refuse. Persisted
+provider identity is checked before cache allocation or mmap. Earlier v3 files
+implicitly use the legacy provider; a different provider must identify itself.
+Restore still copies one tensor at a time and unmaps only after those copies,
+so this change introduces no new device/backing lifetime assumption. Failed
+clone and snapshot construction release intermediate owned views.
+
+Adapter namespaces now hash the weight file plus scale/rank policy once at
+mount. Remounting the same name with different bytes or scale cannot reuse its
+old RAM prefix or generation checkpoint. The shared server cache uses that
+namespace for both lookup and persistence. Codec provider fault/round-trip tests
+pass; native persistence passes five cells with one unavailable golden skipped,
+and dedicated/generated Gemma passes six cells, including direct logit identity.
 
 R5 now shares a portable prefill program between serial AR and solo batch
 admission. Its MLX executor preserves drain evaluation, KV maintenance, allocator

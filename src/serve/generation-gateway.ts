@@ -171,6 +171,7 @@ export class GenerationGateway {
     private readonly opts: {
       kvBudgetBytes?: number;
       checkpoints?: boolean;
+      stateCodecs?: import("../kv-store").CacheCodecProvider;
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
        *  scheduler at construction when batchable (Phase 3.1). turboQuant is
        *  never threaded to the scheduler (always solo-only — see placement);
@@ -478,6 +479,7 @@ export class GenerationGateway {
     if (!this.#scheduler)
       this.#scheduler = new BatchScheduler(this.model, {
         maxBatch: this.#batch,
+        stateCodecs: this.opts.stateCodecs,
         kvBudgetBytes: this.opts.kvBudgetBytes,
         // Phase 3.1: the batchable kvConfig composition is applied by the
         // scheduler (solo rows convert at serial chunk boundaries, then

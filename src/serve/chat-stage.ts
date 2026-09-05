@@ -130,7 +130,7 @@ export class ChatStage {
       // len-1 → skip; the snapshot gate needs boundary > cached prefix).
       if (built.probeStableLen) {
         const cachePeek = this.promptCache.peekPrefixLen(
-          promptIds, options.adapters?.join("+") ?? "");
+          promptIds, options.adapters?.length ? ctx.adapters.cacheNamespace(options.adapters) : "");
         if (cachePeek < promptIds.length - 1)
           options.snapshotAt = prep.stableLenFor(body, tools, promptIds);
       }

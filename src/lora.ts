@@ -12,6 +12,7 @@
 
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "./mlx/array";
 import { C } from "./mlx/ffi";
@@ -198,6 +199,7 @@ export class AdapterManager {
   readonly #mounted = new Map<string, AdapterInfo>();
   /** Owned adapter arrays per id (disposed on unmount). */
   readonly #arrays = new Map<string, MlxArray[]>();
+  readonly #revisions = new Map<string, string>();
 
   constructor(model: RuntimeModel) {
     this.#model = model;
@@ -216,6 +218,11 @@ export class AdapterManager {
 
     const weightsFile = adapterWeightsFile(path);
     const { scale, rank: configRank, rsLora } = await readAdapterScale(path);
+    // Hash once at mount, before native allocation. Reusing an adapter name
+    // for different weights or scale must never reuse its prefix/checkpoint.
+    const digest = createHash("sha256").update(JSON.stringify({ scale, rank: configRank, rsLora }));
+    for await (const chunk of Bun.file(weightsFile).stream()) digest.update(chunk);
+    const revision = digest.digest("hex");
     const tensors = loadAdapterTensors(weightsFile);
     const targets = this.#model.loraTargets();
 
@@ -347,6 +354,7 @@ export class AdapterManager {
       ramBytes,
     };
     this.#mounted.set(id, info);
+    this.#revisions.set(id, revision);
     this.#arrays.set(id, validated.flatMap(({ lw }) => [lw.a, lw.b]));
     return info;
   }
@@ -355,6 +363,7 @@ export class AdapterManager {
    *  stay in place for other adapters, like the reference. */
   unmount(id: string): number {
     if (!this.#mounted.delete(id)) return 0;
+    this.#revisions.delete(id);
     let removed = 0;
     for (const linear of this.#model.loraTargets().values()) {
       if (linear.adapters?.delete(id)) removed++;
@@ -364,6 +373,15 @@ export class AdapterManager {
     if (this.#model.loraState.active.includes(id))
       this.#model.loraState.active = this.#model.loraState.active.filter((x) => x !== id);
     return removed;
+  }
+
+  /** Ordered, content-addressed namespace for the actual mounted composition. */
+  cacheNamespace(ids: readonly string[]): string {
+    return ids.map((id) => {
+      const revision = this.#revisions.get(id);
+      if (!revision) throw new Error(`adapter ${id} is no longer mounted`);
+      return `${id}@${revision}`;
+    }).join("+");
   }
 
   list(): AdapterInfo[] {

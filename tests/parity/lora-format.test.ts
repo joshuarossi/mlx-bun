@@ -28,6 +28,32 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 const MODULE = "model.layers.0.self_attn.q_proj";
 
+test("adapter cache identity survives remounts and changes with weights or scale", async () => {
+  const dir = join(root, "cache-identity");
+  const manager = new AdapterManager(stubModel().model);
+  const a = { shape: [2, 3], values: [1, 2, 3, 4, 5, 6] };
+  const b = { shape: [4, 2], values: [1, 2, 3, 4, 5, 6, 7, 8] };
+  writePeftAdapter(dir, a, b);
+  try {
+    await manager.mount("same-name", dir);
+    const original = manager.cacheNamespace(["same-name"]);
+    manager.unmount("same-name");
+    expect(() => manager.cacheNamespace(["same-name"])).toThrow("no longer mounted");
+    await manager.mount("same-name", dir);
+    expect(manager.cacheNamespace(["same-name"])).toBe(original);
+    manager.unmount("same-name");
+    writePeftAdapter(dir, a, b, { alpha: 8 });
+    await manager.mount("same-name", dir);
+    expect(manager.cacheNamespace(["same-name"])).not.toBe(original);
+    const scaled = manager.cacheNamespace(["same-name"]);
+    manager.unmount("same-name");
+    writePeftAdapter(dir, a, { ...b, values: b.values.map((v) => v + 1) }, { alpha: 8 });
+    await manager.mount("same-name", dir);
+    expect(manager.cacheNamespace(["same-name"])).not.toBe(scaled);
+    expect(manager.cacheNamespace([])).toBe("");
+  } finally { manager.unmount("same-name"); }
+});
+
 interface StubLinear {
   inFeatures: number;
   outFeatures: number;

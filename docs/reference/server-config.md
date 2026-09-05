@@ -74,7 +74,10 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 Generation checkpoint identity includes stop strings, sampling/KV policy, the
 resolved execution method, and artifact/implementation identity. Changing any
 of these starts a new completion. Version-2 generation checkpoints are not
-selected for automatic resume; ordinary prefix-cache files remain compatible.
+selected for automatic resume; ordinary prefix-cache files remain compatible
+with the legacy state provider. A different backend codec identity refuses
+incompatible files. Adapter namespaces include the mounted weight contents and
+scale, so a changed adapter starts with a fresh prefix and checkpoint.
 Native media and grammar preparation waits for the generation execution lease
 and releases its resources if the client disconnects during preparation.
 
