@@ -35,6 +35,14 @@ import {
 } from "./runtime-config";
 
 const argv = process.argv.slice(2);
+// Private self-exec protocol for managed jobs in the single-file binary.
+// Literal imports in job-entry keep the numerical runners inside the bundle.
+if (argv[0] === "__job") {
+  const { runJobEntry } = await import("./jobs/job-entry");
+  await runJobEntry(argv[1]);
+  process.exit(0);
+}
+
 // The appliance path: naked `mlx-bun` (or only options, e.g.
 // `mlx-bun --port 9000`) runs `serve` — first run downloads a model and
 // opens the chat UI. `--help`/`--version` and explicit subcommands still win.

@@ -157,6 +157,7 @@ interface QueuedSpawn {
   jobId: string;
   entry: string;
   bin: string;
+  compiled: boolean;
   spawn: typeof Bun.spawn;
   onComplete?: (jobId: string, code: number) => void;
 }
@@ -210,6 +211,7 @@ export function submitSubprocess(
     store,
     jobId: row.id,
     entry: opts.entry ?? JOB_ENTRY_PATH,
+    compiled: opts.entry === undefined && opts.bin === undefined && JOB_ENTRY_PATH.includes("$bunfs"),
     bin: opts.bin ?? "bun",
     spawn: opts.spawn ?? Bun.spawn,
     onComplete: opts.onComplete,
@@ -232,7 +234,7 @@ function spawnNow(item: QueuedSpawn): void {
   // a file-backed DB.
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    proc = spawn([bin, entry, jobId], {
+    proc = spawn(item.compiled ? [process.execPath, "__job", jobId] : [bin, entry, jobId], {
       stdout: "pipe",
       stderr: "pipe",
       env: {

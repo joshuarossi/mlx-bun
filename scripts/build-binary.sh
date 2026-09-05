@@ -171,3 +171,14 @@ if [ -f "scripts/verify-binary-pi.ts" ]; then
   fi
   rm -f "$OUT/verify-binary-pi"
 fi
+
+echo "==> smoke: packaged managed jobs (no model/server)"
+bun build --compile scripts/packaging/verify-jobs.ts \
+  --outfile "$OUT/verify-binary-jobs" >/dev/null 2>&1
+if "$OUT/verify-binary-jobs" "$OUT/mlx-bun"; then
+  rm -f "$OUT/verify-binary-jobs"
+else
+  rm -f "$OUT/verify-binary-jobs"
+  echo "    ERROR: packaged job smoke failed" >&2
+  exit 1
+fi

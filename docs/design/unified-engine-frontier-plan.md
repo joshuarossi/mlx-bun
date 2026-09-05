@@ -1632,7 +1632,9 @@ The current model-free suite passes; root, browser and portable typechecks pass.
 Native state checks cover mixed-KV oracle logits, wrapped-ring conversion,
 speculative recurrent rollback and persistence. The Qwen B=2 oracle and one
 Qwen persistence fixture are absent and skip. The binary builds and its CLI/Pi
-asset smoke passes. These checks do not replace the unavailable artifact/machine
+asset smoke passes. Managed jobs now self-exec the packaged binary; literal
+runner imports retain quantize/train code in the bundle, and a compiled
+subprocess smoke verifies progress and terminal persistence. These checks do not replace the unavailable artifact/machine
 cells or the final default-cutover gate.
 
 The Qwen replay now has a native exception diagnosis: Metal reports insufficient

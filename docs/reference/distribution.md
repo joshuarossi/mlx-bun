@@ -319,3 +319,9 @@ The pack is ad-hoc signed only — `build-native-pack.sh` never touches a
 Developer ID and nothing notarizes it; it is `dlopen`ed by the user's own Bun
 process, not by our signed executable. The most recent pack
 (`native-v0.3.0`, published 2026-08-22) added `mlx-bun-frame-extract`.
+
+Managed jobs in the compiled binary re-exec that binary through a private job
+entry, with the database/log paths passed in the environment. They do not depend
+on a Bun executable or a TypeScript source tree. The build runs
+`scripts/packaging/verify-jobs.ts` as a compiled smoke: subprocess completion,
+progress persistence and the CLI entry must pass before the bundle is accepted.
