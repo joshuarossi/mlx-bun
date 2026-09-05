@@ -343,6 +343,7 @@ export class CompletionExecutor {
         },
         logprobs: logprobs?.payload() ?? null,
       };
+      planned.dispose(); // retained preparation reservations outlive the native run
       closeCompletion?.();
       return summary;
     } catch (error) {

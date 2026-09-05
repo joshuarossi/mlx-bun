@@ -1,3 +1,6 @@
+import { AdmissionPool } from "../engine/admission";
+import { acquireReservation } from "./preparation";
+import { cleanupFailure, disposeResources } from "../engine/resources";
 // GenerationGateway is the scheduling seam between CompletionExecutor and
 // the inference runtime. It declares one mechanism per request: the preserved
 // strict/dedicated serial executor, or the continuous scheduler (`--batch N`).
@@ -151,8 +154,15 @@ export interface GenerationPlacement {
   readonly execution?: ResolvedExecution;
 }
 
+function disposeUnstartedRequest(options: GenerateOptions, vision?: Vision): void {
+  disposeResources([options.grammar, vision?.embeddings, vision?.imageMask,
+    vision?.multimodalMask, options.visionPixels].filter((resource) => resource != null));
+}
+
 export class GenerationGateway {
+  #closed = false;
   readonly #runtime = runtimeConfig();
+  readonly #requests: AdmissionPool;
   readonly #mutex = new AsyncMutex();
   readonly #batch: number;
   #scheduler: BatchScheduler | null = null;
@@ -185,6 +195,7 @@ export class GenerationGateway {
     } = {},
   ) {
     this.#batch = Math.max(1, Math.floor(batch));
+    this.#requests = new AdmissionPool(this.#batch);
   }
 
   /** True if `--batch N` (N>1) is on (batchability is then per-request). */
@@ -214,7 +225,15 @@ export class GenerationGateway {
    *  running/pending. activeRows/pendingRows alone MISS the serial lane —
    *  a serial generation holds the mutex but shows zero rows. */
   get busy(): boolean {
-    return this.#mutex.locked || this.activeRows > 0 || this.pendingRows > 0;
+    return this.#requests.active > 0 || this.#requests.queued > 0 ||
+      this.#mutex.locked || this.activeRows > 0 || this.pendingRows > 0;
+  }
+
+  async close(): Promise<void> {
+    this.#closed = true;
+    this.#requests.close();
+    await this.#scheduler?.close();
+    await this.onIdle();
   }
 
   /** Resolves once the engine is idle (poll-based, ~`pollMs` granularity —
@@ -324,29 +343,37 @@ export class GenerationGateway {
    *  mount/unmount all come through here, so nothing runs concurrently with
    *  batched decode steps (or with each other). Registers as a serial waiter
    *  so the scheduler drains (stops admitting) until `fn` has run. */
+  /** Shared by inference, preparation and managed GPU subprocesses. */
+  async acquireExecutionLease(
+    signal?: AbortSignal,
+    trace?: PromptResponseTrace,
+  ): Promise<import("../contracts/resources").DisposableResource> {
+    if (this.#closed) throw new Error("generation gateway is closed");
+    this.#serialWaiters++;
+    const closeAdmission = trace?.begin("engine.admission_wait", { mechanism: "serial" });
+    const resume = () => {
+      this.#serialWaiters--;
+      if (this.#serialWaiters === 0) this.#scheduler?.kick();
+    };
+    try {
+      const release = await this.#mutex.acquire(signal);
+      let released = false;
+      return { dispose: () => {
+        if (released) return;
+        released = true;
+        release(); resume();
+      } };
+    } catch (error) { resume(); throw error; }
+    finally { closeAdmission?.(); }
+  }
+
   async runExclusive<T>(
     fn: () => Promise<T>,
     trace?: PromptResponseTrace,
     signal?: AbortSignal,
   ): Promise<T> {
-    this.#serialWaiters++;
-    let closeAdmission = trace?.begin("engine.admission_wait", {
-      mechanism: "serial",
-    });
-    try {
-      const release = await this.#mutex.acquire(signal);
-      closeAdmission?.();
-      closeAdmission = undefined;
-      try {
-        return await fn();
-      } finally {
-        release();
-      }
-    } finally {
-      closeAdmission?.();
-      this.#serialWaiters--;
-      if (this.#serialWaiters === 0) this.#scheduler?.kick(); // resume admission
-    }
+    const lease = await this.acquireExecutionLease(signal, trace);
+    try { return await fn(); } finally { lease.dispose(); }
   }
 
   /** Run one generation on the appropriate lane. onToken is invoked per emitted
@@ -361,13 +388,24 @@ export class GenerationGateway {
     signal?: AbortSignal,
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
-    const disposeUnstarted = () => {
-      options.grammar?.dispose();
-      for (const resource of new Set([
-        vision?.embeddings, vision?.imageMask, vision?.multimodalMask,
-        options.visionPixels,
-      ])) resource?.dispose();
-    };
+    let reservation;
+    try { reservation = await acquireReservation(this.#requests, signal); }
+    catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options, vision)); }
+    try { return await this.#run(promptIds, options, onToken, vision, shape, placement, signal, trace); }
+    finally { reservation.dispose(); }
+  }
+
+  async #run(
+    promptIds: number[],
+    options: GenerateOptions & { stopSequences?: string[] },
+    onToken: OnToken,
+    vision: Vision | undefined,
+    shape: RequestShape,
+    placement: GenerationPlacement,
+    signal?: AbortSignal,
+    trace?: PromptResponseTrace,
+  ): Promise<GenerateStats> {
+    const disposeUnstarted = () => disposeUnstartedRequest(options, vision);
     if (placement.shape !== shape) {
       disposeUnstarted();
       throw new Error("generation placement does not belong to this request shape");

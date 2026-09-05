@@ -7,6 +7,7 @@
 // the runner, runs it with a log-appending emit, sets terminal status, and
 // exits 0 (done) / 1 (failed).
 
+import { createJobTaskClient } from "./task-client";
 import { JobStore } from "./db";
 import { getRunner, makeEmit } from "./runner";
 import type { JobRunner } from "./types";
@@ -87,7 +88,7 @@ async function main(): Promise<void> {
 
   try {
     const runner = await resolveRunner(row.kind);
-    const result = await runner(emit, config);
+    const result = await createJobTaskClient(runner).run(config, emit);
     const out = result?.outputPath;
     if (out) store.setOutputPath(jobId, out);
     store.setProgress(jobId, 1);

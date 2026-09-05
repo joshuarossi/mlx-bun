@@ -6,6 +6,13 @@ export type { DisposableResource } from "../contracts/resources";
 
 export class RequestOwnership {
   #owner = ownResource(new Set<DisposableResource>(), disposeResources);
+  #reservations = ownResource(new Set<DisposableResource>(), disposeResources);
+
+  /** Reservations live until completion, including after native ownership transfers. */
+  retain<T extends DisposableResource>(reservation: T): T {
+    this.#reservations.borrow().add(reservation);
+    return reservation;
+  }
 
   own<T extends DisposableResource | null | undefined>(resource: T): T {
     if (resource) this.#owner.borrow().add(resource);
@@ -17,7 +24,7 @@ export class RequestOwnership {
   }
 
   dispose(): void {
-    this.#owner.close();
+    disposeResources([{ dispose: () => this.#owner.close() }, { dispose: () => this.#reservations.close() }]);
   }
 }
 

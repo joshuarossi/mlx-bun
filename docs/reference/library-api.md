@@ -7,7 +7,9 @@ admission — is importable directly into a Bun process. Published as
 (or `./src/index` in a clone) is the programmatic surface.
 
 This page is the canonical description of that surface. The source of
-truth is `src/index.ts`: what it re-exports is the semver contract;
+truth is the package export map: `src/index.ts` preserves the native compatibility API,
+`src/library.ts` supplies the CPU-safe `mlx-bun/engine` entry, and
+`src/client.ts` supplies `mlx-bun/client`. These exports are the semver contract;
 everything else under `src/` is internal and may change without notice.
 Every export is documented below, grouped the way `src/index.ts` groups
 them.
@@ -44,15 +46,10 @@ Types that are *not* exported (`GenerateOptions`, `GenerateStats`,
 ## Quick start
 
 ```ts
-import {
-  ensureNativeRuntime,
-  openModel,         // artifact-aware dispatch, including bounded GLM-5.2
-  loadTokenizer,
-  ChatTemplate,
-  generate,
-} from "mlx-bun";   // or "./src/index" in-repo
+import { initializeMlx } from "mlx-bun/engine";
 
-await ensureNativeRuntime();
+// Bootstrap finishes before the native API is imported.
+const { openModel, loadTokenizer, ChatTemplate, generate } = await initializeMlx();
 const dir = "/path/to/hf-snapshot";          // mlx-bun ls prints these
 const model = await openModel(dir);
 const tok = await loadTokenizer(dir);
@@ -74,6 +71,38 @@ Ordinary safetensors loading is lazy (mmap + mlx native loader). GLM-5.2
 first runs its header-only exact process equation, then opens the bounded
 Colibri resident/expert tiers; impossible plans fail before either tier is
 committed.
+
+## Clients and isolated hosts
+
+`mlx-bun/client` and `mlx-bun/engine` can be imported without native MLX.
+`createCompletionClient` accepts a `/v1` URL and optionally a borrowed host
+implementing `forward(Request): Promise<Response>`. It sends JSON completions,
+forces `stream: false`, passes cancellation through `signal`, and never retries
+a POST. Full SSE streaming remains available through the host's `forward` port
+and the existing HTTP API. A supplied host belongs to the caller.
+
+```ts
+import { createCompletionClient, openIsolatedHost } from "mlx-bun/engine";
+
+const host = await openIsolatedHost("/path/to/hf-snapshot");
+try {
+  const client = createCompletionClient({ baseUrl: "http://engine/v1", host });
+  const result = await client.complete({
+    body: { messages: [{ role: "user", content: "Hello" }], max_tokens: 64 },
+  });
+  console.log(result.choices[0]?.message?.content);
+} finally {
+  await host.close();
+}
+```
+
+`openIsolatedHost(model, { arguments?, readyTimeoutMs? })` starts the existing
+CLI on a private Unix socket and resolves after health readiness. `close()`
+waits for the worker to exit. `createDirectHost(handler, shutdown?)` adapts an
+in-process HTTP handler to the same contract; its shutdown callback owns any
+native resources and response streams. `createInferenceEngine` and
+`CancellationSource` expose the portable token-session API for registered methods.
+The original root exports remain compatible and require an installed native runtime.
 
 ## Native runtime
 

@@ -64,11 +64,11 @@ describe("renderPiExtension", () => {
     expect(src).toContain("m.context_window");
   });
 
-  it("emits supportsDeveloperRole:false everywhere (aligned with buildPiProvider)", () => {
+  it("bakes the system-role compatibility flag into the fallback", () => {
     // Baked fallback (JSON) and the live-discovery template must both carry
     // the compat flag — our chat templates only know system, not developer.
     expect(src).toContain('"supportsDeveloperRole": false'); // baked JSON
-    expect(src).toContain("supportsDeveloperRole: false"); // live template
+    // The execution test below checks the live builder, independent of Bun printing false as !1.
   });
 
   it("is self-contained (no imports — pi loads it with jiti)", () => {

@@ -1,3 +1,4 @@
+import type { EngineHost } from "../contracts/host";
 // Runtime isolation — the parent half (docs/reference/server-config.md).
 //
 // ARCHITECTURE (decision 2026-07-05, deviating from the doc's original
@@ -38,6 +39,10 @@ export interface EngineSpec {
   /** Max ms to wait for the child's /health after spawn (weights load —
    *  large models take a while). Default 15 min. */
   readyTimeoutMs?: number;
+  /** Bound automatic restarts in a rolling window, including startup failure. */
+  maxRestarts?: number;
+  restartWindowMs?: number;
+  restartDelayMs?: number;
 }
 
 const HOP_BY_HOP = new Set([
@@ -50,17 +55,21 @@ export function defaultSocketPath(): string {
 }
 
 /** The persistent engine child: spawn, health-gate, respawn-on-crash. */
-export class EngineChild {
+export class EngineChild implements EngineHost<Request, Response> {
   readonly spec: EngineSpec;
   #proc: ReturnType<typeof Bun.spawn> | null = null;
   #ready: Promise<void>;
   #stopping = false;
   restarts = 0;
   #lastSpawnAt = 0;
+  #restartTimes: number[] = [];
+  #backoff: ReturnType<typeof setTimeout> | undefined;
+  #wakeBackoff: (() => void) | undefined;
 
   constructor(spec: EngineSpec) {
-    this.spec = spec;
+    this.spec = Object.freeze({ ...spec, argv: [...spec.argv] });
     this.#ready = this.#spawn();
+    void this.#ready.catch(() => {}); // failures remain observable through ready/forward
   }
 
   get ready(): Promise<void> {
@@ -72,6 +81,7 @@ export class EngineChild {
   }
 
   async #spawn(): Promise<void> {
+    if (this.#stopping) throw new Error("engine host is closed");
     this.#lastSpawnAt = Date.now();
     try { unlinkSync(this.spec.socketPath); } catch {}
     const proc = Bun.spawn(this.spec.argv, {
@@ -81,18 +91,35 @@ export class EngineChild {
     this.#proc = proc;
     void proc.exited.then((code) => {
       if (this.#stopping || this.#proc !== proc) return;
+      const now = Date.now();
+      const window = this.spec.restartWindowMs ?? 60_000;
+      this.#restartTimes = this.#restartTimes.filter((time) => now - time < window);
+      if (this.#restartTimes.length >= (this.spec.maxRestarts ?? 3)) {
+        this.#ready = Promise.reject(new Error(`engine restart limit reached after exit ${code}`));
+        void this.#ready.catch(() => {});
+        return;
+      }
+      this.#restartTimes.push(now);
       console.error(`[isolate] engine exited (code ${code}) — respawning`);
       this.restarts++;
       // Crash-loop backoff: an engine that dies within 10 s of spawning
       // (bad flags, OOM on load) waits 5 s before the retry.
-      const delay = Date.now() - this.#lastSpawnAt < 10_000 ? 5_000 : 0;
-      this.#ready = new Promise((r) => setTimeout(r, delay)).then(() => this.#spawn());
+      const delay = this.spec.restartDelayMs ?? (Date.now() - this.#lastSpawnAt < 10_000 ? 5_000 : 0);
+      this.#ready = new Promise<void>((resolve) => {
+        this.#wakeBackoff = resolve;
+        this.#backoff = setTimeout(resolve, delay);
+      }).then(() => {
+        this.#backoff = undefined; this.#wakeBackoff = undefined;
+        return this.#spawn();
+      });
+      void this.#ready.catch(() => {});
     });
     // Health-gate: poll the child's /health over the socket until it
     // answers — model load happens behind this.
     const deadline = Date.now() + (this.spec.readyTimeoutMs ?? 15 * 60_000);
     while (Date.now() < deadline) {
-      if (proc.killed || this.#proc !== proc) throw new Error("engine died during startup");
+      if (this.#stopping || proc.killed || proc.exitCode !== null || this.#proc !== proc)
+        throw new Error("engine died during startup");
       try {
         const r = await fetch("http://engine/health", {
           unix: this.spec.socketPath,
@@ -102,6 +129,7 @@ export class EngineChild {
       } catch { /* not up yet */ }
       await new Promise((r) => setTimeout(r, 250));
     }
+    proc.kill();
     throw new Error("engine did not become healthy in time");
   }
 
@@ -124,7 +152,16 @@ export class EngineChild {
   }
 
   async #forwardOnce(request: Request): Promise<Response> {
-    await this.#ready;
+    if (this.#stopping) throw new Error("engine host is closed");
+    request.signal.throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => { request.signal.removeEventListener("abort", abort); reject(request.signal.reason); };
+      request.signal.addEventListener("abort", abort, { once: true });
+      this.#ready.then(() => { request.signal.removeEventListener("abort", abort); resolve(); },
+        (error) => { request.signal.removeEventListener("abort", abort); reject(error); });
+    });
+    if (this.#stopping) throw new Error("engine host is closed");
+    request.signal.throwIfAborted();
     const headers = new Headers();
     request.headers.forEach((v, k) => {
       if (!HOP_BY_HOP.has(k.toLowerCase())) headers.set(k, v);
@@ -148,8 +185,19 @@ export class EngineChild {
 
   stop(): void {
     this.#stopping = true;
+    clearTimeout(this.#backoff);
+    this.#wakeBackoff?.();
     this.#proc?.kill();
     try { unlinkSync(this.spec.socketPath); } catch {}
+  }
+
+  async close(): Promise<void> {
+    this.stop();
+    const process = this.#proc;
+    if (!process) return;
+    const force = setTimeout(() => { if (process.exitCode === null) process.kill("SIGKILL"); }, 3000);
+    try { await process.exited; }
+    finally { clearTimeout(force); }
   }
 }
 
@@ -170,6 +218,8 @@ export class ModelPool {
   #children = new Map<string, EngineChild>(); // repoId → child
   #lru: string[] = []; // most-recent last
   #spawning = new Map<string, Promise<EngineChild>>();
+  #starting = new Set<EngineChild>();
+  #stopping = false;
   readonly defaultKey: string;
 
   constructor(
@@ -210,40 +260,50 @@ export class ModelPool {
   /** Route a request's `model` field to a child, spawning on first use.
    *  undefined/empty/unknown → the default child (drop-in semantics). */
   async childFor(modelField: string | undefined | null): Promise<EngineChild> {
-    if (!modelField) return this.#use(this.defaultKey);
+    if (this.#stopping) throw new Error("model pool is closed");
+    modelField ||= this.defaultKey;
     // Already resident under this exact id?
     if (this.#children.has(modelField)) return this.#use(modelField);
     const rec = (() => {
       try { return this.opts.resolve(modelField); } catch { return null; }
     })();
-    if (!rec) return this.#use(this.defaultKey); // unknown → ignore, like mlx-lm
-    if (this.#children.has(rec.repoId)) return this.#use(rec.repoId);
-    const inflight = this.#spawning.get(rec.repoId);
-    if (inflight) return inflight.then(() => this.#use(rec.repoId));
+    if (!rec && modelField !== this.defaultKey) return this.childFor(this.defaultKey);
+    const resolved = rec ?? { repoId: this.defaultKey, path: "" };
+    if (this.#children.has(resolved.repoId)) return this.#use(resolved.repoId);
+    const inflight = this.#spawning.get(resolved.repoId);
+    if (inflight) return inflight.then(() => this.#use(resolved.repoId));
     const spawnP = (async () => {
-      const sock = this.#socketFor(rec.repoId);
-      const child = new EngineChild({
-        argv: [...this.opts.selfArgv, ...engineArgvForModel(this.opts.rawArgs, sock, rec.path)],
+      const sock = this.#socketFor(resolved.repoId);
+      const child = new EngineChild(resolved.repoId === this.defaultKey ? this.opts.defaultChild.spec : {
+        argv: [...this.opts.selfArgv, ...engineArgvForModel(this.opts.rawArgs, sock, resolved.path)],
         socketPath: sock,
       });
-      // SPAWN-OVERLAP: the old model keeps serving while this loads.
-      await child.ready;
-      this.#children.set(rec.repoId, child);
-      this.#lru.push(rec.repoId);
-      await this.#evictOverCap();
-      return child;
+      this.#starting.add(child);
+      try {
+        await child.ready;
+        if (this.#stopping) throw new Error("model pool is closed");
+        this.#children.set(resolved.repoId, child);
+        this.#lru.push(resolved.repoId);
+        await this.#evictOverCap();
+        return child;
+      } catch (error) {
+        await child.close();
+        throw error;
+      } finally { this.#starting.delete(child); }
     })();
-    this.#spawning.set(rec.repoId, spawnP);
+    this.#spawning.set(resolved.repoId, spawnP);
     try {
       return await spawnP;
     } finally {
-      this.#spawning.delete(rec.repoId);
+      this.#spawning.delete(resolved.repoId);
     }
   }
 
   #use(key: string): EngineChild {
     this.#bump(key);
-    return this.#children.get(key)!;
+    const child = this.#children.get(key);
+    if (!child) throw new Error(`model ${key} is no longer resident`);
+    return child;
   }
 
   /** Evict least-recently-used children over the cap: drain + demote (the
@@ -262,14 +322,23 @@ export class ModelPool {
           signal: AbortSignal.timeout(120_000),
         } as RequestInit & { unix: string });
       } catch { /* best-effort — state also persists via evict-spill */ }
-      child.stop();
+      await child.close();
       console.log(`[isolate] evicted engine ${victim} (pool cap ${this.opts.poolMax})`);
     }
   }
 
   stopAll(): void {
-    for (const c of this.#children.values()) c.stop();
+    this.#stopping = true;
+    for (const child of new Set([...this.#children.values(), ...this.#starting])) child.stop();
     this.#children.clear();
+    this.#lru = [];
+  }
+
+  async close(): Promise<void> {
+    const children = new Set([...this.#children.values(), ...this.#starting]);
+    this.stopAll();
+    await Promise.all([...children].map((child) => child.close()));
+    await Promise.allSettled(this.#spawning.values());
   }
 }
 

@@ -8,6 +8,7 @@ export {
   getRunner,
   submitInProcess,
   submitSubprocess,
+  closeSubprocessJobs,
   makeEmit,
   isGpuBusy,
   currentGpuJob,

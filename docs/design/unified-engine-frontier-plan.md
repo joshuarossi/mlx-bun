@@ -1385,7 +1385,7 @@ contracts. R5–R7 perform the execution migration. R8–R10 complete applicatio
 isolation, and deletion. Contract drafting must lead to the first real graph
 replacement in R2; it cannot grow indefinitely without that working proof.
 
-### 12.13 Implementation status (2026-09-04)
+### 12.13 Implementation status (2026-09-05)
 
 Branch: `refactor/interface-engine-v2`. R0 fixes pin TypeScript 6.0.3 for
 local/CI checks, add stop strings and a version to generation-checkpoint
@@ -1509,7 +1509,7 @@ order is ignored; array order remains meaningful. Version-2 generation keys do
 not resume through this version; ordinary prefix-store format is unchanged.
 Nine native scheduling gates pass after planner integration, including rotating
 dynamic joins, row failure containment, serial drain, prefix sharing, SSD restore
-and compiled B=1. Preparation memory reservations remain required for R4 closure.
+and compiled B=1. Preparation reservations now remain owned through execution; see below.
 
 R3 state persistence now uses `CacheCodecProvider`, bound through the server's
 model context, RAM cloner, batch snapshots and SSD store. A provider supplies
@@ -1576,14 +1576,64 @@ checks and two native failure-containment/serial-drain checks pass. Policy tests
 lease release; backend fault tests cover a request removed from the queue when
 admission fails, retained-prefix cleanup, shutdown and submission after close.
 Closing a group stops at a safe boundary, rejects pending/active requests and
-releases owned state. Queue limits, managed resource coordination and the full
-mixed-state concurrency/performance matrix remain open.
+releases owned state. Bounded request and preparation queues now reject overflow explicitly. The full
+mixed-state concurrency/performance matrix remains open.
 
 R8 now shares Pi/browser messages, history, sampling data and route IDs in
 `src/contracts/pi.ts`. Compatibility re-exports preserve server-side imports.
 The browser TypeScript project has no Bun ambient types; Bun UI tests remain
 covered by the root project. The resolved-import gate prevents browser modules
 from importing server implementations, including type-only imports.
+
+R4/R7 admission now uses a portable FIFO `AdmissionPool`. The gateway bounds
+active requests and queued waiters; cancelled waiters do not release another
+request's capacity. Media and grammar preparation reserve capacity before native
+allocation. The request owner retains that reservation after transferring native
+resources to execution, then releases it on success, failure or cancellation.
+The direct batch group also bounds pending submissions. Overload is explicit in
+the existing HTTP/SSE error contract. Nine native scheduling checks pass after
+this integration, including rotating joins, failure containment, prefix/SSD reuse
+and compiled B=1. The gateway's shared execution lease covers preparation,
+generation and managed GPU jobs.
+
+R8 completion/batch/task contracts are portable. Memory calls accept an injected
+client; their existing native implementation moved behind a lazy backend import.
+Eval generation accepts a replacement completion client and retains its separate
+bit-exact greedy oracle path in the MLX backend. Training and quantization keep
+their numerical runners and artifact results; both job execution modes now use
+the task adapter. Progress delivery is synchronous and unbuffered; cooperative
+cancellation checks before work and at progress boundaries. Native work already
+dispatched still completes at its safe boundary.
+
+Pi's embedded registry and generated extension use one model-definition builder.
+Job and Pi/browser messages now share portable declarations. New `mlx-bun/engine`
+and `mlx-bun/client` exports import without MLX; `initializeMlx()` explicitly
+bootstraps the compatibility API. The existing root import remains compatible.
+The JSON completion client uses either HTTP or an `EngineHost` without changing
+callers, preserves abort, and never retries completion POSTs.
+
+R9 adapts the existing `EngineChild` into `EngineHost`, bounds restart attempts,
+cancels restart backoff on close, kills failed startup, and checks disconnect
+while waiting for readiness. Model-pool startup failures and shutdown close their
+owned children; an evicted default can be resolved again for an absent/unknown
+model request. The fake-host proxy suite now runs in the model-free CI tier.
+Real MiniCPM JSON and incremental SSE requests pass through the isolated host.
+
+Managed GPU subprocess jobs reserve the same gateway lease as inference: the
+current batch drains before spawn, and the job retains the lease through child
+exit, including crashes. Host shutdown cancels admission/queued jobs and terminates
+its active job before releasing the lease. Fault tests cover rejected admission,
+spawn failure, child death and shutdown. This coordination is scoped to one
+server gateway; cross-worker model-pool coordination and moving application state
+out of the existing full-server worker remain R9 work. No process-host default
+has changed.
+
+The current model-free suite passes; root, browser and portable typechecks pass.
+Native state checks cover mixed-KV oracle logits, wrapped-ring conversion,
+speculative recurrent rollback and persistence. The Qwen B=2 oracle and one
+Qwen persistence fixture are absent and skip. The binary builds and its CLI/Pi
+asset smoke passes. These checks do not replace the unavailable artifact/machine
+cells or the final default-cutover gate.
 
 The Qwen replay now has a native exception diagnosis: Metal reports insufficient
 memory from its completion handler. Details remain in the existing turn-8 repro.

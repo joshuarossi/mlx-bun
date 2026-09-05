@@ -1,3 +1,4 @@
+import { AdmissionRejected } from "../../engine/admission";
 import type { ExecutionGroup } from "../../contracts/scheduling";
 import { driveExecutionGroup } from "../../engine/scheduler";
 import { disposeResources } from "../../engine/resources";
@@ -64,7 +65,6 @@ import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../../mlx/ffi";
 import { runtimeConfig } from "../../runtime-config";
-import { runtimeValue } from "../../runtime-config";
 import { CompiledDecode } from "../../model/compiled-decode";
 import type { Gemma4Model } from "../../model/gemma4";
 import {
@@ -99,14 +99,12 @@ import type { PromptResponseTrace } from "../../serve/prompt-response-trace";
 
 /** Decode-pipeline kill switch (read once at load, like the serial loop's
  *  MLX_BUN_COMPILED_DECODE): 1 ⇒ read each step's tokens synchronously. */
-const NO_PIPELINE = runtimeValue("MLX_BUN_BATCH_NO_PIPELINE") === "1";
 
 /** Per-step phase timing (MLX_BUN_BATCH_STEP_TRACE=1, debug-only): where a
  *  decode step's wall time goes — graph BUILD+dispatch (host), the pipelined
  *  READ of the previous step's tokens (GPU wait), row EMIT (onToken/SSE), and
  *  the GAP between consecutive steps (drive-loop + everything else). Sums
  *  print via `stepTraceReport()` (the b1 profile experiment calls it). */
-const STEP_TRACE = runtimeValue("MLX_BUN_BATCH_STEP_TRACE") === "1";
 const STEP_T = { t0: 0, lastEnd: 0, build: 0, read: 0, emit: 0, gap: 0, n: 0 };
 export function stepTraceReport(): string {
   const per = (x: number) => (STEP_T.n ? (x / STEP_T.n).toFixed(3) : "0");
@@ -262,6 +260,7 @@ export interface ExclusiveLock {
 }
 
 export interface MlxBatchExecutionGroupOptions {
+  maxQueued?: number;
   stateCodecs?: import("../../kv-store").CacheCodecProvider;
   /** Max rows in the running batch (mlx-lm `--decode-concurrency`). */
   maxBatch: number;
@@ -306,7 +305,10 @@ type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class MlxBatchExecutionGroup {
   readonly #runtime = runtimeConfig();
+  readonly #noPipeline = this.#runtime.value("MLX_BUN_BATCH_NO_PIPELINE") === "1";
+  readonly #stepTrace = this.#runtime.value("MLX_BUN_BATCH_STEP_TRACE") === "1";
   readonly #stateCodecs: import("../../kv-store").CacheCodecProvider | undefined;
+  readonly #maxQueued: number;
   #running: Row[] = [];
   #inners: LayerInner[] | null = null; // per-layer batched KV; null when empty
   #fullLeftPad: number[] = []; // per-row padding for FULL layers (rot self-tracks)
@@ -351,6 +353,8 @@ export class MlxBatchExecutionGroup {
   #compiled: CompiledDecode | null;
 
   constructor(private readonly model: RuntimeModel, opts: MlxBatchExecutionGroupOptions) {
+    this.#maxQueued = opts.maxQueued ?? 64;
+    if (!Number.isSafeInteger(this.#maxQueued) || this.#maxQueued < 1) throw new Error("invalid batch queue limit");
     this.#stateCodecs = opts.stateCodecs;
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
@@ -479,6 +483,7 @@ export class MlxBatchExecutionGroup {
   submit(req: BatchRequest): Promise<BatchStats> {
     if (this.#closed) return Promise.reject(new Error("scheduler closed"));
     if (req.signal?.aborted) return Promise.reject(req.signal.reason);
+    if (this.#pending.length >= this.#maxQueued) return Promise.reject(new AdmissionRejected());
     return new Promise<BatchStats>((resolve, reject) => {
       let abortListener: (() => void) | null = null;
       const cleanup = () => {
@@ -1044,7 +1049,7 @@ export class MlxBatchExecutionGroup {
    *  step; filter drops the row (mlx-lm behaves identically). Length-finished
    *  rows are known in advance and are NOT sampled (placeholder slot). */
   async #step(): Promise<void> {
-    if (STEP_TRACE) {
+    if (this.#stepTrace) {
       const now = performance.now();
       if (STEP_T.lastEnd) STEP_T.gap += now - STEP_T.lastEnd;
       STEP_T.t0 = now;
@@ -1162,7 +1167,7 @@ export class MlxBatchExecutionGroup {
         // harmless (the slot is filtered before it is ever emitted; its only
         // use is one KV write on the row's own, about-to-evict row).
         const vecOk =
-          runtimeValue("MLX_BUN_BATCH_VEC_SAMPLE") !== "0" &&
+          this.#runtime.value("MLX_BUN_BATCH_VEC_SAMPLE") !== "0" &&
           rows.every((r) => r.sampled >= r.req.maxTokens || r.req.plainGreedy);
         // Doomed slots hold placeholders (vec path: a real argmax value,
         // equally not part of the row's stream) — flag them so the fed
@@ -1208,7 +1213,7 @@ export class MlxBatchExecutionGroup {
     }
     this.#steps++;
     if (this.#steps % 256 === 0) clearCache(); // serial's cadence, not per-step
-    if (STEP_TRACE) STEP_T.build += performance.now() - STEP_T.t0;
+    if (this.#stepTrace) STEP_T.build += performance.now() - STEP_T.t0;
 
     // Read + emit the PREVIOUS step's tokens while the new step computes.
     const prev = this.#pendingToks;
@@ -1219,12 +1224,12 @@ export class MlxBatchExecutionGroup {
     // MLX_BUN_BATCH_NO_PIPELINE=1 reads THIS step's tokens synchronously —
     // set from process start `prev` is always null, so the flush below IS the
     // whole phase 2. Same math either way (pipelining is scheduling).
-    if (NO_PIPELINE) {
+    if (this.#noPipeline) {
       await this.#flushPipeline();
       return;
     }
     if (prev) {
-      const tRead = STEP_TRACE ? performance.now() : 0;
+      const tRead = this.#stepTrace ? performance.now() : 0;
       const toks = prev.toIntTokens();
       prev.dispose();
       // These values were the step's forward input (fed) iff a forward ran.
@@ -1235,12 +1240,12 @@ export class MlxBatchExecutionGroup {
           if (!prevReal || prevReal[b]) rows[b]!.fed.push(toks[b]!);
           else rows[b]!.fedTainted = true;
         }
-      if (STEP_TRACE) STEP_T.read += performance.now() - tRead;
-      const tEmit = STEP_TRACE ? performance.now() : 0;
+      if (this.#stepTrace) STEP_T.read += performance.now() - tRead;
+      const tEmit = this.#stepTrace ? performance.now() : 0;
       await this.#emitRows(toks); // also filters #pendingToks on eviction
-      if (STEP_TRACE) { STEP_T.emit += performance.now() - tEmit; STEP_T.n++; }
+      if (this.#stepTrace) { STEP_T.emit += performance.now() - tEmit; STEP_T.n++; }
     }
-    if (STEP_TRACE) STEP_T.lastEnd = performance.now();
+    if (this.#stepTrace) STEP_T.lastEnd = performance.now();
   }
 
   /** Read out the pipeline register (if any): emit its tokens and evict

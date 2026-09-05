@@ -534,6 +534,9 @@ All errors are `{ "error": { "message": …, ... } }`.
   fits is never rejected for a broad `max_tokens`: the upper bound is
   capped to the remaining room (`max_tokens` is a ceiling, not a promise)
   and generation proceeds. The ceiling is visible at `/stats`.
+- `429` with `"type": "resource_admission"`, `"code": "queue_full"` when
+  a preparation or generation queue has 64 waiting requests. If SSE headers
+  are already sent, the stream emits its terminal error instead.
 - `500` — a generation failure after admission; the stack is logged
   server-side, the body keeps only the message.
 

@@ -301,6 +301,25 @@ describe("GenerationGateway.place", () => {
 // SERIAL lane too — activeRows/pendingRows read 0 while a serial generation
 // holds the mutex, which is exactly when the old flush stole decode slices.
 describe("GenerationGateway.busy / onIdle", () => {
+  test("a managed execution lease drains earlier work and blocks later inference until released", async () => {
+    const g = gateway(2);
+    const order: string[] = [];
+    const first = await g.acquireExecutionLease();
+    const job = g.acquireExecutionLease().then((lease) => { order.push("job"); return lease; });
+    const inference = g.runExclusive(async () => { order.push("inference"); });
+    expect(order).toEqual([]);
+    first.dispose();
+    const jobLease = await job;
+    expect(order).toEqual(["job"]);
+    expect(g.busy).toBe(true);
+    jobLease.dispose();
+    jobLease.dispose();
+    await inference;
+    expect(order).toEqual(["job", "inference"]);
+    await g.close();
+    expect(g.busy).toBe(false);
+  });
+
   test("idle gateway: busy=false, onIdle resolves immediately", async () => {
     const g = gateway(1);
     expect(g.busy).toBe(false);

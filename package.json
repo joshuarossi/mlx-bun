@@ -1,7 +1,7 @@
 {
   "name": "mlx-bun",
   "version": "0.2.0",
-  "description": "Native MLX inference for Bun on Apple Silicon — local LLM server (OpenAI/Anthropic-compatible) and TypeScript library. No Python.",
+  "description": "Native MLX inference for Bun on Apple Silicon \u2014 local LLM server (OpenAI/Anthropic-compatible) and TypeScript library. No Python.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -26,7 +26,9 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./engine": "./src/library.ts",
+    "./client": "./src/client.ts"
   },
   "files": [
     "bin",

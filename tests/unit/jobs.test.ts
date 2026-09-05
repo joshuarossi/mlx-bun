@@ -186,6 +186,83 @@ describe("submitInProcess (noop)", () => {
 });
 
 describe("submitSubprocess crash isolation", () => {
+  test("closing a job host cancels admission and removes its queued jobs", async () => {
+    const { closeSubprocessJobs } = await import("../../src/jobs");
+    const store = freshStore();
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const first = submitSubprocess(store, "noop", {}, undefined, {
+      acquire: (signal) => new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        entered();
+      }),
+      spawn: (() => { throw new Error("must never spawn"); }) as typeof Bun.spawn,
+    });
+    const queued = submitSubprocess(store, "noop", {});
+    await waiting;
+    await closeSubprocessJobs(store);
+    expect(store.get(first.jobId)!.status).toBe("failed");
+    expect(store.get(queued.jobId)!.status).toBe("failed");
+    expect(isGpuBusy()).toBe(false);
+    expect(() => submitSubprocess(store, "noop", {})).toThrow("closed");
+  });
+
+  test("closing an active job waits for child death before releasing its host", async () => {
+    const { closeSubprocessJobs } = await import("../../src/jobs");
+    const store = freshStore();
+    const exit = deferredExit();
+    let killed = 0, released = 0;
+    submitSubprocess(store, "noop", {}, undefined, {
+      acquire: async () => ({ dispose() { released++; } }),
+      spawn: (() => ({ stdout: undefined, stderr: undefined, exited: exit.promise,
+        kill() { killed++; }, exitCode: null })) as unknown as typeof Bun.spawn,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const closing = closeSubprocessJobs(store);
+    expect(killed).toBe(1);
+    expect(released).toBe(0);
+    exit.resolve(143);
+    await closing;
+    expect(released).toBe(1);
+    expect(isGpuBusy()).toBe(false);
+  });
+
+  test("host admission precedes spawn and its lease survives until child exit", async () => {
+    const store = freshStore();
+    const exit = deferredExit();
+    let admit!: (lease: { dispose(): void }) => void;
+    let spawned = 0, released = 0;
+    const admission = new Promise<{ dispose(): void }>((resolve) => { admit = resolve; });
+    const { jobId } = submitSubprocess(store, "noop", {}, undefined, {
+      acquire: () => admission,
+      spawn: (() => { spawned++; return { stdout: undefined, stderr: undefined, exited: exit.promise }; }) as unknown as typeof Bun.spawn,
+    });
+    await Promise.resolve();
+    expect(spawned).toBe(0);
+    expect(store.get(jobId)!.status).toBe("queued");
+    admit({ dispose() { released++; } });
+    await waitFor(() => spawned === 1, "host admission");
+    expect(released).toBe(0);
+    exit.resolve(1);
+    await waitFor(() => !isGpuBusy(), "child exit releases host");
+    expect(released).toBe(1);
+  });
+
+  test("host admission rejection fails the job without spawning or stranding the next job", async () => {
+    const store = freshStore();
+    let spawned = 0;
+    const failed = submitSubprocess(store, "noop", {}, undefined, {
+      acquire: async () => { throw new Error("host closed"); },
+      spawn: (() => { spawned++; throw new Error("must not spawn"); }) as typeof Bun.spawn,
+    });
+    const next = submitSubprocess(store, "noop", {});
+    expect(await waitForStatus(store, failed.jobId, ["failed"])).toBe("failed");
+    expect(store.get(failed.jobId)!.error).toContain("host closed");
+    expect(spawned).toBe(0);
+    expect(await waitForStatus(store, next.jobId, ["done", "failed"])).toBe("done");
+    await waitFor(() => !isGpuBusy(), "next job completion");
+  });
+
   test("a synchronous spawn throw fails the row and releases the GPU lease", () => {
     const store = freshStore();
     const throwingSpawn = (() => {

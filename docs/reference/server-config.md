@@ -79,7 +79,11 @@ with the legacy state provider. A different backend codec identity refuses
 incompatible files. Adapter namespaces include the mounted weight contents and
 scale, so a changed adapter starts with a fresh prefix and checkpoint.
 Native media and grammar preparation waits for the generation execution lease
-and releases its resources if the client disconnects during preparation.
+and retains a reservation through completion. At most one media preparation and
+`--batch` grammar preparations can be retained. Generation and preparation
+queues each allow 64 waiting requests; overflow returns `429` before a response
+stream opens, or a terminal stream error after it opens. Disconnects release
+queued reservations and completed preparation resources.
 
 Disconnected serial requests leave the admission queue immediately. Active AR
 requests check cancellation between prefill chunks and decode steps; a native
@@ -215,8 +219,10 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
   `/ws/chat` is **not proxied** — `501` with a pointer to run without
   `--isolate` for the web chat UI.
 - **Crashes.** A child exit (uncatchable Metal OOM/SIGTRAP included) is
-  respawned automatically (`restarts` increments); an engine that dies
-  within 10 s of spawning waits 5 s before the retry. In-flight requests
+  respawned automatically (`restarts` increments), with at most three restarts
+  in a rolling 60-second window. Exhausting that budget leaves the host
+  unavailable until restarted. An engine that dies within 10 s of spawning
+  waits 5 s before the retry. In-flight requests
   get `502 { error: { type: "engine_unavailable" } }`; bodyless `GET`/`HEAD`
   requests are retried once after the respawn. A request whose client
   disconnected answers `499`.
@@ -674,3 +680,10 @@ model's cache layout, and `batch` when the model is admitted.
 `active_rows` is the instantaneous live-row count. Under `--isolate`,
 `GET /engine` on the parent reports the child pid, restart count, socket,
 and pool residency.
+
+Managed quantization and finetuning jobs wait for the serving gateway to drain,
+then hold its execution lease until their subprocess exits. Generation and native
+preparation wait during that job. Shutdown cancels queued jobs and terminates the
+host's active job before releasing its lease. Resident model weights remain
+loaded; the lease coordinates execution within that server, not memory capacity
+or independent servers/model-pool workers.

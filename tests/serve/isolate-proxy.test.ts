@@ -186,6 +186,8 @@ describe("model pool (fake engines)", () => {
     expect(eng.pool.resident).toEqual(["model-b"]);
 
     // ... and switching BACK respawns model-a (state would restore from SSD)
-    expect((await ask(base, "model-a")).served_by).toBe("/models/a");
+    expect((await ask(base)).served_by).toBe("/models/a");
+    expect((await ask(base, "model-b")).served_by).toBe("/models/b");
+    expect((await ask(base, "unknown")).served_by).toBe("/models/a");
   }, 30_000);
 });

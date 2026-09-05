@@ -57,10 +57,10 @@ export class ChatStage {
   async run(request: ChatRequest, requestId?: string, signal?: AbortSignal): Promise<InferenceRequest> {
     signal?.throwIfAborted();
     const body = request.params;
-    const native = body.response_format != null || !!body.guided_grammar ||
-      !!body.guided_regex || !!body.guided_choice?.length || body.structured_outputs != null ||
-      body.messages.some((message) => Array.isArray(message.content) &&
+    const media = body.messages.some((message) => Array.isArray(message.content) &&
         message.content.some((part) => part.type !== "text"));
+    const native = media || body.response_format != null || !!body.guided_grammar ||
+      !!body.guided_regex || !!body.guided_choice?.length || body.structured_outputs != null;
     const build = async () => {
       signal?.throwIfAborted();
       const result = await this.runPrepared(request, requestId);
@@ -70,7 +70,14 @@ export class ChatStage {
       }
       return result;
     };
-    return native && this.preparation ? this.preparation.run(build, signal) : build();
+    if (!native || !this.preparation) return build();
+    let reservation = await this.preparation.reserve?.(media ? "media" : "constraint", signal);
+    try {
+      const result = await this.preparation.run(build, signal);
+      if (reservation) result.plan.ownership.retain(reservation);
+      reservation = undefined;
+      return result;
+    } finally { reservation?.dispose(); }
   }
 
   private async runPrepared(request: ChatRequest, requestId?: string): Promise<InferenceRequest> {

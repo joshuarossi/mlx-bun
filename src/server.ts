@@ -63,6 +63,7 @@ import {
   withModelUsageFlush,
   withModelWiredLimit,
 } from "./generate";
+import { createPreparationExecutor } from "./serve/preparation";
 import { cloneKvCaches, legacyCacheCodecs, SpillQueue } from "./kv-store";
 import type { Cache } from "./model/gemma4";
 import { resolveKvScheme } from "./kv-scheme";
@@ -254,6 +255,8 @@ export interface ServerOptions {
 }
 
 interface ServerLifecycle {
+  stopJobs: () => Promise<void>;
+  close: () => Promise<void>;
   flush: () => Promise<DurabilityFlushResult>;
   stats: () => DurabilitySnapshotStats;
   stopTimers: () => void;
@@ -296,8 +299,10 @@ export async function shutdownServer(
   lifecycle?.stopTimers();
   const stopped = Promise.resolve(server.stop(false));
   const work = (async (): Promise<ServerShutdownResult> => {
+    await lifecycle?.stopJobs();
     await stopped;
     const durability = lifecycle ? await lifecycle.flush() : emptyDurabilityResult();
+    await lifecycle?.close();
     return { stopped: true, timedOut: false, durability };
   })();
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -989,9 +994,10 @@ export function createServer(
   // chatStage with their own wire formats.)
   const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens });
   const { templateOptionsFor } = prep;
+  const preparation = createPreparationExecutor((work, signal) => gateway.runExclusive(work, undefined, signal), batch);
   const chatStage = new ChatStage(
     ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter,
-    { run: (work, signal) => gateway.runExclusive(work, undefined, signal) });
+    preparation);
   const textStage = new TextCompletionStage(
     ctx, prep, admission.maxSafeContext, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
@@ -1581,6 +1587,7 @@ export function createServer(
 
       const labResponse = await handleLabRoute(url, request, {
         ensureJobs,
+        acquireGpu: (signal) => gateway.acquireExecutionLease(signal),
         serverPort: () => server.port,
         invalidateLibrary: () => discoveryRoutes.invalidateLibrary(),
       });
@@ -1596,6 +1603,8 @@ export function createServer(
     },
   });
   serverLifecycles.set(serverRef, {
+    stopJobs: async () => { if (jobStore) await (await import("./jobs")).closeSubprocessJobs(jobStore); },
+    close: async () => { preparation.close(); await gateway.close(); },
     flush: flushDurability,
     stats: durabilityStats,
     stopTimers: () => {
