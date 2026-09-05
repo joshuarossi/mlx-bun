@@ -14,6 +14,10 @@
 // only RNG consumers then are the canvas draws.
 
 import type { DiffusionGemmaModel } from "../model/diffusion-gemma";
+import type { DenoisingGraph } from "../inference/denoising";
+import { assertMlxDenoisingGraph, bindLegacyDenoisingModel } from "../backends/mlx/diffusion";
+import { cleanupFailure, disposeResources, ownResource } from "../engine/resources";
+import type { DisposableResource, ResourceOwner } from "../contracts/resources";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -184,14 +188,48 @@ function entropyTransferMask(entropy: MlxArray, bound: number): MlxArray {
   return out;
 }
 
-export function diffusionGenerate(
-  model: DiffusionGemmaModel,
-  promptIds: number[],
-  opts: DiffusionGenOptions,
-): DiffusionGenResult {
-  const t = model.config.text;
-  const vocab = t.vocabSize;
-  const modelCanvas = model.canvasLength;
+/** Compatibility entry. Both sync and asynchronous callers drain one algorithm. */
+export function diffusionGenerate(model: DiffusionGemmaModel, promptIds: number[], opts: DiffusionGenOptions): DiffusionGenResult {
+  return denoiseSync(bindLegacyDenoisingModel(model).graph, promptIds, opts);
+}
+
+export function denoiseSync<State>(graph: DenoisingGraph<MlxArray, State>, promptIds: number[], opts: DiffusionGenOptions): DiffusionGenResult {
+  const steps = denoisingSteps(graph, promptIds, opts);
+  while (true) {
+    const step = steps.next();
+    if (step.done) {
+      if (!step.value) throw new Error("denoising ended without a result");
+      return step.value;
+    }
+  }
+}
+
+/** One macrotask between bounded denoising units allows cancellation and I/O.
+ * No tentative canvas tokens are published, and no extra device eval is added. */
+export async function denoiseAsync<State>(
+  graph: DenoisingGraph<MlxArray, State>, promptIds: number[], opts: DiffusionGenOptions, signal?: AbortSignal,
+): Promise<DiffusionGenResult> {
+  signal?.throwIfAborted();
+  const steps = denoisingSteps(graph, promptIds, opts);
+  try {
+    while (true) {
+      signal?.throwIfAborted();
+      const step = steps.next();
+      if (step.done) {
+        if (!step.value) throw new Error("denoising ended without a result");
+        return step.value;
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  } finally { steps.return(undefined); }
+}
+
+function* denoisingSteps<State>(
+  graph: DenoisingGraph<MlxArray, State>, promptIds: number[], opts: DiffusionGenOptions,
+): Generator<void, DiffusionGenResult | undefined> {
+  assertMlxDenoisingGraph(graph);
+  const vocab = graph.vocabSize;
+  const modelCanvas = graph.canvasLength;
   const maxSteps = opts.maxDenoisingSteps ?? 48;
   const fullCanvas = opts.fullCanvas ?? false;
   const maxCanvas = fullCanvas ? modelCanvas : Math.min(modelCanvas, opts.maxCanvasLength ?? modelCanvas);
@@ -214,10 +252,9 @@ export function diffusionGenerate(
 
   ops.randomSeed(opts.seed ?? 0n);
 
-  const cache = opts.visionPixels
-    ? model.prefillVision(promptIds, opts.visionPixels)
-    : model.prefill(promptIds);
-  const dequantWeight = model.dequantEmbedWeight();
+  let stateOwner: ResourceOwner<State> | undefined;
+  let dequantWeight: MlxArray | null = null;
+  let failure: { error: unknown } | undefined;
 
   const emitted: number[] = [];
   const blocks: number[][] = [];
@@ -228,6 +265,9 @@ export function diffusionGenerate(
   let isFirstBlock = true;
 
   try {
+    const cache = graph.prefill(promptIds, opts.visionPixels);
+    stateOwner = ownResource(cache, (state) => graph.closeState(state));
+    dequantWeight = graph.dequantEmbedWeight();
     while (generated < maxNewTokens) {
       const remaining = maxNewTokens - generated;
       const canvasLength = fullCanvas
@@ -238,161 +278,186 @@ export function diffusionGenerate(
         // Continuation: prefill the encoder over the previous accepted block.
         const prev = blocks[blocks.length - 1]!;
         const prevArr = MlxArray.fromInt32(Int32Array.from(prev), [1, prev.length]);
-        model.extendPrefill(prevArr, cache);
-        prevArr.dispose();
+        try { graph.extendPrefill(prevArr, cache); }
+        finally { prevArr.dispose(); }
       }
       isFirstBlock = false;
 
-      let currentCanvas = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: init
-      let draftReveal = ops.zeros([1, canvasLength], Dtype.bool);
-      let draftCanvas = ops.reshape(currentCanvas, [1, canvasLength]); // alias copy
-      let argmaxCanvas = ops.reshape(currentCanvas, [1, canvasLength]);
+      let currentCanvas: MlxArray | null = null;
+      let draftReveal: MlxArray | null = null;
+      let draftCanvas: MlxArray | null = null;
+      let argmaxCanvas: MlxArray | null = null;
       let scEmbeddings: MlxArray | null = null;
       const history: MlxArray[] = [];
       let stepsThisCanvas = 0;
+      try {
+        currentCanvas = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: init
+        draftReveal = ops.zeros([1, canvasLength], Dtype.bool);
+        draftCanvas = ops.reshape(currentCanvas, [1, canvasLength]); // alias copy
+        argmaxCanvas = ops.reshape(currentCanvas, [1, canvasLength]);
 
-      for (let curStep = maxSteps; curStep >= 1; curStep--) {
-        stepsThisCanvas++;
-        const logits = model.decoderLogits(currentCanvas, cache, scEmbeddings);
-        const schedT = linearTemp(curStep, maxSteps, tMin, tMax);
-        // Match the reference EXACTLY: divide (not reciprocal-multiply) — the
-        // f32 rounding differs and the confidence threshold is a hard cutoff
-        // that flips acceptance on a 1-ULP difference, diverging the trajectory.
-        const schedArr = ops.scalarLike(schedT, logits);
-        const processed = ops.div(logits, schedArr);
-        schedArr.dispose();
-        logits.dispose();
+        for (let curStep = maxSteps; curStep >= 1; curStep--) {
+          yield; // safe point before the next denoising step
+          stepsThisCanvas++;
+          let logits: MlxArray | null = null;
+          let processed: MlxArray | null = null;
+          let acceptance: MlxArray | null = null;
+          let nextSc: MlxArray | null = null;
+          try {
+            logits = graph.decoderLogits(currentCanvas, cache, scEmbeddings);
+            const schedT = linearTemp(curStep, maxSteps, tMin, tMax);
+            // Match the reference EXACTLY: divide (not reciprocal-multiply) — the
+            // f32 rounding differs and the confidence threshold is a hard cutoff
+            // that flips acceptance on a 1-ULP difference, diverging the trajectory.
+            const schedArr = ops.scalarLike(schedT, logits);
+            processed = ops.div(logits, schedArr);
+            schedArr.dispose();
+            logits.dispose();
 
-        argmaxCanvas.dispose();
-        const argmax = ops.argmaxAxis(processed, -1);
-        argmaxCanvas = argmax.astype(I32); // [1, L]
-        argmax.dispose();
+            argmaxCanvas.dispose();
+            const argmax = ops.argmaxAxis(processed, -1);
+            argmaxCanvas = argmax.astype(I32); // [1, L]
+            argmax.dispose();
 
-        if (curStep === 1) {
-          processed.dispose();
-          break;
-        }
+            if (curStep === 1) {
+              processed.dispose();
+              break;
+            }
 
-        // temperature 0 → denoiser canvas is the argmax.
-        const denoiser = argmaxCanvas;
+            // temperature 0 → denoiser canvas is the argmax.
+            const denoiser = argmaxCanvas;
 
-        let acceptance: MlxArray;
-        let nextSc: MlxArray | null = null;
-        if (sampler === "entropy-bound") {
-          // cur_step > 1 always here (cur_step==1 breaks before the sampler):
-          // entropy AND the next soft embeddings come from the SAME entropy
-          // chain (reference _diffusion_entropy_and_soft_embeddings) — NOT the
-          // softmax-precise path the confidence sampler uses.
-          const { probs, entropy } = entropyProbsChain(processed);
-          acceptance = entropyTransferMask(entropy, entropyBound);
-          entropy.dispose();
-          nextSc = softEmbeddingsFromProbs(probs, dequantWeight, model.embedScale);
-          probs.dispose();
-          // accepted/current update (entropy variant)
-          const accepted = ops.where(acceptance, denoiser, currentCanvas);
-          const noise = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: re-noise
-          const newCurrent = ops.where(acceptance, accepted, noise);
-          noise.dispose();
-          currentCanvas.dispose();
-          currentCanvas = newCurrent;
-          draftReveal.dispose();
-          const notAcceptance = ops.logicalNot(acceptance);
-          draftReveal = ops.logicalNot(notAcceptance); // = acceptance
-          notAcceptance.dispose();
-          draftCanvas.dispose();
-          draftCanvas = ops.reshape(argmaxCanvas, [1, canvasLength]);
-          accepted.dispose();
-        } else {
-          const unrevealed = ops.logicalNot(draftReveal);
-          const confidence = tokenProbability(processed, denoiser);
-          acceptance = confidenceTransferMask(confidence, unrevealed, threshold, false);
-          confidence.dispose();
-          const accepted = ops.where(acceptance, denoiser, draftCanvas);
-          const revealOrAccept = ops.logicalOr(draftReveal, acceptance);
-          const noise = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: re-noise
-          const newCurrent = ops.where(revealOrAccept, accepted, noise);
-          noise.dispose();
-          currentCanvas.dispose();
-          currentCanvas = newCurrent;
-          const newReveal = ops.logicalOr(draftReveal, acceptance);
-          draftReveal.dispose();
-          draftReveal = newReveal;
-          const newDraft = ops.where(acceptance, accepted, draftCanvas);
-          draftCanvas.dispose();
-          draftCanvas = newDraft;
-          unrevealed.dispose();
-          revealOrAccept.dispose();
-          accepted.dispose();
-        }
-        acceptance.dispose();
+            if (sampler === "entropy-bound") {
+              // cur_step > 1 always here (cur_step==1 breaks before the sampler):
+              // entropy AND the next soft embeddings come from the SAME entropy
+              // chain (reference _diffusion_entropy_and_soft_embeddings) — NOT the
+              // softmax-precise path the confidence sampler uses.
+              const { probs, entropy } = entropyProbsChain(processed);
+              acceptance = entropyTransferMask(entropy, entropyBound);
+              entropy.dispose();
+              nextSc = softEmbeddingsFromProbs(probs, dequantWeight, graph.embedScale);
+              probs.dispose();
+              // accepted/current update (entropy variant)
+              const accepted = ops.where(acceptance, denoiser, currentCanvas);
+              const noise = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: re-noise
+              const newCurrent = ops.where(acceptance, accepted, noise);
+              noise.dispose();
+              currentCanvas.dispose();
+              currentCanvas = newCurrent;
+              draftReveal.dispose();
+              const notAcceptance = ops.logicalNot(acceptance);
+              draftReveal = ops.logicalNot(notAcceptance); // = acceptance
+              notAcceptance.dispose();
+              draftCanvas.dispose();
+              draftCanvas = ops.reshape(argmaxCanvas, [1, canvasLength]);
+              accepted.dispose();
+            } else {
+              const unrevealed = ops.logicalNot(draftReveal);
+              const confidence = tokenProbability(processed, denoiser);
+              acceptance = confidenceTransferMask(confidence, unrevealed, threshold, false);
+              confidence.dispose();
+              const accepted = ops.where(acceptance, denoiser, draftCanvas);
+              const revealOrAccept = ops.logicalOr(draftReveal, acceptance);
+              const noise = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: re-noise
+              const newCurrent = ops.where(revealOrAccept, accepted, noise);
+              noise.dispose();
+              currentCanvas.dispose();
+              currentCanvas = newCurrent;
+              const newReveal = ops.logicalOr(draftReveal, acceptance);
+              draftReveal.dispose();
+              draftReveal = newReveal;
+              const newDraft = ops.where(acceptance, accepted, draftCanvas);
+              draftCanvas.dispose();
+              draftCanvas = newDraft;
+              unrevealed.dispose();
+              revealOrAccept.dispose();
+              accepted.dispose();
+            }
+            acceptance.dispose();
 
-        // Early stop 1 (confidence sampler): all positions revealed.
-        if (sampler === "confidence-threshold") {
-          const allRevealed = ops.allReduce(draftReveal);
-          const done = ops.itemBool(allRevealed);
-          allRevealed.dispose();
-          if (done) {
+            // Early stop 1 (confidence sampler): all positions revealed.
+            if (sampler === "confidence-threshold") {
+              const allRevealed = ops.allReduce(draftReveal);
+              const done = ops.itemBool(allRevealed);
+              allRevealed.dispose();
+              if (done) {
+                processed.dispose();
+                break;
+              }
+            }
+
+            // Early stop 2: stable + confident (only when explicitly configured;
+            // the as-loaded oracle has stopping_config None and never stops here).
+            if (
+              stableStop &&
+              stableAndConfident(argmaxCanvas, processed, history, stabilityThreshold, stopConfidence)
+            ) {
+              // Entropy sampling precomputes the next step's self-conditioning
+              // tensor before evaluating this stop. The break means ownership is
+              // never transferred to scEmbeddings, so release the pending value.
+              nextSc?.dispose();
+              processed.dispose();
+              break;
+            }
+
+            // Self-conditioning feedback for the next step.
+            if (curStep > 1) {
+              if (nextSc === null) nextSc = graph.softEmbeddings(processed, dequantWeight);
+              if (scEmbeddings) scEmbeddings.dispose();
+              scEmbeddings = nextSc;
+              nextSc = null; // ownership transferred to persistent feedback
+            }
             processed.dispose();
-            break;
+          } finally {
+            disposeResources([logits, processed, acceptance, nextSc]
+              .filter((array): array is MlxArray => array !== null));
           }
         }
 
-        // Early stop 2: stable + confident (only when explicitly configured;
-        // the as-loaded oracle has stopping_config None and never stops here).
-        if (
-          stableStop &&
-          stableAndConfident(argmaxCanvas, processed, history, stabilityThreshold, stopConfidence)
-        ) {
-          // Entropy sampling precomputes the next step's self-conditioning
-          // tensor before evaluating this stop. The break means ownership is
-          // never transferred to scEmbeddings, so release the pending value.
-          nextSc?.dispose();
-          processed.dispose();
-          break;
-        }
+        if (scEmbeddings) scEmbeddings.dispose();
+        for (const hh of history) hh.dispose();
+        currentCanvas.dispose();
+        draftReveal.dispose();
+        draftCanvas.dispose();
 
-        // Self-conditioning feedback for the next step.
-        if (curStep > 1) {
-          if (nextSc === null) nextSc = model.softEmbeddings(processed, dequantWeight);
-          if (scEmbeddings) scEmbeddings.dispose();
-          scEmbeddings = nextSc;
+        // Emit from the final argmax canvas.
+        const argmaxFloat = argmaxCanvas.astype(Dtype.float32);
+        let blockTokens: number[];
+        try { blockTokens = [...argmaxFloat.toFloat32()].map((x) => Math.round(x)); }
+        finally { argmaxFloat.dispose(); }
+        argmaxCanvas.dispose();
+        blocks.push(blockTokens);
+        totalSteps += stepsThisCanvas;
+
+        for (const tok of blockTokens) {
+          generated++;
+          if (eosIds.has(tok)) {
+            stopped = true;
+            finishReason = "stop";
+            break;
+          }
+          emitted.push(tok);
+          if (generated >= maxNewTokens) {
+            stopped = true;
+            finishReason = "length";
+            break;
+          }
         }
-        processed.dispose();
+        if (stopped) break;
+      } finally {
+        disposeResources([currentCanvas, draftReveal, draftCanvas, argmaxCanvas, scEmbeddings, ...history]
+          .filter((array): array is MlxArray => array !== null));
       }
-
-      if (scEmbeddings) scEmbeddings.dispose();
-      for (const hh of history) hh.dispose();
-      currentCanvas.dispose();
-      draftReveal.dispose();
-      draftCanvas.dispose();
-
-      // Emit from the final argmax canvas.
-      const argmaxFloat = argmaxCanvas.astype(Dtype.float32);
-      const blockTokens = [...argmaxFloat.toFloat32()].map((x) => Math.round(x));
-      argmaxFloat.dispose();
-      argmaxCanvas.dispose();
-      blocks.push(blockTokens);
-      totalSteps += stepsThisCanvas;
-
-      for (const tok of blockTokens) {
-        generated++;
-        if (eosIds.has(tok)) {
-          stopped = true;
-          finishReason = "stop";
-          break;
-        }
-        emitted.push(tok);
-        if (generated >= maxNewTokens) {
-          stopped = true;
-          finishReason = "length";
-          break;
-        }
-      }
-      if (stopped) break;
     }
+  } catch (error) {
+    failure = { error };
+    throw error;
   } finally {
-    dequantWeight.dispose();
-    for (const c of cache) c.dispose();
+    const cleanup = () => disposeResources([dequantWeight,
+      ...(stateOwner ? [{ dispose: () => stateOwner!.close() }] : [])]
+      .filter((resource): resource is DisposableResource => resource !== null));
+    if (failure) cleanupFailure(failure.error, cleanup);
+    else cleanup();
   }
 
   return { tokens: emitted, blocks, steps: totalSteps, finishReason };

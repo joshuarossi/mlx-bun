@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createInferenceEngine } from "../../src/engine/engine";
-import { createAutoregressiveMethod, createSpeculativeMethod } from "../../src/backends/mlx/methods";
+import { createAutoregressiveMethod, createSpeculativeMethod, createDenoisingMethod } from "../../src/backends/mlx/methods";
 import { bindMlxGraph } from "../../src/backends/mlx/graph";
 import { bindCacheRollback } from "../../src/backends/mlx/rollback";
 import { MlxArray } from "../../src/mlx/array";
 import { KVCache, type Cache } from "../../src/model/gemma4";
 import type { MlxSpeculativeBinding } from "../../src/backends/mlx/speculative";
 import type { MlxAutoregressiveBinding } from "../../src/backends/mlx/autoregressive";
+import type { MlxDenoisingBinding } from "../../src/backends/mlx/diffusion";
 import type { InferenceMethod, Timer } from "../../src/contracts/generation";
 import type { GenerateStats } from "../../src/generate";
 
@@ -48,17 +49,40 @@ function fixture(fail = false) {
         commit() {}, dispose() { calls.sources++; } };
     },
   };
-  return { calls, ar, spec };
+  const denoising: MlxDenoisingBinding<{ closed: boolean }> = {
+    memory: { weightsBytes: 0 },
+    graph: {
+      descriptor: { id: "canvas-fixture", artifact: "synthetic", backend: "mlx",
+        graphAbi: "mlx-denoising-v1", stateAbi: "fixture-canvas-state" },
+      vocabSize: 8, canvasLength: 4, embedScale: 1,
+      prefill() { return { closed: false }; },
+      extendPrefill() {},
+      decoderLogits() {
+        if (fail) throw new Error("target failed");
+        const values = new Float32Array(32);
+        for (let i = 0; i < 4; i++) values[i * 8 + i + 2] = 10;
+        return MlxArray.fromFloat32(values, [1, 4, 8]);
+      },
+      dequantEmbedWeight: () => MlxArray.fromFloat32(new Float32Array(8), [8, 1]),
+      softEmbeddings: () => MlxArray.fromFloat32(new Float32Array(4), [1, 4, 1]),
+      closeState(state) {
+        if (state.closed) throw new Error("canvas state released twice");
+        state.closed = true; calls.caches++;
+      },
+    },
+  };
+  return { calls, ar, spec, denoising };
 }
 
-for (const method of ["AR", "speculative"] as const) {
+for (const method of ["AR", "speculative", "denoising"] as const) {
   describe(`${method} uses the common native method/session contract`, () => {
     function setup(fail = false) {
       const f = fixture(fail);
       const options = { maxTokens: 4, temperature: 0 };
       const registration: InferenceMethod<GenerateStats> = method === "AR"
         ? createAutoregressiveMethod(f.ar, [0, 1], options)
-        : createSpeculativeMethod(f.spec, 2, [0, 1], options);
+        : method === "speculative" ? createSpeculativeMethod(f.spec, 2, [0, 1], options)
+        : createDenoisingMethod(f.denoising, [0, 1], options);
       const engine = createInferenceEngine({ async plan() {
         return { id: "replacement", outputTokenLimit: 4, method: registration };
       } }, { timer });

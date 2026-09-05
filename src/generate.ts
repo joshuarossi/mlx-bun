@@ -20,7 +20,8 @@ import * as ops from "./mlx/ops";
 import { KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
 import { PagedKVCache } from "./lab/paged-kv/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
-import { diffusionGenerate } from "./diffusion/diffusion-generate";
+import { denoiseAsync } from "./diffusion/diffusion-generate";
+import { bindLegacyDenoisingModel, type MlxDenoisingBinding } from "./backends/mlx/diffusion";
 import type { RuntimeModel } from "./model/factory";
 import {
   assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
@@ -498,13 +499,7 @@ export function generate(
   // server stream it through the existing token machinery.
   if (!(model instanceof DiffusionGemmaModel))
     return generateAutoregressive(bindLegacyAutoregressiveModel(model), promptTokens, options, diagnostics);
-  let inner = generateDiffusionInner(model, promptTokens, options);
-  if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
-  const memoryModel: WiredModelMemory = model;
-  if (memoryModel.expertRuntime?.finishUsage || memoryModel.expertRuntime?.flushUsage)
-    inner = usageScoped(memoryModel, inner);
-  const wire = modelNeedsWiredLimit(model);
-  return new Generation(wire ? wiredScoped(inner) : inner);
+  return generateDenoising(bindLegacyDenoisingModel(model), promptTokens, options);
 }
 
 /** Execute a supplied backend binding through the same AR loop and resource
@@ -526,13 +521,26 @@ export function generateAutoregressive(
   return new Generation(modelNeedsWiredLimit(binding.memory) ? wiredScoped(inner) : inner);
 }
 
+/** Denoising bindings use their own state and feedback graph. Callers hold
+ * the native runtime's exclusive generation lease, including its global RNG. */
+export function generateDenoising<State>(
+  binding: MlxDenoisingBinding<State>, promptTokens: number[], options: GenerateOptions = {},
+): Generation {
+  let inner = generateDiffusionInner(binding, promptTokens, options);
+  if (options.adapters?.length && binding.adapters)
+    inner = adapterScoped({ loraState: binding.adapters }, options.adapters, inner);
+  if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
+    inner = usageScoped(binding.memory, inner);
+  return new Generation(modelNeedsWiredLimit(binding.memory) ? wiredScoped(inner) : inner);
+}
+
 /** Non-autoregressive diffusion generation, adapted to the AR Generation
  *  contract. Runs the denoising engine (its own prefill + canvas loop) and
  *  streams the emitted tokens. v1: greedy (temperature 0, confidence-threshold
  *  sampler — the OptiQ default); per-block intra-stream + temperature>0
  *  (categorical) are follow-ups. */
-async function* generateDiffusionInner(
-  model: DiffusionGemmaModel,
+async function* generateDiffusionInner<State>(
+  binding: MlxDenoisingBinding<State>,
   promptTokens: number[],
   options: GenerateOptions,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
@@ -546,14 +554,14 @@ async function* generateDiffusionInner(
       : BigInt(Math.floor(Math.random() * 0x7fffffff));
   // The shipped checkpoint's tokenizer stops on {1, 106}; union any caller eos.
   const eos = [...new Set([1, 106, ...(options.eosTokenIds ?? [])])];
-  const result = diffusionGenerate(model, promptTokens, {
+  const result = await denoiseAsync(binding.graph, promptTokens, {
     maxTokens,
     sampler: "confidence-threshold",
     temperature: 0,
     eosTokenIds: eos,
     seed,
     visionPixels: options.visionPixels,
-  });
+  }, options.signal);
   const decodeMs = performance.now() - t0;
   let index = 0;
   for (const token of result.tokens) {
@@ -578,11 +586,12 @@ async function* adapterScoped(
   adapters: string[],
   inner: AsyncGenerator<GeneratedToken, GenerateStats>,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
+  const previous = model.loraState.active;
   model.loraState.active = adapters;
   try {
     return yield* inner;
   } finally {
-    model.loraState.active = [];
+    model.loraState.active = previous;
   }
 }
 

@@ -1,3 +1,4 @@
+import { cleanupFailure, disposeResources } from "../engine/resources";
 // DiffusionGemma-26B-A4B-it (model_type "diffusion_gemma") — the first
 // NON-autoregressive model in the codebase. Instead of a left-to-right AR loop
 // it runs an ENCODER prefill over the prompt (builds a KV cache) and then a
@@ -626,8 +627,8 @@ export class DiffusionGemmaModel {
   /** Prefill from a pre-spliced image+text prompt → populated cache. */
   prefillVision(splicedIds: number[], pixels: MlxArray): Cache[] {
     const cache = this.makeCache();
-    this.encodeVisionPrefill(splicedIds, pixels, cache);
-    return cache;
+    try { this.encodeVisionPrefill(splicedIds, pixels, cache); return cache; }
+    catch (error) { cleanupFailure(error, () => disposeResources(cache)); }
   }
 
   /** One KVCache (full) / RotatingKVCache (sliding) per layer — the encoder
@@ -899,16 +900,15 @@ export class DiffusionGemmaModel {
    *  loop reuses it across all steps of a canvas block). */
   prefill(promptIds: number[]): Cache[] {
     const cache = this.makeCache();
-    this.encodePrompt(promptIds, cache);
-    return cache;
+    try { this.encodePrompt(promptIds, cache); return cache; }
+    catch (error) { cleanupFailure(error, () => disposeResources(cache)); }
   }
 
   /** One denoising-step decoder pass -> softcapped logits [1, canvas, vocab]. */
   decoderLogits(canvasArr: MlxArray, cache: Cache[], scEmbeddings: MlxArray | null): MlxArray {
     const h = this.decodeCanvasArr(canvasArr, cache, null, scEmbeddings);
-    const logits = this.logitsFromHidden(h);
-    h.dispose();
-    return logits;
+    try { return this.logitsFromHidden(h); }
+    finally { h.dispose(); }
   }
 
   /** Dequantized embedding table (once per call), for self-conditioning soft

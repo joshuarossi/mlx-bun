@@ -1,9 +1,10 @@
 import type { GenerationOutput, InferenceMethod, MethodResult } from "../../contracts/generation";
 import { throwIfCancelled } from "../../engine/cancellation";
-import { generateAutoregressive, type GenerateOptions, type GenerateStats } from "../../generate";
+import { generateAutoregressive, generateDenoising, type GenerateOptions, type GenerateStats } from "../../generate";
 import { specRun } from "../../spec/serve-loop";
 import type { MlxAutoregressiveBinding } from "./autoregressive";
 import type { MlxSpeculativeBinding } from "./speculative";
+import type { MlxDenoisingBinding } from "./diffusion";
 
 /** The native algorithm owns cleanup in its finally. This host adapter owns
  * cancellation subscriptions and waits for the algorithm before closing. */
@@ -64,5 +65,19 @@ export function createSpeculativeMethod(
     const metrics = await specRun(binding, numDraftTokens, prompt, { ...options, signal },
       (token) => output.commit([token]));
     return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop", metrics };
+  });
+}
+
+/** The canvas stays private. This method publishes only the finished result. */
+export function createDenoisingMethod<State>(
+  binding: MlxDenoisingBinding<State>, promptIds: readonly number[], options: GenerateOptions,
+): InferenceMethod<GenerateStats> {
+  const prompt = [...promptIds];
+  return nativeMethod("mlx-denoising", async (output, signal) => {
+    const generation = generateDenoising(binding, prompt, { ...options, signal });
+    for await (const item of generation) await output.commit([item.token]);
+    const metrics = generation.stats;
+    if (!metrics) throw new Error("denoising method did not settle its metrics");
+    return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 256) ? "length" : "stop", metrics };
   });
 }

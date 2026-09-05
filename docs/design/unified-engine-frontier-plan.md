@@ -1515,8 +1515,20 @@ session tests exercise collection, streaming, early reader closure and forward
 failure for both. Four native Qwen3.5-0.8B gates pass, including recurrent
 rejections and identical speculative acceptance traces through a portable
 session. This smaller available model supplies compatibility coverage only.
-Legacy draft providers still use their existing target adapters; diffusion and
-full method-composition migration remain open.
+Denoising now implements that same method/session contract through a separate
+`DenoisingGraph<Tensor, State>`. Its test binding uses a position-only state
+record, with no AR cache or token-prefix API. The existing synchronous diffusion
+entry and cooperative generation drain one denoising program. Cooperative calls
+yield between denoising steps and publish only the final output; cancellation
+releases canvas, feedback, embedding weights and graph state. Generation holds
+the existing exclusive runtime lease, including the diffusion global RNG.
+
+Scripted regression tests cover both samplers, RNG-dependent canvases across
+multiple blocks, sync/async identity, preparation failure, cancellation between
+steps and repeated-run native memory accounting. The existing soft-embedding
+lifetime test passes. Diffusion weights are absent on this machine, so its
+weight/oracle gates remain unrun. Legacy draft providers still use their
+existing target adapters; full method-composition migration remains open.
 
 R8 now shares Pi/browser messages, history, sampling data and route IDs in
 `src/contracts/pi.ts`. Compatibility re-exports preserve server-side imports.
