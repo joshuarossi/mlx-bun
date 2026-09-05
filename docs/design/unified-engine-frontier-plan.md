@@ -1501,6 +1501,23 @@ checks pass, including dynamic rows, prompt reuse, SSD restore and compiled B=1;
 the dedicated/generated same-session test also passes on the M1 Max 32 GB.
 Method-run/checkpoint ownership and the wider R5 abort matrix remain open.
 
+R6 now runs the speculative verifier through `MlxSpeculativeBinding`. Target
+forwards, projection, tap capture, draft construction and kernel pinning bind
+outside the verifier. Legacy tap contexts restore their previous value on exit.
+The complete rollback facet validates recurrent begin/commit/replay together;
+partial layer failures invalidate the transaction and the run discards its state.
+Ring-capacity fallback retains its strict pre-write boundary. The verifier owns
+input/hidden scratch on failure and attempts every final release.
+
+AR and speculative methods now implement `InferenceMethod` directly. Their shared
+host adapter translates cancellation and waits for native cleanup. The same
+session tests exercise collection, streaming, early reader closure and forward
+failure for both. Four native Qwen3.5-0.8B gates pass, including recurrent
+rejections and identical speculative acceptance traces through a portable
+session. This smaller available model supplies compatibility coverage only.
+Legacy draft providers still use their existing target adapters; diffusion and
+full method-composition migration remain open.
+
 R8 now shares Pi/browser messages, history, sampling data and route IDs in
 `src/contracts/pi.ts`. Compatibility re-exports preserve server-side imports.
 The browser TypeScript project has no Bun ambient types; Bun UI tests remain

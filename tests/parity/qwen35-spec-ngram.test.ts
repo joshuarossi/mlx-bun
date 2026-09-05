@@ -94,4 +94,24 @@ describe.skipIf(!have)("serve-loop spec on qwen3_5 (SSM rollback, 0.8B)", async 
     // prefix — and the stream still matched the baseline exactly.
     expect(spec.rejected).toBeGreaterThan(0);
   }, 600_000);
+
+  test("the bound speculative method preserves output and acceptance trace through a portable session", async () => {
+    const { createInferenceEngine } = await import("../../src/engine/engine");
+    const { createSpeculativeMethod } = await import("../../src/backends/mlx/methods");
+    const { bindLegacySpeculativeModel } = await import("../../src/backends/mlx/speculative");
+    const ids = promptIds(ECHO_PROMPT);
+    const expected = await serveSpec(ids, 10);
+    const method = createSpeculativeMethod(bindLegacySpeculativeModel(model, new NgramProvider()),
+      10, ids, { maxTokens: MAX_TOKENS, temperature: 0 });
+    const engine = createInferenceEngine({ async plan() {
+      return { id: "qwen-spec", outputTokenLimit: MAX_TOKENS, method };
+    } }, { timer: { after(ms, callback) { const id = setTimeout(callback, ms); return () => clearTimeout(id); } } });
+    try {
+      const result = await (await engine.open({}, { output: "collect" })).result;
+      expect(result.status).toBe("completed");
+      if (result.status !== "completed") throw new Error(JSON.stringify(result));
+      expect([...result.output!]).toEqual(expected.out);
+      expect(result.result.metrics.spec).toEqual(expected.stats.spec);
+    } finally { await engine.close(); }
+  }, 180_000);
 });

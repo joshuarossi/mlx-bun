@@ -42,7 +42,9 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
-import { flagOn } from "../runtime-config";
+import { cleanupFailure, disposeResources } from "../engine/resources";
+import type { DisposableResource } from "../contracts/resources";
+import { assertMlxSpeculativeBinding, bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "../backends/mlx/speculative";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
 import type { GenerateOptions, GenerateStats } from "../generate";
@@ -51,58 +53,6 @@ import type { OnToken } from "../serve/generation-gateway";
 import type { DraftProvider } from "./source";
 
 const PREFILL_CHUNK = 2048;
-
-/** Run one target forward, and when `tapLayers` is set (⟹ a Gemma4 target — a
- *  DSpark-style source), also return the captured multi-layer context
- *  [1,L,m*H] (tapLayers concatenated on the feature axis; index nLayers is the
- *  post-finalNorm sentinel). Non-tapping sources get ctxML=null and never
- *  touch model.hiddenTap. Mirrors generate-dflash.ts forwardTapped. */
-async function forwardMaybeTap(
-  model: RuntimeModel,
-  ids: MlxArray,
-  caches: Cache[],
-  tapLayers: number[] | undefined,
-): Promise<{ hidden: MlxArray; ctxML: MlxArray | null }> {
-  if (!tapLayers) {
-    const asyncModel = model as RuntimeModel & {
-      forwardHiddenAsync?: (
-        ids: MlxArray,
-        caches: Cache[],
-      ) => Promise<MlxArray>;
-    };
-    const hidden = typeof asyncModel.forwardHiddenAsync === "function"
-      ? await asyncModel.forwardHiddenAsync(ids, caches)
-      : model.forwardHidden(ids, caches);
-    return { hidden, ctxML: null };
-  }
-  const m = model as unknown as {
-    hiddenTap: { layers: Set<number>; captured: Map<number, MlxArray> } | null;
-  };
-  const cap = new Map<number, MlxArray>();
-  m.hiddenTap = { layers: new Set(tapLayers), captured: cap };
-  let hidden: MlxArray | null = null;
-  try {
-    hidden = model.forwardHidden(ids, caches);
-    const perLayer = tapLayers.map((li) => {
-      const a = cap.get(li);
-      if (!a) throw new Error(`spec tap: layer ${li} not captured`);
-      return a;
-    });
-    const ctxML = ops.concatAxis(perLayer, 2); // [1,L,m*H]
-    for (const [, a] of cap) a.dispose();
-    cap.clear(); // consumed — the finally must not double-dispose
-    const out = { hidden, ctxML };
-    hidden = null; // ownership returned to the caller
-    return out;
-  } finally {
-    // On any throw (forward mid-capture, missing layer, concat), free the
-    // partially-captured tap tensors and the orphaned hidden. On success both
-    // are already gone (cap cleared, hidden nulled).
-    hidden?.dispose();
-    for (const [, a] of cap) a.dispose();
-    m.hiddenTap = null;
-  }
-}
 
 export interface SpecServeExtras {
   drafted: number;
@@ -129,8 +79,20 @@ export async function specServeRun(
   options: GenerateOptions & { stopSequences?: string[] },
   onToken: OnToken,
 ): Promise<GenerateStats> {
+  return specRun(bindLegacySpeculativeModel(model, provider), numDraftTokens, promptIds, options, onToken);
+}
+
+/** The verifier consumes a bound target and source factory, independent of
+ * concrete model classes. Compatibility callers use specServeRun above. */
+export async function specRun(
+  binding: MlxSpeculativeBinding,
+  numDraftTokens: number,
+  promptIds: number[],
+  options: GenerateOptions & { stopSequences?: string[] },
+  onToken: OnToken,
+): Promise<GenerateStats> {
   const maxTokens = options.maxTokens ?? 512;
-  const eos = options.eosTokenIds ?? model.config.eosTokenIds;
+  const eos = options.eosTokenIds ?? [...binding.eosTokenIds];
   const sampler = makeSampler(options);
   const stepSampler = makeStepSampler(options, {
     tokenRepresentation: "number",
@@ -205,10 +167,19 @@ export async function specServeRun(
     return flat;
   };
 
+  const forwardTokens = async (tokens: number[], taps?: number[]) => {
+    const ids = ops.fromInt32(tokens, [1, tokens.length]);
+    try { return await binding.forward(ids, caches, taps); }
+    finally { ids.dispose(); }
+  };
+  let failure: { error: unknown } | undefined;
+
   try {
     options.signal?.throwIfAborted();
-    caches = model.makeCache();
-    const src = provider.open({ sampler, target: { model, caches } });
+    assertMlxSpeculativeBinding(binding);
+    caches = binding.makeCache();
+    const rollback = binding.bindRollback(caches);
+    const src = binding.openDraft(sampler, caches);
     source = src;
     tapLayers = src.tapLayers;
     // ---- prefill (target, chunked; optionally tapped for DSpark), then seed
@@ -241,7 +212,7 @@ export async function specServeRun(
     const t0 = performance.now();
     const tailSplit =
       src.prefillMode !== "full" &&
-      flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+      binding.prefillTailSplit;
     const oracleShape = tailSplit && promptIds.length > 1;
     if (oracleShape) {
       let pos = 0;
@@ -250,21 +221,15 @@ export async function specServeRun(
         options.signal?.throwIfAborted();
         const n = Math.min(PREFILL_CHUNK, end - pos);
         const chunk = promptIds.slice(pos, pos + n);
-        const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const { hidden: h, ctxML } = await forwardMaybeTap(
-          model,
-          ids,
-          caches,
-          tapLayers,
-        );
-        ids.dispose();
+        const { hidden: h, ctxML } = await forwardTokens(chunk, tapLayers);
         if (ctxML) ctxParts.push(ctxML);
-        if (pos + n >= end) {
-          const L = h.shape[1]!;
-          const H = h.shape[2]!;
-          anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // position len-2
-        }
-        h.dispose(); // logits never computed during the drain
+        try {
+          if (pos + n >= end) {
+            const L = h.shape[1]!;
+            const H = h.shape[2]!;
+            anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // position len-2
+          }
+        } finally { h.dispose(); } // no logits during the drain
         clearCache();
         pos += n;
         if (pos < end) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -275,25 +240,18 @@ export async function specServeRun(
       for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
         options.signal?.throwIfAborted();
         const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
-        const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const { hidden: h, ctxML } = await forwardMaybeTap(
-          model,
-          ids,
-          caches,
-          tapLayers,
-        );
-        ids.dispose();
+        const { hidden: h, ctxML } = await forwardTokens(chunk, tapLayers);
         if (ctxML) ctxParts.push(ctxML);
-        if (off + PREFILL_CHUNK >= promptIds.length) {
+        try { if (off + PREFILL_CHUNK >= promptIds.length) {
           const L = h.shape[1]!;
           const H = h.shape[2]!;
           anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // [1,1,H], retained
-          const lg = model.logitsFromHidden(anchorHidden);
-          const V = lg.shape[lg.shape.length - 1]!;
-          lastLogits = ops.reshape(lg, [1, V]);
-          lg.dispose();
-        }
-        h.dispose();
+          const lg = binding.projectLogits(anchorHidden);
+          try {
+            const V = lg.shape[lg.shape.length - 1]!;
+            lastLogits = ops.reshape(lg, [1, V]);
+          } finally { lg.dispose(); }
+        } } finally { h.dispose(); }
         clearCache();
         if (off + PREFILL_CHUNK < promptIds.length)
           await new Promise<void>((resolve) => setImmediate(resolve));
@@ -357,19 +315,14 @@ export async function specServeRun(
       options.signal?.throwIfAborted();
       if (!speculating) {
         // plain single-token continuation (post-ring-wrap fallback)
-        const ids = ops.fromInt32([pending], [1, 1]);
-        const { hidden: h } = await forwardMaybeTap(
-          model,
-          ids,
-          caches,
-          undefined,
-        );
-        ids.dispose();
-        const lg = model.logitsFromHidden(h);
-        h.dispose();
-        const V = lg.shape[lg.shape.length - 1]!;
-        roundRow = ops.reshape(lg, [1, V]);
-        lg.dispose();
+        const { hidden: h } = await forwardTokens([pending], undefined);
+        try {
+          const lg = binding.projectLogits(h);
+          try {
+            const V = lg.shape[lg.shape.length - 1]!;
+            roundRow = ops.reshape(lg, [1, V]);
+          } finally { lg.dispose(); }
+        } finally { h.dispose(); }
         extras.targetCalls++;
         const tok = await samplePos(roundRow, stats.generatedTokens);
         roundRow.dispose();
@@ -395,11 +348,7 @@ export async function specServeRun(
       // spec-eligible through the round snapshot/replay contract instead:
       // specRoundBegin before the verify forward, then commit or a bit-exact
       // rollback(keep) after the accept walk.
-      const roundFits = caches.every((c) =>
-        "maxSize" in c && typeof (c as { maxSize?: number }).maxSize === "number"
-          ? c.offset + n + 1 < (c as { maxSize: number }).maxSize
-          : c.isTrimmable() || typeof c.specRoundBegin === "function",
-      );
+      const roundFits = rollback.canBegin(n);
       if (!roundFits) {
         console.warn(
           "spec: sliding window nearly wrapped — finishing without speculation",
@@ -440,21 +389,20 @@ export async function specServeRun(
       // the emitted position is the next round's anchor hidden.
       // Arm recurrent caches' spec round around the verify forward (no-op for
       // trimmable caches, which roll back via trim() below).
-      for (const c of caches) c.specRoundBegin?.();
+      rollback.begin(d);
       const vIds = ops.fromInt32([pending, ...drafts], [1, d + 1]);
-      const pinTarget = src.pinTargetKernelFamily === true &&
-        "setSpecKernelPinned" in model;
-      if (pinTarget) model.setSpecKernelPinned(true);
+      let pin: { close(): void } | undefined;
       try {
-        const ft = await forwardMaybeTap(model, vIds, caches, tapLayers);
+        pin = src.pinTargetKernelFamily ? binding.pinVerify?.() : undefined;
+        const ft = await binding.forward(vIds, caches, tapLayers);
         // Assign these before the lm-head call so the outer cleanup owns them
         // even if logits construction throws.
         vHidden = ft.hidden;
         vCtxML = ft.ctxML;
-        vLogits = model.logitsFromHidden(vHidden);
+        vLogits = binding.projectLogits(vHidden);
       } finally {
         vIds.dispose();
-        if (pinTarget) model.setSpecKernelPinned(false);
+        pin?.close();
       }
       extras.targetCalls++;
       // The lm-head remains one logical batched operation. Native GLM MTP's
@@ -535,14 +483,7 @@ export async function specServeRun(
         // drafts). Trimmable caches drop the rejected tail; recurrent caches
         // restore their pre-round snapshot and bit-exactly replay those
         // kAccept+1 kept tokens. On full accept the round just commits.
-        if (kAccept < d) {
-          for (const c of caches) {
-            if (c.specRoundRollback) c.specRoundRollback(kAccept + 1);
-            else c.trim(d - kAccept);
-          }
-        } else {
-          for (const c of caches) c.specRoundCommit?.();
-        }
+        rollback.resolve(kAccept);
         await src.commit(
           d,
           kAccept,
@@ -574,21 +515,15 @@ export async function specServeRun(
       ? (stats.generatedTokens / stats.decodeMs) * 1000
       : 0;
     return stats;
+  } catch (error) {
+    failure = { error };
+    throw error;
   } finally {
-    // Dispose whatever a mid-round/prefill throw left live (each is nulled the
-    // instant its normal disposal or ownership transfer ran, so no double-free).
-    anchorHidden?.dispose();
-    lastLogits?.dispose();
-    prefillCtx?.dispose();
-    for (const p of ctxParts) p.dispose();
-    vLogits?.dispose();
-    roundRow?.dispose();
-    vHidden?.dispose();
-    vCtxML?.dispose();
-    for (const c of caches) c.dispose();
-    source?.dispose();
-    stepSampler.dispose();
-    options.grammar?.dispose(); // Phase C will consume it; never leak either way
-    clearCache();
+    const resources = [anchorHidden, lastLogits, prefillCtx, ...ctxParts,
+      vLogits, roundRow, vHidden, vCtxML, ...caches, source, stepSampler,
+      options.grammar, { dispose: clearCache }]
+      .filter((resource): resource is DisposableResource => resource != null);
+    if (failure) cleanupFailure(failure.error, () => disposeResources(resources));
+    else disposeResources(resources);
   }
 }
