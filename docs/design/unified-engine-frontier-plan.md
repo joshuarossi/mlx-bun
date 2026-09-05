@@ -1488,6 +1488,13 @@ cache constructor or trace hook releases prepared grammar/media and any acquired
 cache state; one failed destructor does not skip sibling releases or replace
 the execution error. Checkpoint replay checks cancellation before each saved
 token and retains its durable checkpoint when interrupted.
+Failed prefix trimming releases acquired clone/restored state. Prefix insertion
+validates cache metadata before adopting ownership; eviction cleanup errors are
+reported after adoption without inviting the caller to dispose the live stored
+entry. Clear detaches entries and attempts cleanup for every sibling. Backing
+retention is released only after successful cache disposal. Rejected optional
+prompt-boundary snapshots release their clones while generation retains its
+live state. These are failure-path ownership changes, with no cache-math change.
 
 Model-free binding tests exercise an independent graph, a replacement fused
 decoder, declined steps, unrecovered errors, and unsupported ABI/media/adapter

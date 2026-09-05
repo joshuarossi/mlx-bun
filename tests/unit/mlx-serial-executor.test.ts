@@ -76,6 +76,26 @@ test("one cleanup failure preserves the execution error and releases sibling res
   expect(f.released).toEqual(["grammar", "media"]);
 });
 
+test("a rejected boundary snapshot releases its clone while generation retains the live state", async () => {
+  const f = fixture();
+  const live = new f.TrackedCache(), clone = new f.TrackedCache();
+  f.binding.makeCache = () => [live];
+  f.services.cloneState = () => [clone];
+  f.services.promptCache.put = (ids, caches) => {
+    if (ids.length === 299) throw new Error("snapshot rejected");
+    f.stored.push(caches);
+  };
+  const binding: MlxSerialBinding = { ...f.binding, generate: (_prompt, options) => new Generation((async function* () {
+    options!.onPrefillDone!();
+    yield { token: 2, index: 0 };
+    return f.stats;
+  })()) };
+  await createMlxSerialExecutor(binding, f.services)(Array(300).fill(0), {}, () => {}, undefined, undefined, execution);
+  expect(f.stored).toEqual([[live]]);
+  expect(f.released).toEqual(["cache", "context"]); // clone only
+  live.dispose();
+});
+
 test("cancellation while replaying a checkpoint stops before the next saved token and frees restored state", async () => {
   const f = fixture();
   const abort = new AbortController();

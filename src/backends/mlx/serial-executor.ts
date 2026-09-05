@@ -65,8 +65,10 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
     let retain: (() => void) | undefined;
     let closeMedia: (() => void) | undefined;
     const cleanup = ownResource(null, () => disposeResources([
-      { dispose: () => disposeResources(caches) },
-      { dispose: () => retain?.() },
+      { dispose() {
+        disposeResources(caches);
+        retain?.(); // backing release requires successful cache disposal
+      } },
       { dispose: () => closeMedia?.() },
       ...[options.grammar, vision?.embeddings, vision?.imageMask,
         vision?.multimodalMask, options.visionPixels].filter((value) => value != null),
@@ -208,7 +210,11 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
               snapshotAt: boundary,
               onPrefillDone: () => {
                 try {
-                  promptCache.put(promptIds.slice(0, boundary), services.cloneState(caches), cacheNs);
+                  const snapshot = ownResource(services.cloneState(caches), disposeResources);
+                  try {
+                    promptCache.put(promptIds.slice(0, boundary), snapshot.borrow(), cacheNs);
+                    snapshot.transfer();
+                  } finally { snapshot.close(); }
                 } catch (e) {
                   console.warn(`prompt-boundary snapshot skipped: ${(e as Error).message}`);
                 }
