@@ -6,6 +6,11 @@ structured backing record is the user-local eval DB
 (`~/.cache/mlx-bun/evals.sqlite`). Promote a run into this file
 deliberately when it becomes the new reference.
 
+The optional `mlx-bun-isolated` arm runs the same CLI/model/request cells through
+`--isolate`; select it alongside `mlx-bun` to compare transport cost. Its RSS
+column sums the parent and descendant processes. This is aggregate process RSS,
+not deduplicated physical memory; shared runtime pages may appear in both.
+
 ## Running the benchmark
 
 `bun scripts/bench-serve.ts all` is THE benchmark — one pass, real servers,

@@ -1,28 +1,31 @@
+import { snapshotGenerationPolicy } from "../backends/mlx/request-policy";
 import type { GenerateOptions } from "../generate";
 import type { RequestShape } from "./generation-gateway";
-
-export interface DisposableResource {
-  dispose(): void;
-}
+import type { DisposableResource } from "../contracts/resources";
+import { disposeResources, ownResource } from "../engine/resources";
+export type { DisposableResource } from "../contracts/resources";
 
 export class RequestOwnership {
-  #resources = new Set<DisposableResource>();
-  #transferred = false;
+  #owner = ownResource(new Set<DisposableResource>(), disposeResources);
+  #reservations = ownResource(new Set<DisposableResource>(), disposeResources);
+
+  /** Reservations live until completion, including after native ownership transfers. */
+  retain<T extends DisposableResource>(reservation: T): T {
+    this.#reservations.borrow().add(reservation);
+    return reservation;
+  }
 
   own<T extends DisposableResource | null | undefined>(resource: T): T {
-    if (resource) this.#resources.add(resource);
+    if (resource) this.#owner.borrow().add(resource);
     return resource;
   }
 
   transfer(): void {
-    this.#transferred = true;
-    this.#resources.clear();
+    this.#owner.transfer();
   }
 
   dispose(): void {
-    if (this.#transferred) return;
-    for (const resource of this.#resources) resource.dispose();
-    this.#resources.clear();
+    disposeResources([{ dispose: () => this.#owner.close() }, { dispose: () => this.#reservations.close() }]);
   }
 }
 
@@ -148,9 +151,9 @@ export function planRequest(input: RequestPlanInput): PlanRequestResult {
   };
 
   return new RequestPlan({
-    promptIds: input.promptIds,
-    options,
-    shape,
+    promptIds: Object.freeze([...input.promptIds]) as number[],
+    options: snapshotGenerationPolicy(options),
+    shape: Object.freeze(shape),
     captureLogprobs,
     wantLogprobs: input.wantLogprobs,
     topLogprobs: input.topLogprobs,

@@ -1,3 +1,4 @@
+import { AdmissionRejected } from "../engine/admission";
 // The HTTP end of the pipeline: build + admit a request (errors → a JSON
 // error response in the surface's own shape), then run it and write the
 // result as JSON, or as protocol frames while events arrive. One writer for
@@ -21,6 +22,7 @@ export const openAiError: ErrorFormatter = (status, _message, body) =>
 /** RequestError → the surface's error response; anything else is a 500 with
  *  its stack logged (a 500 with no server-side trace is undebuggable). */
 export function errorResponse(e: unknown, context: string, format: ErrorFormatter = openAiError): Response {
+  if (e instanceof AdmissionRejected) return format(429, e.message, { message: e.message, type: "resource_admission", code: "queue_full" });
   if (e instanceof RequestError) return format(e.status, e.message, e.body);
   console.error(`[serve] 500 on ${context}:\n${(e as Error).stack ?? e}`);
   const message = (e as Error).message;

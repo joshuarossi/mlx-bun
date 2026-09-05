@@ -1,0 +1,75 @@
+{
+  "oracle": {
+    "mlx": "0.31.2",
+    "mlx_lm": "0.31.3",
+    "optiq": "0.2.15",
+    "model_revision": "664aabaed233c653f82716d8dc822234d0091f78",
+    "generator": "scripts/oracle/gen-batched-extend-golden.py"
+  },
+  "model": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78",
+  "scenario": {
+    "A": [
+      1,
+      100,
+      200,
+      300,
+      400,
+      500,
+      600
+    ],
+    "B": [
+      1,
+      150,
+      250,
+      350,
+      450
+    ],
+    "C": [
+      1,
+      130,
+      230,
+      330,
+      430,
+      530
+    ],
+    "phase1": 3,
+    "phase2": 3,
+    "phase3": 3,
+    "join_after": 3,
+    "leave_after": 6,
+    "leave_row": 0,
+    "join_op": "extend"
+  },
+  "trajectories": {
+    "A": [
+      33,
+      242,
+      37,
+      35,
+      42,
+      33,
+      242
+    ],
+    "B": [
+      96,
+      351,
+      33,
+      521,
+      284,
+      32611,
+      290,
+      7634,
+      33,
+      521
+    ],
+    "C": [
+      101,
+      242,
+      37,
+      242,
+      37,
+      242,
+      37
+    ]
+  }
+}

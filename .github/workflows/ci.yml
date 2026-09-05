@@ -35,8 +35,7 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
-      - run: bunx tsc --noEmit
-      - run: bunx tsc -p tsconfig.web.json --noEmit
+      - run: bun run typecheck
 
   tests-model-free:
     runs-on: macos-14

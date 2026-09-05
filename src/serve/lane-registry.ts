@@ -16,7 +16,8 @@
 // a same-process debugging/telemetry aid, not a durable store — entries for
 // long-dead requests must not leak memory over a long-running server.
 
-export type Lane = "serial" | "serial+spec" | "batched";
+import type { Lane } from "../contracts/pi";
+export type { Lane } from "../contracts/pi";
 
 const MAX_ENTRIES = 512;
 const lanes = new Map<string, Lane>();

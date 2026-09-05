@@ -160,7 +160,7 @@ function snapshotOf(repoDir: string): string {
   }
 }
 
-type Arm = "mlx-bun" | "mlx-bun-serial" | "mlx-bun-mixed" | "mlx-lm" | "optiq-mixed";
+type Arm = "mlx-bun" | "mlx-bun-isolated" | "mlx-bun-serial" | "mlx-bun-mixed" | "mlx-lm" | "optiq-mixed";
 interface Cell { model: string; arm: Arm }
 
 function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
@@ -170,6 +170,8 @@ function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
   switch (c.arm) {
     case "mlx-bun": // THE drop-in arm: real CLI, real defaults (+ SSD tier for the restart leg)
       return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", ...ssd];
+    case "mlx-bun-isolated":
+      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--isolate", ...ssd];
     case "mlx-bun-serial":
       return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd];
     case "mlx-bun-mixed":
@@ -503,6 +505,22 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   // Peak-RSS sampler: cell-lifetime max PLUS a per-leg max that markLeg()
   // snapshots and re-seeds at each boundary (B4).
   const sampleRss = (p: number): number => {
+    if (c.arm === "mlx-bun-isolated") {
+      // The parent deliberately has no model. Account for its complete process
+      // tree; reporting parent RSS alone would invent a memory improvement.
+      const all = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,rss="]);
+      if (all.exitCode !== 0) return 0;
+      const rows = all.stdout.toString().trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
+      const owned = new Set([p]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [pid, parent] of rows) if (owned.has(parent!) && !owned.has(pid!)) {
+          owned.add(pid!); changed = true;
+        }
+      }
+      return rows.reduce((sum, [pid, , rss]) => sum + (owned.has(pid!) ? rss! : 0), 0) / 1024;
+    }
     const r = Bun.spawnSync(["ps", "-o", "rss=", "-p", String(p)]);
     return r.exitCode === 0 ? Number(r.stdout.toString().trim()) / 1024 : 0;
   };
@@ -987,6 +1005,7 @@ async function main(): Promise<void> {
     const pairs: Array<[Arm, Arm, string]> = [
       ["mlx-bun", "mlx-lm", "bf16 drop-in (vs mlx-lm)"],
       ["mlx-bun", "mlx-bun-serial", "unified engine vs --batch 1 pin"],
+      ["mlx-bun", "mlx-bun-isolated", "direct vs isolated host"],
       ["mlx-bun-mixed", "optiq-mixed", "mixed-KV (vs optiq)"],
     ];
     const verdicts: string[] = [];

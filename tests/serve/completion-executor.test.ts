@@ -205,7 +205,8 @@ describe("CompletionExecutor", () => {
         quantizedKvStart: 0,
       }),
     ]);
-    expect(engine.seenOptions[0]!.kvConfig).toBe(kvConfig);
+    expect(engine.seenOptions[0]!.kvConfig).toEqual(kvConfig);
+    expect(engine.seenOptions[0]!.kvConfig).not.toBe(kvConfig);
     expect(observedPlacement).toMatchObject({
       mechanism: "serial",
       lane: "serial",

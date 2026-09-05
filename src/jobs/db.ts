@@ -55,6 +55,10 @@ export class JobStore {
     this.dbPath = dbPath;
     this.logsDir = logsDir;
     this.db = new Database(dbPath);
+    // Parent submissions and child progress updates share this WAL database.
+    // Wait for a short writer transaction instead of failing a valid job with
+    // SQLITE_BUSY while the other process commits its terminal event.
+    this.db.exec("PRAGMA busy_timeout = 5000");
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec(SCHEMA);
     this.migrate();

@@ -13,17 +13,21 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-  SNAPSHOT_QWEN38,
-  SNAPSHOT_QWEN38_MTP,
-  snapshotQwen38Available,
-  snapshotQwen38MtpAvailable,
+  SNAPSHOT_QWEN38 as DEFAULT_TARGET,
+  SNAPSHOT_QWEN38_MTP as DEFAULT_DRAFT,
 } from "../support/paths";
 
 const optIn = process.env.MLX_BUN_TEST_QWEN38_MTP === "1";
-const have = (await snapshotQwen38Available()) && (await snapshotQwen38MtpAvailable());
+// This gate compares two methods on the same artifact; it does not consume a
+// different quant's logit golden. Explicit paths let each Mac test its quants.
+const SNAPSHOT_QWEN38 = process.env.MLX_BUN_TEST_MTP_TARGET ?? DEFAULT_TARGET;
+const SNAPSHOT_QWEN38_MTP = process.env.MLX_BUN_TEST_MTP_DRAFT ?? DEFAULT_DRAFT;
+const have = await Bun.file(`${SNAPSHOT_QWEN38}/config.json`).exists() &&
+  await Bun.file(`${SNAPSHOT_QWEN38_MTP}/config.json`).exists();
 
 describe.skipIf(!optIn || !have)("Qwen3.8 native MTP (serve loop)", async () => {
   if (!optIn || !have) return;
+  console.log(`MTP compatibility target=${SNAPSHOT_QWEN38} draft=${SNAPSHOT_QWEN38_MTP}`);
   const { loadModelConfig } = await import("../../src/config");
   const { Weights } = await import("../../src/weights");
   const { Qwen35Model } = await import("../../src/model/qwen3_5");

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type RuntimeKey = `MLX_BUN_${string}`;
 export type RuntimeOverrides = Readonly<Partial<Record<RuntimeKey, string | undefined>>>;
 
@@ -34,13 +36,20 @@ export function createRuntimeConfig(
 }
 
 let active = createRuntimeConfig(process.env);
+const executionConfig = new AsyncLocalStorage<RuntimeConfig>();
+
+/** Legacy kernels read through this port. A bound execution sees its own
+ * immutable snapshot across awaits, independently of later host settings. */
+export function withRuntimeConfig<T>(config: RuntimeConfig, run: () => T): T {
+  return executionConfig.getStore() === config ? run() : executionConfig.run(config, run);
+}
 
 export function runtimeConfig(): RuntimeConfig {
-  return active;
+  return executionConfig.getStore() ?? active;
 }
 
 export function runtimeValue(name: RuntimeKey): string | undefined {
-  return active.value(name);
+  return runtimeConfig().value(name);
 }
 
 /** On/off env flag: an explicit "1"/"0" always wins; otherwise `defaultOn`.
@@ -49,11 +58,11 @@ export function flagOn(name: RuntimeKey, defaultOn: boolean): boolean {
   return runtimeFlag(name, defaultOn);
 }
 export function runtimeFlag(name: RuntimeKey, defaultOn: boolean): boolean {
-  return active.flag(name, defaultOn);
+  return runtimeConfig().flag(name, defaultOn);
 }
 
 export function runtimeNumber(name: RuntimeKey, fallback: number): number {
-  return active.number(name, fallback);
+  return runtimeConfig().number(name, fallback);
 }
 
 export function runtimeKey(name: string): RuntimeKey {

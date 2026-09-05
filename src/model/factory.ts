@@ -25,14 +25,53 @@ import {
 import { UniversalDenseModel } from "./universal/dense";
 import { genericArgsFor } from "./universal/archs";
 import {
+  ModelImplementationRegistry,
+  type ModelImplementation,
+  type ModelImplementationProvider,
+} from "./implementation";
+import {
   assertResolvedModelProfile,
   resolveModelProfile,
   type ResolvedModelProfile,
+  type ResolveModelProfileOptions,
+  type ModelGraph,
 } from "./profile";
 
 export type RuntimeModel =
   | Gemma4Model | MiniCPM5Model | Qwen35Model | Qwen3Model | Qwen3MoeModel
   | DiffusionGemmaModel | Glm52Model | UniversalDenseModel;
+
+function residentImplementation(
+  id: string,
+  graph: ModelGraph,
+  create: ModelImplementation<Weights, RuntimeModel>["create"],
+): ModelImplementation<Weights, RuntimeModel> {
+  return { id, graph, loader: "safetensors",
+    loop: graph === "diffusion-gemma" ? "diffusion" : "autoregressive", create };
+}
+
+/** Engine-owned registrations. Exact quant profiles can name additional
+ * implementations in a composed registry, without changing sessions or files. */
+export const MLX_MODEL_IMPLEMENTATIONS = new ModelImplementationRegistry<Weights, RuntimeModel>([
+  residentImplementation("diffusion-gemma", "diffusion-gemma", (weights, config) => new DiffusionGemmaModel(weights, config)),
+  residentImplementation("minicpm5", "minicpm5", (weights, config) => new MiniCPM5Model(weights, config)),
+  residentImplementation("qwen3.5", "qwen3.5", (weights, config) => new Qwen35Model(weights, config)),
+  residentImplementation("qwen3-moe", "qwen3-moe", (weights, config) => new Qwen3MoeModel(weights, config)),
+  residentImplementation("qwen3", "qwen3", (weights, config) => new Qwen3Model(weights, config)),
+  residentImplementation("gemma4", "gemma4", (weights, config) => new Gemma4Model(weights, config)),
+  residentImplementation("gemma4-generated", "gemma4", (weights, config) => {
+    const Graph = GENERATED.get(configFingerprint(config));
+    if (!Graph) throw new Error("no generated Gemma graph for this config; refusing to fall back");
+    return new Graph(weights, config);
+  }),
+  residentImplementation("universal-dense", "universal-dense", (weights, config) =>
+    new UniversalDenseModel(weights, config, genericArgsFor(config)!)),
+]);
+
+export interface ModelOpenOptions<Model = RuntimeModel> extends Glm52RuntimeOpenOptions {
+  readonly profiles?: ResolveModelProfileOptions;
+  readonly implementations?: ModelImplementationProvider<Weights, Model>;
+}
 
 export interface Glm52RuntimeOpenOptions {
   /** Whole-process ceiling. Defaults to the smaller of the validated 25 GiB
@@ -100,47 +139,51 @@ export async function openGlm52RuntimeModel(
  * model.safetensors.index.json, so it must bypass Weights.open and use its
  * dedicated header catalog/tensor source.
  */
-export async function openModel(
+export function openModel<Model>(
   modelDir: string,
-  options: Glm52RuntimeOpenOptions = {},
-): Promise<RuntimeModel> {
+  options: ModelOpenOptions<Model> & { readonly implementations: ModelImplementationProvider<Weights, Model> },
+): Promise<Model>;
+export function openModel(modelDir: string, options?: ModelOpenOptions): Promise<RuntimeModel>;
+export async function openModel<Model>(
+  modelDir: string,
+  options: ModelOpenOptions<Model> = {},
+): Promise<Model | RuntimeModel> {
   const config = await loadModelConfig(modelDir);
-  const profile = resolveModelProfile(config);
-  if (profile.profile.execution.loader === "colibri")
+  const profile = resolveModelProfile(config, options.profiles);
+  if (profile.profile.execution.loader === "colibri") {
+    if (options.implementations || profile.profile.execution.implementation !== undefined)
+      throw new Error("custom Colibri implementations require a streamed loader binding; refusing to fall back");
     return (await openGlm52RuntimeModel(modelDir, options)).model;
-  return createModel(await Weights.open(modelDir), config, profile);
+  }
+  // Resolve before opening weights; missing or incompatible code allocates nothing.
+  const implementation = (options.implementations ?? MLX_MODEL_IMPLEMENTATIONS).select(config, profile);
+  const weights = await Weights.open(modelDir);
+  try { return implementation.create(weights, config, profile); }
+  catch (error) { weights.dispose(); throw error; }
 }
 
-/** Construct the graph named by a previously validated profile. */
+/** Construct the binding named by a validated profile. A supplied registry can
+ * return any backend-owned interface; the compatibility default returns the
+ * legacy model union. The caller retains ownership of the supplied weights. */
+export function createModel<Model>(
+  weights: Weights, config: ModelConfig, resolved: ResolvedModelProfile | undefined,
+  implementations: ModelImplementationProvider<Weights, Model>,
+): Model;
 export function createModel(
+  weights: Weights, config: ModelConfig, resolved?: ResolvedModelProfile,
+  implementations?: ModelImplementationProvider<Weights, RuntimeModel>,
+): RuntimeModel;
+export function createModel<Model>(
   weights: Weights,
   config: ModelConfig,
   resolved: ResolvedModelProfile = resolveModelProfile(config),
-): RuntimeModel {
+  implementations: ModelImplementationProvider<Weights, Model> | ModelImplementationProvider<Weights, RuntimeModel> = MLX_MODEL_IMPLEMENTATIONS,
+): Model | RuntimeModel {
   assertResolvedModelProfile(config, resolved);
-  const execution = resolved.profile.execution;
-  switch (execution.graph) {
-    case "glm5.2":
-      throw new Error(
-        "glm_moe_dsa uses the direct Colibri container; construct it with " +
-        "openModel(modelDir) or Glm52Model.open(modelDir)",
-      );
-    // DiffusionGemma is non-autoregressive. The profile pairs this graph with
-    // the denoising loop; generate() recognizes the constructed model surface.
-    case "diffusion-gemma": return new DiffusionGemmaModel(weights, config);
-    case "minicpm5": return new MiniCPM5Model(weights, config);
-    case "qwen3.5": return new Qwen35Model(weights, config);
-    case "qwen3-moe": return new Qwen3MoeModel(weights, config);
-    case "qwen3": return new Qwen3Model(weights, config);
-    case "gemma4": {
-      // Generated specializations remain exact config matches. Output-changing
-      // request methods stay independently resolved and cannot be fallbacks.
-      const cls = execution.specialization === "generated"
-        ? GENERATED.get(configFingerprint(config))!
-        : Gemma4Model;
-      return new cls(weights, config);
-    }
-    case "universal-dense":
-      return new UniversalDenseModel(weights, config, genericArgsFor(config)!);
-  }
+  if (resolved.profile.execution.loader === "colibri")
+    throw new Error(
+      "glm_moe_dsa uses the direct Colibri container; construct it with " +
+      "openModel(modelDir) or Glm52Model.open(modelDir)",
+    );
+  return implementations.select(config, resolved).create(weights, config, resolved);
 }

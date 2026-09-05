@@ -1,9 +1,8 @@
+import { modelServingBinding } from "../backends/mlx/model-serving";
 import pkgJson from "../../package.json" with { type: "json" };
-import type { ServerContext } from "./model-host";
+import type { ServingContext } from "./model-host";
 import type { GenerationGateway } from "./generation-gateway";
 import { fit } from "../fit";
-import { isEmbeddingModel } from "../embed";
-import { Glm52Model } from "../model/glm52";
 
 const pkgVersion = (pkgJson as { version: string }).version;
 
@@ -32,7 +31,7 @@ export interface DiscoveryRoutes {
 }
 
 export function createDiscoveryRoutes(
-  ctx: ServerContext,
+  ctx: ServingContext,
   gateway: Pick<GenerationGateway, "batchMode">,
   startedAt: number,
 ): DiscoveryRoutes {
@@ -46,7 +45,7 @@ export function createDiscoveryRoutes(
     async handle(url, request) {
       switch (matchDiscoveryRoute(request.method, url.pathname)) {
         case "library": {
-          if (!libraryCache || Date.now() - libraryCache.at > 30_000) {
+          if (url.searchParams.get("refresh") === "1" || !libraryCache || Date.now() - libraryCache.at > 30_000) {
             const { Registry, visionCapable, audioCapable } = await import("../registry");
             const { loadModelConfig } = await import("../config");
             const { supportTier } = await import("../model/support");
@@ -132,7 +131,7 @@ export function createDiscoveryRoutes(
             top_p: ctx.genDefaults.topP ?? null,
             top_k: ctx.genDefaults.topK ?? null,
           };
-          const isGlm52 = ctx.model instanceof Glm52Model;
+          const capabilities = modelServingBinding(ctx).discovery;
           const data: Array<Record<string, unknown>> = [{
             id: ctx.modelId,
             object: "model",
@@ -147,10 +146,10 @@ export function createDiscoveryRoutes(
             batch_mode: gateway.batchMode,
             tools: true,
             structured_output: true,
-            embeddings: isEmbeddingModel(ctx.model),
-            adapters: !isGlm52,
-            training: !isGlm52,
-            dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
+            embeddings: capabilities.embeddings,
+            adapters: capabilities.adapters,
+            training: capabilities.training,
+            dsa: capabilities.dsa,
             mtp: ctx.draft?.provider.id === "glm52-native-mtp",
             capabilities: {
               chat_completions: true,
@@ -161,11 +160,11 @@ export function createDiscoveryRoutes(
               tools: true,
               structured_output: true,
               logprobs: true,
-              embeddings: isEmbeddingModel(ctx.model),
+              embeddings: capabilities.embeddings,
               vision: !!(ctx.vision || ctx.loadVision),
               audio: !!(ctx.audio || ctx.loadAudio),
-              adapters: !isGlm52,
-              training: !isGlm52,
+              adapters: capabilities.adapters,
+              training: capabilities.training,
             },
             gen_defaults: genDefaults,
           }];

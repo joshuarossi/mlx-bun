@@ -11,6 +11,7 @@ import { SSMCache } from "../../src/model/qwen3-delta";
 import type { RuntimeModel } from "../../src/model/factory";
 import { resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
+import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -56,11 +57,51 @@ const batchable: RequestShape = {
 };
 
 describe("GenerationGateway.place", () => {
+  test("a binding keeps its runtime snapshot while later bindings see new flags", () => {
+    const restoreInitial = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "1" });
+    try {
+      const original = gateway(2);
+      const restoreChanged = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "0" });
+      try {
+        const shape = { ...batchable, hasGrammar: true };
+        expect(original.place(shape).mechanism).toBe("continuous");
+        expect(gateway(2).place(shape).mechanism).toBe("serial");
+      } finally { restoreChanged(); }
+    } finally { restoreInitial(); }
+  });
+
+  test("the serial callback receives the exact plan, including draft fallback", async () => {
+    let seen: unknown;
+    const g = new GenerationGateway(stubModel, 1, async (_ids, _options, _sink, _vision, _trace, execution) => {
+      seen = execution;
+      return {} as never;
+    });
+    const shape = { ...batchable, hasDraft: true, wantsLogprobs: true };
+    const placement = g.place(shape, { logprobs: true });
+    await g.run([1], { logprobs: true }, () => {}, undefined, shape, placement);
+    expect(seen).toBe(placement.execution);
+    expect(placement.execution?.method).toBe("autoregressive");
+  });
+
+  test("compiled and grammar policy use the host snapshot across later configuration changes", () => {
+    const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_GRAMMAR_JUMP: "1" });
+    try {
+      const model = { ...stubModel, config: { ...stubModel.config, modelType: "gemma4" } } as RuntimeModel;
+      const first = new GenerationGateway(model, 1, stubSerial);
+      const changed = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0", MLX_BUN_GRAMMAR_JUMP: "0" });
+      try {
+        const shape = { ...batchable, hasGrammar: true };
+        expect(first.place(shape).execution).toMatchObject({ compiledDecode: true, grammarJump: true });
+        expect(new GenerationGateway(model, 1, stubSerial).place(shape).execution)
+          .toMatchObject({ compiledDecode: false, grammarJump: false });
+      } finally { changed(); }
+    } finally { restore(); }
+  });
   test("place freezes one shape and declares its scheduling mechanism", () => {
     const g = gateway(2);
     const shape = { ...batchable };
     const placement = g.place(shape);
-    expect(placement).toEqual({ shape, mechanism: "continuous" });
+    expect(placement).toMatchObject({ shape, mechanism: "continuous", execution: { method: "autoregressive" } });
     expect(placement.shape).toBe(shape);
     expect(Object.isFrozen(placement)).toBe(true);
     expect(Object.isFrozen(placement.shape)).toBe(true);
@@ -70,7 +111,7 @@ describe("GenerationGateway.place", () => {
 
   test("--batch 1 declares the preserved strict-serial mechanism", () => {
     const placement = gateway(1).place(batchable);
-    expect(placement).toEqual({ shape: batchable, mechanism: "serial" });
+    expect(placement).toMatchObject({ shape: batchable, mechanism: "serial", execution: { method: "autoregressive" } });
   });
 
   test("--batch 1 never batches (serial mode), regardless of shape", () => {
@@ -275,6 +316,25 @@ describe("GenerationGateway.place", () => {
 // SERIAL lane too — activeRows/pendingRows read 0 while a serial generation
 // holds the mutex, which is exactly when the old flush stole decode slices.
 describe("GenerationGateway.busy / onIdle", () => {
+  test("a managed execution lease drains earlier work and blocks later inference until released", async () => {
+    const g = gateway(2);
+    const order: string[] = [];
+    const first = await g.acquireExecutionLease();
+    const job = g.acquireExecutionLease().then((lease) => { order.push("job"); return lease; });
+    const inference = g.runExclusive(async () => { order.push("inference"); });
+    expect(order).toEqual([]);
+    first.dispose();
+    const jobLease = await job;
+    expect(order).toEqual(["job"]);
+    expect(g.busy).toBe(true);
+    jobLease.dispose();
+    jobLease.dispose();
+    await inference;
+    expect(order).toEqual(["job", "inference"]);
+    await g.close();
+    expect(g.busy).toBe(false);
+  });
+
   test("idle gateway: busy=false, onIdle resolves immediately", async () => {
     const g = gateway(1);
     expect(g.busy).toBe(false);
@@ -369,16 +429,75 @@ describe("GenerationGateway request cancellation", () => {
       abort.signal,
     );
     abort.abort(new DOMException("client disconnected", "AbortError"));
-    release();
-    await owner;
-    await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
-    expect(serialStarts).toBe(0);
-    expect(grammarDisposals).toBe(1);
+    try {
+      // The owner stays locked: removing this waiter must not depend on it.
+      await expect(abandoned).rejects.toHaveProperty("name", "AbortError");
+      expect(serialStarts).toBe(0);
+      expect(grammarDisposals).toBe(1);
+      expect(g.busy).toBe(true);
+    } finally {
+      release();
+      await owner;
+    }
 
     const next = await g.run(
       [1], {}, () => {}, undefined, batchable, g.place(batchable),
     );
     expect(next.generatedTokens).toBe(1);
     expect(serialStarts).toBe(1);
+  });
+
+  test("serial execution receives the request signal before producing tokens", async () => {
+    const abort = new AbortController();
+    const g = new GenerationGateway(stubModel, 1, async (_ids, options) => {
+      expect(options.signal).toBe(abort.signal);
+      abort.abort(new DOMException("client disconnected", "AbortError"));
+      options.signal!.throwIfAborted();
+      throw new Error("unreachable");
+    });
+    await expect(g.run(
+      [1], {}, () => {}, undefined, batchable, g.place(batchable), abort.signal,
+    )).rejects.toHaveProperty("name", "AbortError");
+    expect(g.busy).toBe(false);
+  });
+});
+
+describe("portable session through the real legacy gateway", () => {
+  test("retains serial token order, metrics, and request snapshot", async () => {
+    const g = new GenerationGateway(stubModel, 1, async (ids, options, onToken) => {
+      expect(ids).toEqual([1, 2]);
+      expect(options.temperature).toBe(0);
+      await onToken(7); await onToken(8);
+      return { promptTokens: 2, cachedTokens: 0, generatedTokens: 2,
+        prefillMs: 0, decodeMs: 0, prefillTps: 0, decodeTps: 0, cacheTokens: [1, 2, 7] };
+    });
+    const engine = createTextInferenceEngine(g);
+    const request = { promptIds: [1, 2], options: { temperature: 0 }, shape: { ...batchable } };
+    const session = await engine.open(request, { output: "stream" });
+    request.promptIds[0] = 999;
+    request.options.temperature = 1;
+    const events = await Array.fromAsync(session.events);
+    expect(events.map((event) => event.type === "committed" ? event.tokenIds : [])).toEqual([[7], [8]]);
+    expect(await session.result).toMatchObject({ status: "completed", result: {
+      finishReason: "stop", metrics: { generatedTokens: 2 },
+    } });
+    await engine.close();
+    expect(g.busy).toBe(false);
+  });
+
+  test("session cancellation removes its queued gateway waiter while the holder is still running", async () => {
+    const g = gateway(1);
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    const owner = g.runExclusive(() => held);
+    const engine = createTextInferenceEngine(g);
+    const session = await engine.open({ promptIds: [1], options: {}, shape: batchable }, { output: "collect" });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await session.cancel();
+      expect(await session.result).toMatchObject({ status: "cancelled" });
+      expect(g.busy).toBe(true);
+    } finally { release(); await owner; await engine.close(); }
+    expect(g.busy).toBe(false);
   });
 });

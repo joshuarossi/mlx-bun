@@ -12,6 +12,11 @@ proxy lives in [src/serve/isolate.ts](../../src/serve/isolate.ts). For the
 request/response wire format see [server-api.md](./server-api.md); for
 CLI verbs see [cli.md](./cli.md).
 
+The server runs generation through method-neutral sessions. A model binding
+supplies execution planning, its supported methods, media preparation and
+diagnostics. Stop/tool parsing runs directly in session delivery, so it can stop
+generation before another token is produced. This adds no architecture flag.
+
 Sections: [Start flags](#start-flags) · [`--isolate` semantics](#--isolate-semantics)
 · [Per-request overrides](#per-request-overrides) · [Environment variables](#environment-variables)
 · [Execution modes](#execution-modes-serial-vs---batch-n) · [Compatibility matrix](#compatibility-matrix)
@@ -71,11 +76,29 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 | `--ssd-demote-idle` | seconds | `300` with `--ssd-cache`, else off | both | Prompt-cache entries unused this long spill to the SSD tier and free their GPU memory; the next hit restores them. Swept only when the engine is fully idle. `0` disables. Warns and is ignored without `--ssd-cache`. |
 | `--generation-checkpoint` | output tokens | off | serial | Atomically snapshots an in-flight generation every N emitted tokens. Repeating the identical request after a restart replays the saved assistant prefix and continues from its already-sampled next token. Requires `--ssd-cache` and `--batch 1`; completed generations remove their checkpoint. |
 
+Generation checkpoint identity includes stop strings, sampling/KV policy, the
+resolved execution method, compiled/grammar policy, and artifact/implementation
+identity. Changing any of these starts a new completion. Version-2/3 generation keys are not
+selected for automatic resume; ordinary prefix-cache files remain compatible
+with the legacy state provider. A different backend codec identity refuses
+incompatible files. Adapter namespaces include the mounted weight contents and
+scale, so a changed adapter starts with a fresh prefix and checkpoint.
+Native media and grammar preparation waits for the generation execution lease
+and retains a reservation through completion. At most one media preparation and
+`--batch` grammar preparations can be retained. Generation and preparation
+queues each allow 64 waiting requests; overflow returns `429` before a response
+stream opens, or a terminal stream error after it opens. Disconnects release
+queued reservations and completed preparation resources.
+
+Disconnected serial requests leave the admission queue immediately. Active AR
+requests check cancellation between prefill chunks and decode steps; a native
+operation already running completes before that boundary.
+
 ### Runtime isolation
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
-| `--isolate` | (bool) | off | both | Run the inference engine as a **child process** on a unix socket while this process stays a pure UI/API reverse proxy — instant under any GPU load, survives engine crashes (auto-respawn). Full semantics in [`--isolate` semantics](#--isolate-semantics). |
+| `--isolate` | (bool) | off | both | Run the inference engine as a **child process** on a unix socket while this process owns CPU application routes and proxies inference — instant under any GPU load, survives engine crashes (auto-respawn). Full semantics in [`--isolate` semantics](#--isolate-semantics). |
 | `--model-pool` | n (≥1) | `1` | both | With `--isolate`: max **resident** model engines. A request whose `model` field is an **exact** `/v1/models` id spawns/routes to that model's own engine child (spawn-overlap: the new model loads while the old keeps serving). Over the cap the least-recently-used engine is drained (`POST /admin/drain` over its socket), demotes its prompt cache to the SSD tier, and exits; switching back respawns it with state restored from disk. Without `--isolate` the flag warns and is ignored. |
 
 ### Scheduling
@@ -193,16 +216,25 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
 - **Readiness.** The parent polls the child's `/health` over the socket
   (up to 15 minutes — large models take a while) and prints "engine ready
   pid N". Requests arriving earlier wait on that readiness.
-- **Proxying.** Every HTTP request is forwarded verbatim over the unix
+- **Application state.** The web shell, job submissions, records, progress streams, settings and
+  Responses conversation history live in the CPU-only parent, so worker death or model eviction does not remove
+  them. Native inspection/merge/export and generation still execute in workers.
+  WebSocket chat retains its existing unsupported status under isolation.
+- **Proxying.** Remaining HTTP requests are forwarded over the unix
   socket (hop-by-hop headers stripped, SSE streams through, a client
   abort aborts the proxied fetch so the engine sees the disconnect).
   `GET /engine` answers from the parent:
-  `{ isolated: true, pid, restarts, socket, pool?: { resident, default } }`.
+  `{ isolated: true, pid, restarts, socket, response_store, pool?: { resident, default } }`.
+  Worker fields describe the currently resident default worker and are `null`
+  while it is evicted; inspection does not load a model. A recreated worker has
+  its own restart count.
   `/ws/chat` is **not proxied** — `501` with a pointer to run without
   `--isolate` for the web chat UI.
 - **Crashes.** A child exit (uncatchable Metal OOM/SIGTRAP included) is
-  respawned automatically (`restarts` increments); an engine that dies
-  within 10 s of spawning waits 5 s before the retry. In-flight requests
+  respawned automatically (`restarts` increments), with at most three restarts
+  in a rolling 60-second window. Exhausting that budget leaves the host
+  unavailable until restarted. An engine that dies within 10 s of spawning
+  waits 5 s before the retry. In-flight requests
   get `502 { error: { type: "engine_unavailable" } }`; bodyless `GET`/`HEAD`
   requests are retried once after the respawn. A request whose client
   disconnected answers `499`.
@@ -214,9 +246,18 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
   semantics). Eviction over the cap: `POST /admin/drain` on the victim's
   socket (gateway quiesce + demote its prompt cache to the SSD tier),
   then stop; `/admin/drain` is unix-socket-only, never on the TCP
-  listener. `--model-pool` is clamped to ≥ 1.
-- **Shutdown.** `SIGINT`/`SIGTERM` on the parent stops every child and
-  unlinks the sockets.
+  listener. Cold model starts are serialized through a bounded queue while the
+  resident model keeps serving; concurrent switches cannot evict a newly loaded
+  worker before its pending request is returned. `--model-pool` is clamped to ≥ 1.
+- **Managed GPU jobs.** A FIFO parent coordinator waits for active worker
+  responses, then holds a native execution lease inside every resident worker
+  before spawning a quantization/finetuning job. Startup, restart and eviction
+  participate in admission too. Job exit releases those leases. Dataset jobs use
+  the same loopback completion API and keep their progress in the parent.
+- **Shutdown.** `SIGINT`/`SIGTERM` cancels queued jobs, stops the active GPU job,
+  waits for in-process task cleanup, then closes workers and unlinks sockets.
+  Worker close also waits for pending startup admission and failed startup
+  attempts to release their execution leases, including before a child exists.
 
 ## Near-ceiling models on small machines (24 GB)
 
@@ -660,3 +701,10 @@ model's cache layout, and `batch` when the model is admitted.
 `active_rows` is the instantaneous live-row count. Under `--isolate`,
 `GET /engine` on the parent reports the child pid, restart count, socket,
 and pool residency.
+
+Managed quantization and finetuning jobs wait for the serving gateway to drain,
+then hold its execution lease until their subprocess exits. Generation and native
+preparation wait during that job. Shutdown cancels queued jobs and terminates the
+host's active job before releasing its lease. Resident model weights remain
+loaded. Under isolation, the parent coordinates all of its model-pool workers.
+This controls execution, not memory capacity or independently launched servers.

@@ -26,7 +26,6 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import { Gemma4Model } from "../model/gemma4";
 import { DeepspecDrafter, type ContextKV } from "./dspark/deepspec-module";
 import type { DraftProvider, DraftSource, TargetView } from "./source";
 
@@ -65,16 +64,17 @@ export class DeepspecProvider implements DraftProvider {
   }
 }
 
-class DeepspecSource implements DraftSource {
+export class DeepspecSource implements DraftSource {
   readonly weightsBytes = 0; // provider-owned weights
   readonly tapLayers: number[];
   private ctxKV: ContextKV[] | null = null; // per-layer projected context rows
   private ctxLen = 0; // context rows cached == the anchor's absolute position
 
-  constructor(private readonly drafter: DeepspecDrafter, target: TargetView) {
-    if (!(target.model instanceof Gemma4Model))
+  constructor(private readonly drafter: Pick<DeepspecDrafter,
+    "cfg" | "tapLayers" | "projectContext" | "projectContextKV" | "draftBlock">, target: TargetView) {
+    if (!target.gemmaTaps)
       throw new Error("DeepSpec drafter requires a Gemma4 target");
-    const nLayers = target.model.layers.length;
+    const nLayers = target.gemmaTaps.layerCount;
     if (nLayers !== drafter.cfg.num_target_layers)
       throw new Error(
         `DeepSpec drafter was trained for a ${drafter.cfg.num_target_layers}-layer target; ` +

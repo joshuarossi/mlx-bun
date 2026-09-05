@@ -58,6 +58,9 @@ export interface ModelExecutionComposition {
   readonly graph: ModelGraph;
   readonly loop: GenerationLoop;
   readonly specialization: ModelSpecialization;
+  /** Engine-owned code registration. Model files never supply executable code.
+   * Omit to retain the existing graph implementation. */
+  readonly implementation?: string;
 }
 
 /** A profile declares construction only. Request methods such as MTP, KV
@@ -323,6 +326,10 @@ function executionCapabilities(profile: ModelProfile): EngineCapability[] {
 
 function validateProfile(profile: ModelProfile): void {
   if (!profile.id) throw new Error("model profile id must not be empty");
+  if (profile.execution.implementation !== undefined &&
+      (!profile.execution.implementation.trim() || !profile.artifactFingerprint ||
+       profile.execution.specialization !== "artifact"))
+    throw new Error(`model profile ${profile.id} must bind a named implementation to an exact artifact`);
   if ((profile.artifactFingerprint === undefined) !== (profile.configFingerprint === undefined))
     throw new Error(
       `model profile ${profile.id} must declare artifactFingerprint and configFingerprint together`,
@@ -413,6 +420,7 @@ export function assertResolvedModelProfile(
   config: ModelConfig,
   resolved: ResolvedModelProfile,
 ): void {
+  validateProfile(resolved.profile);
   const fingerprint = configFingerprint(config);
   if (resolved.artifact.configFingerprint !== fingerprint)
     throw new Error(
@@ -424,8 +432,10 @@ export function assertResolvedModelProfile(
       `model profile ${resolved.profile.id} selects ${resolved.profile.execution.graph}, ` +
       `which is incompatible with ${config.modelType}`,
     );
-  if (resolved.exactArtifact &&
-      resolved.profile.artifactFingerprint !== resolved.artifact.fingerprint)
+  if (resolved.exactArtifact !== (resolved.profile.artifactFingerprint !== undefined) ||
+      (resolved.exactArtifact &&
+       (resolved.profile.artifactFingerprint !== resolved.artifact.fingerprint ||
+        resolved.profile.configFingerprint !== fingerprint)))
     throw new Error(
       `model profile ${resolved.profile.id} does not match artifact ` +
       `${resolved.artifact.fingerprint ?? "<unidentified>"}`,

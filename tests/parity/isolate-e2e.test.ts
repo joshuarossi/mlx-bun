@@ -34,7 +34,7 @@ describe.skipIf(!optIn || !haveCpm)("runtime isolation E2E (cpm5 engine child)",
     },
   });
   const base = `http://localhost:${started.server.port}`;
-  afterAll(() => { started.engine.stop(); started.server.stop(true); });
+  afterAll(async () => { await started.close(); });
 
   test("chat completion round-trips through the proxy", async () => {
     const r = await fetch(`${base}/v1/chat/completions`, {
@@ -86,4 +86,42 @@ describe.skipIf(!optIn || !haveCpm)("runtime isolation E2E (cpm5 engine child)",
     expect(probedMs).toBeGreaterThanOrEqual(0);
     expect(probedMs).toBeLessThan(250);
   }, 240_000);
+  test("parent-owned native lease blocks generation until release", async () => {
+    const lease = await started.engine.reserveExecution(new AbortController().signal);
+    let settled = false;
+    const work = fetch(`${base}/v1/chat/completions`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "Say hello." }], max_tokens: 4 }),
+    }).then(async (response) => { settled = true; await response.arrayBuffer(); return response.status; });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+      expect((await fetch(`${base}/engine`)).status).toBe(200);
+    } finally { lease.dispose(); }
+    expect(await work).toBe(200);
+  }, 240_000);
+
+  test("Responses continuation survives worker replacement and streamed metadata stays intact", async () => {
+    const first = await (await fetch(`${base}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "Say hello.", max_output_tokens: 4 }),
+    })).json() as { id: string };
+    expect(first.id).toStartWith("resp_");
+    const restarts = started.engine.restarts;
+    process.kill(started.engine.pid!, "SIGKILL");
+    for (let i = 0; i < 100 && started.engine.restarts === restarts; i++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    await started.engine.ready;
+    const next = await fetch(`${base}/v1/responses`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ previous_response_id: first.id, input: "Say goodbye.", max_output_tokens: 4, stream: true }),
+    });
+    expect(next.status).toBe(200);
+    const stream = await next.text();
+    expect(stream).toContain("event: response.completed");
+    expect(stream).toContain(`"previous_response_id":"${first.id}"`);
+    const state = await (await fetch(`${base}/engine`)).json() as { response_store: { entries: number } };
+    expect(state.response_store.entries).toBe(2);
+  }, 240_000);
+
 });

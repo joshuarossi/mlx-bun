@@ -37,6 +37,7 @@
 import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/support/paths";
 import { goldenAt, goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 const OUT = goldenOutDir();
 mkdirSync(OUT, { recursive: true });
@@ -151,8 +152,8 @@ print(json.dumps({
 
 const proc = Bun.spawn(
   [ORACLE_PYTHON, "-c", py, MODEL, JSON.stringify(existing.prompt_ids),
-   String(MAX_TOKENS), String(LOGIT_STEPS), OUT, BIN_PREFIX],
-  { stdout: "pipe", stderr: "pipe", cwd: import.meta.dir + "/.." },
+   String(MAX_TOKENS), String(LOGIT_STEPS), resolve(OUT), BIN_PREFIX],
+  { stdout: "pipe", stderr: "pipe" },
 );
 const [out, err, code] = await Promise.all([
   new Response(proc.stdout).text(),

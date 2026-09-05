@@ -26,12 +26,13 @@
 import { ORACLE_PYTHON, SNAPSHOT } from "../../tests/support/paths";
 import { goldenOutDir } from "../../tests/support/goldens";
 import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 const OUT = goldenOutDir();
 mkdirSync(OUT, { recursive: true });
 
 const py = `
-import json, sys
+import json, sys, hashlib, os, importlib.metadata
 import mlx.core as mx
 from optiq.runtime.kv.rotating import RotatingQuantizedKVCache, patch_rotating_to_quantized
 
@@ -120,13 +121,41 @@ for key, bits in (("kv8", 8), ("kv4", 4)):
     manifest["e2e"][key + "_greedy"] = toks
     del cache
 
+    # generate() uses the serving loop's different prefill geometry: bf16
+    # head, convert populated caches, then a single-token tail. Compare that
+    # path with its own oracle, never the fully-quantized single-forward arm.
+    cache = make_prompt_cache(model)
+    model(mx.array([ids[:-1]]), cache=cache)
+    for i, c in enumerate(cache):
+        if isinstance(c, (KVCache, RotatingKVCache)):
+            cache[i] = c.to_quantized(group_size=64, bits=bits)
+    y = mx.array([[ids[-1]]])
+    toks = []
+    for _ in range(16):
+        logits = model(y, cache=cache)
+        t = int(mx.argmax(logits[0, -1, :]).item())
+        toks.append(t)
+        y = mx.array([[t]])
+    manifest["e2e"][key + "_generate_greedy"] = toks
+    del cache
+
+manifest["e2e"]["generation_prefill"] = "bf16-head-quantize-tail-v1"
+manifest["oracle"] = {
+    "mlx": importlib.metadata.version("mlx"),
+    "mlx_lm": importlib.metadata.version("mlx-lm"),
+    "optiq": importlib.metadata.version("mlx-optiq"),
+    "model_revision": os.path.basename(os.path.realpath(snap)),
+    "generator": "scripts/regen.ts rotating-kvq",
+}
+manifest["blob_sha256"] = hashlib.sha256(blob).hexdigest()
+
 with open(f"{outdir}/rotating-kvq.bin", "wb") as f:
     f.write(bytes(blob))
 print(json.dumps(manifest))
 `;
 
-const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, SNAPSHOT, OUT], {
-  stdout: "pipe", stderr: "pipe", cwd: import.meta.dir + "/..",
+const proc = Bun.spawn([ORACLE_PYTHON, "-c", py, SNAPSHOT, resolve(OUT)], {
+  stdout: "pipe", stderr: "pipe",
 });
 const [out, err, code] = await Promise.all([
   new Response(proc.stdout).text(),

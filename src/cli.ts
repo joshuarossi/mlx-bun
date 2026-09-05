@@ -35,6 +35,14 @@ import {
 } from "./runtime-config";
 
 const argv = process.argv.slice(2);
+// Private self-exec protocol for managed jobs in the single-file binary.
+// Literal imports in job-entry keep the numerical runners inside the bundle.
+if (argv[0] === "__job") {
+  const { runJobEntry } = await import("./jobs/job-entry");
+  await runJobEntry(argv[1]);
+  process.exit(0);
+}
+
 // The appliance path: naked `mlx-bun` (or only options, e.g.
 // `mlx-bun --port 9000`) runs `serve` — first run downloads a model and
 // opens the chat UI. `--help`/`--version` and explicit subcommands still win.
@@ -1595,7 +1603,7 @@ switch (cmd) {
       };
       const poolMaxRaw = opt("model-pool");
       const poolMax = Math.max(1, Number(poolMaxRaw ?? 1) || 1);
-      const { engine, pool } = startProxyServer({
+      const { engine, close } = startProxyServer({
         port: rt.port,
         ...(rt.serverOptions.hostname ? { hostname: rt.serverOptions.hostname } : {}),
         engine: {
@@ -1611,7 +1619,7 @@ switch (cmd) {
       const shownHost0 = rt.serverOptions.hostname ?? "localhost";
       console.log(style.dim(`  isolated mode: engine child starting (socket ${sock})`));
       console.log(`  ${style.green("●")} ${style.bold("proxy up")} http://${shownHost0}:${rt.port} ${style.dim(`· ${m0.repoId} loading behind it · model pool ${poolMax}`)}`);
-      const onExit = () => { pool?.stopAll(); engine.stop(); process.exit(0); };
+      const onExit = () => { void close().finally(() => process.exit(0)); };
       process.on("SIGINT", onExit);
       process.on("SIGTERM", onExit);
       await engine.ready;

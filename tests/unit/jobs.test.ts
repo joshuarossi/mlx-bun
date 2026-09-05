@@ -4,7 +4,7 @@
 // live in a per-test tmp dir — never the real ~/.cache/mlx-bun.
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -186,6 +186,83 @@ describe("submitInProcess (noop)", () => {
 });
 
 describe("submitSubprocess crash isolation", () => {
+  test("closing a job host cancels admission and removes its queued jobs", async () => {
+    const { closeSubprocessJobs } = await import("../../src/jobs");
+    const store = freshStore();
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const first = submitSubprocess(store, "noop", {}, undefined, {
+      acquire: (signal) => new Promise((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        entered();
+      }),
+      spawn: (() => { throw new Error("must never spawn"); }) as typeof Bun.spawn,
+    });
+    const queued = submitSubprocess(store, "noop", {});
+    await waiting;
+    await closeSubprocessJobs(store);
+    expect(store.get(first.jobId)!.status).toBe("failed");
+    expect(store.get(queued.jobId)!.status).toBe("failed");
+    expect(isGpuBusy()).toBe(false);
+    expect(() => submitSubprocess(store, "noop", {})).toThrow("closed");
+  });
+
+  test("closing an active job waits for child death before releasing its host", async () => {
+    const { closeSubprocessJobs } = await import("../../src/jobs");
+    const store = freshStore();
+    const exit = deferredExit();
+    let killed = 0, released = 0;
+    submitSubprocess(store, "noop", {}, undefined, {
+      acquire: async () => ({ dispose() { released++; } }),
+      spawn: (() => ({ stdout: undefined, stderr: undefined, exited: exit.promise,
+        kill() { killed++; }, exitCode: null })) as unknown as typeof Bun.spawn,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const closing = closeSubprocessJobs(store);
+    expect(killed).toBe(1);
+    expect(released).toBe(0);
+    exit.resolve(143);
+    await closing;
+    expect(released).toBe(1);
+    expect(isGpuBusy()).toBe(false);
+  });
+
+  test("host admission precedes spawn and its lease survives until child exit", async () => {
+    const store = freshStore();
+    const exit = deferredExit();
+    let admit!: (lease: { dispose(): void }) => void;
+    let spawned = 0, released = 0;
+    const admission = new Promise<{ dispose(): void }>((resolve) => { admit = resolve; });
+    const { jobId } = submitSubprocess(store, "noop", {}, undefined, {
+      acquire: () => admission,
+      spawn: (() => { spawned++; return { stdout: undefined, stderr: undefined, exited: exit.promise }; }) as unknown as typeof Bun.spawn,
+    });
+    await Promise.resolve();
+    expect(spawned).toBe(0);
+    expect(store.get(jobId)!.status).toBe("queued");
+    admit({ dispose() { released++; } });
+    await waitFor(() => spawned === 1, "host admission");
+    expect(released).toBe(0);
+    exit.resolve(1);
+    await waitFor(() => !isGpuBusy(), "child exit releases host");
+    expect(released).toBe(1);
+  });
+
+  test("host admission rejection fails the job without spawning or stranding the next job", async () => {
+    const store = freshStore();
+    let spawned = 0;
+    const failed = submitSubprocess(store, "noop", {}, undefined, {
+      acquire: async () => { throw new Error("host closed"); },
+      spawn: (() => { spawned++; throw new Error("must not spawn"); }) as typeof Bun.spawn,
+    });
+    const next = submitSubprocess(store, "noop", {});
+    expect(await waitForStatus(store, failed.jobId, ["failed"])).toBe("failed");
+    expect(store.get(failed.jobId)!.error).toContain("host closed");
+    expect(spawned).toBe(0);
+    expect(await waitForStatus(store, next.jobId, ["done", "failed"])).toBe("done");
+    await waitFor(() => !isGpuBusy(), "next job completion");
+  });
+
   test("a synchronous spawn throw fails the row and releases the GPU lease", () => {
     const store = freshStore();
     const throwingSpawn = (() => {
@@ -316,4 +393,42 @@ describe("streamJobResponse", () => {
     expect(text).toContain('"type":"started"');
     expect(text).toContain("event: end");
   });
+});
+
+test("host shutdown waits for in-process task cleanup and prevents new submissions", async () => {
+  const { closeInProcessJobs, registerRunner } = await import("../../src/jobs");
+  const store = freshStore();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  let cleaned = false;
+  registerRunner("shutdown-probe", async (emit) => {
+    try { await gate; emit({ type: "stage", stage: "after-wait" }); }
+    finally { cleaned = true; }
+  });
+  const { jobId } = submitInProcess(store, "shutdown-probe", {});
+  const closing = closeInProcessJobs(store);
+  expect(cleaned).toBe(false);
+  release(); await closing;
+  expect(cleaned).toBe(true);
+  expect(store.get(jobId)!.status).toBe("failed");
+  expect(store.get(jobId)!.error).toContain("cancelled");
+  expect(() => submitInProcess(store, "noop", {})).toThrow("closed");
+});
+
+test("parent submissions tolerate a child committing a job update", async () => {
+  const store = freshStore();
+  const marker = `${store.logsDir}/writer-ready`;
+  const proc = Bun.spawn([process.execPath, "-e", `
+    const { Database } = require('bun:sqlite');
+    const { writeFileSync } = require('node:fs');
+    const db = new Database(process.argv[1]);
+    db.exec('BEGIN IMMEDIATE');
+    writeFileSync(process.argv[2], 'locked');
+    setTimeout(() => { db.exec('COMMIT'); db.close(); }, 250);
+  `, store.dbPath, marker], { stdout: "ignore", stderr: "pipe" });
+  try {
+    await waitFor(() => existsSync(marker), "child writer transaction");
+    expect(store.create("noop", {}).status).toBe("queued");
+    expect(await proc.exited).toBe(0);
+  } finally { if (proc.exitCode === null) { proc.kill(); await proc.exited; } }
 });

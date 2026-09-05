@@ -2,6 +2,7 @@ import type { JobStore } from "../jobs";
 
 export interface LabRouteDeps {
   ensureJobs(): Promise<JobStore>;
+  acquireGpu?: (signal: AbortSignal) => Promise<import("../contracts/resources").DisposableResource>;
   serverPort(): number | undefined;
   invalidateLibrary(): void;
 }
@@ -103,6 +104,7 @@ export async function handleLabRoute(
         "finetune",
         { ...body, adapter_path: adapterPath },
         adapterPath,
+        { acquire: deps.acquireGpu },
       );
       return Response.json({ ok: true, job_id: jobId, adapter_path: adapterPath });
     }
@@ -332,6 +334,7 @@ async function submitQuantize(request: Request, deps: LabRouteDeps): Promise<Res
     rotate_weights: body.rotate_weights,
     rotation_seed: body.rotation_seed,
   }, outDir, {
+    acquire: deps.acquireGpu,
     onComplete: () => deps.invalidateLibrary(),
   });
   return Response.json({ ok: true, job_id: jobId, output_dir: outDir });

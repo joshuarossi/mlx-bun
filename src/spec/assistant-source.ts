@@ -21,10 +21,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "../mlx/array";
-import * as ops from "../mlx/ops";
-import { Gemma4Model, type Cache } from "../model/gemma4";
 import { GemmaAssistantDrafter } from "./drafter";
-import type { DraftProvider, DraftSource, TargetView } from "./source";
+import type { DraftProvider, DraftSource, TargetView, AssistantTarget } from "./source";
 
 /** Sum of the drafter's on-disk safetensors — admission accounting only. */
 function safetensorsBytes(dir: string): number {
@@ -32,19 +30,6 @@ function safetensorsBytes(dir: string): number {
   for (const f of readdirSync(dir))
     if (f.endsWith(".safetensors")) total += statSync(join(dir, f)).size;
   return total;
-}
-
-/** The target's LAST sliding and LAST full cache owners (port of optiq
- *  kv_view.find_donor_layers; mirrors donorIndices in generate.ts). */
-function donorIndices(model: Gemma4Model): { sliding: number; full: number } {
-  let sliding = -1;
-  let full = -1;
-  for (let i = 0; i < model.numDonors; i++) {
-    if (model.layers[i]!.layerType === "sliding_attention") sliding = i;
-    else full = i;
-  }
-  if (sliding < 0 || full < 0) throw new Error("assistant drafter: missing donor layer type");
-  return { sliding, full };
 }
 
 export class AssistantProvider implements DraftProvider {
@@ -75,37 +60,18 @@ export class AssistantProvider implements DraftProvider {
   }
 }
 
-class AssistantSource implements DraftSource {
+export class AssistantSource implements DraftSource {
   readonly weightsBytes = 0; // provider-owned weights; per-request adds nothing
-  private readonly model: Gemma4Model;
-  private readonly caches: Cache[];
-  private readonly donors: { sliding: number; full: number };
+  private readonly target: AssistantTarget;
 
-  constructor(private readonly drafter: GemmaAssistantDrafter, target: TargetView) {
-    if (!(target.model instanceof Gemma4Model))
-      throw new Error("assistant drafter requires a Gemma4 target");
-    this.model = target.model;
-    this.caches = target.caches;
-    this.donors = donorIndices(this.model);
+  constructor(private readonly drafter: Pick<GemmaAssistantDrafter, "forward">, target: TargetView) {
+    if (!target.assistant)
+      throw new Error("assistant drafter requires a Gemma4 target with donor views");
+    this.target = target.assistant;
   }
 
   /** No own cache to prime — the drafter reads the target's live state. */
   prefill(_promptIds: number[], _ctxML?: MlxArray): void {}
-
-  private embedScaled(token: number): MlxArray {
-    const ids = ops.fromInt32([token], [1, 1]);
-    const e = this.model.embed.encode(ids);
-    ids.dispose();
-    const s = ops.mulScalar(e, this.model.embedScale);
-    e.dispose();
-    return s;
-  }
-
-  private readDonors(): { sliding: [MlxArray, MlxArray]; full: [MlxArray, MlxArray] } {
-    const view = (i: number) =>
-      (this.caches[i] as unknown as { temporalView(): [MlxArray, MlxArray] }).temporalView();
-    return { sliding: view(this.donors.sliding), full: view(this.donors.full) };
-  }
 
   /** Draft n tokens against the target's donor K/V, conditioning the first
    *  step on the anchor (the last emitted token + its target hidden) and
@@ -113,8 +79,8 @@ class AssistantSource implements DraftSource {
    *  specGenerate's 2a block. anchorHidden is borrowed; never disposed here. */
   draft(feed: number[], n: number, _stepBase: number, anchorHidden?: MlxArray): number[] {
     if (!anchorHidden) throw new Error("assistant drafter needs the target anchor hidden");
-    const position = this.caches[0]!.offset - 1;
-    const shared = this.readDonors();
+    const position = this.target.position();
+    const shared = this.target.readDonors();
     const drafts: number[] = [];
     const ownedHiddens: MlxArray[] = [];
     let dTok = feed[feed.length - 1]!; // the pending token (anchorHidden's token)
@@ -122,7 +88,7 @@ class AssistantSource implements DraftSource {
     let emb: MlxArray | null = null; // hoisted so a mid-loop throw still frees it
     try {
       for (let k = 0; k < n; k++) {
-        emb = this.embedScaled(dTok);
+        emb = this.target.embedScaled(dTok);
         const step = this.drafter.forward(emb, dHid, shared, position + k);
         emb.dispose();
         emb = null;

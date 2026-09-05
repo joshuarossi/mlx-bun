@@ -2,7 +2,7 @@
 status: active
 axis: ON
 canonical-for: engine-architecture
-plan-anchor: "Serving architecture consolidation `[~]` (opened 2026-08-21)"
+plan-anchor: "Interface-based engine refactor `[~]`"
 last-verified: 2026-08-23
 ---
 
@@ -20,6 +20,14 @@ This is the canonical architecture doc for mlx-bun's engine. It owns:
 - the **request path** as it exists in `src/` today, the single-path rule, and
   the known deviations from it;
 - the **flag end-state** and how it maps onto the layers.
+
+The v2 refactor is in [§12](#12-interface-based-engine-refactor).
+Josh requested replaceable implementations behind interfaces on 2026-09-04.
+That section defines the target and migration, with implementation status below.
+The portable session and native implementation ports are documented in the
+library API; existing model-class exports remain supported.
+Earlier sections retain the current architecture and numerical contracts.
+`last-verified` above dates the earlier inventory, not a whole-document reaudit.
 
 Folded in (2026-08-23): `docs/design/unified-engine-frontier-plan.md` (tier framing, two axes, flag
 classification) and `docs/archive/investigations/faithful-l1-consolidation.md` (the 2026-07-04 faithful→L1
@@ -682,3 +690,1180 @@ default 8.
 `GenerationPlacement` (S1), declared model profiles (S2), `serial | continuous`
 as the placement vocabulary with the scheduler's B=1 fast path as the default
 lone-request route (S3). S4 (land + post-merge verify) is the open box.
+
+## 12. Interface-based engine refactor
+
+Design requested 2026-09-04. Initial implementation is recorded in §12.13. The R0–R10
+checkboxes live in PLAN.md under "Interface-based engine refactor". This
+section owns the contracts, migration details, and acceptance criteria.
+
+### 12.1 Outcome and scope
+
+The product objective is to push the Pareto frontier of **speed, quality, and
+size for local AI on a Mac**. Josh's goal is that a user sees the result and
+asks how that quality, performance, and model size are possible on their
+laptop. Interface consistency is useful when it makes those gains easier to
+build, compare, compose, and ship. It is not an independent reason to accept
+slower execution or a larger working set.
+
+The current target is **Josh's designated Qwen3.8-27B quants**. They are on a
+drive unavailable to this session. Artifact access is needed for target-specific
+numerical and performance validation; it does not block the refactor.
+The locally cached published flagship and TQ snapshots are not those targets
+(Josh clarified this on 2026-09-04); availability must not select the product
+baseline. Quant recipes and quality findings remain in [TurboQuant](turboquant.md),
+including rejected variants and raw-EOS regressions. Interfaces must preserve
+exact packing, rotation, per-layer precision, recurrent-state, and kernel
+choices. Other artifacts/families provide compatibility coverage only.
+
+A downloaded quant supplies weights, configuration, and tokenizer data. The
+engine owns the hyperoptimized implementations and the rules for identifying
+which quant each one supports. Resolve artifact identity and configuration at
+load time, select registered engine code, then retain that binding for execution.
+The quant does not supply a graph, kernel, method, plugin, or executable manifest.
+An unknown artifact may use a compatible family implementation. An exact
+declaration with missing code or incompatible configuration must fail explicitly.
+Sessions remain independent of the selected implementation.
+
+Aggressive specialization for a particular quantization is expected. A
+quant-specific layout, graph, fused kernel, cache scheme, compiled schedule,
+or complete execution method is a legitimate production implementation.
+Several specialized implementations can be worth maintaining when each wins
+in a useful regime. Shared orchestration must not force the fastest numerical
+implementation through an inefficient generic operator path.
+A model implementation may expose several supported execution methods. Loading
+the weights does not permanently choose one method; request planning selects
+among the compatible methods. Their private graphs, state and numerical loops
+can differ while the session contract remains the same.
+
+A session must work without knowing the model class, graph implementation,
+decoding algorithm, cache layout, or scheduling mechanism. Every replaceable
+component exposes an interface. Immutable configuration, events, and results
+remain data records; implementations keep private helpers private.
+
+There are three distinct replacement operations:
+
+| Replacement | Integration change | What must remain compatible |
+|---|---|---|
+| Dedicated graph → generated, compiled, or quant-specialized graph | Replace one graph registration in a model bundle | Graph ABI, backend, input/output shapes, state ABI, numerical contract |
+| Autoregressive → speculative or diffusion method | Select a method registration and its compatible graph bundle | Session lifecycle, committed-output events, cancellation, accounting |
+| MLX implementation → another runtime | Register a complete backend bundle with its graphs, state, sampling, and resource services | Engine/session contracts; a numerical claim requires separate evidence |
+
+The first operation must require no session, scheduler-policy, route, or
+application changes. The second must require no method-specific session or
+protocol branches. A different numerical runtime cannot reuse MLX tensor
+handles merely because the TypeScript interface matches.
+
+Preserve the existing APIs and numerical defaults during migration. A new
+internal interface does not implicitly expand supported feature combinations.
+Keep one repository and the single-binary distribution. Remote compute, new
+model families, a universal tensor library, a generic graph compiler, and true
+B-wide prefill are separate projects. Training gets its own task interface;
+it does not pretend to be a text-generation session.
+
+This scope boundary does not defer quant-specific optimization. The refactor
+must accommodate the existing quantization campaign and future optimized
+implementations throughout migration. New numerical work has separate paired
+validation, so structural changes cannot conceal a quality or performance
+tradeoff. §12.11 defines the shared frontier scorecard.
+
+### 12.2 Dependency structure
+
+```mermaid
+flowchart TD
+    Apps["CLI / HTTP / Pi / memory / evaluation"] --> Client["CompletionClient and task interfaces"]
+    Client --> Prep["Prompt preparation and request planning"]
+    Prep --> Engine["InferenceEngine"]
+    Engine --> Session["GenerationSession lifecycle"]
+    Engine --> Schedule["Scheduler policy and resource admission"]
+    Session --> Method["InferenceMethod"]
+    Schedule --> Group["SchedulingAdapter / ExecutionGroup"]
+    Group --> Method
+    Method --> Graph["Graph interface"]
+    Method --> State["State and checkpoint interfaces"]
+    Method --> Sample["Sampling / constraints / draft interfaces"]
+    Graph --> Backend["Backend runtime and resource leases"]
+    State --> Backend
+    Sample --> Backend
+    Compose["Composition root and implementation registry"] -.-> Engine
+    Compose -.-> Method
+    Compose -.-> Graph
+    Compose -.-> Backend
+```
+
+Interfaces belong to the consumer's contract layer. Composition roots import
+implementations and supply them explicitly. No service locator inside a token
+loop, import-time self-registration, dependency injection framework, or
+reflection-based constructor discovery is needed.
+
+Proposed homes, introduced only as their migration phase lands:
+
+| Home | Responsibility and permitted dependencies |
+|---|---|
+| `src/contracts/` | Portable requests, events, results, session/client/task interfaces. No Bun, DOM, MLX, concrete model, or application imports. |
+| `src/engine/` | Session lifecycle, planner, scheduler policy, admission. Depends on contracts and injected ports. |
+| `src/inference/` | Method and graph contracts; reusable AR orchestration, verification, and scheduling adapters. Tensor-facing code is parameterized by a backend binding. |
+| `src/backends/mlx/` | MLX runtime, typed bindings, resource owners, execution groups, state adapters. Wrap existing numerics before relocating files. |
+| `src/model/` | Existing model math behind graph adapters, artifact profiles, loaders. Concrete implementations may use MLX internally. |
+| `src/serve/` | Protocol parsing/framing and transport; calls the completion client. No concrete graph selection or cache surgery. |
+| `src/app/` | Composition roots, runtime bootstrap, server/application assembly. The intentional location for concrete imports. |
+| Existing application directories | Memory, Pi, web, eval, train, quantize consume their declared client/task ports. Move root modules only when their dependencies have been separated. |
+
+Use TypeScript projects plus an AST/import-resolution boundary check. The check
+must follow type-only imports, re-exports, aliases, and literal dynamic imports.
+New forbidden edges fail; temporary legacy edges have a named R-phase owner and
+a deletion gate. Browser contracts cannot import declarations out of pi-web.ts.
+No new concrete model checks in engine/session/planner code. Model-specific
+checks remain legitimate inside the model's own adapter.
+
+### 12.3 Interface inventory
+
+These are responsibility boundaries, not a mandate for one class per row.
+Small stateless ports may be implemented by functions or object literals.
+
+| Interface | Owns | Must not own |
+|---|---|---|
+| `CompletionClient` | Semantic completion request, event stream, terminal result, cancellation | Tensor/state handles, model class selection |
+| `PromptPreparer` | Template/tokenizer policy, token IDs, validated media descriptors, stable-prefix boundary | GPU scheduling or request-global model mutation |
+| `ExecutionPlanner` | Effective immutable policy, implementation selection, capability negotiation, fallback reasons, plan identity | Starting generation or inventing new feature support |
+| `InferenceEngine` | Session creation, runtime coordination, shutdown | Per-family forward math |
+| `GenerationSession` | Lifecycle, committed output, result, cancellation and close | Token-at-a-time assumption, KV offsets, concrete method branches |
+| `InferenceMethod` | AR/speculative/diffusion algorithm and private per-run state | HTTP framing or application sessions |
+| `SchedulingAdapter` / `ExecutionGroup` | Method-specific join/leave and bounded execution work | Queue priority policy or independent memory admission |
+| `Scheduler` | Fairness, active-row cap, queue limits, safe-point dispatch | Cache merge math, sampler math, model-family checks |
+| `ModelBundle` / `GraphFactory` | Artifact construction, graph selection, compatible backend/state services | Rewriting requested sampling or KV policy |
+| `AutoregressiveGraph` | Forward-to-hidden and selective logits projection | Token selection, prefill loop, stopping, persistence |
+| `DenoisingGraph` | Canvas/noise-step operations required by diffusion | Pretend AR cache or fake next-token API |
+| `SpecializedExecutionFactory` | Quant/artifact/device-specific fused execution behind the same method/group contract | Changing quality policy or observable session semantics without a declared plan |
+| `SamplingPolicy` / `SamplingKernel` | Shared processor/mask/logprob/sample/history semantics and backend execution | Transport, independent request defaults |
+| `ConstraintProvider` / `DraftProvider` | Per-run constraint state or proposals under declared capabilities | Mutating target model fields outside a bound context |
+| `StateFactory` and capability facets | Owned state, borrowing, snapshots, batch operations, rollback where supported | Assuming every state is trimmable token KV |
+| `PrefixStore` / `CheckpointStore` | Lookup, retention, integrity, atomic persistence and version checks | Reconstructing arbitrary concrete cache classes itself |
+| `ResourceManager` / `ResourceLease` | Reservations, backing memory lifetime, device completion, release | Model math or hiding synchronization |
+| `ArtifactResolver` / `TokenizerProvider` | Pinned artifact identity, tokenizer/template provenance and loading | Request execution |
+| `TelemetrySink` / `Clock` | Structured observations and time | Scheduling or output decisions |
+| `EngineHost` / `TaskRunner` | Direct or isolated runtime lifecycle; train/quantize task execution | Sending live tensor handles across a process boundary |
+
+Existing `CompletionExecutor`, `CompletionSink`, `DraftProvider`, `DraftSource`,
+model profiles, `KvScheme`, and the cache codec table are starting points.
+Adapt or evolve them; do not retain a second permanent wrapper hierarchy.
+
+### 12.4 Session and graph contracts
+
+Illustrative signatures below fix the intended separation. Supporting record
+types are specified by the semantics in this section and finalized in R1.
+They are not implemented public exports yet.
+
+```ts
+interface InferenceEngine {
+  open(request: GenerationRequest, control: RunControl): Promise<GenerationSession>;
+  close(): Promise<void>;
+}
+
+interface GenerationSession {
+  readonly id: string;
+  readonly events: AsyncIterable<GenerationEvent>;
+  readonly result: Promise<GenerationOutcome>;
+  cancel(reason: CancelReason): Promise<void>;
+  close(): Promise<void>;
+}
+
+type GenerationEvent =
+  | { type: "committed"; sequence: number; tokenIds: readonly number[] }
+  | { type: "progress"; usage: UsageSnapshot };
+
+interface InferenceMethod<Binding> {
+  readonly descriptor: MethodDescriptor;
+  createRun(plan: ExecutionPlan, binding: Binding): Promise<MethodRun<Binding>>;
+}
+
+// Tensor-facing contracts exist only inside a compatible backend bundle.
+interface AutoregressiveGraph<Tensor, State, Inputs> {
+  readonly descriptor: GraphDescriptor;
+  forwardHidden(inputs: Inputs, state: State): Tensor;
+  projectLogits(hidden: Tensor, selection: LogitSelection): Tensor;
+}
+
+interface GraphFactory<Graph, Binding> {
+  readonly descriptor: GraphDescriptor;
+  open(artifact: ResolvedArtifact, binding: Binding): Promise<Graph>;
+}
+```
+
+`GenerationSession` is one completion attempt, distinct from a Pi conversation
+or application thread. The engine coordinates independent sessions sharing a
+resident model. The method's private run owns prompt position, sampler history,
+pending device work, and caches/canvas; those do not become session fields.
+`RunControl` uses a portable cancellation port; HTTP adapters translate their
+AbortSignal into it. Contract declarations do not pull in browser/server modules.
+
+All methods publish only irrevocably committed token spans. A span can contain
+one token, an accepted speculative group, or a whole completed diffusion
+result. Tentative diffusion canvas revisions and rejected draft tokens are
+private. A non-streaming method may publish nothing until its final output.
+The existing completion sink converts committed tokens to semantic text,
+reasoning, tools, stops, and protocol usage. Tokenizer identity is fixed at
+session open. Task types that cannot provide this token contract use a separate
+task interface rather than fabricated tokens or usage.
+
+Lifecycle is `created → preparing → queued → running → settling → terminal`.
+Terminal outcome is exactly one of completed, cancelled, or failed. Each state
+accepts cancellation. Early iterator return initiates cancellation. Only one
+consumer may read events; progress observation cannot steal output. A bounded
+queue propagates backpressure to scheduling between safe work units. Never
+silently drop output or let a slow consumer retain unlimited device state.
+
+`result` settles once on every path, including no consumer, worker death,
+preparation failure, and cancellation. It contains a discriminated outcome
+with final usage/error data. Events already emitted remain a partial result
+on failure. GenerationRequest declares streaming or collecting consumption at
+open. Streaming starts on demand and has a configured idle-consumer deadline;
+an abandoned/unread stream cancels when that deadline expires. Collecting runs
+without an event reader, reserves output storage against the admitted maximum,
+and returns collected tokens with the outcome. Insufficient collection capacity
+fails admission; it never silently truncates output. R1 fixes the queue/deadline
+defaults with tests. Completed sessions reject further advancement;
+cancel/close are idempotent. Close cancels live work and awaits safe release.
+
+Graph calls remain direct device operations. The interface does not insert
+an await, readback, tensor wrapper, or synchronization for each operator.
+`forwardHidden` plus selective `projectLogits` preserves the existing ability
+to avoid a full prompt-length × vocabulary logits allocation. Compile caches
+belong to the implementation and key on the graph/state/request parameters
+that affect their trace. A graph factory owns and closes resident weights;
+individual runs borrow them through leases.
+
+The selective-hidden/logits interface is the reusable AR path. A specialization
+may instead implement a coarse execution contract that fuses graph, head,
+sampling, or state updates and never materializes those intermediate tensors.
+It must preserve the declared sampler/constraint semantics, accounting, safe
+points, and resource ownership, and pass the same conformance suite. Do not
+require a fused kernel to synthesize hidden/logits objects solely to satisfy
+an abstraction. The planner binds this alternative once through the registry;
+the session and scheduler policy remain unchanged.
+
+R1 must specify graph ABI dimensions, dtypes, mutation rules, position/mask
+inputs, output ownership, and evaluation semantics. Include media inputs,
+hidden taps, and adapter bindings as typed graph capabilities. Move mRoPE,
+adapter selection, and hidden taps out of mutable model-global request fields
+into bound per-run contexts. While legacy models still mutate those fields,
+their adapter requires the exclusive lease and restores them on every exit.
+
+The registration bundle binds graph, tensor type, state factory, sampler,
+device runtime, and optional capabilities together. Use generics and opaque
+handles internally; do not erase them with `any` or public casts. Validate
+backend ID, state ABI, graph ABI, and artifact identity at construction and
+restore. TypeScript compatibility alone does not establish numerical parity.
+
+Specialization keys may include exact artifact fingerprint, weight quant/layout
+and packing version, layer/shape geometry, KV scheme, Mac GPU capabilities,
+context regime, and batch regime. Dispatch is planned or bound at a safe shape
+transition, with a validated compatible fallback outside the optimized range.
+It must not become a collection of per-token environment checks. Fused paths
+may retain optional features only when implemented; capability negotiation
+selects another faithful implementation when the requested composition needs it.
+
+### 12.5 Capability negotiation and planning
+
+Replace scattered feature booleans with versioned capability descriptors and
+typed capability interfaces. Obtain a complete optional facet once during
+planning, such as rollback or batch join. The core never probes a handful of
+optional methods and hopes they form a complete implementation.
+
+Evaluate the whole composition: artifact/profile, graph, method, KV scheme,
+sampler, seed, constraints, adapters, media, checkpointing, and batching.
+Two independently supported features do not prove their combination works.
+Each supported composition links to its conformance/oracle test cell.
+
+Within a compatible composition, selection may use a measured execution recipe
+for the artifact/quant/device/workload. A recipe binds the entire implementation
+bundle, its quality contract, and resource model. It can choose a quant-specific
+fused method rather than a generic graph. Record provenance and the evidence
+behind automatic selection. Never optimize by changing the requested artifact,
+quant, or quality tier without an explicitly permitted product policy.
+
+Planning returns supported, refused, or an explicit policy-permitted fallback
+with reasons. Distinguish required request behavior from preferred acceleration.
+Retain existing intentional fallback behavior during migration and record it
+in the plan. Never silently change a required scheme, constraint, seed, or
+adapter to gain batching. Preserving existing support also means retaining
+explicit refusals. Fallback ordering is deterministic and tested.
+
+The plan contains artifact and tokenizer identities, implementation IDs/ABIs,
+oracle tier, actual algorithm, resolved sampling/stop policy, state layout,
+cache/checkpoint policy, resource estimates, and allowed execution shapes.
+Dynamic batch membership is runtime state within those allowed shapes. Record
+it in traces; do not freeze a future arrival schedule into admission.
+
+Normalize environment/CLI/request configuration at the boundary. Capture an
+immutable effective snapshot per engine/run. No runtime configuration lookups
+inside forward/decode after binding. Experiment commands construct separate
+bindings with explicit snapshots. Diagnostics may observe a running request
+but cannot change its numeric policy halfway through execution.
+
+Admission is two-stage: validate metadata and reserve a conservative preparation
+budget before compiling grammar or running media towers; then refine the
+reservation using prepared sizes before execution. Count shared resident
+weights once, per-run state, draft resources, media/preparation transients,
+compiled state, pending output, and retained snapshot/write-behind buffers.
+Reservation ownership transfers across stages and releases on every failure.
+Keep prompt/context clamping semantics and aggregate KV limits consistent with
+current policy. A rejected prompt must not first allocate its full GPU payload.
+
+### 12.6 State, ownership, and persistence
+
+Resource rules apply to success, partial construction, eviction, cancellation,
+rollback, shutdown, and native failure:
+
+- A resource has one owner, with explicit borrowed views or retained leases.
+  Ownership transfer is a checked operation; a resource cannot be disposed by
+  both the old and new owner. Close is idempotent and attempts every release
+  even if one cleanup fails, preserving the original execution error.
+- Device handles and host/mmap backing memory have distinct lifetimes. A native
+  completion fence governs final backing release. JS scope exit or array
+  disposal alone is insufficient. Never restore a JS callback destructor on
+  a Metal completion thread. Finalization remains a diagnostic/backstop.
+- Replace `stateNeedsDispose` with an explicit owned state-view lease. Snapshot
+  creation returns a stable owner; later writes to the donor cannot change it.
+  Prefix lookup returns retained state and its exact logical coverage.
+- State capability facets include snapshot, prefix reuse, trimming, batch
+  merge/extract/filter, and speculative transaction. Recurrent state supports
+  exact restore/replay where proven; diffusion state can expose a different
+  snapshot without claiming a token prefix or trim operation.
+- A speculative transaction includes every participating layer and draft-side
+  state. Commit or rollback leaves one consistent accepted prefix. Partial
+  failure invalidates the run; it cannot return uncertain state to PrefixStore.
+- Storage policy is separate from layout codecs. Provider-owned codecs bind
+  formats to a compatible implementation. Keep streamed tensor writes,
+  corruption checks, atomic publication, byte caps, and bounded spill queues.
+  Do not replace the current copy-restore with unsafe mmap borrowing for style.
+
+Prefix identity and generation-resume identity are separate records. Prefix
+identity covers artifact content, tokenizer/template interpretation, adapters
+and their revisions, effective numeric scheme, graph/state compatibility, and
+media content when reuse is supported. Generation identity additionally covers
+the complete normalized request, stop strings, sampling/seed policy, method,
+constraints, generation limit, and resume schema. Canonicalize map keys while
+preserving semantically ordered arrays. Store the descriptor as well as its
+digest, and validate it on restore.
+
+A resume snapshot includes consumed input coverage, committed completion count,
+pending token/device work in a restorable form, RNG/history position, and any
+method/constraint state needed for exact continuation. Physical cache offset,
+committed output, and bytes delivered to a client are different quantities.
+Snapshots are legal only at declared safe points. Unsupported exact-resume
+compositions remain refused or disabled as documented.
+
+Retries must distinguish a new generation from a resumed attempt. Preserve the
+current replay contract through its compatibility adapter; explicitly design
+any future idempotency/resume field before changing the public API. Never claim
+exactly-once delivery across a broken stream or automatically replay tool side
+effects. Cold-prefix misses may recompute; an incompatible exact-resume request
+must report the mismatch rather than invent a continuation. Version the format
+and define read-old/write-new compatibility or explicit invalidation per change.
+
+### 12.7 Scheduling and inference methods
+
+Keep policy independent from mechanics. Scheduler chooses eligible work,
+fairness, queue bounds, active-row limits, and resource reservations. A method's
+scheduling adapter creates execution groups and implements join/leave/advance
+over its own state. Native batch merge and filter stay inside the MLX adapter.
+Scheduler must not import KV classes or perform a per-layer tensor loop.
+
+An advancement is a bounded safe unit, not necessarily a token: one prefill
+chunk, a pipelined decode step, one verify round, or one denoising iteration.
+Budgets describe admitted resources and work hints separately. A synchronous
+kernel cannot be interrupted; cancellation is honored at the next safe point.
+Keep pending MLX work between advancements to preserve decode overlap. No
+mandatory GPU synchronize or full logits readback at the scheduling boundary.
+
+An execution group owns its resident run handles exclusively. Join/leave
+validates compatibility before state mutation. Group-wide failure either
+proves unaffected rows safe or fails the entire group; it cannot publish
+possibly corrupted snapshots. Slow readers stop receiving dispatch while their
+reservations remain accounted for; cancellation releases them after pending
+device work is safe. Queued cancellation removes the waiter promptly so a dead
+serial request cannot keep batch admission in drain mode.
+
+Migrate these existing algorithms behind the contracts:
+
+| Method/component | Preserved behavior |
+|---|---|
+| AR method | Shared prefill program, existing tail split/snapshot boundaries, sampler order, pending-token pipeline |
+| Speculative method | Existing verifier and DraftSource variants, actual proposal length, target taps, per-step RNG, recurrent rollback, source-specific prefill convention |
+| Fill/grammar acceleration | Explicit assert/verify proposal policy and constraint state; preserve current exclusions and fidelity gates |
+| Diffusion method | Existing denoising behavior with private canvas state and committed output only; no fabricated AR state |
+| Continuous execution adapter | B=1 adopted-cache path; existing merge/extract/filter operations and per-row sampler history |
+| Quant-specific execution | Fused or precompiled work units with the same observable semantics and explicit numerical tier; no forced intermediate allocations |
+
+Shared AR prefill does not imply full-prompt forwarding for every method.
+Native GLM MTP already declares a different prefill convention. Preserve it as
+data in the method plan. Likewise, unifying solo prefill code does not establish
+bit identity with B-wide prefill or broaden the batch support matrix.
+
+The shared prefill program is the canonical policy for segmentation, snapshots,
+and cancellation. A measured specialization can execute that program through
+a different kernel schedule while satisfying its numerical and resource
+contract. Share the decisions; do not prohibit a faster executor merely because
+its implementation cannot reuse a helper function.
+
+### 12.8 Applications, library, and process boundaries
+
+Keep the existing token-to-semantic completion pipeline. `CompletionClient`
+is the application/transport boundary; `GenerationSession` is the worker's
+method-neutral token boundary. An ordinary OpenAI-compatible remote endpoint
+can implement CompletionClient without exposing token IDs or local checkpoints.
+It cannot masquerade as a fully capable local GenerationSession.
+
+Provide direct and isolated CompletionClient/EngineHost implementations. Evolve
+the existing `src/serve/isolate.ts` EngineChild, ModelPool, health gating,
+restart policy, and HTTP-over-Unix-socket proxy. Isolation already exists.
+Do not build a competing supervisor or change the wire protocol merely to
+match internal interfaces. Current whole-server isolation remains supported
+while CPU application services are separated from worker-owned compute.
+
+Worker requests contain portable policy and media descriptors/bytes. Grammar
+controllers, media tensors, sampler closures, state handles, and device leases
+are created in the worker. A crash fails in-flight completion attempts, resets
+worker-owned residency, and preserves parent health/application state. Existing
+GET/HEAD retry behavior does not authorize automatic generation POST replay.
+Cross-process resume requires the explicit checkpoint/replay contract above.
+
+One resource coordinator covers inference and managed training/quantization
+jobs that share a runtime host. Preserve the existing jobs subprocess design
+and persist terminal job state. Do not describe this coordinator as controlling
+unrelated external Python processes or a separately launched training run.
+
+The high-level library opens a runtime asynchronously before importing/loading
+native implementations. Root high-level imports must work without installed
+MLX. Keep advanced native/model access in explicit low-level exports with clear
+ownership and bootstrap requirements. Compatibility wrappers preserve current
+exports until a deliberate versioned removal; they may not maintain duplicate
+generation loops. Validate the packaged binary and native sidecars, not only
+source execution, before release.
+
+### 12.9 Current-to-target migration map
+
+| Current code | Target and removal condition |
+|---|---|
+| `src/server.ts` runGeneration | Method/cache orchestration moves to inference/engine services; server retains composition and route dispatch |
+| `src/generate.ts` | Compatibility entry around the AR method/session; one shared prefill and pending-token implementation |
+| `src/serve/batch-scheduler.ts` | Split queue policy from MLX execution-group mechanics; delete duplicate prefill after parity gates |
+| `src/serve/generation-gateway.ts` | Planner plus scheduling/resource coordination; remove late feature eligibility and concrete model probes |
+| `src/serve/{request-plan,completion-executor,completion-sink}.ts` | Evolve into the request/session boundary and semantic adapter; retain tested accounting/framing behavior |
+| `src/model/{factory,profile}.ts` and concrete graph files | Model bundle registration and graph adapters; replace the central concrete RuntimeModel union in generic consumers |
+| `src/model/gemma4-base.ts` cache classes | Shared state contracts leave the Gemma module; implementations remain behind MLX state adapters until moved independently |
+| `src/{prompt-cache,kv-store,ssd-cache}.ts` | Prefix/checkpoint policies use provider codecs and explicit retained snapshots |
+| `src/{runtime-config,mlx/array,mlx/ffi}.ts` | Bound immutable configuration, explicit runtime opening, native resource owners |
+| `src/spec/` and `src/fill/` | Typed method/draft/constraint capabilities; existing algorithms and oracle fixtures retained |
+| `src/pi-web.ts`, Pi provider files, `src/web/src/` | Shared portable protocol declarations, client adapters, one provider-wiring implementation |
+| `src/memory/`, `src/eval/`, `src/train/`, `src/quantize/`, `src/jobs/` | Completion/task clients and explicit artifact/resource services; preserve task-specific semantics |
+| `src/serve/isolate.ts`, `src/index.ts`, `src/cli.ts` | Host/client adapters and composition roots; async high-level bootstrap and compatibility exports |
+
+File moves follow responsibility extraction. Every temporary adapter has a
+deletion criterion. Do not combine renames, numerical rewrites, and protocol
+changes in one patch. Preserve failure reproduction fixtures through migration.
+
+### 12.10 Implementation stages and dependencies
+
+Each stage is one or more reviewable PRs. No calendar promise is made before R0
+establishes the fixture and machine prerequisites. Checkboxes are in PLAN.md.
+
+**R0. Stabilize and record the baseline.** Pin the compiler and align local/CI
+typechecks. Reproduce and fix checkpoint stop-policy identity and serial
+cancellation with targeted tests. Diagnose the recorded Qwen cache-reuse crash
+before migrating its state implementation. Record exact revisions, existing
+support/refusal cells, public defaults, ABI/schema versions, and resource
+ownership. Capture quiet-machine baselines using existing bench tooling.
+Structural refactoring and model-free validation proceed while target artifacts,
+quiet hardware, or crash diagnosis are unavailable. Preserve existing numerical
+and state behavior; changing the affected state implementation or promoting a
+default still requires its relevant correctness and performance gates.
+Exit: fixes independently verified, baseline manifest available, missing
+machine/oracle cells explicitly listed. No unverified previous-review claim
+becomes a passing gate merely by entering this plan.
+
+**R1. Land contracts and prove method independence.** Depends on R0's inventory.
+Create portable interfaces and dependency checks. Implement scripted AR-like
+and final-output-only fake methods with different private state. Run the exact
+same session lifecycle suite against both, including cancellation, failure,
+backpressure, no-consumer behavior, and close. Introduce a legacy adapter around
+the current executor so existing APIs still run. Exit: engine/session modules
+import no concrete graph/native module; switching fake methods edits registration
+only. Finalize the illustrative signatures through these executable contracts.
+
+**R2. Bind real graphs and backend capabilities.** Depends on R1. Wrap existing
+models with GraphFactory/ModelBundle bindings, beginning with one dedicated
+graph and its existing generated counterpart. Bind sampler/state/runtime types,
+resource estimates, artifact profile, media inputs, taps, and adapter context.
+Exit: both real graphs run through the same method/session without consumer
+edits; direct forward logits match their pinned oracle; backend/state mismatch
+fails before allocation. Keep old models reachable through adapters until their
+family-specific tests have migrated.
+
+Also adapt an existing quant-specific path through its bundle and verify that
+the interface adds no obligatory dequantization, tensor copy, intermediate
+allocation, or synchronization. Validate the coarse fused-execution contract
+before standardizing the reusable graph ABI.
+
+**R3. Establish resource and state ownership.** Depends on R2 and the relevant
+R0 crash fix. Introduce explicit state views, retained snapshots, device-backed
+leases, and complete rollback facets. Evolve the codec table into provider-bound
+codecs. Validate prefix and resume identities, including stop policy and adapter
+revision. Exit: injected failures release all owners; donor/clone isolation,
+ring wrap, recurrent rollback, cold restore, and restart fixtures pass. No new
+GC-dependent lifetime or unsafe mmap release is accepted.
+
+**R4. Resolve plans and reservations once.** Depends on R1–R3. Move speculation,
+fill, compilation, cache bypass, and capability selection into one planner.
+Use exact resolved plan data for execution, metrics, and checkpoint identity.
+Move native media/constraint allocation behind preparation admission. Capture
+configuration per binding. Exit: table-driven tests cover every shipped
+composition and refusal; lane reports agree before/after execution; engine code
+does not reread mutable global configuration. Existing fallbacks stay explicit.
+
+**R5. Share AR prefill and session execution.** Depends on R2–R4. Extract a
+step-able prefill program preserving chunk/eval/quantization/snapshot/final-token
+order. Route serial execution and current solo batch-prefill through it. Move
+pending-token, history, and checkpoint-safe-point state into the AR method run.
+Thread cancellation through queue, preparation, prefill, and decode. Exit:
+duplicate prefill loops are removed, phase-specific abort tests release the
+lease, and cold/warm/restored logits plus streamed results match the baseline.
+This is the Maintainability prefill item; Phase 18 S1a remains separate.
+
+**R6. Adapt other methods and extensions.** Depends on R3–R5. Move the existing
+speculative verifier and all retained DraftSource implementations behind typed
+target views. Adapt fill/grammar acceleration and diffusion without expanding
+their support. Exit: the same session suite passes for each; accepted/rejected
+trace, pending-token accounting, stop handling, and recurrent rollback match
+their method oracle. No session branch identifies AR/spec/diffusion by name.
+
+**R7. Separate scheduler policy from batch execution.** Depends on R5–R6.
+Move merge/extract/filter and B=1 adoption into execution groups. Centralize
+fairness, drain policy, queue bounds, reservations, and cancellation. Exit:
+dynamic join/leave, uneven rows, slow consumers, group failure, mixed-KV,
+recurrent state, and ring-wrap cells pass wherever supported; unsupported
+compositions retain their recorded placement/refusal. Preserve pipeline overlap.
+Do not merge true B-wide prefill or new concurrency features into this stage.
+
+**R8. Move applications onto client/task interfaces.** Depends on R1 and R4;
+runtime cutover follows R5–R7. Separate shared web/Pi protocol declarations,
+consolidate Pi provider configuration, and route memory/eval through clients.
+Train/quantize retain task ports and dedicated numerical graphs. Add async
+high-level library bootstrap and compatibility exports. Exit: CPU-only clients
+and high-level package imports need no MLX; API/CLI/UI fixtures preserve current
+behavior; task progress/cancellation and artifact semantics remain intact.
+
+**R9. Adapt isolation and resource coordination.** Depends on R7–R8. Implement
+EngineHost over existing isolation/model-pool code, separate parent application
+state from worker compute, and coordinate managed GPU jobs. Exit: worker startup
+failure, death mid-stream, bounded restart, model eviction, disconnect, and
+shutdown tests pass; no automatic POST replay or native object serialization;
+direct/isolated clients share the semantic contract. Compare transport overhead
+before any default change. Existing `--isolate` behavior remains available.
+
+**R10. Cut over, remove duplication, and close.** Depends on R0–R9. Default to
+the new engine only after the full supported matrix and performance gates pass.
+Delete legacy executor branches and temporary import exceptions. Review generated
+twins, diffusion, curve/HLG, expert offload, paged KV, DSpark variants, compiled
+decode, and Pi wiring using the existing D6 requirement: demonstrated use or
+measured value, otherwise an explicit deletion decision. Retained experiments
+register through declared interfaces. Update reference docs and package exports
+in the same change as any public difference. Exit: replacement exercise below
+passes, no duplicate engine remains, binary packaging works, and open-phase
+blocks close without archiving this still-canonical architecture document.
+
+### 12.11 Validation and release gates
+
+**Contract tests on every PR.** Run without native MLX: scripted alternate
+methods, lifecycle, ownership transfer, capability composition/refusal, stable
+identity, queue fairness, resource accounting, event ordering/backpressure,
+partial result/error behavior, and dependency boundaries. Add graph adapter
+type-tests that reject incompatible backend/state bindings. Existing protocol
+and UI tests remain their behavioral reference.
+
+**Numerical and state matrix on available Apple Silicon machines.** Use the
+pinned oracle and existing machine-layered goldens. Cover dedicated/generated
+graphs, dense/MoE/recurrent/rotating state, bf16/uniform/mixed/TurboQuant where
+supported, cold/warm/SSD/resume, B=1 and matching-B concurrent composition,
+constraints, seeds, logprobs, adapters, media, speculation, and fill. Use targeted
+pairwise cases plus every known failure reproduction; do not imply every
+Cartesian combination is supported. Diffusion keeps its distinct oracle gate.
+Exact cells remain exact. Existing tolerance cells require their recorded
+justification; a refactor cannot loosen a gate to get green.
+
+**Lifecycle sequences.** Exercise cancel before preparation, during admission,
+between prefill chunks, after dispatch but before readback, during verify, during
+checkpoint write, and on slow/broken streams. Check one terminal outcome and
+eventual reservation release after device completion. Restore-and-continue must
+equal uninterrupted execution for the exact supported resume policy. Test
+incompatible/corrupt checkpoints and failed cleanup. Measure steady memory
+after synchronization across repeated warm and aborted requests.
+
+**Frontier scorecard.** Speed, quality, and size are independent axes. Keep a
+Pareto set rather than collapsing them into one weighted score that hides a
+regression. Every optimization names its target Mac memory budget, workload,
+context, and concurrency before measurement.
+
+| Axis | Required evidence |
+|---|---|
+| Speed | Short/long-context TTFT, sustained decode, inter-token latency, concurrent throughput; include startup/compile and cold/warm behavior separately |
+| Quality | Oracle identity for unchanged numerics; for changed quants/numerics, KL as a screen plus frozen task evaluations, raw-prompt/EOS checks, and representative multi-turn agent/tool outcomes |
+| Size | Actual artifact bytes and effective bpw including scales/codebooks/sidecars; peak unified-memory footprint at the declared context, including KV, draft model, workspaces and retained snapshots |
+| Practical experience | Largest useful context that fits, responsiveness during long work, completion correctness, restart behavior, and a reproducible local task with visible user benefit |
+
+A frontier improvement improves at least one axis without a meaningful loss on
+the others at the declared measurement precision. A useful tradeoff can also be
+a new non-dominated point; describe the lost/gained quantities explicitly and
+apply the intended quality floor. A smaller model that causes an EOS/task
+failure is not a quality-preserving win because its KL or aggregate benchmark
+looked similar. Neither faster kernels alone nor smaller on-disk weights alone
+establish a better product experience.
+
+Compare to the best relevant measured recipe, including the current shipping
+bundle and credible same-budget alternatives, not an intentionally weak
+baseline. Publish artifact provenance, input corpus, evaluator, uncertainty,
+machine and memory accounting. Keep training/tuning examples separate from the
+held-out promotion set. Include ordinary laptop use and cold-start experience
+in product evaluation while keeping quotable paired microbenchmarks quiet.
+
+Optimization cycle: choose a bottleneck and target budget → propose a quant,
+layout, graph/kernel or execution recipe → establish its numerical/quality
+contract → measure the full scorecard → retain the non-dominated recipes →
+register validated selectors for the appropriate Macs and workloads. Negative
+findings belong in the topic doc; one-off research scripts are then removed.
+The existing TurboQuant, decode-speed, KV and speculative programs own their
+experiments. This architecture supplies the common registration and evaluation
+contract without duplicating their backlogs.
+
+Pure refactor PRs may be frontier-neutral. V2 product promotion requires at
+least one reproducible frontier advance plus a representative local workload
+that demonstrates the benefit. Until measured, it is an objective, not a claim.
+Supporting multiple useful quant-specialized implementations is intentional;
+remove duplicated lifecycle policy, not a demonstrated numerical advantage.
+
+**Performance regression guard.** Record host/chip/RAM, revisions, artifact, effective plan,
+concurrency, context, cache warmth and native runtime. Compare paired old/new
+runs on the same quiet machine with existing tooling. Track startup, short/long
+TTFT, inter-token latency, decode throughput, concurrent throughput/fairness,
+peak memory, cancellation delay, and checkpoint stall. Predeclare a 3% median
+regression investigation trigger for TTFT/decode on each representative cell, with
+enough repetitions to distinguish it from noise; noisy results are unresolved.
+Even smaller repeatable losses require a fix or an explicit measured benefit
+elsewhere. No unexplained growing memory retention or disabled pipeline overlap.
+The trigger prioritizes investigation; it is not an acceptable abstraction tax,
+does not redefine a Pareto improvement, and does not permit quality degradation.
+Report on both dev machines before final cutover; do not compare bits across
+their different metallibs. Curated numbers go only in benchmarks.md.
+
+**Replacement exercise.** Before closure, replace a real compatible graph with
+another registered graph, run a quant-specific coarse/fused implementation
+without adding session branches, then swap the method for a final-output-only test
+implementation, then run the client through direct and isolated hosts. Session,
+scheduler-policy, protocol, and application code must remain unchanged. Changes
+belong only to the implementation/bundle registration and its tests. This is the
+acceptance test for Josh's "swap one piece" requirement.
+
+### 12.12 Rollout rules and remaining design decisions
+
+Each stage routes a bounded set of existing configurations through a temporary
+implementation selector in the composition root. Preserve the old implementation
+only for paired comparison and rollback while that stage is open. Do not add
+permanent user modes for intermediate architecture. Rollback selects a coherent
+bundle and compatible persistence schema; never mix old graph state with a new
+codec because both happen to implement an interface.
+
+Decisions still requiring implementation evidence have explicit owners:
+
+| Decision | Owner / decision gate |
+|---|---|
+| Exact event buffering and collect-mode limits | R1 contract tests; no-consumer and slow-consumer behavior must be bounded |
+| Smallest graph ABI that covers existing taps/media/compiled paths | R2 real graph replacement plus per-family adapters |
+| Fence/lease implementation and old checkpoint compatibility | R3 native lifetime tests and restore/restart fixtures |
+| Which batch mechanics can share a method adapter | R7 parity and pipeline-overlap measurements |
+| Whether finer worker separation should become a default | R9 crash containment, packaging, and transport measurements |
+| Retirement of each experimental/duplicate implementation | R10 D6 usage or paired measurement; no deletion by interface preference |
+| Which optimized recipe becomes the automatic choice for a Mac/workload | R10 full frontier scorecard and held-out quality gate; no universal winner assumed |
+
+R0 fixes are small independent changes. R1–R4 establish and validate the
+contracts. R5–R7 perform the execution migration. R8–R10 complete applications,
+isolation, and deletion. Contract drafting must lead to the first real graph
+replacement in R2; it cannot grow indefinitely without that working proof.
+
+### 12.13 Implementation status (2026-09-05)
+
+Branch: `refactor/interface-engine-v2`. The comparison baseline is
+`6d45ca1e17e825c48af9b246a37486380117f640` (`origin/main`, fetched again
+2026-09-05). Its reference docs and tests freeze the pre-refactor public
+defaults, supported combinations and refusals; use `git show <revision>:<path>`
+to inspect that baseline without consulting a moving branch.
+
+| Baseline dimension | Frozen source / compatibility rule |
+|---|---|
+| Flags, defaults and routes | Baseline `docs/reference/{server-config,server-api,cli}.md`; no new architecture mode becomes a default in this phase |
+| Families, quants and feature support | Baseline `docs/reference/models.md`, model profiles and parity tests; the locally available published Qwen artifacts supply compatibility evidence only |
+| Native oracle and machine | Baseline `docs/reference/environment.md` plus its machine-layered golden manifests; all branch numerical comparisons reported here use the M1 Max 32 GB and the pinned venv |
+| Toolchain | Bun 1.4.0 (`34cbb9a40`), TypeScript pinned to 6.0.3; Python MLX/Metal 0.31.2, mlx-lm 0.31.3, mlx-optiq 0.2.15 |
+| Graph/state representation | Existing MLX hidden `[batch, positions, width]` and legacy cache arrays; newly declared `mlx-hidden-bsh-v1` / `legacy-cache-array-v1` describe those representations without converting them. Denoising uses its distinct `mlx-denoising-v1` graph ABI |
+| Persistence | SSD prefix format 3 is retained; legacy codec identity remains readable. Generation resume identity advances from the baseline's unversioned policy hash to version 4, including stops, adapter content, implementation and resolved policy |
+| Ownership | Resident weights remain borrowed; request caches, rollback scratch, native preparation and retained prefix backing release at their existing device-safe boundaries, now expressed through owners and leases |
+| Performance | Baseline/candidate paired diagnostics exist for available artifacts; quiet-machine preflight did not pass, so none establishes a quotable regression result or frontier advance |
+
+Outstanding evidence is explicit: Josh's designated quant artifacts, the M4 Pro
+24 GB matrix, quiet paired performance, unavailable diffusion/drafter weights,
+the Qwen 4B B=2/persistence oracle fixtures, and reconciliation of the reported
+other-machine Metal-memory fix. The crash is diagnosed as a native allocation
+failure; this branch preserves the affected cache math. These missing cells
+do not prevent interface work. They keep the full frontier scorecard and
+production acceptance gate open after the branch implementation is complete.
+
+R0 fixes pin TypeScript 6.0.3 for
+local/CI checks, add stop strings and a version to generation-checkpoint
+identity, remove cancelled serial waiters immediately, and check cancellation
+between AR/spec target-prefill chunks and committed-token boundaries.
+
+`src/contracts/generation.ts` defines portable planner, method/run, session,
+output, result, cancellation, and timer ports. `src/engine/` implements lifecycle
+and delivery without model or runtime imports. The dedicated TypeScript project
+has ES2022 only and no ambient runtime types; an AST/resolved-import test also
+checks type imports, re-exports, and dynamic imports against dependency layers.
+
+Streaming starts on the first reader demand. Defaults are 32 queued events,
+256 queued token IDs, 20 top-logprob entries per token, and a 30-second
+idle-consumer deadline. Large committed spans split under backpressure.
+Collecting reserves a Uint32 buffer before method creation, with an aggregate
+65,536-token active-collection ceiling; terminal output ownership transfers to
+the caller. Collection currently returns IDs only; logprobs require streaming.
+Cancellation and early iterator return wait for run cleanup. Failure outcomes
+retain the execution error if cleanup also fails. These are internal defaults,
+not new server flags.
+
+HTTP completion execution now uses the shared session by default.
+`createSessionCompletionEngine` delivers tokens directly to the existing
+stop/tool parser through callback output, avoiding a second queue. The callback
+is awaited and can request a normal stop; cleanup completes before the result
+settles. Streaming/collection library consumers retain their bounded delivery.
+AR, speculative and denoising methods honor callback stops. Denoising now settles
+its emitted-token count when delivery closes before the completed canvas ends.
+`src/backends/mlx/text-engine.ts` is the data-only token API. It snapshots requests
+before demand-start and shares `createCompletionMethod` with HTTP. Native media,
+adapters and grammar still require prepared inputs; their HTTP requests now run
+through the same session lifecycle. The temporary text-only legacy engine is gone.
+
+`ModelServingBinding` owns the gateway binding, serial execution construction,
+prompt/media preparation, SSD restore, signal evaluation, embedding execution and
+model diagnostics. The server consumes model metadata and this binding.
+`MlxGatewayBinding` owns compatibility decisions and batch-group construction;
+method IDs are implementation-owned strings. A model can expose several methods
+with unrelated private state. Existing classes enter through the MLX binder;
+replacement implementations supply the port directly. `loadContext` selects an
+engine-owned host implementation before either default weight loader runs.
+The HTTP replacement test selects a synthetic exact artifact registration and
+runs two custom methods with no concrete model, forward function or cache factory.
+This proves the construction-to-session path, not quant quality or performance.
+
+`src/inference/graph.ts` declares the backend-bound graph ABI.
+`src/backends/mlx/graph.ts` binds synchronous/streamed forwards once and selects
+hidden positions before vocabulary projection. `src/backends/mlx/autoregressive.ts`
+defines one `MlxAutoregressiveBinding` for the graph, cache construction, media
+forwarding, adapter state, memory accounting, and optional compiled/fused decode.
+`generateAutoregressive()` consumes that interface without requiring a
+`RuntimeModel`. The existing `generate()` API adapts AR models into it, preserving
+the serial loop's sampling, prefill chunks, lazy evaluation, and decode pipeline.
+No tensor wrapper, device readback, or synchronization was introduced.
+
+Concrete Gemma compiled-decode selection and rollback-based fallback now live
+in the legacy binding. A replacement supplies its own decoder; the loop never
+infers one from the model family. A declined step must leave state unchanged.
+Unrecovered errors propagate without retry. Bindings must declare the MLX
+hidden-state ABI and legacy `Cache[]` ABI; mismatches fail before cache allocation.
+
+The host now captures AR/denoising and speculative bindings once. Compiled
+replay permission and grammar jumping are resolved alongside placement and
+included in checkpoint identity. Serial execution consumes that policy; B=1
+batch replay also honors it, with dynamic cache geometry still allowed to
+decline replay transactionally. A lazily created batch group inherits the
+gateway's runtime snapshot. Composition and snapshot tests cover later config
+changes, adapters, paged/media fallback, speculation, denoising and logprobs.
+Legacy kernel flag reads now resolve through an execution-local runtime snapshot.
+AR/denoising generator resumes and cleanup, the speculative verifier and its
+memory scope, and each batch driver retain that snapshot across awaits. A later
+host configuration change cannot alter a running binding's kernel policy.
+Nested/concurrent scope tests and native binding tests cover early close,
+verification callbacks and lazy batch construction. The scope adds no tensor
+copy, evaluation or device fence; its performance remains part of the paired gate.
+Rejected initial state releases owned caches while preserving borrowed caches.
+Decoder cleanup completes before cache disposal, including early iterator return.
+If execution and decoder cleanup both fail, the aggregate retains both errors.
+The legacy descriptor is not a persistence identity. Rich media remains a native
+preparation input; tap capabilities and provider-bound persistence are described
+below. A different cache ABI requires its own compatible method/backend binding.
+
+Serial cache lookup, checkpoint replay/persistence and prompt-boundary snapshots
+now live in `src/backends/mlx/serial-executor.ts`. The HTTP server injects a bound
+generator/verifier, cache constructor, prefix/checkpoint stores, clone function
+and adapter namespace service. Native Qwen media context is installed/restored
+by its compatibility binder. The executor has no concrete model dispatch;
+the existing gateway still owns scheduling and exclusive execution.
+Native input ownership starts before cache lookup/construction. A failed lookup,
+cache constructor or trace hook releases prepared grammar/media and any acquired
+cache state; one failed destructor does not skip sibling releases or replace
+the execution error. Checkpoint replay checks cancellation before each saved
+token and retains its durable checkpoint when interrupted.
+Failed prefix trimming releases acquired clone/restored state. Prefix insertion
+validates cache metadata before adopting ownership; eviction cleanup errors are
+reported after adoption without inviting the caller to dispose the live stored
+entry. Clear detaches entries and attempts cleanup for every sibling. Backing
+retention is released only after successful cache disposal. Rejected optional
+prompt-boundary snapshots release their clones while generation retains its
+live state. These are failure-path ownership changes, with no cache-math change.
+
+Model-free binding tests exercise an independent graph, a replacement fused
+decoder, declined steps, unrecovered errors, and unsupported ABI/media/adapter
+requests. The native `generated-parity` gate runs dedicated and generated Gemma
+bindings through the same gateway method and portable session consumer. Tokens
+and cache coverage match, and its counter verifies the generated path executed.
+This is a compatibility gate using available weights, not a product speed claim.
+The binding migration also passes all eight compiled-decode parity/recovery
+checks and the Qwen3.8-27B TQ smoke below on the M1 Max 32 GB.
+
+`src/model/implementation.ts` defines the backend-parameterized
+`ModelImplementation` construction port and immutable registration table.
+`ModelExecutionComposition.implementation` lets an exact engine-owned artifact
+profile name its code. Existing identity/config guards perform the matching;
+the registry does not introduce another artifact matcher. `src/model/factory.ts`
+now registers the existing resident constructors, including generated Gemma,
+and selects one before construction. `openModel` checks the binding before
+opening weights; callers can compose profiles and implementations through its
+options. `createModel` accepts a registry for already-open weights. No selection
+is added to the token loop, and no model file format changes.
+Both factories preserve a supplied registry's return interface; replacement
+implementations need not join the concrete `RuntimeModel` union. Construction
+does not select the request's execution method. An implementation can support
+several methods, including quant-specific paths, while the session consumes
+the selected method's execution, output and cleanup contract. The shared
+contract does not require a shared numerical loop.
+
+Unknown artifacts retain existing family selection. Missing implementations,
+graph/loader/loop mismatches, duplicate IDs, and inconsistent exact identities
+fail explicitly. Construction failures propagate without trying another graph.
+Model-free tests exercise the factory with a synthetic exact quant identity and
+an alternate constructor; this establishes selection, not numerical or speed
+claims. No registration pretends to identify Josh's inaccessible quants.
+This step covers resident graph construction. Colibri retains its existing
+streamed opener and refuses supplied resident registries or named overrides
+until its resident loader binding exists. Existing class-based library exports
+remain available through compatibility binders. The server consumes the
+model-owned serving port; host implementations can own resident or streamed
+loading. Specialized inference methods remain.
+
+Artifact-parameterized native smoke gate:
+`MLX_BUN_QWEN_QUANT_PATH=/path/to/our/artifact bun test tests/parity/qwen-quant-engine.test.ts`.
+Run one artifact per process. Compatibility-only checks on the M1 Max 32 GB
+pass for the locally cached published `mjriii/Qwen3.8-27B` and
+`mjriii/Qwen3.8-27B-TQ`: direct-versus-bound logits, legacy-versus-session greedy
+output/cache coverage, and repeated recurrent-prefix borrowing. These are not
+Josh's current target quants. Target validation awaits access to those artifacts;
+implementation continues independently. The test is a bounded smoke, not a full model oracle or the
+recorded turn-8 repro. Gemma compiled-decode checks are secondary coverage too.
+
+R1 is complete. Incremental and final-only producers run the same lifecycle
+cases for collection/streaming, blocked-consumer cancellation, partial failure,
+and no-consumer/pre-cancelled settlement. Additional tests cover preparation
+cancellation, admission refusal, metadata bounds, and cleanup failures.
+
+R3 now gives request resources one checked owner. Transfer invalidates the
+previous owner, close is idempotent even after a destructor failure, and cleanup
+attempts all releases while preserving the original execution error. MLX state
+views expose a lease; prefill and prefix-cache accounting close it without
+knowing whether handles are borrowed or temporary. Only the compatibility
+adapter reads the legacy ownership marker. No tensor copy, evaluation or device
+synchronization is added by these leases. Fault-injection tests cover transfer,
+partial view acquisition and throwing destructors. Existing native fences remain
+in place; codec binding and persistence identity are described below.
+
+R4 now resolves method, scheduling mechanism, paged-KV fallback, prompt-cache
+bypass, fill eligibility and checkpoint eligibility in one portable planner.
+The gateway passes that immutable decision to serial execution; lane accounting
+uses the actual method, including AR fallback with a configured draft. Request
+policy arrays/maps are copied and frozen at admission. AR runtime settings and
+batch work flags use a binding snapshot. Native grammar/media preparation takes
+the gateway execution lease before allocation; text rendering remains outside
+that lease. Cancellation before/during preparation is covered with allocation
+and cleanup assertions.
+Native AR/speculative/denoising method creation now uses the same policy snapshot
+as HTTP admission. Scalar settings and nested policy arrays/maps cannot change
+between registration and the first reader demand. A binding without an explicit
+runtime captures the host default at method creation; kernels execute under
+that snapshot. Native caches, controllers and callbacks retain their declared
+ownership instead of being cloned with policy data.
+
+Checkpoint request identity is now canonical SHA-256 over sampling/stop policy,
+resolved execution and the artifact/implementation/state ABI. Object insertion
+order is ignored; array order remains meaningful. Version-4 keys include the
+resolved compiled/grammar policy; version-2/3 generation keys do
+not resume through this version; ordinary prefix-store format is unchanged.
+Nine native scheduling gates pass after planner integration, including rotating
+dynamic joins, row failure containment, serial drain, prefix sharing, SSD restore
+and compiled B=1. Preparation reservations now remain owned through execution; see below.
+
+R3 state persistence now uses `CacheCodecProvider`, bound through the server's
+model context, RAM cloner, batch snapshots and SSD store. A provider supplies
+clone/snapshot/restore/trimmability together; ambiguous matches refuse. Persisted
+provider identity is checked before cache allocation or mmap. Earlier v3 files
+implicitly use the legacy provider; a different provider must identify itself.
+Restore still copies one tensor at a time and unmaps only after those copies,
+so this change introduces no new device/backing lifetime assumption. Failed
+clone and snapshot construction release intermediate owned views.
+
+Adapter namespaces now hash the weight file plus scale/rank policy once at
+mount. Remounting the same name with different bytes or scale cannot reuse its
+old RAM prefix or generation checkpoint. The shared server cache uses that
+namespace for both lookup and persistence. Codec provider fault/round-trip tests
+pass; native persistence passes five cells with one unavailable golden skipped,
+and dedicated/generated Gemma passes six cells, including direct logit identity.
+
+R5 now shares a portable prefill program between serial AR and solo batch
+admission. Its MLX executor preserves drain evaluation, KV maintenance, allocator
+clears, stable-boundary snapshots, and the separate final-token forward. Batch
+admission retains its short-tail scheduling behavior. Six native scheduler
+checks pass, including dynamic rows, prompt reuse, SSD restore and compiled B=1;
+the dedicated/generated same-session test also passes on the M1 Max 32 GB.
+The native AR method run owns its generator's pending tokens, history and
+checkpoint boundary. Phase-specific tests now cover cancellation before any
+cache allocation, after a prefill chunk, after decode dispatch/before emission,
+and while an asynchronous checkpoint borrows live state. Cancellation waits for
+the checkpoint to finish before releasing state. Current-token logprob arrays
+remain owned until readback succeeds, including forward/grammar failure;
+cancelled execution stops before emission or a subsequent checkpoint write.
+
+R6 now runs the speculative verifier through `MlxSpeculativeBinding`. Target
+forwards, projection, tap capture, draft construction and kernel pinning bind
+outside the verifier. Legacy tap contexts restore their previous value on exit.
+The complete rollback facet validates recurrent begin/commit/replay together;
+partial layer failures invalidate the transaction and the run discards its state.
+Ring-capacity fallback retains its strict pre-write boundary. The verifier owns
+input/hidden scratch on failure and attempts every final release.
+
+AR and speculative methods now implement `InferenceMethod` directly. Their shared
+host adapter translates cancellation and waits for native cleanup. The same
+session tests exercise collection, streaming, early reader closure and forward
+failure for both. Four native Qwen3.5-0.8B gates pass, including recurrent
+rejections and identical speculative acceptance traces through a portable
+session. This smaller available model supplies compatibility coverage only.
+Denoising now implements that same method/session contract through a separate
+`DenoisingGraph<Tensor, State>`. Its test binding uses a position-only state
+record, with no AR cache or token-prefix API. The existing synchronous diffusion
+entry and cooperative generation drain one denoising program. Cooperative calls
+yield between denoising steps and publish only the final output; cancellation
+releases canvas, feedback, embedding weights and graph state. Generation holds
+the existing exclusive runtime lease, including the diffusion global RNG.
+
+Scripted regression tests cover both samplers, RNG-dependent canvases across
+multiple blocks, sync/async identity, preparation failure, cancellation between
+steps and repeated-run native memory accounting. The existing soft-embedding
+lifetime test passes. Diffusion weights are absent on this machine, so its
+weight/oracle gates remain unrun. Draft sources now consume declared target
+ports for assistant donor views/scaled embeddings, Gemma hidden taps/output
+projection and Qwen MTP embeddings/output projection. The target view contains
+no concrete model or cache array; the MLX compatibility binder owns family
+checks and donor layout. Native GLM providers compare an opaque target identity
+before borrowing their own model-owned weights. Both retained DSpark variants
+use the projection interface. Missing extensions refuse before draft allocation.
+An independent assistant target fixture proves construction and draft cleanup
+without a model class; donor acquisition releases partial views on failure.
+The locally cached published Qwen3.8-27B and its bundled MTP head pass the
+same-artifact greedy comparison after this migration. This does not establish
+performance or compatibility for Josh's unavailable exact quants.
+
+R7 now separates the portable scheduling driver from `MlxBatchExecutionGroup`.
+The driver sees queue/active counts, admission readiness and bounded work units;
+it imports no model, cache, tensor or runtime implementation. Native admission,
+merge/extract/filter, sampling and pipeline state live in `src/backends/mlx/`.
+A compatibility re-export preserves existing batch-scheduler imports.
+
+The driver retains short-admission grouping, long-prefill interleaving, serial
+drain and the 25 ms single-row responsiveness budget. Six native scheduler
+checks and two native failure-containment/serial-drain checks pass. Policy tests cover those ordering rules, execution failure and
+lease release; backend fault tests cover a request removed from the queue when
+admission fails, retained-prefix cleanup, shutdown and submission after close.
+Closing a group stops at a safe boundary, rejects pending/active requests and
+releases owned state. Bounded request and preparation queues now reject overflow explicitly. The full
+mixed-state concurrency/performance matrix remains open.
+
+R8 now shares Pi/browser messages, history, sampling data and route IDs in
+`src/contracts/pi.ts`. Compatibility re-exports preserve server-side imports.
+The browser TypeScript project has no Bun ambient types; Bun UI tests remain
+covered by the root project. The resolved-import gate prevents browser modules
+from importing server implementations, including type-only imports.
+
+R4/R7 admission now uses a portable FIFO `AdmissionPool`. The gateway bounds
+active requests and queued waiters; cancelled waiters do not release another
+request's capacity. Media and grammar preparation reserve capacity before native
+allocation. The request owner retains that reservation after transferring native
+resources to execution, then releases it on success, failure or cancellation.
+The direct batch group also bounds pending submissions. Overload is explicit in
+the existing HTTP/SSE error contract. Nine native scheduling checks pass after
+this integration, including rotating joins, failure containment, prefix/SSD reuse
+and compiled B=1. The gateway's shared execution lease covers preparation,
+generation and managed GPU jobs.
+
+R8 is complete: completion/batch/task contracts are portable. Memory calls accept an injected
+client; their existing native implementation moved behind a lazy backend import.
+Eval generation accepts a replacement completion client and retains its separate
+bit-exact greedy oracle path in the MLX backend. Training and quantization keep
+their numerical runners and artifact results; both job execution modes now use
+the task adapter. Progress delivery is synchronous and unbuffered; cooperative
+cancellation checks before work and at progress boundaries. Native work already
+dispatched still completes at its safe boundary.
+
+Pi's embedded registry and generated extension use one model-definition builder.
+Job and Pi/browser messages now share portable declarations. New `mlx-bun/engine`
+and `mlx-bun/client` exports import without MLX; `initializeMlx()` explicitly
+bootstraps the compatibility API. The existing root import remains compatible.
+The JSON completion client uses either HTTP or an `EngineHost` without changing
+callers, preserves abort, and never retries completion POSTs.
+
+R9 adapts the existing `EngineChild` into `EngineHost`, bounds restart attempts,
+cancels restart backoff on close, kills failed startup, and checks disconnect
+while waiting for readiness. Model-pool startup failures and shutdown close their
+owned children; an evicted default can be resolved again for an absent/unknown
+model request. The fake-host proxy suite now runs in the model-free CI tier.
+Real MiniCPM JSON and incremental SSE requests pass through the isolated host.
+
+Managed GPU subprocess jobs reserve the same gateway lease as inference: the
+current batch drains before spawn, and the job retains the lease through child
+exit, including crashes. Host shutdown cancels admission/queued jobs and terminates
+its active job before releasing the lease. Fault tests cover rejected admission,
+spawn failure, child death and shutdown. The isolation parent now owns job/settings routes and their store. A portable
+shared/exclusive coordinator covers every worker's startup, restart, response
+body and eviction. Before GPU job spawn, live UDS lease responses reserve each
+worker's gateway after durability flush; disconnect releases the worker lock.
+Those connections remain owned through subprocess exit, not merely until a
+client HTTP disconnect. Native MiniCPM checks verify that generation waits for
+the parent lease and resumes after release. Worker death does not remove parent
+job records. In-process task cancellation waits for runner cleanup before closing
+the store. The parent serves the same embedded web assets and owns Responses
+conversation history; direct and isolated serving share conversation-resolution
+policy. Workers skip duplicate history retention for parent-owned requests. A
+real worker replacement preserves previous-response continuation and streamed
+metadata. WebSocket chat remains an explicit unsupported isolation cell. No
+process-host default has changed. R9's direct/isolated transport comparison is
+complete on the M1 Max using the same MiniCPM artifact and CLI/request cells:
+completion and chat probes each matched 64 greedy tokens; cold, warm, SSD
+restart and concurrent legs completed. The run is diagnostic because the quiet
+gate failed. The optional `mlx-bun-isolated` benchmark arm accounts for parent
+and worker RSS; raw reports stay machine-local. R9 is complete for the retained
+opt-in host; promotion and the other machine's scorecard remain R10 gates.
+
+The current model-free suite passes; root, browser and portable typechecks pass.
+Native state checks cover mixed-KV oracle logits, wrapped-ring conversion,
+speculative recurrent rollback and persistence. The Qwen B=2 oracle and one
+Qwen persistence fixture are absent and skip. The binary builds and its CLI/Pi
+asset smoke passes. Managed jobs now self-exec the packaged binary; literal
+runner imports retain quantize/train code in the bundle, and a compiled
+subprocess smoke verifies progress and terminal persistence. These checks do not replace the unavailable artifact/machine
+cells or the final production acceptance gate.
+
+The Qwen replay now has a native exception diagnosis: Metal reports insufficient
+memory from its completion handler. Details remain in the existing turn-8 repro.
+Josh reports a possible fix on the other machine; reconcile it before changing
+the affected state path. The 2026-09-05 benchmark preflight found 4 GB of existing swap and high
+background CPU load. Measurements taken without that gate are diagnostic only.
+Quiet-machine baselines remain open. Remaining R0–R10
+work is tracked in PLAN.md; no speed/quality/size improvement is claimed yet.
+
+The first per-file native matrix at `a75cd39` ran 84 local parity files with
+batch-decode opt-in: 338 passes, 44 skips and seven failed assertions. Five
+audio failures were a fixture path left behind by the test-directory move.
+The two numerical failures reproduced on baseline `6d45ca1`: the local CPM
+mixed-KV blobs did not match their manifest hashes, and CPM extend-join fell
+back to the M4 reference because no M1 override existed. The pinned Python
+oracle regenerated the mixed-KV manifest's exact hashes and an M1 extend-join
+trajectory identical to the implementation. The corrected batch suites pass
+15 tests with one unavailable e4b oracle skip. Tests now check blob hashes;
+the mixed-KV generator writes blobs and manifests to the same resolved output
+directory. A second per-file run enables the local train/quantize/LoRA/generated
+and model-family gates. Two rotating-quantized continuation failures also
+reproduced on the baseline: the test compared `generate()`'s bf16-head/quantize/
+tail prefill with a fully quantized single-forward oracle. The generator now
+records both procedures separately. Existing mechanics, single-forward logits
+and trajectories regenerated unchanged; the matching serving trajectories pass
+the original prefix threshold. All six rotating tests pass. Missing new
+continuation fixtures skip explicitly on other machines until regeneration.
+A process that exits successfully without registering tests is not a passing
+matrix cell; absent large-model/drafter fixtures remain open.
+The production test runner now uses a fresh process for each native test file,
+preserving model residency and runtime isolation between cells. The complete
+default runner passed at `2a14021`, including hygiene,
+all TypeScript projects, the model-free suite and available parity/research
+tests. Optional cells are reported separately; a green default run does not
+imply unavailable weights or opt-in cases ran.
+That run reports 2,344 passes, 98 skips and no failures, with 109 native files
+each receiving a fresh process.
+The expanded runner at `ab0db74` enabled the locally applicable model-family,
+training, quantization, LoRA and batch-decode gates: 2,427 passes, 44 skips and
+no failures across the model-free tier and 109 native files. Ten native files
+registered no tests because their configured model/drafter fixtures were absent;
+those are unavailable cells, not passes. At `b9b56aa`, the model-free suite
+passed 1,718 tests with 10 skips. All TypeScript projects, hygiene and compiled
+CLI/Pi/assets/job smokes passed. The subsequent focused native run passed 44
+tests covering batch lifecycle, SSD state, generated graphs, ngram verification,
+both available published Qwen graph/session bindings and the published Qwen MTP
+target/draft pair. Explicit MTP paths supplied one previously unavailable cell.
+These results do not close the target-artifact, second-machine or default-cutover
+gates.
+
+The sequential Gemma e4b repeat compares baseline `6d45ca1` with `5e3b92e`
+using default and serial HTTP arms, the same artifact, a 4K context and 96
+requested tokens. Both arms preserve the completion/chat greedy probes and
+durable restart state. The earlier long-context prefill slowdown and default-arm
+RSS increase did not reproduce; warm-cache latency still varies across runs.
+Background load and existing swap keep these reports diagnostic. This repeat
+does not establish a speed win or satisfy the quiet-machine frontier gate.
+
+R10's implementation-retention review currently records these decisions. None
+of the open measurement cells changes an existing numerical default:
+
+| Implementation | Current disposition and remaining evidence |
+|---|---|
+| Pi provider wiring | Consolidated into one builder; generated-extension and binary asset tests pass. Duplicate policy is removed |
+| Dedicated/generated Gemma | Both register through the engine and pass the same session/oracle gates. Keep both during paired comparison; numerical equivalence alone does not choose a winner |
+| Compiled decode | Retained behind the declared decoder capability and resolved eligibility. Existing recovery/parity gates pass; final paired regression measurements remain required |
+| Diffusion | One denoising program and method interface replace duplicate orchestration. Real model/oracle fixtures remain unavailable; no promotion or deletion decision is implied by scripted tests |
+| Assistant/DSpark/DeepSpec/MTP | Typed draft target ports replace concrete target dispatch. Available Qwen MTP and ngram verification pass; source-specific drafter validation and the DSpark wall-clock decision remain open in the speculative program |
+| Curve/HLG and paged KV | Existing opt-in placement and refusals remain. Their experiment-specific quality/performance gates remain open; this refactor does not make them defaults |
+| Expert offload | Existing streamed GLM loading/task semantics remain behind native bindings; model-free streamed/provider tests and packaged task entry pass. The larger-model value/footprint decision remains in its own program |
+The final server cutover is implemented at `015f56d`. The model-free suite passes
+1,732 tests with 10 skips. Fresh native processes run all 109 parity/research
+files with the locally applicable opt-ins, including the published Qwen target
+and MTP paths: 720 passes, 33 skips, no failures. Nine fixture-dependent files
+register no tests and remain unavailable cells. The second published Qwen TQ
+artifact also passes the graph/session test. The public replacement and import/
+docs boundary checks pass after the final exports. Commit `d1abd60` also puts
+embeddings under the shared GPU lease. Its new ownership test, the public
+replacement test and both native embedding-route tests pass. All three
+TypeScript projects pass, as does hygiene. The standalone binary built at
+`d1abd60` passes CLI, Pi asset and managed-job subprocess smoke checks.
+
+The final HTTP comparison uses the frozen `6d45ca1` baseline and this branch on
+the M1 Max 32 GB, with MiniCPM5 and Gemma e4b, default and serial arms, a 4k
+context and 96 generated tokens. The first candidate run overlapped a repository
+hygiene scan and showed slower e4b long prefill and SSD restart. A sequential
+e4b repeat without other checks removed the long-prefill gap, but restart
+latency still varied. A further candidate-then-baseline default-arm pair removed
+that restart gap too. Completion and chat parity probes match between default
+and serial arms; every restart restores a durable prefix with no failed or
+dropped spills. These loaded-machine diagnostics do not establish a quiet
+performance acceptance result. Raw reports remain local in
+`/tmp/mlx-bun-cutover-{baseline,candidate}-report.md`,
+`/tmp/mlx-bun-cutover-repeat-{baseline,candidate}-report.md` and
+`/tmp/mlx-bun-cutover-reverse-{baseline,candidate}-report.md`.
+
+R1–R9 implementation and R10 code migration are complete. Existing model-class
+exports use backend compatibility binders; there is one default session lifecycle
+and no alternate legacy HTTP executor. R10's retained implementations keep their
+existing placement and numerical defaults. Their independent experiment programs
+still own promotion/deletion decisions. Quiet performance, exact target quants,
+unavailable oracle/drafter fixtures and the second machine remain acceptance
+work, not missing interface code. No frontier advance is claimed by this refactor.

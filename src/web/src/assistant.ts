@@ -1,3 +1,5 @@
+import type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../contracts/pi";
+export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../contracts/pi";
 // GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
 // §6.6 "the app-aware assistant", §9 Phase 3, beat matrix Axis 12). Built
 // into src/web/app.js by scripts/build-web.ts.
@@ -25,42 +27,6 @@
 //     like one.
 
 import { getSpotlightTarget, isViewId, ROUTE_LABELS, type RouteId, type ViewId } from "./ui-catalog";
-
-/* ────────────────────────────────────────────────────────────────────
-   1. SEE — the structured DOM snapshot
-   ──────────────────────────────────────────────────────────────────── */
-
-export interface UiSnapshotElement {
-  ref: string;
-  tag: string;
-  label: string;
-  kind: "interactive" | "region";
-  role?: string;
-  selector: string;
-  spotlightId?: string;
-}
-
-export interface UiSnapshot {
-  route: string;
-  capturedAt: string;
-  elements: UiSnapshotElement[];
-}
-
-/** Process-state fields layered onto the snapshot (§6.6 "the snapshot
- *  carries process state, not just elements") — wizard step for the
- *  quantize/finetune/dataset wizards, when the current route has one.
- *  Derived by reading the DOM the step indicator already renders
- *  (markdown.ts's renderSteps into #q-steps/#f-steps/#d-steps + the
- *  [data-qstep]/[data-fstep]/[data-dstep] visibility toggle quantize.ts/
- *  finetune.ts/dataset.ts already do) rather than adding a callback hook to
- *  those three controllers — zero behavior change to files outside this
- *  wave's scope, and the DOM IS the source of truth those controllers
- *  already write to. */
-export interface WizardStep {
-  index: number;
-  count: number;
-  label: string;
-}
 
 const STEP_CONTAINER_BY_ROUTE: Partial<Record<RouteId, string>> = {
   quantize: "q-steps",

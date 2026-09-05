@@ -110,8 +110,7 @@ export type FillMode = "off" | "strict" | "echo";
 /** MLX_BUN_FILL=off|strict|echo (default off). `echo` is additive: the strict
  *  rows still apply (and stay policy "assert"); the echo index joins as a
  *  second, weaker source. Lab tier — default off, A/B before any default. */
-export function resolveFillMode(): FillMode {
-  const raw = runtimeValue("MLX_BUN_FILL");
+export function resolveFillMode(raw = runtimeValue("MLX_BUN_FILL")): FillMode {
   if (raw === undefined || raw === "" || raw === "off" || raw === "0") return "off";
   if (raw === "strict" || raw === "1") return "strict";
   if (raw === "echo") return "echo";

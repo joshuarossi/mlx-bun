@@ -18,6 +18,7 @@ import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { renderPiExtension } from "../src/harness-pi";
 import {
   AuthStorage,
   createAgentSession,
@@ -48,6 +49,24 @@ function fail(stage: string, err: unknown): never {
 
 async function main(): Promise<void> {
   console.error(`[pi-smoke] execPath=${process.execPath}`);
+
+  // Generated extensions embed a shared function's source. Check the actual
+  // compiled representation too: bundler rewrites must leave it self-contained.
+  try {
+    const source = new Bun.Transpiler({ loader: "ts" }).transformSync(
+      renderPiExtension("http://engine/v1", []));
+    const extension = new Function("fetch", `${source.replace("export default", "return")}`)(
+      async () => Response.json({ data: [{ id: "packaged/model", context_window: 65536,
+        reasoning: true, vision: true }] }));
+    let definition: any;
+    await extension({ registerProvider(_id: string, value: unknown) { definition = value; } });
+    const model = definition?.models?.[0];
+    if (model?.id !== "local" || model?.name !== "packaged/model (mlx-bun local)" ||
+        model?.contextWindow !== 65536 || model?.compat?.supportsDeveloperRole !== false ||
+        model?.compat?.thinkingFormat !== "qwen-chat-template" || !model?.input?.includes("image"))
+      throw new Error("generated provider changed its contract");
+    console.error("[pi-smoke] OK: compiled standalone provider discovery");
+  } catch (error) { fail("generated provider", error); }
 
   // ---- Check 1: SDK + resource-loader assets resolve (headless) -------
   // This builds the exact session pi-web.ts builds. Any missing bundled

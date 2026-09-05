@@ -14,6 +14,8 @@ function stubModel(): DiffusionGemmaModel {
     canvasLength: CANVAS,
     embedScale: 1,
     prefill: () => [],
+    extendPrefill() { throw new Error("unexpected continuation"); },
+    softEmbeddings() { throw new Error("unexpected confidence sampler"); },
     dequantEmbedWeight: () =>
       MlxArray.fromFloat32(
         Float32Array.from({ length: VOCAB * HIDDEN }, (_, i) => (i % HIDDEN) / HIDDEN),

@@ -2,28 +2,14 @@
 // §7/§9 Phase 3, §6.6 "app-aware assistant"). Built into src/web/app.js by
 // scripts/build-web.ts.
 //
-// The frontend half of the app-aware assistant's route/spotlight catalog.
-// Mirrors PortfolioManager's ui-catalog.json pattern (client/src/lib/
-// ui-catalog.ts + server/src/agent/ui-catalog.ts, read together with
-// server/src/agent/portfolio-tools.ts as the reference implementation) but
-// inlined as a TS module (not a shared JSON file) since mlx-bun's server and
-// browser bundles are separate build outputs (scripts/build-web.ts vs bun's
-// own TS execution) with no shared-JSON-import convention today — pi-web.ts
-// mirrors ROUTE_IDS/SPOTLIGHT_TARGETS as plain string arrays for its own
-// server-side validation (navigate_app/spotlight_ui reject anything not in
-// that list BEFORE touching the browser) so route validity is checked at
-// both ends without a build-time shared asset.
-//
-// Keep this list's ROUTE_IDS in sync with shell.ts's ROUTES tuple (chat,
-// quantize, finetune, dataset, status) plus the Developer-only overlays that
-// aren't hash-routes (memory panel, hub panel, settings) — those are
-// `view`s, not `route`s (see UiContext.view below), reached by opening an
-// overlay rather than changing the URL hash.
+// Shared route IDs keep browser navigation and server validation in agreement.
+// Spotlight selectors and overlay IDs belong to the browser.
 
 /** A hash-routed page (shell.ts's Route union, minus "routes" — the DAG
  *  diagram tab isn't a useful assistant destination and is itself
  *  feature-detected/hidden when unavailable). */
-export const ROUTE_IDS = ["chat", "quantize", "finetune", "dataset", "status"] as const;
+import { APP_ROUTE_IDS as ROUTE_IDS } from "../../contracts/pi";
+export { ROUTE_IDS };
 export type RouteId = (typeof ROUTE_IDS)[number];
 
 /** A non-route overlay/panel the assistant can navigate to or spotlight

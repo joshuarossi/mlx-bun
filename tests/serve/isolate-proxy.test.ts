@@ -133,7 +133,8 @@ describe("model pool (fake engines)", () => {
   const mkPool = (poolMax: number) => {
     const resolve = (q: string) =>
       q === "model-a" ? { repoId: "model-a", path: "/models/a" } :
-      q === "model-b" ? { repoId: "model-b", path: "/models/b" } : null;
+      q === "model-b" ? { repoId: "model-b", path: "/models/b" } :
+      q === "model-c" ? { repoId: "model-c", path: "/models/c" } : null;
     const selfArgv = [process.execPath, "run", FIXTURE];
     const rawArgs = ["serve", "some-query", "--batch", "2"];
     const started = startProxyServer({
@@ -171,8 +172,15 @@ describe("model pool (fake engines)", () => {
     expect(eng.pool.resident.sort()).toEqual(["model-a", "model-b"]);
   }, 30_000);
 
-  test("pool cap 1: switching drains + demotes + evicts the old model, and back again", async () => {
+  test("concurrent cold switches each reach their selected worker before eviction", async () => {
     const { base } = mkPool(1);
+    expect((await ask(base)).served_by).toBe("/models/a");
+    const results = await Promise.all([ask(base, "model-b"), ask(base, "model-c")]);
+    expect(results.map((result) => result.served_by)).toEqual(["/models/b", "/models/c"]);
+  }, 30_000);
+
+  test("pool cap 1: switching drains + demotes + evicts the old model, and back again", async () => {
+    const { base, pool } = mkPool(1);
     const drainMarker = `${sockFor("model-a")}.drained`;
     rmSync(drainMarker, { force: true });
     expect((await ask(base, "model-a")).served_by).toBe("/models/a");
@@ -182,10 +190,22 @@ describe("model pool (fake engines)", () => {
     for (let i = 0; i < 20 && !existsSync(drainMarker); i++)
       await new Promise((r) => setTimeout(r, 100));
     expect(existsSync(drainMarker)).toBe(true);
-    const eng = await (await fetch(`${base}/engine`)).json() as { pool: { resident: string[] } };
+    const eng = await (await fetch(`${base}/engine`)).json() as {
+      pid: number | null; restarts: number | null; socket: string | null;
+      pool: { resident: string[] };
+    };
     expect(eng.pool.resident).toEqual(["model-b"]);
+    expect(eng.pid).toBeNull();
+    expect(eng.restarts).toBeNull();
+    expect(eng.socket).toBeNull();
+    expect(pool!.residentKeys).toEqual(["model-b"]);
 
     // ... and switching BACK respawns model-a (state would restore from SSD)
-    expect((await ask(base, "model-a")).served_by).toBe("/models/a");
+    expect((await ask(base)).served_by).toBe("/models/a");
+    const restored = await (await fetch(`${base}/engine`)).json() as { pid: number; socket: string };
+    expect(restored.pid).toBe(pool!.child("model-a")!.pid!);
+    expect(restored.socket).toBe(pool!.child("model-a")!.spec.socketPath);
+    expect((await ask(base, "model-b")).served_by).toBe("/models/b");
+    expect((await ask(base, "unknown")).served_by).toBe("/models/a");
   }, 30_000);
 });

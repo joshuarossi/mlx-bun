@@ -12,6 +12,9 @@ import {
   type Glm52Config,
 } from "../../src/model/glm52-config";
 import { ColibriGlm52Container } from "../../src/model/glm52-container";
+import { openModel } from "../../src/model/factory";
+import { ModelImplementationRegistry } from "../../src/model/implementation";
+import type { Weights } from "../../src/weights";
 
 type Dtype = "U8" | "I8" | "F32";
 
@@ -208,6 +211,15 @@ describe("GLM-5.2 config", () => {
       expect(() => parseTiny(override)).toThrow(pattern);
     }
     expect(() => parseTiny({ eos_token_id: null }, null)).toThrow(/no EOS/);
+  });
+
+  test("a supplied resident registry cannot silently return the default streamed model", async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, "config.json"), JSON.stringify(tinyRaw()));
+    const implementations = new ModelImplementationRegistry<Weights, { methods: readonly string[] }>([]);
+    // There are no weights here. Refusal must precede any default loader work.
+    await expect(openModel(dir, { implementations }))
+      .rejects.toThrow(/custom Colibri implementations require a streamed loader binding/);
   });
 });
 

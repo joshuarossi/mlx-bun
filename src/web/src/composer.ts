@@ -10,8 +10,8 @@
 // the original single IIFE), but every WS send goes through a callback
 // passed in from chat.ts, which owns the actual WebSocket.
 
-import type { ReadyGenDefaults, SamplingOverrides } from "../../pi-web";
-import type { Lane } from "../../serve/lane-registry";
+import type { ReadyGenDefaults, SamplingOverrides } from "../../contracts/pi";
+import type { Lane } from "../../contracts/pi";
 import { api } from "./api";
 import type { ApiEnvelope } from "./protocol";
 import {

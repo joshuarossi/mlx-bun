@@ -13,7 +13,9 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const PI_EXTENSION_FILENAME = "mlx-bun-provider.ts";
-export const PI_PROVIDER_ID = "mlx-bun";
+import { PI_PROVIDER_ID, PI_LOCAL_MODEL_ID, PI_API_KEY, PI_API, piModelDefinition,
+  DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS } from "./contracts/pi-provider";
+export { PI_PROVIDER_ID, PI_LOCAL_MODEL_ID } from "./contracts/pi-provider";
 /** Stable pi-facing model id. The server runs exactly one model at a time
  *  (memory: the 26B alone is 18 GB) and which one varies run-to-run, so
  *  advertising the real, changing repo id makes pi's persisted default go
@@ -21,7 +23,7 @@ export const PI_PROVIDER_ID = "mlx-bun";
  *  model is loaded; the real model is carried in the `name` field, and the
  *  server still reports the true id in /v1/models and responses. Gives a
  *  clean `mlx-bun/local` handle instead of `mlx-bun/mlx-community/…`. */
-export const PI_LOCAL_MODEL_ID = "local";
+
 // 127.0.0.1 (the server's actual default bind), not "localhost": the generated
 // extension runs under the USER'S pi (node/jiti, not Bun), so don't depend on
 // how that runtime's resolver maps localhost.
@@ -89,8 +91,8 @@ export async function fetchServerModels(baseUrl: string, timeoutMs = 3000): Prom
     if (!served) return [];
     return [{
       id: served.id,
-      contextWindow: served.context_window ?? 32768,
-      maxTokens: 8192,
+      contextWindow: served.context_window ?? DEFAULT_CONTEXT_WINDOW,
+      maxTokens: DEFAULT_MAX_TOKENS,
       reasoning: !!served.reasoning,
       vision: !!served.vision,
     }];
@@ -120,6 +122,7 @@ export function renderPiExtension(baseUrl: string, fallbackModels: ServerModel[]
 // is the fallback when the server isn't running.
 const BASE_URL = ${JSON.stringify(baseUrl)};
 const FALLBACK_MODELS = ${fallback};
+const modelEntry = ${piModelDefinition.toString()};
 
 export default async function (pi: any) {
   let models = FALLBACK_MODELS;
@@ -131,27 +134,19 @@ export default async function (pi: any) {
         // The SERVED model is the row with the capability extras (first);
         // the rest are servable-but-not-served registry entries.
         const served = data.find((m: any) => m.context_window !== undefined) ?? data[0];
-        models = [{
-          id: ${JSON.stringify(PI_LOCAL_MODEL_ID)},
+        models = [modelEntry({
           name: \`\${served.id} (mlx-bun local)\`,
-          reasoning: !!served.reasoning,
-          compat: {
-            supportsDeveloperRole: false,
-            ...(served.reasoning ? { thinkingFormat: "qwen-chat-template" } : {}),
-          },
-          input: served.vision ? ["text", "image"] : ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: served.context_window ?? 32768,
-          maxTokens: 8192,
-        }];
+          reasoning: !!served.reasoning, vision: !!served.vision,
+          contextWindow: served.context_window,
+        })];
       }
     }
   } catch {}
   if (models.length === 0) return; // nothing to register
   pi.registerProvider(${JSON.stringify(PI_PROVIDER_ID)}, {
     baseUrl: BASE_URL,
-    apiKey: "sk-mlx-bun-local",
-    api: "openai-completions",
+    apiKey: ${JSON.stringify(PI_API_KEY)},
+    api: ${JSON.stringify(PI_API)},
     models,
   });
 }
@@ -159,21 +154,7 @@ export default async function (pi: any) {
 }
 
 function modelEntry(m: ServerModel) {
-  return {
-    id: PI_LOCAL_MODEL_ID,
-    name: `${m.id} (mlx-bun local)`,
-    reasoning: !!m.reasoning,
-    // Kept aligned with buildPiProvider (src/pi-provider.ts): the system
-    // prompt must arrive as `system`, not `developer`.
-    compat: {
-      supportsDeveloperRole: false,
-      ...(m.reasoning ? { thinkingFormat: "qwen-chat-template" } : {}),
-    },
-    input: m.vision ? ["text", "image"] : ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: m.contextWindow,
-    maxTokens: m.maxTokens,
-  };
+  return piModelDefinition({ ...m, name: `${m.id} (mlx-bun local)` });
 }
 
 export interface InstallResult {

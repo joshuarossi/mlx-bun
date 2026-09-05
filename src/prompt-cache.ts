@@ -1,3 +1,5 @@
+import { leaseCacheState } from "./backends/mlx/state-views";
+import { withResource, cleanupFailure, disposeResources, ownResource } from "./engine/resources";
 // Byte-capped LRU prompt cache — the RAM tier of the Layer-0 KV store.
 //
 // The mlx-lm lesson (PLAN.md): a count-capped cache of multi-GB KV
@@ -105,14 +107,7 @@ export interface PromptCacheEntry {
 export function cacheBytes(caches: Cache[]): number {
   let total = 0;
   for (const c of caches) {
-    const state = c.state();
-    for (const a of state) total += a.nbytes;
-    // Most Cache kinds' state() returns their own live-owned arrays (safe
-    // to just read), but TurboQuantKVCache allocates fresh trimmed slice
-    // views per call (kv-store.ts snapshotCache/cloneKvCaches contract) —
-    // those must be disposed here or they leak (see generate.ts
-    // evalCacheState for the same hazard on the prefill path).
-    if (c.stateNeedsDispose) for (const a of state) a.dispose();
+    total += withResource(leaseCacheState(c), (state) => state.reduce((bytes, a) => bytes + a.nbytes, 0));
   }
   return total;
 }
@@ -202,8 +197,8 @@ export class PromptCache {
         if (spill) try { spill(entry); } catch {}
       }
     }
-    for (const c of entry.caches) c.dispose();
-    entry.retain?.();
+    disposeResources(entry.caches);
+    entry.retain?.(); // backing release requires successful cache disposal
   }
 
   get totalBytes(): number {
@@ -258,27 +253,22 @@ export class PromptCache {
       if (hit && hit.prefixLen > bestLen) {
         const loaded = this.#cold.restore(hit.handle);
         if (loaded) {
-          const trimNeeded = loaded.tokens.length - hit.prefixLen;
-          if (trimNeeded > 0 && !loaded.caches.every((c) => c.isTrimmable())) {
-            // Divergent tail on an untrimmable kind: this file can't seed
-            // the prompt — fall back to the RAM candidate. Loud: this used
-            // to be the silent 84 s "restore-then-re-prefill" path (the
-            // whole cold tier degrading with zero observables, 2026-07-06).
-            console.warn(
-              `[prompt-cache] cold entry unusable: ${loaded.tokens.length} tokens, ` +
-              `needs trim ${trimNeeded} but untrimmable (wrapped ring/SSM) — re-prefilling`,
-            );
-            for (const c of loaded.caches) c.dispose();
-            loaded.retain();
-          } else {
-            if (trimNeeded > 0) for (const c of loaded.caches) c.trim(trimNeeded);
-            return {
-              tokens: loaded.tokens.slice(0, hit.prefixLen),
-              caches: loaded.caches,
-              ns,
-              retain: loaded.retain,
-            };
-          }
+          const owner = ownResource(loaded, (entry) =>
+            this.#disposeEntry({ ...entry, ns }, false));
+          const result = withResource(owner, (entry) => {
+            const trimNeeded = entry.tokens.length - hit.prefixLen;
+            if (trimNeeded > 0 && !entry.caches.every((cache) => cache.isTrimmable())) {
+              console.warn(
+                `[prompt-cache] cold entry unusable: ${entry.tokens.length} tokens, ` +
+                `needs trim ${trimNeeded} but untrimmable (wrapped ring/SSM) — re-prefilling`,
+              );
+              return null;
+            }
+            if (trimNeeded > 0) for (const cache of entry.caches) cache.trim(trimNeeded);
+            const tokens = entry.tokens.slice(0, hit.prefixLen);
+            return { ...owner.transfer(), tokens, ns };
+          });
+          if (result) return result;
         }
       }
     }
@@ -298,7 +288,11 @@ export class PromptCache {
     rec.lastUsedMs = Date.now();
     const clones = this.#clone(rec.entry.caches);
     const trimNeeded = rec.entry.tokens.length - bestLen;
-    if (trimNeeded > 0) for (const c of clones) c.trim(trimNeeded);
+    try {
+      if (trimNeeded > 0) for (const c of clones) c.trim(trimNeeded);
+    } catch (error) {
+      cleanupFailure(error, () => disposeResources(clones));
+    }
     return {
       tokens: rec.entry.tokens.slice(0, bestLen),
       caches: clones,
@@ -337,10 +331,20 @@ export class PromptCache {
    *  (spilling each to the cold tier first, when one is attached). If the
    *  entry itself exceeds the cap it is spilled + disposed, not stored. */
   put(tokens: number[], caches: Cache[], ns = "", retain?: () => void): void {
+    // All cache-provided validation runs before ownership is adopted.
     const bytes = cacheBytes(caches);
+    const trimmable = caches.every((cache) => cache.isTrimmable());
+    const discard = (entry: PromptCacheEntry, spill: boolean) => {
+      try { this.#disposeEntry(entry, spill); }
+      catch (error) {
+        // The new entry is already owned here. Throwing back to its previous
+        // owner would invite disposal of state still held by this store.
+        console.warn(`[prompt-cache] entry cleanup failed: ${error}`);
+      }
+    };
     const entry: PromptCacheEntry = { tokens, caches, ns, retain };
     if (bytes > this.maxBytes) {
-      this.#disposeEntry(entry, true);
+      discard(entry, true);
       return;
     }
     // The donor's retain becomes ref-counted so take()'s clones can hold
@@ -359,7 +363,7 @@ export class PromptCache {
       if (old.entry.tokens.length !== tokens.length) continue;
       if (commonPrefixLength(old.entry.tokens, tokens) !== tokens.length) continue;
       this.#entries = this.#entries.filter((r) => r !== old);
-      this.#disposeEntry(old.entry, false);
+      discard(old.entry, false);
     }
     // SUPERSEDE strict prefix-ancestors (the SSD store's rule, brought to
     // RAM — prefix sharing would otherwise grow an entry per turn): same-ns
@@ -370,13 +374,13 @@ export class PromptCache {
     // can only serve exact-length matches, so shorter ancestors — e.g.
     // the prompt-boundary snapshot that makes drifted multi-turn agents
     // hit — must survive.
-    if (caches.every((c) => c.isTrimmable())) {
+    if (trimmable) {
       for (const old of [...this.#entries]) {
         if (old === rec || old.entry.ns !== ns) continue;
         if (old.entry.tokens.length >= tokens.length) continue;
         if (commonPrefixLength(old.entry.tokens, tokens) !== old.entry.tokens.length) continue;
         this.#entries = this.#entries.filter((r) => r !== old);
-        this.#disposeEntry(old.entry, false);
+        discard(old.entry, false);
       }
     }
     while (this.totalBytes > this.maxBytes && this.#entries.length > 1) {
@@ -384,7 +388,7 @@ export class PromptCache {
       for (let i = 1; i < this.#entries.length; i++)
         if (this.#entries[i]!.lastUsed < this.#entries[lruIdx]!.lastUsed) lruIdx = i;
       const [evicted] = this.#entries.splice(lruIdx, 1);
-      this.#disposeEntry(evicted!.entry, true);
+      discard(evicted!.entry, true);
     }
     try { this.onPut?.(tokens, ns); } catch {}
   }
@@ -413,7 +417,8 @@ export class PromptCache {
   }
 
   clear(): void {
-    for (const e of this.#entries) this.#disposeEntry(e.entry, false);
+    const entries = this.#entries;
     this.#entries = [];
+    disposeResources(entries.map(({ entry }) => ({ dispose: () => this.#disposeEntry(entry, false) })));
   }
 }

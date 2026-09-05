@@ -638,6 +638,34 @@ Landed so far:
 - 2026-09-02 — Q3 full recipe passed (KL 0.1553 @ 3.55 bpw, MMLU 88, tGSM 48,
   rawGSM 44); `tq-repack-fakequant.ts` eval carrier.
 
+## Interface-based engine refactor `[~]`
+
+Design and exit criteria: [engine architecture §12](docs/design/unified-engine-frontier-plan.md#12-interface-based-engine-refactor).
+Primary target: **Josh’s Qwen3.8-27B quants**; unavailable artifacts defer target validation only.
+Goal: push speed/quality/size on Macs through replaceable graph/method/session
+contracts and aggressive quant-specific specialization. Interfaces must permit
+fused execution without extra copies, materialization, or synchronization.
+Branch: `refactor/interface-engine-v2`. R0–R10 follow the dependencies in §12.10.
+Implementation R1–R9 and the R10 server cutover are complete on the branch:
+model-owned loading/planning/media/diagnostics, multiple methods per model,
+shared sessions/prefill, explicit request/state ownership, native batching,
+application clients/tasks, and direct/isolated hosts. The public replacement
+exercise loads one synthetic exact registration and serves two custom methods
+without a concrete model class. Details and evidence: architecture §12.13.
+The available matrix passes: 1,732 model-free and 720 native tests, with
+unavailable fixture cells recorded separately. Binary/CLI/Pi/job smoke passes.
+
+- [ ] **R0/R10 acceptance evidence**: quiet paired performance and the second
+      Mac's scorecard; reconcile the reported other-machine Metal OOM fix.
+- [ ] **Target frontier validation**: run Josh's designated quants when available,
+      plus the unavailable model/drafter/oracle cells. No quant recipe or numerical
+      default is promoted by the refactor's compatibility results.
+
+Refactor PRs may be frontier-neutral; v2 product promotion needs a measured
+speed/quality/size frontier advance and a representative local-user workload.
+Shared prefill belongs to R5; true B-wide prefill remains Phase 18 S1a. D6
+decisions feed R10. The linked engine document stays canonical as phases close.
+
 ## Serving architecture consolidation `[~]` (opened 2026-08-21)
 
 Canonical docs: [unified-engine-frontier-plan.md](docs/design/unified-engine-frontier-plan.md),
@@ -652,7 +680,7 @@ exact revisions pinned and mismatches refusing rather than downgrading.
 - [ ] **S4 — land and post-merge verify.** Rerun the real server/UI conversation
       on merged `main` (streaming, tool cards, context carryover, metrics,
       composer recovery). Exit when checks are green, no server is left running,
-      and this block plus its execution-seam design doc move to the archive.
+      and this block closes; retain the canonical engine doc for the v2 refactor.
 
 Landed so far:
 - 2026-08-21 — S0/S1: `CompletionExecutor` + immutable `RequestShape`;
@@ -725,10 +753,9 @@ instructions, and the hygiene gates that enforce every rule). Phase 4 is the
 code seams. The principle throughout: darlings are QUARANTINED and measured,
 not killed on taste.
 
-- [ ] **Unify the two prefill loops.** `src/generate.ts` (serial, chunked) and
-      `src/serve/batch-scheduler.ts` (merged solo-prefill) implement prefill
-      twice with different reduction orders — the direct cause of the batched
-      Gemma golden being demoted to a KL gate. Converges with Phase 18 S1a.
+- Shared prefill extraction is tracked in **Interface-based engine refactor R5**.
+  Preserving solo prefill semantics and building true B-wide prefill are separate
+  changes; the latter remains Phase 18 S1a with its own numerical gates.
 - Landed 2026-08-30: the request pipeline — `src/server.ts` 3,690 → 1,541
   lines. A request is data; each stage is one program with a declared input
   and output, composed in order: `new ChatRequest(body)` (validates) →
@@ -744,9 +771,9 @@ not killed on taste.
   a scripted engine and asserts on result objects. No invented token caps:
   a request that omits `max_tokens` runs to EOS or the admitted context
   (admission is the limit; DEVIATION from mlx_lm.server's 512 default on
-  raw completion, `--max-tokens 512` reproduces it). Still in `createServer`
-  (~900 lines): `runGeneration` (the serial engine), the `/fit` `/stats`
-  `/signal` `/generate` branches.
+  raw completion, `--max-tokens 512` reproduces it). Serial cache/checkpoint
+  execution now lives behind `MlxSerialBinding`; `createServer` composes it.
+  The `/fit` `/stats` `/signal` `/generate` branches remain.
 - Landed 2026-08-23: the batch lane reports real prefill/decode timing (admission→first token→finish marks in `BatchScheduler`; `GenerationGateway` derives tok/s).
 - Landed 2026-08-24: tests live in `tests/{unit,serve,using}` (CI, model-free) and `tests/{parity,research}` (weights/oracle-gated); `scripts/test.sh` shards by directory; hygiene check 10 keeps weights/opt-in dependencies out of the CI tiers.
 - Landed 2026-08-24: `src/lab/{curve,paged-kv,expert-trace}` quarantined with hygiene check 11 (`LAB_IMPORT_ALLOWLIST` records the six existing production edges as debt; any new edge fails CI). Diffusion stays in place until D6 decides it — it is wired through factory/train/eval/gateway.
@@ -757,9 +784,8 @@ not killed on taste.
       sampler (`src/lab/curve/curve-sampler.ts`); the expert-offload cluster
       (`expert-{io,offload,offload-build,residency,trace,usage}.ts` — six files
       for one flag); paged-KV; the DSpark triplets; compiled-decode
-      (`src/model/compiled-decode.ts` + `src/mlx/compile.ts`); and the three pi
-      provider wirings (`harness-pi.ts`, `pi-provider.ts`, `pi-terminal.ts`,
-      `pi-web.ts`) that overlap.
+      (`src/model/compiled-decode.ts` + `src/mlx/compile.ts`). Pi provider
+      wiring is consolidated into one builder; that D6 item is closed.
 
 Landed so far:
 - 2026-08-23 — `scripts/experiments/` (178 one-offs) and the `scripts/` root

@@ -6,10 +6,7 @@
   },
   "include": [
     "src/web/src",
-    "src/md-modules.d.ts",
-    "tests/using/web-app.test.ts",
-    "tests/support/web-dom-setup.ts",
-    "tests/using/web-palette-sessions.test.ts"
+    "src/md-modules.d.ts"
   ],
   "exclude": []
 }

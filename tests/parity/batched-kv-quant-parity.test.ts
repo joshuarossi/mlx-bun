@@ -41,6 +41,7 @@ import type { MlxArray } from "../../src/mlx/array";
 import { goldenAt } from "../support/goldens";
 import { SNAPSHOT, SNAPSHOT_MINICPM5 } from "../support/paths";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const optIn = process.env.MLX_BUN_TEST_BATCH_DECODE === "1";
 const haveCpm = existsSync(`${SNAPSHOT_MINICPM5}/config.json`);
@@ -52,7 +53,7 @@ const MIN_PREFIX = 24; // of 48 — the standing knife-edge allowance
 describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm5)", async () => {
   if (!optIn || !haveCpm || !haveGolden) return;
   const golden = (await goldenFile.json()) as {
-    prompt_ids: number[]; mixed: number[]; logit_steps: number;
+    prompt_ids: number[]; mixed: number[]; logit_steps: number; logit_sha256: string[];
   };
 
   const { loadModelConfig } = await import("../../src/config");
@@ -93,7 +94,10 @@ describe.skipIf(!optIn || !haveCpm || !haveGolden)("batched mixed-KV parity (cpm
     // convert → L=1 step), so the old GEMV-vs-GEMM argmax anchor is now a
     // strict compare.
     for (let s = 0; s < golden.logit_steps; s++) {
-      const ref = new Float32Array(await goldenAt(`mixedkv-cpm-logits-step${s}.bin`).arrayBuffer());
+      const bytes = await goldenAt(`mixedkv-cpm-logits-step${s}.bin`).arrayBuffer();
+      expect(createHash("sha256").update(new Uint8Array(bytes)).digest("hex"))
+        .toBe(golden.logit_sha256[s]!);
+      const ref = new Float32Array(bytes);
       let maxDiff = 0;
       for (let i = 0; i < ref.length; i++)
         maxDiff = Math.max(maxDiff, Math.abs(captured[s]![i]! - ref[i]!));

@@ -7,6 +7,7 @@
 // the runner, runs it with a log-appending emit, sets terminal status, and
 // exits 0 (done) / 1 (failed).
 
+import { createJobTaskClient } from "./task-client";
 import { JobStore } from "./db";
 import { getRunner, makeEmit } from "./runner";
 import type { JobRunner } from "./types";
@@ -16,9 +17,9 @@ import { runtimeValue } from "../runtime-config";
  *  kinds are built by parallel efforts; importing the module is expected to
  *  call `registerRunner(kind, ...)` at top level. Missing module ⇒ the job
  *  fails cleanly (see resolveRunner). */
-const KIND_MODULES: Record<string, string> = {
-  quantize: "../quantize/job.ts",
-  finetune: "../train/job.ts",
+const KIND_MODULES: Record<string, () => Promise<unknown>> = {
+  quantize: () => import("../quantize/job"),
+  finetune: () => import("../train/job"),
 };
 
 /** Resolve a runner for `kind`. Test kinds (noop/crash) are pre-registered in
@@ -28,19 +29,19 @@ async function resolveRunner(kind: string): Promise<JobRunner> {
   const existing = getRunner(kind);
   if (existing) return existing;
 
-  const modPath = KIND_MODULES[kind];
-  if (modPath) {
+  const load = KIND_MODULES[kind];
+  if (load) {
     try {
-      await import(modPath);
+      await load();
     } catch (e) {
       throw new Error(
-        `kind "${kind}": failed to load runner module ${modPath} ` +
+        `kind "${kind}": failed to load runner module ${kind} ` +
           `(${e instanceof Error ? e.message : String(e)})`,
       );
     }
     const loaded = getRunner(kind);
     if (loaded) return loaded;
-    throw new Error(`kind "${kind}": module ${modPath} did not register a runner`);
+    throw new Error(`kind "${kind}": module ${kind} did not register a runner`);
   }
   throw new Error(`no runner registered for kind "${kind}"`);
 }
@@ -49,8 +50,7 @@ function nowIso(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
-async function main(): Promise<void> {
-  const jobId = process.argv[2];
+export async function runJobEntry(jobId = process.argv[2]): Promise<void> {
   if (!jobId) {
     console.error("usage: bun job-entry.ts <jobId>");
     process.exit(2);
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
 
   try {
     const runner = await resolveRunner(row.kind);
-    const result = await runner(emit, config);
+    const result = await createJobTaskClient(runner).run(config, emit);
     const out = result?.outputPath;
     if (out) store.setOutputPath(jobId, out);
     store.setProgress(jobId, 1);
@@ -104,4 +104,4 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+if (import.meta.main) void runJobEntry();

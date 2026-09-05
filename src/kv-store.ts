@@ -1,3 +1,4 @@
+import { cleanupFailure, disposeResources } from "./engine/resources";
 // KV-cache persistence: save prompt caches to disk, reload by streamed copy.
 // The serialization core of the SSD cold tier (docs/design/kv-cache.md).
 //
@@ -139,6 +140,8 @@ export interface KvSaveMeta {
 }
 
 export interface KvFileHeader extends KvSaveMeta {
+  /** Absent in earlier v3 files, which used mlx-cache-v3. */
+  codecProvider?: string;
   formatVersion: 3;
   createdAt: number;
   tokens: number[];
@@ -158,7 +161,7 @@ const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
  *  materialization until rawBytes at write time). */
 interface TensorSource { arr: MlxArray; disposeAfter: boolean }
 
-interface SnapshotContext {
+export interface SnapshotContext {
   slots: TensorSlot[];
   push(a: MlxArray, disposeAfter: boolean): void;
   liveSlice(a: MlxArray, upTo: number): MlxArray;
@@ -166,21 +169,21 @@ interface SnapshotContext {
   pushTriple(t: ops.QuantizedTensor, upTo: number | null): void;
 }
 
-interface CloneContext {
+export interface CloneContext {
   view(a: MlxArray): MlxArray;
   liveView(a: MlxArray, upTo: number): MlxArray;
   mlaView(a: MlxArray, upTo: number): MlxArray;
   tripleView(t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor;
 }
 
-interface LoadContext {
+export interface LoadContext {
   path: string;
   arr(slot: TensorSlot): MlxArray;
   grownArr(slot: TensorSlot, offset: number): MlxArray;
   triple(slots: TensorSlot[], at: number): ops.QuantizedTensor;
 }
 
-interface CacheCodec {
+export interface CacheCodec {
   matches(cache: Cache): boolean;
   snapshot(cache: Cache, context: SnapshotContext): CacheHeaderEntry;
   clone(cache: Cache, context: CloneContext): Cache;
@@ -473,16 +476,50 @@ const CACHE_CODECS = {
   },
 } satisfies Record<CacheKind, CacheCodec>;
 
-const cacheCodec = (cache: Cache): CacheCodec => {
-  const codec = Object.values(CACHE_CODECS).find((candidate) => candidate.matches(cache));
-  if (!codec) throw new Error(`unsupported cache signature ${cacheSignature(cache)}`);
-  return codec;
-};
+/** Codecs belong to the loaded backend binding. The persisted ID is checked
+ * before allocating state; codecs are engine code, never loaded from a file. */
+export interface CacheCodecProvider {
+  readonly id: string;
+  forCache(cache: Cache): CacheCodec;
+  forHeader(entry: CacheHeaderEntry): CacheCodec;
+}
 
-export const cacheHeadersTrimmable = (caches: readonly CacheHeaderEntry[]): boolean =>
-  caches.every((entry) => CACHE_CODECS[entry.kind].headerTrimmable(entry));
+export function createCacheCodecProvider(
+  id: string, entries: Readonly<Partial<Record<CacheKind, CacheCodec>>>,
+): CacheCodecProvider {
+  if (!id.trim()) throw new Error("cache codec provider needs an identity");
+  const table = new Map(Object.entries(entries).map(([kind, codec]) => [kind, Object.freeze({
+    matches: codec.matches.bind(codec), snapshot: codec.snapshot.bind(codec), clone: codec.clone.bind(codec),
+    load: codec.load.bind(codec), headerTrimmable: codec.headerTrimmable.bind(codec),
+  })]));
+  const candidates = [...table.values()];
+  const selected = new WeakMap<Cache, CacheCodec>();
+  return Object.freeze({
+    id,
+    forCache(cache: Cache) {
+      const bound = selected.get(cache);
+      if (bound) return bound;
+      const matches = candidates.filter((codec) => codec.matches(cache));
+      if (matches.length !== 1)
+        throw new Error(`cache codec provider ${id}: ${matches.length} matches for ${cacheSignature(cache)}`);
+      selected.set(cache, matches[0]!);
+      return matches[0]!;
+    },
+    forHeader(entry: CacheHeaderEntry) {
+      const codec = table.get(entry.kind);
+      if (!codec) throw new Error(`cache codec provider ${id}: unsupported cache kind ${entry.kind}`);
+      return codec;
+    },
+  });
+}
 
-function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry; sources: TensorSource[]; next: number } {
+export const legacyCacheCodecs = createCacheCodecProvider("mlx-cache-v3", CACHE_CODECS);
+
+export const cacheHeadersTrimmable = (
+  caches: readonly CacheHeaderEntry[], codecs: CacheCodecProvider = legacyCacheCodecs,
+): boolean => caches.every((entry) => codecs.forHeader(entry).headerTrimmable(entry));
+
+function snapshotCache(c: Cache, dataOffset: number, codecs: CacheCodecProvider): { entry: CacheHeaderEntry; sources: TensorSource[]; next: number } {
   const slots: TensorSlot[] = [];
   const sources: TensorSource[] = [];
   let cursor = dataOffset;
@@ -508,10 +545,13 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
     }
   };
 
-  const entry = cacheCodec(c).snapshot(c, {
-    slots, push, liveSlice, liveMlaSlice, pushTriple,
-  });
-  return { entry, sources, next: cursor };
+  try {
+    const entry = codecs.forCache(c).snapshot(c, { slots, push, liveSlice, liveMlaSlice, pushTriple });
+    return { entry, sources, next: cursor };
+  } catch (error) {
+    for (const source of sources) if (source.disposeAfter) source.arr.dispose();
+    throw error;
+  }
 }
 
 /** Persist `caches` (+ the exact token prefix they encode) to `path`.
@@ -528,15 +568,17 @@ function snapshotCache(c: Cache, dataOffset: number): { entry: CacheHeaderEntry;
  *  called while the caches hold EXACTLY the state to snapshot (post-wrap
  *  rings cannot be rewound later). Same per-kind dispatch as
  *  snapshotCache/loadKvCache. */
-export function cloneKvCaches(caches: Cache[]): Cache[] {
-  const view = (a: MlxArray): MlxArray => a.slice(a.shape.map(() => 0), [...a.shape]);
+export function cloneKvCaches(caches: Cache[], codecs: CacheCodecProvider = legacyCacheCodecs): Cache[] {
+  const pending: MlxArray[] = [];
+  const hold = (array: MlxArray): MlxArray => { pending.push(array); return array; };
+  const view = (a: MlxArray): MlxArray => hold(a.slice(a.shape.map(() => 0), [...a.shape]));
   const liveView = (a: MlxArray, upTo: number): MlxArray => {
     const [B, H, , D] = a.shape as [number, number, number, number];
-    return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
+    return hold(a.slice([0, 0, 0, 0], [B, H, upTo, D]));
   };
   const mlaView = (a: MlxArray, upTo: number): MlxArray => {
     const [B, , D] = a.shape as [number, number, number];
-    return a.slice([0, 0, 0], [B, upTo, D]);
+    return hold(a.slice([0, 0, 0], [B, upTo, D]));
   };
   const tripleView = (t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor => ({
     packed: upTo === null ? view(t.packed) : liveView(t.packed, upTo),
@@ -546,11 +588,11 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
   const out: Cache[] = [];
   try {
     for (const c of caches) {
-      out.push(cacheCodec(c).clone(c, { view, liveView, mlaView, tripleView }));
+      out.push(codecs.forCache(c).clone(c, { view, liveView, mlaView, tripleView }));
+      pending.length = 0; // transferred to the returned cache
     }
   } catch (err) {
-    for (const c of out) c.dispose();
-    throw err;
+    cleanupFailure(err, () => disposeResources([...pending, ...out]));
   }
   return out;
 }
@@ -560,14 +602,14 @@ export function cloneKvCaches(caches: Cache[]): Cache[] {
  *  between yields so the EVENT LOOP KEEPS SERVING while a multi-hundred-MB
  *  entry flushes (the write-behind persistence contract: durability never
  *  blocks a request). try/finally still runs on early generator close. */
-function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta): Generator<void, void, void> {
+function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta, codecs: CacheCodecProvider): Generator<void, void, void> {
   // Plan pass: header entries + lazy tensor sources, NO bytes materialized.
   const entries: CacheHeaderEntry[] = [];
   const sources: TensorSource[] = [];
   let dataOffset = 0; // relative; rebased after header is sized
   try {
     for (const c of caches) {
-      const s = snapshotCache(c, dataOffset);
+      const s = snapshotCache(c, dataOffset, codecs);
       entries.push(s.entry);
       sources.push(...s.sources);
       dataOffset = s.next;
@@ -576,7 +618,7 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
     // Header size is final NOW: hashes are fixed-width placeholders that get
     // patched in place (same byte length) after the data pass computes them.
     const header: KvFileHeader = {
-      formatVersion: 3, createdAt: Date.now(), ...meta, tokens, caches: entries,
+      formatVersion: 3, createdAt: Date.now(), ...meta, codecProvider: codecs.id, tokens, caches: entries,
     };
     const headerLen = new TextEncoder().encode(JSON.stringify(header)).length;
     const dataStart = alignUp(PREFIX_LEN + headerLen);
@@ -641,8 +683,8 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
   }
 }
 
-export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}): void {
-  for (const _ of saveKvCacheSteps(path, tokens, caches, meta)) { /* drain */ }
+export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}, codecs: CacheCodecProvider = legacyCacheCodecs): void {
+  for (const _ of saveKvCacheSteps(path, tokens, caches, meta, codecs)) { /* drain */ }
 }
 
 /** Non-blocking variant: yields the event loop after every tensor write so
@@ -660,9 +702,9 @@ export function saveKvCache(path: string, tokens: number[], caches: Cache[], met
  *  (an early generator close inside the fd-open section would leak the fd). */
 export async function saveKvCacheAsync(
   path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
-  waitTurn?: () => Promise<void>,
+  waitTurn?: () => Promise<void>, codecs: CacheCodecProvider = legacyCacheCodecs,
 ): Promise<void> {
-  const steps = saveKvCacheSteps(path, tokens, caches, meta);
+  const steps = saveKvCacheSteps(path, tokens, caches, meta, codecs);
   while (true) {
     if (waitTurn) await waitTurn().catch(() => {});
     if (steps.next().done) break;
@@ -919,9 +961,12 @@ function withStepCapacity(a: MlxArray, offset: number): MlxArray {
 export function loadKvCache(
   path: string,
   model: { makeCache(): Cache[] },
-  expect: KvLoadExpect = {},
+  expect: KvLoadExpect = {}, codecs: CacheCodecProvider = legacyCacheCodecs,
 ): LoadedKvCache {
   const header = readKvHeader(path);
+  if ((header.codecProvider ?? legacyCacheCodecs.id) !== codecs.id)
+    throw new Error(`${path}: cache codec provider mismatch`);
+  for (const entry of header.caches) codecs.forHeader(entry);
   for (const key of [
     "modelId",
     "configFingerprint",
@@ -981,9 +1026,7 @@ export function loadKvCache(
   const caches: Cache[] = [];
   try {
     for (const e of header.caches) {
-      const codec = CACHE_CODECS[e.kind];
-      if (!codec)
-        throw new Error(`${path}: unknown cache kind ${(e as { kind: string }).kind}`);
+      const codec = codecs.forHeader(e);
       caches.push(codec.load(e, { path, arr, grownArr, triple }));
       // This entry's tensors are now owned by its cache — stop tracking them
       // (the catch must not double-free through both pending AND caches).

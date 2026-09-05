@@ -4,7 +4,7 @@
 // special-token handling, exactly mlx-lm's `tokenizer.encode(request.prompt)`).
 // Same admission / adapter / lane path as chat; no tool router or thinking
 // splitter (raw text in, raw text out).
-import type { ServerContext } from "./model-host";
+import type { ServingContext } from "./model-host";
 import type { TextCompletionRequest } from "./chat-request";
 import type { InferenceRequest } from "./inference-request";
 import { RequestError } from "./pipeline";
@@ -14,7 +14,7 @@ import { StopMatcher, ThinkingTagSplitter, ToolAwareStream } from "./token-strea
 
 export class TextCompletionStage {
   constructor(
-    private readonly ctx: ServerContext,
+    private readonly ctx: ServingContext,
     private readonly prep: RequestPrep,
     private readonly maxSafeContext: number,
     /** `--max-tokens` / the GLM plan's reservation. No invented fallback:

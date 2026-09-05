@@ -10,12 +10,13 @@
 //  (2) END-TO-END (12B, slow tier): single-forward logits over a
 //      past-window 1536-token prompt with uniform kv8/kv4 on ALL
 //      layers, bit-exact vs python (patch_rotating_to_quantized +
-//      fused install); greedy continuation prefix vs the
-//      fused-prefill/stock-decode reference.
+//      fused install); generate() continuation vs bf16 head → populated-cache
+//      quantization → final-token prefill, matching the serving oracle.
 //
 // Goldens: scripts/regen.ts rotating-kvq.
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { goldenAt } from "../support/goldens";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
@@ -31,6 +32,7 @@ interface T { offset: number; shape: number[]; dtype: string }
 describe.skipIf(!haveGoldens)("rotating KV-quant", async () => {
   if (!haveGoldens) return;
   const manifest = (await manifestFile.json()) as {
+    blob_sha256?: string;
     mechanics: {
       config: { max_size: number; heads: number; dim: number; group_size: number; bits: number };
       steps: { S: number; k: T; v: T }[];
@@ -43,6 +45,8 @@ describe.skipIf(!haveGoldens)("rotating KV-quant", async () => {
     e2e: Record<string, unknown> & { prompt_ids: number[] };
   };
   const buf = await blobFile.arrayBuffer();
+  if (manifest.blob_sha256)
+    expect(createHash("sha256").update(new Uint8Array(buf)).digest("hex")).toBe(manifest.blob_sha256);
   const f32 = (t: T): Float32Array => {
     const n = t.shape.reduce((a, b) => a * b, 1);
     return new Float32Array(buf, t.offset * 4, n);
@@ -205,7 +209,8 @@ describe.skipIf(!haveGoldens)("rotating KV-quant", async () => {
         expect(m).toBe(0);
       }, 300_000);
 
-      test(`${key}: greedy continuation long-prefix agreement`, async () => {
+      test.skipIf(!manifest.e2e[`${key}_generate_greedy`])(`${key}: greedy continuation long-prefix agreement`, async () => {
+        expect(manifest.e2e.generation_prefill).toBe("bf16-head-quantize-tail-v1");
         const caches = model.makeCache();
         const gen = generate(model, ids, {
           maxTokens: 16, temperature: 0, cache: caches,
@@ -215,7 +220,7 @@ describe.skipIf(!haveGoldens)("rotating KV-quant", async () => {
         for await (const t of gen) out.push(t.token);
         expect(caches.filter((c) => c instanceof RotatingQuantizedKVCache).length).toBe(40);
         for (const c of caches) c.dispose();
-        const ref = manifest.e2e[`${key}_greedy`] as number[];
+        const ref = manifest.e2e[`${key}_generate_greedy`] as number[];
         let prefix = 0;
         while (prefix < Math.min(ref.length, out.length) && out[prefix] === ref[prefix]) prefix++;
         // trajectories are loop-shape-sensitive at bf16 knife edges

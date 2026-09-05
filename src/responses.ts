@@ -43,7 +43,16 @@ const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
 /** Process-local TTL + byte-capped LRU (port of response_store.py).
  *  Does not survive restarts — sufficient for local serving; anything
  *  sturdier means external storage, out of scope upstream too. */
-export class ResponseStore {
+export interface ResponseHistory {
+  readonly ttlMs: number;
+  readonly maxBytes: number;
+  readonly size: number;
+  readonly totalBytes: number;
+  put(id: string, entry: StoredResponse): void;
+  get(id: string): StoredResponse | null;
+}
+
+export class ResponseStore implements ResponseHistory {
   #items = new Map<string, StoreEntry>(); // Map iterates in insertion order
   #bytes = 0;
 
@@ -112,6 +121,24 @@ export class ResponseStore {
       this.#items.delete(id);
     }
   }
+}
+
+/** Conversation policy shared by direct and isolated application hosts. */
+export function resolveResponsesConversation(body: ResponsesRequest, store: Pick<ResponseHistory, "get">) {
+  const previousId = body.previous_response_id ?? null;
+  if (previousId) {
+    const prior = store.get(previousId);
+    if (!prior) throw new Error(`previous_response_id '${previousId}' not found or expired`);
+    const next = typeof body.input === "string"
+      ? body.input ? [{ type: "message", role: "user", content: body.input }] : []
+      : body.input ?? [];
+    body = { ...body, input: [...prior.input, ...outputItemsToInputItems(prior.output), ...next] as Array<Record<string, unknown>>,
+      instructions: body.instructions ?? prior.instructions ?? undefined };
+  }
+  return { body, previousId,
+    input: typeof body.input === "string" ? [{ type: "message", role: "user", content: body.input }] : [...body.input ?? []],
+    instructions: body.instructions ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------

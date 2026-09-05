@@ -2,6 +2,26 @@
 
 **Status:** ISOLATED to prompt-cache prefix reuse (2026-09-02): same session replay with `--prompt-cache 0` serves all four turns (turn 8: 457 tokens); with the default cache it dies on turn 8, 6/6 runs. Root cause in the engine not yet found.
 
+**In-process reduction (2026-09-04).** Reproduced without HTTP on the M1 Max
+32 GB, Bun 1.4.0, using the locally staged published `mjriii/Qwen3.8-27B`.
+This artifact is **not Josh's current target quant**; applicability to his
+current artifacts remains unverified. Load the existing request fixture, render
+message prefixes of lengths 1, 3, 5, 8 through `createRequestPrep`, and use the
+server's stable-boundary snapshot / `PromptCache.take` / `generate` / `put`
+sequence. Prompt lengths are 404, 4,158, 6,139, 11,958; reused prefixes are
+0, 403, 4,157, 6,138. The fourth request aborts with the same bare C++ exception.
+Reducing **every request to one generated token still reproduces it**; long
+decode runs and HTTP streaming are unnecessary. FFI call tracing reaches
+`mlx_eval` while evaluating the continuation prefill. A temporary native terminate handler recovered the exception from the Metal
+completion thread: `[METAL] Command buffer execution failed: Insufficient Memory
+(00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)`. The backtrace reaches
+`mlx::core::gpu::check_error(MTL::CommandBuffer*)` from its completion handler.
+This establishes device allocation failure; it does not establish cache-state
+corruption. Josh reports a possible fix on the other machine; it was not present
+on fetched `origin/main` at `6d45ca1`. Reconcile that fix before further changes.
+The short aligned-prefix borrow test passes on this artifact; that does not
+cover this long continuation. Temporary investigation scripts were removed.
+
 **Signature.** `bun src/cli.ts serve --model mjriii/Qwen3.8-27B --batch 1`
 (also on the default batch lane) dies with `panic: A C++ exception occurred`
 (Bun 1.4.0, mlx 0.31.2) on the request in `request.json`; no MLX error line

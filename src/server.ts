@@ -1,3 +1,6 @@
+import { modelServingBinding } from "./backends/mlx/model-serving";
+import type { ServingContext } from "./serve/model-host";
+export { generationCheckpointKey } from "./serve/checkpoint-identity";
 // OpenAI-compatible HTTP server: /v1/chat/completions (+ SSE streaming)
 // and /v1/models. Phase 4 core — tool calling, vision, and the
 // byte-capped prompt cache land on top of this.
@@ -9,45 +12,9 @@
 // Generation is serialized through a single queue (one GPU, batch=1).
 
 import type { Server } from "bun";
-// Embedded web app — the unified SPA (chat / quantize / finetune /
-// dataset / status). `with { type: "text" }` inlines the file in both
-// `bun run` and the compiled single binary. bun-types types *.html
-// imports as HTMLBundle (the html loader), but the text attribute makes
-// the runtime value a string — hence the double cast.
-import appHtml from "./web/app.html" with { type: "text" };
-import curveDesignerHtml from "./lab/curve/curve-designer.html" with { type: "text" };
-// Vendored, no-CDN static assets referenced by app.html (convention: any
-// self-contained JS/CSS too big to inline gets `with { type: "text" }`
-// imported here and served under /assets/<name>; see src/web/vendor/README
-// for how hljs.js was built). Add new vendored assets the same way.
-import hljsJs from "./web/vendor/hljs.js" with { type: "text" };
-import hljsCss from "./web/vendor/hljs-theme.css" with { type: "text" };
-// The frontend bundle (plan §7/§9 Phase 2 module split): GENERATED from
-// src/web/src/*.ts by `bun scripts/build-web.ts` — see that file's header
-// and tests/using/web-build.test.ts (the freshness gate). Same
-// with { type: "text" } + /assets/<name> pattern as the vendored assets
-// above; app.html's <script defer src="/assets/app.js"> loads it.
-import appJs from "./web/app.js" with { type: "text" };
-// PWA installability (plan §9 Phase 3, beat-matrix Axis 10): a manifest +
-// a single inline SVG icon (no binary PNGs — the hygiene gate forbids
-// tracked binary files; some browsers won't show an SVG app icon, which is
-// an accepted tradeoff, see docs/reference/server-config.md) + a shell-
-// only service worker. Same with { type: "text" } + /assets/<name>-shaped
-// pattern as the vendored assets above; see src/web/sw.js's header for why
-// it deliberately does NOT cache API/WS traffic.
-import manifestWebmanifest from "./web/manifest.webmanifest" with { type: "text" };
-import iconSvg from "./web/icon.svg" with { type: "text" };
-import swJs from "./web/sw.js" with { type: "text" };
+import { STATIC_ROUTE_ASSETS } from "./web-assets";
 import { readFileSync } from "node:fs";
-const APP_PAGE = appHtml as unknown as string;
-const HLJS_JS = hljsJs as unknown as string;
-const HLJS_CSS = hljsCss as unknown as string;
-const APP_JS = appJs as unknown as string;
-const MANIFEST_WEBMANIFEST = manifestWebmanifest as unknown as string;
-const ICON_SVG = iconSvg as unknown as string;
-const SW_JS = swJs as unknown as string;
 import { type TurboQuantScheme } from "./config";
-import { Glm52Model } from "./model/glm52";
 import {
   GLM52_G5_ASPIRATIONAL_DECODE_TPS,
   GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS,
@@ -55,21 +22,18 @@ import {
   GLM52_G5_MEASURED_WARM_DECODE_TPS,
 } from "./model/glm52-memory";
 import {
-  generate,
   type GenerateOptions,
-  type TokenLogprobs,
-  withModelUsageFlush,
-  withModelWiredLimit,
 } from "./generate";
-import { cloneKvCaches, SpillQueue } from "./kv-store";
+import { createPreparationExecutor } from "./serve/preparation";
+import { cloneKvCaches, legacyCacheCodecs, SpillQueue } from "./kv-store";
 import type { Cache } from "./model/gemma4";
 import { resolveKvScheme } from "./kv-scheme";
 import { runtimeValue } from "./runtime-config";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./lab/curve/curve-sampler";
-const CURVE_PAGE = curveDesignerHtml as unknown as string;
-import { GenerationGateway } from "./serve/generation-gateway";
+import { GenerationGateway, disposeUnstartedRequest } from "./serve/generation-gateway";
+import { createSessionCompletionEngine } from "./serve/session-completion-engine";
 import {
   CompletionExecutor,
 } from "./serve/completion-executor";
@@ -83,16 +47,7 @@ import { createDiscoveryRoutes } from "./serve/discovery-routes";
 import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
 import { handleStaticRoute } from "./serve/static-routes";
-const STATIC_ROUTE_ASSETS = {
-  appPage: APP_PAGE,
-  appJs: APP_JS,
-  hljsJs: HLJS_JS,
-  hljsCss: HLJS_CSS,
-  manifest: MANIFEST_WEBMANIFEST,
-  iconSvg: ICON_SVG,
-  serviceWorker: SW_JS,
-  curvePage: CURVE_PAGE,
-};
+
 import { PromptCache, cacheBytes } from "./prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import {
@@ -106,14 +61,12 @@ import {
   type AnthropicRequest,
 } from "./anthropic";
 import {
-  ResponseStore, chatJsonToResponses, outputItemsToInputItems,
+  ResponseStore, chatJsonToResponses, resolveResponsesConversation,
   responsesToChatBody, createResponsesStreamProtocol,
   type ResponsesRequest,
 } from "./responses";
 import { fit } from "./fit";
 import { setMemoryLimit } from "./mlx/ffi";
-import { Qwen35Model } from "./model/qwen3_5";
-import type { MropeRequestState } from "./model/qwen3-mrope";
 import { makePiWsHandler, type PiWsData } from "./pi-web";
 import { ChatStage } from "./serve/chat-stage";
 import { TextCompletionStage } from "./serve/text-completion-stage";
@@ -252,6 +205,8 @@ export interface ServerOptions {
 }
 
 interface ServerLifecycle {
+  stopJobs: () => Promise<void>;
+  close: () => Promise<void>;
   flush: () => Promise<DurabilityFlushResult>;
   stats: () => DurabilitySnapshotStats;
   stopTimers: () => void;
@@ -294,8 +249,10 @@ export async function shutdownServer(
   lifecycle?.stopTimers();
   const stopped = Promise.resolve(server.stop(false));
   const work = (async (): Promise<ServerShutdownResult> => {
+    await lifecycle?.stopJobs();
     await stopped;
     const durability = lifecycle ? await lifecycle.flush() : emptyDurabilityResult();
+    await lifecycle?.close();
     return { stopped: true, timedOut: false, durability };
   })();
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -367,52 +324,9 @@ function curveJunk(s: string): boolean {
   return nonLatin >= 0.02 || /�/.test(s) || /<unused\d+>/.test(s);
 }
 
-/** Stable identity for an exactly resumable generation. The prompt already
- * includes rendered messages and tool schemas; the remaining fields cover
- * every sampling policy that can change the continuation. */
-export function generationCheckpointKey(
-  promptIds: number[], options: GenerateOptions, cacheNs = "",
-): string {
-  const policy = {
-    cacheNs,
-    promptIds,
-    maxTokens: options.maxTokens,
-    eosTokenIds: options.eosTokenIds,
-    temperature: options.temperature,
-    topP: options.topP,
-    topK: options.topK,
-    minP: options.minP,
-    minTokensToKeep: options.minTokensToKeep,
-    xtcProbability: options.xtcProbability,
-    xtcThreshold: options.xtcThreshold,
-    xtcSpecialTokens: options.xtcSpecialTokens,
-    // A missing client seed means "fresh randomness" for a new request, but
-    // an identical RETRY must find the durable checkpoint and restore the
-    // original random stream. Keep the generated seed out of request identity;
-    // it travels in checkpoint metadata instead. Explicit seeds remain part of
-    // the policy, so changing one cannot select an incompatible checkpoint.
-    seedMode: options.seedWasExplicit ? "explicit" : "server-default",
-    seed: options.seedWasExplicit ? options.seed : undefined,
-    hlg: options.hlg,
-    curve: options.curve,
-    logitBias: options.logitBias,
-    repetitionPenalty: options.repetitionPenalty,
-    repetitionContextSize: options.repetitionContextSize,
-    presencePenalty: options.presencePenalty,
-    presenceContextSize: options.presenceContextSize,
-    frequencyPenalty: options.frequencyPenalty,
-    frequencyContextSize: options.frequencyContextSize,
-    kvBits: options.kvBits,
-    kvGroupSize: options.kvGroupSize,
-    quantizedKvStart: options.quantizedKvStart,
-    kvConfig: options.kvConfig,
-    turboQuant: options.turboQuant,
-  };
-  return Bun.hash(JSON.stringify(policy)).toString(16);
-}
 
 export function createServer(
-  ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
+  ctx: ServingContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
   // --batch N is a concurrency cap: N===1 pins the strict serial executor;
   // N>1 admits supported execution compositions to the continuous scheduler.
@@ -429,6 +343,8 @@ export function createServer(
   // only changes behavior when concurrent requests actually arrive — the
   // agentic sub-agent workload. --batch 1 pins strict serial for
   // arrival-independent numerics. 8 = optiq's Mac-safe concurrency.
+  const serving = modelServingBinding(ctx);
+  ctx = { ...ctx, serving };
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 8));
   if (serverOptions.generationCheckpointTokens !== undefined) {
     if (!Number.isInteger(serverOptions.generationCheckpointTokens) ||
@@ -557,6 +473,8 @@ export function createServer(
   // entries still demote to SSD and LRU eviction bounds pressure.
   // --prompt-cache <GB> overrides; 0 disables.
   const promptCacheCap = serverOptions.promptCacheBytes ?? 8e9;
+  const stateCodecs = ctx.stateCodecs ?? legacyCacheCodecs;
+  const cloneState = (caches: Cache[]) => cloneKvCaches(caches, stateCodecs);
   let ssdStore: SsdCacheStore | null = null;
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
@@ -564,6 +482,7 @@ export function createServer(
     const schemeKey = resolvedKvScheme.cacheKey;
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
     ssdStore = new SsdCacheStore({
+      codecs: stateCodecs,
       dir: serverOptions.ssdCacheDir,
       maxBytes: serverOptions.ssdCacheMaxBytes ?? 32 * 2 ** 30,
       configFingerprint: `${configFingerprint(ctx.model.config)}-${schemeKey}`,
@@ -589,7 +508,7 @@ export function createServer(
           return h ? { prefixLen: h.prefixLen, handle: h.entry } : null;
         },
         restore: (handle: unknown) => {
-          const loaded = ssdStore!.restore(handle as import("./ssd-cache").SsdIndexEntry, ctx.model);
+          const loaded = serving.restore(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
           if (!loaded) return null;
           // Restore is a STREAMED COPY (2026-07-07 A7-restore): the caches
           // own their bytes and no mapping outlives loadKvCache — nothing
@@ -623,6 +542,7 @@ export function createServer(
         }
       : null,
     coldTier,
+    cloneState,
   );
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
@@ -630,245 +550,14 @@ export function createServer(
   // so its KV prefill is already cached.
   const responseStore = new ResponseStore();
 
-  /** Run one generation with prompt-cache reuse. Must be called under the
-   *  gateway's exclusive lock — the gateway invokes it on the serial lane;
-   *  the curve /generate endpoint wraps it in gateway.runExclusive. (The old
-   *  `enqueue` promise queue is gone; the gateway's AsyncMutex is THE lock.)
-   *  onToken returning `false` halts generation early (stop
-   *  sequence fired); the cache snapshot stays valid and is still kept.
-   *  Media (vision/audio embeddings-prefill) requests bypass the prompt
-   *  cache: soft tokens are identical placeholder ids, so prefix matching
-   *  across different images/clips would false-hit. */
-  const runGeneration = async (
-    promptIds: number[],
-    options: GenerateOptions,
-    onToken: (token: number, logprobs?: TokenLogprobs) => void | boolean | Promise<void | boolean>,
-    vision?: {
-      embeddings: import("./mlx/array").MlxArray;
-      imageMask?: import("./mlx/array").MlxArray;
-      multimodalMask?: import("./mlx/array").MlxArray;
-      mrope?: MropeRequestState;
-    },
-    trace?: PromptResponseTrace,
-  ) => {
-    // Qwen vision: install the request's mRoPE state for every forward of
-    // this serial run (prefill AND decode use the 3D interleaved positions +
-    // delta). Scoped inside the try below — under the serial mutex — so
-    // queued text requests never see it and a throw between here and the
-    // try (makeCache under memory pressure, spec-path early return) can't
-    // leave a DEAD request's positions installed for the next generation
-    // (2026-08-18 review).
-    // Speculative decoding (serve --draft-model): spec-ELIGIBLE requests
-    // decode through the verify loop; the rest fall through to the normal
-    // serial path (never wrong results, just no speedup — logged once per
-    // combination class would be noise, so silent). Eligibility v1:
-    // text-only, base weights, no logprobs capture, bf16 KV — ALL quantized
-    // KV axes excluded (affine kvBits/kvConfig AND turboQuant; the spec loop
-    // builds fresh bf16 caches and never calls maybeQuantizeKv, so routing a
-    // turbo request here would silently drop the operator's KV scheme —
-    // 2026-07-07 review). Grammar COMPOSES (Phase C constrained verify walk
-    // — see the serve-loop.ts header). Prompt-cache reuse is bypassed on
-    // the spec path v1.
-    if (
-      ctx.draft &&
-      !vision &&
-      !options.adapters?.length &&
-      !options.logprobs &&
-      !options.kvBits &&
-      !options.kvConfig &&
-      !options.turboQuant &&
-      // Belt: --paged-kv + --draft-model is refused at createServer; this
-      // keeps the spec lane paged-free even for programmatic callers.
-      !options.pagedKv
-    ) {
-      const { specServeRun } = await import("./spec/serve-loop");
-      return withModelWiredLimit(
-        ctx.model,
-        () => withModelUsageFlush(
-          ctx.model,
-          () => specServeRun(
-            ctx.model, ctx.draft!.provider, ctx.draft!.numDraftTokens,
-            promptIds, options, onToken,
-          ),
-        ),
-      );
-    }
-    // Cache entries are adapter-specific: KV computed under one adapter
-    // must never seed another's (or the base's) prefill.
-    const cacheNs = options.adapters?.join("+") ?? "";
-    // Paged-KV request scope (docs/design/kv-cache.md): media
-    // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
-    // they run the PLAIN cache path even under --paged-kv (scope the flag
-    // per request, never 400). Effective value computed ONCE so the
-    // prompt-cache bypass below and the generate() options can't disagree.
-    const pagedKv = vision || options.adapters?.length ? undefined : options.pagedKv;
-    // Paged requests bypass the prompt cache entirely (v1 non-goal:
-    // PagedKVCache has no cloneKvCaches/restore path — the vision
-    // precedent). Fresh caches per request, disposed on completion.
-    const skipPromptCache = Boolean(vision || pagedKv);
-    const checkpointEvery = serverOptions.generationCheckpointTokens;
-    const checkpointEligible = Boolean(
-      checkpointEvery && ssdStore && !skipPromptCache &&
-      !options.grammar && !options.fill && !options.logprobs &&
-      !(options.topLogprobs && options.topLogprobs > 0),
-    );
-    const checkpointKey = checkpointEligible
-      ? generationCheckpointKey(promptIds, options, cacheNs)
-      : null;
-    // Both tiers in one call (Layer 0): take() prefers a strictly-longer
-    // SSD prefix, restores it zero-copy, and trims — see PromptCache.take.
-    const closeCacheLookup = trace?.begin("cache.lookup_restore", {
-      mechanism: "serial",
-      bypassed: skipPromptCache,
-    });
-    const checkpointEntry = checkpointKey
-      ? ssdStore!.findGenerationCheckpoint(promptIds, checkpointKey, cacheNs)
-      : null;
-    const restoredCheckpoint = checkpointEntry
-      ? ssdStore!.restore(checkpointEntry, ctx.model)
-      : null;
-    const checkpoint = restoredCheckpoint?.header.generationCheckpoint;
-    const resuming = Boolean(restoredCheckpoint && checkpoint);
-    const generationPromptIds = resuming ? restoredCheckpoint!.tokens : promptIds;
-    const entry = skipPromptCache || resuming
-      ? null
-      : promptCache.take(promptIds, cacheNs);
-    closeCacheLookup?.();
-    const caches = restoredCheckpoint?.caches ?? entry?.caches ?? ctx.model.makeCache();
-    // Prompt-boundary snapshot (the multi-turn agent fix, 2026-07-04): the
-    // prompt+gen entry put() below is UNTRIMMABLE at context > sliding
-    // window (wrapped rings) and under quantized KV (mid-group), so any
-    // decode→encode roundtrip drift in the reply the client sends back
-    // turns the next turn into a total miss (measured: 12B turn-2 TTFT
-    // 8.9 s instead of ~0.2 s). A prompt-ONLY entry is always an exact
-    // prefix of the next turn's rendering regardless of reply drift.
-    // Zero-copy (cloneKvCaches = slice views); only for substantial cold
-    // prefills, where the re-prefill it saves is worth an extra entry.
-    // The oracle invariant (mlx-lm insert_segments): a trim-free STRICT
-    // prefix of the prompt exists for EVERY substantial request — cap the
-    // boundary at len-1 so even a stableLen == len prompt (e4b: the
-    // template tail survives the probe render) snapshots prompt[:-1]. An
-    // exact repeat then matches with trimNeeded == 0, bypassing
-    // isTrimmable() entirely — the only reuse path a wrapped ring has.
-    const boundary = Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1);
-    // Re-snapshot on EVERY substantial request whose stable boundary extends
-    // past the cached prefix; the clone is zero-copy views, so re-putting
-    // is ~free.
-    const snapshotBoundary =
-      !skipPromptCache && !resuming && boundary >= 256 &&
-      boundary > (entry?.tokens.length ?? 0);
-    try {
-      if (vision?.mrope && ctx.model instanceof Qwen35Model)
-        ctx.model.mrope = vision.mrope;
-      if (resuming) {
-        const replay = generationPromptIds.slice(promptIds.length);
-        console.log(
-          `[generation-checkpoint] resuming ${checkpointKey} at ` +
-          `${replay.length} emitted tokens`,
-        );
-        for (const token of replay) {
-          if ((await onToken(token)) === false)
-            throw new Error("saved generation prefix triggered a terminal stop while replaying");
-        }
-      }
-      const gen = generate(ctx.model, generationPromptIds, {
-        ...options,
-        ...(resuming ? { seed: checkpoint!.seed } : {}),
-        pagedKv, // request-scoped (undefined strips the server-wide flag)
-        cache: caches,
-        ...(resuming
-          ? {
-              initialPendingToken: checkpoint!.pendingToken,
-              initialGeneratedTokens: checkpoint!.generatedTokens,
-              originalPromptTokens: checkpoint!.originalPromptTokens,
-            }
-          : {}),
-        ...(checkpointEligible
-          ? {
-              checkpointEveryTokens: checkpointEvery,
-              onDecodeCheckpoint: async (state: {
-                cacheTokens: number[];
-                caches: Cache[];
-                generatedTokens: number;
-                pendingToken: number;
-              }) => {
-                const stored = await ssdStore!.storeGenerationCheckpoint(
-                  state.cacheTokens,
-                  state.caches,
-                  {
-                    key: checkpointKey!,
-                    cacheNs,
-                    originalPromptTokens: promptIds.length,
-                    generatedTokens: state.generatedTokens,
-                    pendingToken: state.pendingToken,
-                    seed: options.seed ?? 0,
-                    seedWasExplicit: options.seedWasExplicit === true,
-                  },
-                );
-                if (stored)
-                  console.log(
-                    `[generation-checkpoint] saved ${state.generatedTokens} emitted tokens`,
-                  );
-              },
-            }
-          : {}),
-        ...(snapshotBoundary
-          ? {
-              // snapshotAt MUST travel with the hook: generate() splits the
-              // prefill at exactly this many tokens and fires the hook while
-              // the caches hold exactly that prefix — putting boundary
-              // tokens against caches at any other offset is silent KV
-              // corruption.
-              snapshotAt: boundary,
-              onPrefillDone: () => {
-                try {
-                  promptCache.put(promptIds.slice(0, boundary), cloneKvCaches(caches), cacheNs);
-                } catch (e) {
-                  console.warn(`prompt-boundary snapshot skipped: ${(e as Error).message}`);
-                }
-              },
-            }
-          : {}),
-        ...(vision
-          ? {
-              promptEmbeddings: vision.embeddings,
-              ...(vision.imageMask ? { imageMask: vision.imageMask } : {}),
-              ...(vision.multimodalMask ? { multimodalMask: vision.multimodalMask } : {}),
-            }
-          : {}),
-      }, { trace, mechanism: "serial" });
-      for await (const t of gen) {
-        if ((await onToken(t.token, t.logprobs)) === false) break;
-      }
-      const s = gen.stats!; // set on completion AND on early break
-      if (checkpointKey) ssdStore!.removeGenerationCheckpoints(checkpointKey);
-      if (skipPromptCache) {
-        // Vision and paged-KV requests own their caches for exactly one
-        // generation (paged: v1 non-goal — no PromptCache integration).
-        for (const c of caches) c.dispose();
-      } else {
-        // put() fires onPut → the debounced write-behind SSD snapshot
-        // (wired below), covering the batch lane's puts too.
-        promptCache.put(s.cacheTokens, caches, cacheNs, entry?.retain);
-      }
-      return s;
-    } catch (e) {
-      for (const c of caches) c.dispose();
-      entry?.retain?.();
-      // A throw BEFORE generate()/the gateway took ownership (promptCache
-      // take / makeCache) would leak the grammar's WASM matcher; dispose()
-      // is idempotent, so this is safe when the throw came from inside run
-      // (whose finally already disposed it).
-      options.grammar?.dispose();
-      throw e;
-    } finally {
-      if (ctx.model instanceof Qwen35Model) ctx.model.mrope = null;
-      vision?.embeddings.dispose();
-      vision?.imageMask?.dispose();
-      vision?.multimodalMask?.dispose();
-      options.visionPixels?.dispose();
-    }
-  };
+  const runGeneration = serving.createSerial({
+    promptCache, checkpoints: ssdStore,
+    checkpointEveryTokens: serverOptions.generationCheckpointTokens,
+    identity: { artifact: ctx.profile.artifact, implementation: ctx.profile.profile.execution,
+      stateAbi: "legacy-cache-array-v1", codecs: stateCodecs.id },
+    adapterNamespace: (adapters) => ctx.adapters.cacheNamespace(adapters),
+    cloneState,
+  });
 
   // Write-behind persistence (restart survival — the oMLX boundary-snapshot
   // idea at whole-entry granularity, spill-on-evict alone can't survive a
@@ -923,8 +612,10 @@ export function createServer(
   // never drops the item just enqueued).
   // The gateway exists before the spill queue because the SSD writer uses
   // its idle boundary to avoid competing with generation.
-  const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
+  const gateway = new GenerationGateway(serving.gateway, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
+    checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
+    stateCodecs,
     kvScheme: resolvedKvScheme,
     promptCache,
   });
@@ -944,7 +635,7 @@ export function createServer(
         gateway,
         promptCache,
         spillQueue,
-        cloneKvCaches,
+        cloneState,
         (tokens, ns) => ssdStore.hasDurablePrefix(tokens, ns),
       )
     : null;
@@ -995,7 +686,8 @@ export function createServer(
     demoteTimer.unref?.();
   }
 
-  const completionExecutor = new CompletionExecutor(gateway);
+  const sessionEngine = createSessionCompletionEngine(gateway, disposeUnstartedRequest);
+  const completionExecutor = new CompletionExecutor(sessionEngine);
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
@@ -1058,8 +750,10 @@ export function createServer(
   // chatStage with their own wire formats.)
   const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens });
   const { templateOptionsFor } = prep;
+  const preparation = createPreparationExecutor((work, signal) => gateway.runExclusive(work, undefined, signal), batch);
   const chatStage = new ChatStage(
-    ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter);
+    ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter,
+    preparation, serving.buildPrompt);
   const textStage = new TextCompletionStage(
     ctx, prep, admission.maxSafeContext, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
@@ -1336,33 +1030,7 @@ export function createServer(
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
-          ...(ctx.glmMemoryPlan ? {
-            glm52: {
-              preset: ctx.glmMemoryPlan.preset,
-              planned_process_bytes: ctx.glmMemoryPlan.plannedProcessBytes,
-              process_limit_bytes: ctx.glmMemoryPlan.processLimitBytes,
-              context_tokens: ctx.glmMemoryPlan.contextTokens,
-              max_generation_tokens: ctx.glmMemoryPlan.maxGenerationTokens,
-              batch_size: ctx.glmMemoryPlan.batchSize,
-              dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
-              mtp: ctx.draft?.provider.id === "glm52-native-mtp",
-              mtp_draft_tokens: ctx.glmMemoryPlan.mtpDraftTokens,
-              resident_weight_bytes: ctx.glmMemoryPlan.lineItems.residentWeightsBytes,
-              main_expert_slab_bytes: ctx.glmMemoryPlan.lineItems.mainExpertSlabBytes,
-              mtp_expert_slab_bytes: ctx.glmMemoryPlan.lineItems.mtpExpertSlabBytes,
-              expert_runtime: ctx.model instanceof Glm52Model &&
-                  ctx.model.expertRuntime
-                ? {
-                    main_residency:
-                      ctx.model.expertRuntime.manager.snapshot(),
-                    mtp_residency:
-                      ctx.model.expertRuntime.mtp?.manager.snapshot() ?? null,
-                    last_turn: ctx.model.expertRuntime.lastTelemetry,
-                    last_repin: ctx.model.expertRuntime.lastRepin,
-                  }
-                : null,
-            },
-          } : {}),
+          ...serving.diagnostics(),
           // --batch: configured cap, whether batching is live for this model,
           // and rows currently decoding in the batch.
           batch: {
@@ -1376,6 +1044,26 @@ export function createServer(
             kv_budget_bytes: gateway.kvBytes.budget,
           },
         });
+      }
+
+      // A parent-managed GPU job holds this response open. The connection owns
+      // the native lease, so parent death cannot strand the worker lock.
+      if (serverOptions.unixSocket && url.pathname === "/admin/lease" && request.method === "POST") {
+        await flushDurability();
+        const lease = await gateway.acquireExecutionLease(request.signal);
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          request.signal.removeEventListener("abort", release);
+          lease.dispose();
+        };
+        request.signal.addEventListener("abort", release, { once: true });
+        if (request.signal.aborted) release();
+        return new Response(new ReadableStream({
+          start(controller) { controller.enqueue(new TextEncoder().encode("leased\n")); },
+          cancel() { release(); },
+        }), { headers: { "content-type": "application/octet-stream" } });
       }
 
       // Engine-mode admin (unix-socket children only — never exposed on
@@ -1409,20 +1097,7 @@ export function createServer(
           // gateway.runExclusive: this raw forward must not run concurrently
           // with batched decode steps or a serial generation (GPU + shared
           // model state are single-owner — D3, one lock).
-          const result = await gateway.runExclusive(async () => {
-            const cache = ctx.model.makeCache();
-            try {
-              const logits = ctx.model.forward(sids, cache); // [1, L, V]
-              const [, Ln, V] = logits.shape as [number, number, number];
-              const last = logits.slice([0, Ln - 1, 0], [1, Ln, V]);
-              const f = last.toFloat32(); logits.dispose(); last.dispose();
-              let mx = -Infinity; for (const v of f) if (v > mx) mx = v;
-              let Z = 0; for (const v of f) Z += Math.exp(v - mx); const lse = mx + Math.log(Z);
-              const bins = new Array<number>(NB).fill(0);
-              for (const v of f) { const t = Math.max(0, Math.min(1, (v - lse - CURVE_UMIN) / (-CURVE_UMIN))); const bi = Math.min(NB - 1, Math.floor(t * NB)); bins[bi] = (bins[bi] ?? 0) + 1; }
-              return { bins, vocab: V };
-            } finally { for (const c of cache) c.dispose(); }
-          });
+          const result = await gateway.runExclusive(() => serving.signal(sids, NB, CURVE_UMIN));
           return Response.json(result, { headers: CURVE_CORS });
         } catch (e) {
           return Response.json({ error: `signal failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
@@ -1464,9 +1139,14 @@ export function createServer(
             const genOpts: GenerateOptions = useCurve
               ? { curve, seed: baseSeed + i, maxTokens, ...kvScheme }
               : { temperature: recipe.temperature, topP: recipe.topP, topK: recipe.topK, seed: baseSeed + i, maxTokens, ...kvScheme };
-            // runExclusive: runGeneration touches the GPU + prompt cache, so
-            // it needs the gateway lock (this endpoint bypasses gateway.run).
-            await gateway.runExclusive(() => runGeneration(ids, genOpts, (t) => { toks.push(t); }));
+            // The same plan and execution lease cover the Lab comparison endpoint.
+            const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
+              hasLogitsExtras: false, wantsLogprobs: false, userSeed: true,
+              kvQuant: !!(genOpts.kvBits || genOpts.kvConfig?.length), turboQuant: !!genOpts.turboQuant,
+              hasGrammar: false, hasDraft: !!ctx.draft };
+            const placement = gateway.place(shape, genOpts);
+            await gateway.run(ids, genOpts, (t) => { toks.push(t); }, undefined,
+              shape, placement, request.signal);
             const text = ctx.tokenizer.decode(toks, true).trim();
             samples.push({ text, junk: curveJunk(text) });
           }
@@ -1487,7 +1167,7 @@ export function createServer(
         if (body instanceof Response) return body;
         const meta = openAiMeta(id);
         const a = await admit(
-          inferenceStage, () => chatStage.run(new ChatRequest(body), id), trace, "chat request");
+          inferenceStage, () => chatStage.run(new ChatRequest(body), id, request.signal), trace, "chat request");
         if ("response" in a) return a.response;
         return body.stream
           ? respondStream(inferenceStage, a.admitted, chatCompletionStream(meta), request.signal, trace)
@@ -1539,7 +1219,7 @@ export function createServer(
         }
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const a = await admit(
-          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id), undefined,
+          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id, request.signal), undefined,
           "anthropic request", anthropicError);
         if ("response" in a) return a.response;
         if (anthropicBody.stream)
@@ -1574,34 +1254,17 @@ export function createServer(
           return responsesError(400, "invalid JSON body", {});
         }
 
-        // previous_response_id: prepend the prior conversation's input
-        // + output (as input items); carry instructions forward only if
-        // the new request omits them (oracle semantics).
-        const prevId = responsesBody.previous_response_id ?? null;
-        if (prevId) {
-          const prior = responseStore.get(prevId);
-          if (!prior)
-            return responsesError(404, `previous_response_id '${prevId}' not found or expired`, {});
-          const prepended = [...prior.input, ...outputItemsToInputItems(prior.output)];
-          const newInput =
-            typeof responsesBody.input === "string"
-              ? responsesBody.input
-                ? [{ type: "message", role: "user", content: responsesBody.input }]
-                : []
-              : responsesBody.input ?? [];
-          responsesBody = {
-            ...responsesBody,
-            input: [...prepended, ...newInput] as Array<Record<string, unknown>>,
-            instructions: responsesBody.instructions ?? prior.instructions ?? undefined,
-          };
-        }
-        // Remember the effective input so a later follow-up that chains
-        // off THIS response sees the full history.
-        const capturedInput: unknown[] =
-          typeof responsesBody.input === "string"
-            ? [{ type: "message", role: "user", content: responsesBody.input }]
-            : [...(responsesBody.input ?? [])];
-        const capturedInstructions = responsesBody.instructions ?? null;
+        let conversation: ReturnType<typeof resolveResponsesConversation>;
+        try { conversation = resolveResponsesConversation(responsesBody, responseStore); }
+        catch (error) { return responsesError(404, (error as Error).message, {}); }
+        responsesBody = conversation.body;
+        const prevId = conversation.previousId;
+        const capturedInput = conversation.input;
+        const capturedInstructions = conversation.instructions;
+        const storeHere = !(serverOptions.unixSocket && request.headers.get("x-mlx-bun-response-owner") === "parent");
+        const remember = (id: string, output: unknown[]) => {
+          if (storeHere) responseStore.put(id, { input: capturedInput, output, instructions: capturedInstructions });
+        };
 
         let chatBody: ChatRequestParams;
         try {
@@ -1611,7 +1274,7 @@ export function createServer(
         }
         const id = `chatcmpl-${crypto.randomUUID()}`;
         const a = await admit(
-          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id), undefined,
+          inferenceStage, () => chatStage.run(new ChatRequest(chatBody), id, request.signal), undefined,
           "responses request", responsesError);
         if ("response" in a) return a.response;
         if (responsesBody.stream)
@@ -1621,22 +1284,14 @@ export function createServer(
               ctx.modelId,
               prevId,
               (final) =>
-                responseStore.put(final.id as string, {
-                  input: capturedInput,
-                  output: final.output as unknown[],
-                  instructions: capturedInstructions,
-                }),
+                remember(final.id as string, final.output as unknown[]),
             ),
             request.signal);
         return respondJson(
           inferenceStage, a.admitted,
           (r) => {
             const responses = chatJsonToResponses(chatCompletionJson(r, openAiMeta(id)), ctx.modelId, prevId);
-            responseStore.put(responses.id as string, {
-              input: capturedInput,
-              output: responses.output as unknown[],
-              instructions: capturedInstructions,
-            });
+            remember(responses.id as string, responses.output as unknown[]);
             return responses;
           },
           request.signal, undefined, responsesError);
@@ -1644,6 +1299,7 @@ export function createServer(
 
       const labResponse = await handleLabRoute(url, request, {
         ensureJobs,
+        acquireGpu: (signal) => gateway.acquireExecutionLease(signal),
         serverPort: () => server.port,
         invalidateLibrary: () => discoveryRoutes.invalidateLibrary(),
       });
@@ -1659,6 +1315,13 @@ export function createServer(
     },
   });
   serverLifecycles.set(serverRef, {
+    stopJobs: async () => {
+      if (jobStore) {
+        const jobs = await import("./jobs");
+        await Promise.all([jobs.closeSubprocessJobs(jobStore), jobs.closeInProcessJobs(jobStore)]);
+      }
+    },
+    close: async () => { preparation.close(); await sessionEngine.close(); await gateway.close(); },
     flush: flushDurability,
     stats: durabilityStats,
     stopTimers: () => {

@@ -17,16 +17,24 @@ import {
   synchronize,
 } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
-import { CompiledDecode } from "./model/compiled-decode";
-import { Gemma4Model, KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
+import { KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
 import { PagedKVCache } from "./lab/paged-kv/paged-kv";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
-import { diffusionGenerate } from "./diffusion/diffusion-generate";
+import { denoiseAsync } from "./diffusion/diffusion-generate";
+import { bindLegacyDenoisingModel, type MlxDenoisingBinding } from "./backends/mlx/diffusion";
 import type { RuntimeModel } from "./model/factory";
+import {
+  assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
+  type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep,
+} from "./backends/mlx/autoregressive";
+import { nextPrefillStep } from "./inference/prefill";
+import { evalCacheState, executeMlxPrefillStep } from "./backends/mlx/prefill";
+export { evalCacheState } from "./backends/mlx/prefill";
+import type { TokenLogprobs } from "./contracts/generation";
+export type { TokenLogprobs } from "./contracts/generation";
 import type { PromptResponseTrace } from "./serve/prompt-response-trace";
 import type { KvQuantSpec, TurboQuantScheme } from "./config";
-import { flagOn } from "./runtime-config";
-import { runtimeValue } from "./runtime-config";
+import { runtimeConfig, runtimeValue, withRuntimeConfig, type RuntimeConfig } from "./runtime-config";
 import {
   disposeStepExtras,
   makeStepSampler,
@@ -47,6 +55,12 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
+  /** Resolved host policy. Direct compatibility calls resolve from their
+   * captured binding when this is absent. */
+  decodePolicy?: Readonly<Pick<import("./contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;
+  /** Cooperatively cancel at prefill/decode boundaries; pending native work
+   *  finishes before owned resources are released. */
+  signal?: AbortSignal;
   maxTokens?: number;
   eosTokenIds?: number[];
   prefillChunkSize?: number;
@@ -173,9 +187,10 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
 
 export function shouldUseGrammarJump(
   options: Pick<GenerateOptions, "grammar" | "logprobs" | "topLogprobs">,
+  runtime: RuntimeConfig = runtimeConfig(),
 ): boolean {
   return options.grammar !== undefined &&
-    flagOn("MLX_BUN_GRAMMAR_JUMP", false) &&
+    runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0);
 }
@@ -198,9 +213,10 @@ export function shouldUseFill(
     "fill" | "grammar" | "logprobs" | "topLogprobs" | "promptEmbeddings"
     | "kvBits" | "kvConfig" | "turboQuant"
   >,
+  runtime: RuntimeConfig = runtimeConfig(),
 ): boolean {
   if (!options.fill) return false;
-  if (resolveFillMode() === "off") return false;
+  if (resolveFillMode(runtime.value("MLX_BUN_FILL") ?? "off") === "off") return false;
   return options.grammar === undefined &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0) &&
@@ -208,36 +224,6 @@ export function shouldUseFill(
     !options.kvBits &&
     !options.kvConfig?.length &&
     options.turboQuant === undefined;
-}
-
-/** Per-token logprob info (only present when GenerateOptions requested it). */
-export interface TokenLogprobs {
-  /** logprob of the emitted token (requires options.logprobs). */
-  logprob?: number;
-  /** top-k (id, logprob) pairs, sorted by logprob descending (requires
-   *  options.topLogprobs > 0). mlx-lm leaves argpartition order unspecified;
-   *  sorting is the deterministic reading of the same set. */
-  top?: { id: number; logprob: number }[];
-}
-
-/** Materialize every cache's state at a prefill chunk boundary. Unlike
- *  KVCache/QuantizedKVCache/RotatingKVCache, TurboQuantKVCache.state()
- *  allocates FRESH trimmed slice views on every call (required by its
- *  snapshotCache/cloneKvCaches callers in kv-store.ts, which already
- *  dispose them) rather than returning its own live-owned arrays — so
- *  this chokepoint must dispose that cache kind's state() output itself,
- *  or the views leak (unreferenced past this call, only reclaimed by the
- *  FinalizationRegistry backstop on GC of the tiny JS wrapper). */
-export function evalCacheState(cache: Cache[]): void {
-  const turboState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? c.state() : []));
-  try {
-    const liveState = cache.flatMap((c) => (c instanceof TurboQuantKVCache ? [] : c.state()));
-    ops.evalAll([...turboState, ...liveState]);
-  } finally {
-    // Disposed even when evalAll throws (Metal OOM / deferred graph error) —
-    // the whole reason this chokepoint exists is that these views are owned.
-    for (const a of turboState) a.dispose();
-  }
 }
 
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
@@ -415,16 +401,23 @@ export interface GeneratedToken {
 
 export class Generation implements AsyncIterable<GeneratedToken> {
   stats: GenerateStats | null = null;
-  readonly #iter: AsyncGenerator<GeneratedToken, GenerateStats>;
+  readonly #next: () => Promise<IteratorResult<GeneratedToken, GenerateStats>>;
+  readonly #return: () => Promise<IteratorResult<GeneratedToken, GenerateStats>>;
 
-  constructor(iter: AsyncGenerator<GeneratedToken, GenerateStats>) {
-    this.#iter = iter;
+  constructor(iter: AsyncGenerator<GeneratedToken, GenerateStats>, runtime = runtimeConfig()) {
+    // Async generators resume in the caller's context on every next/return.
+    // Bind both operations so consumer awaits and early close cannot change
+    // the runtime snapshot seen by kernels or their cleanup.
+    const next = iter.next.bind(iter);
+    const close = () => iter.return(undefined as unknown as GenerateStats);
+    this.#next = () => withRuntimeConfig(runtime, next);
+    this.#return = () => withRuntimeConfig(runtime, close);
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<GeneratedToken> {
     try {
       while (true) {
-        const r = await this.#iter.next();
+        const r = await this.#next();
         if (r.done) {
           this.stats = r.value;
           return;
@@ -437,7 +430,7 @@ export class Generation implements AsyncIterable<GeneratedToken> {
       // disposal, wired/adapter scopes) and capture the stats its
       // early-return path still reports.
       if (this.stats === null) {
-        const r = await this.#iter.return(undefined as unknown as GenerateStats);
+        const r = await this.#return();
         if (r.done && r.value) this.stats = r.value;
       }
     }
@@ -464,14 +457,7 @@ const WIRE_THRESHOLD = 0.5;
 let wiredScopeDepth = 0;
 let wiredOldLimit = 0;
 
-type WiredModelMemory = {
-  readonly weightsBytes: number;
-  readonly expertRuntime?: {
-    readonly plan: { readonly plannedBytes: number };
-    flushUsage?: () => void;
-    finishUsage?: () => Promise<void>;
-  } | null;
-};
+type WiredModelMemory = MlxModelMemory;
 
 /** Bytes whose MLX graph must stay resident while a model executes. */
 export function wiredWorkingSetBytes(model: WiredModelMemory): number {
@@ -519,19 +505,59 @@ export function generate(
   options: GenerateOptions = {},
   diagnostics: GenerateDiagnostics = {},
 ): Generation {
+  return bindGeneration(model)(promptTokens, options, diagnostics);
+}
+
+/** Resolve the compatibility model once at host construction. Every request
+ * borrows the same binding and immutable runtime snapshot. */
+export function bindGeneration(model: RuntimeModel): (
+  promptTokens: number[], options?: GenerateOptions, diagnostics?: GenerateDiagnostics,
+) => Generation {
   // DiffusionGemma is non-autoregressive: route to the denoising engine instead
   // of the AR decode loop. Same Generation/GenerateStats contract so the CLI and
   // server stream it through the existing token machinery.
-  let inner =
-    model instanceof DiffusionGemmaModel
-      ? generateDiffusionInner(model, promptTokens, options)
-      : generateInner(model, promptTokens, options, diagnostics);
-  if (options.adapters?.length) inner = adapterScoped(model, options.adapters, inner);
-  const memoryModel: WiredModelMemory = model;
-  if (memoryModel.expertRuntime?.flushUsage)
-    inner = usageScoped(memoryModel, inner);
-  const wire = modelNeedsWiredLimit(model);
-  return new Generation(wire ? wiredScoped(inner) : inner);
+  if (!(model instanceof DiffusionGemmaModel)) {
+    const binding = bindLegacyAutoregressiveModel(model);
+    return (prompt, options, diagnostics) => generateAutoregressive(binding, prompt, options, diagnostics);
+  }
+  const binding = bindLegacyDenoisingModel(model);
+  return (prompt, options) => generateDenoising(binding, prompt, options);
+}
+
+/** Execute a supplied backend binding through the same AR loop and resource
+ * scopes as generate(). Callers serialize shared model/adapter access. Replacing
+ * this binding replaces graph, cache construction, media, and optional decode
+ * together; it never borrows another model's compiled execution implicitly. */
+export function generateAutoregressive(
+  binding: MlxAutoregressiveBinding,
+  promptTokens: number[],
+  options: GenerateOptions = {},
+  diagnostics: GenerateDiagnostics = {},
+): Generation {
+  const runtime = binding.runtime ?? runtimeConfig();
+  let inner = generateInner(binding, promptTokens, options, diagnostics, runtime);
+  if (options.adapters?.length && binding.adapters) {
+    inner = adapterScoped({ loraState: binding.adapters }, options.adapters, inner);
+  }
+  if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
+    inner = usageScoped(binding.memory, inner);
+  return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
+    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner, runtime);
+}
+
+/** Denoising bindings use their own state and feedback graph. Callers hold
+ * the native runtime's exclusive generation lease, including its global RNG. */
+export function generateDenoising<State>(
+  binding: MlxDenoisingBinding<State>, promptTokens: number[], options: GenerateOptions = {},
+): Generation {
+  let inner = generateDiffusionInner(binding, promptTokens, options);
+  if (options.adapters?.length && binding.adapters)
+    inner = adapterScoped({ loraState: binding.adapters }, options.adapters, inner);
+  if (binding.memory.expertRuntime?.finishUsage || binding.memory.expertRuntime?.flushUsage)
+    inner = usageScoped(binding.memory, inner);
+  const runtime = binding.runtime ?? runtimeConfig();
+  return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
+    runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner, runtime);
 }
 
 /** Non-autoregressive diffusion generation, adapted to the AR Generation
@@ -539,11 +565,12 @@ export function generate(
  *  streams the emitted tokens. v1: greedy (temperature 0, confidence-threshold
  *  sampler — the OptiQ default); per-block intra-stream + temperature>0
  *  (categorical) are follow-ups. */
-async function* generateDiffusionInner(
-  model: DiffusionGemmaModel,
+async function* generateDiffusionInner<State>(
+  binding: MlxDenoisingBinding<State>,
   promptTokens: number[],
   options: GenerateOptions,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
+  options.signal?.throwIfAborted();
   const t0 = performance.now();
   const maxTokens = options.maxTokens ?? 256;
   // A fresh random canvas seed per request unless the caller pins one.
@@ -553,40 +580,52 @@ async function* generateDiffusionInner(
       : BigInt(Math.floor(Math.random() * 0x7fffffff));
   // The shipped checkpoint's tokenizer stops on {1, 106}; union any caller eos.
   const eos = [...new Set([1, 106, ...(options.eosTokenIds ?? [])])];
-  const result = diffusionGenerate(model, promptTokens, {
+  const result = await denoiseAsync(binding.graph, promptTokens, {
     maxTokens,
     sampler: "confidence-threshold",
     temperature: 0,
     eosTokenIds: eos,
     seed,
     visionPixels: options.visionPixels,
-  });
+  }, options.signal);
   const decodeMs = performance.now() - t0;
   let index = 0;
-  for (const token of result.tokens) yield { token, index: index++ };
-  return {
-    promptTokens: promptTokens.length,
-    cachedTokens: 0,
-    generatedTokens: result.tokens.length,
-    prefillTps: 0,
-    decodeTps: result.tokens.length / Math.max(decodeMs / 1000, 1e-9),
-    prefillMs: 0,
-    decodeMs,
-    cacheTokens: [],
-  };
+  let failure: { error: unknown } | undefined;
+  try {
+    for (const token of result.tokens) {
+      options.signal?.throwIfAborted();
+      yield { token, index: index++ };
+    }
+  } catch (error) { failure = { error }; }
+  finally {
+    // A stop parser may close delivery before the finished canvas is exhausted.
+    // Settle the emitted count on return(), without suppressing cancellation/errors.
+    if (failure) throw failure.error;
+    return {
+      promptTokens: promptTokens.length,
+      cachedTokens: 0,
+      generatedTokens: index,
+      prefillTps: 0,
+      decodeTps: index / Math.max(decodeMs / 1000, 1e-9),
+      prefillMs: 0,
+      decodeMs,
+      cacheTokens: [],
+    };
+  }
 }
 
 /** Hold the model's active-adapter list for exactly this generation. */
 async function* adapterScoped(
-  model: RuntimeModel,
+  model: { loraState: { active: string[] } },
   adapters: string[],
   inner: AsyncGenerator<GeneratedToken, GenerateStats>,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
+  const previous = model.loraState.active;
   model.loraState.active = adapters;
   try {
     return yield* inner;
   } finally {
-    model.loraState.active = [];
+    model.loraState.active = previous;
   }
 }
 
@@ -646,35 +685,34 @@ export async function withModelUsageFlush<T>(
   }
 }
 
-/** Forward through either the ordinary synchronous model surface or a
- * streamed-expert model whose layer execution must cross async I/O. Keeping
- * this choice inside the shared generator preserves the complete generation
- * contract (sampling, grammar, logprobs, prompt cache, and cancellation) for
- * both execution styles. */
-async function forwardHiddenForGeneration(
-  model: RuntimeModel,
-  ids: MlxArray,
-  cache: Cache[],
-): Promise<MlxArray> {
-  const asyncModel = model as RuntimeModel & {
-    forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
-  };
-  return typeof asyncModel.forwardHiddenAsync === "function"
-    ? await asyncModel.forwardHiddenAsync(ids, cache)
-    : model.forwardHidden(ids, cache);
-}
-
 async function* generateInner(
-  model: RuntimeModel,
+  binding: MlxAutoregressiveBinding,
   promptTokens: number[],
   options: GenerateOptions,
   diagnostics: GenerateDiagnostics,
+  runtime: RuntimeConfig,
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
+  if (options.signal?.aborted) {
+    options.grammar?.dispose();
+    options.signal.throwIfAborted();
+  }
   const {
     maxTokens = 512,
-    eosTokenIds = model.config.eosTokenIds,
+    eosTokenIds = binding.eosTokenIds,
     prefillChunkSize = 2048,
   } = options;
+
+  try {
+    assertMlxAutoregressiveBinding(binding);
+    if (options.promptEmbeddings && !binding.forwardEmbeddings)
+      throw new Error("AR binding does not support prompt embeddings");
+    if (options.adapters?.length && !binding.adapters)
+      throw new Error("AR binding does not support adapters");
+  } catch (error) {
+    options.grammar?.dispose();
+    throw error;
+  }
+  const graph = binding.graph;
 
   // logprobs capture (mlx_lm.server semantics — see GenerateOptions.logprobs).
   // Everything below is gated: when neither flag is set, no extra ops, evals,
@@ -700,26 +738,36 @@ async function* generateInner(
     mechanism: diagnostics.mechanism ?? "serial",
   });
   const ownsCache = !options.cache;
-  const cache = options.cache ?? model.makeCache();
-  const cachedTokens = cache[0]!.offset;
   const resuming = options.initialPendingToken !== undefined;
-  if ((!resuming && cachedTokens >= promptTokens.length) ||
-      (resuming && cachedTokens !== promptTokens.length))
-    throw new Error(
-      resuming
-        ? `resumed cache (${cachedTokens} tokens) must exactly cover the resume prefix (${promptTokens.length})`
-        : `pre-warmed cache (${cachedTokens} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
-    );
-  // Paged KV (default off): swap fresh full-attention caches for paged
-  // storage BEFORE prefill. Capacity is exact — the deepest write lands at
-  // prompt + maxTokens − 1 (step maxTokens−1's forward), so this bound
-  // makes pool exhaustion an accounting-bug tripwire, not a request limit.
-  maybePageKv(cache, options, promptTokens.length + maxTokens);
+  let cache: Cache[] = options.cache ?? [];
+  try {
+    if (ownsCache) cache = binding.makeCache();
+    if (!cache.length) throw new Error("AR binding returned an empty cache");
+    const cached = cache[0]!.offset;
+    if ((!resuming && cached >= promptTokens.length) ||
+        (resuming && cached !== promptTokens.length))
+      throw new Error(
+        resuming
+          ? `resumed cache (${cached} tokens) must exactly cover the resume prefix (${promptTokens.length})`
+          : `pre-warmed cache (${cached} tokens) must be a strict prefix of the prompt (${promptTokens.length})`,
+      );
+    // Replace fresh full-attention caches before any forward. The deepest
+    // write is prompt + maxTokens - 1, so capacity covers every decode step.
+    maybePageKv(cache, options, promptTokens.length + maxTokens);
+  } catch (error) {
+    if (ownsCache) for (const state of cache) state.dispose();
+    stepSampler.dispose();
+    options.grammar?.dispose();
+    closeBatchSetup?.();
+    closePrefill?.();
+    throw error;
+  }
+  const cachedTokens = cache[0]!.offset;
   // Token fast-forwarding gate (see shouldUseFill). RotatingKVCache (sliding
   // window) layers append multi-token writes through #updateConcat — O(window)
   // per append rather than the O(L) a plain ring pays — so v1 warns and skips
   // the whole feature for those models rather than paying it silently.
-  let fillOn = shouldUseFill(options);
+  let fillOn = shouldUseFill(options, runtime);
   if (fillOn && cache.some((c) => c instanceof RotatingKVCache)) {
     fillOn = false;
     if (!warnedFillRotating) {
@@ -788,8 +836,10 @@ async function* generateInner(
   let nextPending: MlxArray | null = null;
   let pendingExtras: StepExtras | null = null;
   let nextExtras: StepExtras | null = null;
+  let decoder: MlxDecodeStep | null = null;
   let finished = false;
   let threw = false;
+  let executionError: unknown;
   let closeTokenZero: (() => void) | undefined;
   const makeStats = (): GenerateStats => ({
     promptTokens: options.originalPromptTokens ?? promptTokens.length,
@@ -905,7 +955,7 @@ async function* generateInner(
     try {
       const fillIds = ops.fromInt32(ids, [1, ids.length]);
       try {
-        hf = await forwardHiddenForGeneration(model, fillIds, cache);
+        hf = await graph.forwardHidden(fillIds, cache);
       } finally {
         fillIds.dispose();
       }
@@ -915,7 +965,7 @@ async function* generateInner(
         // Free logits: this forward already computed every span position's
         // hidden state. argmax at j is the model's continuation after ids[j],
         // so it verifies ids[j+1]. (Under assert this readback is trace-only.)
-        logitsAll = model.logitsFromHidden(hf);
+        logitsAll = graph.projectLogits(hf, { type: "all" });
         const argmax = ops.argmaxAxis(logitsAll, -1);
         pred = argmax.toIntTokens();
         argmax.dispose();
@@ -962,7 +1012,7 @@ async function* generateInner(
           logits = logitsAll.slice([0, accepted - 1, 0], [1, accepted, V]);
         } else {
           const hLast = hf.slice([0, Lf - 1, 0], [1, Lf, Hf]);
-          logits = model.logitsFromHidden(hLast);
+          logits = graph.projectLogits(hLast, { type: "all" });
           hLast.dispose();
         }
         const sn = sampleStep(logits, willGen);
@@ -1023,115 +1073,44 @@ async function* generateInner(
       // e2b/e4b need the spliced token ids to build per-layer inputs
       // (multimodal soft-token positions zeroed inside forwardEmbeddings).
       const embedIds = ops.fromInt32(promptTokens, [1, promptTokens.length]);
-      h0 = model.forwardEmbeddings(
+      h0 = binding.forwardEmbeddings!(
         options.promptEmbeddings, cache, options.imageMask ?? null, embedIds,
         options.multimodalMask ?? null,
       );
       embedIds.dispose();
     } else {
       let pos = cachedTokens;
-      // Stable-boundary snapshot: prefill up to snapshotAt first (plain
-      // chunks, no logits), fire the hook while the caches hold exactly
-      // that prefix, then continue with the remainder below. Splitting here
-      // changes chunk shapes only for requests that opted in — the same
-      // numerics class as a prompt-cache-hit continuation prefill.
-      const snapAt = options.onPrefillDone && options.snapshotAt !== undefined
+      const snapshotAt = options.onPrefillDone && options.snapshotAt !== undefined
         ? Math.min(Math.max(options.snapshotAt, cachedTokens), promptTokens.length)
-        : promptTokens.length;
-      if (snapAt > pos && snapAt < promptTokens.length) {
-        while (pos < snapAt) {
-          const chunk = promptTokens.slice(pos, Math.min(pos + prefillChunkSize, snapAt));
-          const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
-            mechanism: diagnostics.mechanism ?? "serial",
-            startToken: pos,
-            tokens: chunk.length,
-          });
-          const ids = ops.fromInt32(chunk, [1, chunk.length]);
-          const h = await forwardHiddenForGeneration(model, ids, cache);
-          ids.dispose();
-          h.dispose();
-          evalCacheState(cache);
-          maybeQuantizeKv(cache, options);
-          clearCache();
-          closeChunk?.();
-          pos += chunk.length;
-          // Macrotask yield between chunks (docs/reference/server-config.md Phase 1):
-          // each chunk is a synchronous multi-hundred-ms FFI eval; without
-          // this the event loop serves no I/O for the WHOLE prefill.
-          await new Promise<void>((r) => setImmediate(r));
-        }
-        options.onPrefillDone?.();
-      }
-      // Oracle prefill convention (mlx-lm 0.31.3 generate_step,
-      // generate.py:430-453): drain the prompt only to len-1 — chunks of
-      // min(prefillChunkSize, remaining-1) — then compute step-0 logits from
-      // a SEPARATE L=1 forward of the LAST prompt token (its server's
-      // batched engine shares the convention: insert_segments' forced final
-      // 1-token segment + GenerationBatch._step, generate.py:1645/1327).
-      // Forwarding the last token as the tail of an L=n GEMM instead is
-      // ulp-different in bf16 (qmm-vs-qmv + L-dependent SDPA dispatch) in
-      // BOTH the step-0 logits and that token's stored KV — near-tie greedy
-      // streams flip (2026-07-07 12B completion-probe ✗: first token flip at
-      // step 24). MLX_BUN_PREFILL_TAIL_SPLIT=0 restores the old
-      // full-final-chunk convention (A/B lever + kill switch).
-      const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
-      const drainGate = tailSplit ? 1 : prefillChunkSize;
-      while (promptTokens.length - pos > drainGate) {
-        const n = tailSplit
-          ? Math.min(prefillChunkSize, promptTokens.length - pos - 1)
-          : prefillChunkSize;
-        const chunk = promptTokens.slice(pos, pos + n);
+        : undefined;
+      const tailSplit = runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+      const forward = graph.forwardHidden.bind(graph);
+      const maintain = () => maybeQuantizeKv(cache, options);
+      while (true) {
+        options.signal?.throwIfAborted();
+        const step = nextPrefillStep({ length: promptTokens.length, position: pos,
+          chunkSize: prefillChunkSize, tailSplit, snapshotAt });
+        if (step.kind === "final" && needsTokenHistory) stepSampler.seedHistory(promptTokens);
         const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
-          mechanism: diagnostics.mechanism ?? "serial",
-          startToken: pos,
-          tokens: chunk.length,
+          mechanism: diagnostics.mechanism ?? "serial", startToken: step.start,
+          tokens: step.end - step.start, ...(step.kind === "final" ? { final: true } : {}),
         });
-        const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = await forwardHiddenForGeneration(model, ids, cache);
-        ids.dispose();
-        h.dispose(); // logits never computed for non-final chunks
-        evalCacheState(cache);
-        maybeQuantizeKv(cache, options);
-        // mlx-lm _prefill clears the allocator cache after every chunk;
-        // without this, prefill transients pile up in the buffer cache
-        // and the first decode step pays a one-shot reclaim stall that
-        // scales with prompt length (~800 ms after an 8k prefill —
-        // measured, scripts/decode-split.ts; the context-scaling decode
-        // gap's main term).
-        clearCache();
-        closeChunk?.();
-        pos += n;
-        if (runtimeValue("MLX_BUN_PREFILL_MEM_LOG") === "1")
+        let hidden: MlxArray | null;
+        try { hidden = await executeMlxPrefillStep(forward, cache, promptTokens, step, maintain); }
+        finally { closeChunk?.(); }
+        pos = step.end;
+        if (hidden) { h0 = hidden; break; }
+        if (runtime.value("MLX_BUN_PREFILL_MEM_LOG") === "1")
           console.error(`[prefill-mem] ${pos} active ${(activeMemory() / 2 ** 30).toFixed(2)} peak ${(peakMemory() / 2 ** 30).toFixed(2)}`);
-        // Macrotask yield between chunks (docs/reference/server-config.md Phase 1).
-        await new Promise<void>((r) => setImmediate(r));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (step.snapshot) options.onPrefillDone?.();
       }
-      if (needsTokenHistory) {
-        stepSampler.seedHistory(promptTokens);
-      }
-      // Under tailSplit this is exactly [promptTokens[len-1]] — the L=1
-      // step-0 forward (uncompiled L=1 is bit-exact with compiled decode,
-      // tests/parity/compiled-decode.test.ts). The last prompt token's KV enters
-      // the cache HERE, so downstream bookkeeping (forwarded[], cacheTokens,
-      // PromptCache.put alignment) is unchanged: after step 0 the caches
-      // cover exactly the prompt, as before.
-      const lastChunk = promptTokens.slice(pos);
-      const closeChunk = diagnostics.trace?.begin("prefill.chunk", {
-        mechanism: diagnostics.mechanism ?? "serial",
-        startToken: pos,
-        tokens: lastChunk.length,
-        final: true,
-      });
-      const ids0 = ops.fromInt32(lastChunk, [1, lastChunk.length]);
-      h0 = await forwardHiddenForGeneration(model, ids0, cache);
-      ids0.dispose();
-      closeChunk?.();
     }
     if (options.snapshotAt === undefined || options.snapshotAt >= promptTokens.length)
       options.onPrefillDone?.();
     // The trace's prefill span is the uncached model-forward portion only.
     // Token-0 lm-head, sampling, and readback are a separate additive stage.
-    if (diagnostics.trace && runtimeValue("MLX_BUN_P2R_SYNC") === "1")
+    if (diagnostics.trace && runtime.value("MLX_BUN_P2R_SYNC") === "1")
       synchronize(gpuStream);
     closePrefill?.();
     closeTokenZero = diagnostics.trace?.begin("token_zero.total", {
@@ -1140,7 +1119,7 @@ async function* generateInner(
     const [, L0, H] = h0.shape as [number, number, number];
     const hLast = h0.slice([0, L0 - 1, 0], [1, L0, H]);
     h0.dispose();
-    const logits0 = model.logitsFromHidden(hLast);
+    const logits0 = graph.projectLogits(hLast, { type: "all" });
     hLast.dispose();
     const s0 = sampleStep(logits0, 0); // token array [1] (+ optional extras)
     pending = s0.tok;
@@ -1158,28 +1137,10 @@ async function* generateInner(
     }
 
     // ---- decode (pipelined) ----
-    // Compiled decode (docs/archive/investigations/optimization_plan.md Phase A): replay the per-step
-    // graph in C++ instead of rebuilding it through bun:ffi every token.
-    // Bit-exact with the uncompiled path (tests/parity/compiled-decode.test.ts);
-    // MLX_BUN_COMPILED_DECODE=0 is the kill switch / A-B lever. LoRA
-    // generations stay uncompiled (adapter weights would bake into the
-    // trace as constants). Any unsupported cache state falls back for
-    // the rest of the generation.
-    // MoE models stay uncompiled: GatherQMM lacks output_shapes in mlx
-    // 0.6.0, and shapeless replay re-infers the whole tape whenever the
-    // growing attention windows change shape (= every step). Remove this
-    // when upstream implements GatherQMM::output_shapes.
-    let compiled =
-      flagOn("MLX_BUN_COMPILED_DECODE", true) &&
-      !options.adapters?.length &&
-      // Paged caches can't compile (data-dependent block-list length —
-      // the shapeless-replay hazard; CompiledDecode.supports() also
-      // excludes them per step, this just skips the setup).
-      !options.pagedKv &&
-      model.config.modelType.startsWith("gemma4") &&
-      !model.config.text.enableMoeBlock
-        ? CompiledDecode.for(model as Gemma4Model)
-        : null;
+    // Selection and transactional fallback belong to the graph's binding.
+    decoder = options.decodePolicy?.compiledDecode === false ? null : binding.createDecode?.({
+      hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
+    }) ?? null;
     let stop = false;
     /** Token id read eagerly at the top of the loop for grammar (reused for
      *  the yield, avoiding a second readback). -1 when grammar is off — the
@@ -1192,11 +1153,13 @@ async function* generateInner(
     // (see GrammarController.jumpForward for the contract + the fidelity
     // note on why this is opt-in). Excluded when logprobs are requested
     // (jumped tokens are never sampled, so they'd have no logprobs rows).
-    const grammarJump = shouldUseGrammarJump(options);
+    const grammarJump = options.decodePolicy?.grammarJump ?? shouldUseGrammarJump(options, runtime);
     while (!stop) {
+      options.signal?.throwIfAborted();
       const cur = pending!;
       const curExtras = pendingExtras;
-      pendingExtras = null;
+      // Keep current extras owned by the run until readback succeeds. A
+      // forward/grammar failure must leave them reachable by finally.
       // Grammar advance (src/grammar.ts): acceptToken needs the token id as a
       // JS number, which the pipelined loop defers (it operates on device
       // arrays). So grammar requests eager-read cur here, advance the matcher,
@@ -1245,7 +1208,7 @@ async function* generateInner(
         stepSampler.commitNumbers(jumpEmit);
         const chunk = [grammarTok, ...jumpEmit];
         const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = await forwardHiddenForGeneration(model, ids, cache);
+        const h = await graph.forwardHidden(ids, cache);
         ids.dispose();
         // Every chunk token's KV is in the cache regardless of what follows.
         forwarded.push(...chunk);
@@ -1254,7 +1217,7 @@ async function* generateInner(
           const [, Lj, Hj] = h.shape as [number, number, number];
           const hLast = h.slice([0, Lj - 1, 0], [1, Lj, Hj]);
           h.dispose();
-          const logits = model.logitsFromHidden(hLast);
+          const logits = graph.projectLogits(hLast, { type: "all" });
           hLast.dispose();
           const sn = sampleStep(logits, willGen);
           nextPending = sn.tok;
@@ -1269,26 +1232,16 @@ async function* generateInner(
         pushHistory(cur);
         let logits: MlxArray | null = null;
         let evalWith: MlxArray[] = [];
-        if (compiled && CompiledDecode.supports(cache)) {
-          try {
-            const r = compiled.step(cur, cache);
-            logits = r.logits;
-            evalWith = r.evalWith;
-          } catch (e) {
-            // Safe to re-forward the SAME token below: a failed step is
-            // transactional — segmented mode stages ring adopts and rolls
-            // back committed js-layer writes on throw (see #stepSegmented),
-            // and buffer growth done by a partial prepare is benign for the
-            // uncompiled path (updateAndFetch re-checks capacity).
-            compiled = null;
-            console.warn(`compiled decode disabled for this generation: ${e}`);
-          }
+        const decoded = decoder?.tryStep(cur, cache);
+        if (decoded) {
+          logits = decoded.logits;
+          evalWith = decoded.evalWith;
         }
         if (!logits) {
           const ids = ops.reshape(cur, [1, 1]);
-          const h = await forwardHiddenForGeneration(model, ids, cache);
+          const h = await graph.forwardHidden(ids, cache);
           ids.dispose();
-          logits = model.logitsFromHidden(h);
+          logits = graph.projectLogits(h, { type: "all" });
           h.dispose();
         }
         const sn = sampleStep(logits, generated + 1);
@@ -1302,6 +1255,7 @@ async function* generateInner(
       // sync-read step n's token while n+1 computes (grammar already read it
       // eagerly above — reuse to avoid a second GPU sync)
       const token = options.grammar ? grammarTok : ops.itemUint32(cur);
+      options.signal?.throwIfAborted();
       if (generated === 0) {
         // first token arrived: prompt clock stops, decode clock starts
         // (mlx-lm stream_generate's n==0 clock swap; the first token is
@@ -1320,6 +1274,7 @@ async function* generateInner(
 
       if (eosTokenIds.includes(token)) {
         disposeStepExtras(curExtras);
+        pendingExtras = null;
         nextPending?.dispose();
         nextPending = null;
         disposeStepExtras(nextExtras);
@@ -1353,7 +1308,9 @@ async function* generateInner(
         // readExtras before the yield: if the consumer breaks at this yield,
         // the extras are already read and disposed.
         const logprobs = readExtras(curExtras);
+        pendingExtras = null;
         yield { token, index: generated - 1, ...(logprobs ? { logprobs } : {}) };
+        options.signal?.throwIfAborted();
         // mlx-lm generate_step: clear_cache after token 0 (drops the
         // remaining prefill transients) and every 256 tokens after
         if ((generated - 1) % 256 === 0) clearCache();
@@ -1364,6 +1321,7 @@ async function* generateInner(
         // safe — `forwarded` already reflects the cache exactly.
         if (jumpEmit) {
           for (const jt of jumpEmit) {
+            options.signal?.throwIfAborted();
             generated++;
             yield { token: jt, index: generated - 1 };
             if ((generated - 1) % 256 === 0) clearCache();
@@ -1375,6 +1333,7 @@ async function* generateInner(
         // would have in an unfilled run).
         if (fillEmit) {
           for (const ft of fillEmit) {
+            options.signal?.throwIfAborted();
             generated++;
             yield { token: ft, index: generated - 1 };
             if ((generated - 1) % 256 === 0) clearCache();
@@ -1410,6 +1369,7 @@ async function* generateInner(
     return makeStats();
   } catch (e) {
     threw = true;
+    executionError = e;
     throw e;
   } finally {
     if (!finished) {
@@ -1418,13 +1378,19 @@ async function* generateInner(
       disposeStepExtras(pendingExtras);
       disposeStepExtras(nextExtras);
     }
-    if (ownsCache) for (const c of cache) c.dispose();
-    // The grammar controller owns native WASM state (GrammarMatcher +
-    // TokenizerInfo cache) — dispose on every exit path (normal, early break,
-    // throw). TokenizerInfo itself is process-cached (vocab-structural), so
-    // only the per-request matcher/compiled are freed here.
-    options.grammar?.dispose();
-    stepSampler.dispose();
+    try {
+      const closing = decoder?.close();
+      if (closing) await closing;
+    } catch (error) {
+      if (threw) throw new AggregateError([executionError, error],
+        "AR execution and decoder cleanup failed", { cause: executionError });
+      throw error;
+    } finally {
+      if (ownsCache) for (const c of cache) c.dispose();
+      // TokenizerInfo is process-cached; this request owns the matcher.
+      options.grammar?.dispose();
+      stepSampler.dispose();
+    }
     if (!finished && !threw) {
       // forced early return (consumer break at a yield): still report
       // stats — `forwarded` only lists tokens whose KV actually entered

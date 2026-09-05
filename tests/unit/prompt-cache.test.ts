@@ -7,7 +7,7 @@
 // entry is trimmable. Tests inject a stub cloner (the real one,
 // kv-store.cloneKvCaches, switches on real cache classes).
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { PromptCache } from "../../src/prompt-cache";
 import type { PromptCacheEntry } from "../../src/prompt-cache";
 import type { Cache } from "../../src/model/gemma4";
@@ -44,6 +44,75 @@ const mk = (maxBytes = 1e9) => {
 };
 
 describe("PromptCache", () => {
+  test("failed trimming disposes every clone while preserving its donor", () => {
+    const donor = { count: 0 }, clones = { count: 0 };
+    const pc = new PromptCache(1e9, null, null, () => [
+      { ...stubCache(10, clones), trim() { throw new Error("trim failed"); } },
+      stubCache(10, clones),
+    ]);
+    pc.put([1, 2, 3], [stubCache(10, donor)]);
+    expect(() => pc.take([1, 2, 4])).toThrow("trim failed");
+    expect(clones.count).toBe(2);
+    expect(donor.count).toBe(0);
+    expect(pc.size).toBe(1);
+    pc.clear();
+  });
+
+  test("a failed cold trim releases restored state before its backing", () => {
+    const events: string[] = [];
+    const restored = { ...stubCache(10, { count: 0 }),
+      trim() { throw new Error("cold trim failed"); },
+      dispose() { events.push("cache"); },
+    };
+    const pc = new PromptCache(1e9, null, {
+      find: () => ({ prefixLen: 2, handle: "fixture" }),
+      restore: () => ({ tokens: [1, 2, 3], caches: [restored], retain() { events.push("backing"); } }),
+      store() {},
+    });
+    expect(() => pc.take([1, 2, 4])).toThrow("cold trim failed");
+    expect(events).toEqual(["cache", "backing"]);
+  });
+
+  test("failed eviction cleanup does not return ownership of the adopted entry to its caller", () => {
+    const oldSibling = { count: 0 }, incoming = { count: 0 };
+    const pc = new PromptCache(30);
+    pc.put([1], [{ ...stubCache(10, { count: 0 }), dispose() { throw new Error("old cleanup failed"); } },
+      stubCache(10, oldSibling)]);
+    const cache = stubCache(20, incoming);
+    const warning = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => pc.put([2], [cache])).not.toThrow();
+      expect(warning).toHaveBeenCalledTimes(1);
+      expect(oldSibling.count).toBe(1);
+      expect(incoming.count).toBe(0);
+      expect(pc.findExact([2])?.caches).toEqual([cache]);
+    } finally { warning.mockRestore(); pc.clear(); }
+    expect(incoming.count).toBe(1);
+  });
+
+  test("cache validation fails before adoption and leaves disposal to the caller", () => {
+    const disposed = { count: 0 };
+    const pc = new PromptCache(1e9);
+    const cache = { ...stubCache(10, disposed), isTrimmable() { throw new Error("invalid state"); } };
+    expect(() => pc.put([1], [cache])).toThrow("invalid state");
+    expect(pc.size).toBe(0);
+    expect(disposed.count).toBe(0);
+    cache.dispose();
+  });
+
+  test("clear detaches all entries and attempts sibling cleanup after a destructor failure", () => {
+    const sibling = { count: 0 };
+    let backing = 0;
+    const pc = new PromptCache(1e9);
+    pc.put([1], [{ ...stubCache(10, { count: 0 }), dispose() { throw new Error("cleanup failed"); } }], "", () => { backing++; });
+    pc.put([2], [stubCache(10, sibling)]);
+    expect(() => pc.clear()).toThrow("cleanup failed");
+    expect(pc.size).toBe(0);
+    expect(sibling.count).toBe(1);
+    expect(backing).toBe(0); // do not unmap backing when cache disposal failed
+    expect(() => pc.clear()).not.toThrow();
+  });
+
   test("longest usable prefix wins; donor stays in the cache (non-consuming)", () => {
     const { pc, cloneTrims } = mk();
     const d = { count: 0 };

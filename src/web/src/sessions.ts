@@ -20,7 +20,7 @@
 // wires each rendered `.sess` row's click to `onOpen` below — this just
 // finds and clicks the right row instead of duplicating that send()).
 
-import type { SessionListItem } from "../../pi-web";
+import type { SessionListItem } from "../../contracts/pi";
 import { $, el, injectStyles } from "./shell";
 import { api } from "./api";
 

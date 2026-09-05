@@ -1,3 +1,4 @@
+import { CancellationSource } from "../engine/cancellation";
 // Job runner: turns a registered `JobRunner` into a tracked, logged job.
 // Two execution modes — both create a row, both stream NDJSON events to the
 // log, both own terminal status:
@@ -14,6 +15,8 @@
 // Port of optiq lab jobs.py `submit` + `_job_main`, split across this file
 // and job-entry.ts.
 
+import type { DisposableResource } from "../contracts/resources";
+import { createJobTaskClient } from "./task-client";
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Emit, JobEvent, JobRunner } from "./types";
@@ -104,18 +107,28 @@ export interface SubmitResult {
  *  on success sets 'done'/progress 1/ended_at + emits 'done', on throw sets
  *  'failed'/error/ended_at + emits 'failed'. Returns once the task is
  *  scheduled (does not await completion — poll the row / tail the log). */
+interface InProcessWork { cancellation: CancellationSource; done: Promise<void>; }
+const inProcess = new WeakMap<JobStore, Set<InProcessWork>>();
+
 export function submitInProcess(
   store: JobStore,
   kind: string,
   config: Record<string, unknown>,
   outputPath?: string,
 ): SubmitResult {
+  if (closedStores.has(store)) throw new Error("job host is closed");
   const row = store.create(kind, config, outputPath);
   const emit = makeEmit(store, row.id, row.log_path);
   store.setStatus(row.id, "running");
   emit({ type: "started", ts: Date.now() });
 
   const runner = getRunner(kind);
+  const cancellation = new CancellationSource();
+  const running = inProcess.get(store) ?? new Set<InProcessWork>();
+  inProcess.set(store, running);
+  let finish!: () => void;
+  const work = { cancellation, done: new Promise<void>((resolve) => { finish = resolve; }) };
+  running.add(work);
   void (async () => {
     if (!runner) {
       const error = `no runner registered for kind "${kind}"`;
@@ -124,7 +137,7 @@ export function submitInProcess(
       return;
     }
     try {
-      const result = await runner(emit, JSON.parse(row.config_json));
+      const result = await createJobTaskClient(runner).run(JSON.parse(row.config_json), emit, cancellation);
       const out = result?.outputPath;
       if (out) store.setOutputPath(row.id, out);
       store.setProgress(row.id, 1);
@@ -135,7 +148,7 @@ export function submitInProcess(
       store.setStatus(row.id, "failed", { error, endedAt: nowIso() });
       emit({ type: "failed", error, ts: Date.now() });
     }
-  })();
+  })().finally(() => { running.delete(work); finish(); });
 
   return { jobId: row.id, outputPath };
 }
@@ -145,16 +158,25 @@ export function submitInProcess(
 // ---------------------------------------------------------------------------
 
 interface QueuedSpawn {
+  acquire?: (signal: AbortSignal) => Promise<DisposableResource>;
+  lease?: DisposableResource;
+  abort: AbortController;
+  proc?: Bun.Subprocess;
+  finished: Promise<void>;
+  finish(): void;
   store: JobStore;
   jobId: string;
   entry: string;
   bin: string;
+  compiled: boolean;
   spawn: typeof Bun.spawn;
   onComplete?: (jobId: string, code: number) => void;
 }
 
 let gpuLeaseHolder: string | null = null;
 const spawnQueue: QueuedSpawn[] = [];
+let activeSpawn: QueuedSpawn | undefined;
+const closedStores = new WeakSet<JobStore>();
 
 /** True while a GPU (subprocess) job is running — the server gates token
  *  generation on this so quantize/finetune don't fight live inference. */
@@ -168,6 +190,8 @@ export function currentGpuJob(): string | null {
 }
 
 export interface SubprocessOpts {
+  /** Host execution lease, held until child exit (including crashes). */
+  acquire?: (signal: AbortSignal) => Promise<DisposableResource>;
   /** Override the entry script (tests). Defaults to JOB_ENTRY_PATH. */
   entry?: string;
   /** Override the runtime binary (tests). Defaults to "bun". */
@@ -189,14 +213,20 @@ export function submitSubprocess(
   outputPath?: string,
   opts: SubprocessOpts = {},
 ): SubmitResult {
+  if (closedStores.has(store)) throw new Error("job host is closed");
   const row = store.create(kind, config, outputPath);
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => { finish = resolve; });
   const item: QueuedSpawn = {
+    abort: new AbortController(), finished, finish,
     store,
     jobId: row.id,
     entry: opts.entry ?? JOB_ENTRY_PATH,
+    compiled: opts.entry === undefined && opts.bin === undefined && JOB_ENTRY_PATH.includes("$bunfs"),
     bin: opts.bin ?? "bun",
     spawn: opts.spawn ?? Bun.spawn,
     onComplete: opts.onComplete,
+    acquire: opts.acquire,
   };
   spawnQueue.push(item);
   drainQueue();
@@ -215,7 +245,7 @@ function spawnNow(item: QueuedSpawn): void {
   // a file-backed DB.
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    proc = spawn([bin, entry, jobId], {
+    proc = spawn(item.compiled ? [process.execPath, "__job", jobId] : [bin, entry, jobId], {
       stdout: "pipe",
       stderr: "pipe",
       env: {
@@ -230,14 +260,16 @@ function spawnNow(item: QueuedSpawn): void {
         error: errString(e),
         endedAt: nowIso(),
       });
+    } catch (error) {
+      console.error(`[jobs] failed to record spawn failure: ${errString(error)}`);
     } finally {
-      releaseLease(jobId);
+      releaseLease(item);
     }
     return;
   }
 
-  const row = store.get(jobId);
-  const logPath = row?.log_path;
+  item.proc = proc;
+  const logPath = store.get(jobId)?.log_path;
   const logLine = (line: string) => {
     if (!line || !logPath) return;
     const ev: JobEvent = { type: "log", line };
@@ -252,7 +284,7 @@ function spawnNow(item: QueuedSpawn): void {
     // code 0 ⇒ trust the child's terminal status (it set done/failed itself).
     // non-zero ⇒ if the row never reached terminal (crash before the wrapper
     // could write), force it failed.
-    if (code !== 0) {
+    try { if (code !== 0) {
       const cur = store.get(jobId);
       if (cur && (cur.status === "queued" || cur.status === "running")) {
         store.setStatus(jobId, "failed", {
@@ -260,15 +292,25 @@ function spawnNow(item: QueuedSpawn): void {
           endedAt: nowIso(),
         });
       }
+    } } catch (error) {
+      console.error(`[jobs] failed to record child exit: ${errString(error)}`);
+    } finally {
+      releaseLease(item);
+      try { item.onComplete?.(jobId, code); } catch {}
+      drainQueue();
     }
-    releaseLease(jobId);
-    try { item.onComplete?.(jobId, code); } catch {}
-    drainQueue();
   })();
 }
 
-function releaseLease(jobId: string): void {
-  if (gpuLeaseHolder === jobId) gpuLeaseHolder = null;
+function releaseLease(item: QueuedSpawn): void {
+  try { item.lease?.dispose(); }
+  catch (error) { console.error(`[jobs] execution lease cleanup failed: ${errString(error)}`); }
+  finally {
+    item.lease = undefined;
+    if (gpuLeaseHolder === item.jobId) gpuLeaseHolder = null;
+    if (activeSpawn === item) activeSpawn = undefined;
+    item.finish();
+  }
 }
 
 /** Run the next queued subprocess job if the lease is free. */
@@ -279,8 +321,51 @@ export function drainQueue(): void {
     // A synchronous spawn failure releases the lease. Keep draining
     // iteratively so a run of bad queue entries cannot recurse or wedge the
     // first startable job behind them.
-    spawnNow(next);
+    activeSpawn = next;
+    if (next.acquire) {
+      gpuLeaseHolder = next.jobId; // reserve FIFO order while inference drains
+      void Promise.resolve().then(() => next.acquire!(next.abort.signal)).then((lease) => {
+        next.lease = lease;
+        if (next.abort.signal.aborted) throw next.abort.signal.reason;
+        spawnNow(next);
+      }).catch((error) => {
+        try {
+          next.store.setStatus(next.jobId, "failed", { error: errString(error), endedAt: nowIso() });
+        } catch (recordError) {
+          console.error(`[jobs] failed to record admission failure: ${errString(recordError)}`);
+        } finally { releaseLease(next); }
+      }).finally(drainQueue);
+    } else spawnNow(next);
   }
+}
+
+/** Dataset work stays in-process, but belongs to the application host too. */
+export async function closeInProcessJobs(store: JobStore): Promise<void> {
+  closedStores.add(store);
+  const active = [...inProcess.get(store) ?? []];
+  for (const work of active) work.cancellation.cancel("engine_closed");
+  await Promise.all(active.map((work) => work.done));
+}
+
+/** Stop only this host's managed GPU jobs. Await process death before releasing
+ * the execution lease; queued and admission-waiting jobs never spawn. */
+export async function closeSubprocessJobs(store: JobStore): Promise<void> {
+  closedStores.add(store);
+  for (let i = spawnQueue.length - 1; i >= 0; i--) {
+    const item = spawnQueue[i]!;
+    if (item.store !== store) continue;
+    spawnQueue.splice(i, 1);
+    store.setStatus(item.jobId, "failed", { error: "job host closed", endedAt: nowIso() });
+    item.finish();
+  }
+  const active = activeSpawn;
+  if (!active || active.store !== store) return;
+  active.abort.abort(new Error("job host closed"));
+  const proc = active.proc;
+  if (proc) proc.kill("SIGTERM");
+  const force = proc ? setTimeout(() => { if (proc.exitCode === null) proc.kill("SIGKILL"); }, 3000) : undefined;
+  try { await active.finished; }
+  finally { if (force) clearTimeout(force); }
 }
 
 /** Read a child stream line-by-line, buffering partial trailing lines, and

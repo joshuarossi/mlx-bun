@@ -21,16 +21,40 @@
 // two-model). See [[dspark-seam-kv-borrowing]].
 
 import type { MlxArray } from "../mlx/array";
-import type { RuntimeModel } from "../model/factory";
-import type { Cache } from "../model/gemma4";
+import type { Dtype } from "../mlx/ffi";
 
-/** Read-only handle to the target's live decode state, handed to every source
- *  at open(). Two-model ignores it; KV-borrowing sources read the target's
- *  model (embed / lm-head / the draft module) and its LIVE cache array (donor
- *  K/V views + offset — the SAME caches the serve loop drives). */
+/** Numerical ports are backend-specific; returned arrays are caller-owned. */
+export interface DraftProjection {
+  readonly embed: {
+    encode(ids: MlxArray): MlxArray;
+    readonly scales: { readonly dtype: Dtype };
+  };
+  logitsFromHidden(hidden: MlxArray): MlxArray;
+}
+
+export interface AssistantTarget {
+  position(): number;
+  embedScaled(token: number): MlxArray;
+  /** Retained temporal views; the draft round disposes every returned array. */
+  readDonors(): { sliding: [MlxArray, MlxArray]; full: [MlxArray, MlxArray] };
+}
+
+export interface QwenMtpTarget {
+  readonly hiddenSize: number;
+  readonly layerCount: number;
+  embed(ids: MlxArray): MlxArray;
+  logitsFromHidden(hidden: MlxArray): MlxArray;
+}
+
+/** Graph-declared extensions over the target's live state. Sources request
+ * only the ports they consume; they never inspect a concrete model or cache.
+ * Absence refuses an unsupported pairing before draft-side allocation. */
 export interface TargetView {
-  readonly model: RuntimeModel;
-  readonly caches: Cache[];
+  /** Opaque identity for providers borrowing weights from one exact target. */
+  readonly identity: object;
+  readonly assistant?: AssistantTarget;
+  readonly gemmaTaps?: { readonly layerCount: number; readonly projection: DraftProjection };
+  readonly qwenMtp?: QwenMtpTarget;
 }
 
 /** A per-request draft-token producer. Created per generation (owns its own
@@ -111,7 +135,7 @@ export interface DraftProvider {
      *  sampler as the target — mlx-lm parity; greedy drafting under a
      *  temperature>0 request is NOT parity). */
     sampler: (logprobs: MlxArray, step: number) => MlxArray;
-    /** The target model + its live caches (donor views / offset). */
+    /** Bound target capabilities, with explicit donor-view ownership. */
     target: TargetView;
   }): DraftSource;
   dispose(): void;

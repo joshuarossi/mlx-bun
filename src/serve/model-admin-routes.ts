@@ -1,6 +1,6 @@
-import type { ServerContext } from "./model-host";
+import { modelServingBinding } from "../backends/mlx/model-serving";
+import type { ServingContext } from "./model-host";
 import type { GenerationGateway } from "./generation-gateway";
-import { embedMany, isEmbeddingModel } from "../embed";
 import { listAvailableAdapters } from "../lora";
 
 export type ModelAdminRoute =
@@ -29,7 +29,7 @@ export function matchModelAdminRoute(method: string, pathname: string): ModelAdm
 export async function handleModelAdminRoute(
   url: URL,
   request: Request,
-  ctx: ServerContext,
+  ctx: ServingContext,
   gateway: Pick<GenerationGateway, "runExclusive">,
 ): Promise<Response | null> {
   const route = matchModelAdminRoute(request.method, url.pathname);
@@ -37,7 +37,9 @@ export async function handleModelAdminRoute(
 
   switch (route.kind) {
     case "embeddings": {
-      if (!isEmbeddingModel(ctx.model)) {
+      const binding = modelServingBinding(ctx);
+      const embed = binding.embed?.bind(binding);
+      if (!embed) {
         return Response.json({
           error: {
             message: `served model "${ctx.modelId}" is not an embedding model; ` +
@@ -66,7 +68,7 @@ export async function handleModelAdminRoute(
         }, { status: 400 });
       }
       const instruction = typeof body.instruction === "string" ? body.instruction : undefined;
-      const results = embedMany(ctx.model, ctx.tokenizer, inputs, instruction);
+      const results = await gateway.runExclusive(async () => embed(inputs, instruction), undefined, request.signal);
       let totalTokens = 0;
       const data = results.map((result, index) => {
         totalTokens += result.tokens;
