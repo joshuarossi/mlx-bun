@@ -72,8 +72,8 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 | `--generation-checkpoint` | output tokens | off | serial | Atomically snapshots an in-flight generation every N emitted tokens. Repeating the identical request after a restart replays the saved assistant prefix and continues from its already-sampled next token. Requires `--ssd-cache` and `--batch 1`; completed generations remove their checkpoint. |
 
 Generation checkpoint identity includes stop strings, sampling/KV policy, the
-resolved execution method, and artifact/implementation identity. Changing any
-of these starts a new completion. Version-2 generation checkpoints are not
+resolved execution method, compiled/grammar policy, and artifact/implementation
+identity. Changing any of these starts a new completion. Version-2/3 generation keys are not
 selected for automatic resume; ordinary prefix-cache files remain compatible
 with the legacy state provider. A different backend codec identity refuses
 incompatible files. Adapter namespaces include the mounted weight contents and

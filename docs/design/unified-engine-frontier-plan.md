@@ -1513,7 +1513,8 @@ and cleanup assertions.
 
 Checkpoint request identity is now canonical SHA-256 over sampling/stop policy,
 resolved execution and the artifact/implementation/state ABI. Object insertion
-order is ignored; array order remains meaningful. Version-2 generation keys do
+order is ignored; array order remains meaningful. Version-4 keys include the
+resolved compiled/grammar policy; version-2/3 generation keys do
 not resume through this version; ordinary prefix-store format is unchanged.
 Nine native scheduling gates pass after planner integration, including rotating
 dynamic joins, row failure containment, serial drain, prefix sharing, SSD restore

@@ -20,9 +20,10 @@ export function generationCheckpointKey(
   execution?: ResolvedExecution, bindingIdentity?: unknown,
 ): string {
   const policy = {
-    version: 3,
+    version: 4,
     execution: execution && { method: execution.method, mechanism: execution.mechanism,
-      pagedKv: execution.pagedKv, fill: execution.fill },
+      pagedKv: execution.pagedKv, fill: execution.fill,
+      compiledDecode: execution.compiledDecode, grammarJump: execution.grammarJump },
     bindingIdentity,
     stopSequences: options.stopSequences ?? [],
     cacheNs,
