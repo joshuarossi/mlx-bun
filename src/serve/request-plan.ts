@@ -1,3 +1,4 @@
+import { snapshotGenerationPolicy } from "../backends/mlx/request-policy";
 import type { GenerateOptions } from "../generate";
 import type { RequestShape } from "./generation-gateway";
 import type { DisposableResource } from "../contracts/resources";
@@ -108,24 +109,6 @@ export class RequestPlan {
 
 export type PlanRequestResult = RequestPlan | RequestRejection;
 
-/** Copy policy data without cloning native caches, controllers or callbacks. */
-function snapshotOptions(options: RequestPlanInput["options"]): RequestPlanInput["options"] {
-  const snapshot = { ...options };
-  const freeze = (value: unknown): void => {
-    if (!value || typeof value !== "object") return;
-    for (const item of Object.values(value)) freeze(item);
-    Object.freeze(value);
-  };
-  for (const key of ["stopSequences", "eosTokenIds", "adapters", "xtcSpecialTokens", "logitBias",
-    "kvConfig", "turboQuant", "pagedKv", "hlg", "curve", "decodePolicy"] as const) {
-    if (snapshot[key] === undefined) continue;
-    const value = structuredClone(snapshot[key]);
-    freeze(value);
-    Object.assign(snapshot, { [key]: value });
-  }
-  return Object.freeze(snapshot);
-}
-
 /** Compile the model-independent part of request execution into one value.
  * Prompt/media construction happens before this boundary; admission, capture
  * options, adapter selection, and lane shape are derived here once for chat
@@ -169,7 +152,7 @@ export function planRequest(input: RequestPlanInput): PlanRequestResult {
 
   return new RequestPlan({
     promptIds: Object.freeze([...input.promptIds]) as number[],
-    options: snapshotOptions(options),
+    options: snapshotGenerationPolicy(options),
     shape: Object.freeze(shape),
     captureLogprobs,
     wantLogprobs: input.wantLogprobs,

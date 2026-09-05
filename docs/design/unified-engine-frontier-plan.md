@@ -1554,6 +1554,12 @@ batch work flags use a binding snapshot. Native grammar/media preparation takes
 the gateway execution lease before allocation; text rendering remains outside
 that lease. Cancellation before/during preparation is covered with allocation
 and cleanup assertions.
+Native AR/speculative/denoising method creation now uses the same policy snapshot
+as HTTP admission. Scalar settings and nested policy arrays/maps cannot change
+between registration and the first reader demand. A binding without an explicit
+runtime captures the host default at method creation; kernels execute under
+that snapshot. Native caches, controllers and callbacks retain their declared
+ownership instead of being cloned with policy data.
 
 Checkpoint request identity is now canonical SHA-256 over sampling/stop policy,
 resolved execution and the artifact/implementation/state ABI. Object insertion
@@ -1758,3 +1764,16 @@ tests. Optional cells are reported separately; a green default run does not
 imply unavailable weights or opt-in cases ran.
 That run reports 2,344 passes, 98 skips and no failures, with 109 native files
 each receiving a fresh process.
+
+R10's implementation-retention review currently records these decisions. None
+of the open measurement cells changes an existing numerical default:
+
+| Implementation | Current disposition and remaining evidence |
+|---|---|
+| Pi provider wiring | Consolidated into one builder; generated-extension and binary asset tests pass. Duplicate policy is removed |
+| Dedicated/generated Gemma | Both register through the engine and pass the same session/oracle gates. Keep both during paired comparison; numerical equivalence alone does not choose a winner |
+| Compiled decode | Retained behind the declared decoder capability and resolved eligibility. Existing recovery/parity gates pass; final paired regression measurements remain required |
+| Diffusion | One denoising program and method interface replace duplicate orchestration. Real model/oracle fixtures remain unavailable; no promotion or deletion decision is implied by scripted tests |
+| Assistant/DSpark/DeepSpec/MTP | Typed draft target ports replace concrete target dispatch. Available Qwen MTP and ngram verification pass; source-specific drafter validation and the DSpark wall-clock decision remain open in the speculative program |
+| Curve/HLG and paged KV | Existing opt-in placement and refusals remain. Their experiment-specific quality/performance gates remain open; this refactor does not make them defaults |
+| Expert offload | Existing streamed GLM loading/task semantics remain behind native bindings; model-free streamed/provider tests and packaged task entry pass. The larger-model value/footprint decision remains in its own program |

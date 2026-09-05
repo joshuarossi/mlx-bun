@@ -9,13 +9,13 @@ import type { MlxSpeculativeBinding } from "../../src/backends/mlx/speculative";
 import type { MlxAutoregressiveBinding } from "../../src/backends/mlx/autoregressive";
 import type { MlxDenoisingBinding } from "../../src/backends/mlx/diffusion";
 import type { InferenceMethod, Timer } from "../../src/contracts/generation";
-import type { GenerateStats } from "../../src/generate";
+import type { GenerateOptions, GenerateStats } from "../../src/generate";
 import { specRun } from "../../src/spec/serve-loop";
 import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime-config";
 
 const timer: Timer = { after(ms, callback) { const id = setTimeout(callback, ms); return () => clearTimeout(id); } };
 
-function fixture(fail = false) {
+function fixture(fail = false, observe = () => {}) {
   const calls = { caches: 0, sources: 0, forwards: 0, rollbacks: 0 };
   const makeCache = () => {
     class OwnedCache extends KVCache {
@@ -26,6 +26,7 @@ function fixture(fail = false) {
   };
   const graph = bindMlxGraph({
     forwardHidden(ids: MlxArray, state: Cache[]) {
+      observe();
       if (fail && calls.forwards++ > 0) throw new Error("target failed");
       const tokens = ids.toIntTokens();
       const kv = MlxArray.fromFloat32(new Float32Array(tokens.length * 4), [1, 1, tokens.length, 4]);
@@ -60,6 +61,7 @@ function fixture(fail = false) {
       prefill() { return { closed: false }; },
       extendPrefill() {},
       decoderLogits() {
+        observe();
         if (fail) throw new Error("target failed");
         const values = new Float32Array(32);
         for (let i = 0; i < 4; i++) values[i * 8 + i + 2] = 10;
@@ -103,6 +105,30 @@ test("speculative execution retains bound settings through verification, callbac
 
 for (const method of ["AR", "speculative", "denoising"] as const) {
   describe(`${method} uses the common native method/session contract`, () => {
+    test("method creation snapshots policy and default runtime before delayed execution", async () => {
+      const observed: (string | undefined)[] = [];
+      const f = fixture(false, () => observed.push(runtimeValue("MLX_BUN_POLICY_TEST")));
+      const options: GenerateOptions = { maxTokens: 4, temperature: 0, eosTokenIds: [7] };
+      const restore = configureRuntime({ MLX_BUN_POLICY_TEST: "bound" });
+      let registration: InferenceMethod<GenerateStats>;
+      try {
+        registration = method === "AR" ? createAutoregressiveMethod(f.ar, [0, 1], options)
+          : method === "speculative" ? createSpeculativeMethod(f.spec, 2, [0, 1], options)
+          : createDenoisingMethod(f.denoising, [0, 1], options);
+      } finally { restore(); }
+      options.maxTokens = 1; options.eosTokenIds![0] = 2;
+      const engine = createInferenceEngine({ async plan() {
+        return { id: "snapshot", outputTokenLimit: 4, method: registration };
+      } }, { timer });
+      try {
+        const result = await (await engine.open({}, { output: "collect" })).result;
+        expect(result.status).toBe("completed");
+        expect([...result.output!]).toEqual([2, 3, 4, 5]);
+        expect(observed.length).toBeGreaterThan(0);
+        expect(observed.every((value) => value === "bound")).toBe(true);
+      } finally { await engine.close(); }
+    });
+
     function setup(fail = false) {
       const f = fixture(fail);
       const options = { maxTokens: 4, temperature: 0 };

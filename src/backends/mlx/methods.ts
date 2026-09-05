@@ -1,3 +1,5 @@
+import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../../runtime-config";
+import { snapshotGenerationPolicy } from "./request-policy";
 import type { GenerationOutput, InferenceMethod, MethodResult } from "../../contracts/generation";
 import { throwIfCancelled } from "../../engine/cancellation";
 import { generateAutoregressive, generateDenoising, type GenerateOptions, type GenerateStats } from "../../generate";
@@ -11,6 +13,7 @@ import type { MlxDenoisingBinding } from "./diffusion";
 function nativeMethod<Metrics>(
   id: string,
   execute: (output: GenerationOutput, signal: AbortSignal) => Promise<MethodResult<Metrics>>,
+  runtime: RuntimeConfig,
 ): InferenceMethod<Metrics> {
   return {
     id,
@@ -25,7 +28,7 @@ function nativeMethod<Metrics>(
       return {
         execute(output) {
           if (work || closing) return Promise.reject(new Error("method run can execute only once"));
-          work = execute(output, abort.signal);
+          work = withRuntimeConfig(runtime, () => execute(output, abort.signal));
           return work;
         },
         close() {
@@ -46,6 +49,7 @@ export function createAutoregressiveMethod(
   binding: MlxAutoregressiveBinding, promptIds: readonly number[], options: GenerateOptions,
 ): InferenceMethod<GenerateStats> {
   const prompt = [...promptIds];
+  options = snapshotGenerationPolicy(options);
   return nativeMethod("mlx-autoregressive", async (output, signal) => {
     const generation = generateAutoregressive(binding, prompt, { ...options, signal });
     for await (const item of generation)
@@ -53,7 +57,7 @@ export function createAutoregressiveMethod(
     const metrics = generation.stats;
     if (!metrics) throw new Error("AR method did not settle its metrics");
     return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop", metrics };
-  });
+  }, binding.runtime ?? runtimeConfig());
 }
 
 export function createSpeculativeMethod(
@@ -61,11 +65,12 @@ export function createSpeculativeMethod(
   promptIds: readonly number[], options: GenerateOptions,
 ): InferenceMethod<GenerateStats> {
   const prompt = [...promptIds];
+  options = snapshotGenerationPolicy(options);
   return nativeMethod("mlx-speculative", async (output, signal) => {
     const metrics = await specRun(binding, numDraftTokens, prompt, { ...options, signal },
       (token) => output.commit([token]));
     return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop", metrics };
-  });
+  }, binding.runtime ?? runtimeConfig());
 }
 
 /** The canvas stays private. This method publishes only the finished result. */
@@ -73,11 +78,12 @@ export function createDenoisingMethod<State>(
   binding: MlxDenoisingBinding<State>, promptIds: readonly number[], options: GenerateOptions,
 ): InferenceMethod<GenerateStats> {
   const prompt = [...promptIds];
+  options = snapshotGenerationPolicy(options);
   return nativeMethod("mlx-denoising", async (output, signal) => {
     const generation = generateDenoising(binding, prompt, { ...options, signal });
     for await (const item of generation) await output.commit([item.token]);
     const metrics = generation.stats;
     if (!metrics) throw new Error("denoising method did not settle its metrics");
     return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 256) ? "length" : "stop", metrics };
-  });
+  }, binding.runtime ?? runtimeConfig());
 }
