@@ -18,7 +18,7 @@ describe.skipIf(!enabled)("Qwen3.8-27B quant: engine contracts", () => {
     const { loadTokenizer } = await import("../../src/tokenizer");
     const { generate } = await import("../../src/generate");
     const { bindMlxGraph } = await import("../../src/backends/mlx/graph");
-    const { createLegacyInferenceEngine } = await import("../../src/backends/mlx/legacy-engine");
+    const { createTextInferenceEngine } = await import("../../src/backends/mlx/text-engine");
     const { GenerationGateway } = await import("../../src/serve/generation-gateway");
     const { MlxArray } = await import("../../src/mlx/array");
     const { clearCache } = await import("../../src/mlx/ffi");
@@ -40,7 +40,7 @@ describe.skipIf(!enabled)("Qwen3.8-27B quant: engine contracts", () => {
       if (!generation.stats) throw new Error("generation did not settle its metrics");
       return generation.stats;
     });
-    const engine = createLegacyInferenceEngine(gateway);
+    const engine = createTextInferenceEngine(gateway);
     try {
       expect(model.config.modelType).toBe("qwen3_5");
       expect(model.config.text.numHiddenLayers).toBe(64);

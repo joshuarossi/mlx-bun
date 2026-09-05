@@ -26,7 +26,8 @@ surface); direct library callers must do the same.
 | [Native runtime](#native-runtime) | `ensureNativeRuntime`, `nativeRuntimeDir` | — |
 | [Config and weights](#config-and-weights) | `loadModelConfig`, `Weights` | — |
 | [Model profiles](#model-profiles) | `resolveModelProfile`, `configFingerprint`, `externalArtifactFingerprint`, `BUILTIN_ARTIFACT_PROFILES`, `ENGINE_CAPABILITIES` | `ArtifactModelProfile`, `EngineCapability`, `FidelityTarget`, `FidelityTier`, `GenerationLoop`, `ModelArtifactIdentity`, `ModelExecutionComposition`, `ModelGraph`, `ModelLoader`, `ModelProfile`, `ModelSpecialization`, `ResolveModelProfileOptions`, `ResolvedModelProfile` |
-| [Opening a model](#opening-a-model) | `openModel`, `createModel`, `openGlm52RuntimeModel` | `RuntimeModel`, `Glm52RuntimeOpenOptions` |
+| [Opening a model](#opening-a-model) | `openModel`, `createModel`, `openGlm52RuntimeModel` | `RuntimeModel`, `ModelOpenOptions`, `Glm52RuntimeOpenOptions` |
+| [Engine-owned implementations](#engine-owned-implementations) | `ModelImplementationRegistry` | `ModelImplementation`, `ModelImplementationProvider`, `ModelServingBinding`, `ModelPromptBuilder`, `BuiltPrompt`, `ServedModelInfo`, `ServingContext`, `ModelHostSource`, `AdapterService`, `MlxGatewayBinding`, `MlxBatchGroup`, `MlxSerialServices`, `MlxSerialBinding` |
 | [Concrete model classes](#concrete-model-classes) | `Gemma4Model`, `MiniCPM5Model`, `Qwen3Model` | — |
 | [Tokenizer](#tokenizer) | `loadTokenizer` | — |
 | [Chat templates](#chat-templates) | `ChatTemplate` | — |
@@ -35,7 +36,7 @@ surface); direct library callers must do the same.
 | [Model discovery](#model-discovery-registry) | `Registry` | — |
 | [Downloads](#downloads) | `downloadModel` | — |
 | [Memory fit](#memory-fit) | `fit`, `skuMatrix`, `thisMachine`, `chooseAutoModel`, `recommendedRepoId`, `largestRecommendedRepoId`, `DEFAULT_REPO_ID`, `COEXIST_FRACTION` | — |
-| [Serving](#serving) | `loadContext`, `createServer` | `LoadContextOptions`, `ServerContext`, `ServerOptions` |
+| [Serving](#serving) | `loadContext`, `createServer`, `shutdownServer` | `LoadContextOptions`, `ServerContext`, `ServerOptions` |
 
 Types that are *not* exported (`GenerateOptions`, `GenerateStats`,
 `GeneratedToken`, `Generation`, `LoadedTokenizer`, `ChatMessage`,
@@ -103,6 +104,43 @@ in-process HTTP handler to the same contract; its shutdown callback owns any
 native resources and response streams. `createInferenceEngine` and
 `CancellationSource` expose the portable token-session API for registered methods.
 The original root exports remain compatible and require an installed native runtime.
+
+Sessions support queued `stream`, bounded `collect`, and direct `callback`
+delivery. Callback control supplies `onTokens(ids, logprobs?)`; execution awaits
+it, and returning `false` requests a normal stop. The callback owns any retained
+output storage. Methods must honor that stop and finish cleanup before returning
+metrics. HTTP uses this mode to preserve immediate stop/tool parsing without a
+second queue. Method IDs and private state belong to the implementation.
+
+## Engine-owned implementations
+
+`ModelImplementationRegistry<Source, Model>` validates a resolved artifact profile
+and selects registered engine code. Its `select()` checks the named implementation,
+graph, loader and construction loop; missing or incompatible code fails before
+construction. `with()` returns a new immutable registry. Model files supply data,
+not executable registrations.
+
+`createModel(weights, config, profile, implementations)` and
+`openModel(directory, { profiles, implementations })` preserve the supplied
+registry's return interface. Resident implementations can therefore return their
+own graph/method binding without inheriting a concrete model class. The caller
+owns already-open weights; a successfully opened implementation must retain the
+weights it uses. Resident overrides cannot replace the Colibri streamed loader.
+
+For a complete implementation, pass a
+`ModelImplementationProvider<ModelHostSource, Promise<ServerContext<Model>>>`
+to `loadContext(directory, modelId, { profiles, implementations })`. Selection
+precedes either default weight loader. The selected code owns loading, including
+partial-allocation cleanup on failure, and returns the model metadata and a
+`serving` binding. `ModelServingBinding` supplies planning, serial methods, batch
+groups, prompt/media preparation, restore, diagnostics and optional embeddings.
+One implementation may expose multiple methods with its own selection policy.
+The host owns loaded resources; the server borrows the context.
+
+The executable replacement example is
+[`tests/serve/model-replacement.test.ts`](../../tests/serve/model-replacement.test.ts).
+It selects one synthetic exact artifact registration and exercises two custom
+methods through the public loader and HTTP API, without a concrete model class.
 
 ## Native runtime
 
@@ -543,7 +581,8 @@ check). `LoadContextOptions`: `memoryBudgetBytes`, `glm`
 (`Glm52RuntimeOpenOptions`, ignored by other models), and the speculative
 decoding trio `draftModelDir` / `numDraftTokens` / `draftKind`
 (`"dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | "mtp"`)
-plus `ngramMax` / `ngramMin`.
+plus `ngramMax` / `ngramMin`. `profiles` and `implementations` supply the
+engine-owned construction registry described above.
 
 `createServer(ctx, port = 0, serverOptions?)` returns Bun's `Server`
 exposing OpenAI chat completions, Anthropic `/v1/messages`, OpenAI
@@ -557,6 +596,11 @@ bits`; unset = bf16), `turboQuant`, `pagedKv`, `memoryBudgetBytes`
 `defaultTopP` / `defaultTopK` / `defaultMaxTokens`, `defaultAdapter`, `hlg`,
 and the SSD tier (`ssdCacheDir`, `ssdCacheMaxBytes`, `ssdDemoteIdleSec`,
 `ssdCacheVerify`).
+
+`shutdownServer(server, timeoutMs = 120_000)` stops accepting requests, waits for
+active work and managed jobs, flushes durable caches, and closes session/runtime
+services. It returns `{ stopped, timedOut, durability }`. A timeout reports
+unfinished shutdown; it does not dispose a borrowed model context.
 
 ```ts
 import { createServer, loadContext } from "mlx-bun";

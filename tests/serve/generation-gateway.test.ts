@@ -11,7 +11,7 @@ import { SSMCache } from "../../src/model/qwen3-delta";
 import type { RuntimeModel } from "../../src/model/factory";
 import { resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
-import { createLegacyInferenceEngine } from "../../src/backends/mlx/legacy-engine";
+import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -471,7 +471,7 @@ describe("portable session through the real legacy gateway", () => {
       return { promptTokens: 2, cachedTokens: 0, generatedTokens: 2,
         prefillMs: 0, decodeMs: 0, prefillTps: 0, decodeTps: 0, cacheTokens: [1, 2, 7] };
     });
-    const engine = createLegacyInferenceEngine(g);
+    const engine = createTextInferenceEngine(g);
     const request = { promptIds: [1, 2], options: { temperature: 0 }, shape: { ...batchable } };
     const session = await engine.open(request, { output: "stream" });
     request.promptIds[0] = 999;
@@ -490,7 +490,7 @@ describe("portable session through the real legacy gateway", () => {
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
     const owner = g.runExclusive(() => held);
-    const engine = createLegacyInferenceEngine(g);
+    const engine = createTextInferenceEngine(g);
     const session = await engine.open({ promptIds: [1], options: {}, shape: batchable }, { output: "collect" });
     try {
       await new Promise<void>((resolve) => setImmediate(resolve));

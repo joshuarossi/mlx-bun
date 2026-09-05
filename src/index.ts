@@ -16,9 +16,15 @@ export {
   createModel,
   openGlm52RuntimeModel,
   openModel,
+  type ModelOpenOptions,
   type Glm52RuntimeOpenOptions,
   type RuntimeModel,
 } from "./model/factory";
+export { ModelImplementationRegistry, type ModelImplementation, type ModelImplementationProvider } from "./model/implementation";
+export type { ModelServingBinding, ModelPromptBuilder, BuiltPrompt, ServedModelInfo } from "./serve/model-binding";
+export type { ServingContext, ModelHostSource, AdapterService } from "./serve/model-host";
+export type { MlxGatewayBinding, MlxBatchGroup } from "./backends/mlx/gateway-binding";
+export type { MlxSerialServices, MlxSerialBinding } from "./backends/mlx/serial-executor";
 export { Qwen3Model } from "./model/qwen3";
 export { configFingerprint } from "./model/fingerprint";
 export {
@@ -49,6 +55,7 @@ export { downloadModel } from "./download";
 export { Registry } from "./registry";
 export {
   createServer,
+  shutdownServer,
   loadContext,
   type LoadContextOptions,
   type ServerContext,

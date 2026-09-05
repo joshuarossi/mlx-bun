@@ -590,20 +590,28 @@ async function* generateDiffusionInner<State>(
   }, options.signal);
   const decodeMs = performance.now() - t0;
   let index = 0;
-  for (const token of result.tokens) {
-    options.signal?.throwIfAborted();
-    yield { token, index: index++ };
+  let failure: { error: unknown } | undefined;
+  try {
+    for (const token of result.tokens) {
+      options.signal?.throwIfAborted();
+      yield { token, index: index++ };
+    }
+  } catch (error) { failure = { error }; }
+  finally {
+    // A stop parser may close delivery before the finished canvas is exhausted.
+    // Settle the emitted count on return(), without suppressing cancellation/errors.
+    if (failure) throw failure.error;
+    return {
+      promptTokens: promptTokens.length,
+      cachedTokens: 0,
+      generatedTokens: index,
+      prefillTps: 0,
+      decodeTps: index / Math.max(decodeMs / 1000, 1e-9),
+      prefillMs: 0,
+      decodeMs,
+      cacheTokens: [],
+    };
   }
-  return {
-    promptTokens: promptTokens.length,
-    cachedTokens: 0,
-    generatedTokens: result.tokens.length,
-    prefillTps: 0,
-    decodeTps: result.tokens.length / Math.max(decodeMs / 1000, 1e-9),
-    prefillMs: 0,
-    decodeMs,
-    cacheTokens: [],
-  };
 }
 
 /** Hold the model's active-adapter list for exactly this generation. */

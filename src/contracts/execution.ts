@@ -31,7 +31,9 @@ export interface ExecutionFeatures {
 
 /** Selected once; consumers execute/report these values without reselecting. */
 export interface ResolvedExecution {
-  readonly method: "autoregressive" | "speculative" | "denoising";
+  /** Implementation-owned method ID. The built-in planner retains its known
+   * methods; another model may register a different set without editing this contract. */
+  readonly method: string;
   readonly mechanism: "serial" | "continuous";
   readonly pagedKv: boolean;
   readonly promptCache: boolean;

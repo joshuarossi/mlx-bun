@@ -1437,12 +1437,29 @@ Cancellation and early iterator return wait for run cleanup. Failure outcomes
 retain the execution error if cleanup also fails. These are internal defaults,
 not new server flags.
 
-`src/backends/mlx/legacy-engine.ts` bridges already-resolved text requests into
-the existing gateway. It snapshots request data before demand-start and keeps
-placement, serialization, native cancellation, caches, and quant execution in
-the existing implementation. Media, adapters, grammar, and caller-owned native
-resources remain with the legacy completion executor; this bridge explicitly
-refuses those requests. It is not the default HTTP path.
+HTTP completion execution now uses the shared session by default.
+`createSessionCompletionEngine` delivers tokens directly to the existing
+stop/tool parser through callback output, avoiding a second queue. The callback
+is awaited and can request a normal stop; cleanup completes before the result
+settles. Streaming/collection library consumers retain their bounded delivery.
+AR, speculative and denoising methods honor callback stops. Denoising now settles
+its emitted-token count when delivery closes before the completed canvas ends.
+`src/backends/mlx/text-engine.ts` is the data-only token API. It snapshots requests
+before demand-start and shares `createCompletionMethod` with HTTP. Native media,
+adapters and grammar still require prepared inputs; their HTTP requests now run
+through the same session lifecycle. The temporary text-only legacy engine is gone.
+
+`ModelServingBinding` owns the gateway binding, serial execution construction,
+prompt/media preparation, SSD restore, signal evaluation, embedding execution and
+model diagnostics. The server consumes model metadata and this binding.
+`MlxGatewayBinding` owns compatibility decisions and batch-group construction;
+method IDs are implementation-owned strings. A model can expose several methods
+with unrelated private state. Existing classes enter through the MLX binder;
+replacement implementations supply the port directly. `loadContext` selects an
+engine-owned host implementation before either default weight loader runs.
+The HTTP replacement test selects a synthetic exact artifact registration and
+runs two custom methods with no concrete model, forward function or cache factory.
+This proves the construction-to-session path, not quant quality or performance.
 
 `src/inference/graph.ts` declares the backend-bound graph ABI.
 `src/backends/mlx/graph.ts` binds synchronous/streamed forwards once and selects
@@ -1534,10 +1551,10 @@ an alternate constructor; this establishes selection, not numerical or speed
 claims. No registration pretends to identify Josh's inaccessible quants.
 This step covers resident graph construction. Colibri retains its existing
 streamed opener and refuses supplied resident registries or named overrides
-until its loader binding exists. Existing server composition still uses the
-concrete runtime model union. Its compatibility binders translate those classes
-into execution ports; moving that composition into each implementation remains
-R2/R6 work. Specialized inference methods are retained through this migration.
+until its resident loader binding exists. Existing class-based library exports
+remain available through compatibility binders. The server consumes the
+model-owned serving port; host implementations can own resident or streamed
+loading. Specialized inference methods remain.
 
 Artifact-parameterized native smoke gate:
 `MLX_BUN_QWEN_QUANT_PATH=/path/to/our/artifact bun test tests/parity/qwen-quant-engine.test.ts`.

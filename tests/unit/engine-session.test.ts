@@ -39,6 +39,30 @@ function fixture(
 }
 const done = { finishReason: "stop" as const, metrics: { steps: 1 } };
 
+test("callback false stops publication normally and still closes the method", async () => {
+  const f = fixture(async (output) => {
+    for (const id of [1, 2, 3]) if (await output.commit([id]) === false) break;
+    return done;
+  });
+  const ids: number[] = [];
+  const session = await f.engine.open(undefined, {
+    output: "callback", async onTokens(tokens) { ids.push(...tokens); return false; },
+  });
+  expect(await session.result).toMatchObject({ status: "completed", committedTokens: 1 });
+  expect(ids).toEqual([1]);
+  expect(f.closed).toBe(1);
+  await f.engine.close();
+});
+
+test("a method cannot continue publishing after a callback stop", async () => {
+  const f = fixture(async (output) => { await output.commit([1]); await output.commit([2]); return done; });
+  const session = await f.engine.open(undefined, { output: "callback", async onTokens() { return false; } });
+  expect(await session.result).toMatchObject({ status: "failed", committedTokens: 1,
+    error: { message: "method published after the consumer requested a stop" } });
+  expect(f.closed).toBe(1);
+  await f.engine.close();
+});
+
 for (const mode of ["incremental", "final-only"] as const) {
   describe(`shared method lifecycle: ${mode}`, () => {
     const publish = async (output: Parameters<Awaited<ReturnType<InferenceMethod<Metrics>["createRun"]>>["execute"]>[0]) => {
@@ -57,6 +81,24 @@ for (const mode of ["incremental", "final-only"] as const) {
         expect(output === "collect" ? [...result.output!] : tokens).toEqual([1, 2, 3]);
       }
       expect(f.closed).toBe(2);
+      await f.engine.close();
+    });
+    test("callback delivery waits for the consumer and uses the same cleanup", async () => {
+      const gate = deferred();
+      let returned = false;
+      const f = fixture(async (output) => { await publish(output); returned = true; return done; });
+      const tokens: number[] = [];
+      const session = await f.engine.open(undefined, {
+        output: "callback", async onTokens(ids) { tokens.push(...ids); await gate.promise; },
+      });
+      await tick();
+      expect(returned).toBe(false);
+      expect(f.closed).toBe(0);
+      gate.resolve();
+      expect(await session.result).toMatchObject({ status: "completed", committedTokens: 3 });
+      expect(tokens).toEqual([1, 2, 3]);
+      expect(f.closed).toBe(1);
+      expect(f.timer.callbacks.size).toBe(0);
       await f.engine.close();
     });
     test("abandoned output cancels blocked publication and closes once", async () => {

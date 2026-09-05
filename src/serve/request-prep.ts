@@ -26,7 +26,7 @@ import {
   resolveHlg,
   type ChatRequestParams,
 } from "./chat-request";
-import type { ServerContext } from "./model-host";
+import type { ServingContext } from "./model-host";
 import { selectToolStreamMode, ToolAwareStream, type ToolStreamMode } from "./token-streams";
 
 /** The ServerOptions fields request preparation reads (server-wide
@@ -41,7 +41,7 @@ export interface RequestPrepOptions {
 }
 
 export function createRequestPrep(input: {
-  ctx: ServerContext;
+  ctx: ServingContext;
   serverOptions: RequestPrepOptions;
   /** The server-wide KV scheme (resolveKvScheme(...).generationOptions),
    *  spread into every request's GenerateOptions. */

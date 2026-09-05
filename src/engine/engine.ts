@@ -43,7 +43,7 @@ export function createInferenceEngine<Request, Metrics>(
       if (closed) throw new Error("inference engine is closed");
       let session: EngineSession<Metrics> | undefined;
       session = new EngineSession(String(++nextId), (cancellation) => planner.plan(request, cancellation),
-        { output: control.output, cancellation: control.cancellation }, resources,
+        { ...control }, resources,
         () => { if (session) sessions.delete(session); });
       if (session.state !== "terminal") sessions.add(session);
       return session;

@@ -1,4 +1,5 @@
-import { bindLegacySerialModel, createMlxSerialExecutor } from "./backends/mlx/serial-executor";
+import { modelServingBinding } from "./backends/mlx/model-serving";
+import type { ServingContext } from "./serve/model-host";
 export { generationCheckpointKey } from "./serve/checkpoint-identity";
 // OpenAI-compatible HTTP server: /v1/chat/completions (+ SSE streaming)
 // and /v1/models. Phase 4 core — tool calling, vision, and the
@@ -14,7 +15,6 @@ import type { Server } from "bun";
 import { STATIC_ROUTE_ASSETS } from "./web-assets";
 import { readFileSync } from "node:fs";
 import { type TurboQuantScheme } from "./config";
-import { Glm52Model } from "./model/glm52";
 import {
   GLM52_G5_ASPIRATIONAL_DECODE_TPS,
   GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS,
@@ -32,7 +32,8 @@ import { runtimeValue } from "./runtime-config";
 import { TURBOQUANT_HEAD_DIMS } from "./mlx/turboquant-tables";
 import type { HlgConfig } from "./sampler";
 import { isMonotone, CURVE_UMIN, type CurveParams } from "./lab/curve/curve-sampler";
-import { GenerationGateway } from "./serve/generation-gateway";
+import { GenerationGateway, disposeUnstartedRequest } from "./serve/generation-gateway";
+import { createSessionCompletionEngine } from "./serve/session-completion-engine";
 import {
   CompletionExecutor,
 } from "./serve/completion-executor";
@@ -325,7 +326,7 @@ function curveJunk(s: string): boolean {
 
 
 export function createServer(
-  ctx: ServerContext, port = 0, serverOptions: ServerOptions = {},
+  ctx: ServingContext, port = 0, serverOptions: ServerOptions = {},
 ): Server<unknown> {
   // --batch N is a concurrency cap: N===1 pins the strict serial executor;
   // N>1 admits supported execution compositions to the continuous scheduler.
@@ -342,6 +343,8 @@ export function createServer(
   // only changes behavior when concurrent requests actually arrive — the
   // agentic sub-agent workload. --batch 1 pins strict serial for
   // arrival-independent numerics. 8 = optiq's Mac-safe concurrency.
+  const serving = modelServingBinding(ctx);
+  ctx = { ...ctx, serving };
   const batch = Math.max(1, Math.floor(serverOptions.batch ?? 8));
   if (serverOptions.generationCheckpointTokens !== undefined) {
     if (!Number.isInteger(serverOptions.generationCheckpointTokens) ||
@@ -505,7 +508,7 @@ export function createServer(
           return h ? { prefixLen: h.prefixLen, handle: h.entry } : null;
         },
         restore: (handle: unknown) => {
-          const loaded = ssdStore!.restore(handle as import("./ssd-cache").SsdIndexEntry, ctx.model);
+          const loaded = serving.restore(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
           if (!loaded) return null;
           // Restore is a STREAMED COPY (2026-07-07 A7-restore): the caches
           // own their bytes and no mapping outlives loadKvCache — nothing
@@ -547,7 +550,7 @@ export function createServer(
   // so its KV prefill is already cached.
   const responseStore = new ResponseStore();
 
-  const runGeneration = createMlxSerialExecutor(bindLegacySerialModel(ctx.model, ctx.draft ?? undefined), {
+  const runGeneration = serving.createSerial({
     promptCache, checkpoints: ssdStore,
     checkpointEveryTokens: serverOptions.generationCheckpointTokens,
     identity: { artifact: ctx.profile.artifact, implementation: ctx.profile.profile.execution,
@@ -609,7 +612,7 @@ export function createServer(
   // never drops the item just enqueued).
   // The gateway exists before the spill queue because the SSD writer uses
   // its idle boundary to avoid competing with generation.
-  const gateway = new GenerationGateway(ctx.model, batch, runGeneration, {
+  const gateway = new GenerationGateway(serving.gateway, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
     checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
     stateCodecs,
@@ -683,7 +686,8 @@ export function createServer(
     demoteTimer.unref?.();
   }
 
-  const completionExecutor = new CompletionExecutor(gateway);
+  const sessionEngine = createSessionCompletionEngine(gateway, disposeUnstartedRequest);
+  const completionExecutor = new CompletionExecutor(sessionEngine);
 
   // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
   // fit() solves max safe context from weights + KV growth + prefill
@@ -749,7 +753,7 @@ export function createServer(
   const preparation = createPreparationExecutor((work, signal) => gateway.runExclusive(work, undefined, signal), batch);
   const chatStage = new ChatStage(
     ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter,
-    preparation);
+    preparation, serving.buildPrompt);
   const textStage = new TextCompletionStage(
     ctx, prep, admission.maxSafeContext, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
@@ -1026,33 +1030,7 @@ export function createServer(
             usable_bytes: admission.usableBytes,
             weights_bytes: ctx.model.weightsBytes,
           },
-          ...(ctx.glmMemoryPlan ? {
-            glm52: {
-              preset: ctx.glmMemoryPlan.preset,
-              planned_process_bytes: ctx.glmMemoryPlan.plannedProcessBytes,
-              process_limit_bytes: ctx.glmMemoryPlan.processLimitBytes,
-              context_tokens: ctx.glmMemoryPlan.contextTokens,
-              max_generation_tokens: ctx.glmMemoryPlan.maxGenerationTokens,
-              batch_size: ctx.glmMemoryPlan.batchSize,
-              dsa: ctx.model instanceof Glm52Model && ctx.model.capabilities.dsa,
-              mtp: ctx.draft?.provider.id === "glm52-native-mtp",
-              mtp_draft_tokens: ctx.glmMemoryPlan.mtpDraftTokens,
-              resident_weight_bytes: ctx.glmMemoryPlan.lineItems.residentWeightsBytes,
-              main_expert_slab_bytes: ctx.glmMemoryPlan.lineItems.mainExpertSlabBytes,
-              mtp_expert_slab_bytes: ctx.glmMemoryPlan.lineItems.mtpExpertSlabBytes,
-              expert_runtime: ctx.model instanceof Glm52Model &&
-                  ctx.model.expertRuntime
-                ? {
-                    main_residency:
-                      ctx.model.expertRuntime.manager.snapshot(),
-                    mtp_residency:
-                      ctx.model.expertRuntime.mtp?.manager.snapshot() ?? null,
-                    last_turn: ctx.model.expertRuntime.lastTelemetry,
-                    last_repin: ctx.model.expertRuntime.lastRepin,
-                  }
-                : null,
-            },
-          } : {}),
+          ...serving.diagnostics(),
           // --batch: configured cap, whether batching is live for this model,
           // and rows currently decoding in the batch.
           batch: {
@@ -1119,20 +1097,7 @@ export function createServer(
           // gateway.runExclusive: this raw forward must not run concurrently
           // with batched decode steps or a serial generation (GPU + shared
           // model state are single-owner — D3, one lock).
-          const result = await gateway.runExclusive(async () => {
-            const cache = ctx.model.makeCache();
-            try {
-              const logits = ctx.model.forward(sids, cache); // [1, L, V]
-              const [, Ln, V] = logits.shape as [number, number, number];
-              const last = logits.slice([0, Ln - 1, 0], [1, Ln, V]);
-              const f = last.toFloat32(); logits.dispose(); last.dispose();
-              let mx = -Infinity; for (const v of f) if (v > mx) mx = v;
-              let Z = 0; for (const v of f) Z += Math.exp(v - mx); const lse = mx + Math.log(Z);
-              const bins = new Array<number>(NB).fill(0);
-              for (const v of f) { const t = Math.max(0, Math.min(1, (v - lse - CURVE_UMIN) / (-CURVE_UMIN))); const bi = Math.min(NB - 1, Math.floor(t * NB)); bins[bi] = (bins[bi] ?? 0) + 1; }
-              return { bins, vocab: V };
-            } finally { for (const c of cache) c.dispose(); }
-          });
+          const result = await gateway.runExclusive(() => serving.signal(sids, NB, CURVE_UMIN));
           return Response.json(result, { headers: CURVE_CORS });
         } catch (e) {
           return Response.json({ error: `signal failed: ${(e as Error).message}` }, { status: 500, headers: CURVE_CORS });
@@ -1356,7 +1321,7 @@ export function createServer(
         await Promise.all([jobs.closeSubprocessJobs(jobStore), jobs.closeInProcessJobs(jobStore)]);
       }
     },
-    close: async () => { preparation.close(); await gateway.close(); },
+    close: async () => { preparation.close(); await sessionEngine.close(); await gateway.close(); },
     flush: flushDurability,
     stats: durabilityStats,
     stopTimers: () => {

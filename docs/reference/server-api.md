@@ -2,8 +2,10 @@
 
 `mlx-bun serve` exposes an OpenAI-compatible HTTP API on one model. The
 request's `model` field is ignored; the loaded model's id is echoed back.
-By default generation is serialized through a single queue (one GPU,
-batch = 1); `--batch N` switches the server into bf16 continuous batching.
+The default concurrency cap is eight. Eligible requests use continuous batching;
+`--batch 1` pins serial execution. Both use the shared generation session for
+output, cancellation and cleanup. Each model implementation supplies its own
+execution methods; protocol handlers do not select a concrete model class.
 
 This is the canonical wire reference: every route the server registers is
 listed below, and every field documented here exists in the code that

@@ -51,7 +51,7 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
     const { bindLegacyAutoregressiveModel } = await import("../../src/backends/mlx/autoregressive");
     const { generateAutoregressive } = await import("../../src/generate");
     const { GenerationGateway } = await import("../../src/serve/generation-gateway");
-    const { createLegacyInferenceEngine } = await import("../../src/backends/mlx/legacy-engine");
+    const { createTextInferenceEngine } = await import("../../src/backends/mlx/text-engine");
     const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0" });
     const options = { maxTokens: 8, temperature: 0, kvConfig: config.kvQuant!, quantizedKvStart: 0 };
     const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
@@ -66,7 +66,7 @@ describe.skipIf(!haveWeights)("generated 12B vs monolith", async () => {
           if (await emit(token.token, token.logprobs) === false) break;
         return generation.stats!;
       });
-      const engine = createLegacyInferenceEngine(gateway);
+      const engine = createTextInferenceEngine(gateway);
       try {
         const session = await engine.open({ promptIds: prompt.slice(0, 64), options, shape }, { output: "collect" });
         const outcome = await session.result;

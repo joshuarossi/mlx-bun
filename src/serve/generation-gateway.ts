@@ -40,23 +40,12 @@ import { cleanupFailure, disposeResources } from "../engine/resources";
 
 import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
-import { DiffusionGemmaModel } from "../model/diffusion-gemma";
-import {
-  KVCache,
-  RotatingKVCache,
-  isBatchableCache,
-  isPlainKvCache,
-  isRotatingPlainCache,
-} from "../model/gemma4-base";
-import { SSMCache } from "../model/qwen3-delta";
-import { UniversalDenseModel } from "../model/universal/dense";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
-import { MlxBatchExecutionGroup as BatchScheduler, type RowPromptCache } from "../backends/mlx/batch-group";
-import { runtimeConfig } from "../runtime-config";
-import { resolveExecution } from "../engine/execution-plan";
-import { legacyCompiledDecodeAvailable } from "../backends/mlx/autoregressive";
+import type { RowPromptCache } from "../backends/mlx/batch-group";
+import { bindMlxGateway, type MlxGatewayBinding, type MlxBatchGroup } from "../backends/mlx/gateway-binding";
+import type { RuntimeConfig } from "../runtime-config";
 import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
 import type { PromptResponseTrace } from "./prompt-response-trace";
 
@@ -155,18 +144,19 @@ export interface GenerationPlacement {
   readonly execution?: ResolvedExecution;
 }
 
-function disposeUnstartedRequest(options: GenerateOptions, vision?: Vision): void {
+export function disposeUnstartedRequest(options: GenerateOptions, vision?: Vision): void {
   disposeResources([options.grammar, vision?.embeddings, vision?.imageMask,
     vision?.multimodalMask, options.visionPixels].filter((resource) => resource != null));
 }
 
 export class GenerationGateway {
   #closed = false;
-  readonly #runtime = runtimeConfig();
+  readonly #runtime: RuntimeConfig;
+  readonly #binding: MlxGatewayBinding;
   readonly #requests: AdmissionPool;
   readonly #mutex = new AsyncMutex();
   readonly #batch: number;
-  #scheduler: BatchScheduler | null = null;
+  #scheduler: MlxBatchGroup | null = null;
   #rowsSubmitted = 0;
   /** Serial-lane requests waiting for / holding the mutex. While > 0 the
    *  scheduler pauses admission (drain) so they can't be starved. */
@@ -176,7 +166,7 @@ export class GenerationGateway {
   /** Lazy, memoized: can the configured KV scheme convert every named cache? */
   #kvSchemeBatchable: boolean | null = null;
   constructor(
-    private readonly model: RuntimeModel,
+    model: RuntimeModel | MlxGatewayBinding,
     batch: number,
     private readonly serialRun: SerialRun,
     private readonly opts: {
@@ -195,6 +185,8 @@ export class GenerationGateway {
       promptCache?: RowPromptCache;
     } = {},
   ) {
+    this.#binding = "createBatchGroup" in model ? model : bindMlxGateway(model);
+    this.#runtime = this.#binding.runtime;
     this.opts = Object.freeze({ ...opts });
     this.#batch = Math.max(1, Math.floor(batch));
     this.#requests = new AdmissionPool(this.#batch);
@@ -263,83 +255,20 @@ export class GenerationGateway {
     };
   }
 
-  /** Cache-capability gate (mirrors mlx-lm server.py's all-caches-have-merge
-   *  check): the scheduler's dynamic-B ops (temporalView/merge/filter) exist
-   *  on KVCache, RotatingKVCache, and SSMCache (hybrid gated-DeltaNet models
-   *  — Qwen3.5 — batch via SSMCache.mergeRows/filter; MLX_BUN_BATCH_SSM=0 is
-   *  the kill switch back to serial routing). */
   #modelCachesBatchable(): boolean {
-    if (this.#cacheBatchable === null) {
-      // Tier-0 universal models: batchable for PLAIN full-attention archs
-      // only. The 2026-07-03 uneven-row bug (scalar-offset RoPE decoded
-      // padded rows at wrong positions) is fixed via
-      // UniversalRope.applyDynamic + ropeOffsetArr and GATED token-exact vs
-      // mlx-lm B=2 on Llama-3.2-3B (static + dynamic join/leave,
-      // tests/parity/batched-decode-parity.test.ts "Llama 3B Tier-0"). The
-      // maskArray archs (gemma2-family: forwardLayers builds a pad-blind
-      // causal mask) and sliding-window universal archs remain UNVALIDATED
-      // cells → serial, per the per-model-cell discipline.
-      if (this.model instanceof UniversalDenseModel) {
-        const a = this.model.args;
-        this.#cacheBatchable =
-          !a.maskArray && !a.layerTypes?.includes("sliding_attention");
-        return this.#cacheBatchable;
-      }
-      const ssmOk = this.#runtime.value("MLX_BUN_BATCH_SSM") !== "0";
-      const proto = this.model.makeCache(); // fresh caches hold no buffers
-      this.#cacheBatchable = proto.every(
-        (c) =>
-          c instanceof KVCache ||
-          c instanceof RotatingKVCache ||
-          isBatchableCache(c) ||
-          (ssmOk && c instanceof SSMCache),
-      );
-      for (const c of proto) c.dispose();
-    }
-    return this.#cacheBatchable;
+    return this.#cacheBatchable ??= this.#binding.cachesBatchable();
   }
 
-  /** Phase 3.1 + milestone 2: the server's kv scheme batches iff it is a
-   *  per-layer kvConfig (the L2 mixed scheme) whose every configured layer
-   *  is a full-attention KVCache (BatchedQuantDecodeMaskCache + quantized
-   *  merge/extend/filter) or a rotating RotatingKVCache
-   *  (BatchedRotatingQuantCache — milestone 2, gemma's kv_config). Uniform
-   *  kvBits (quantizedKvStart threshold semantics via the serial no-byLayer
-   *  path) and configs naming SSM layers stay serial. */
   #kvBatchable(): boolean {
-    if (this.#kvSchemeBatchable === null) {
-      const scheme = this.opts.kvScheme;
-      if (scheme?.kind !== "affine-config") {
-        this.#kvSchemeBatchable = false;
-      } else {
-        const proto = this.model.makeCache();
-        try {
-          this.#kvSchemeBatchable = scheme.batchable(
-            this.model.config,
-            (layerIdx) =>
-              isPlainKvCache(proto[layerIdx]) || isRotatingPlainCache(proto[layerIdx]),
-          );
-        } finally {
-          for (const cache of proto) cache.dispose();
-        }
-      }
-    }
-    return this.#kvSchemeBatchable;
+    return this.#kvSchemeBatchable ??= !!this.opts.kvScheme && this.#binding.kvBatchable(this.opts.kvScheme);
   }
 
   place(shape: RequestShape, options: GenerateOptions = {}): GenerationPlacement {
     const frozenShape = Object.freeze(shape);
-    const execution = resolveExecution(frozenShape, {
-      method: this.model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
+    const execution = this.#binding.plan(frozenShape, options, {
       continuous: this.batchingEnabled,
       quantizedBatch: shape.kvQuant && this.#kvBatchable(),
-      grammarBatch: this.#runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
       checkpoints: this.opts.checkpoints === true,
-      compiledDecode: legacyCompiledDecodeAvailable(this.model),
-    }, {
-      pagedKv: !!options.pagedKv, fill: !!options.fill,
-      compiledDecode: this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true),
-      grammarJump: this.#runtime.flag("MLX_BUN_GRAMMAR_JUMP", false),
     });
     return Object.freeze({ shape: frozenShape, mechanism: execution.mechanism, execution });
   }
@@ -487,7 +416,7 @@ export class GenerationGateway {
         promptIds,
         compiledDecode: placement.execution?.compiledDecode,
         maxTokens: options.maxTokens ?? 512,
-        eosTokenIds: options.eosTokenIds ?? this.model.config.eosTokenIds,
+        eosTokenIds: options.eosTokenIds ?? this.#binding.config.eosTokenIds,
         sample,
         plainGreedy: stepSampler.isPlainGreedy,
         onToken,
@@ -521,9 +450,9 @@ export class GenerationGateway {
     };
   }
 
-  #ensureScheduler(): BatchScheduler {
+  #ensureScheduler(): MlxBatchGroup {
     if (!this.#scheduler)
-      this.#scheduler = new BatchScheduler(this.model, {
+      this.#scheduler = this.#binding.createBatchGroup({
         runtime: this.#runtime,
         maxBatch: this.#batch,
         stateCodecs: this.opts.stateCodecs,

@@ -35,6 +35,7 @@ export class EngineSession<Metrics> implements GenerationSession<Metrics> {
   #unsubscribe: (() => void) | undefined;
   #buffer: Uint32Array | undefined;
   #limit = 0;
+  #outputStopped = false;
 
   constructor(
     readonly id: string,
@@ -49,7 +50,7 @@ export class EngineSession<Metrics> implements GenerationSession<Metrics> {
     if (this.#state === "terminal") unsubscribe?.();
     else this.#unsubscribe = unsubscribe;
     if (this.#state !== "terminal") {
-      if (control.output === "collect") this.#start();
+      if (control.output !== "stream") this.#start();
       else this.#armIdle();
     }
   }
@@ -163,18 +164,25 @@ export class EngineSession<Metrics> implements GenerationSession<Metrics> {
     }
   }
 
-  async #publish(ids: readonly number[], logprobs?: readonly (TokenLogprobs | undefined)[]): Promise<void> {
+  async #publish(ids: readonly number[], logprobs?: readonly (TokenLogprobs | undefined)[]): Promise<void | false> {
     if (this.#publishing) throw new Error("method must await each publication");
     this.#publishing = true;
     try {
       throwIfCancelled(this.#cancel);
       if (this.#state !== "running") throw new Error("publication outside method execution");
+      if (this.#outputStopped) throw new Error("method published after the consumer requested a stop");
       if (ids.length > this.#limit - this.#committed) throw new Error("method exceeded planned output limit");
       if (logprobs && logprobs.length !== ids.length) throw new Error("logprobs must align with committed tokens");
       if (logprobs?.some((item) => (item?.top?.length ?? 0) > this.resources.maxTopLogprobs))
         throw new Error("top logprobs exceed session delivery capacity");
       for (const id of ids)
         if (!Number.isInteger(id) || id < 0 || id > 0xffffffff) throw new Error("invalid committed token id");
+      if (this.control.output === "callback") {
+        this.#committed += ids.length;
+        const result = await this.control.onTokens(ids, logprobs);
+        if (result === false) this.#outputStopped = true;
+        return result;
+      }
       if (this.#buffer) {
         if (logprobs) throw new Error("token logprobs require stream consumption");
         this.#buffer.set(ids, this.#committed);
@@ -209,7 +217,7 @@ export class EngineSession<Metrics> implements GenerationSession<Metrics> {
       if (!Number.isFinite(completed) || completed < 0 ||
           (total !== undefined && (!Number.isFinite(total) || total < completed)))
         throw new Error("invalid progress");
-      if (this.control.output === "collect") return;
+      if (this.control.output !== "stream") return;
       await this.#space(0);
       this.#queue.push({ type: "progress", completed, ...(total === undefined ? {} : { total }) });
       this.#wakeReader?.();

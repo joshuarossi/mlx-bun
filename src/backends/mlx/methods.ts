@@ -53,7 +53,7 @@ export function createAutoregressiveMethod(
   return nativeMethod("mlx-autoregressive", async (output, signal) => {
     const generation = generateAutoregressive(binding, prompt, { ...options, signal });
     for await (const item of generation)
-      await output.commit([item.token], item.logprobs ? [item.logprobs] : undefined);
+      if (await output.commit([item.token], item.logprobs ? [item.logprobs] : undefined) === false) break;
     const metrics = generation.stats;
     if (!metrics) throw new Error("AR method did not settle its metrics");
     return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop", metrics };
@@ -81,7 +81,8 @@ export function createDenoisingMethod<State>(
   options = snapshotGenerationPolicy(options);
   return nativeMethod("mlx-denoising", async (output, signal) => {
     const generation = generateDenoising(binding, prompt, { ...options, signal });
-    for await (const item of generation) await output.commit([item.token]);
+    for await (const item of generation)
+      if (await output.commit([item.token]) === false) break;
     const metrics = generation.stats;
     if (!metrics) throw new Error("denoising method did not settle its metrics");
     return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 256) ? "length" : "stop", metrics };

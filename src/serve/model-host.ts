@@ -28,11 +28,16 @@ import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "../vision/pro
 import { AudioTower, parseAudioConfig } from "../audio/conformer";
 import { sidecarShipsAudioTower } from "../registry";
 import { fit } from "../fit";
+import type { ModelImplementationProvider } from "../model/implementation";
+import type { ServedModelInfo } from "./model-binding";
 
-export interface ServerContext {
+export interface AdapterService extends Pick<AdapterManager, keyof AdapterManager> {}
+
+export interface ServerContext<Model = RuntimeModel> {
+  serving?: import("./model-binding").ModelServingBinding;
   /** State serialization supplied by this model/backend implementation. */
   stateCodecs?: import("../kv-store").CacheCodecProvider;
-  model: RuntimeModel;
+  model: Model;
   /** Declared external artifact/family profile that selected model
    * construction. Request-level methods are resolved separately. */
   profile: ResolvedModelProfile;
@@ -59,7 +64,7 @@ export interface ServerContext {
   loadAudio: (() => AudioTower) | null;
   /** null when the model has no `audio_config` (audio-incapable). */
   audioTokenIds: AudioTokenIds | null;
-  adapters: AdapterManager;
+  adapters: AdapterService;
   /** Per-layer KV quantization from the repo's kv_config.json (null if
    *  absent). Applied by default — optiq serve's headline behavior;
    *  ServerOptions.kvQuant overrides ("off" | uniform bits). */
@@ -81,7 +86,19 @@ export interface ServerContext {
   glmMemoryPlan?: Glm52MemoryPlan | null;
 }
 
-export interface LoadContextOptions {
+export type ServingContext = ServerContext<import("./model-binding").ServedModelInfo>;
+
+export interface ModelHostSource {
+  readonly modelDir: string;
+  readonly modelId: string | undefined;
+  readonly options: Omit<LoadContextOptions, "implementations">;
+}
+
+export interface LoadContextOptions<Model extends ServedModelInfo = RuntimeModel> {
+  /** Engine-owned complete implementations may own their loader and methods.
+   * Selection happens before opening the default resident or streamed weights. */
+  implementations?: ModelImplementationProvider<ModelHostSource, Promise<ServerContext<Model>>>;
+  profiles?: import("../model/profile").ResolveModelProfileOptions;
   memoryBudgetBytes?: number;
   /** Direct Colibri runtime/resource overrides. Ignored by other models. */
   glm?: Glm52RuntimeOpenOptions;
@@ -150,12 +167,27 @@ async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDef
   }
 }
 
+export function loadContext<Model extends ServedModelInfo>(
+  modelDir: string, modelId: string | undefined,
+  opts: LoadContextOptions<Model> & {
+    implementations: ModelImplementationProvider<ModelHostSource, Promise<ServerContext<Model>>>;
+  },
+): Promise<ServerContext<Model>>;
+export function loadContext(modelDir: string, modelId?: string, opts?: LoadContextOptions): Promise<ServerContext>;
+export function loadContext<Model extends ServedModelInfo>(
+  modelDir: string, modelId: string | undefined, opts: LoadContextOptions<Model>,
+): Promise<ServingContext>;
 export async function loadContext(
   modelDir: string, modelId?: string,
-  opts: LoadContextOptions = {},
-): Promise<ServerContext> {
+  opts: LoadContextOptions<ServedModelInfo> = {},
+): Promise<ServingContext> {
   const config = await loadModelConfig(modelDir);
-  const profile = resolveModelProfile(config);
+  const profile = resolveModelProfile(config, opts.profiles);
+  if (opts.implementations) {
+    const implementation = opts.implementations.select(config, profile);
+    const { implementations: _provider, ...options } = opts;
+    return implementation.create({ modelDir, modelId, options }, config, profile);
+  }
   const glm = profile.profile.execution.loader === "colibri";
   // Bundled MTP companion: `--draft-kind mtp` with no --draft-model resolves
   // to the artifact's own mtp/ subfolder (single-repo packaging — the

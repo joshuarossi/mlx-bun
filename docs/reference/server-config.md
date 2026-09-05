@@ -12,6 +12,11 @@ proxy lives in [src/serve/isolate.ts](../../src/serve/isolate.ts). For the
 request/response wire format see [server-api.md](./server-api.md); for
 CLI verbs see [cli.md](./cli.md).
 
+The server runs generation through method-neutral sessions. A model binding
+supplies execution planning, its supported methods, media preparation and
+diagnostics. Stop/tool parsing runs directly in session delivery, so it can stop
+generation before another token is produced. This adds no architecture flag.
+
 Sections: [Start flags](#start-flags) · [`--isolate` semantics](#--isolate-semantics)
 · [Per-request overrides](#per-request-overrides) · [Environment variables](#environment-variables)
 · [Execution modes](#execution-modes-serial-vs---batch-n) · [Compatibility matrix](#compatibility-matrix)

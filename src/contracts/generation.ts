@@ -22,7 +22,9 @@ export type GenerationEvent =
 /** Methods publish in order and await each publication before publishing again.
  * Only committed tokens cross this boundary. Tentative canvases/drafts stay private. */
 export interface GenerationOutput {
-  commit(tokenIds: readonly number[], logprobs?: readonly (TokenLogprobs | undefined)[]): Promise<void>;
+  /** False requests a normal stop. The method must stop publishing and settle
+   * its metrics after releasing its private execution state. */
+  commit(tokenIds: readonly number[], logprobs?: readonly (TokenLogprobs | undefined)[]): Promise<void | false>;
   progress(completed: number, total?: number): Promise<void>;
 }
 
@@ -66,11 +68,18 @@ export type GenerationOutcome<Metrics> =
 
 export type SessionState = "created" | "preparing" | "running" | "settling" | "terminal";
 
-export interface RunControl {
+export type RunControl = {
   /** collect returns token IDs; per-token logprobs require stream consumption. */
   readonly output: "stream" | "collect";
   readonly cancellation?: Cancellation;
-}
+} | {
+  /** Direct delivery for consumers that already own bounded output storage.
+   * The callback is awaited before execution continues; false is a normal
+   * token stop. Borrowed arrays are valid until the callback settles. */
+  readonly output: "callback";
+  readonly onTokens: GenerationOutput["commit"];
+  readonly cancellation?: Cancellation;
+};
 
 export interface GenerationSession<Metrics> {
   readonly id: string;

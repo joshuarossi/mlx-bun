@@ -161,6 +161,19 @@ for (const method of ["AR", "speculative", "denoising"] as const) {
       } finally { await engine.close(); }
     });
 
+    test("callback stops settle normally and release private state", async () => {
+      const { engine, calls } = setup();
+      try {
+        const tokens: number[] = [];
+        const result = await (await engine.open({}, {
+          output: "callback", async onTokens(ids) { tokens.push(...ids); return false; },
+        })).result;
+        expect(result.status).toBe("completed");
+        expect(tokens).toEqual([2]);
+        expect(calls.caches).toBe(1);
+        if (method === "speculative") expect(calls.sources).toBe(1);
+      } finally { await engine.close(); }
+    });
     test("early reader close cancels execution and waits for state release", async () => {
       const { engine, calls } = setup();
       try {
