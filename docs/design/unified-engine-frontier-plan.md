@@ -1796,6 +1796,14 @@ target/draft pair. Explicit MTP paths supplied one previously unavailable cell.
 These results do not close the target-artifact, second-machine or default-cutover
 gates.
 
+The sequential Gemma e4b repeat compares baseline `6d45ca1` with `5e3b92e`
+using default and serial HTTP arms, the same artifact, a 4K context and 96
+requested tokens. Both arms preserve the completion/chat greedy probes and
+durable restart state. The earlier long-context prefill slowdown and default-arm
+RSS increase did not reproduce; warm-cache latency still varies across runs.
+Background load and existing swap keep these reports diagnostic. This repeat
+does not establish a speed win or satisfy the quiet-machine frontier gate.
+
 R10's implementation-retention review currently records these decisions. None
 of the open measurement cells changes an existing numerical default:
 
