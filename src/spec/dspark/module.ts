@@ -31,6 +31,7 @@ import { MlxArray } from "../../mlx/array";
 import { Dtype } from "../../mlx/ffi";
 import * as ops from "../../mlx/ops";
 import type { Gemma4Model } from "../../model/gemma4";
+import type { DraftProjection } from "../source";
 import { loadAdapterTensors } from "../../lora";
 import { writeShardedSafetensors, type NamedTensor } from "../../quantize/safetensors-writer";
 import { processLogits, sampleToken, KeyStream, type DSparkSampleConfig } from "./sample";
@@ -343,7 +344,7 @@ export class DSparkDrafter {
 
   /** Base logits U from the SHARED frozen LM head over the backbone block
    *  hidden. [A,γ,V] (model dtype). */
-  #baseLogits(model: Gemma4Model, block: MlxArray): MlxArray {
+  #baseLogits(model: DraftProjection, block: MlxArray): MlxArray {
     const hOut = ops.matmul(block, this.get("out_proj")); // [A,γ,H] (f32)
     const hBf = hOut.astype(model.embed.scales.dtype);    // head's activation dtype
     hOut.dispose();
@@ -404,7 +405,7 @@ export class DSparkDrafter {
    * reconstructs (so q is consistent). hCtx [1,H], anchorTok the bonus token.
    * Returns the raw per-position logits so the verifier can recover q.
    */
-  forwardInfer(model: Gemma4Model, hCtx: MlxArray, anchorTok: number, gamma: number, opts: DSparkDraftOpts = {}): DSparkDraftBlock {
+  forwardInfer(model: DraftProjection, hCtx: MlxArray, anchorTok: number, gamma: number, opts: DSparkDraftOpts = {}): DSparkDraftBlock {
     const { dDraft, markovRank: r } = this.cfg;
     const V = this.dims.vocabSize;
     const A = 1;
@@ -537,4 +538,3 @@ function buildNames(cfg: DSparkConfig): string[] {
     "markov.w1", "markov.w2", "conf.w", "conf.b");
   return names;
 }
-

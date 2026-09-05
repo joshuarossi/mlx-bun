@@ -3,6 +3,7 @@
 // towers + adapters + optional draft), and the on-demand tower getters.
 // Extracted from src/server.ts (repo-taming Phase 4).
 import { existsSync, readFileSync } from "node:fs";
+import { bindLegacyDraftTarget } from "../backends/mlx/draft-target";
 import { loadModelConfig, type KvQuantSpec, type ModelConfig } from "../config";
 import { Weights } from "../weights";
 import { Gemma4Model } from "../model/gemma4";
@@ -307,7 +308,7 @@ export async function loadContext(
         provider
           .open({
             sampler: () => { throw new Error("probe sampler never samples"); },
-            target: { model, caches: probeCaches },
+            target: bindLegacyDraftTarget(model, probeCaches),
           })
           .dispose();
       } catch (err) {

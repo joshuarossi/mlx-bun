@@ -1569,8 +1569,18 @@ Scripted regression tests cover both samplers, RNG-dependent canvases across
 multiple blocks, sync/async identity, preparation failure, cancellation between
 steps and repeated-run native memory accounting. The existing soft-embedding
 lifetime test passes. Diffusion weights are absent on this machine, so its
-weight/oracle gates remain unrun. Legacy draft providers still use their
-existing target adapters; full method-composition migration remains open.
+weight/oracle gates remain unrun. Draft sources now consume declared target
+ports for assistant donor views/scaled embeddings, Gemma hidden taps/output
+projection and Qwen MTP embeddings/output projection. The target view contains
+no concrete model or cache array; the MLX compatibility binder owns family
+checks and donor layout. Native GLM providers compare an opaque target identity
+before borrowing their own model-owned weights. Both retained DSpark variants
+use the projection interface. Missing extensions refuse before draft allocation.
+An independent assistant target fixture proves construction and draft cleanup
+without a model class; donor acquisition releases partial views on failure.
+The locally cached published Qwen3.8-27B and its bundled MTP head pass the
+same-artifact greedy comparison after this migration. This does not establish
+performance or compatibility for Josh's unavailable exact quants.
 
 R7 now separates the portable scheduling driver from `MlxBatchExecutionGroup`.
 The driver sees queue/active counts, admission readiness and bounded work units;

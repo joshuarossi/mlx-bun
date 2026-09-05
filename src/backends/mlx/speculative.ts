@@ -8,6 +8,7 @@ import { flagOn } from "../../runtime-config";
 import type { SpeculativeTransaction } from "../../inference/rollback";
 import { bindCacheRollback } from "./rollback";
 import type { GraphDescriptor } from "../../inference/graph";
+import { bindLegacyDraftTarget } from "./draft-target";
 
 /** Bound target operations and draft construction for one speculative run.
  * A replacement graph supplies this entire port, including any hidden taps.
@@ -34,7 +35,7 @@ export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftP
     eosTokenIds: model.config.eosTokenIds,
     prefillTailSplit: flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true),
     makeCache: model.makeCache.bind(model),
-    openDraft: (sampler, caches) => provider.open({ sampler, target: { model, caches } }),
+    openDraft: (sampler, caches) => provider.open({ sampler, target: bindLegacyDraftTarget(model, caches) }),
     bindRollback: bindCacheRollback,
     forward: (ids, caches, tapLayers) => legacyForwardWithTaps(model, ids, caches, tapLayers),
     projectLogits: model.logitsFromHidden.bind(model),

@@ -43,6 +43,12 @@ bumped from 0.2.4 to 0.2.15 on 2026-07-06 and the mixed-KV goldens stayed
 byte-identical across the bump. The venv directory holds no project source —
 just the venv and `serve.sh`.
 
+The Qwen MTP compatibility test accepts explicit local artifact paths through
+`MLX_BUN_TEST_MTP_TARGET` and `MLX_BUN_TEST_MTP_DRAFT`, alongside
+`MLX_BUN_TEST_QWEN38_MTP=1`. It compares speculative and ordinary greedy
+generation on that same target and prints both paths. This does not substitute
+one quant for another in the pinned logit-oracle tests.
+
 Readable oracle source, in that `site-packages/`: `mlx_lm/models/gemma3.py`
 and `mlx_lm/server.py` for the port targets; `mlx_lm/models/cache.py` for the
 cache classes; `mlx_lm/tokenizer_utils.py` for prompt rendering;

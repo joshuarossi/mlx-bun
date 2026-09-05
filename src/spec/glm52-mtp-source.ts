@@ -57,7 +57,7 @@ export class Glm52NativeMtpProvider implements DraftProvider {
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
-    if (opts.target.model !== this.model)
+    if (opts.target.identity !== this.model)
       throw new Error("native MTP provider was opened for a different target");
     return new Glm52NativeMtpSource(this.model, this.#layer, opts.sampler);
   }

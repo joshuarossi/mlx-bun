@@ -22,10 +22,9 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import { Gemma4Model } from "../model/gemma4";
 import type { DflashDrafter } from "./dspark/module-dflash";
 import { loadDsparkDrafter } from "./dspark/loader";
-import type { DraftProvider, DraftSource, TargetView } from "./source";
+import type { DraftProvider, DraftSource, TargetView, DraftProjection } from "./source";
 import { runtimeValue } from "../runtime-config";
 
 function safetensorsBytes(dir: string): number {
@@ -65,16 +64,17 @@ export class DflashProvider implements DraftProvider {
   }
 }
 
-class DflashSource implements DraftSource {
+export class DflashSource implements DraftSource {
   readonly weightsBytes = 0; // provider-owned weights
   readonly tapLayers: number[];
-  private readonly model: Gemma4Model;
+  private readonly model: DraftProjection;
+  private readonly minConf = runtimeValue("MLX_BUN_DSPARK_MINCONF");
   private hCtx: MlxArray | null = null; // [1, L, m*H] — grows with the accepted stream
 
-  constructor(private readonly drafter: DflashDrafter, target: TargetView) {
-    if (!(target.model instanceof Gemma4Model))
+  constructor(private readonly drafter: Pick<DflashDrafter, "cfg" | "forwardInfer">, target: TargetView) {
+    if (!target.gemmaTaps)
       throw new Error("DSpark drafter requires a Gemma4 target");
-    this.model = target.model;
+    this.model = target.gemmaTaps.projection;
     this.tapLayers = drafter.cfg.tapLayers;
   }
 
@@ -94,7 +94,7 @@ class DflashSource implements DraftSource {
   draft(feed: number[], n: number, _stepBase: number, _anchorHidden?: MlxArray): number[] {
     if (!this.hCtx) throw new Error("DSpark drafter: draft before prefill");
     const anchorTok = feed[feed.length - 1]!;
-    const envMin = runtimeValue("MLX_BUN_DSPARK_MINCONF");
+    const envMin = this.minConf;
     const block = this.drafter.forwardInfer(this.model, this.hCtx, anchorTok, n, {
       thresholds: this.drafter.cfg.sts?.thresholds,
       collectLogits: false, // serve loop runs its own verify lm-head, never reads this

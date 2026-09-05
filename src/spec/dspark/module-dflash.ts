@@ -17,6 +17,7 @@ import { MlxArray } from "../../mlx/array";
 import { Dtype } from "../../mlx/ffi";
 import * as ops from "../../mlx/ops";
 import type { Gemma4Model } from "../../model/gemma4";
+import type { DraftProjection } from "../source";
 import { loadAdapterTensors } from "../../lora";
 import { writeShardedSafetensors, type NamedTensor } from "../../quantize/safetensors-writer";
 import { processLogits, sampleToken, KeyStream, type DSparkSampleConfig } from "./sample";
@@ -300,7 +301,7 @@ export class DflashDrafter {
     return H_d;
   }
 
-  #baseLogits(model: Gemma4Model, block: MlxArray): MlxArray {
+  #baseLogits(model: DraftProjection, block: MlxArray): MlxArray {
     const hOut = ops.matmul(block, this.get("out_proj")); // [A,γ,H]
     const hBf = hOut.astype(model.embed.scales.dtype); hOut.dispose();
     const logits = model.logitsFromHidden(hBf); hBf.dispose();
@@ -416,7 +417,7 @@ export class DflashDrafter {
    *  one toFloat32 after the loop). The sampling path already forces a host
    *  read every position (sampleToken draws from a device RNG key) — that
    *  path is unchanged. */
-  forwardInfer(model: Gemma4Model, hCtx: MlxArray, anchorTok: number, gamma: number, opts: DflashDraftOpts = {}): DflashDraftBlock {
+  forwardInfer(model: DraftProjection, hCtx: MlxArray, anchorTok: number, gamma: number, opts: DflashDraftOpts = {}): DflashDraftBlock {
     const { dDraft, markovRank: r } = this.cfg;
     const V = this.dims.vocabSize;
     const sample = opts.sample && opts.sample.temperature > 0 ? opts.sample : null;

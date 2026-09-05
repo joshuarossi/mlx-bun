@@ -31,8 +31,7 @@ import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
 import { disposing, KVCache, RMSNorm, type Mask } from "../model/gemma4-base";
 import { DenseLinear } from "../model/universal/modules";
-import { Qwen35Model } from "../model/qwen3_5";
-import type { DraftProvider, DraftSource, TargetView } from "./source";
+import type { DraftProvider, DraftSource, QwenMtpTarget } from "./source";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
@@ -216,13 +215,13 @@ export class QwenMtpProvider implements DraftProvider {
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
-    const target = opts.target.model;
-    if (!(target instanceof Qwen35Model))
+    const target = opts.target.qwenMtp;
+    if (!target)
       throw new Error("qwen MTP drafting requires a qwen3_5-family target");
-    if (target.config.text.hiddenSize !== this.#config.text.hiddenSize) {
+    if (target.hiddenSize !== this.#config.text.hiddenSize) {
       throw new Error(
         `qwen MTP drafter hidden ${this.#config.text.hiddenSize} != target ` +
-        `${target.config.text.hiddenSize} — split from a different checkpoint?`,
+        `${target.hiddenSize} — split from a different checkpoint?`,
       );
     }
     return new QwenMtpSource(target, this.#module, opts.sampler);
@@ -243,7 +242,7 @@ export class QwenMtpSource implements DraftSource {
    *  The seam's anchorHidden is post-final-norm and is deliberately unused. */
   readonly tapLayers: number[];
 
-  readonly #target: Qwen35Model;
+  readonly #target: QwenMtpTarget;
   readonly #module: MtpModule;
   readonly #sampler: Sampler;
   readonly #cache = new KVCache();
@@ -254,11 +253,11 @@ export class QwenMtpSource implements DraftSource {
   #roundAppended = 0;
   #closed = false;
 
-  constructor(target: Qwen35Model, module: MtpModule, sampler: Sampler) {
+  constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler) {
     this.#target = target;
     this.#module = module;
     this.#sampler = sampler;
-    this.tapLayers = [target.config.text.numHiddenLayers - 1];
+    this.tapLayers = [target.layerCount - 1];
   }
 
   /** Drafter prefill: rows for positions 0..L-2, keyed (token_{p+1}, h_p) —
@@ -280,7 +279,7 @@ export class QwenMtpSource implements DraftSource {
         const n = Math.min(DRAFT_PREFILL_CHUNK, L - 1 - pos);
         const shifted = promptIds.slice(pos + 1, pos + 1 + n);
         const ids = ops.fromInt32(shifted, [1, n]);
-        const embeds = this.#target.embed.encode(ids);
+        const embeds = this.#target.embed(ids);
         ids.dispose();
         const hiddens = ctxML.slice([0, pos, 0], [1, pos + n, H]);
         const out = this.#module.forward(embeds, hiddens, this.#cache);
@@ -369,7 +368,7 @@ export class QwenMtpSource implements DraftSource {
       const H = vCtxML.shape[2]!;
       if (kAccept === d && d > 0) {
         const ids = ops.fromInt32([acceptedTokens[kAccept - 1]!], [1, 1]);
-        const embeds = this.#target.embed.encode(ids);
+        const embeds = this.#target.embed(ids);
         ids.dispose();
         const hidden = vCtxML.slice([0, d - 1, 0], [1, d, H]);
         const out = this.#module.forward(embeds, hidden, this.#cache);
@@ -397,7 +396,7 @@ export class QwenMtpSource implements DraftSource {
   /** One module forward for (token, hidden) — appends one KV row. */
   #stepOne(token: number, hidden: MlxArray): MlxArray {
     const ids = ops.fromInt32([token], [1, 1]);
-    const embed = this.#target.embed.encode(ids);
+    const embed = this.#target.embed(ids);
     ids.dispose();
     const out = this.#module.forward(embed, hidden, this.#cache);
     embed.dispose();

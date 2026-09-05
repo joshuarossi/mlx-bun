@@ -985,7 +985,7 @@ test("native GLM MTP drafts to gamma and rolls target + MTP caches back exactly"
   const provider = new Glm52NativeMtpProvider(model);
   const source = provider.open({
     sampler: makeSampler({ temperature: 0 }),
-    target: { model, caches: [] },
+    target: { identity: model },
   });
   expect(source).toBeInstanceOf(Glm52NativeMtpSource);
   expect(source.prefillMode).toBe("full");
@@ -1077,7 +1077,7 @@ test("native MTP compressed row restores to the same next draft", async () => {
   const provider = new Glm52NativeMtpProvider(model);
   const open = () => provider.open({
     sampler: makeSampler({ temperature: 0 }),
-    target: { model, caches: [] },
+    target: { identity: model },
   }) as Glm52NativeMtpSource;
   const live = open();
   const resumed = open();
