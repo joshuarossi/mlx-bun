@@ -74,6 +74,7 @@ export class EngineChild implements EngineHost<Request, Response> {
   #restartTimes: number[] = [];
   #backoff: ReturnType<typeof setTimeout> | undefined;
   #wakeBackoff: (() => void) | undefined;
+  #startups = new Set<Promise<void>>();
 
   constructor(spec: EngineSpec) {
     this.spec = Object.freeze({ ...spec, argv: [...spec.argv] });
@@ -89,7 +90,14 @@ export class EngineChild implements EngineHost<Request, Response> {
     return this.#proc?.pid ?? null;
   }
 
-  async #spawn(): Promise<void> {
+  #spawn(): Promise<void> {
+    const work = this.#start();
+    this.#startups.add(work);
+    void work.finally(() => this.#startups.delete(work)).catch(() => {});
+    return work;
+  }
+
+  async #start(): Promise<void> {
     if (this.#stopping) throw new Error("engine host is closed");
     const lease = await this.spec.acquire?.(this.#lifetime.signal);
     let starting: ReturnType<typeof Bun.spawn> | undefined;
@@ -243,10 +251,12 @@ export class EngineChild implements EngineHost<Request, Response> {
   async close(): Promise<void> {
     this.stop();
     const process = this.#proc;
-    if (!process) return;
-    const force = setTimeout(() => { if (process.exitCode === null) process.kill("SIGKILL"); }, 3000);
-    try { await process.exited; }
-    finally { clearTimeout(force); }
+    const force = process ? setTimeout(() => { if (process.exitCode === null) process.kill("SIGKILL"); }, 3000) : undefined;
+    try {
+      // Startup owns an admission lease even before a child exists. Earlier
+      // crashed attempts can still be unwinding after #ready switches to a retry.
+      await Promise.allSettled([this.#ready, ...this.#startups, ...(process ? [process.exited] : [])]);
+    } finally { if (force) clearTimeout(force); }
   }
 }
 

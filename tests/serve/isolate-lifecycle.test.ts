@@ -7,6 +7,26 @@ import { createCompletionClient, createDirectHost } from "../../src/client";
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+test("close waits for startup admission to settle and release its lease", async () => {
+  let admit!: (lease: { dispose(): void }) => void;
+  let released = false;
+  const child = new EngineChild({ argv: [process.execPath, "-e", "process.exit(0)"],
+    socketPath: join(tmpdir(), `mlx-close-startup-${crypto.randomUUID()}.sock`),
+    acquire: () => new Promise((resolve) => { admit = resolve; }),
+  });
+  let closed = false;
+  const closing = child.close().then(() => { closed = true; });
+  try {
+    await pause(10);
+    expect(closed).toBe(false);
+  } finally {
+    admit({ dispose() { released = true; } });
+    await closing;
+  }
+  expect(released).toBe(true);
+  expect(child.pid).toBeNull();
+});
+
 test("direct and isolated hosts satisfy the same completion client contract", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mlx-host-contract-"));
   const socket = join(dir, "engine.sock");

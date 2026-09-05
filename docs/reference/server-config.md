@@ -256,6 +256,8 @@ Design and measurements: [docs/reference/server-config.md](./server-config.md)
   the same loopback completion API and keep their progress in the parent.
 - **Shutdown.** `SIGINT`/`SIGTERM` cancels queued jobs, stops the active GPU job,
   waits for in-process task cleanup, then closes workers and unlinks sockets.
+  Worker close also waits for pending startup admission and failed startup
+  attempts to release their execution leases, including before a child exists.
 
 ## Near-ceiling models on small machines (24 GB)
 
