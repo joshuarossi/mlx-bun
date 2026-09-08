@@ -42,7 +42,10 @@ Rules that apply across rows (all enforced in `src/server.ts`):
   (two-model requires the same tokenizer family — probe-checked at startup).
   The KV-borrowing drafters (`-assistant`, DSpark, DeepSpec) require a
   Gemma 4 target; `qwen3_5_mtp` heads require a Qwen3.5-family target; GLM's
-  MTP is its own row. Any quantized KV scheme excludes the speculative lane
+  MTP is its own row. Qwen MTP companions may store dense or affine-quantized
+  projections; the loader uses each module's quantization metadata. Target
+  verification is unchanged, while draft acceptance and speed depend on the
+  companion. Any quantized KV scheme excludes the speculative lane
   (requests keep the scheme and decode serially without speculation).
 - **Qwen3.5-family checkpoint generations.** Both ship the same graph and both
   load: the mlx-lm-converted naming (`language_model.model.*`,
@@ -223,7 +226,9 @@ have, loading refuses; it never downgrades to another model path.
 **Packed trellis artifacts.** A `quantization` entry with `mode: "trellis"`
 (TurboQuant Q2b, `mjriii/Qwen3.8-27B-q3-…-packed`) stores that module as a
 trellis-coded bit-stream + fp16 row scales and is served by the engine's own
-Metal kernels; stock mlx-lm cannot load it. Format and kernels:
+Metal kernels; stock mlx-lm cannot load it. Experimental k3/axis0 artifacts
+can store two-block interleaved codes as a 3D tensor; the loader identifies
+the layout from its shape and keeps one resident code copy. Format and kernels:
 `docs/design/turboquant.md` (Q campaign); fallback `MLX_BUN_TRELLIS=expand`:
 `server-config.md`.
 

@@ -1,7 +1,9 @@
 // Phase 15 — head-to-head benchmark harness: mlx-bun vs mlx-lm vs optiq.
 //
-// ONE-SHOT (after a reboot, nothing else open):
-//   bun scripts/bench-serve.ts all            (= bun scripts/bench-h2h.ts all)
+// Canonical HTTP measurements use the separate scripts/bench-serve.ts all.
+// This legacy driver retains report/server utilities. Its direct leg uses
+// scripts/bench/native.ts for dense Qwen with bf16 KV, records diagnostic
+// rows, and retains every predeclared sample in alternating process order.
 //
 // RESUMABLE: cells that already have a row (same stack/model/leg/kv,
 // same commit, < 36 h old) are SKIPPED, so a re-run after a mid-matrix
@@ -11,8 +13,7 @@
 // APPLES-TO-APPLES pairs (each cell tagged kv=off|config in its row):
 //   engine vs engine:  mlx-bun(bf16 KV)   vs mlx-lm(bf16 KV)
 //   best   vs best  :  mlx-bun(kv_config) vs optiq(kv_config)
-// optiq-direct = mlx-lm engine + optiq's install_mixed_kv patch
-// (bench.ts --baseline --baseline-kv config).
+// Mixed-KV direct cells are unsupported; use the HTTP harness for those.
 //
 // ORDER: models smallest→largest and the 26B (the swap generator) runs
 // its cells LAST, so accumulated swap can't taint smaller models.
@@ -27,7 +28,8 @@ import { checkMachine, machineStateJson } from "../src/preflight";
 import { EvalDB, gitCommit } from "../src/evaldb";
 import { Registry, type ModelRecord } from "../src/registry";
 import { ORACLE_VENV } from "../tests/support/paths";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { hostname, totalmem } from "node:os";
 
 const VENV = `${ORACLE_VENV}/bin`;
@@ -174,70 +176,81 @@ interface DirectCell {
   kv: "off" | "config";
 }
 const cellKey = (c: DirectCell) => `${c.m.repoId.split("/").at(-1)}/${c.stack}/kv=${c.kv}`;
+const directPrompts = new Map<string, string>();
+
+async function directPromptFile(modelPath: string, requested?: number): Promise<string> {
+  const key = `${modelPath}:${requested ?? 0}`;
+  const existing = directPrompts.get(key);
+  if (existing) return existing;
+  const { loadTokenizer } = await import("../src/tokenizer");
+  const { ChatTemplate } = await import("../src/chat-template");
+  const tokenizer = await loadTokenizer(modelPath), template = await ChatTemplate.load(modelPath);
+  const render = (prefix: string) => tokenizer.encode(template.render(
+    [{ role: "user", content: prefix + PROMPT }], { enableThinking: false }));
+  let ids = render("");
+  if (requested && requested > ids.length) {
+    const filler = "Mechanical calculators preceded electronic computers. Stored programs made machines programmable.\n";
+    const text = filler.repeat(requested);
+    let low = 0, high = text.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (render(text.slice(0, middle)).length < requested) low = middle + 1;
+      else high = middle;
+    }
+    ids = render(text.slice(0, low));
+  }
+  const hash = createHash("sha256").update(JSON.stringify(ids)).digest("hex");
+  mkdirSync("reports/native-prompts", { recursive: true });
+  const path = `reports/native-prompts/${hash}.json`;
+  await Bun.write(path, JSON.stringify(ids) + "\n"); directPrompts.set(key, path);
+  return path;
+}
 
 async function directRun(c: DirectCell, tokens: number, promptTokens?: number): Promise<{
   prefillTps: number; decodeTps: number; peakGB: number; promptTokens: number;
+  completionTokens: number; reportPath: string;
 }> {
-  const args = ["bun", "bench.ts (deleted 2026-08-23; git history)", "--model", c.m.repoId, "--tokens", String(tokens)];
-  if (promptTokens) args.push("--prompt-tokens", String(promptTokens));
-  if (c.stack === "mlx-bun") args.push("--kv", c.kv);
-  else {
-    args.push("--baseline");
-    if (c.stack === "optiq") args.push("--baseline-kv", "config");
-  }
-  // optiq crashes ~half the time on KV-sharing models (see isTransientOptiqKvCrash).
-  // Re-spawn on that specific error so one unlucky run doesn't sink the cell.
-  const maxAttempts = c.stack === "optiq" ? OPTIQ_RETRIES + 1 : 1;
-  let out = "", err = "", code = 0;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
-    [out, err, code] = await Promise.all([
-      new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
-    ]);
-    if (code === 0) break;
-    if (attempt < maxAttempts && isTransientOptiqKvCrash(err)) {
-      console.log(`  [retry ${attempt}/${maxAttempts - 1}] ${cellKey(c)}: transient optiq KV crash, re-spawning`);
-      continue;
-    }
-    break;
-  }
-  if (code !== 0) throw new Error(`bench.ts failed for ${cellKey(c)}:\n${err.slice(-500)}`);
-  const prefill = out.match(/prompt: (\d+) tok @ ([\d.]+) tok\/s/);
-  const decode = out.match(/decode: \d+ tok @ ([\d.]+) tok\/s/);
-  const peak = out.match(/peak mem: ([\d.]+) GB/);
-  if (!prefill || !decode || !peak) throw new Error(`could not parse bench output:\n${out.slice(-400)}`);
+  if (c.stack === "optiq" || c.kv !== "off")
+    throw new Error("native control worker supports Qwen with bf16 KV; use bench-serve for mixed-KV/OptiQ serving cells");
+  const promptFile = await directPromptFile(c.m.path, promptTokens);
+  const reportPath = `reports/native-direct-${Date.now()}-${c.stack}-${crypto.randomUUID()}.json`;
+  const args = ["bun", "scripts/bench/native.ts", "--model-path", c.m.path,
+    "--prompt-ids", promptFile, "--stack", c.stack, "--tokens", String(tokens),
+    "--samples", "1", "--warmup", "1", "--json", reportPath];
+  if (flag("force")) args.push("--diagnostic");
+  const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = await Promise.all([
+    new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+  ]);
+  if (code !== 0) throw new Error(`native worker failed for ${cellKey(c)}:\n${err.slice(-2000)}`);
+  const result = await Bun.file(reportPath).json();
+  const sample = result.samples?.[0];
+  if (!result.complete || !sample || sample.tokens.length < 2 || !(sample.firstTokenMs > 0) ||
+      !(sample.wallMs > sample.firstTokenMs)) throw new Error(`invalid native sample: ${reportPath}\n${out}`);
   // Context sanity: a long-context cell whose child actually ran a short
   // prompt must FAIL, not record — the original Phase 15 matrix's @8k
   // python rows silently measured ctx=31 (the --prompt-tokens plumbing
   // didn't reach the baseline path) and fabricated a −10% decode-gap
   // headline. A failed cell lands in the failure footer instead.
-  if (promptTokens && Number(prefill[1]) < 0.9 * promptTokens)
+  if (promptTokens && result.promptIds.length < 0.9 * promptTokens)
     throw new Error(
       `context sanity failed for ${cellKey(c)}: requested ~${promptTokens} prompt tokens, ` +
-      `child measured ${prefill[1]} — refusing to record a mislabeled long-context row`,
+      `child measured ${result.promptIds.length} — refusing to record a mislabeled long-context row`,
     );
   return {
-    promptTokens: Number(prefill[1]),
-    prefillTps: Number(prefill[2]),
-    decodeTps: Number(decode[1]),
-    peakGB: Number(peak[1]),
+    promptTokens: result.promptIds.length, completionTokens: sample.tokens.length, reportPath,
+    prefillTps: result.promptIds.length / sample.firstTokenMs * 1000,
+    decodeTps: (sample.tokens.length - 1) / (sample.wallMs - sample.firstTokenMs) * 1000,
+    peakGB: sample.peakBytes / 1e9,
   };
 }
 
-interface Agg { samples: { decode: number; prefill: number; peak: number }[]; prompt: number }
+interface Agg { samples: { decode: number; prefill: number; peak: number; tokens?: number; reportPath?: string }[]; prompt: number }
 
 // --- run-stability policy ---------------------------------------------------
-// Interference on a personal machine is ONE-SIDED: a background process can
-// only make a run slower, never faster. So when a cell's runs disagree, the
-// consistent FAST cluster is the machine's true capability and the slow runs
-// are contamination. The 2026-07-05 pass proved the failure mode: a slow
-// window (07:39–08:17) flipped mid-round, our mixed@16k median caught
-// [15.1,15.1,24.6] while optiq caught [13.6,23.5,23.5] — the report printed
-// a fabricated 0.64× regression that the previous night's pass (1.05×)
-// refutes. Policy: if a cell's runs spread past SPREAD_TOL, run extra rounds
-// until the top-3 runs agree within STABLE_TOL (record median of that
-// cluster, tagged `stabilized`); if they never converge, record the median
-// of everything tagged `unstable` — rendered ~ and the pair verdict withheld.
+// Historical server/client report policy only. The direct leg below and the
+// current HTTP harness retain all fixed samples; neither uses fast-cluster
+// selection. These legacy helpers must not decide kernel promotion.
 const STABLE_TOL = 1.05;
 const MAX_EXTRA_ROUNDS = 3;
 
@@ -262,13 +275,15 @@ async function directLeg(
   cells: DirectCell[], runs: number, machineState: string,
   o: { tokens: number; promptTokens?: number; forceNote?: boolean },
 ): Promise<void> {
+  if (!Number.isInteger(runs) || runs < 1 || runs > 12)
+    throw new Error("--runs must be an integer from 1 to 12");
   const ctxTag = o.promptTokens ? ` ctxreq=${o.promptTokens}` : "";
   const todo = cells.filter((c) => {
     // resume keys on the REQUESTED context length, so an 8k row can
     // never satisfy (and silently skip) a future 32k cell
-    const like = `h2h-direct%kv=${c.kv}${o.promptTokens ? ` ctxreq=${o.promptTokens} ` : " "}%`;
+    const like = `h2h-direct-v2%kv=${c.kv}${o.promptTokens ? ` ctxreq=${o.promptTokens} ` : " "}%`;
     const notLike = o.promptTokens ? undefined : "%ctxreq=%";
-    if (hasRecentRow(c.stack, c.m.path, like, notLike)) {
+    if (hasRecentRow(`${c.stack}-native-diagnostic`, c.m.path, like, notLike)) {
       console.log(`  [skip] ${cellKey(c)}${ctxTag} — recent row exists (use --redo to rerun)`);
       return false;
     }
@@ -278,8 +293,10 @@ async function directLeg(
 
   const agg = new Map<string, Agg>();
   const failed = new Set<string>();
-  for (let r = 0; r <= runs; r++) {
-    for (const c of todo) {
+  for (let r = 0; r < runs; r++) {
+    // Each worker warms its resident model. Alternate process order and keep
+    // the predeclared number of observations, including slow samples.
+    for (const c of r % 2 ? [...todo].reverse() : todo) {
       const key = cellKey(c);
       if (failed.has(key)) continue;
       let res;
@@ -296,38 +313,11 @@ async function directLeg(
         bucket.push({ cell: `${key}${ctxTag}`, error: failureLine(msg) });
         continue;
       }
-      if (r === 0) {
-        console.log(`  [warmup] ${key}: ${res.decodeTps.toFixed(1)} tok/s (discarded)`);
-        continue;
-      }
       const a = agg.get(key) ?? { samples: [], prompt: res.promptTokens };
-      a.samples.push({ decode: res.decodeTps, prefill: res.prefillTps, peak: res.peakGB });
+      a.samples.push({ decode: res.decodeTps, prefill: res.prefillTps, peak: res.peakGB,
+        tokens: res.completionTokens, reportPath: res.reportPath });
       agg.set(key, a);
-      console.log(`  [run ${r}/${runs}] ${key}: ${res.decodeTps.toFixed(1)} tok/s decode`);
-    }
-  }
-
-  // Stability retries (see run-stability policy above): only cells whose
-  // runs disagree re-run, interleaved, so a mid-pass machine-state flip gets
-  // a chance to resolve into a consistent fast cluster instead of shipping a
-  // mixed-state median as a headline.
-  for (let extra = 1; extra <= MAX_EXTRA_ROUNDS; extra++) {
-    const shaky = todo.filter((c) => {
-      const a = agg.get(cellKey(c));
-      return !failed.has(cellKey(c)) && a && needsRetry(a);
-    });
-    if (shaky.length === 0) break;
-    for (const c of shaky) {
-      const key = cellKey(c);
-      try {
-        const res = await directRun(c, o.tokens, o.promptTokens);
-        agg.get(key)!.samples.push({ decode: res.decodeTps, prefill: res.prefillTps, peak: res.peakGB });
-        console.log(`  [stability retry ${extra}/${MAX_EXTRA_ROUNDS}] ${key}: ${res.decodeTps.toFixed(1)} tok/s decode`);
-      } catch (e) {
-        // keep what we have — the cell records from its existing runs
-        console.error(`  [stability retry ${extra}] ${key} failed: ${failureLine((e as Error).message)}`);
-        break;
-      }
+      console.log(`  [run ${r + 1}/${runs}] ${key}: ${res.decodeTps.toFixed(1)} tok/s decode`);
     }
   }
 
@@ -335,7 +325,8 @@ async function directLeg(
     const key = cellKey(c);
     if (failed.has(key)) continue;
     const a = agg.get(key)!;
-    const { picked, tag } = robustPick(a);
+    const picked = a.samples;
+    const tag = spreadOf(decodes(a)) > SPREAD_TOL ? ` unstable spread=${spreadOf(decodes(a)).toFixed(2)}` : "";
     const dec = picked.map((s) => s.decode);
     const pre = picked.map((s) => s.prefill);
     console.log(
@@ -343,16 +334,18 @@ async function directLeg(
       `peak ${Math.max(...a.samples.map((s) => s.peak)).toFixed(2)} GB${tag ? ` [${tag.trim()}]` : ""}`,
     );
     db.record({
-      modelPath: c.m.path, commitSha: commit, stack: c.stack,
-      promptTokens: a.prompt, generatedTokens: o.tokens,
+      modelPath: c.m.path, commitSha: commit,
+      stack: `${c.stack}-native-diagnostic`,
+      promptTokens: a.prompt, generatedTokens: Math.round(median(a.samples.map((s) => s.tokens!))),
       prefillTps: median(pre), decodeTps: median(dec),
       // peak stays max over ALL runs — a contaminated run's peak is still a
       // real high-water mark of the allocation pattern, not a speed artifact
       peakBytes: Math.round(Math.max(...a.samples.map((s) => s.peak)) * 1e9),
       machineState,
-      notes: `h2h-direct median-of-${runs} kv=${c.kv}` +
+      notes: `h2h-direct-v2 median-of-${runs} kv=${c.kv}` +
         `${o.promptTokens ? ` ctxreq=${o.promptTokens} ctx=${a.prompt}` : ""} ` +
-        `decode[${list(decodes(a))}]${tag}${o.forceNote ? " preflight-failed" : ""}`,
+        `decode[${list(decodes(a))}]${tag}${o.forceNote ? " preflight-failed" : ""} ` +
+        `rates=prompt/ttft,(emitted-1)/(wall-ttft) reports=${JSON.stringify(a.samples.map((s) => s.reportPath))}`,
     });
   }
 }
@@ -883,19 +876,28 @@ if (reg.list().length === 0) await reg.scan();
 const resolveAll = (q: string): ModelRecord[] => q.split(",").map((s) => reg.resolve(s.trim()));
 
 if (cmd === "direct") {
+  const selection = opt("models", "");
+  if (!selection) throw new Error("direct requires --models <dense-Qwen registry selection>; for an exact local artifact use scripts/bench/native.ts --model-path");
+  const runs = Number(opt("runs", "6")), tokens = Number(opt("tokens", "256"));
+  const promptTokens = Number(opt("prompt-tokens", "0"));
+  if (!Number.isInteger(runs) || runs < 1 || runs > 12) throw new Error("--runs must be 1..12");
+  if (!Number.isInteger(tokens) || tokens < 2 || tokens > 4096) throw new Error("--tokens must be 2..4096");
+  if (!Number.isInteger(promptTokens) || promptTokens < 0 || promptTokens > 131072)
+    throw new Error("--prompt-tokens must be 0..131072");
+  if (opt("kv", "off") !== "off") throw new Error("direct requires --kv off; use bench-serve for mixed KV");
   const machineState = preflight(false);
-  const models = resolveAll(opt("models", "cpm,e4b-it-OptiQ,12B,26B"));
-  const kv = opt("kv", "config") as "off" | "config";
+  const models = resolveAll(selection);
+  const kv = opt("kv", "off") as "off" | "config";
   const cells: DirectCell[] = models.flatMap((m) => [
     { m, stack: "mlx-bun" as const, kv },
     ...(flag("with-baseline") ? [{ m, stack: "mlx-lm" as const, kv: "off" as const }] : []),
   ]);
-  await directLeg(cells, Number(opt("runs", "3")), machineState, {
-    tokens: Number(opt("tokens", "256")),
-    promptTokens: Number(opt("prompt-tokens", "0")) || undefined,
+  await directLeg(cells, runs, machineState, {
+    tokens,
+    promptTokens: promptTokens || undefined,
     forceNote: flag("force") && !checkMachine().ok,
   });
-  process.exit(0);
+  process.exit(failures.length ? 1 : 0);
 }
 
 if (cmd === "server") {

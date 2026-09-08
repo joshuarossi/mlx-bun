@@ -5,6 +5,7 @@ import { embedMany, isEmbeddingModel } from "../../embed";
 import { bindMlxGateway } from "./gateway-binding";
 import { bindLegacySerialModel, createMlxSerialExecutor } from "./serial-executor";
 import { buildModelPrompt } from "./model-prompt";
+import { MLX_VERSION, deviceArchitecture } from "../../mlx/ffi";
 
 export function modelPromptBuilder(context: ServingContext): ModelServingBinding["buildPrompt"] {
   return context.serving?.buildPrompt ?? ((body, tools, ownership, prep) =>
@@ -23,6 +24,7 @@ export function modelServingBinding(context: ServingContext): ModelServingBindin
   const glm = model instanceof Glm52Model;
   const embedding = isEmbeddingModel(model);
   return {
+    stateCompatibility: `mlx-${MLX_VERSION}-${deviceArchitecture()}`,
     gateway: bindMlxGateway(model),
     createSerial: (services) => createMlxSerialExecutor(serial, services),
     buildPrompt: (body, tools, ownership, prep) => buildModelPrompt(ctx, prep, body, tools, ownership),

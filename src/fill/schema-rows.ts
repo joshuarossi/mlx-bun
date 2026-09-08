@@ -1,10 +1,9 @@
 // Strict fill rows (K3b) — the chat template is its own oracle.
 //
-// Nothing here knows what a tool-call format looks like. We render the SAME
-// conversation several ways, tokenize each rendering, and diff the token id
-// sequences: what does NOT change is, by construction, the template's fixed
-// scaffold — the tokens the model must emit no matter what it decides. Those
-// become rows. Same technique as request-prep.ts::stableLenFor's primer probe,
+// We render the same conversation several ways, tokenize each rendering,
+// and diff the token IDs to find fixed template structure. Those spans become
+// rows. The tool parser supplies complete lexical delimiters; a request-local
+// context must establish an active tool boundary before a row can assert. Same technique as request-prep.ts::stableLenFor's primer probe,
 // applied to the assistant turn instead of the generation prompt.
 //
 // TWO RULES, both learned the hard way.
@@ -32,7 +31,9 @@
 // renders them without the name/arguments) produces IDENTICAL probes, the diff
 // is empty, and no rows are compiled — degrade to no-fill, never wrong output.
 import type { ChatMessage, RenderOptions, ToolDefinition } from "../chat-template";
-import type { FillRow } from "./fill-session";
+import type { FillRow, StrictFillContext } from "./fill-session";
+import { hasCompleteToolValueDelimiter } from "../tool-call";
+import { ToolCallFillContext } from "./tool-boundary";
 
 /** The template surface row compilation needs (ChatTemplate satisfies it). */
 export interface FillTemplateLike {
@@ -68,8 +69,8 @@ const ID_A = "call_zzalphaidqq";
 const ID_B = "call_wwbetaidmm";
 const ID_N = "call_vvgammaidkk";
 
-/** Tools compiled per plan (a pathological request with hundreds of tools
- *  would otherwise pay hundreds of renders). */
+/** Requests above this limit skip strict rows. Probing only a subset would
+ *  incorrectly treat choices from the omitted tools as fixed structure. */
 const MAX_TOOLS = 32;
 /** A "scaffold" longer than this is a diff that went wrong, not punctuation. */
 const MAX_SPAN_TOKENS = 64;
@@ -93,6 +94,8 @@ export interface CompileStrictRowsInput {
 
 export interface StrictRowPlan {
   rows: FillRow[];
+  /** A fresh parser context for each request; compiled rows may be cached. */
+  createContext?: (promptIds: readonly number[]) => StrictFillContext;
   /** Token ids that legitimately END an argument value in this template — the
    *  closing quote (JSON) or the markup that follows a value (`</parameter`).
    *  Read off the diff between two value probes: the first non-whitespace
@@ -107,7 +110,16 @@ export interface StrictRowPlan {
  *  degrades to no rows. */
 export function compileStrictFillRows(input: CompileStrictRowsInput): StrictRowPlan {
   try {
-    return compile(input);
+    const plan = compile(input);
+    if (!plan.rows.length) return plan;
+    const { tokenizer, tools } = input;
+    return {
+      ...plan,
+      rows: plan.rows.map(row => ({ ...row, requiresContext: true as const })),
+      createContext: promptIds => new ToolCallFillContext(
+        ids => tokenizer.decode([...ids], false), tools, tokenizer.decode([...promptIds], false),
+      ),
+    };
   } catch {
     return { rows: [], delimiters: [] };
   }
@@ -116,7 +128,7 @@ export function compileStrictFillRows(input: CompileStrictRowsInput): StrictRowP
 function compile(input: CompileStrictRowsInput): StrictRowPlan {
   const { template, tokenizer, messages, tools, renderOptions } = input;
   const empty: StrictRowPlan = { rows: [], delimiters: [] };
-  if (!tools.length) return empty;
+  if (!tools.length || tools.length > MAX_TOOLS) return empty;
 
   const encode = (text: string): number[] => {
     const ids = tokenizer.encode(text);
@@ -269,10 +281,7 @@ function compile(input: CompileStrictRowsInput): StrictRowPlan {
   // exactly one, required argument. Otherwise the model may still be about to
   // write a second `<parameter=…>` and injecting the close would silently drop
   // it — the request's own schema decides whether this row exists at all.
-  const singleArgRequest = tools.slice(0, MAX_TOOLS).every((tool) => {
-    const { keys, required } = keysOf(tool);
-    return keys.length === 1 && required.includes(keys[0]!);
-  });
+  const singleArgRequest = tools.slice(0, MAX_TOOLS).every((tool) => determinedKeyOf(tool) !== null);
   if (!singleArgRequest) return { rows, delimiters };
   // The shared tail of two plain-content probes is the turn end alone.
   const ca = contentProbe(CONTENT_A);
@@ -283,7 +292,8 @@ function compile(input: CompileStrictRowsInput): StrictRowPlan {
   if (turnEnd.length && endsWith(callClose, turnEnd))
     callClose = callClose.slice(0, callClose.length - turnEnd.length);
   if (callClose.length && callClose.length <= MAX_SPAN_TOKENS) {
-    const row = anchoredRow(callClose, "close", distinctive, whitespace);
+    const row = anchoredRow(callClose, "close", distinctive, whitespace,
+      prefix => hasCompleteToolValueDelimiter(tokenizer.decode(prefix, false)));
     if (row) rows.push(row);
   }
   if (turnEnd.length && turnEnd.length <= MAX_SPAN_TOKENS) {
@@ -307,20 +317,21 @@ function keysOf(tool: ToolDefinition): { keys: string[]; required: string[]; clo
   const keys = props && typeof props === "object" ? Object.keys(props) : [];
   const required = (Array.isArray(params?.required) ? params!.required : [])
     .filter((k): k is string => typeof k === "string");
-  return { keys, required, closed: params?.additionalProperties === false };
+  const patterns = params?.patternProperties;
+  const closed = params?.additionalProperties === false &&
+    (patterns === undefined || patterns !== null && typeof patterns === "object" && Object.keys(patterns).length === 0);
+  return { keys, required, closed };
 }
 
 function firstKeyOf(tool: ToolDefinition): string | null {
   return keysOf(tool).keys[0] ?? null;
 }
 
-/** The key the SCHEMA determines: the only property, and required (so the
- *  model cannot legally omit it). A lone optional property is NOT determined —
- *  the model may emit empty arguments — so the span stops before it. */
+/** A first key is fixed only when it is required and no other key is legal.
+ *  Optional, additional and pattern properties can otherwise come first. */
 function determinedKeyOf(tool: ToolDefinition): string | null {
   const { keys, required, closed } = keysOf(tool);
-  if (keys.length === 1 && required.includes(keys[0]!)) return keys[0]!;
-  if (required.length === 1 && closed && keys.includes(required[0]!)) return required[0]!;
+  if (closed && keys.length === 1 && required.includes(keys[0]!)) return keys[0]!;
   return null;
 }
 
@@ -343,23 +354,28 @@ function determinedSpan(
     if (!a || !b || !n || sameIds(a, b) || sameIds(a, n)) return null;
     return commonPrefix(commonPrefix(a, b), n);
   }
-  const { keys } = keysOf(tool);
-  if (keys.length >= 2) {
-    // Two REAL keys: the cut lands where the model's own choice of first key
-    // diverges, whichever way the tokenizer merges the key into the markup.
-    const a = probe(name, { [keys[0]!]: VALUE_A }, ID_A);
-    const b = probe(name, { [keys[1]!]: VALUE_A }, ID_B);
-    if (!a || !b || sameIds(a, b)) return null;
-    return commonPrefix(a, b);
-  }
-  // One optional key, or none: cut at the key boundary using a diagnostic
-  // alternative. `a` (the real rendering) is still what gets sliced.
-  const a = keys.length === 1
+  const { keys, required, closed } = keysOf(tool);
+  // Compare real key choices when available. Otherwise the alternative only
+  // locates the boundary; returned IDs still come from the real rendering.
+  const a = keys.length > 0
     ? probe(name, { [keys[0]!]: VALUE_A }, ID_A)
     : probe(name, {}, ID_A);
-  const b = probe(name, { [KEY_ALT]: VALUE_A }, ID_B);
+  const b = probe(name, { [keys[1] ?? KEY_ALT]: VALUE_A }, ID_B);
   if (!a || !b || sameIds(a, b)) return null;
-  return commonPrefix(a, b);
+  let span = commonPrefix(a, b);
+  if (!closed && keys.length > 1) {
+    // Declared keys can share BPE tokens that another legal key does not.
+    const alternative = probe(name, { [KEY_ALT]: VALUE_A }, ID_B);
+    if (!alternative) return null;
+    span = commonPrefix(span, alternative);
+  }
+  if (required.length === 0 && keys.length > 0) {
+    // Keep the empty argument rendering possible when no property is required.
+    const empty = probe(name, {}, ID_A);
+    if (!empty) return null;
+    span = commonPrefix(span, empty);
+  }
+  return span;
 }
 
 /** Length of the shortest token run after `at` that no OTHER tool's span
@@ -404,10 +420,15 @@ function anchoredRow(
   kind: FillRow["kind"],
   distinctive: (id: number) => boolean,
   whitespace: (id: number) => boolean,
+  complete?: (prefix: number[]) => boolean,
 ): FillRow | null {
   const rest = span.slice(leadingSkip(span, whitespace));
-  const k = rest.findIndex(distinctive);
+  let k = rest.findIndex(distinctive);
   if (k === -1) return null;
+  if (complete) {
+    while (k < rest.length && !complete(rest.slice(0, k + 1))) k++;
+    if (k === rest.length) return null;
+  }
   const emit = rest.slice(k + 1);
   if (emit.length < 2) return null;
   return { trigger: rest.slice(0, k + 1), emit, kind };

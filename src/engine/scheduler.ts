@@ -3,7 +3,9 @@ import { disposeResources } from "./resources";
 
 /** Continuous scheduling policy. Each advance is a backend-defined safe unit;
  * this driver neither handles native state nor forces pending work to evaluate. */
-export async function driveExecutionGroup(group: ExecutionGroup, clock: SchedulingClock): Promise<void> {
+export async function driveExecutionGroup(
+  group: ExecutionGroup, clock: SchedulingClock, yieldAfterPreparation = false,
+): Promise<void> {
   let execution: (() => void) | undefined;
   let residency: (() => void) | undefined;
   let lastYield = 0;
@@ -28,7 +30,20 @@ export async function driveExecutionGroup(group: ExecutionGroup, clock: Scheduli
 
       if (!group.preparing && !held && group.queued && group.active < group.maxActive)
         group.admitNext();
-      if (group.preparing) await group.advancePreparation();
+      if (group.preparing) {
+        const activeBefore = group.active;
+        await group.advancePreparation();
+        // A backend may emit its first output while preparing the first row.
+        // Flush a lone admission before decode; queued short admissions still
+        // group together. Re-enter policy after yielding to observe new work,
+        // cancellation, admission holds and shutdown.
+        if (yieldAfterPreparation && !activeBefore && !group.preparing &&
+            group.active === 1 && !group.queued) {
+          lastYield = clock.now();
+          await clock.yield();
+          continue;
+        }
+      }
 
       // Finish short admissions before decode; long preparation interleaves
       // with active work because the group still reports preparing=true.

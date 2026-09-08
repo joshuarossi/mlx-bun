@@ -525,6 +525,20 @@ export function wordsPerBlock(T: number, k: number): number {
   return (T * k) / 32;
 }
 
+/** Reorder k3/T256 codes into [two-block groups, rows, 48 words].
+ *  The caller selects an axis0/1MAD/L12 tensor; no code values change. */
+export function interleaveTrellisCodes(codes: MlxArray): MlxArray {
+  if (codes.dtype !== Dtype.uint32 || codes.ndim !== 2 ||
+      codes.shape[0]! < 1 || codes.shape[1]! < 48 || codes.shape[1]! % 48 !== 0)
+    throw new Error("trellis interleave: expected uint32 rows with whole two-block groups");
+  const [rows, words] = codes.shape as [number, number];
+  const view = ops.reshape(codes, [rows, words / 48, 48]);
+  const transposed = ops.transposeAxes(view, [1, 0, 2]);
+  view.dispose();
+  try { return ops.contiguous(transposed); }
+  finally { transposed.dispose(); }
+}
+
 /** Pack `nBlocks` blocks of T states ([nBlocks·T] int32, row-major) into the
  *  reversed-time bit-stream described above, writing into `out`
  *  (nBlocks · wordsPerBlock uint32). */
@@ -570,4 +584,3 @@ export function unpackDecodeHost(
   }
   return out;
 }
-

@@ -111,7 +111,8 @@ const SERVER_FLAGS = `Server options:
                             restarts (long-context agent TTFT drops from a
                             full re-prefill to a zero-copy mmap restore).
                             Off unless set.
-  --ssd-cache-max <GB>      SSD tier byte cap  [default: 32 GB]
+  --ssd-cache-max <GB>      Optional SSD tier byte cap; 0 = unlimited
+                            [default: unlimited]
   --ssd-demote-idle <sec>   Demote prompt-cache entries idle this long to the
                             SSD tier, freeing their GPU memory (prefixes stay
                             reachable via zero-copy restore). 0 disables.
@@ -964,7 +965,16 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (ssdDir !== null) {
     serverOptions.ssdCacheDir = ssdDir;
     const maxRaw = opt("ssd-cache-max");
-    if (maxRaw !== null) serverOptions.ssdCacheMaxBytes = Math.max(1, Number(maxRaw)) * 2 ** 30;
+    if (maxRaw !== null) {
+      const maxGb = Number(maxRaw);
+      if (!Number.isFinite(maxGb) || maxGb < 0) {
+        console.error(`--ssd-cache-max expects a number >= 0 (got "${maxRaw}")`);
+        process.exit(1);
+      }
+      serverOptions.ssdCacheMaxBytes = maxGb === 0
+        ? Number.POSITIVE_INFINITY
+        : maxGb * 2 ** 30;
+    }
     if (flag("ssd-cache-verify")) serverOptions.ssdCacheVerify = true;
     const demoteRaw = opt("ssd-demote-idle");
     if (demoteRaw !== null) serverOptions.ssdDemoteIdleSec = Math.max(0, Number(demoteRaw));

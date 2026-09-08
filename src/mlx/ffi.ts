@@ -10,10 +10,10 @@
 // - mlx_optional_int is `{ int32 value; bool has_value }` = 8 bytes, by
 //   value in one register: value in bits 0..31, has_value at bit 32.
 
-import { dlopen, FFIType, ptr, read } from "bun:ffi";
+import { dlopen, FFIType, ptr, read, type Pointer } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { nativePackDir } from "../native-pack";
+import { MLX_CORE_VERSION, nativePackDir } from "../native-pack";
 import { runtimeValue } from "../runtime-config";
 
 const { ptr: P, i32, u64, f32, f64, cstring } = FFIType;
@@ -38,8 +38,12 @@ function resolveLibmlxc(): string {
 }
 
 export const LIBMLXC_PATH = resolveLibmlxc();
-
 export const C = dlopen(LIBMLXC_PATH, {
+  // linked MLX core version, independent of the C API family
+  mlx_version: { args: [P], returns: i32 },
+  mlx_string_new: { args: [], returns: u64 },
+  mlx_string_data: { args: [u64], returns: cstring },
+  mlx_string_free: { args: [u64], returns: i32 },
   // array lifecycle
   mlx_array_new: { args: [], returns: u64 },
   mlx_array_new_data: { args: [P, P, i32, i32], returns: u64 },
@@ -78,6 +82,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_device_info_get: { args: [P, u64], returns: i32 },
   mlx_device_info_free: { args: [u64], returns: i32 },
   mlx_device_info_get_size: { args: [P, u64, cstring], returns: i32 },
+  mlx_device_info_get_string: { args: [P, u64, cstring], returns: i32 },
   mlx_get_default_device: { args: [P], returns: i32 },
   mlx_device_free: { args: [u64], returns: i32 },
   mlx_synchronize: { args: [u64], returns: i32 },
@@ -98,6 +103,10 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_fast_rms_norm: { args: [P, u64, u64, f32, u64], returns: i32 },
   // (res, x, weight may-be-null, bias may-be-null, eps, stream)
   mlx_fast_layer_norm: { args: [P, u64, u64, u64, f32, u64], returns: i32 },
+  // MLX 0.32.2: mask, sinks, force_fused, stream.
+  mlx_fast_scaled_dot_product_attention: {
+    args: [P, u64, u64, u64, f32, cstring, u64, u64, FFIType.bool, u64], returns: i32,
+  },
   mlx_matmul: { args: [P, u64, u64, u64], returns: i32 },
   mlx_contiguous: { args: [P, u64, FFIType.bool, u64], returns: i32 },
   mlx_copy: { args: [P, u64, u64], returns: i32 },
@@ -108,15 +117,14 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_softmax_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
   mlx_max_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
   mlx_sum_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
+  // Optional dtype uses the eight-byte value/has_value layout of optional int.
+  mlx_cumsum_axis: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64, u64], returns: i32 },
+  mlx_cummax_axis: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
   mlx_maximum: { args: [P, u64, u64, u64], returns: i32 },
   mlx_expand_dims: { args: [P, u64, i32, u64], returns: i32 },
   mlx_logical_or: { args: [P, u64, u64, u64], returns: i32 },
   // (res, x, dims, traditional, opt base, scale, offset, freqs may-be-null, stream)
   mlx_fast_rope: { args: [P, u64, i32, FFIType.bool, u64, f32, i32, u64, u64], returns: i32 },
-  // (res, q, k, v, scale, mask_mode, mask may-be-null, sinks may-be-null, stream)
-  mlx_fast_scaled_dot_product_attention: {
-    args: [P, u64, u64, u64, f32, cstring, u64, u64, u64], returns: i32,
-  },
   // ops (grown as phases need them)
   mlx_add: { args: [P, u64, u64, u64], returns: i32 },
   mlx_subtract: { args: [P, u64, u64, u64], returns: i32 },
@@ -150,8 +158,6 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_arange: { args: [P, f64, f64, f64, i32, u64], returns: i32 },
   mlx_take_along_axis: { args: [P, u64, u64, i32, u64], returns: i32 },
   mlx_put_along_axis: { args: [P, u64, u64, u64, i32, u64], returns: i32 },
-  mlx_cumsum: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
-  mlx_cummax: { args: [P, u64, i32, FFIType.bool, FFIType.bool, u64], returns: i32 },
   mlx_where: { args: [P, u64, u64, u64, u64], returns: i32 },
   mlx_logsumexp_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
   mlx_greater_equal: { args: [P, u64, u64, u64], returns: i32 },
@@ -314,6 +320,22 @@ export function takeMlxError(): string | null {
   return e;
 }
 
+function readRuntimeVersion(): string {
+  const slot = new BigUint64Array([C.mlx_string_new()]);
+  const p = ptr(slot);
+  try {
+    if (C.mlx_version(p) !== 0)
+      throw new Error(`mlx_version failed: ${takeMlxError() ?? "(no mlx message)"}`);
+    return C.mlx_string_data(read.u64(p, 0)).toString();
+  } finally { C.mlx_string_free(read.u64(p, 0)); }
+}
+
+/** Read once at startup; kernel eligibility must follow the linked core. */
+export const MLX_VERSION = readRuntimeVersion();
+if (MLX_VERSION !== MLX_CORE_VERSION) {
+  throw new Error(`mlx-bun requires its bundled MLX ${MLX_CORE_VERSION}; ${LIBMLXC_PATH} loaded MLX ${MLX_VERSION}`);
+}
+
 /** mlx_dtype enum values (array.h). */
 export const enum Dtype {
   bool = 0, uint8 = 1, uint16 = 2, uint32 = 3, uint64 = 4,
@@ -403,6 +425,31 @@ export function resetPeakMemory(): void {
  *  context-scaling decode gap). */
 export function clearCache(): void {
   C.mlx_clear_cache();
+}
+
+let cachedDeviceArchitecture: string | undefined;
+
+/** Native architecture identifier, used to match MLX's hardware dispatch. */
+export function deviceArchitecture(): string {
+  if (cachedDeviceArchitecture !== undefined) return cachedDeviceArchitecture;
+  const devSlot = new BigUint64Array(1), devPtr = ptr(devSlot);
+  if (C.mlx_get_default_device(devPtr) !== 0)
+    throw new Error(`mlx_get_default_device failed: ${takeMlxError() ?? ""}`);
+  const dev = read.u64(devPtr, 0);
+  const infoSlot = new BigUint64Array([C.mlx_device_info_new()]), infoPtr = ptr(infoSlot);
+  try {
+    if (C.mlx_device_info_get(infoPtr, dev) !== 0)
+      throw new Error(`mlx_device_info_get failed: ${takeMlxError() ?? ""}`);
+    const out = new BigUint64Array(1), outPtr = ptr(out);
+    const key = Buffer.from("architecture\0", "utf8");
+    if (C.mlx_device_info_get_string(outPtr, read.u64(infoPtr, 0), ptr(key)) !== 0)
+      throw new Error("architecture not in device info");
+    // Copy before the device-info object releases the native string.
+    return cachedDeviceArchitecture = new CString(Number(read.u64(outPtr, 0)) as Pointer).toString();
+  } finally {
+    C.mlx_device_info_free(read.u64(infoPtr, 0));
+    C.mlx_device_free(dev);
+  }
 }
 
 /** Metal's recommended max working-set size for the default device. */

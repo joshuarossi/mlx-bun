@@ -33,6 +33,7 @@ import xgrammar, {
 import { readFileSync } from "node:fs";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
+import { applyTokenBitmask } from "./mlx/token-bitmask";
 import { runtimeValue } from "./runtime-config";
 import type { LoadedTokenizer } from "./tokenizer";
 
@@ -207,6 +208,7 @@ export class GrammarController {
   private pending: Promise<void> | null;
   private terminated = false;
   private disposed = false;
+  private readonly metalMask = runtimeValue("MLX_BUN_TOKEN_MASK") === "metal";
   /** Tokens emitted via jumpForward() this generation — telemetry/test hook. */
   jumpedTokens = 0;
 
@@ -238,6 +240,7 @@ export class GrammarController {
    *  Sync — the mask is already materialized. Returns a NEW array (caller
    *  disposes the input). Mirrors oMLX's apply_token_bitmask_mlx. */
   applyMask(logits: MlxArray): MlxArray {
+    if (this.metalMask) return applyTokenBitmask(logits, this.readyMask);
     // Build a -inf/0 additive float mask on device from the int32 bitmask.
     // Each int32 bit b (little-endian within the word) gates token
     // word*32 + b. Set = valid (xgrammar convention). Adding -inf → -inf,
@@ -255,7 +258,9 @@ export class GrammarController {
       const valid = (w >>> bit) & 1;
       maskArr[id] = valid ? 0 : -Infinity;
     }
-    const mask = MlxArray.fromFloat32(maskArr, [1, V]).astype(logits.dtype);
+    const raw = MlxArray.fromFloat32(maskArr, [1, V]);
+    const mask = raw.astype(logits.dtype);
+    raw.dispose();
     const out = ops.add(logits, mask);
     mask.dispose();
     return out;

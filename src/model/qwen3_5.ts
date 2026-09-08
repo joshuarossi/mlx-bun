@@ -12,9 +12,10 @@
 import type { ModelConfig } from "../config";
 import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
+import { Dtype, deviceArchitecture } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { CompiledFunction } from "../mlx/compile";
+import { qwenAppendChunkSize } from "./qwen-append";
 import { TrellisLinear, fusedGateUpEligible, fusedGateUpSwiglu, TRELLIS_MATVEC_MAX_M } from "./trellis-linear";
 import {
   argmaxLastPosition,
@@ -31,7 +32,9 @@ import {
   type Mask,
 } from "./gemma4-base";
 import { qwen35WeightsView } from "./qwen3_5-checkpoint";
+import { materializeCopy } from "../mlx/materialize";
 import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
+import type { QwenConvolution } from "./qwen-conv";
 import {
   activeMrope, applyInterleavedRope, buildMropePositions, mropeInvFreq,
   setActiveMrope, type MropeRequestState,
@@ -109,6 +112,10 @@ export function compiledSilu(x: MlxArray): MlxArray {
 
 /** Gated-DeltaNet linear-attention layer (mlx-lm GatedDeltaNet). */
 export class GatedDeltaNet {
+  /** Per-model experiment seam; null retains the oracle graph. The same
+   * implementation advances speculative rollback prefixes. Borrowed inputs,
+   * owned activation and independent state tail; no global runtime mutation. */
+  convolution: QwenConvolution | null = null;
   readonly inProjQkv: QuantizedLinear;
   readonly inProjZ: QuantizedLinear;
   readonly inProjB: QuantizedLinear;
@@ -148,7 +155,24 @@ export class GatedDeltaNet {
     this.normWeight = weights.tensor(`${prefix}.norm.weight`);
   }
 
-  forward(x: MlxArray, cache: SSMCache): MlxArray {
+  #convolve(qkv: MlxArray, state: MlxArray): [MlxArray, MlxArray] {
+    if (this.convolution) return this.convolution(qkv, state, this.convWeight);
+    const [B, S, D] = qkv.shape as [number, number, number];
+    const nKeep = this.convKernel - 1;
+    const input = ops.concatAxis([state, qkv], 1);
+    // MLX copy and contiguous can both alias the whole prefill buffer.
+    // Materialize only the tail so cache residency follows its logical size.
+    const view = input.slice([0, S, 0], [B, S + nKeep, D]);
+    const tail = materializeCopy(view);
+    view.dispose();
+    const conv = ops.conv1d(input, this.convWeight, 1, 0, 1, D);
+    input.dispose();
+    const out = compiledSilu(conv);
+    conv.dispose();
+    return [out, tail];
+  }
+
+  forward(x: MlxArray, cache: SSMCache, independentRows = false): MlxArray {
     const [B, S] = x.shape as [number, number, number];
     const convDim = this.keyDim * 2 + this.valueDim;
     const nKeep = this.convKernel - 1;
@@ -170,38 +194,25 @@ export class GatedDeltaNet {
     }
 
     const t0 = prof ? performance.now() : 0;
-    const qkv = this.inProjQkv.forward(x); // [B,S,convDim]
-    let z = this.inProjZ.forward(x);
+    const qkv = this.inProjQkv.forward(x, independentRows); // [B,S,convDim]
+    let z = this.inProjZ.forward(x, independentRows);
     z = disposing(z, ops.reshape(z, [B, S, this.numVHeads, this.headVDim]));
-    const b = this.inProjB.forward(x); // [B,S,numVHeads]
-    const a = this.inProjA.forward(x);
+    const b = this.inProjB.forward(x, independentRows); // [B,S,numVHeads]
+    const a = this.inProjA.forward(x, independentRows);
     if (prof) { ops.evalAll([qkv, z, b, a]); prof.proj = (prof.proj ?? 0) + performance.now() - t0; }
     const tc = prof ? performance.now() : 0; // [B,S,numVHeads]
 
     // Causal depthwise conv with the conv-state prefix (B=1: no ssm mask).
     const convState =
       cache.conv ?? ops.zeros([B, nKeep, convDim], x.dtype);
-    const convInput = ops.concatAxis([convState, qkv], 1); // [B,S+nKeep,convDim]
+    const [convOut, newConv] = this.#convolve(qkv, convState);
     if (!cache.conv) convState.dispose();
     if (spec) spec.qkv = qkv;
     else qkv.dispose();
-    // New conv state = last nKeep rows. MUST be a TRUE copy (mx.copy):
-    // this tail slice is already row-contiguous at B=1, so ops.contiguous
-    // is a no-op VIEW sharing convInput's buffer — caching it pinned the
-    // whole [B, S+nKeep, convDim] chunk buffer (~42 MB/layer/chunk, 48
-    // layers = the measured 2.0 GB-per-2048-chunk prefill leak; 46 GB
-    // active at 32k, async-GPU-OOM on 24 GB — M4 2026-08-20).
-    const newConvView = convInput.slice([0, S, 0], [B, S + nKeep, convDim]);
-    const newConv = ops.copyOf(newConvView);
-    newConvView.dispose();
     if (spec) spec.prevConv = cache.conv;
     else cache.conv?.dispose();
     cache.conv = newConv;
 
-    const conv = ops.conv1d(convInput, this.convWeight, 1, 0, 1, convDim);
-    convInput.dispose();
-    const convOut = compiledSilu(conv); // nn.silu (mx.compile), matches mlx-lm
-    conv.dispose();
     if (prof) { ops.evalAll([convOut]); prof.conv = (prof.conv ?? 0) + performance.now() - tc; }
     const tn = prof ? performance.now() : 0;
 
@@ -250,7 +261,7 @@ export class GatedDeltaNet {
     z.dispose();
     const merged = ops.reshape(gated, [B, S, this.valueDim]);
     gated.dispose();
-    const result = this.outProj.forward(merged);
+    const result = this.outProj.forward(merged, independentRows);
     merged.dispose();
     if (prof) { ops.evalAll([result]); prof.out = (prof.out ?? 0) + performance.now() - to; }
     return result;
@@ -275,21 +286,12 @@ export class GatedDeltaNet {
     const qkvPfx = ops.contiguous(qkvPfxView);
     qkvPfxView.dispose();
     const convState = cache.conv ?? ops.zeros([B, nKeep, convDim], qkvPfx.dtype);
-    const convInput = ops.concatAxis([convState, qkvPfx], 1);
+    const [convOut, newConv] = this.#convolve(qkvPfx, convState);
     if (!cache.conv) convState.dispose();
     qkvPfx.dispose();
-    // TRUE copy, same reason as forward(): the contiguous tail slice would
-    // otherwise be a view pinning the whole replay convInput buffer.
-    const rConvView = convInput.slice([0, keep, 0], [B, keep + nKeep, convDim]);
-    const newConv = ops.copyOf(rConvView);
-    rConvView.dispose();
     cache.conv?.dispose();
     cache.conv = newConv;
 
-    const conv = ops.conv1d(convInput, this.convWeight, 1, 0, 1, convDim);
-    convInput.dispose();
-    const convOut = compiledSilu(conv);
-    conv.dispose();
     const [qFlat, kFlat, vFlat] = ops.split(
       convOut, [this.keyDim, 2 * this.keyDim], -1,
     ) as [MlxArray, MlxArray, MlxArray];
@@ -367,18 +369,18 @@ export class Qwen3Attention {
     this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
   }
 
-  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
+  forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false): MlxArray {
     const [B, L] = x.shape as [number, number, number];
 
     // q_proj emits 2× head_dim per head → split into queries + gate.
-    const qp = this.qProj.forward(x);
+    const qp = this.qProj.forward(x, independentRows);
     const qpr = disposing(qp, ops.reshape(qp, [B, L, this.nHeads, this.headDim * 2]));
     const [qHeads, gateHeads] = ops.split(qpr, [this.headDim], -1) as [MlxArray, MlxArray];
     qpr.dispose();
     const gate = disposing(gateHeads, ops.reshape(gateHeads, [B, L, this.nHeads * this.headDim]));
 
-    let k = this.kProj.forward(x);
-    let v = this.vProj.forward(x);
+    let k = this.kProj.forward(x, independentRows);
+    let v = this.vProj.forward(x, independentRows);
 
     // q/k norm over head_dim BEFORE transpose (reference order).
     let q = this.qNorm.forward(qHeads);
@@ -441,7 +443,7 @@ export class Qwen3Attention {
     const gated = ops.mul(merged, sig);
     merged.dispose();
     sig.dispose();
-    const out = this.oProj.forward(gated);
+    const out = this.oProj.forward(gated, independentRows);
     gated.dispose();
     return out;
   }
@@ -452,9 +454,12 @@ export class Qwen3Attention {
  *  quantization entry (`mode: "trellis"`). */
 export type MlpLinear = QuantizedLinear | TrellisLinear;
 function loadMlpLinear(weights: Weights, path: string, config: ModelConfig): MlpLinear {
-  return TrellisLinear.isTrellis(config, path)
-    ? TrellisLinear.load(weights, path, config)
-    : QuantizedLinear.load(weights, path, config);
+  if (!TrellisLinear.isTrellis(config, path)) return QuantizedLinear.load(weights, path, config);
+  // M4 Pro measurements support the 27B down projection at M3/4. The
+  // operation also checks variant, dtype and packed-code layout eligibility.
+  const useSharedScatterCodebook = config.text.hiddenSize === 5120 &&
+    config.text.intermediateSize === 17408 && path.endsWith(".down_proj");
+  return TrellisLinear.load(weights, path, config, useSharedScatterCodebook);
 }
 
 export class Qwen3MLP {
@@ -468,26 +473,26 @@ export class Qwen3MLP {
     this.down = loadMlpLinear(weights, `${prefix}.down_proj`, config);
   }
 
-  forward(x: MlxArray): MlxArray {
+  forward(x: MlxArray, inputRowContiguous = false, independentRows = false): MlxArray {
     // Packed-trellis decode (M ≤ 4): gate, up and the swiglu in ONE kernel —
-    // x read once, no gate/up vectors materialized (same rounding as the
-    // compiled swiglu over two separate outputs).
+    // x read once, no gate/up vectors materialized. This Lab path retains
+    // the packed activation arithmetic documented in turboquant.md.
     if (this.gate instanceof TrellisLinear && this.up instanceof TrellisLinear &&
         fusedGateUpEligible(this.gate, this.up) &&
         x.shape.slice(0, -1).reduce((a, b) => a * b, 1) <= TRELLIS_MATVEC_MAX_M) {
       const hidden = fusedGateUpSwiglu(x, this.gate, this.up);
-      const out = this.down.forward(hidden);
+      const out = this.down instanceof QuantizedLinear ? this.down.forward(hidden, independentRows) : this.down.forward(hidden);
       hidden.dispose();
       return out;
     }
-    const g = this.gate.forward(x);
-    const u = this.up.forward(x);
+    const g = this.gate instanceof TrellisLinear ? this.gate.forward(x, inputRowContiguous) : this.gate.forward(x, independentRows);
+    const u = this.up instanceof TrellisLinear ? this.up.forward(x, inputRowContiguous) : this.up.forward(x, independentRows);
     // Oracle: down_proj(swiglu(gate_proj(x), up_proj(x))) — swiglu ALWAYS compiled
     // (mlx-lm's @mx.compile swiglu; no unfused silu+mul, matches its kernel set).
     const hidden = compiledSwiglu(g, u);
     g.dispose();
     u.dispose();
-    const out = this.down.forward(hidden);
+    const out = this.down instanceof QuantizedLinear ? this.down.forward(hidden, independentRows) : this.down.forward(hidden);
     hidden.dispose();
     return out;
   }
@@ -512,16 +517,18 @@ export class Qwen3Layer {
     this.postAttnNorm = new RMSNorm(weights.tensor(`${prefix}.post_attention_layernorm.weight`), config.text.rmsNormEps);
   }
 
-  forward(x: MlxArray, faMask: Mask, cache: Cache): MlxArray {
+  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false): MlxArray {
     const xn = this.inputNorm.forward(x);
     const r = this.isLinear
-      ? this.linearAttn!.forward(xn, cache as SSMCache)
-      : this.selfAttn!.forward(xn, faMask, cache);
+      ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows)
+      : this.selfAttn!.forward(xn, faMask, cache, independentRows);
     xn.dispose();
     const h = ops.add(x, r);
     r.dispose();
     const hn = this.postAttnNorm.forward(h);
-    const m = this.mlp.forward(hn);
+    // RMSNorm allocates an aligned row-contiguous output. Pass that layout
+    // proof so Trellis can match native small-prefill matmul without an eval.
+    const m = this.mlp.forward(hn, true, independentRows);
     hn.dispose();
     const out = ops.add(h, m);
     h.dispose();
@@ -598,6 +605,38 @@ export class Qwen35Model {
     return this.layers.map((l) => (l.isLinear ? new SSMCache() : new KVCache()));
   }
 
+  /** The 27B append path keeps the native M1 affine arithmetic while Trellis
+   * shares up to four rows. Other shapes retain single-token execution. */
+  createAppend(policy: { hasAdapters: boolean; pagedKv: boolean }) {
+    const t = this.config.text;
+    if (policy.hasAdapters || policy.pagedKv || this.loraState.active.length || this.mrope ||
+        t.hiddenSize !== 5120 || t.intermediateSize !== 17408 || this.layers.length !== 64 ||
+        t.headDim !== 256 || t.numAttentionHeads !== 24 || t.numKeyValueHeads !== 4)
+      return null;
+    if (deviceArchitecture() !== "applegpu_g16s") return null;
+    const qualified = (linear: QuantizedLinear | TrellisLinear) => {
+      if (linear instanceof TrellisLinear) return true;
+      const { mode, bits, groupSize } = linear.spec;
+      return mode === "affine" && [2, 3, 4, 6, 8].includes(bits) && [32, 64, 128].includes(groupSize);
+    };
+    for (const layer of this.layers) {
+      const a = layer.linearAttn, s = layer.selfAttn;
+      const attention = a ? [a.inProjQkv, a.inProjZ, a.inProjB, a.inProjA, a.outProj]
+        : [s!.qProj, s!.kProj, s!.vProj, s!.oProj];
+      if (!attention.every(qualified) || ![layer.mlp.gate, layer.mlp.up, layer.mlp.down].every(qualified))
+        return null;
+    }
+    return {
+      maxChunkSize: (state: readonly Cache[]) => qwenAppendChunkSize(state[0]!.offset),
+      forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
+        if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)
+          throw new Error("Qwen committed-token append supports one row and at most four positions");
+        const hidden = this.embed.encode(ids);
+        return this.forwardLayers(hidden, cache, true);
+      },
+    };
+  }
+
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
     const h = this.embed.encode(ids);
     return this.forwardLayers(h, cache);
@@ -608,6 +647,8 @@ export class Qwen35Model {
    *  the bit-exact fast-rope path). While set, forwardLayers installs the
    *  per-forward interleaved cos/sin consumed by every full-attn layer. */
   mrope: MropeRequestState | null = null;
+  /** Serving's memory-pressure check, scoped to the serial request. */
+  prefillMemoryGuard: (() => void) | null = null;
   #mropeInvFreq: MlxArray | null = null;
 
   /** Vision prefill: spliced input embeddings [1, L, H] (image features
@@ -641,7 +682,7 @@ export class Qwen35Model {
     tap.captured.set(i, copy);
   }
 
-  protected forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
+  protected forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false): MlxArray {
     const L = h0.shape[1]!;
     // One full-attention mask shared by all full layers (same offset); linear
     // layers see no ssm mask at B=1.
@@ -665,10 +706,21 @@ export class Qwen35Model {
       | undefined;
     try {
       for (let i = 0; i < this.layers.length; i++) {
+        if (L > 1) this.prefillMemoryGuard?.();
         const tl = prof ? performance.now() : 0;
-        const next = this.layers[i]!.forward(h, faMask, cache[i]!);
+        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows);
         h.dispose();
         h = next;
+        const mlp = this.layers[i]!.mlp;
+        if (L > TRELLIS_MATVEC_MAX_M &&
+            [mlp.gate, mlp.up, mlp.down].some((p) => p instanceof TrellisLinear && !p.fallback)) {
+          // Materialize the cache outputs too. In particular, the tiny
+          // copied conv tail is not a dependency of `h`; leaving it lazy
+          // pins the whole prefill conv buffer until the chunk ends.
+          const state = cache[i]!.state();
+          try { ops.evalAll([h, ...state]); }
+          finally { if (cache[i]!.stateNeedsDispose) for (const a of state) a.dispose(); }
+        }
         if (prof) {
           ops.evalAll([h]);
           const key = this.layers[i]!.isLinear ? "layerLin" : "layerFull";

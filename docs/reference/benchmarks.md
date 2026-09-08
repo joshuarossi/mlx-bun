@@ -16,15 +16,17 @@ not deduplicated physical memory; shared runtime pages may appear in both.
 `bun scripts/bench-serve.ts all` is THE benchmark — one pass, real servers,
 real paths, every number that matters. Per model × arm (mlx-bun@defaults ·
 mlx-bun `--batch 1` [the control arm — `--no-serial` skips] · mlx-lm ·
-mlx-bun-mixed · optiq-mixed) it measures decode tok/s (spread/stability
-policy), TTFT cold (~1k, nonce-busted) and warm/cached (each stack's own
+mlx-bun-mixed · optiq-mixed) it measures decode tok/s (five fixed samples,
+all retained; unstable runs flagged), TTFT cold (~1k, nonce-busted) and warm/cached (each stack's own
 prompt cache), prefill tok/s, long-context prefill/TTFT/decode (ONE measured
 prefill; decode sampled on 64 tok + 2 cached repeats), aggregate tok/s at 4
 concurrent streams, peak RSS (sampled; undercounts GPU), and load→ready time.
-From the SAME cells it checks BIT PARITY: a fixed greedy 64-token probe must
-be byte-identical between stacks of the same scheme (mlx-bun vs mlx-lm;
-mixed vs optiq; unified engine vs `--batch 1`), with prompt_tokens equality
-doubling as a chat-template-parity check.
+The same cells compare decoded text from greedy probes of up to 64 tokens
+between stacks of the same scheme, including the serial control vs mlx-lm.
+Prompt-count inequality rejects a comparison as template/tokenizer drift;
+matching counts and text are a smoke check, not proof of identical token IDs
+or logits. Missing usage cannot produce a passing verdict. The engine's
+pinned logit oracle remains the correctness gate.
 
 ```sh
 bun scripts/bench-serve.ts all                       # cpm5 + e4b + 12B + Qwen3.8-27B, all arms
@@ -34,12 +36,100 @@ bun scripts/bench-serve.ts all --skip-context        # drop the long-context leg
 bun scripts/bench-serve.ts all --context 8192        # shorter context leg
 ```
 
+For an exact local quant use `--model-path <dir>` and optionally `--label`.
+It replaces the registry selection and cannot be combined with `--models`.
+`--dry-run` prints artifact metadata and server commands, with no preflight,
+model load, database write or server process. Packed trellis skips stock
+mlx-lm/optiq arms; explicitly requesting those arms fails before starting a
+server. A fake-quant/8-bit carrier is a separate artifact and cannot establish
+same-artifact packed performance or decode parity.
+
+```sh
+bun scripts/bench-serve.ts all --model-path /path/to/quant --label qwen38-quant --dry-run
+bun scripts/bench-serve.ts all --model-path /path/to/affine --arms mlx-bun-serial,mlx-lm --context 4096 --out reports/affine-h2h.md
+bun scripts/bench-serve.ts all --model-path /path/to/packed --arms mlx-bun-serial --context 4096 --out reports/packed-baseline.md
+bun scripts/bench/model-inventory.ts /path/to/affine /path/to/packed > reports/model-inventory.json
+```
+
+`--workload-seed <block-id>` generates identical nonce-prefixed prompts for
+every engine and artifact in that block, with distinct nonces for retries.
+Thinking is pinned on for all chat measurements. Long-context filler uses a
+fixed character estimate so token-count drift cannot silently change the
+input on one engine. Record actual token counts and compare raw request hashes.
+Use phase/attempt/index to distinguish a cold request from its identical warm
+repeat; request hashes alone do not identify cache state.
+For paired trials, alternate `--arms mlx-bun-serial,mlx-lm` and the reversed
+order across blocks; give every block its own seed and `--out` path.
+`--diagnostic` explicitly permits a loaded-machine serving run. It records
+the preflight snapshot and writes `*-serve-diagnostic` DB rows, which cannot
+serve as canonical results. Server children use the invoking Bun executable,
+so an isolated runtime comparison actually changes the server runtime too.
+
+The Markdown report has a `<report>.md.json` companion containing all chat
+requests, results, failures and retries, plus config/source-diff hashes and
+server commands. Schema 4 also hashes a sorted manifest of tracked and
+untracked source files at startup and save time, so new local kernels cannot
+escape source identity. External native libraries and weights need their own
+manifests. Failed attempts include the child's stderr tail and process
+status; a successful retry keeps the recovered failure visible. It is saved
+after each completed or failed cell. The report
+separately records total request wall time and actual-output throughput.
+The decode columns use the first-to-last visible SSE interval: bursty chunks
+can distort that interval, so it is not a GPU timing. Token throughput requires
+valid server usage; chunk counting is no longer a fallback. Raw results also
+record response-header, first-byte and first-SSE-event latency, then every
+content/reasoning/tool-output event arrival. Event gaps measure stream
+delivery, not individual token latency. Tool-only streams have an output TTFT.
+Malformed/error SSE and responses without a finish reason or `[DONE]` fail
+the measurement. Match output counts, finish reasons and text before
+interpreting a speed difference. The exported `measureCompletionRequest`
+helper applies the same timing and stream-validation contract to raw
+`/v1/completions` requests, without chat-template preparation.
+
+The inventory reads shard headers and config only, reconstructs matrix
+shapes including trellis axis-0 storage, and counts actual tensors rather
+than duplicate config aliases. Its matrix effective-bpw figure includes
+scales/biases but excludes norms, convolutions and sidecars; it is explicitly
+not whole-model bpw or peak memory. Config/index/layout hashes do not hash
+weight payloads. Use existing shard hashes or hash weights outside timed runs
+when certifying artifact identity. The complete Qwen campaign is in
+[the performance program](../design/decode-speed-program.md#7-qwen38-27b-research-program).
+
+For native engine isolation, `scripts/bench/native.ts` runs dense Qwen3.5/3.8
+with bf16 attention KV, f32 recurrent state and greedy decoding. Supply a
+frozen JSON array of prompt token IDs and the exact local artifact to both
+stacks. Each request starts with a fresh cache; warmups and every measured
+sample are retained. Reports include actual output IDs, EOS policy, TTFT,
+wall time through cache cleanup/GPU synchronization, memory and source pins.
+They record the effective wiring policy and active/cached memory around each
+request. The oracle worker enters mlx-lm's normal scoped wired limit; compare
+that policy with Bun's model-sized scope before interpreting a ratio.
+`--clear-before-request` is a separate allocator-cache experiment on both
+stacks, with cleanup included in wall time. Keep it fixed within a pair;
+it does not clear model weights or substitute for a fresh inference cache.
+Stock mlx-lm rejects packed trellis. This worker uses the pinned oracle
+environment and never starts a server or downloads a model.
+
+```sh
+bun scripts/bench/native.ts --model-path /path/to/affine --prompt-ids reports/prompt-ids.json --stack mlx-bun --json reports/native-bun.json --dry-run
+bun scripts/bench/native.ts --model-path /path/to/affine --prompt-ids reports/prompt-ids.json --stack mlx-lm --json reports/native-oracle.json
+```
+
+Alternate stack order across predeclared process pairs. Check token IDs,
+output counts and finish reasons before comparing request wall times.
+`--diagnostic` permits a failed quiet-machine preflight and records that
+failure. Native results remain diagnostic, including on a quiet machine;
+they do not establish HTTP throughput, task quality or full logit parity.
+The repaired legacy `bench-h2h.ts direct` command delegates to this worker,
+requires `--models` and bf16 KV, and writes only `*-native-diagnostic` DB
+rows with raw report paths. Its rates use actual emitted tokens and all
+fixed samples. Use the worker directly to avoid registry ambiguity.
+
 `all` runs the clean-machine preflight first (refuses headline numbers from
 a loaded or swapped box) and holds `caffeinate` for the pass. Quotable
-ABSOLUTE numbers need a quiet machine (reboot, nothing open); parity verdicts
-and ratios survive a dirty one. Results land in the eval DB
-(`~/.cache/mlx-bun/evals.sqlite`) plus a dated markdown report (gitignored;
-move it to `reports/`). Developer lever A/Bs are NOT benchmarks — run
+numbers and ratios need a quiet machine; loaded runs are diagnostic only.
+Results land in the eval DB (`~/.cache/mlx-bun/evals.sqlite`) plus dated
+Markdown and JSON reports under `reports/` by default. Developer lever A/Bs are NOT benchmarks — run
 `scripts/bench-levers.ts <faithful-matrix|fused-prefill|compiled-decode>` or
 `scripts/bench-matrix.ts <modes|features>` directly when touching those paths.
 
@@ -551,6 +641,320 @@ The doctrine (docs/design/speculative-decoding.md Phase 4e): a feature is ON by
 default for a (model, config) pair only when it WINS a clean-machine
 paired A/B on that pair; losing configs stay documented default-off
 levers. This section records the decisions and the numbers behind them.
+
+### Fresh Pi kanban diagnostic, M4 Pro, 2026-09-07
+
+Machine: `Joshs-MBP-2025.local`, M4 Pro, 24 GB; Bun 1.4.0, Pi 0.85.1,
+MLX 0.32.2. These are task diagnostics with existing swap. The first attempt
+also had a brief background browser-test CPU burst. Neither is a quiet-machine
+speed claim.
+The model is the required 12.14 GiB packed Qwen3.8-27B Trellis artifact with
+lossless interleaving. The selected Luke profile is
+`qwen3.8-27b-q3_k_xl-coding-128k`, pinned at repository commit
+`3288d1918fa6140c10f3b2de2d37f9d717a5ab75`. It uses the unchanged prompt,
+xhigh thinking, temperature 0.6, seed 42 and 131072 context. The MLX mapping
+uses target affine KV4 group64, two MTP drafts, paired RAM prompt prefixes
+and 256-token prefill chunks.
+
+| Attempt | Time until Pi stopped | Output tokens | Overall tok/s | First-turn tok/s, including prefill | First reasoning TTFT | Peak server + Pi RSS | Result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| History fixed; original tool-value parser | 65m 30.245s | 53,631 | 13.646 | 15.965 | 22.869s | 12.042 GiB | Failed: only HTML and two JS modules; final edit call remained assistant text |
+| History and tool-value parsing fixed | 106m 6.531s | 82,015 confirmed | 12.882 | 16.154 | 22.892s | 13.795 GiB | Failed inference: Metal out of memory at the 85,238-token request; Pi did not finish |
+
+All four request prompt counts matched independent renders. Later requests
+reused 2,549, 53,174 and 54,859 prompt tokens, with MTP active. Pi had no
+automatic retries or compactions. Its clean process exit did not mean the
+app was complete: the mandatory README was absent and most app files were
+never written. The untouched output fails acceptance. No successful task
+completion time or matched task-time speedup is established by this row.
+
+The saved final edit parameter is valid JSON. The engine decoded XML
+entities before JSON parsing and its repair pass misidentified the nested
+array as the outer call. The corrected parser preserves the complete argument
+array through the actual tokenizer and streaming path.
+
+The fresh attempt with both fixes completed ten requests. Every completed
+prompt count matched the independent render and every response used MTP.
+The aggregate accepted/drafted ratio was 80.038%. The first tool transition
+took 524.244 seconds to first output while processing newly generated history.
+Later requests reused progressively longer prompt prefixes. The cache still
+captures prompt boundaries rather than the newly generated history.
+
+The eleventh request reached a Metal allocation failure after its first
+reasoning fragment. Its terminal usage was unavailable, so the output total
+counts only completed responses. The wall-clock interval includes that failed
+request, prefill, tools and agent overhead. Ten completed response intervals,
+excluding TTFT, average 15.270 output tokens/s. This is distinct from both
+overall task throughput and the short-context serving-suite decode rate.
+There were no retries, compactions or tool errors. Engine source hashes stayed
+fixed. All inference processes exited during bounded cleanup.
+
+The untouched app has HTML, CSS, twelve JavaScript modules and package.json,
+but no README. Syntax checks pass. A separate browser smoke test after server
+shutdown shows the default columns and keyboard card creation work, but opening
+the editor throws `ReferenceError: renderLabels is not defined`. Remaining UI
+checks were not run after that blocking failure. No app edits or repair prompts
+were supplied. These are findings about an incomplete artifact, not a completed
+model submission. No successful completion time or matched task-time gain exists.
+
+Process RSS does not measure all Metal allocations. The out-of-memory failure
+does not establish the model's architectural context limit; the tested KV4,
+MTP and retained-prefix combination needs a separate memory diagnosis.
+
+Protocol and design: [decode-speed-program §7.7](../design/decode-speed-program.md#77-gates-scheduling-and-completion).
+Raw evidence: `reports/qwen38-rd/kanban-final/luke-q3-128k-xhigh-history-fixed/`
+and `luke-q3-128k-xhigh-tool-values-fixed/`, including `quality-static.json`,
+`quality-browser.json` and screenshots. Portable report:
+`reports/qwen38-rd/kanban-final/comparison.html`.
+
+### Kanban capacity diagnosis, M4 Pro, 2026-09-08
+
+Native Bun screen on `Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB, using the
+same 12.14 GiB target, MTP head, MLX 0.32.2 candidate and KV4/prefix settings
+as the failed Pi attempt above. The saved failing history renders to 85,238
+tokens. Fixed text tokens extend it to 110,000 for this capacity screen.
+No Pi task runs in this screen. Sampling follows the selected profile, but
+EOS stopping is disabled to require a short continuation. This is neither
+a fresh task result nor a quiet-machine performance claim.
+
+The unchanged control finished target prefill and emitted one token, then
+failed with Metal out of memory in the first MTP draft round. Its wall time
+was 1,482.497 seconds. Peak active Metal allocation reached 19,451,721,310
+bytes against a recommended working set of 19,069,665,280 bytes. Immediately
+before draft prefill, active allocation was 14,593,938,440 bytes; at the
+first emitted token it was 17,494,527,842 bytes. The retained prefix reported
+2,633,836,544 logical bytes. These counters measure different things from
+process RSS and do not establish a model context limit. Source hashes stayed
+fixed; the worker exited with failure and bounded cleanup completed.
+
+Raw control: `reports/qwen38-rd/kanban-capacity-110k-control.json` and its
+allocation event log. A focused small ownership regression retains 8,405,016
+bytes before the fix, despite requiring only small KV state and one hidden
+row. The isolated candidate now evaluates draft KV at each existing prefill
+chunk and materializes the retained final hidden row. The ownership,
+prefix-position and provider-disposal tests pass. Full-model exactness and
+large-context acceptance are checked separately. A sampling-failure
+regression retains 524,288 bytes before scoped disposal; it now passes the
+under-4-KiB cleanup guard without running GC after the failure.
+
+The final-source small native comparison uses the same first 8,192 history
+tokens and generates 32 tokens twice. Before and after the ownership changes,
+both responses and all MTP acceptance decisions match exactly. Each process
+first prefills from zero, then restores 8,191 cached tokens. Peak active
+allocation is 13,330,783,014 bytes before and 13,105,695,458 after. Both source
+manifests stay fixed. This is one correctness/allocation comparison, not a
+request-time speed claim. Typechecks pass. Evidence: `kanban-capacity-8k-final-comparison.json`
+and its two referenced control/candidate reports in `reports/qwen38-rd/`.
+
+The final native capacity screen passes at 110,000 prompt tokens. It completes
+three identical 256-token continuations, with 109,999 tokens restored on each
+cached request. Between the latter two, an intentional output-sink error after
+eight emitted tokens exercises request cleanup. Retained active allocation is
+14,911,641,794 bytes after every completed or intentionally failed request.
+The next request recovers in the same process and reproduces the continuation.
+Peak active allocation is 17,981,018,362 bytes, 1,470,702,948 bytes below the
+failing control, despite the longer continuation. The first request takes
+1,525.095 seconds including full prefill; the two complete cached requests take
+33.148 and 33.175 seconds. Instrumented synthetic-context timings are not
+Kanban completion estimates. Final provider/weight disposal leaves 101,892,102
+active bytes; the equal per-request counters establish no incremental retention
+from the injected failure, not zero global runtime allocation. The worker exits
+successfully, its source hashes stay fixed and its deadline is not reached.
+
+The main source has the same ownership fixes. Its focused memory/provider tests
+and a real-target MTP/non-MTP short greedy identity gate pass, as do all
+typechecks.
+Native evidence: `reports/qwen38-rd/kanban-capacity-110k-owned-final.json`.
+
+The saved-history HTTP gate also passes on the isolated candidate. It first
+replays the exact failed request, then appends that response and synthetic
+tool/user history to test growth. Tool calls are recorded but never executed
+by this diagnostic. Each response allows up to 512 output tokens and stops
+naturally. Both repeated responses preserve all text, tool arguments, output
+counts and MTP acceptance decisions.
+
+| Prompt tokens | Cached tokens | Output tokens | Complete request, s | TTFT, s |
+|---:|---:|---:|---:|---:|
+| 85,238 | 0 | 42 | 988.103 | 984.951 |
+| 85,238 | 85,237 | 42 | 3.283 | 0.225 |
+| 110,014 | 85,237 | 92 | 401.843 | 393.126 |
+| 110,014 | 110,013 | 92 | 8.931 | 0.255 |
+
+Source hashes stay fixed and server cleanup exits successfully. This validates
+serving capacity and cache reuse, not a completed Kanban task. Raw evidence:
+`reports/qwen38-rd/kanban-memory-http-owned.json` and the saved request/response
+files beside it. These checks exercise short continuations. The fresh Pi
+retry below still fails during sustained generation.
+
+During the saved-history HTTP prefill, simultaneous read-only `/health` and
+`/stats` requests both returned 200, taking 4,776.475 and 4,776.682 ms. This
+single busy-server observation does not establish an idle baseline or latency
+distribution. It identifies responsiveness during native prefill for a separate
+serving check. Evidence: `reports/qwen38-rd/kanban-memory-http-responsiveness.json`.
+
+### Fresh Pi Kanban after MTP ownership fixes, M4 Pro, 2026-09-08
+
+The fresh retry on `Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB, failed with
+Metal out of memory after **106m 5.416s**. It used the same 12.14 GiB target,
+published Luke Q3 128K xhigh profile and unchanged prompt as the preceding
+attempt. The source and every saved request's profile pass the post-run audit.
+The first request body is byte-identical to the preceding attempt; its entire
+response and MTP acceptance trace also match. Later history includes actual
+tool results, including changed directory timestamps.
+
+Eight requests completed, reporting **73,831 output tokens**. The ninth
+request started with **77,077 prompt tokens**, emitted its first output after
+26.415 seconds and failed after 780.891 seconds, during sustained decode.
+Its terminal usage is missing. Retokenizing delivered reasoning estimates
+another 5,659 tokens, but excludes buffered tool arguments, so the full
+generation count is unknown. The completed-response rate after first output
+is 15.658 tok/s; this excludes prefill, tool time and the failed response.
+Peak combined server/Pi RSS is **13.836 GiB**. Completed requests report
+79.911% MTP acceptance. There were no retries, compactions or tool execution
+errors. Pi exited with code zero but reported a terminal error; the task
+therefore failed. No successful completion time or task-time speedup is
+established.
+
+The untouched app supplies its README and passes syntax, basic card creation,
+board/theme persistence, column creation/rename and between-column card drag
+checks. The card editor throws `ReferenceError: renderLabels is not defined`;
+the archive panel throws `TypeError: K.render.renderArchive is not a function`.
+Required functional acceptance fails. Reorder interaction probes remain
+unconfirmed because their input simulation needs validation. Independent UI
+checks ran only after inference exited. No app code was edited and no repair
+prompts were supplied.
+
+The short native and HTTP capacity checks above did not reproduce this long
+decode failure. It motivated the sustained allocation check below. Raw result,
+source/profile audit and untouched
+app checks: `reports/qwen38-rd/kanban-final/luke-q3-128k-xhigh-mtp-memory-fixed/`
+contains `result.json`, `measurement-audit.json`, `quality.json` and its
+referenced evidence.
+
+### Sustained Kanban decode allocation diagnosis, M4 Pro, 2026-09-08
+
+A fresh native process loaded the failed task's saved **77,077-token** request
+and generated **12,288 tokens** with the same model, MTP, KV and sampling
+settings. EOS stopping was disabled for this bounded diagnostic; no tools
+were executed. The unchanged control completed in 2,408.753 seconds including
+923.348 seconds to first output. Decode was 8.272 tok/s. Peak active MLX
+allocation was **18,204,808,450 bytes**; **1,593,360,390 bytes** remained active
+after provider/weights disposal and allocator-cache clearing. Source hashes
+stayed fixed. This is a saved-history diagnostic, not a fresh task result or
+a quiet-machine speed claim.
+
+The large-range cache retained every distinct causal-mask range above 65,536
+elements. Early comparable rounds each added **311,296 bytes**, matching the
+page-rounded int32 range allocation. A focused regression with 256 changing
+context lengths retained **79,790,080 bytes** in the old implementation and
+**7,258,112 bytes** after bounding cached array data to 8 MiB. Three oversized
+ranges retained **37,748,736 bytes** before and **zero additional bytes** after.
+The regression fails before the change and passes after it, including exact
+range values, vocabulary reuse and lazy-view ownership after eviction. Eight
+focused main-source tests, the candidate regression and both workspace
+typechecks pass.
+
+Reconstructing the target prefill lengths and verification windows from the
+control's acceptance trace predicts 4,685 distinct large mask ranges occupying
+1,592,344,576 page-rounded bytes. That accounts for more than 99.9% of the
+observed allocation left after model disposal. This is allocation attribution
+from the recorded execution and source, not a measurement of every cache entry.
+
+The bounded-cache full-model repeat passes: all **12,288 output tokens** and
+all **4,638 MTP acceptance decisions** are identical. Source and harness hashes
+stay fixed, with `src/mlx/ops.ts` the only engine difference between arms.
+Both runs exit normally without cleanup errors.
+
+| Native diagnostic metric | Unbounded cache | Bounded cache |
+|---|---:|---:|
+| Complete request time | 2,408.753 s | 2,461.051 s |
+| Time to first output | 923.348 s | 939.902 s |
+| Decode rate | 8.272 tok/s | 8.078 tok/s |
+| Peak active MLX allocation | 18,204,808,450 B | 16,622,195,970 B |
+| Active MLX allocation after model disposal | 1,593,360,390 B | 8,224,774 B |
+| Observed peak process RSS | 14,324,711,424 B | 12,745,523,200 B |
+| OS lifetime peak process footprint | 18,969,882,768 B | 18,826,963,720 B |
+
+Peak active allocation falls by **1,582,612,480 bytes**. The single diagnostic
+pair takes **2.171% longer**, so it establishes a memory/ownership correction,
+not a throughput gain. RSS, active allocation and physical footprint remain
+distinct measurements. The process monitor started during control prefill
+and before candidate prefill; native allocation instrumentation is identical.
+The fresh Pi task with this correction completed; its separate task result
+and functional acceptance are recorded below.
+
+Raw evidence: `reports/qwen38-rd/kanban-sustained-77k-owned-control.json`, its
+allocation/process-memory traces, `kanban-arange-allocation-evidence.json`,
+`kanban-arange-regression.json`, `kanban-arange-micro-memory.json` and
+`kanban-arange-reconstruction.json`. Full-model comparison:
+`kanban-sustained-arange-comparison.json`, with both raw runs and their traces.
+
+### Completed fresh Pi Kanban with bounded range cache, M4 Pro, 2026-09-08
+
+The untouched app passes the required functional checks after a fresh Pi run
+on `Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB, using the required 12.14 GiB
+Trellis target. The published Luke Q3 coding 128K profile, unchanged prompt,
+xhigh thinking, sampling and seed 42 remain fixed. The candidate uses MLX
+0.32.2, target KV4, MTP depth 2 and paired RAM prefixes. Processes, application
+caches, Pi session and task workspace started fresh; OS file cache was not purged.
+
+| Completed task metric | Result |
+|---|---:|
+| Prompt submitted to Pi settled | **3h 33m 7.685s** |
+| Including server startup | 3h 33m 8.581s |
+| First request time to first output | 23.145 s |
+| Reported output tokens, including reasoning and compaction | **130,494** |
+| Completed inference requests | 62 |
+| Output / whole task elapsed time | 10.205 tok/s |
+| Completed-response rate after first output | 13.904 tok/s |
+| Sum of request time before first output | 56.665 min |
+| MTP draft-token acceptance | 79.706% |
+| Peak sampled combined server/Pi RSS | 11.916 GiB |
+
+All 443 source, profile, request, usage and timing audit checks pass. Every
+response has terminal usage; the output total is exact. Pi and the server
+exit normally, with no inference error or automatic retry. Pi encounters
+seven tool execution errors during its own debugging and completes the task
+without external repair prompts.
+
+One context compaction is included in the total. Its summary request uses
+90,214 input tokens, reports 1,404 output tokens, and takes **19m 42.705s**,
+including 17m 37.551s before first output. The following coding request has
+28,126 input tokens and takes another 4m 22.552s before first output.
+Both prompts have zero cached tokens because the summary changes the exact
+serialized prefix. The first ordinary tool turn separately takes 8m 53.415s
+before first output after the initial 50,533-token response; its cached prefix
+contains only 2,549 tokens. These are measured targets for reducing repeated
+prefill, not claimed savings. The frozen outcome helper recorded zero
+compactions because it recognized only `auto_compaction_start`; derived
+reports count the observed `compaction_start` while preserving the raw result.
+
+The server's last observed OS lifetime peak physical footprint is
+**18,913,094,336 bytes**. The external monitor began during the task and
+sampled through five seconds before exit; lifetime counters include earlier
+process history but may miss the final interval. Physical footprint and the
+runner's sampled combined RSS are different measurements. Separate process
+lifetime peaks are not added as though they were concurrent.
+
+After inference exited, independent browser checks passed card creation,
+required-title editing, description/labels/assignee fields, combined filters,
+archive/restore, column creation/rename/safe deletion/restore, native card
+and column reordering, the Done indicator, and persisted theme/board/order.
+The app supplies run instructions and modular vanilla code. No generated
+source was edited. Earlier automated reorder probes remain recorded; native
+mouse motion with dragover before release confirms both reorder operations.
+
+This establishes a completed task on the frozen candidate. There is no
+matched successful original baseline, so it establishes no task-time speedup
+percentage. The complete first response and every MTP acceptance decision
+match the preceding failed attempt; its time changes from 3,152.595 to
+3,147.633 seconds, effectively flat in one pair. The bounded range cache's
+measured benefit remains retained-memory correction and successful completion.
+
+Raw evidence: `reports/qwen38-rd/kanban-final/luke-q3-128k-xhigh-arange-bounded/`
+contains `result.json`, `measurement-audit.json`, `quality.json`, referenced
+browser evidence, `memory-summary.json`, the untouched app and saved sources.
+The derived HTML report is `reports/qwen38-rd/kanban-final/comparison.html`.
 
 ### Speculative decoding — "should spec be on?" (decision pending Phase 0/1 runs)
 

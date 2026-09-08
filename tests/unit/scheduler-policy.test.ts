@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { ExecutionGroup } from "../../src/contracts/scheduling";
 import { driveExecutionGroup } from "../../src/engine/scheduler";
 
-function fixture(chunks = [1, 1]) {
+function fixture(chunks = [1, 1], yieldAfterPreparation = false) {
   const events: string[] = [];
   const state = { active: 0, queued: [...chunks], remaining: 0, held: false, closed: false, time: 0 };
   const group: ExecutionGroup = {
@@ -27,8 +27,82 @@ function fixture(chunks = [1, 1]) {
     async waitForWork() { events.push("wait"); state.closed = true; },
   };
   const clock = { now: () => state.time, async yield() { events.push("yield"); state.time += 25; } };
-  return { events, state, group, clock, run: () => driveExecutionGroup(group, clock) };
+  return { events, state, group, clock, run: () => driveExecutionGroup(group, clock, yieldAfterPreparation) };
 }
+
+test("an enabled lone admission yields before decode and retains its execution lease", async () => {
+  const f = fixture([1], true); await f.run();
+  expect(f.events.slice(0, 6)).toEqual(["reserve", "acquire", "admit", "prepare:1", "yield", "advance:1"]);
+  expect(f.events.filter((event) => event === "acquire")).toHaveLength(1);
+  expect(f.events.filter((event) => event === "release-execution")).toHaveLength(1);
+});
+
+test("the early preparation yield preserves queued short-admission grouping", async () => {
+  const f = fixture([1, 1], true); await f.run();
+  expect(f.events.slice(0, 7)).toEqual(["reserve", "acquire", "admit", "prepare:1", "admit", "prepare:1", "advance:2"]);
+});
+
+test("a joiner with active work does not trigger the early preparation yield", async () => {
+  const f = fixture([1], true); f.state.active = 1; await f.run();
+  expect(f.events.slice(0, 5)).toEqual(["reserve", "acquire", "admit", "prepare:1", "advance:2"]);
+});
+
+test("unfinished preparation still interleaves active work", async () => {
+  const f = fixture([1, 3], true); await f.run();
+  const first = f.events.indexOf("prepare:3");
+  expect(f.events.slice(first, first + 4)).toEqual(["prepare:3", "advance:1", "yield", "prepare:2"]);
+});
+
+test("shutdown at the early yield releases both reservations without decoding", async () => {
+  const f = fixture([1], true);
+  f.clock.yield = async () => { f.events.push("yield"); f.state.closed = true; };
+  await f.run();
+  expect(f.events).toEqual(["reserve", "acquire", "admit", "prepare:1", "yield", "close", "release-execution", "release-memory"]);
+});
+
+test("a cancelled arrival at the early yield is pruned before admission", async () => {
+  const f = fixture([1], true); let first = true;
+  f.clock.yield = async () => {
+    f.events.push("yield"); f.state.time += 25;
+    if (first) { first = false; f.state.queued.push(1); }
+  };
+  f.group.pruneCancelled = () => {
+    if (!first && f.state.queued.length) { f.state.queued = []; f.events.push("pruned"); }
+  };
+  await f.run();
+  expect(f.events.slice(3, 7)).toEqual(["prepare:1", "yield", "pruned", "advance:1"]);
+  expect(f.events.filter((event) => event === "admit")).toHaveLength(1);
+});
+
+test("an admission hold acquired at the early yield drains active work before a joiner", async () => {
+  const f = fixture([1], true); let first = true;
+  f.clock.yield = async () => {
+    f.events.push("yield"); f.state.time += 25;
+    if (first) { first = false; f.state.held = true; f.state.queued.push(1); }
+  };
+  f.group.waitForWork = async () => {
+    f.events.push("wait");
+    if (f.state.held) f.state.held = false;
+    else f.state.closed = true;
+  };
+  await f.run();
+  const prepare = f.events.indexOf("prepare:1");
+  expect(f.events.slice(prepare, prepare + 3)).toEqual(["prepare:1", "yield", "advance:1"]);
+  const nextAdmission = f.events.lastIndexOf("admit");
+  expect(f.events.indexOf("release-execution")).toBeLessThan(nextAdmission);
+  expect(f.events.indexOf("wait")).toBeLessThan(nextAdmission);
+  expect(f.events.filter((event) => event === "acquire")).toHaveLength(2);
+});
+
+test("a failed early yield closes the group and releases reservations once", async () => {
+  const f = fixture([1], true);
+  f.clock.yield = async () => { throw new Error("yield failed"); };
+  const close = f.group.failAll;
+  f.group.failAll = (error) => { expect(error).toHaveProperty("message", "yield failed"); close(error); };
+  await f.run();
+  expect(f.events.slice(-3)).toEqual(["close", "release-execution", "release-memory"]);
+  expect(f.events).not.toContain("advance:1");
+});
 
 test("completed short admissions group before the next execution step", async () => {
   const f = fixture(); await f.run();

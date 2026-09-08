@@ -54,7 +54,7 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 Active engineering design docs — one per topic; status lives in front matter + PLAN.md.
 
 - [batching.md](../docs/design/batching.md) — Batching — continuous scheduling for `--batch N`
-- [decode-speed-program.md](../docs/design/decode-speed-program.md) — Decode-speed program — the ranked path to faster tokens
+- [decode-speed-program.md](../docs/design/decode-speed-program.md) — Inference performance program
 - [dreaming-nightly-pipeline.md](../docs/design/dreaming-nightly-pipeline.md) — The Dreaming — memory write path + synthesis (canonical design)
 - [generic-model-support.md](../docs/design/generic-model-support.md) — Model support — run anything mlx-lm runs, and the ports we target
 - [kv-cache.md](../docs/design/kv-cache.md) — KV cache — residency and layout

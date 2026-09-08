@@ -4,6 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   FillSession,
+  fillAppendChunkSize,
   fillEchoConfig,
   fillMaxSpan,
   resolveFillMode,
@@ -55,6 +56,20 @@ describe("MLX_BUN_FILL mode", () => {
         k: 4, maxSpan: 8, maxCandidates: 3, indexMax: 2048,
       });
     } finally { restore(); }
+  });
+
+  test("append chunks are captured independently of the injected span cap", () => {
+    const restore = configureRuntime({ MLX_BUN_FILL_APPEND_CHUNK_SIZE: "4" });
+    let s: FillSession;
+    try {
+      expect(fillAppendChunkSize()).toBe(4);
+      s = new FillSession(plan([row([7], [11, 12, 13, 14, 15])]), []);
+      expect(new FillSession(plan([]), [], { appendChunkSize: 0 }).appendChunkSize).toBe(0);
+    } finally { restore(); }
+    expect(s!.appendChunkSize).toBe(4);
+    expect(s!.push(7)!.ids).toEqual([11, 12, 13, 14, 15]);
+    for (const appendChunkSize of [-1, 0.5, NaN, Infinity])
+      expect(() => new FillSession(plan([]), [], { appendChunkSize })).toThrow("nonnegative safe integer");
   });
 });
 

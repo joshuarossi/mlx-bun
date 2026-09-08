@@ -30,6 +30,13 @@ export interface MlxDecodeStep {
   close(): void | Promise<void>;
 }
 
+/** Model-owned execution for committed tokens. Recheck the chunk limit after
+ * each forward: native arithmetic can change at a cache-length boundary. */
+export interface MlxTokenAppend {
+  maxChunkSize(state: readonly Cache[]): number;
+  forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
+}
+
 /** One replaceable binding owns all graph-specific operations used by the AR
  * loop. The current method requires MLX tensors and the legacy Cache[] ABI.
  * Weights are borrowed for the binding's lifetime; generated caches are owned
@@ -48,6 +55,7 @@ export interface MlxAutoregressiveBinding {
   /** Called once after prefill. A compiled/fused decoder belongs to THIS graph,
    * never to a model inferred from a name or inherited by a replacement. */
   createDecode?(policy: { hasAdapters: boolean; pagedKv: boolean }): MlxDecodeStep | null;
+  createAppend?(policy: { hasAdapters: boolean; pagedKv: boolean }): MlxTokenAppend | null;
 }
 
 /** Keep concrete model and compiled-decode decisions at the legacy boundary. */
@@ -64,6 +72,7 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
     adapters: model.loraState,
     makeCache: model.makeCache.bind(model),
     forwardEmbeddings: model.forwardEmbeddings?.bind(model),
+    createAppend: "createAppend" in model ? model.createAppend.bind(model) : undefined,
     createDecode(policy) {
       // Preserve the existing Gemma path and exclusions. MoE shapeless replay
       // retraces growing windows; adapters would bake residuals into the tape.

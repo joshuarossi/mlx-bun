@@ -21,15 +21,16 @@
 // (held over from the verify tap). Computationally identical to mlx-vlm's
 // commit-time "seed" append, just performed at the top of the next round.
 //
-// Weights are plain bf16 (DenseLinear); the published drafter snapshots are
-// already sanitized (norms in runtime layout — no +1.0 shift here).
+// Companion projections may be dense or quantized according to their metadata.
+// Published drafter norms are already sanitized to runtime layout; no +1.0 shift.
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
+import { materializeCopy } from "../mlx/materialize";
 import { toLogprobs } from "../sampler";
 import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
-import { disposing, KVCache, RMSNorm, type Mask } from "../model/gemma4-base";
+import { disposing, KVCache, QuantizedLinear, RMSNorm, type Mask } from "../model/gemma4-base";
 import { DenseLinear } from "../model/universal/modules";
 import type { DraftProvider, DraftSource, QwenMtpTarget } from "./source";
 
@@ -37,14 +38,26 @@ type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
 const DRAFT_PREFILL_CHUNK = 2048;
 
-/** Dense-weight clone of Qwen3Attention.forward (src/model/qwen3_5.ts —
- *  ops copied verbatim; only the projection flavor differs: the drafter is
- *  bf16, the target's class hardwires QuantizedLinear). */
+type MtpLinear = DenseLinear | QuantizedLinear;
+
+/** Projection tensors belong to Weights; dense transpose views belong to
+ *  the provider's resource stack. Quantized heads keep no dense copy. */
+function loadMtpLinear(
+  weights: Weights, path: string, config: ModelConfig, resources: DisposableStack,
+): MtpLinear {
+  if (weights.has(`${path}.scales`)) return QuantizedLinear.load(weights, path, config);
+  const layer = new DenseLinear(weights.tensor(`${path}.weight`), null);
+  resources.use(layer.wT);
+  return layer;
+}
+
+/** Qwen3Attention.forward with the companion's dense or quantized projections.
+ *  Attention operations follow src/model/qwen3_5.ts verbatim. */
 class MtpAttention {
-  readonly qProj: DenseLinear;
-  readonly kProj: DenseLinear;
-  readonly vProj: DenseLinear;
-  readonly oProj: DenseLinear;
+  readonly qProj: MtpLinear;
+  readonly kProj: MtpLinear;
+  readonly vProj: MtpLinear;
+  readonly oProj: MtpLinear;
   readonly qNorm: RMSNorm;
   readonly kNorm: RMSNorm;
   readonly nHeads: number;
@@ -54,7 +67,7 @@ class MtpAttention {
   readonly ropeDims: number;
   readonly ropeBase: number;
 
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+  constructor(weights: Weights, config: ModelConfig, prefix: string, resources: DisposableStack) {
     const t = config.text;
     this.nHeads = t.numAttentionHeads;
     this.nKvHeads = t.numKeyValueHeads;
@@ -62,12 +75,10 @@ class MtpAttention {
     this.scale = Math.pow(this.headDim, -0.5);
     this.ropeDims = Math.trunc(this.headDim * t.partialRotaryFactor);
     this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
-    const dense = (path: string): DenseLinear =>
-      new DenseLinear(weights.tensor(`${path}.weight`), null);
-    this.qProj = dense(`${prefix}.q_proj`);
-    this.kProj = dense(`${prefix}.k_proj`);
-    this.vProj = dense(`${prefix}.v_proj`);
-    this.oProj = dense(`${prefix}.o_proj`);
+    this.qProj = loadMtpLinear(weights, `${prefix}.q_proj`, config, resources);
+    this.kProj = loadMtpLinear(weights, `${prefix}.k_proj`, config, resources);
+    this.vProj = loadMtpLinear(weights, `${prefix}.v_proj`, config, resources);
+    this.oProj = loadMtpLinear(weights, `${prefix}.o_proj`, config, resources);
     this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
     this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
   }
@@ -120,28 +131,26 @@ class MtpAttention {
 
 /** The one MTP decoder block: fc-merge → attention → swiglu MLP → norm. */
 class MtpModule {
-  readonly fc: DenseLinear;
+  readonly fc: MtpLinear;
   readonly preFcNormEmbedding: RMSNorm;
   readonly preFcNormHidden: RMSNorm;
   readonly attn: MtpAttention;
-  readonly mlpGate: DenseLinear;
-  readonly mlpUp: DenseLinear;
-  readonly mlpDown: DenseLinear;
+  readonly mlpGate: MtpLinear;
+  readonly mlpUp: MtpLinear;
+  readonly mlpDown: MtpLinear;
   readonly inputNorm: RMSNorm;
   readonly postAttnNorm: RMSNorm;
   readonly finalNorm: RMSNorm;
 
-  constructor(weights: Weights, config: ModelConfig) {
+  constructor(weights: Weights, config: ModelConfig, resources: DisposableStack) {
     const eps = config.text.rmsNormEps;
-    const dense = (path: string): DenseLinear =>
-      new DenseLinear(weights.tensor(`${path}.weight`), null);
-    this.fc = dense("fc");
+    this.fc = loadMtpLinear(weights, "fc", config, resources);
     this.preFcNormEmbedding = new RMSNorm(weights.tensor("pre_fc_norm_embedding.weight"), eps);
     this.preFcNormHidden = new RMSNorm(weights.tensor("pre_fc_norm_hidden.weight"), eps);
-    this.attn = new MtpAttention(weights, config, "layers.0.self_attn");
-    this.mlpGate = dense("layers.0.mlp.gate_proj");
-    this.mlpUp = dense("layers.0.mlp.up_proj");
-    this.mlpDown = dense("layers.0.mlp.down_proj");
+    this.attn = new MtpAttention(weights, config, "layers.0.self_attn", resources);
+    this.mlpGate = loadMtpLinear(weights, "layers.0.mlp.gate_proj", config, resources);
+    this.mlpUp = loadMtpLinear(weights, "layers.0.mlp.up_proj", config, resources);
+    this.mlpDown = loadMtpLinear(weights, "layers.0.mlp.down_proj", config, resources);
     this.inputNorm = new RMSNorm(weights.tensor("layers.0.input_layernorm.weight"), eps);
     this.postAttnNorm = new RMSNorm(weights.tensor("layers.0.post_attention_layernorm.weight"), eps);
     this.finalNorm = new RMSNorm(weights.tensor("norm.weight"), eps);
@@ -161,7 +170,7 @@ class MtpModule {
     const x = this.fc.forward(joined);
     joined.dispose();
 
-    // Decoder layer (Qwen3Layer.forward shape, dense weights).
+    // Decoder layer (Qwen3Layer.forward shape).
     const L = x.shape[1]!;
     const mask = cache.makeMask(L, null);
     const xn = this.inputNorm.forward(x);
@@ -194,13 +203,14 @@ export class QwenMtpProvider implements DraftProvider {
   readonly weightsBytes: number;
   readonly #module: MtpModule;
   readonly #config: ModelConfig;
+  readonly #resources: DisposableStack;
 
-  private constructor(id: string, config: ModelConfig, weights: Weights, module: MtpModule) {
+  private constructor(id: string, config: ModelConfig, weightsBytes: number, module: MtpModule, resources: DisposableStack) {
     this.id = id;
     this.#config = config;
     this.#module = module;
-    this.weightsBytes = [...weights.shards.files.values()]
-      .reduce((a, f) => a + f.mmap.size, 0);
+    this.weightsBytes = weightsBytes;
+    this.#resources = resources;
   }
 
   static async load(dir: string): Promise<QwenMtpProvider> {
@@ -208,13 +218,20 @@ export class QwenMtpProvider implements DraftProvider {
     if (config.modelType !== "qwen3_5_mtp")
       throw new Error(`${dir}: not a qwen3_5_mtp drafter (model_type ${config.modelType})`);
     const weights = await Weights.open(dir);
+    using resources = new DisposableStack();
+    resources.defer(() => weights.dispose());
+    const weightsBytes = [...weights.shards.files.values()]
+      .reduce((a, f) => a + f.mmap.size, 0);
+    const module = new MtpModule(weights, config, resources);
     return new QwenMtpProvider(
       dir.split("/").filter(Boolean).at(-1) ?? "qwen-mtp",
-      config, weights, new MtpModule(weights, config),
+      config, weightsBytes, module, resources.move(),
     );
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
+    if (this.#resources.disposed)
+      throw new Error("qwen MTP provider is disposed");
     const target = opts.target.qwenMtp;
     if (!target)
       throw new Error("qwen MTP drafting requires a qwen3_5-family target");
@@ -228,8 +245,9 @@ export class QwenMtpProvider implements DraftProvider {
   }
 
   dispose(): void {
-    // Weights are mmap-backed and pinned for the process (house rule: no JS
-    // dtors into mlx); the provider owns no other native state.
+    // Release cached transpose views before their native weight maps. MLX
+    // retains buffers needed by outstanding GPU commands until completion.
+    this.#resources.dispose();
   }
 }
 
@@ -274,7 +292,9 @@ export class QwenMtpSource implements DraftSource {
       const H = ctxML.shape[2]!;
       if (ctxML.shape[1]! !== L)
         throw new Error(`qwen MTP tap covered ${ctxML.shape[1]} of ${L} prompt positions`);
-      this.#pendingTrueHidden = ctxML.slice([0, L - 1, 0], [1, L, H]);
+      // Retain one compact row instead of a view into the complete prompt.
+      using tail = ctxML.slice([0, L - 1, 0], [1, L, H]);
+      this.#pendingTrueHidden = materializeCopy(tail);
       for (let pos = 0; pos + 1 < L; pos += DRAFT_PREFILL_CHUNK) {
         const n = Math.min(DRAFT_PREFILL_CHUNK, L - 1 - pos);
         const shifted = promptIds.slice(pos + 1, pos + 1 + n);
@@ -286,9 +306,14 @@ export class QwenMtpSource implements DraftSource {
         embeds.dispose();
         hiddens.dispose();
         out.dispose(); // prefill outputs are not seeds; only KV matters here
+        // Bound the lazy KV graph at each chunk. Evaluating the unused output
+        // would also execute attention and the MLP, which prefill does not need.
+        ops.evalAll(this.#cache.state());
       }
       if (this.#cache.offset !== L - 1)
         throw new Error(`qwen MTP prefill offset ${this.#cache.offset}, expected ${L - 1}`);
+      // Materialize the retained row even when a one-token prompt has no KV.
+      ops.evalAll([this.#pendingTrueHidden, ...this.#cache.state()]);
     } finally {
       ctxML?.dispose(); // ownership per the seam contract
     }
@@ -315,8 +340,8 @@ export class QwenMtpSource implements DraftSource {
       this.#pendingTrueHidden.dispose();
       this.#pendingTrueHidden = null;
       this.#roundAppended++;
-      drafts.push(this.#sample(out, stepBase));
       chained = out;
+      drafts.push(this.#sample(out, stepBase));
       while (drafts.length < n) {
         const out = this.#stepOne(drafts.at(-1)!, chained!);
         chained!.dispose();
@@ -395,33 +420,29 @@ export class QwenMtpSource implements DraftSource {
 
   /** One module forward for (token, hidden) — appends one KV row. */
   #stepOne(token: number, hidden: MlxArray): MlxArray {
-    const ids = ops.fromInt32([token], [1, 1]);
-    const embed = this.#target.embed(ids);
+    using ids = ops.fromInt32([token], [1, 1]);
+    using embed = this.#target.embed(ids);
     ids.dispose();
-    const out = this.#module.forward(embed, hidden, this.#cache);
-    embed.dispose();
-    return out;
+    return this.#module.forward(embed, hidden, this.#cache);
   }
 
   /** Sample a draft token from the module output via the TARGET's lm head
    *  and the request sampler (per-step RNG stream discipline). */
   #sample(moduleOut: MlxArray, step: number): number {
-    const logits = this.#target.logitsFromHidden(moduleOut);
+    using logits = this.#target.logitsFromHidden(moduleOut);
     // Sampler contract is [1, V] (the main decode loop's shape). moduleOut
     // is [1, 1, H] → logits [1, 1, V]; without this reshape any sampler
     // that slices 2-D (top-k) throws "[slice] Invalid number of indices…
     // dimension 3" — the serve-lane MTP 500 (chat defaults carry the
     // model's top_k=20; the greedy bench harness never hit it).
     const V = logits.shape[logits.shape.length - 1]!;
-    const flat = ops.reshape(logits, [1, V]);
+    using flat = ops.reshape(logits, [1, V]);
     logits.dispose();
-    const logprobs = toLogprobs(flat);
+    using logprobs = toLogprobs(flat);
     flat.dispose();
-    const tok = this.#sampler(logprobs, step);
+    using tok = this.#sampler(logprobs, step);
     logprobs.dispose();
-    const id = ops.itemUint32(tok);
-    tok.dispose();
-    return id;
+    return ops.itemUint32(tok);
   }
 
   #checkOpen(): void {

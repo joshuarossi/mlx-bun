@@ -5,9 +5,35 @@
 // bench-serve.ts is import-safe (main() gated on import.meta.main).
 
 import { describe, expect, test } from "bun:test";
-import { probeVerdict, scaledBudgetMs, type ProbeOut } from "../../scripts/bench-serve";
+import { benchmarkSourceSnapshot, probeVerdict, scaledBudgetMs, type ProbeOut } from "../../scripts/bench-serve";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const p = (text: string, promptTokens: number): ProbeOut => ({ text, promptTokens });
+
+test("source identity includes unstaged kernels, edits and deletions while ignoring reports", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "bench-source-"));
+  try {
+    expect(Bun.spawnSync(["git", "init", "-q"], { cwd }).exitCode).toBe(0);
+    mkdirSync(join(cwd, "src"));
+    mkdirSync(join(cwd, "reports"));
+    writeFileSync(join(cwd, "src/base.ts"), "base");
+    expect(Bun.spawnSync(["git", "add", "src"], { cwd }).exitCode).toBe(0);
+    const base = benchmarkSourceSnapshot(cwd);
+    writeFileSync(join(cwd, "src/new-kernel.ts"), "v1");
+    const added = benchmarkSourceSnapshot(cwd);
+    expect(added.sha256).not.toBe(base.sha256);
+    expect(added.files.map((f) => f.path)).toEqual(["src/base.ts", "src/new-kernel.ts"]);
+    writeFileSync(join(cwd, "src/new-kernel.ts"), "v2");
+    expect(benchmarkSourceSnapshot(cwd).sha256).not.toBe(added.sha256);
+    rmSync(join(cwd, "src/new-kernel.ts"));
+    writeFileSync(join(cwd, "reports/result.json"), "{}");
+    expect(benchmarkSourceSnapshot(cwd).sha256).toBe(base.sha256);
+    rmSync(join(cwd, "src/base.ts"));
+    expect(benchmarkSourceSnapshot(cwd).files).toEqual([]);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
 
 describe("probeVerdict", () => {
   test("prompt_tokens inequality is a HARD stop — drift verdict, never a char-diff", () => {
@@ -34,7 +60,7 @@ describe("probeVerdict", () => {
     const v = probeVerdict("chat", "mixed-KV", p("abcdef", 30), p("abcXef", 30));
     expect(v).toContain("parity ✗");
     expect(v).toContain("diverged at char 3");
-    expect(v).toContain("same prompt bits");
+    expect(v).toContain("equal prompt token counts");
   });
 
   test("missing probe on either side = not attempted, names the side", () => {
@@ -43,9 +69,9 @@ describe("probeVerdict", () => {
     expect(probeVerdict("chat", "L", null, null)).toContain("both arms");
   });
 
-  test("both-zero prompt_tokens (no usage) passes the gate but is flagged UNVERIFIED", () => {
+  test("missing token usage cannot produce a parity pass", () => {
     const v = probeVerdict("chat", "L", p("same", 0), p("same", 0));
-    expect(v).toContain("parity ✓");
+    expect(v).toContain("parity ?");
     expect(v).toContain("UNVERIFIED");
   });
 });

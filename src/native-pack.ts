@@ -17,22 +17,23 @@ import { dirname, join } from "node:path";
 import { downloadOne } from "./download";
 import { runtimeValue } from "./runtime-config";
 
-export const NATIVE_PACK_VERSION = "0.3.0";
+export const NATIVE_PACK_VERSION = "0.4.0";
+export const MLX_CORE_VERSION = "0.32.2";
 export const NATIVE_PACK_FILES = [
   "libmlxc.dylib", "libmlx.dylib", "libjaccl.dylib", "mlx.metallib",
   "libmlx_bun_expert_io.dylib", "mlx-bun-frame-extract",
 ] as const;
 
 // RELEASE-TIME BAKE: scripts/build-native-pack.sh prints the sha256/size for
-// the freshly built tarball — publish `native-v0.3.0` with both assets and
+// the freshly built tarball — publish `native-v0.4.0` with both assets and
 // paste the values here BEFORE tagging the package release (the download
 // 404s until the GitHub release exists; dev trees resolve via homebrew/env
 // and never hit this path).
 const SHA256: Record<string, string> = {
-  arm64: "b485fed858971ea6f072f349a0234c0e2d5030d3ef2ddfa942c8975eca2d3b2e",
+  arm64: "f2b0857658aa0826aee14b94a6b83d4c86c08f2c07d716991de6afd038f5ca5d",
 };
 const SIZE: Record<string, number> = {
-  arm64: 52299265,
+  arm64: 41931583,
 };
 
 export function nativePackName(arch = process.arch): string {

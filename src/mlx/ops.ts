@@ -213,7 +213,7 @@ export function sdpa(
     outArray("fast_sdpa", (o) =>
       C.mlx_fast_scaled_dot_product_attention(
         o, q.handle, k.handle, v.handle, scale, ptr(cstr(maskMode)),
-        maskArr?.handle ?? 0n, 0n, s,
+        maskArr?.handle ?? 0n, 0n, false, s,
       ),
     ),
   );
@@ -314,7 +314,8 @@ export function takeAxis(a: MlxArray, indices: MlxArray, axis: number, s: S = gp
 }
 
 export function reshape(a: MlxArray, shape: number[], s: S = gpuStream): MlxArray {
-  const buf = new Int32Array(shape);
+  // bun:ffi cannot take a pointer to an empty view; ndim=0 ignores the dummy.
+  const buf = new Int32Array(shape.length ? shape : [0]);
   return new MlxArray(
     outArray("reshape", (o) => C.mlx_reshape(o, a.handle, ptr(buf), BigInt(shape.length), s)),
   );
@@ -454,14 +455,14 @@ export function putAlongAxis(
 
 export function cumsum(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
   return new MlxArray(
-    outArray("cumsum", (o) => C.mlx_cumsum(o, a.handle, axis, false, true, s)),
+    outArray("cumsum", (o) => C.mlx_cumsum_axis(o, a.handle, axis, false, true, 0n, s)),
   );
 }
 
 /** Cumulative maximum along `axis` (inclusive, forward) — mlx.core.cummax. */
 export function cummax(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
   return new MlxArray(
-    outArray("cummax", (o) => C.mlx_cummax(o, a.handle, axis, false, true, s)),
+    outArray("cummax", (o) => C.mlx_cummax_axis(o, a.handle, axis, false, true, s)),
   );
 }
 
@@ -476,10 +477,13 @@ export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream
 // (lab/repro/bun-ffi-f64/) traced the root cause to a Bun bug: after DFG
 // tier-up, typed-array reads following a bun:ffi call return stale values
 // (the JIT eliminates the load across the native call). Not f64 marshaling
-// — args reach C intact. See PLAN.md Phase 4 findings. Large constant
-// ranges (topP's vocab arange) are cached for the process lifetime.
-const arangeCache = new Map<string, MlxArray>();
+// — args reach C intact. See PLAN.md Phase 4 findings. Reuse large ranges
+// across attention layers and sampling, but bound their retained storage:
+// causal masks request a new range on every round once context exceeds 64K.
+const arangeCache = new Map<string, { array: MlxArray; bytes: number }>();
 const ARANGE_CACHE_MIN = 65536;
+const ARANGE_CACHE_BYTES = 8 * 1024 * 1024;
+let arangeCacheBytes = 0;
 
 export function arange(start: number, stop: number, step: number, dtype: Dtype, s: S = gpuStream): MlxArray {
   if (!Number.isInteger(start) || !Number.isInteger(step) || step === 0)
@@ -487,7 +491,11 @@ export function arange(start: number, stop: number, step: number, dtype: Dtype, 
   const n = Math.max(0, Math.ceil((stop - start) / step));
   const key = `${start}|${step}|${n}|${dtype}`;
   const cached = arangeCache.get(key);
-  if (cached) return cached.slice([0], [n], s);
+  if (cached) {
+    arangeCache.delete(key);
+    arangeCache.set(key, cached);
+    return cached.array.slice([0], [n], s);
+  }
 
   let arr: MlxArray;
   if (dtype === Dtype.int32) {
@@ -503,8 +511,20 @@ export function arange(start: number, stop: number, step: number, dtype: Dtype, 
     arr = new MlxArray(outArray("arange", (o) => C.mlx_arange(o, start, stop, step, dtype, s)));
   }
   if (n >= ARANGE_CACHE_MIN) {
-    arangeCache.set(key, arr);
-    return arr.slice([0], [n], s);
+    const bytes = arr.nbytes;
+    if (bytes <= ARANGE_CACHE_BYTES) {
+      while (arangeCacheBytes + bytes > ARANGE_CACHE_BYTES) {
+        const [oldKey, old] = arangeCache.entries().next().value!;
+        arangeCache.delete(oldKey);
+        arangeCacheBytes -= old.bytes;
+        // Returned slices retain their own native reference, including lazy
+        // views that have not been evaluated when this owner is evicted.
+        old.array.dispose();
+      }
+      arangeCache.set(key, { array: arr, bytes });
+      arangeCacheBytes += bytes;
+      return arr.slice([0], [n], s);
+    }
   }
   return arr;
 }

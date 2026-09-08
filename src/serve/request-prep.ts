@@ -324,7 +324,10 @@ export function createRequestPrep(input: {
         eos: ctx.model.config.eosTokenIds,
       },
       promptIds,
-      { maxSpan: fillMaxSpan(), decode: (ids) => ctx.tokenizer.decode([...ids]) },
+      {
+        maxSpan: fillMaxSpan(), decode: (ids) => ctx.tokenizer.decode([...ids]),
+        strictContext: plan.createContext?.(promptIds),
+      },
     );
   };
 

@@ -187,7 +187,7 @@ export interface ServerOptions {
    *  long-context TTFT win (docs/design/kv-cache.md). Off unless
    *  a directory is given. Serial lane only (where the prompt cache lives). */
   ssdCacheDir?: string;
-  /** Byte cap for the SSD tier (default 32 GiB). */
+  /** Optional byte cap for the SSD tier (default unbounded). */
   ssdCacheMaxBytes?: number;
   /** Idle-demotion threshold in seconds (`--ssd-demote-idle`): prompt-cache
    *  entries unused this long spill to the SSD tier and free their GPU
@@ -465,7 +465,8 @@ export function createServer(
   // eviction and restarts. Compatibility key = configFingerprint (graph
   // shape) + the EFFECTIVE kv scheme (flags pick bf16 vs config vs uniform
   // on the same model — restored caches must match what serving produces) +
-  // tokenizer hash (ids must keep meaning the same text).
+  // tokenizer hash (ids must keep meaning the same text). The model binding
+  // also identifies the runtime numerics that produced the persisted state.
   // RAM prompt-cache cap: 8 GB default (Josh's call, 2026-07-06). The old
   // flat 2e9 was an anti-OOM reflex sized for a 1B model in 24 GB — a
   // single full-context 12B entry is ~0.6 GB, so it silently shrank to
@@ -479,21 +480,27 @@ export function createServer(
   if (serverOptions.ssdCacheDir) {
     if (promptCacheCap <= 0)
       throw new Error("--ssd-cache requires the RAM prompt cache (--prompt-cache 0 disables it)");
+    if (typeof serving.stateCompatibility !== "string" || !serving.stateCompatibility.length)
+      throw new Error("--ssd-cache requires the model binding's stateCompatibility identity");
     const schemeKey = resolvedKvScheme.cacheKey;
+    const stateKey = Bun.hash(serving.stateCompatibility).toString(16);
     const tokJson = readFileSync(`${ctx.model.config.modelDir}/tokenizer.json`);
     ssdStore = new SsdCacheStore({
       codecs: stateCodecs,
       dir: serverOptions.ssdCacheDir,
-      maxBytes: serverOptions.ssdCacheMaxBytes ?? 32 * 2 ** 30,
-      configFingerprint: `${configFingerprint(ctx.model.config)}-${schemeKey}`,
+      maxBytes: serverOptions.ssdCacheMaxBytes ?? Number.POSITIVE_INFINITY,
+      configFingerprint: `${configFingerprint(ctx.model.config)}-${schemeKey}-${stateKey}`,
       tokenizerHash: Bun.hash(tokJson).toString(16),
       modelId: ctx.modelId,
       verify: serverOptions.ssdCacheVerify,
     });
     const recovered = ssdStore.scan();
+    const capacity = Number.isFinite(ssdStore.maxBytes)
+      ? `${(ssdStore.maxBytes / 2 ** 30).toFixed(0)} GiB cap`
+      : "unlimited";
     console.log(
       `[ssd-cache] ${serverOptions.ssdCacheDir} — ${recovered} entr${recovered === 1 ? "y" : "ies"} recovered, ` +
-      `${(ssdStore.totalBytes / 2 ** 30).toFixed(2)} GiB of ${(ssdStore.maxBytes / 2 ** 30).toFixed(0)} GiB cap`,
+      `${(ssdStore.totalBytes / 2 ** 30).toFixed(2)} GiB, ${capacity}`,
     );
   }
 
@@ -517,7 +524,8 @@ export function createServer(
           return { tokens: loaded.tokens, caches: loaded.caches, retain: () => {} };
         },
         store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string) => {
-          ssdStore!.store(tokens, caches, ns);
+          if (ssdStore!.hasDurablePrefix(tokens, ns)) return true;
+          return ssdStore!.store(tokens, caches, ns);
         },
       }
     : null;
@@ -528,7 +536,7 @@ export function createServer(
     // cache hands us OWNED zero-copy clones + copied tokens (made under
     // the generation lock — microseconds; entries are immutable so the
     // clones stay consistent), and the flush goes through the BOUNDED
-    // SpillQueue -> storeAsync (idle-gated per tensor, see below) ->
+    // SpillQueue -> storeAsync (generation-locked per tensor, see below) ->
     // clone disposal on every settle/drop path (that dispose is what
     // actually frees the demoted GPU memory; the queue's byte cap keeps
     // starved-gate retention bounded — 2026-07-07 review fix). spillQueue
@@ -550,8 +558,41 @@ export function createServer(
   // so its KV prefill is already cached.
   const responseStore = new ResponseStore();
 
+  // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
+  // fit() solves max safe context from weights + KV growth + prefill
+  // transient. The active kv-quant scheme (uniform kvBits / per-layer
+  // kvConfig) is billed at its true bytes/element so a quantized cache
+  // advertises and admits the larger window it actually enables; only
+  // TurboQuant still bills bf16 (conservative — no projector for its
+  // layout yet, and it is solo-only in v1).
+  const admission = ctx.glmMemoryPlan ?? fit(
+    ctx.model.config, ctx.model.weightsBytes, 1,
+    undefined, undefined, 0, serverOptions.memoryBudgetBytes,
+    resolvedKvScheme.fitOptions,
+  );
+  // A zero ceiling is a warning, never a startup refusal: killing the
+  // server here can only parrot the per-request admission message (which
+  // still fires, with this same ceiling) or be a false positive from the
+  // fit model itself — it can never save anything the request gate
+  // doesn't. Serve until physically incapable.
+  if (admission.maxSafeContext < 1)
+    console.warn(
+      `[admission] memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB leaves no ` +
+      `safe context for ${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB) ` +
+      `— serving anyway; generation requests will be refused until the budget is raised`,
+    );
+  const allocatorLimit =
+    admission.allocatorLimitBytes ?? serverOptions.memoryBudgetBytes;
+  if (allocatorLimit) setMemoryLimit(allocatorLimit);
+
+  const memoryBudget = {
+    usableBytes: admission.usableBytes,
+    kvOptions: resolvedKvScheme.fitOptions,
+    promptCache,
+  };
   const runGeneration = serving.createSerial({
     promptCache, checkpoints: ssdStore,
+    memoryBudget,
     checkpointEveryTokens: serverOptions.generationCheckpointTokens,
     identity: { artifact: ctx.profile.artifact, implementation: ctx.profile.profile.execution,
       stateAbi: "legacy-cache-array-v1", codecs: stateCodecs.id },
@@ -587,17 +628,17 @@ export function createServer(
   // pacing interleaved those slices exactly between decode tokens. A ~16k
   // entry's flush overlapping the bench's ctx repeats depressed decode@ctx
   // ~9% on e4b (mlx-lm runs no equivalent background work). Now every step
-  // — including the first — awaits gateway.onIdle() (ssdFlushGate), so the
+  // — including the first — runs through gateway.runExclusive(), so the
   // flush only progresses while NOTHING is generating and pauses when a
   // request arrives mid-flush. Tradeoffs, accepted: durability waits for a
   // quiet moment (single-user serving quiesces constantly; sustained
   // hammering defers the flush AND the spill clones' GPU-memory release —
-  // bounded by the chain), and one in-flight tensor step (~10-15 MB) can
-  // still land ahead of a just-arrived request. MLX_BUN_SSD_WRITEBEHIND=0
+  // bounded by the chain). MLX_BUN_SSD_WRITEBEHIND=0
   // disables write-behind snapshots entirely — the paired-A/B lever + kill
   // switch (restart survival then degrades to spill-on-evict only).
   const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
-  const ssdFlushGate = (): Promise<void> => gateway.onIdle();
+  const ssdFlushStep = <T>(step: () => T): Promise<T> =>
+    gateway.runExclusive(async () => step());
   // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
   // kv-store.ts): pending clones pin their entries' GPU buffers while the
   // idle gate starves under sustained traffic, so QUEUED bytes are capped —
@@ -614,10 +655,12 @@ export function createServer(
   // its idle boundary to avoid competing with generation.
   const gateway = new GenerationGateway(serving.gateway, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
+    memoryBudget,
     checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
     stateCodecs,
     kvScheme: resolvedKvScheme,
     promptCache,
+    beforeSerial: async () => { await flushDurability(); },
   });
   const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
@@ -626,7 +669,7 @@ export function createServer(
     ? new SpillQueue(
         spillQueueCapBytes,
         cacheBytes,
-        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushGate),
+        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushStep),
         (caches) => { for (const c of caches) c.dispose(); },
       )
     : null;
@@ -677,7 +720,7 @@ export function createServer(
   let demoteTimer: ReturnType<typeof setInterval> | null = null;
   if (ssdStore && demoteIdleMs > 0) {
     demoteTimer = setInterval(() => {
-      if (gateway.activeRows > 0 || gateway.pendingRows > 0) return;
+      if (gateway.busy) return;
       void gateway.runExclusive(async () => {
         const n = promptCache.demoteIdle(demoteIdleMs);
         if (n > 0) console.log(`[ssd-cache] demoted ${n} idle entr${n === 1 ? "y" : "ies"} to disk`);
@@ -688,33 +731,6 @@ export function createServer(
 
   const sessionEngine = createSessionCompletionEngine(gateway, disposeUnstartedRequest);
   const completionExecutor = new CompletionExecutor(sessionEngine);
-
-  // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
-  // fit() solves max safe context from weights + KV growth + prefill
-  // transient. The active kv-quant scheme (uniform kvBits / per-layer
-  // kvConfig) is billed at its true bytes/element so a quantized cache
-  // advertises and admits the larger window it actually enables; only
-  // TurboQuant still bills bf16 (conservative — no projector for its
-  // layout yet, and it is solo-only in v1).
-  const admission = ctx.glmMemoryPlan ?? fit(
-    ctx.model.config, ctx.model.weightsBytes, 1,
-    undefined, undefined, 0, serverOptions.memoryBudgetBytes,
-    resolvedKvScheme.fitOptions,
-  );
-  // A zero ceiling is a warning, never a startup refusal: killing the
-  // server here can only parrot the per-request admission message (which
-  // still fires, with this same ceiling) or be a false positive from the
-  // fit model itself — it can never save anything the request gate
-  // doesn't. Serve until physically incapable.
-  if (admission.maxSafeContext < 1)
-    console.warn(
-      `[admission] memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB leaves no ` +
-      `safe context for ${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB) ` +
-      `— serving anyway; generation requests will be refused until the budget is raised`,
-    );
-  const allocatorLimit =
-    admission.allocatorLimitBytes ?? serverOptions.memoryBudgetBytes;
-  if (allocatorLimit) setMemoryLimit(allocatorLimit);
 
   // /library response cache (30 s) — registry + config reads only.
   const startedAt = Date.now();
@@ -995,7 +1011,7 @@ export function createServer(
               dir: serverOptions.ssdCacheDir,
               entries: ssdStore.entries,
               bytes: ssdStore.totalBytes,
-              max_bytes: ssdStore.maxBytes,
+              max_bytes: Number.isFinite(ssdStore.maxBytes) ? ssdStore.maxBytes : null,
               restores: ssdStore.stats.restores,
               spills: ssdStore.stats.spills,
               restore_ms_last: Math.round(ssdStore.stats.restoreMsLast),

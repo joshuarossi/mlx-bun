@@ -21,6 +21,14 @@ Before asserting anything about RAM, OOM, or bandwidth, run
 reference `serve.sh` (below) hard-codes a 28 GB wired limit "of 32 GB", so it
 is written for the M1 Max.
 
+For the current M4 Pro optimization campaign, Josh specifies internal SSD
+storage for active models. The external SSD stores artifacts to copy when
+needed; external-drive loading performance is outside normal acceptance for
+the 12–17 GB models. Stage each needed artifact under `~/models/`, verify
+every file against its archive, and record that path in both benchmark arms.
+Preserve earlier external-drive measurements as a separate cohort. The local
+active-model manifests live under `reports/qwen38-rd/`.
+
 Perf claims get a number on the machine they were measured on, recorded in the
 user-local eval DB (`~/.cache/mlx-bun/evals.sqlite`) and promoted to
 `docs/reference/benchmarks.md` deliberately. `bun scripts/bench-serve.ts all`
@@ -30,12 +38,46 @@ garbage — run-to-run spread is the stability signal, and the harness retries
 unstable cells (`scripts/bench-serve.ts`; `benchmarks.md`, "Running the
 benchmark").
 
+## External storage loading
+
+On the M4 Pro with MLX 0.32.2, two RTN4 first-request warmups from
+`/Volumes/MLX-Models`, an external USB SSD using APFS, hit Metal GPU timeouts
+before any committed-token append. One occurred with fill disabled. The
+system log confirms the first timeout; neither establishes an allocation
+leak or an append-kernel failure. Three attention tests, a fresh four-response
+external HTTP control, and a separate four-response internal-SSD control pass.
+The internal copy contains the same 25 files and 15,849,971,577 bytes, each
+SHA-256 verified. Its responses and final active allocation match the external
+control. Copying and hashing may warm the OS file cache, so this comparison
+alone does not prove that the drive caused the failures.
+
+[MLX issue #3803](https://github.com/ml-explore/mlx/issues/3803) reports the
+same failure with external storage on a different machine and much larger
+models. A [maintainer recommends evaluating weights before GPU inference](https://github.com/ml-explore/mlx/issues/3803#issuecomment-4898914127)
+so disk-loading tasks finish first. Our loader already assigns safetensors
+loads to the CPU stream, but leaves them lazy. A research preload evaluates
+each requested canonical weight once during construction. Two balanced
+external-drive pairs complete all sixteen responses exactly, with identical
+final active allocation. Both eager arms take longer from process start to
+first complete response; moving work before readiness is not a startup-speed
+win. Both ordinary arms also pass, so reliability remains unproven. This
+loading change is not integrated, and further external-drive tuning is
+deferred under the active-storage policy above. Evidence under `reports/qwen38-rd/`:
+`fill-append-http-final-partial-review.json`, `rtn4-storage-control-manifest.json`,
+`fill-append-storage-control-review.json` and `weights-loading-http.json`.
+
 ## The Python oracle
 
 Logit parity with mlx-lm is the correctness oracle; mixed-precision KV and the
-vision sidecar verify against mlx-optiq. The reference venv is
-`/Users/joshrossi/Code/mlx-lm/.venv` — run reference scripts with
-`/Users/joshrossi/Code/mlx-lm/.venv/bin/python`. Pinned versions, verified
+vision sidecar verify against mlx-optiq. The current working tree requires
+MLX and MLX-Metal 0.32.2. On the M4 Pro, the default reference is
+`/Users/joshrossi/Code/mlx-lm/.venv-mlx-0.32.2-macos14`; invoke its
+`bin/python` for reference scripts. MLX-LM remains 0.31.3. The shared resolver
+checks installed MLX/Metal versions and rejects an incompatible explicit
+`MLX_BUN_ORACLE_VENV` instead of silently selecting another environment.
+
+The earlier reference at `/Users/joshrossi/Code/mlx-lm/.venv` remains an
+old-runtime control. Its historical pins were verified
 from the installed `dist-info` directories in
 `.venv/lib/python3.14/site-packages/`: mlx 0.31.2 (with mlx-metal 0.31.2),
 mlx-lm 0.31.3, mlx-optiq 0.2.15, pillow 12.2.0. PLAN.md records that optiq was
@@ -48,6 +90,87 @@ The Qwen MTP compatibility test accepts explicit local artifact paths through
 `MLX_BUN_TEST_QWEN38_MTP=1`. It compares speculative and ordinary greedy
 generation on that same target and prints both paths. This does not substitute
 one quant for another in the pinned logit-oracle tests.
+
+**M4 Pro installation checked 2026-09-04:** the same venv path on
+`Joshs-MBP-2025.local` currently uses `lib/python3.13/site-packages`, with
+mlx/metal 0.31.2, mlx-lm 0.31.3 and mlx-optiq **0.2.7** from installed
+dist-info metadata. The older python3.14/OptiQ 0.2.15 record above is not the
+installed stack on this Mac. Record actual interpreter/package/native-library
+versions for every comparison; preserve this oracle as the 0.31.2 control.
+Qwen artifacts are also present under
+`/Volumes/MLX-Models/models/{Qwen,mjriii}/`; header-only inventories under
+`reports/qwen38-rd/` are machine-local and do not load the GPU.
+
+**Authorized M4 Pro runtime update, staged 2026-09-07:** MLX 0.32.2 with
+MLX-C `c74db5307cc8ce122f48d97ef951b30578674e7f` is built under
+`reports/qwen38-rd/mlx-upgrade-0.32.2/install/lib/`. Explicit
+`MLX_BUN_LIBMLXC=<that-directory>/libmlxc.dylib` selects it per process.
+The original Homebrew MLX 0.31.2 and MLX-C 0.6.0 revision 2 remain installed.
+The staged core uses the official macOS 26 arm64 MLX-Metal wheel, with verified
+archive hashes and relocatable library dependencies. This local artifact does
+not change the published native pack or its minimum supported macOS version.
+The source-build attempt failed because the offline Metal toolchain is absent;
+building the C wrapper against the official native libraries succeeded.
+
+The matching reference is `/Users/joshrossi/Code/mlx-lm/.venv-mlx-0.32.2`,
+selected through `MLX_BUN_ORACLE_VENV`. Its Python remains 3.13.5; MLX and
+MLX-Metal change to 0.32.2 while all other 62 package pins match the old venv,
+including MLX-LM 0.31.3 and OptiQ 0.2.7. Installation and dependency checks pass.
+Keep runtime and reference overrides paired. The macOS 26 build remains an
+explicit comparison build. The working tree now selects the macOS 14 package
+candidate described below. Build manifests, package freezes and gate results
+live under the upgrade report directory.
+
+The package candidate also has an official macOS 14 build of MLX-Metal 0.32.2,
+with MLX-C compiled for 14.0 under `install-macos14/lib/`. Its matching Python
+reference is `/Users/joshrossi/Code/mlx-lm/.venv-mlx-0.32.2-macos14`, with the
+same 64 package versions as the macOS 26 reference and a passing dependency
+check. Both builds pass the twelve-cell RTN4 same-version logit/state oracle
+comparison. The macOS 14 candidate additionally passes the actual 4K prompt
+and 8K extension, with complete logits and live cache state checked against
+its matching reference. After the Trellis arithmetic port, the model-free
+suite passes 1,882 tests with ten skips on the new core and 1,881 tests with
+eleven skips on the old core. The local native-pack
+candidate under `native-pack-candidate/` extracts into `native-pack-extracted/`;
+all five Mach-O files target 14.0, have valid ad-hoc signatures and load their
+non-system dependencies from siblings. These checks ran on macOS 27, not an
+actual macOS 14 host. The production native-pack manifest now targets this
+0.4.0 candidate and the verified local cache is
+`/Users/joshrossi/Library/Caches/mlx-bun/native-v0.4.0-arm64`. The candidate
+has not been published. The consolidated source passes 52 complete Qwen
+forward/state/continuation cases and six Trellis generations, with fixed
+source/runtime/reference hashes and clean worker exits. The consolidated
+model-free suite passes 1,875 tests with ten skips; all typechecks pass.
+Integrated inverse-KV serving response gates also pass. The broader
+same-version reference gate passes all eighteen MiniCPM5, Llama 1B and Gemma
+e4b cases after matching MLX-LM's compiled MiniCPM5 prefill activation.
+Run `MLX_BUN_TEST_RUNTIME_ORACLE=1 bun test tests/parity/runtime-oracle.test.ts`
+to repeat these logit, live-cache and continuation comparisons against the
+matching reference. It skips unavailable artifacts, runs the Bun and Python
+children sequentially and does not rewrite goldens. Combined/pressure
+acceptance remains.
+The frozen old source lives outside Bun's
+test discovery at
+`/Users/joshrossi/.cache/mlx-bun/runtime-controls/mlx-0.31.2-before-0.32.2/`.
+Preserve its `snapshot.json` and source for old-runtime comparisons when
+simplifying production bindings. The build directories are under the upgrade
+report directory, whose `control-location.json` records the verified move.
+The accepted new-core source before binding consolidation is also frozen at
+`/Users/joshrossi/.cache/mlx-bun/runtime-controls/mlx-0.32.2-before-consolidation/`.
+Its 932 files and the six locally installed native files were hash-verified;
+`consolidation-preparation.json` records the copy and local installation.
+
+The small DeltaNet fixture also depends on the oracle/runtime. On the M4 Pro
+with the pins above, both Bun and Python differ from the June fixture at one
+prefill output; their gate values, outputs and complete recurrent states agree
+exactly. The fixture was explicitly replayed on 2026-09-05 with unchanged
+inputs. It now records package/device/source provenance and exact state hashes.
+No numerical tolerance changed. `scripts/oracle/gen-qwen-delta-golden.py
+--replay tests/fixtures/qwen-delta-golden.json --output <review-file>` reproduces
+the comparison under the pinned Python. Without `--output`, the M4 Pro writes
+the reference fixture; other chips write a `goldens/<chip>/` override, which
+the test resolves before the reference. Earlier oracle comparisons and the
+single-value diff are in `reports/qwen38-rd/delta-*.json`.
 
 Readable oracle source, in that `site-packages/`: `mlx_lm/models/gemma3.py`
 and `mlx_lm/server.py` for the port targets; `mlx_lm/models/cache.py` for the
@@ -136,13 +259,21 @@ their natural mlx-c signatures — `ops.conv2d` in `src/mlx/ops.ts` passes all
 eleven args plainly and the packed-u64 workaround is gone. `ISSUE.md` keeps
 the original report as the regression record.
 
-**bun:ffi symbol `.ptr` is a float64 bit-cast.** A `dlopen`'d symbol's `.ptr`
-comes back bit-cast to float64, so passing it back truncates to NULL. Resolve
-function addresses via `dlsym` instead — `src/mlx/array.ts` does this for
-libc `free` (`RTLD_DEFAULT`, `dlsym(free)` guarded by a throw). The
-supporting experiments live in `lab/repro/bun-ffi-f64/` (filed as
-oven-sh/bun#32054; the same directory documents stale typed-array reads
-after FFI calls once the caller is JIT-compiled).
+**bun:ffi symbol `.ptr` is fixed in 1.4.** Direct function addresses match
+`dlsym` on both 1.4.0 and the isolated 1.4.2 runtime. `src/mlx/array.ts` now
+uses the numeric `free.ptr`, with a validity guard and a process-lifetime
+library handle. Native destructor ownership remains unchanged.
+
+**FFI typed-array readback still needs `read.*`.** The standalone
+`lab/repro/bun-ffi-f64/` hot-loop repro still produces stale indexed reads on
+1.4.0 and 1.4.2, despite the upstream issue being closed. Keep the native
+out-param read helpers. The stack-argument repro passes on both versions.
+Raw runtime binaries, hashes and outcomes are recorded in
+`reports/qwen38-rd/bun-runtime-audit/`; the installed runtime and pinned Python
+oracle were not upgraded. Bun's [1.4 release notes](https://bun.com/blog/bun-v1.4)
+describe its new FFI implementation, while [1.4.2](https://bun.com/blog/bun-v1.4.2)
+fixes the intervening AsyncLocalStorage regression. Release claims do not
+replace these local regression checks.
 
 **`Bun.mmap` SIGTRAPs above 4 GB.** JSC ArrayBuffers cap at 2^32 bytes, so
 `Bun.mmap` panics on weight shards larger than that (observed on Bun 1.3.3,
@@ -162,6 +293,16 @@ process, restored KV is copied at load (`src/kv-store.ts` `loadKvCache`,
 since 2026-07-07), and `unpinHostBuffer` runs only on the JS thread.
 
 ## Metal and mlx-c facts
+
+**`mlx_copy` shares storage.** In pinned MLX 0.31.2, `Copy::eval` calls
+`copy_shared_buffer`. Neither `ops.copyOf` nor `contiguous` guarantees a
+small independent allocation for a contiguous view. Explicit disposal drops
+handles but a surviving view can retain its entire source allocation.
+`src/mlx/materialize.ts` uses the stock dynamic-slice kernel, which allocates
+the output's logical size and supports gradients. The Qwen convolution state
+uses it to release large prefill buffers. Byte, pointer, retained-memory,
+compiled execution and gradient gates live in `tests/unit/materialize.test.ts`;
+the direct storage probe is `reports/qwen38-rd/copy-alias-probe.json`.
 
 **Non-page-aligned host pointers read garbage on the GPU.** Metal cannot
 no-copy-wrap a host pointer that is not page-aligned: GPU ops silently read

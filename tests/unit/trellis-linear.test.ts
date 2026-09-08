@@ -5,15 +5,15 @@
 // codec's own reconstruction — bit-exact where the math is identical
 // (decode), within fp32-accumulation tolerance for the matvecs.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
 import * as ops from "../../src/mlx/ops";
 import {
   Trellis, lut1mad, packStates, stateAt, unpackDecodeHost, wordsPerBlock,
 } from "../../src/quantize/trellis";
-import { TrellisLinear, expandTrellis, trellisGeometry, fusedGateUpSwiglu, fusedGateUpEligible } from "../../src/model/trellis-linear";
-import { compiledSwiglu } from "../../src/model/qwen3_5";
+import { TrellisLinear, expandTrellis, trellisGeometry, fusedGateUpSwiglu, fusedGateUpEligible, setTrellisVariant } from "../../src/model/trellis-linear";
+import { compiledSwiglu, Qwen35Model } from "../../src/model/qwen3_5";
 import type { QuantSpec } from "../../src/config";
 
 const L = 12, T = 256;
@@ -73,7 +73,92 @@ describe("packStates / stateAt", () => {
 });
 
 describe("TrellisLinear kernels", () => {
+  test("Qwen packed prefill evaluates cache outputs and checks memory between layers", () => {
+    const cached = MlxArray.fromFloat32(new Float32Array([1, 2]), [2]);
+    const h = MlxArray.fromFloat32(new Float32Array(10), [1, 5, 2]);
+    const packed = Object.create(TrellisLinear.prototype);
+    let checked = 0;
+    const model = {
+      faIdx: 0, mrope: null,
+      prefillMemoryGuard: () => { checked++; },
+      layers: [{ mlp: { gate: packed }, forward: (x: MlxArray) => ops.copyOf(x) }],
+      captureLayer: () => {},
+      finalNorm: { forward: (x: MlxArray) => ops.copyOf(x) },
+    };
+    const cache = [{ makeMask: () => ({ mode: "", arr: null }), state: () => [cached] }];
+    const evaluate = spyOn(ops, "evalAll");
+    let out: MlxArray | undefined;
+    try {
+      out = (Qwen35Model.prototype as any).forwardLayers.call(model, h, cache);
+      expect(checked).toBe(1);
+      expect(evaluate.mock.calls.some(([arrays]) => arrays.includes(cached))).toBe(true);
+      expect([...out!.toFloat32()]).toEqual(Array(10).fill(0));
+    } finally {
+      evaluate.mockRestore();
+      out?.dispose();
+      cached.dispose();
+      h.dispose();
+    }
+  });
+
+  test("packed prefill evaluates each projection; decode remains lazy", () => {
+    const { rec, codes, scales } = encoded(3);
+    try {
+      for (const axis of [0, 1] as const) {
+        const lin = new TrellisLinear(codes, scales, spec(3, axis), "kernel");
+        for (const M of [1, 4, 5]) {
+          const inputSize = axis === 1 ? C : N;
+          const x = MlxArray.fromFloat32(gaussian(M * inputSize, 913), [M, inputSize]);
+          const evaluate = spyOn(MlxArray.prototype, "eval");
+          let y: MlxArray | undefined;
+          try {
+            y = lin.forward(x);
+            expect(evaluate.mock.contexts.filter((a) => a === y).length).toBe(M > 4 ? 1 : 0);
+          } finally {
+            evaluate.mockRestore();
+            y?.dispose();
+            x.dispose();
+          }
+        }
+      }
+    } finally {
+      for (const a of [rec, codes, scales]) a.dispose();
+    }
+  });
+
   for (const k of [2, 3, 4]) {
+    test(`k=${k}: shared-M and balanced-scatter variants preserve variant 6 outputs and crossover`, () => {
+      const a = encoded(k, 73), b = encoded(k, 91);
+      const gate = new TrellisLinear(a.codes, a.scales, spec(k, 1), "kernel");
+      const up = new TrellisLinear(b.codes, b.scales, spec(k, 1), "kernel");
+      const down = new TrellisLinear(a.codes, a.scales, spec(k, 0), "kernel");
+      try {
+        for (const M of [1, 2, 3, 4, 5]) for (const dtype of [Dtype.bfloat16, Dtype.float32]) {
+          const raw = MlxArray.fromFloat32(gaussian(M * C, 177 + M), [1, M, C]);
+          const x = raw.astype(dtype); raw.dispose();
+          const run = () => {
+            const g = gate.forward(x);
+            let mid: MlxArray;
+            if (M <= 4) mid = fusedGateUpSwiglu(x, gate, up);
+            else {
+              const u = up.forward(x);
+              try { mid = compiledSwiglu(g, u); } finally { u.dispose(); }
+            }
+            const out = down.forward(mid);
+            try { return [g, mid, out].map((y) => [...y.rawBytes()]); }
+            finally { g.dispose(); mid.dispose(); out.dispose(); }
+          };
+          try {
+            setTrellisVariant(6); const reference = run();
+            for (const variant of [7, 8, 9, 10, 11, 12, 13]) { setTrellisVariant(variant); expect(run()).toEqual(reference); }
+          } finally { x.dispose(); }
+        }
+      } finally {
+        setTrellisVariant(null);
+        for (const arr of [a.rec, a.codes, a.scales, b.rec, b.codes, b.scales]) arr.dispose();
+      }
+    });
+
     test(`k=${k}: host unpack and expand kernel reproduce the codec (bit-exact)`, () => {
       const { rec, codes, scales } = encoded(k);
       const recF = rec.toFloat32();
@@ -134,7 +219,7 @@ describe("TrellisLinear kernels", () => {
       for (const a of [rec, codes, scales, w, x, y, wt, x2, ref, yc]) a.dispose();
     });
 
-    test(`k=${k}: fused gate/up/swiglu kernel matches the two-matvec + compiled swiglu graph`, () => {
+    test(`k=${k}: fused gate/up/swiglu satisfies the legacy small-input tolerance screen`, () => {
       const a = encoded(k), b = encoded(k, 17);
       const gate = new TrellisLinear(a.codes, a.scales, spec(k, 1), "kernel");
       const up = new TrellisLinear(b.codes, b.scales, spec(k, 1), "kernel");

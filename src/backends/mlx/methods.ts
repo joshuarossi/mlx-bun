@@ -56,7 +56,7 @@ export function createAutoregressiveMethod(
       if (await output.commit([item.token], item.logprobs ? [item.logprobs] : undefined) === false) break;
     const metrics = generation.stats;
     if (!metrics) throw new Error("AR method did not settle its metrics");
-    return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop", metrics };
+    return { finishReason: metrics.finishReason ?? (metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop"), metrics };
   }, binding.runtime ?? runtimeConfig());
 }
 
@@ -69,7 +69,7 @@ export function createSpeculativeMethod(
   return nativeMethod("mlx-speculative", async (output, signal) => {
     const metrics = await specRun(binding, numDraftTokens, prompt, { ...options, signal },
       (token) => output.commit([token]));
-    return { finishReason: metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop", metrics };
+    return { finishReason: metrics.finishReason ?? (metrics.generatedTokens >= (options.maxTokens ?? 512) ? "length" : "stop"), metrics };
   }, binding.runtime ?? runtimeConfig());
 }
 

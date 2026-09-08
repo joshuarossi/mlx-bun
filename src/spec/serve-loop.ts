@@ -307,11 +307,12 @@ async function specRunInner(
       pending = await samplePos(lastLogits!, 0);
       lastLogits!.dispose();
       lastLogits = null;
+      stats.generatedTokens++;
       if (eos.includes(pending)) {
+        stats.finishReason = "stop";
         stats.decodeMs = performance.now() - tDecode;
         return stats;
       }
-      stats.generatedTokens++;
       if (
         (await onToken(pending)) === false ||
         stats.generatedTokens >= maxTokens ||
@@ -344,8 +345,8 @@ async function specRunInner(
         roundRow.dispose();
         roundRow = null;
         clearCache();
-        if (eos.includes(tok)) break;
         stats.generatedTokens++;
+        if (eos.includes(tok)) { stats.finishReason = "stop"; break; }
         pending = tok;
         if ((await onToken(tok)) === false) break;
         if (grammar?.isTerminated) break; // grammar closed — finish "stop"
@@ -478,6 +479,13 @@ async function specRunInner(
         stats.generatedTokens++;
         if ((await onToken(tok)) === false) { halted = true; break; }
         if (stats.generatedTokens >= maxTokens) break;
+      }
+      // Native generation and mlx-lm count the stopping EOS in usage while
+      // keeping it out of content. A callback or budget may stop earlier in
+      // this verified burst; that unused suffix must not enter usage.
+      if (sawEos && !halted && stats.generatedTokens < maxTokens) {
+        stats.generatedTokens++;
+        stats.finishReason = "stop";
       }
       extras.tokensPerForward = extras.rounds > 0
         ? stats.generatedTokens / extras.rounds

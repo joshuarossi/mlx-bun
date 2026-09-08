@@ -123,7 +123,7 @@ describe("regression: a token that merges under the real name, not under a place
     const rows = compile(template, tokenizer, [WEATHER, SEARCH]);
     expect(rows.filter((r) => r.kind === "name").map((r) => asText(tokenizer, r))).toEqual([
       { trigger: "<tool_call>\n<function=get", emit: "_weather><parameter=city>\n" },
-      { trigger: "<tool_call>\n<function=search", emit: "_docs><parameter=" },
+      { trigger: "<tool_call>\n<function=search", emit: "_docs><" },
     ]);
   });
 
@@ -159,16 +159,71 @@ describe("close rows", () => {
     expect(kinds(compile(template, two, [WEATHER, SEARCH]))).not.toContain("close");
   });
 
-  test("the trigger carries letters, so a bare `</` in prose cannot arm it", () => {
+  test("the trigger includes the complete argument delimiter", () => {
     const tokenizer = makeTokenizer(MERGES_XML);
     const close = compile(template, tokenizer, [WEATHER]).find((r) => r.kind === "close")!;
     expect(asText(tokenizer, close)).toEqual({
-      trigger: "</parameter",
-      emit: "></function>\n</tool_call>",
+      trigger: "</parameter>",
+      emit: "</function>\n</tool_call>",
     });
     // The turn end is left to the model: `</tool_call>` ends the span.
     expect(asText(tokenizer, close).emit).not.toContain("<|im_end|>");
   });
+});
+
+describe("schema choices remain available after a fill trigger", () => {
+  const cases: Array<{ name: string; patch: Record<string, unknown>; calls: Record<string, unknown>[] }> = [
+    { name: "additional properties", patch: { additionalProperties: true },
+      calls: [{ extra: "first", city: "Paris" }, { city: "Paris", extra: "last" }] },
+    { name: "omitted additionalProperties", patch: { additionalProperties: undefined },
+      calls: [{ extra: "first", city: "Paris" }, { city: "Paris", extra: "last" }] },
+    { name: "schema-valued additionalProperties", patch: { additionalProperties: { type: "string" } },
+      calls: [{ extra: "first", city: "Paris" }, { city: "Paris", extra: "last" }] },
+    { name: "pattern properties", patch: { patternProperties: { "^extra_": { type: "string" } } },
+      calls: [{ extra_note: "first", city: "Paris" }, { city: "Paris", extra_note: "last" }] },
+    { name: "additional keys outside a shared declared prefix", patch: { additionalProperties: true,
+      properties: { city_name: { type: "string" }, city_code: { type: "string" } }, required: ["city_name"] },
+      calls: [{ extra: "first", city_name: "Paris" }, { city_name: "Paris", extra: "last" }] },
+    { name: "pattern keys outside a shared declared prefix", patch: { patternProperties: { "^extra_": { type: "string" } },
+      properties: { city_name: { type: "string" }, city_code: { type: "string" } }, required: ["city_name"] },
+      calls: [{ extra_note: "first", city_name: "Paris" }, { city_name: "Paris", extra_note: "last" }] },
+    { name: "optional property first", patch: { properties: { city: { type: "string" }, unit: { type: "string" } } },
+      calls: [{ unit: "C", city: "Paris" }, { city: "Paris", unit: "C" }] },
+    { name: "sole optional property", patch: { required: [] }, calls: [{}, { city: "Paris" }] },
+    { name: "multiple optional properties", patch: { required: [], properties: { city: { type: "string" }, unit: { type: "string" } } },
+      calls: [{}, { city: "Paris" }, { unit: "C" }] },
+  ];
+  const formats: Array<[string, FillTemplateLike]> = [
+    ["XML", jinjaTemplate(QWEN_XML_TEMPLATE)],
+    ["JSON", jinjaTemplate(QWEN_STYLE_TEMPLATE)],
+    ["GLM", { render: (m, o) => renderGlm52Chat(m, o) }],
+  ];
+  for (const [format, template] of formats) for (const scenario of cases) {
+    test(`${format}: ${scenario.name}`, () => {
+      const tokenizer = makeTokenizer([...MERGES_XML, "city"]);
+      const tool: ToolDefinition = { ...WEATHER, function: { ...WEATHER.function,
+        parameters: { ...WEATHER.function.parameters, ...scenario.patch } } };
+      const rows = compile(template, tokenizer, [tool]);
+      const conflicts: unknown[] = [];
+      const prompt = template.render(messages, { tools: [tool], addGenerationPrompt: true });
+      for (const args of scenario.calls) {
+        const rendered = template.render([...messages, { role: "assistant", content: "",
+          tool_calls: [{ id: "call_choices", type: "function", function: { name: "get_weather", arguments: args } }] }],
+          { tools: [tool], addGenerationPrompt: false });
+        expect(rendered.startsWith(prompt)).toBe(true);
+        const ids = tokenizer.encode(rendered.slice(prompt.length));
+        for (const row of rows) {
+          const at = idSubsequenceAt(ids, row.trigger);
+          if (at < 0) continue;
+          const continuation = ids.slice(at + row.trigger.length, at + row.trigger.length + row.emit.length);
+          if (JSON.stringify(continuation) !== JSON.stringify(row.emit))
+            conflicts.push({ args, row: asText(tokenizer, row), actual: tokenizer.pieces(continuation).join("") });
+        }
+      }
+      expect(conflicts).toEqual([]);
+      expect(kinds(rows)).not.toContain("close");
+    });
+  }
 });
 
 describe("Qwen-style JSON <tool_call> template", () => {
@@ -194,7 +249,7 @@ describe("Qwen-style JSON <tool_call> template", () => {
     expect(rows.map((r) => asText(tokenizer, r))).toEqual([
       { trigger: "<tool_call>", emit: '\n{"name": "' },
       { trigger: '<tool_call>\n{"name": "get_weather', emit: '", "arguments": {"city": ' },
-      { trigger: '<tool_call>\n{"name": "search_docs', emit: '", "arguments": {"' },
+      { trigger: '<tool_call>\n{"name": "search_docs', emit: '", "arguments": {' },
     ]);
     expectRowsSliceRealRenderings(
       template, tokenizer, [WEATHER, SEARCH], rows, [WEATHER_CALL, SEARCH_CALL]);
@@ -212,9 +267,8 @@ describe("Qwen-style JSON <tool_call> template", () => {
   test("a multi-property tool's span stops before the key the model picks", () => {
     const tokenizer = makeTokenizer();
     const rows = compile(template, tokenizer, [SEARCH]);
-    // `query` vs `limit` diverge, so nothing past the arguments brace is
-    // determined — the model chooses which key comes first.
-    expect(asText(tokenizer, rows[0]!).emit).toBe('\n{"name": "search_docs", "arguments": {"');
+    // Both keys are optional, so the model can also choose empty arguments.
+    expect(asText(tokenizer, rows[0]!).emit).toBe('\n{"name": "search_docs", "arguments": {');
   });
 });
 

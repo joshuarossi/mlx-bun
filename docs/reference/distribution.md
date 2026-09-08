@@ -46,6 +46,12 @@ and **ad-hoc signs** every Mach-O it touched — arm64 requires a valid
 signature after any load-command rewrite. Ad-hoc is only for local runs; the
 release script replaces it (below).
 
+The C and Swift helpers target macOS 14.0 by default, matching the package's
+minimum macOS version. `MACOSX_DEPLOYMENT_TARGET` can override that build
+target. Verify the MLX libraries' deployment targets as well when replacing
+the bundled runtime; compiling our helpers for 14.0 cannot lower a dependency's
+minimum OS version.
+
 **Build-time smoke.** The script then runs `mlx-bun --version`, `--help`, and
 `ls`, and compiles [scripts/verify-binary-pi.ts](../../scripts/verify-binary-pi.ts)
 into a *sibling* binary inside the same directory so `process.execPath` points
@@ -319,6 +325,13 @@ The pack is ad-hoc signed only — `build-native-pack.sh` never touches a
 Developer ID and nothing notarizes it; it is `dlopen`ed by the user's own Bun
 process, not by our signed executable. The most recent pack
 (`native-v0.3.0`, published 2026-08-22) added `mlx-bun-frame-extract`.
+
+The working tree targets native pack 0.4.0 with MLX 0.32.2 and MLX-C
+`c74db5307cc8ce122f48d97ef951b30578674e7f`. Its six-file macOS 14 candidate
+has been built and verified locally. It is not published. Release the native
+asset before publishing any package that uses this manifest. Runtime bindings
+match this one C API, and startup checks the linked core version. The old
+runtime and source controls remain separate for benchmark comparisons.
 
 Managed jobs in the compiled binary re-exec that binary through a private job
 entry, with the database/log paths passed in the environment. They do not depend

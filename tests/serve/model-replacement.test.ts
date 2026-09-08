@@ -7,6 +7,7 @@ import { ChatTemplate } from "../../src/chat-template";
 import { resolveModelProfile } from "../../src/model/profile";
 import { configFingerprint } from "../../src/model/fingerprint";
 import { runtimeConfig } from "../../src/runtime-config";
+import type { SsdCacheStore } from "../../src/ssd-cache";
 import { createServer, shutdownServer, loadContext, ModelImplementationRegistry,
   type ServingContext, type ModelHostSource, type ModelServingBinding } from "../../src/index";
 
@@ -24,6 +25,7 @@ test("one model binding supplies multiple methods to the unchanged HTTP/session 
     const config = await loadModelConfig(dir);
     const selected: string[] = [];
     const binding: ModelServingBinding = {
+      stateCompatibility: "synthetic-runtime-v1",
       gateway: {
         config, runtime: runtimeConfig(),
         cachesBatchable: () => false, kvBatchable: () => false,
@@ -106,6 +108,35 @@ test("one model binding supplies multiple methods to the unchanged HTTP/session 
     })).status).toBe(400);
     const stats = await (await fetch(`${base}/stats`)).json() as any;
     expect(stats.custom_model).toEqual({ method_count: 2 });
+
+    // Persistent state survives a matching backend restart, but another
+    // numerical implementation must start without that prefix. Its scan
+    // must leave the original implementation's snapshot available.
+    await shutdownServer(server);
+    server = undefined;
+    writeFileSync(join(dir, "tokenizer.json"), "{}");
+    for (const [stateCompatibility, expectedEntries] of [
+      ["runtime-A", 0], ["runtime-A", 1], ["runtime-B", 0], ["runtime-A", 1],
+    ] as const) {
+      let store: SsdCacheStore | null = null;
+      const serving: ModelServingBinding = {
+        ...binding, stateCompatibility,
+        createSerial(services) {
+          store = services.checkpoints as SsdCacheStore;
+          return binding.createSerial(services);
+        },
+      };
+      server = createServer({ ...opened, serving }, 0, {
+        batch: 1, promptCacheBytes: 1024, ssdCacheDir: join(dir, "state"),
+      });
+      const snapshot = await (await fetch(`http://127.0.0.1:${server.port}/stats`)).json() as any;
+      expect(snapshot.ssd_cache.entries).toBe(expectedEntries);
+      expect(store).not.toBeNull();
+      if (stateCompatibility === "runtime-A" && expectedEntries === 0)
+        expect((store as unknown as SsdCacheStore).store([3, 4, 5], [], "")).toBe(true);
+      await shutdownServer(server);
+      server = undefined;
+    }
   } finally {
     if (server) await shutdownServer(server);
     rmSync(dir, { recursive: true, force: true });

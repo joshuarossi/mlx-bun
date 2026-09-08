@@ -5,6 +5,8 @@
 // that was making reasoning-model chat return no messages.
 
 import { describe, expect, it } from "bun:test";
+import { Template } from "@huggingface/jinja";
+import type { ChatMessage } from "../../src/chat-template";
 
 const { ThinkingTagSplitter } = await import("../../src/serve/token-streams");
 const { promptEndsInOpenThink, normalizeMessages } = await import("../../src/serve/chat-request");
@@ -86,6 +88,32 @@ describe("normalizeMessages — developer→system remap", () => {
       { role: "assistant", content: "yo" },
     ]);
     expect(out.map((m) => m.role)).toEqual(["system", "user", "assistant"]);
+  });
+});
+
+describe("normalizeMessages reasoning history", () => {
+  it("preserves Pi reasoning through tool normalization and Qwen-style rendering", () => {
+    const input: ChatMessage = Object.freeze({
+      role: "assistant", content: "Checking the directory.",
+      reasoning: "Keep the complete plan.\nUse stable card IDs.",
+      tool_calls: [{ id: "call_1", type: "function" as const, function: {
+        name: "bash", arguments: '{"command":"ls"}',
+      } }],
+    });
+    const messages = normalizeMessages([input]);
+    const template = new Template("{{ messages[0].reasoning_content }}|{{ messages[0].tool_calls[0].function.arguments.command }}");
+    expect(template.render({ messages })).toBe("Keep the complete plan.\nUse stable card IDs.|ls");
+    expect(messages[0]!.reasoning).toBe(input.reasoning);
+    expect(input.reasoning_content).toBeUndefined();
+    expect(input.tool_calls![0]!.function.arguments).toBe('{"command":"ls"}');
+  });
+
+  it.each(["", "Canonical history"])("honors explicit reasoning_content %j", (canonical) => {
+    const [message] = normalizeMessages([{
+      role: "assistant", content: "", reasoning: "Alias history", reasoning_content: canonical,
+    }]);
+    expect(message!.reasoning_content).toBe(canonical);
+    expect(message!.reasoning).toBe("Alias history");
   });
 });
 

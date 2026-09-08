@@ -291,7 +291,7 @@ function getDsaRankKeyKernel(): MetalKernel {
           ? ~bits
           : (bits ^ 0x80000000u);
         const uint descending = ~ascending;
-        keys[i] = (ulong(descending) << 32) | ulong(i);
+        keys[i] = descending;
       `,
     });
   }
@@ -308,7 +308,8 @@ function getDsaContractOrderKeyKernel(): MetalKernel {
         const uint i = thread_position_in_grid.x;
         const uint position = selected_positions[i];
         const uint threshold_class = selected_scores[i] > threshold ? 0u : 1u;
-        keys[i] = (ulong(threshold_class) << 32) | ulong(position);
+        // MLX axis lengths are signed int32; positions leave the high bit free.
+        keys[i] = (threshold_class << 31) | position;
       `,
     });
   }
@@ -318,8 +319,8 @@ function getDsaContractOrderKeyKernel(): MetalKernel {
 /**
  * Deterministic on-device equivalent of `selectDsaThresholdTiesF32`.
  *
- * The first uint64 key sorts by score descending and then position ascending,
- * making the top-k set deterministic even at the threshold. The second key
+ * Stable sorting of the first uint32 key orders scores descending and keeps
+ * equal-score positions ascending, including threshold ties. The second key
  * restores Colibri's observable two-scan order: all scores strictly above the
  * threshold in position order, followed by threshold ties in position order.
  * The caller owns the returned arrays and must call `dispose()` once the last
@@ -340,18 +341,21 @@ export function selectGlm52DsaDevice(
     ? scores
     : scores.astype(Dtype.float32);
   const [rankKeys] = getDsaRankKeyKernel().apply([scoresF32], {
-    outputs: [{ shape: [contextLength], dtype: Dtype.uint64 }],
+    outputs: [{ shape: [contextLength], dtype: Dtype.uint32 }],
     grid: [contextLength, 1, 1],
     threadGroup: [Math.min(256, contextLength), 1, 1],
   });
-  const partition = ops.argpartitionAxis(rankKeys!, topK - 1, 0);
-  const selectedUnordered = partition.slice([0], [topK]);
+  // Stable argsort retains ascending positions for equal score bits, so the
+  // ranking key needs no position field. MLX 0.31.2's GPU argpartition also
+  // sorts fully, but does not promise this tie order in its public contract.
+  const rankedPositions = ops.argsortAxis(rankKeys!, 0);
+  const selectedUnordered = rankedPositions.slice([0], [topK]);
   const selectedScores = ops.takeAlongAxis(scoresF32, selectedUnordered, 0);
   const threshold = ops.minAxis(selectedScores, 0, false);
   const [orderKeys] = getDsaContractOrderKeyKernel().apply(
     [selectedScores, selectedUnordered, threshold],
     {
-      outputs: [{ shape: [topK], dtype: Dtype.uint64 }],
+      outputs: [{ shape: [topK], dtype: Dtype.uint32 }],
       grid: [topK, 1, 1],
       threadGroup: [Math.min(256, topK), 1, 1],
     },
@@ -360,7 +364,7 @@ export function selectGlm52DsaDevice(
   const positions = ops.takeAlongAxis(selectedUnordered, order, 0);
 
   rankKeys!.dispose();
-  partition.dispose();
+  rankedPositions.dispose();
   selectedUnordered.dispose();
   selectedScores.dispose();
   orderKeys!.dispose();

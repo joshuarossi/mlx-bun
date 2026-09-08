@@ -13,6 +13,7 @@ import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
+import { quantizedMatmulRows } from "../mlx/quantized-rows";
 import { expertOffloadArray } from "../expert-offload";
 import * as tq from "../mlx/turboquant-ops";
 import { runtimeValue } from "../runtime-config";
@@ -155,8 +156,10 @@ export class QuantizedLinear {
     return this._scales.shape[0]!;
   }
 
-  forward(x: MlxArray): MlxArray {
-    let out = ops.quantizedMatmul(
+  forward(x: MlxArray, independentRows = false): MlxArray {
+    let out = independentRows ? quantizedMatmulRows(
+      x, this._w, this._scales, this._biases, this._spec,
+    ) : ops.quantizedMatmul(
       x,
       this._w,
       this._scales,
@@ -1553,6 +1556,8 @@ export class TurboQuantKVCache implements Cache {
   offset = 0;
   /** Validated lazily on first update, once head_dim is known. */
   #headDim: number | null = null;
+  /** Experimental operation selection, captured once for this cache. */
+  readonly #fusedDecode = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1";
 
   constructor(readonly kBits: number, readonly vBits: number) {}
 
@@ -1631,6 +1636,13 @@ export class TurboQuantKVCache implements Cache {
       const [B, H, , D] = a.shape as [number, number, number, number];
       return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
     };
+    if (this.#fusedDecode) {
+      const inputs = [cut(t.kIdx), cut(t.kScales), cut(t.kZeros), cut(t.vPacked), cut(t.vScales)] as const;
+      try {
+        const decoded = tq.tryDecodePackedKv(inputs, this.kBits, this.vBits, headDim, deferV);
+        if (decoded) return decoded;
+      } finally { for (const input of inputs) input.dispose(); }
+    }
     const kIdxCut = cut(t.kIdx);
     const kIdxUnpacked = this.kBits < 8 ? tq.unpackBits(kIdxCut, this.kBits, headDim) : kIdxCut;
     if (kIdxUnpacked !== kIdxCut) kIdxCut.dispose();

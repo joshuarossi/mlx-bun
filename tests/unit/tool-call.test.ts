@@ -1,7 +1,7 @@
 // Unit tests for the gemma4 tool-call parser (fast tier).
 
 import { describe, expect, test } from "bun:test";
-import { gemmaArgsToJson, parseGeneratedToolCalls, parseToolCalls } from "../../src/tool-call";
+import { gemmaArgsToJson, parseGeneratedToolCalls, parseStrictToolCall, parseToolCalls } from "../../src/tool-call";
 
 const Q = '<|"|>';
 
@@ -60,6 +60,31 @@ describe("parseToolCalls", () => {
   test("string with braces does not break brace balance", () => {
     const calls = parseToolCalls(`call:echo{text:${Q}}}}{{{${Q}}`);
     expect(calls[0]!.arguments).toEqual({ text: "}}}{{{" });
+  });
+});
+
+describe("Qwen raw tool arguments", () => {
+  const tools = [{ type: "function", function: { name: "edit", parameters: {
+    type: "object", properties: { path: { type: "string" }, edits: { type: "array" } },
+    required: ["path", "edits"],
+  } } }, { type: "function", function: { name: "write", parameters: {
+    type: "object", properties: { content: { type: "string" } }, required: ["content"],
+  } } }];
+
+  test("preserves entities and file whitespace inside string parameters", () => {
+    const content = "\n  const entities = ['&amp;', '&lt;', '&gt;', '&quot;', '&#39;'];\n\n";
+    const wire = `<tool_call><function=write><parameter=content>\n${content}\n</parameter></function></tool_call>`;
+    const expected = { name: "write", arguments: { content } };
+    expect(parseGeneratedToolCalls(wire, tools)).toEqual([expected]);
+    expect(parseStrictToolCall(wire, tools)).toEqual(expected);
+  });
+
+  test("parses nested edit JSON without repairing it as the outer call", () => {
+    const edits = [{ oldText: "  return '&';\n", newText: "  return '&amp; &quot; &lt;';\n" }];
+    const wire = `<tool_call>\n<function=edit>\n<parameter=path>\njs/utils.js\n</parameter>\n<parameter=edits>\n${JSON.stringify(edits)}\n</parameter>\n</function>\n</tool_call>`;
+    const expected = { name: "edit", arguments: { path: "js/utils.js", edits } };
+    expect(parseGeneratedToolCalls(`Fixing the escaping:\n${wire}`, tools)).toEqual([expected]);
+    expect(parseStrictToolCall(wire, tools)).toEqual(expected);
   });
 });
 

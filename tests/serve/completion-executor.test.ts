@@ -466,3 +466,36 @@ describe("CompletionExecutor", () => {
     });
   });
 });
+
+for (const stream of [false, true]) for (const terminal of ["stop", undefined] as const) {
+  test(`completion ${stream ? "stream" : "collection"} preserves ${terminal ?? "legacy budget"} termination`, async () => {
+    const runtime: CompletionEngine = {
+      place: (shape) => ({ shape, mechanism: "serial" }),
+      async run(_prompt, _options, onToken) {
+        await onToken(1);
+        if (!terminal) await onToken(2);
+        return {
+          promptTokens: 1, cachedTokens: 0, generatedTokens: 2,
+          finishReason: terminal, prefillTps: 0, decodeTps: 0,
+          prefillMs: 0, decodeMs: 0, cacheTokens: [],
+        };
+      },
+    };
+    const prepared = prepareCompletion({
+      requestId: `eos-${stream}-${terminal}`,
+      plan: {
+        promptIds: [7], options: { maxTokens: 2, stopSequences: [] },
+        requestedMaxTokens: 2, maxSafeContext: 16, stream,
+        wantLogprobs: false, topLogprobs: 0, adapterIds: [],
+        hasVision: false, userSeed: false, hasGrammar: false, hasDraft: false,
+        ownership: new RequestOwnership(),
+      },
+      pipeline: { router, stopper, thinking, collectToolCalls: false },
+      idToToken: String,
+    });
+    const result = await new CompletionExecutor(runtime).execute(prepared);
+    expect(result.finishReason).toBe(terminal ?? "length");
+    expect(result.usage.completionTokens).toBe(2);
+    expect(result.content).toBe(terminal ? "hello " : "hello world");
+  });
+}

@@ -1,4 +1,4 @@
-// TurboQuant KV-cache codec — pure mlx-op composition, ported op-for-op
+// TurboQuant KV-cache codec — reference operations ported op-for-op
 // from the vendored vllm-metal reference
 // (lab/repro/vllm-metal-turboquant/turboquant_reference.py). See
 // docs/design/turboquant.md for the algorithm writeup and
@@ -26,6 +26,10 @@ import {
   SIGN_VECTORS, LLOYD_MAX, TURBOQUANT_HEAD_DIMS, TURBOQUANT_VALUE_BITS,
   type TurboQuantHeadDim, type TurboQuantValueBits,
 } from "./turboquant-tables";
+
+import { tryJointDecodePackedKv, type PackedKvArrays } from "./turboquant-kv-decode";
+import { tryDecodePackedKvInverse256 } from "./turboquant-kv-inverse";
+import { isShapelessTracing } from "./compile";
 
 type S = MlxHandle;
 
@@ -419,6 +423,32 @@ export function decodeValuesRotated(
   const outBf16 = flat.astype(Dtype.bfloat16, s);
   flat.dispose();
   return outBf16;
+}
+
+/** Optional exact packed K/V decode. Inputs stay borrowed; the caller owns
+ * the returned pair. The eager path keeps the reference inverse rotation. */
+export function tryDecodePackedKv(
+  inputs: PackedKvArrays, kBits: number, vBits: number, headDim: number,
+  deferV = false, s: S = gpuStream,
+): [MlxArray, MlxArray] | null {
+  // Reject unsupported value widths before requesting their centroid table.
+  if (![2, 3, 4, 5, 8].includes(vBits)) return null;
+  if (!deferV && headDim === 256 && kBits === 8 && vBits === 3 &&
+      s === gpuStream && !isShapelessTracing() && inputs[0].shape[2]! >= 8192) {
+    const decoded = tryDecodePackedKvInverse256(
+      inputs, centroidsFor(vBits), signArray(256), kBits, vBits, headDim, s,
+    );
+    if (decoded) return decoded;
+  }
+  const decoded = tryJointDecodePackedKv(inputs, centroidsFor(vBits), kBits, vBits, headDim, deferV, s);
+  if (!decoded || deferV) return decoded;
+  const [key, rotated] = decoded;
+  try {
+    const value = fwht(rotated, false, s);
+    try { return [key, value.astype(Dtype.bfloat16, s)]; }
+    finally { value.dispose(); }
+  } catch (error) { key.dispose(); throw error; }
+  finally { rotated.dispose(); }
 }
 
 /** Undo the value rotation on an attention output computed against

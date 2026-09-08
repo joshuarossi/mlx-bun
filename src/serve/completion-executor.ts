@@ -212,7 +212,7 @@ function finishReason(
 ): CompletionFinishReason {
   if (result.toolCalls.length) return "tool_calls";
   if (result.stopped) return "stop";
-  return stats.generatedTokens >= maxTokens ? "length" : "stop";
+  return stats.finishReason ?? (stats.generatedTokens >= maxTokens ? "length" : "stop");
 }
 
 function combineControl(

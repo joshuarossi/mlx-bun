@@ -42,7 +42,10 @@ export function createCompletionMethod(
             const stats = await runtime.run(prompt, options,
               (token, logprobs) => output.commit([token], logprobs ? [logprobs] : undefined),
               vision, shape, placement, controller.signal, trace);
-            return { finishReason: stats.generatedTokens >= maxTokens ? "length" : "stop", metrics: stats };
+            return {
+              finishReason: stats.finishReason ?? (stats.generatedTokens >= maxTokens ? "length" : "stop"),
+              metrics: stats,
+            };
           } catch (error) { onFailure?.(error); throw error; }
         },
         async close() { unsubscribe(); },
