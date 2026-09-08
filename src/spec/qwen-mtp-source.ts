@@ -33,6 +33,11 @@ import { Weights } from "../weights";
 import { disposing, KVCache, QuantizedLinear, RMSNorm, type Mask } from "../model/gemma4-base";
 import { DenseLinear } from "../model/universal/modules";
 import type { DraftProvider, DraftSource, QwenMtpTarget } from "./source";
+import type { Cache } from "../model/gemma4";
+import { cloneKvCaches } from "../kv-store";
+import { cacheBytes } from "../prompt-cache";
+import { disposeResources } from "../engine/resources";
+import { SpeculativePrefixStore, type SpeculativePrefixState } from "./prefix-state";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
@@ -198,12 +203,26 @@ class MtpModule {
   }
 }
 
+class QwenMtpPrefixState implements SpeculativePrefixState {
+  constructor(readonly tokens: number[], readonly targetIdentity: object,
+    readonly namespace: string, readonly bytes: number, readonly target: Cache[],
+    public draft: KVCache | null, public hidden: MlxArray | null) {}
+
+  dispose(): void {
+    const resources = [...this.target.splice(0), this.draft, this.hidden];
+    this.draft = null;
+    this.hidden = null;
+    disposeResources(resources.filter((r) => r != null));
+  }
+}
+
 export class QwenMtpProvider implements DraftProvider {
   readonly id: string;
   readonly weightsBytes: number;
   readonly #module: MtpModule;
   readonly #config: ModelConfig;
   readonly #resources: DisposableStack;
+  readonly #prefixStore = new SpeculativePrefixStore<QwenMtpPrefixState>();
 
   private constructor(id: string, config: ModelConfig, weightsBytes: number, module: MtpModule, resources: DisposableStack) {
     this.id = id;
@@ -241,13 +260,14 @@ export class QwenMtpProvider implements DraftProvider {
         `${target.hiddenSize} — split from a different checkpoint?`,
       );
     }
-    return new QwenMtpSource(target, this.#module, opts.sampler);
+    return new QwenMtpSource(target, this.#module, opts.sampler,
+      { store: this.#prefixStore, identity: opts.target.identity });
   }
 
   dispose(): void {
     // Release cached transpose views before their native weight maps. MLX
     // retains buffers needed by outstanding GPU commands until completion.
-    this.#resources.dispose();
+    disposeResources([this.#prefixStore, { dispose: () => this.#resources.dispose() }]);
   }
 }
 
@@ -263,7 +283,10 @@ export class QwenMtpSource implements DraftSource {
   readonly #target: QwenMtpTarget;
   readonly #module: MtpModule;
   readonly #sampler: Sampler;
-  readonly #cache = new KVCache();
+  #cache = new KVCache();
+  readonly prefix: DraftSource["prefix"];
+  #prefilledTokens = 0;
+  #hasDrafted = false;
   /** Target pre-norm hidden at the position preceding the next pending
    *  token: prefill's last tapped row, then each commit's vCtx row at the
    *  emitted position. draft() consumes it to build the pending row. [1,1,H] */
@@ -271,11 +294,55 @@ export class QwenMtpSource implements DraftSource {
   #roundAppended = 0;
   #closed = false;
 
-  constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler) {
+  constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler,
+    prefix?: { store: SpeculativePrefixStore<QwenMtpPrefixState>; identity: object }) {
     this.#target = target;
     this.#module = module;
     this.#sampler = sampler;
     this.tapLayers = [target.layerCount - 1];
+    if (prefix) this.prefix = {
+      restore: (prompt, caches, namespace, maxBytes) => {
+        this.#checkOpen();
+        if (this.#prefilledTokens !== 0 || this.#hasDrafted)
+          throw new Error("Qwen MTP prefix restore requires a fresh source");
+        const entry = prefix.store.take(prompt, prefix.identity, namespace, maxBytes);
+        if (!entry) return 0;
+        try {
+          if (entry.target.length !== caches.length || !entry.draft || !entry.hidden ||
+            entry.draft.offset !== entry.tokens.length - 1)
+            throw new Error("invalid paired Qwen MTP prefix state");
+          disposeResources(caches);
+          caches.splice(0, caches.length, ...entry.target.splice(0));
+          this.#cache.dispose();
+          this.#cache = entry.draft;
+          entry.draft = null;
+          this.#pendingTrueHidden?.dispose();
+          this.#pendingTrueHidden = entry.hidden;
+          entry.hidden = null;
+          return this.#prefilledTokens = entry.tokens.length;
+        } finally { entry.dispose(); }
+      },
+      capture: (tokens, caches, namespace, maxBytes) => {
+        this.#checkOpen();
+        if (tokens.length !== this.#prefilledTokens || !this.#pendingTrueHidden ||
+          this.#cache.offset !== tokens.length - 1 || this.#roundAppended !== 0)
+          throw new Error("Qwen MTP snapshot requires an aligned prefill boundary");
+        const bytes = cacheBytes([...caches, this.#cache]) + this.#pendingTrueHidden.nbytes;
+        if (bytes > maxBytes) { prefix.store.dispose(); return; }
+        const retained: Cache[] = [];
+        let draft: KVCache | null = null, hidden: MlxArray | null = null;
+        try {
+          retained.push(...cloneKvCaches(caches));
+          draft = cloneKvCaches([this.#cache])[0] as KVCache;
+          hidden = this.#pendingTrueHidden.slice([0, 0, 0], this.#pendingTrueHidden.shape);
+          const entry = new QwenMtpPrefixState([...tokens], prefix.identity, namespace,
+            bytes, retained.splice(0), draft, hidden);
+          draft = null;
+          hidden = null;
+          prefix.store.put(entry, maxBytes);
+        } finally { disposeResources([...retained, draft, hidden].filter((r) => r != null)); }
+      },
+    };
   }
 
   /** Drafter prefill: rows for positions 0..L-2, keyed (token_{p+1}, h_p) —
@@ -286,22 +353,30 @@ export class QwenMtpSource implements DraftSource {
     if (!ctxML)
       throw new Error("qwen MTP prefill requires the tapped pre-final-norm context");
     try {
-      if (this.#cache.offset !== 0)
-        throw new Error("qwen MTP source cannot be prefilled twice");
+      if (this.#hasDrafted)
+        throw new Error("qwen MTP prefill cannot follow drafting");
       const L = promptIds.length;
+      const start = this.#prefilledTokens;
       const H = ctxML.shape[2]!;
-      if (ctxML.shape[1]! !== L)
-        throw new Error(`qwen MTP tap covered ${ctxML.shape[1]} of ${L} prompt positions`);
-      // Retain one compact row instead of a view into the complete prompt.
-      using tail = ctxML.slice([0, L - 1, 0], [1, L, H]);
+      if (L <= start || ctxML.shape[1]! !== L - start)
+        throw new Error(`qwen MTP tap covered ${ctxML.shape[1]} of ${L - start} new prompt positions`);
+      if (start > 0) {
+        if (!this.#pendingTrueHidden || this.#cache.offset !== start - 1)
+          throw new Error("qwen MTP prefix state is not aligned");
+        this.#stepOne(promptIds[start]!, this.#pendingTrueHidden).dispose();
+      }
+      this.#pendingTrueHidden?.dispose();
+      // A slice would retain the complete prompt buffer in the saved prefix.
+      // Materialize this one row before handing off the prefill state.
+      using tail = ctxML.slice([0, L - start - 1, 0], [1, L - start, H]);
       this.#pendingTrueHidden = materializeCopy(tail);
-      for (let pos = 0; pos + 1 < L; pos += DRAFT_PREFILL_CHUNK) {
+      for (let pos = start; pos + 1 < L; pos += DRAFT_PREFILL_CHUNK) {
         const n = Math.min(DRAFT_PREFILL_CHUNK, L - 1 - pos);
         const shifted = promptIds.slice(pos + 1, pos + 1 + n);
         const ids = ops.fromInt32(shifted, [1, n]);
         const embeds = this.#target.embed(ids);
         ids.dispose();
-        const hiddens = ctxML.slice([0, pos, 0], [1, pos + n, H]);
+        const hiddens = ctxML.slice([0, pos - start, 0], [1, pos + n - start, H]);
         const out = this.#module.forward(embeds, hiddens, this.#cache);
         embeds.dispose();
         hiddens.dispose();
@@ -312,8 +387,9 @@ export class QwenMtpSource implements DraftSource {
       }
       if (this.#cache.offset !== L - 1)
         throw new Error(`qwen MTP prefill offset ${this.#cache.offset}, expected ${L - 1}`);
-      // Materialize the retained row even when a one-token prompt has no KV.
+      // Also covers a restored-prefix bridge with no subsequent full chunk.
       ops.evalAll([this.#pendingTrueHidden, ...this.#cache.state()]);
+      this.#prefilledTokens = L;
     } finally {
       ctxML?.dispose(); // ownership per the seam contract
     }
@@ -321,6 +397,7 @@ export class QwenMtpSource implements DraftSource {
 
   async draft(feed: number[], n: number, stepBase: number): Promise<number[]> {
     this.#checkOpen();
+    this.#hasDrafted = true;
     if (this.#roundAppended !== 0)
       throw new Error("qwen MTP draft called before the prior round committed");
     if (n <= 0) return [];

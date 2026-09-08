@@ -47,7 +47,7 @@ import type { DisposableResource } from "../contracts/resources";
 import { assertMlxSpeculativeBinding, bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "../backends/mlx/speculative";
 import type { RuntimeModel } from "../model/factory";
 import type { Cache } from "../model/gemma4";
-import { withModelUsageFlush, withModelWiredLimit, type GenerateOptions, type GenerateStats } from "../generate";
+import { maybeQuantizeKv, withModelUsageFlush, withModelWiredLimit, type GenerateOptions, type GenerateStats } from "../generate";
 import { runtimeConfig, withRuntimeConfig } from "../runtime-config";
 import { makeSampler, makeStepSampler } from "../sampler";
 import type { OnToken } from "../serve/generation-gateway";
@@ -120,6 +120,8 @@ async function specRunInner(
     sampler,
   });
   const gamma = Math.max(1, numDraftTokens);
+  const prefillChunk = options.prefillChunkSize ??
+    runtimeConfig().number("MLX_BUN_RD_PREFILL_CHUNK", PREFILL_CHUNK);
 
   // Allocated INSIDE the try below (2026-07-07 review): provider.open()
   // throws on a mismatched (target, drafter) pairing — as pre-try consts a
@@ -192,12 +194,39 @@ async function specRunInner(
 
   try {
     options.signal?.throwIfAborted();
+    if (!Number.isSafeInteger(prefillChunk) || prefillChunk < 1)
+      throw new Error("speculative prefill chunk must be a positive integer");
     assertMlxSpeculativeBinding(binding);
+    if (options.turboQuant || options.kvConfig?.length ||
+        (options.kvBits && (options.kvBits !== 4 || options.quantizedKvStart !== 0)))
+      throw new Error("speculative KV requires the qualified uniform KV4 start=0 policy");
     caches = binding.makeCache();
-    const rollback = binding.bindRollback(caches);
     const src = binding.openDraft(sampler, caches);
     source = src;
     tapLayers = src.tapLayers;
+    const prefixBudget = Math.max(0, options.speculativeCacheBytes ?? 0);
+    const prefix = src.prefillMode === "full" ? src.prefix : undefined;
+    const prefixNamespace = JSON.stringify({ adapters: options.adapters ?? [],
+      kvBits: options.kvBits ?? null, kvGroupSize: options.kvGroupSize ?? 64,
+      quantizedKvStart: options.quantizedKvStart ?? null });
+    const cached = prefix?.restore(promptIds, caches, prefixNamespace, prefixBudget) ?? 0;
+    stats.cachedTokens = cached;
+    const snapshotAt = prefix && prefixBudget > 0
+      ? Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1)
+      : -1;
+    if (prefix && prefixBudget > 0 && cached > 0 && snapshotAt <= cached)
+      prefix.capture(promptIds.slice(0, cached), caches, prefixNamespace, prefixBudget);
+    const seedSource = async (end: number) => {
+      if (ctxParts.length === 1) prefillCtx = ctxParts[0]!;
+      else if (ctxParts.length > 1) {
+        prefillCtx = ops.concatAxis(ctxParts, 1);
+        for (const part of ctxParts) part.dispose();
+      }
+      ctxParts.length = 0;
+      const context = prefillCtx;
+      prefillCtx = null; // source.prefill owns context on both success and failure
+      await src.prefill(promptIds.slice(0, end), context ?? undefined);
+    };
     // ---- prefill (target, chunked; optionally tapped for DSpark), then seed
     // the source. Order: the source's prefill needs the tapped context that the
     // target prefill produces, so target-first (two-model's own draft prefill
@@ -235,7 +264,7 @@ async function specRunInner(
       const end = promptIds.length - 1; // last prompt token NEVER prefilled
       while (pos < end) {
         options.signal?.throwIfAborted();
-        const n = Math.min(PREFILL_CHUNK, end - pos);
+        const n = Math.min(prefillChunk, end - pos);
         const chunk = promptIds.slice(pos, pos + n);
         const { hidden: h, ctxML } = await forwardTokens(chunk, tapLayers);
         if (ctxML) ctxParts.push(ctxML);
@@ -246,6 +275,7 @@ async function specRunInner(
             anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // position len-2
           }
         } finally { h.dispose(); } // no logits during the drain
+        maybeQuantizeKv(caches, options);
         clearCache();
         pos += n;
         if (pos < end) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -253,12 +283,14 @@ async function specRunInner(
     } else {
       // Legacy shape: full chunked prefill (final chunk included), token0
       // sampled from the last position below.
-      for (let off = 0; off < promptIds.length; off += PREFILL_CHUNK) {
+      for (let off = cached; off < promptIds.length;) {
         options.signal?.throwIfAborted();
-        const chunk = promptIds.slice(off, off + PREFILL_CHUNK);
+        const end = Math.min(off + prefillChunk, promptIds.length,
+          snapshotAt > off ? snapshotAt : Infinity);
+        const chunk = promptIds.slice(off, end);
         const { hidden: h, ctxML } = await forwardTokens(chunk, tapLayers);
         if (ctxML) ctxParts.push(ctxML);
-        try { if (off + PREFILL_CHUNK >= promptIds.length) {
+        try { if (end >= promptIds.length) {
           const L = h.shape[1]!;
           const H = h.shape[2]!;
           anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // [1,1,H], retained
@@ -268,8 +300,14 @@ async function specRunInner(
             lastLogits = ops.reshape(lg, [1, V]);
           } finally { lg.dispose(); }
         } } finally { h.dispose(); }
+        maybeQuantizeKv(caches, options);
+        if (end === snapshotAt && snapshotAt > cached) {
+          await seedSource(end);
+          prefix!.capture(promptIds.slice(0, end), caches, prefixNamespace, prefixBudget);
+        }
         clearCache();
-        if (off + PREFILL_CHUNK < promptIds.length)
+        off = end;
+        if (off < promptIds.length)
           await new Promise<void>((resolve) => setImmediate(resolve));
       }
     }
@@ -278,20 +316,12 @@ async function specRunInner(
     // Seed the source: two-model prefills its own draft cache; DSpark seeds
     // H_ctx from the tapped prompt context (ownership transfers to prefill);
     // the assistant is a no-op.
-    if (tapLayers) {
-      if (ctxParts.length === 1) prefillCtx = ctxParts[0]!;
-      else if (ctxParts.length > 1) {
-        prefillCtx = ops.concatAxis(ctxParts, 1); // [1,Lp,m*H]
-        for (const p of ctxParts) p.dispose();
-      }
-      ctxParts.length = 0; // parts consumed (transferred as prefillCtx or disposed)
-      await src.prefill(promptIds, prefillCtx ?? undefined); // takes ownership of prefillCtx
-      prefillCtx = null; // ownership transferred
-    } else {
-      await src.prefill(promptIds);
-    }
+    await seedSource(promptIds.length);
+    // Conversion replaces plain cache objects. Bind only after prefill has
+    // converted every attention layer; rollback must own the active objects.
+    const rollback = binding.bindRollback(caches);
     stats.prefillMs = performance.now() - t0;
-    stats.prefillTps = (promptIds.length / Math.max(stats.prefillMs, 1e-6)) * 1000;
+    stats.prefillTps = ((promptIds.length - cached) / Math.max(stats.prefillMs, 1e-6)) * 1000;
 
     // ---- first pending token ----
     // Oracle shape: pending = the UNPROCESSED last prompt token — never

@@ -24,7 +24,8 @@ export function resolveExecution(
   const mechanism = reasons.length ? "serial" : "continuous";
   const speculative = capabilities.method === "autoregressive" && request.hasDraft &&
     !request.hasVision && !request.hasAdapters && !request.wantsLogprobs &&
-    !request.kvQuant && !request.turboQuant && !features.pagedKv;
+    (!request.kvQuant || capabilities.speculativeKvQuant === true) &&
+    !request.turboQuant && !features.pagedKv;
   if (request.hasDraft && !speculative) reasons.push("draft-incompatible-with-request");
   const method = speculative ? "speculative" : capabilities.method;
   const pagedKv = features.pagedKv && !request.hasVision && !request.hasAdapters;

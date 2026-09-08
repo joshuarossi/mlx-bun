@@ -2,7 +2,7 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { localBenchmarkModel, measureChatRequest, measureCompletionRequest, unsupportedBenchmarkArm, workloadNonce } from "../../scripts/bench-serve";
+import { localBenchmarkModel, measureChatRequest, measureCompletionRequest, serialBenchmarkArgs, unsupportedBenchmarkArm, workloadNonce } from "../../scripts/bench-serve";
 import { inventoryModel } from "../../scripts/bench/model-inventory";
 
 const dirs: string[] = [];
@@ -79,6 +79,30 @@ describe("benchmark artifact selection", () => {
 });
 
 describe("benchmark measurement contract", () => {
+  test("configured experiments require an explicit serial arm and complete values", () => {
+    expect(() => serialBenchmarkArgs(["--draft-kind", "mtp"])).toThrow("--arms mlx-bun-serial");
+    expect(() => serialBenchmarkArgs(["--arms", "mlx-bun-serial,mlx-lm", "--kv-quant", "4"])).toThrow("controls separately");
+    for (const args of [["--draft-kind"], ["--draft-model", "--dry-run"],
+      ["--prompt-cache", "NaN"], ["--num-draft-tokens", "0"]])
+      expect(() => serialBenchmarkArgs(args)).toThrow("requires");
+  });
+
+  test("dry-run includes draft and KV arguments without a research preload", () => {
+    const child = Bun.spawnSync([process.execPath, "scripts/bench-serve.ts", "all",
+      "--model-path", packedFixture(), "--arms", "mlx-bun-serial",
+      "--draft-model", "/local/draft", "--draft-kind", "mtp", "--num-draft-tokens", "2",
+      "--kv-quant", "4", "--prompt-cache", "4", "--dry-run"], {
+      env: { ...process.env, MLX_BUN_MTP_PROMPT_CACHE: "1", MLX_BUN_QWEN_SPEC_KV4: "1" },
+    });
+    expect(child.exitCode).toBe(0);
+    const plan = JSON.parse(child.stdout.toString()), command = plan.cells[0].command as string[];
+    for (const [flag, value] of [["--draft-model", "/local/draft"], ["--draft-kind", "mtp"],
+      ["--num-draft-tokens", "2"], ["--kv-quant", "4"], ["--prompt-cache", "4"]])
+      expect(command[command.indexOf(flag!) + 1]).toBe(value);
+    expect(plan.runtimeEnvironment.MLX_BUN_QWEN_SPEC_KV4).toBe("1");
+    expect(plan.measurement).toBe(false);
+  });
+
   test("paired prompts are reproducible and retries cannot reuse cold-attempt nonces", () => {
     expect(workloadNonce("block-0", "decode", 0, 0)).toBe(workloadNonce("block-0", "decode", 0, 0));
     const cells = [

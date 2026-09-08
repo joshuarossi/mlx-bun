@@ -370,9 +370,12 @@ or the model-free `serve --draft-kind ngram`, which mounts no draft
 model); there is no per-request draft field. The `speculation` usage
 extension appears on chat and text completions alike, non-streaming and on
 the final stream chunk. Spec-eligible requests are text-only on base weights
-(no adapter, no logprobs capture, bf16 KV); ineligible ones decode
-normally and omit the field. The spec path bypasses the prompt cache
-(`cached_tokens` 0), and while a draft is mounted every request routes
+(no adapter or logprobs capture, bf16 KV by default); experimental Qwen
+uniform KV4 start=0 can qualify through `MLX_BUN_QWEN_SPEC_KV4=1`.
+Ineligible requests decode normally and omit the field. The spec path bypasses
+the ordinary prompt cache. Qwen MTP with `MLX_BUN_MTP_PROMPT_CACHE=1` can reuse
+a paired target/draft RAM prefix, reported in `cached_tokens`; the default is
+zero. These prefixes do not persist across restarts. While a draft is mounted every request routes
 through the serial lane (mlx_lm.server parity: `is_batchable = draft is
 None`) — speculation and `--batch N` are different modes.
 

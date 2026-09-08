@@ -405,8 +405,8 @@ export function createServer(
   if (ctx.draft && (kvScheme.turboQuant || kvScheme.kvBits || kvScheme.kvConfig?.length))
     console.warn(
       `[spec] --draft-model with quantized KV (--kv-quant ${serverOptions.turboQuant ? "turbo" : String(serverOptions.kvQuant)}): ` +
-        `the speculative lane is bf16-KV-only in v1 — requests keep the KV scheme and ` +
-        `decode serially WITHOUT speculation. Omit --kv-quant to speculate. ` +
+        `requests keep the KV scheme; the model execution plan enables speculation ` +
+        `only for a qualified combination. Check response usage for the active method. ` +
         `(docs/design/speculative-decoding.md Phase 4)`,
     );
   // TurboQuant head-dim fail-fast (2026-07-07 review): the cache class only
@@ -565,11 +565,20 @@ export function createServer(
   // advertises and admits the larger window it actually enables; only
   // TurboQuant still bills bf16 (conservative — no projector for its
   // layout yet, and it is solo-only in v1).
-  const admission = ctx.glmMemoryPlan ?? fit(
+  const memoryAdmission = ctx.glmMemoryPlan ?? fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
     resolvedKvScheme.fitOptions,
   );
+  // Isolated benchmark profile cap. It may narrow physical admission, never
+  // enlarge it. The normal request planner still clamps prompt + output.
+  const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
+  const contextLimit = profileContext === undefined ? null : Number(profileContext);
+  if (contextLimit !== null && (!Number.isSafeInteger(contextLimit) || contextLimit < 1))
+    throw new Error("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer");
+  const admission = contextLimit === null ? memoryAdmission : {
+    ...memoryAdmission, maxSafeContext: Math.min(contextLimit, memoryAdmission.maxSafeContext),
+  };
   // A zero ceiling is a warning, never a startup refusal: killing the
   // server here can only parrot the per-request admission message (which
   // still fires, with this same ceiling) or be a false positive from the

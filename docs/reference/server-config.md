@@ -134,10 +134,30 @@ operation already running completes before that boundary.
 
 ### Adapters and speculative decoding
 
+Qwen MTP has an experimental paired RAM prefix cache. Set
+`MLX_BUN_MTP_PROMPT_CACHE=1` to retain one aligned target/draft prefill snapshot
+within the prompt cache's byte budget. A hit transfers both states together;
+different targets, KV policies or non-extending histories miss. The cache is
+RAM-only and does not persist across restarts. `usage.cached_tokens` reports
+the reused target prefix. The default remains off.
+
+`MLX_BUN_QWEN_SPEC_KV4=1` qualifies Qwen uniform affine KV4 with
+`quantizedKvStart=0` for speculative execution. Recurrent state and the MTP
+cache keep their original precision. TurboQuant and per-layer KV remain
+incompatible. This composition has diagnostic coverage; final combined,
+pressure and quiet-machine acceptance remain open.
+
+For controlled experiments, `MLX_BUN_RD_PREFILL_CHUNK` sets the speculative
+target prefill chunk, default 2048, unless the library caller provides
+`prefillChunkSize`. `MLX_BUN_RD_CONTEXT_LIMIT` caps physical context admission
+without enlarging it. Both require positive integers; the context cap is unset
+by default. These are benchmark controls, not changes to the published model
+profile or sampling policy.
+
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
 | `--adapter` | dir | none | serial (adapter requests route serial) | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the id is the directory basename) and make it the default for requests without an `adapter` field. A request's explicit `adapter` — including `"none"` — wins; hot-swap via `/v1/adapters` is unchanged. A bad adapter fails startup. Alias `--adapter-path`. |
-| `--draft-model` | path \| query | none | serial (all requests) / per-drafter oracle | **Speculative decoding**: a drafter proposes tokens the target verifies in one forward — exact results, faster decode when drafts land. Resolves like the main model. Kind is auto-detected: a full same-tokenizer model (mlx_lm.server parity, L1 token-for-token; tokenizer-family mismatch fails startup), a Gemma `-assistant` KV-borrowing drafter (L2 vs optiq `spec_generate`), a locally trained **DSpark** checkpoint (`dspark.json`), or a released DeepSpec `Gemma4DSparkModel` drafter. Mounting a draft routes **every** request serial (upstream `is_batchable = draft is None`). Composes with structured output; prompt-cache reuse is bypassed on the spec path. Telemetry: `usage.speculation`. |
+| `--draft-model` | path \| query | none | serial (all requests) / per-drafter oracle | **Speculative decoding**: a drafter proposes tokens the target verifies in one forward — exact results, faster decode when drafts land. Resolves like the main model. Kind is auto-detected: a full same-tokenizer model (mlx_lm.server parity, L1 token-for-token; tokenizer-family mismatch fails startup), a Gemma `-assistant` KV-borrowing drafter (L2 vs optiq `spec_generate`), a locally trained **DSpark** checkpoint (`dspark.json`), or a released DeepSpec `Gemma4DSparkModel` drafter. Mounting a draft routes **every** request serial (upstream `is_batchable = draft is None`). Composes with structured output; ordinary prompt-cache reuse is bypassed on the spec path; Qwen MTP can opt into paired RAM prefixes with `MLX_BUN_MTP_PROMPT_CACHE=1`. Telemetry: `usage.speculation`. |
 | `--draft-kind` | `two-model` \| `assistant` \| `dspark` \| `deepspec` \| `mtp` \| `ngram` | auto | serial | Override drafter detection. `mtp` = a native multi-token-prediction head split from the target's release (`*_mtp` model_type; shares the target's embeddings/lm-head, defaults `--num-draft-tokens` to its trained `block_size − 1`, rolls DeltaNet caches back by snapshot/replay on partial rejects); `mtp` alone mounts the companion bundled at `<model>/mtp/` when present. Qwen MTP companions accept dense or affine-quantized projections using their checkpoint metadata; changing the draft can change acceptance and speed. `ngram` = **model-free prompt lookup** (drafts copied from the request's own prompt+generation; port of prompt-lookup decoding / vLLM's `ngram` proposer) — mount it **alone** (`--draft-kind ngram` with a `--draft-model` is refused, as is any other kind without one); lossless by the same verify, a no-match round degrades to one plain target step. Any other value fails startup. |
 | `--num-draft-tokens` | n (integer ≥ 1) | `3` (`ngram`: `10`; DSpark: pinned ≤ its trained `gamma`) | serial | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
 | `--ngram-max` / `--ngram-min` | k (integer ≥ 1) | `3` / `1` | serial | `--draft-kind ngram` only: longest/shortest trailing k-gram searched (longest first, first occurrence wins). `--ngram-min` > `--ngram-max` fails startup; either flag without `ngram` warns and is ignored. |
@@ -622,7 +642,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Echo injection (session self-copy spans, verified against the same forward's logits) | off | serial only | Lab (paired A/B on task success + wall clock before any default) | `MLX_BUN_FILL=echo`, `MLX_BUN_FILL_K`, `MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX` |
 | `guided_grammar` (EBNF) / `guided_regex`¹ / `guided_choice` / `structured_outputs` | on | both | L2 | request fields |
 | Structured output × speculative decoding | on when both active | serial | Lab | — |
-| Quantized KV × speculative decoding | KV scheme wins — drafted requests decode serially without speculation (startup warning) | serial | — | omit `--kv-quant` to speculate |
+| Quantized KV × speculative decoding | KV scheme wins by default. Qwen uniform KV4 with start=0 can opt into speculation with `MLX_BUN_QWEN_SPEC_KV4=1`; TurboQuant and per-layer schemes remain incompatible. | serial | experimental, default off | `MLX_BUN_QWEN_SPEC_KV4=1` with `--kv-quant 4` |
 | Tool calling (Gemma sentinel / CPM+Qwen XML / GLM `arg_key`+`arg_value`) + `role:"tool"` loops | on | both | — | request `tools` |
 | Vision (`image_url`; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on for models with a tower; SSRF guard on remote URLs | serial | L1/L2 | `--allow-private-media` |
 | Video input (`video_url`/`video`; AVFoundation sidecar, 2 fps, ≤768 frames, 256 MB body cap; never with audio) | on for Qwen3.5-family | serial | mlx-vlm oracle | `--allow-private-media`, `MLX_BUN_FRAME_EXTRACT` |

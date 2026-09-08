@@ -57,6 +57,8 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
+  /** RAM budget for a model-owned paired target/draft prompt snapshot. */
+  speculativeCacheBytes?: number;
   /** Resolved host policy. Direct compatibility calls resolve from their
    * captured binding when this is absent. */
   decodePolicy?: Readonly<Pick<import("./contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;

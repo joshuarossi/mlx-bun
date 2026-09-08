@@ -53,7 +53,7 @@ export function bindLegacySerialModel(
 }
 
 export interface MlxSerialServices {
-  readonly promptCache: Pick<PromptCache, "take" | "put">;
+  readonly promptCache: Pick<PromptCache, "take" | "put"> & Partial<Pick<PromptCache, "maxBytes">>;
   readonly checkpoints: Pick<SsdCacheStore, "findGenerationCheckpoint" | "restore" |
     "storeGenerationCheckpoint" | "removeGenerationCheckpoints"> | null;
   readonly checkpointEveryTokens?: number;
@@ -90,7 +90,11 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       if (!execution) throw new Error("serial execution requires a resolved plan");
       if (execution.method === "speculative") {
         if (!binding.speculate) throw new Error("resolved speculation requires a bound verifier");
-        return await binding.speculate(promptIds, options, onToken);
+        return await binding.speculate(promptIds, {
+          ...options,
+          speculativeCacheBytes: binding.runtime.flag("MLX_BUN_MTP_PROMPT_CACHE", false)
+            ? services.promptCache.maxBytes ?? 0 : 0,
+        }, onToken);
       }
       // Cache entries are adapter-specific: KV computed under one adapter
       // must never seed another's (or the base's) prefill.

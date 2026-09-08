@@ -59,6 +59,9 @@
 //                                  [--model-path /exact/artifact --label name]
 //                                  [--workload-seed campaign-block-0] [--dry-run]
 //                                  [--diagnostic] (records a non-quotable run)
+// Serial experiments (--arms mlx-bun-serial only) also accept:
+//   --draft-model PATH --draft-kind mtp --num-draft-tokens 2
+//   --kv-quant 4 --prompt-cache 4
 //
 // Engine-level legs (in-process kernels, gen-peak memory, kill-switch A/Bs)
 // remain in bench-h2h.ts / scripts/bench-serve.ts all --engine — different question
@@ -78,6 +81,40 @@ const VENV = `${ORACLE_VENV}/bin`;
 // Invoke through the venv python instead; immune to relocation.
 const PY = `${VENV}/python`;
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
+
+// Explicit serial experiments keep their settings in the command manifest.
+// Restrict overrides so a configured cell cannot masquerade as a default or
+// same-policy oracle comparison, or replace benchmark-owned ports/models.
+export function serialBenchmarkArgs(args: string[]): string[] {
+  const allowed = new Set(["draft-model", "draft-kind", "num-draft-tokens", "kv-quant", "prompt-cache"]);
+  const result: string[] = [];
+  for (const name of allowed) {
+    const key = `--${name}`, index = args.indexOf(key);
+    if (index < 0) continue;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(`${key} requires a value`);
+    if (args.lastIndexOf(key) !== index) throw new Error(`${key} may only be supplied once`);
+    if (["num-draft-tokens", "prompt-cache"].includes(name) &&
+        (!Number.isSafeInteger(Number(value)) || Number(value) < (name === "prompt-cache" ? 0 : 1)))
+      throw new Error(`${key} requires ${name === "prompt-cache" ? "a nonnegative" : "a positive"} integer`);
+    result.push(key, value);
+  }
+  if (result.length) {
+    const index = args.indexOf("--arms");
+    if (index < 0 || args[index + 1] !== "mlx-bun-serial")
+      throw new Error("server configuration overrides require --arms mlx-bun-serial; run controls separately");
+  }
+  return result;
+}
+
+function benchmarkRuntimeEnvironment(): Record<string, string> {
+  const names = ["MLX_BUN_LIBMLXC", "MLX_BUN_TRELLIS", "MLX_BUN_TRELLIS_VARIANT",
+    "MLX_BUN_TRELLIS_ASYNC_EXPAND", "MLX_BUN_EARLY_FIRST_TOKEN", "MLX_BUN_FILL",
+    "MLX_BUN_MTP_PROMPT_CACHE", "MLX_BUN_QWEN_SPEC_KV4", "MLX_BUN_RD_CONTEXT_LIMIT",
+    "MLX_BUN_RD_PREFILL_CHUNK", "MLX_BUN_PREFILL_TAIL_SPLIT"];
+  return Object.fromEntries(names.flatMap((name) => process.env[name] === undefined
+    ? [] : [[name, process.env[name]!]]));
+}
 
 const argv = process.argv.slice(2);
 const opt = (name: string, dflt: string): string => {
@@ -214,7 +251,7 @@ function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
     case "mlx-bun-isolated":
       return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--isolate", ...ssd];
     case "mlx-bun-serial":
-      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd, ...serialBenchmarkArgs(argv)];
     case "mlx-bun-mixed":
       if (!existsSync(kvCfg)) return null;
       return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--kv-quant", "config", ...ssd];
@@ -978,6 +1015,7 @@ const median = (xs: number[]): number => {
 };
 
 async function main(): Promise<void> {
+  serialBenchmarkArgs(argv); // fail before preflight or any server process
   if (argv[0] !== "all" && !DIAGNOSTIC && !flag("dry-run"))
     throw new Error("use all for the quiet benchmark, or --diagnostic for an explicitly non-quotable run");
   if (![DECODE_TOKENS, CTX_TOKENS].every((n) => Number.isSafeInteger(n) && n > 0))
@@ -1025,6 +1063,7 @@ async function main(): Promise<void> {
   if (flag("dry-run")) {
     console.log(JSON.stringify({
       measurement: false, diagnostic: DIAGNOSTIC,
+      runtimeEnvironment: benchmarkRuntimeEnvironment(),
       workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, enableThinking: true },
       models: models.map((id) => ({ id, ...MODELS[id]! })),
       cells: models.flatMap((model) => arms.map((arm) => ({
@@ -1060,6 +1099,7 @@ async function main(): Promise<void> {
   const sourceSnapshotStart = benchmarkSourceSnapshot();
   const saveRaw = () => Bun.write(rawPath, JSON.stringify({
     schemaVersion: 4, measurement: true, diagnostic: DIAGNOSTIC, canonical: false,
+    runtimeEnvironment: benchmarkRuntimeEnvironment(),
     qualification: DIAGNOSTIC ? "diagnostic; not eligible for canonical results" : "quiet preflight passed; paired stability and correctness review still required",
     machine, machineBefore, machineAtSave: checkMachine(), commit, bun: Bun.version,
     sourceDiffStart, sourceDiffAtSave: sourceDiff(),
@@ -1143,6 +1183,9 @@ async function main(): Promise<void> {
   if (DIAGNOSTIC) lines.push("", "Diagnostic run. These results are not eligible for canonical performance claims.");
   lines.push(``, `machine: ${machine}`, `commit: ${commit}`, `toolchain: Bun ${Bun.version}`, ``);
   lines.push(`raw requests, counts, finish reasons, timings and retries: ${rawPath}`);
+  const serverArgs = serialBenchmarkArgs(argv);
+  if (serverArgs.length) lines.push(`Configured serial experiment: ${JSON.stringify(serverArgs)}. Compare separately recorded controls with matching policy.`);
+  lines.push(`Runtime overrides: ${JSON.stringify(benchmarkRuntimeEnvironment())}`);
   lines.push(`workload seed: ${WORKLOAD_SEED}; five fixed decode samples, all retained.`);
   lines.push(`All numbers over HTTP against REAL servers (mlx-bun = the actual CLI).`);
   lines.push(`Requests pin enable_thinking=true on every arm. ttft cold = nonce-busted ~1k prompt;`);

@@ -892,7 +892,7 @@ differ across Luke's coding profiles. The selected section is
 The task uses that exact prompt and request recipe. Its first attempt was
 stopped after a serving bug discarded the preceding thinking on tool turns.
 
-The isolated MTP-prefix candidate now permits Qwen uniform KV4 with start=0
+The MTP-prefix integration, now included in the PR #47 feature branch, permits Qwen uniform KV4 with start=0
 behind `MLX_BUN_QWEN_SPEC_KV4`. Prefill converts attention caches through
 `maybeQuantizeKv`; rollback binds after conversion, and prefix identity includes
 KV bits, group size and conversion policy. Recurrent state remains full precision.
@@ -911,7 +911,7 @@ size for MLX prefill, bounding long-context attention workspace.
 ceiling to exactly 131072, never enlarges it. Pi uses the same context and
 xhigh effort. Responses run until EOS or remaining context, with no invented
 16K cap. Task timing includes automatic tool use and retries; app scoring
-follows after inference exits. No task completion result is available yet.
+follows after inference exits. The completed retry is recorded later in this section.
 Raw evidence and invalid runs remain in `reports/qwen38-rd/kanban-final/`.
 
 The paired cache currently captures prompt checkpoints only. Extending it to

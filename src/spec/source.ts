@@ -22,6 +22,7 @@
 
 import type { MlxArray } from "../mlx/array";
 import type { Dtype } from "../mlx/ffi";
+import type { Cache } from "../model/gemma4";
 
 /** Numerical ports are backend-specific; returned arrays are caller-owned. */
 export interface DraftProjection {
@@ -60,6 +61,13 @@ export interface TargetView {
 /** A per-request draft-token producer. Created per generation (owns its own
  *  draft-side state), disposed by the serve loop's finally. */
 export interface DraftSource {
+  /** Optional paired target/draft prefill state. Restore transfers matching
+   * target state into the supplied array. Capture borrows evaluated state;
+   * the source owns its retained snapshot. Only full-prefill sources opt in. */
+  readonly prefix?: {
+    restore(prompt: readonly number[], caches: Cache[], namespace: string, maxBytes: number): number;
+    capture(tokens: number[], caches: Cache[], namespace: string, maxBytes: number): void;
+  };
   /** Target prefill shape required by this source's oracle. Most mlx-lm
    *  sources leave the final prompt token pending; native Colibri MTP starts
    *  from a full-prompt target forward. */

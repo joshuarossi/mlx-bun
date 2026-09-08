@@ -32,8 +32,8 @@ active-model manifests live under `reports/qwen38-rd/`.
 Perf claims get a number on the machine they were measured on, recorded in the
 user-local eval DB (`~/.cache/mlx-bun/evals.sqlite`) and promoted to
 `docs/reference/benchmarks.md` deliberately. `bun scripts/bench-serve.ts all`
-is the benchmark harness; it writes `benchmarks-h2h-<date>-<machine>.md/.html`
-in the working dir (gitignored ephemera). Numbers on a loaded machine are
+is the benchmark harness; it writes Markdown and raw JSON under `reports/`
+as gitignored outputs. Numbers on a loaded machine are
 garbage — run-to-run spread is the stability signal, and the harness retries
 unstable cells (`scripts/bench-serve.ts`; `benchmarks.md`, "Running the
 benchmark").

@@ -60,6 +60,31 @@ Use phase/attempt/index to distinguish a cold request from its identical warm
 repeat; request hashes alone do not identify cache state.
 For paired trials, alternate `--arms mlx-bun-serial,mlx-lm` and the reversed
 order across blocks; give every block its own seed and `--out` path.
+
+Configured serial experiments accept `--draft-model`, `--draft-kind`,
+`--num-draft-tokens`, `--kv-quant` and `--prompt-cache`. These options require
+`--arms mlx-bun-serial`; record default and oracle controls in separate runs.
+The dry-run, raw JSON and Markdown report retain the settings and relevant
+runtime overrides. No script under `reports/` is required to launch them.
+For the current packed Qwen artifact on the M4 Pro, run this after closing
+other workloads. It exercises the opt-in KV4/MTP/paired-prefix configuration
+through the current checkout and writes a new dated report under `reports/`.
+
+```sh
+MLX_BUN_TRELLIS_VARIANT=13 MLX_BUN_QWEN_SPEC_KV4=1 MLX_BUN_MTP_PROMPT_CACHE=1 MLX_BUN_RD_PREFILL_CHUNK=256 \
+bun scripts/bench-serve.ts all \
+  --model-path "$HOME/models/Qwen3.8-27B-q3-trellis-ldlq-k300-packed-interleave2-rd" \
+  --arms mlx-bun-serial \
+  --draft-model "$HOME/models/Qwen3.8-27B-MTP-folded-rtn4-g64-rd" \
+  --draft-kind mtp --num-draft-tokens 2 --kv-quant 4 --prompt-cache 4 \
+  --context 4096 --tokens 192 --workload-seed pr47-block-0
+```
+
+Append `--dry-run` to inspect the command first. This serving suite is separate
+from the Luke Kanban task and does not establish its task-time speedup. The
+portable multi-machine HTML report in the performance plan remains open;
+this entry point currently writes Markdown and JSON.
+
 `--diagnostic` explicitly permits a loaded-machine serving run. It records
 the preflight snapshot and writes `*-serve-diagnostic` DB rows, which cannot
 serve as canonical results. Server children use the invoking Bun executable,
@@ -641,6 +666,49 @@ The doctrine (docs/design/speculative-decoding.md Phase 4e): a feature is ON by
 default for a (model, config) pair only when it WINS a clean-machine
 paired A/B on that pair; losing configs stay documented default-off
 levers. This section records the decisions and the numbers behind them.
+
+### Original and optimized serving diagnostics, M4 Pro, 2026-09-07
+
+Machine: `Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB, Bun 1.4.0.
+`bench-serve.ts all` used workload seed `kanban-final-0`, thinking enabled,
+192 requested output tokens and five decode samples. These are earlier
+diagnostic runs, with existing swap, rather than final-PR quiet acceptance.
+All columns below use the serial serving lane and the required packed target
+weights. Baseline uses `673b43f`, Trellis variant 6 and the older native library;
+optimized arms use variant 13, the lossless interleaved artifact and the local
+MLX 0.32.2 candidate. Each run's source stayed fixed.
+
+All three serving arms use **bf16 KV**, with `--kv-quant off`. The MTP arm
+adds two drafts and paired RAM prefixes. This differs from the completed
+long Kanban task's KV4 configuration. These runs predate the later ownership
+and bounded-range fixes, so they do not measure the exact final task revision.
+
+| Serial serving metric | Original | Optimized, ordinary decode | Optimized, MTP + RAM cache |
+|---|---:|---:|---:|
+| Median decode, tok/s | 10.140 | 11.712 | 19.426 |
+| Cold-request TTFT, ms | 5,923.576 | 6,164.498 | 5,801.504 |
+| Cached TTFT, ms | 190.841 | 436.308 | 91.916 |
+| 1K prefill, tok/s | 127.963 | 122.962 | 130.522 |
+| Peak process RSS, reported MB | 11,958.984 | 13,859.828 | 12,061.219 |
+
+Ordinary decode improves **15.5%**. The MTP configuration improves decode
+**91.6%** relative to the original, with cached TTFT **51.8% lower**.
+Its cold TTFT changes by -2.1%, prefill by +2.0%, and sampled RSS by +0.9%.
+Ordinary decode's gain does not extend to every metric: its cached TTFT and
+RSS regress in this diagnostic. The percentages describe these specific
+serving configurations; they are not a measured Kanban task-time reduction.
+
+The baseline context phase crashed and recovered on retry; no context-phase
+speedup is claimed here. MTP prefix state is RAM-only: the restart probe
+restored zero tokens and does not establish SSD persistence. Stock mlx-lm
+cannot read this packed Trellis artifact, so it supplies no same-artifact
+serving baseline for these rows.
+
+Raw evidence: `reports/qwen38-rd/kanban-final/suite-driver.json`,
+`baseline-suite.md.json`, `optimized-ordinary-suite.md.json`, and
+`optimized-mtp-cache-suite.md.json`. The driver records all commands,
+environments, source hashes and exits. The completed task and its separate
+acceptance are recorded below.
 
 ### Fresh Pi kanban diagnostic, M4 Pro, 2026-09-07
 
