@@ -670,6 +670,40 @@ describe("SsdDurabilityCoordinator", () => {
     expect(result.missingSnapshots).toBe(0);
     expect(result.pendingSnapshots).toBe(0);
   });
+
+  test("one flush recognizes an ancestor covered by a later snapshot write", async () => {
+    let stored = false;
+    const f = durabilityFixture(
+      [{ tokens: [1, 2, 3] }],
+      async () => { stored = true; return true; },
+      (tokens, ns) => stored && ns === "" && tokens.every((token, i) => token === [1, 2, 3][i]),
+    );
+    // A trimmable descendant superseded the short RAM entry before flushing.
+    f.coordinator.schedule([1, 2]);
+    f.coordinator.schedule([1, 2, 3]);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(true);
+    expect(result.pendingSnapshots).toBe(0);
+    expect(result.missingSnapshots).toBe(0);
+    expect(f.stored).toEqual([":1,2,3"]);
+  });
+
+  test("a later snapshot cannot clear an uncovered missing prefix", async () => {
+    let stored = false;
+    const f = durabilityFixture(
+      [{ tokens: [1, 2, 3] }],
+      async () => { stored = true; return true; },
+      (tokens, ns) => stored && ns === "" && tokens.every((token, i) => token === [1, 2, 3][i]),
+    );
+    f.coordinator.schedule([9, 9]);
+    f.coordinator.schedule([1, 2], "other-adapter");
+    f.coordinator.schedule([1, 2, 3]);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(false);
+    expect(result.pendingSnapshots).toBe(2);
+    expect(result.missingSnapshots).toBe(2);
+    expect(f.stored).toEqual([":1,2,3"]);
+  });
 });
 
 // ---------------------------------------------------------------------------

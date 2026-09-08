@@ -52,7 +52,25 @@ jobs:
       # here so PR validation does not depend on an unpublished native pack.
       - run: sh scripts/packaging/build-native-runtime.sh "$RUNNER_TEMP/mlx-runtime"
       - run: echo "MLX_BUN_LIBMLXC=$RUNNER_TEMP/mlx-runtime/lib/libmlxc.dylib" >> "$GITHUB_ENV"
+      # Exact GPU outputs are chip-specific. Replay the unchanged tiny inputs
+      # through the pinned external oracle; never derive goldens from mlx-bun.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install 'mlx==0.32.2' 'mlx-metal==0.32.2' 'mlx-lm==0.31.3'
+      - name: Replay the DeltaNet oracle on the runner GPU
+        run: |
+          oracle_golden_chip=$(bun -e 'import { goldenMachine } from "./tests/support/goldens"; process.stdout.write(goldenMachine());')
+          python scripts/oracle/gen-qwen-delta-golden.py \
+            --replay tests/fixtures/qwen-delta-golden.json \
+            --output "goldens/$oracle_golden_chip/qwen-delta-golden.json"
       # Model-free suites: pure math/logic + synthetic-checkpoint smokes.
-      # No downloads, no cached-model dependencies, no oracle venv.
+      # No model downloads or cached-model dependencies. The tiny oracle
+      # replay above also uses no model weights.
       - run: >
           bun test tests/unit tests/serve tests/using
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qwen-delta-oracle
+          path: goldens/*/qwen-delta-golden.json

@@ -157,7 +157,7 @@ describe("TrellisLinear kernels", () => {
         setTrellisVariant(null);
         for (const arr of [a.rec, a.codes, a.scales, b.rec, b.codes, b.scales]) arr.dispose();
       }
-    });
+    }, 30_000); // Compile the full variant matrix on an uncached CI GPU.
 
     test(`k=${k}: host unpack and expand kernel reproduce the codec (bit-exact)`, () => {
       const { rec, codes, scales } = encoded(k);

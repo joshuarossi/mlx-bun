@@ -456,9 +456,13 @@ the write — the server implied durability it did not have.
 - `flush()` cancels timers, awaits in-flight attempts and `drain()`, then
   forces each dirty record version once, one at a time (so the queue cap
   cannot drop a boundary snapshot while a large final snapshot is in flight).
-  A replacement scheduled during a write receives its own attempt. Result:
+  A replacement scheduled during a write receives its own attempt. After
+  all writes settle, the coordinator checks missing ancestors against the
+  committed SSD index again: a later trimmable descendant may now cover a
+  superseded RAM prefix. Uncovered or foreign-namespace prefixes stay dirty;
+  this adds no duplicate snapshot write. Result:
   `durable` is true only when nothing is pending, nothing dropped or
-  failed during this flush, and nothing was missing.
+  failed during this flush, and no missing prefix remains uncovered.
 
 Surfaces: `POST /admin/cache/flush` returns 200 at the boundary (503
 otherwise) with pending/dropped/failed/entry-count/longest-prefix

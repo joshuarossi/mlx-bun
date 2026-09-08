@@ -151,7 +151,7 @@ export class SsdDurabilityCoordinator {
     this.#timers.clear();
 
     let flushedSnapshots = 0;
-    let missingSnapshots = 0;
+    const missing = new Map<string, DirtySnapshot>();
     const droppedBefore = this.spillQueue.droppedCount;
     const failedBefore = this.spillQueue.failedCount;
 
@@ -175,9 +175,19 @@ export class SsdDurabilityCoordinator {
         if (outcome === "stored") {
           flushedSnapshots++;
         } else if (outcome === "missing") {
-          missingSnapshots++;
+          missing.set(key, rec);
         }
       }
+    }
+
+    // A later trimmable snapshot may now cover a superseded RAM ancestor.
+    // Reconcile against committed SSD coverage after all writes settle;
+    // never clear a missing prefix merely because another write succeeded.
+    for (const [key, rec] of missing) {
+      if (!this.isAlreadyDurable(rec.tokens, rec.ns)) continue;
+      if (this.#dirty.get(key) === rec) this.#dirty.delete(key);
+      missing.delete(key);
+      flushedSnapshots++;
     }
 
     const stats = this.stats;
@@ -188,9 +198,9 @@ export class SsdDurabilityCoordinator {
         stats.pendingSpills === 0 &&
         stats.droppedSpills === droppedBefore &&
         stats.failedSpills === failedBefore &&
-        missingSnapshots === 0,
+        missing.size === 0,
       flushedSnapshots,
-      missingSnapshots,
+      missingSnapshots: missing.size,
       elapsedMs: performance.now() - started,
     };
   }

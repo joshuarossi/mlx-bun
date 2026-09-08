@@ -713,6 +713,48 @@ default for a (model, config) pair only when it WINS a clean-machine
 paired A/B on that pair; losing configs stay documented default-off
 levers. This section records the decisions and the numbers behind them.
 
+### Packed Trellis with KV4/MTP and paired prefixes, M4 Pro, 2026-09-08
+
+The configured serial suite passes every phase on the required 12.14 GiB
+packed Trellis artifact at clean commit `1a80401`, with unchanged source
+hashes throughout. Machine: `Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB,
+Bun 1.4.0, bundled MLX 0.32.2. Quiet preflight passes. This is one run,
+not a matched original/final performance claim or a new Kanban task.
+
+| Metric | Result |
+|---|---:|
+| Short-prompt decode, median of five 192-token samples | **18.806 tok/s** |
+| Short complete-request time, median | **11.389 s** |
+| Output / complete-request time, median | 16.859 tok/s |
+| Cold TTFT, median of three approximately 1K probes | 6.537 s |
+| Warm TTFT, 754 cached tokens | **94.586 ms** |
+| Approximately 1K prefill estimate, median | 115.747 tok/s |
+| Context probe, actual input tokens | 2,677 |
+| Context prefill estimate | 116.808 tok/s |
+| Context decode, median of three samples | 22.763 tok/s |
+| Cached context TTFT | 95.434 ms |
+| Peak sampled process RSS | 11,973.656 MiB (11.693 GiB) |
+| Phase failures | 0 |
+
+Arguments are `--draft-kind mtp --num-draft-tokens 2 --kv-quant 4
+--prompt-cache 4`, with the folded RTN4 MTP draft. Runtime overrides select
+Trellis variant 13, uniform KV4 speculation, paired MTP prefixes and prefill
+chunks of 256. Async Trellis expansion, early-first-token and structural fill
+are off. Workload seed is `pr47-block-0`, thinking is enabled, and the
+requested context target is 4,096; the table reports the actual token count.
+All five short samples emit exactly 192 tokens with no reused prefix.
+
+The speculative prefix store is RAM-only. Restarting restores zero cached
+tokens and the context request takes 24.404 seconds to first output. The
+ordinary SSD flush returns durable with zero entries; this is not proof of
+speculative SSD persistence. No stock mlx-lm arm supports this packed artifact.
+The faster context decode sample reflects a different prompt and MTP acceptance
+workload; it does not establish that increasing context makes inference faster.
+
+Raw evidence: `reports/qwen38-rd/pr47-trellis-kv4-mtp-serve.md` and its `.md.json`
+companion. These serving timings are separate from the completed fresh Pi
+Kanban measurement below.
+
 ### Original and optimized serving diagnostics, M4 Pro, 2026-09-07
 
 Machine: `Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB, Bun 1.4.0.

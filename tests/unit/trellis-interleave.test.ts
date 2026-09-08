@@ -50,7 +50,7 @@ test("interleaved codes preserve every decoder variant and projection path", () 
     const a = before.expandWeight(), b = after.expandWeight();
     try { equalBytes(a, b); } finally { a.dispose(); b.dispose(); }
   } finally { setTrellisVariant(null); codes.dispose(); packed.dispose(); scales.dispose(); }
-});
+}, 30_000); // Includes first-use compilation of all fourteen variants.
 
 test("interleaved expansion accepts strided codes and an incomplete row tile", () => {
   const { codes, packed, scales } = fixture(67);

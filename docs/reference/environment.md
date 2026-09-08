@@ -172,6 +172,13 @@ the reference fixture; other chips write a `goldens/<chip>/` override, which
 the test resolves before the reference. Earlier oracle comparisons and the
 single-value diff are in `reports/qwen38-rd/delta-*.json`.
 
+CI explicitly replays those unchanged inputs through MLX-LM 0.31.3 on
+MLX/MLX-Metal 0.32.2 before testing, saving a runner-chip override and its
+provenance as a workflow artifact. This avoids comparing the macOS 14 runner
+against an M4 Pro output fixture. The test still requires exact output and
+state hashes; Python runs only the external reference. Trellis variant
+matrix tests allow 30 seconds for first-use kernel compilation on CI.
+
 Readable oracle source, in that `site-packages/`: `mlx_lm/models/gemma3.py`
 and `mlx_lm/server.py` for the port targets; `mlx_lm/models/cache.py` for the
 cache classes; `mlx_lm/tokenizer_utils.py` for prompt rendering;
