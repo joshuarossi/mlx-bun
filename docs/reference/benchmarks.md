@@ -318,6 +318,19 @@ replace the Trellis/KV4/MTP measurements nor establish a Kanban task-time gain.
 Raw evidence: `reports/benchmarks-serve-2026-09-08-Joshs-MBP-2025.md` and its
 `.md.json` companion; source hashes are unchanged across the run.
 
+The SSD follow-up at `f144516` fixes flush ordering: an ancestor removed from
+RAM can be covered by a longer trimmable snapshot written later in that same
+flush. After all writes settle, the coordinator checks committed coverage
+again and keeps uncovered prefixes dirty. The regression fails before the
+change and all 29 SSD tests pass afterward. The same M4 Pro repeats pass all
+phases on the first attempt for MiniCPM and Gemma12B in both default and mixed
+serving, restoring 9,061 and 9,588 tokens after restart. Source hashes stay
+fixed in both repeats. Default-arm timed request hashes and all ten output
+texts match the original run. The original failure records remain intact;
+this follow-up does not resolve their separate cross-oracle output differences.
+Evidence: `reports/qwen38-rd/pr47-ssd-followup.md.json` and
+`reports/qwen38-rd/pr47-ssd-followup-mixed.md.json`.
+
 ### Current standard serve matrix — M1 Max 32 GB (2026-08-22)
 
 Real-server HTTP matrix on commit `4103ae1`, with the canonical preflight
