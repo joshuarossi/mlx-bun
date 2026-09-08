@@ -12,6 +12,7 @@ import type { RuntimeModel } from "../../src/model/factory";
 import { resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
 import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
+import { bindMlxGateway, type MlxBatchGroup } from "../../src/backends/mlx/gateway-binding";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -22,6 +23,47 @@ const stubModel = {
 } as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
+
+for (const reason of ["stop", "length"] as const) {
+  test(`continuous statistics preserve ${reason} at the token budget`, async () => {
+    const group: MlxBatchGroup = {
+      activeRows: 0, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: 1024,
+      kick() {}, async close() {},
+      async submit(request) {
+        await request.onToken(7);
+        if (reason === "length") await request.onToken(8);
+        return { promptTokens: 1, cachedTokens: 0, generatedTokens: 2,
+          finishReason: reason, prefillMs: 1, decodeMs: 1 };
+      },
+    };
+    const binding = { ...bindMlxGateway(stubModel), createBatchGroup: () => group };
+    const g = new GenerationGateway(binding, 8, stubSerial);
+    const shape = { ...batchable }, placement = g.place(shape), tokens: number[] = [];
+    expect(placement.mechanism).toBe("continuous");
+    try {
+      const stats = await g.run([1], { maxTokens: 2, temperature: 0, eosTokenIds: [99] },
+        token => { tokens.push(token); }, undefined, shape, placement);
+      expect(stats.finishReason).toBe(reason);
+      expect(stats.generatedTokens).toBe(2);
+      expect(tokens).toEqual(reason === "stop" ? [7] : [7, 8]);
+    } finally { await g.close(); }
+  });
+}
+
+test("serial cache preparation can acquire the engine lock before generation", async () => {
+  const events: string[] = [];
+  const g = new GenerationGateway(stubModel, 1, async () => {
+    events.push("generate");
+    return {} as never;
+  }, {
+    beforeSerial: async () => {
+      await g.runExclusive(async () => { events.push("flush"); });
+    },
+  });
+  const shape = { ...batchable };
+  await g.run([1], {}, () => {}, undefined, shape, g.place(shape));
+  expect(events).toEqual(["flush", "generate"]);
+});
 const usesContinuous = (g: GenerationGateway, shape: RequestShape): boolean =>
   g.place(shape).mechanism === "continuous";
 /** N-layer all-full-attention stub (Phase 3.1 kv-batchability probes). */
@@ -445,6 +487,30 @@ describe("GenerationGateway request cancellation", () => {
     );
     expect(next.generatedTokens).toBe(1);
     expect(serialStarts).toBe(1);
+  });
+
+  test("a client abort during serial decode throws through onToken", async () => {
+    const abort = new AbortController();
+    let returnedFalse = false;
+    const serial = async (
+      _ids: number[],
+      _options: any,
+      onToken: (token: number) => void | boolean | Promise<void | boolean>,
+    ) => {
+      await onToken(7);
+      abort.abort(new DOMException("client disconnected", "AbortError"));
+      const result = await onToken(8);
+      returnedFalse = result === false;
+      return {} as never;
+    };
+    const g = new GenerationGateway(stubModel, 1, serial);
+
+    await expect(
+      g.run(
+        [1], {}, () => {}, undefined, batchable, g.place(batchable), abort.signal,
+      ),
+    ).rejects.toHaveProperty("name", "AbortError");
+    expect(returnedFalse).toBe(false);
   });
 
   test("serial execution receives the request signal before producing tokens", async () => {

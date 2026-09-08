@@ -7,13 +7,14 @@ import { withResource, cleanupFailure, disposeResources, ownResource } from "./e
 // per entry) and evicts least-recently-used until under the cap.
 //
 // Usage pattern (single generation queue, so take/put is race-free):
-//   const hit = cache.take(promptIds);   // longest-prefix match → CLONES
+//   const hit = cache.take(promptIds);   // longest-prefix match
 //   generate(model, promptIds, { cache: hit?.caches ?? fresh })
 //   cache.put([...promptIds, ...generated], caches, ns, hit?.retain);
-// take() is NON-CONSUMING (prefix sharing): it serves zero-copy clones and
-// leaves the donor entry in place — N agents sharing a system prompt all
-// clone from one donor, one prefill; put() supersedes same-ns
-// prefix-ancestors (when the new entry is trimmable) so a conversation
+// take() is NON-CONSUMING for trimmable caches: it serves zero-copy clones
+// and leaves the donor in place, so N agents can share one prefill.
+// Qwen hybrid entries containing recurrent SSM state transfer ownership on
+// an exact hit, avoiding an extra resident recurrent snapshot. put() supersedes
+// same-ns prefix-ancestors (when the new entry is trimmable) so a conversation
 // stays one entry, not one per turn.
 //
 // TIERING (Layer 0, unified-engine plan): when a ColdTier is attached,
@@ -57,8 +58,9 @@ function makeSharedRetain(retain: (() => void) | undefined): { acquire(): () => 
 
 /** The cold (SSD) tier the RAM cache tiers over. Structural — this module
  *  never imports ssd-cache (which imports us); the server binds
- *  SsdCacheStore + the model into this shape (src/server.ts). All methods
- *  must be failure-proof: any error degrades to "no hit"/"not stored". */
+ *  SsdCacheStore + the model into this shape (src/server.ts). Lookup and
+ *  restore failures return null; store returns false on failure. Operations
+ *  that require persistence retain their donor if storing fails. */
 export interface ColdTier {
   /** Longest stored usable prefix for prompt/ns — index-only, no I/O.
    *  `handle` is the tier's opaque entry token, passed back to restore. */
@@ -67,7 +69,9 @@ export interface ColdTier {
    *  pages fault in lazily). `retain` must run after the caches are
    *  disposed (it unmaps the backing file). Null on any failure. */
   restore(handle: unknown): { tokens: number[]; caches: Cache[]; retain: () => void } | null;
-  store(tokens: number[], caches: Cache[], ns: string): void;
+  /** Borrow live caches and finish persistence before returning. A false
+   *  result prevents a required demotion or recurrent ownership transfer. */
+  store(tokens: number[], caches: Cache[], ns: string): boolean | void;
 }
 
 /** Spill sink for eviction/demotion (write-behind, 2026-07-06).
@@ -209,14 +213,36 @@ export class PromptCache {
     return this.#entries.length;
   }
 
+  /** Release LRU entries until the caller's live-memory check is satisfied.
+   * Unlike background eviction, pressure relief must finish the SSD write
+   * and release the buffers now, not enqueue clones that keep them alive.
+   * Call under the engine lock, after taking the request's reusable prefix. */
+  relievePressure(overBudget: () => boolean): number {
+    let count = 0;
+    while (this.#entries.length && overBudget()) {
+      let oldest = 0;
+      for (let i = 1; i < this.#entries.length; i++)
+        if (this.#entries[i]!.lastUsed < this.#entries[oldest]!.lastUsed) oldest = i;
+      const { entry } = this.#entries[oldest]!;
+      // Keep the entry resident if persistence throws. A failed SSD write
+      // must not be presented as a successful demotion.
+      if (this.#cold) {
+        if (this.#cold.store(entry.tokens, entry.caches, entry.ns) === false) break;
+      }
+      else this.#spillSync?.(entry);
+      this.#entries.splice(oldest, 1);
+      this.#disposeEntry(entry, false);
+      this.demotions++;
+      count++;
+    }
+    return count;
+  }
+
   /** Find the entry with the longest usable common prefix of `prompt`
-   *  across BOTH tiers and serve it NON-CONSUMINGLY (prefix sharing,
-   *  2026-07-05): the caller receives zero-copy CLONES trimmed to the
-   *  matched prefix (plus a ref-counted retain share); the donor entry
-   *  stays in the cache, ready for the next agent/session with the same
-   *  prefix. The caller owns the returned caches — dispose them or put()
-   *  an extended entry (which supersedes prefix-ancestors), honoring
-   *  `retain` either way.
+   *  across BOTH tiers. Trimmable RAM entries are served non-consumingly as
+   *  zero-copy clones; exact hits on Qwen hybrid entries containing recurrent
+   *  SSM state transfer the donor itself. The caller owns the returned caches —
+   *  dispose them or put() an extended entry, honoring `retain` either way.
    *
    *  Usable prefix = common prefix capped at prompt.length - 1 (at least
    *  one token must be forwarded to produce logits). Entries longer than
@@ -286,6 +312,18 @@ export class PromptCache {
     const rec = this.#entries[bestIdx]!;
     rec.lastUsed = ++this.#clock;
     rec.lastUsedMs = Date.now();
+    // Qwen recurrent caches are untrimmable. Transfer the exact-boundary
+    // entry instead of retaining a second recurrent snapshot in RAM.
+    // This reduced memory pressure in the recorded multi-turn reproduction.
+    // Save the boundary before consumption: the extended recurrent state
+    // cannot be trimmed back, and a delayed writer can no longer find it
+    // in RAM after ownership moves. An already durable boundary is cheap.
+    if (rec.entry.caches.some((c) => c.signature() === "ssm")) {
+      if (this.#cold?.store(rec.entry.tokens, rec.entry.caches, ns) === false)
+        throw new Error("prompt-cache: failed to persist recurrent boundary before transfer");
+      this.#entries.splice(bestIdx, 1);
+      return rec.entry;
+    }
     const clones = this.#clone(rec.entry.caches);
     const trimNeeded = rec.entry.tokens.length - bestLen;
     try {

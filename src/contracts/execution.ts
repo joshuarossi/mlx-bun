@@ -18,6 +18,8 @@ export interface ExecutionCapabilities {
   readonly quantizedBatch: boolean;
   readonly grammarBatch: boolean;
   readonly checkpoints: boolean;
+  /** Model-qualified speculative execution can retain this request's KV codec. */
+  readonly speculativeKvQuant?: boolean;
   /** A graph-owned compiled step exists; cache geometry can still decline it. */
   readonly compiledDecode?: boolean;
 }

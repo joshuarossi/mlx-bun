@@ -85,6 +85,7 @@ export function respondStream(
   protocol: CompletionStreamProtocol,
   signal: AbortSignal,
   trace?: PromptResponseTrace,
+  heartbeatMs = 15_000,
 ): Response {
   const streamAbort = new AbortController();
   const generationSignal = AbortSignal.any([signal, streamAbort.signal]);
@@ -100,6 +101,11 @@ export function respondStream(
       let wroteFirstEvent = false;
       let outcome: "success" | "error" | "abort" = "success";
       void (async () => {
+        // Tool-aware streams can intentionally buffer a large tool-call JSON
+        // body until it parses as one complete call. Keep the HTTP connection
+        // active during that otherwise silent interval; SSE comments are
+        // ignored by clients and do not alter the completion event stream.
+        const heartbeat = setInterval(() => emit([": keep-alive\n\n"]), heartbeatMs);
         try {
           // The gateway owns lane selection + GPU exclusivity; this body
           // runs per-request (concurrently in batched mode, each writing
@@ -128,6 +134,7 @@ export function respondStream(
             ]);
           }
         } finally {
+          clearInterval(heartbeat);
           trace?.finish(outcome);
           if (!cancelled) {
             if (generationSignal.aborted) controller.error(generationSignal.reason);

@@ -5,6 +5,7 @@ import { DiffusionGemmaModel } from "../../model/diffusion-gemma";
 import { UniversalDenseModel } from "../../model/universal/dense";
 import { KVCache, RotatingKVCache, isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../../model/gemma4-base";
 import { SSMCache } from "../../model/qwen3-delta";
+import { Qwen35Model } from "../../model/qwen3_5";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { disposeResources } from "../../engine/resources";
 import { legacyCompiledDecodeAvailable } from "./autoregressive";
@@ -38,6 +39,9 @@ export function bindMlxGateway(model: RuntimeModel): MlxGatewayBinding {
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
         grammarBatch: runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
+        speculativeKvQuant: model instanceof Qwen35Model && options.kvBits === 4 &&
+          !options.kvConfig?.length && options.quantizedKvStart === 0 &&
+          runtime.flag("MLX_BUN_QWEN_SPEC_KV4", false),
       }, {
         pagedKv: !!options.pagedKv, fill: !!options.fill,
         compiledDecode: runtime.flag("MLX_BUN_COMPILED_DECODE", true),

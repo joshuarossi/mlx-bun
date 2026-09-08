@@ -115,9 +115,9 @@ export class SsdDurabilityCoordinator {
     this.#attempts.set(key, task);
     try {
       const outcome = await task;
-      if (outcome !== "failed" && this.#dirty.get(key) === rec)
+      if (outcome === "stored" && this.#dirty.get(key) === rec)
         this.#dirty.delete(key);
-      if (outcome === "failed" && !force && this.#dirty.get(key) === rec)
+      if (outcome !== "stored" && !force && this.#dirty.get(key) === rec)
         this.#arm(key, this.busyRetryMs);
       return outcome;
     } finally {
@@ -129,6 +129,7 @@ export class SsdDurabilityCoordinator {
     let snap: SpillItem | null = null;
     try {
       snap = await this.gateway.runExclusive(async () => {
+        if (this.isAlreadyDurable(rec.tokens, rec.ns)) return null;
         const entry = this.promptCache.findExact(rec.tokens, rec.ns);
         if (!entry) return null;
         return {
@@ -150,7 +151,7 @@ export class SsdDurabilityCoordinator {
     this.#timers.clear();
 
     let flushedSnapshots = 0;
-    let missingSnapshots = 0;
+    const missing = new Map<string, DirtySnapshot>();
     const droppedBefore = this.spillQueue.droppedCount;
     const failedBefore = this.spillQueue.failedCount;
 
@@ -160,22 +161,33 @@ export class SsdDurabilityCoordinator {
 
     // Flush one entry at a time. This prevents the queue cap from dropping a
     // boundary snapshot while a large final snapshot is already in flight.
+    // Attempt each record version once. Missing state stays dirty, so a
+    // second flush cannot report success without a real durable snapshot.
+    const attempted = new Set<DirtySnapshot>();
     while (this.#dirty.size > 0) {
-      const keys = [...this.#dirty.keys()];
-      let progressed = false;
-      for (const key of keys) {
-        if (!this.#dirty.has(key)) continue;
+      const records = [...this.#dirty.entries()].filter(([, rec]) => !attempted.has(rec));
+      if (records.length === 0) break;
+      for (const [key, rec] of records) {
+        if (this.#dirty.get(key) !== rec) continue;
+        attempted.add(rec);
         const outcome = await this.#attempt(key, true);
         await this.spillQueue.drain();
         if (outcome === "stored") {
           flushedSnapshots++;
-          progressed = true;
         } else if (outcome === "missing") {
-          missingSnapshots++;
-          progressed = true;
+          missing.set(key, rec);
         }
       }
-      if (!progressed) break;
+    }
+
+    // A later trimmable snapshot may now cover a superseded RAM ancestor.
+    // Reconcile against committed SSD coverage after all writes settle;
+    // never clear a missing prefix merely because another write succeeded.
+    for (const [key, rec] of missing) {
+      if (!this.isAlreadyDurable(rec.tokens, rec.ns)) continue;
+      if (this.#dirty.get(key) === rec) this.#dirty.delete(key);
+      missing.delete(key);
+      flushedSnapshots++;
     }
 
     const stats = this.stats;
@@ -186,9 +198,9 @@ export class SsdDurabilityCoordinator {
         stats.pendingSpills === 0 &&
         stats.droppedSpills === droppedBefore &&
         stats.failedSpills === failedBefore &&
-        missingSnapshots === 0,
+        missing.size === 0,
       flushedSnapshots,
-      missingSnapshots,
+      missingSnapshots: missing.size,
       elapsedMs: performance.now() - started,
     };
   }

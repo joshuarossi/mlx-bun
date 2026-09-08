@@ -767,6 +767,15 @@ implementations throughout migration. New numerical work has separate paired
 validation, so structural changes cannot conceal a quality or performance
 tradeoff. §12.11 defines the shared frontier scorecard.
 
+Future design question (2026-09-05): consider a monorepo with the inference
+engine kept together as one package, and application modules such as memory
+and the web UI in separate packages. CLI/TUI and training boundaries can be
+considered in that discussion. This is an unplanned idea, not part of the
+current optimization campaign. Before choosing boundaries, map dependencies,
+native assets, builds, tests, and releases; preserve in-process execution and
+the single-binary distribution. Package boundaries should follow demonstrated
+ownership and dependency needs without adding abstractions to the decode path.
+
 ### 12.2 Dependency structure
 
 ```mermaid

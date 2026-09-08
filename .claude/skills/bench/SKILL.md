@@ -10,10 +10,15 @@ description: Run THE quotable mlx-bun benchmark (real servers, parity probes) an
    the benchmark from an agent session while Josh is using the machine — ask.
 2. `bun scripts/bench-serve.ts all [--models cpm5,e4b,12B,qwen27b] [--no-serial] [--skip-context] [--context N]`
    — runs the clean-machine preflight itself, holds caffeinate, spawns the
-   REAL CLI and the real mlx-lm/optiq servers, writes a dated
-   `benchmarks-serve-<date>-<host>.md` in the working dir.
-3. Move that dump to `reports/` (gitignored). Root dumps fail the hygiene gate.
-4. Read the report: parity ✓ lines are the correctness verdict; the kv-quant
+   REAL CLI and the real mlx-lm/optiq servers, writes dated Markdown and raw
+   JSON under `reports/`. Use `--model-path` for an exact artifact and
+   `--workload-seed` plus distinct `--out` paths for paired blocks. `--dry-run`
+   prints commands without starting servers or touching the GPU.
+3. Keep raw samples in `reports/` (gitignored). All five decode samples are
+   retained. Match request hashes, counts and finish reasons; compare total
+   request wall time as well as the potentially bursty SSE interval.
+4. Read the report: parity ✓ lines compare observed text; token-ID/logit
+   oracle gates are still required for numerical correctness. The kv-quant
    RSS check is known to misfire on large models with --ssd-cache (accounting,
    not silent bf16) — confirm quantization via decode@ctx and restart-restore
    size instead.

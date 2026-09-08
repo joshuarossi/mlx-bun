@@ -29,15 +29,15 @@ export interface MetalKernelSpec {
 }
 
 export interface MetalKernelCall {
-  /** Concrete output shapes/dtypes. Provide this OR `outputShapeFn` (the latter
-   *  makes the kernel derive its outputs from the input shapes, like a real MLX
-   *  primitive — required to compose inside an mx.compile'd / shapeless closure,
-   *  where the wrapper must answer "given these input shapes, what comes out?"). */
+  /** Concrete output shapes/dtypes. Provide this OR `outputShapeFn`.
+   *  Both are captured when apply() builds the custom primitive. */
   outputs?: { shape: number[]; dtype: Dtype }[];
-  /** Derive output shapes/dtypes from the (current/traced) input shapes. */
+  /** Derive outputs during eager construction or a shape-specific compile trace.
+   *  This JS callback is not native shape inference: MLX's CustomKernel lacks
+   *  output_shapes(), so it cannot participate in shapeless replay. */
   outputShapeFn?: (inputs: MlxArray[]) => { shape: number[]; dtype: Dtype }[];
-  /** Concrete launch grid, OR derive it from inputs (so it tracks shape under
-   *  compile replay the same way `outputShapeFn` tracks output shapes). */
+  /** Concrete launch grid, OR derive it during eager construction or tracing.
+   *  Native replay reuses the captured grid without invoking this callback. */
   grid: [number, number, number] | ((inputs: MlxArray[]) => [number, number, number]);
   threadGroup: [number, number, number];
   templateInts?: Record<string, number>;
@@ -73,9 +73,8 @@ export class MetalKernel {
     // flash-CCE pin bug). Pure-additive: holds references, changes no logic.
     const keepAlive: unknown[] = [];
     try {
-      // Derive outputs + grid from the (current) input shapes when a function is
-      // given — so the SAME kernel object answers correctly for any input shape
-      // during a compile/replay trace, instead of baking in one call's shapes.
+      // Resolve callbacks once for this eager call or shape-specific trace.
+      // A compiled graph captures these values; replay does not call JS again.
       const outputs = call.outputShapeFn ? call.outputShapeFn(inputs) : call.outputs;
       if (!outputs) throw new Error("metal_kernel: provide outputs or outputShapeFn");
       const grid = typeof call.grid === "function" ? call.grid(inputs) : call.grid;

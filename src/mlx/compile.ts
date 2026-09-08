@@ -23,8 +23,14 @@ import { MlxArray } from "./array";
 
 export type TraceFn = (inputs: MlxArray[]) => MlxArray[];
 
-const traceRegistry = new Map<number, { fn: TraceFn; count: number }>();
+const traceRegistry = new Map<number, { fn: TraceFn; count: number; shapeless: boolean }>();
 let nextTraceId = 1;
+let shapelessTracing = false;
+
+/** Fixed-shape custom kernels must fall back while a shapeless graph traces. */
+export function isShapelessTracing(): boolean {
+  return shapelessTracing;
+}
 /** Error thrown by a trace fn, carried across the C boundary (the
  *  trampoline must not throw into mlx; it returns non-zero instead). */
 let traceError: unknown = null;
@@ -40,9 +46,11 @@ export let traceCalls = 0;
 // error handler in ffi.ts).
 const trampoline = new JSCallback(
   (resPtr: number, argsVec: bigint, payload: number): number => {
+    const previousShapeless = shapelessTracing;
     try {
       const entry = traceRegistry.get(payload);
       if (!entry) throw new Error(`compile trampoline: unknown trace id ${payload}`);
+      shapelessTracing ||= entry.shapeless;
       const fn = entry.fn;
       entry.count++;
       traceCalls++;
@@ -66,6 +74,8 @@ const trampoline = new JSCallback(
     } catch (e) {
       traceError = e;
       return 1;
+    } finally {
+      shapelessTracing = previousShapeless;
     }
   },
   { args: ["ptr", "u64", "ptr"], returns: "i32" },
@@ -95,7 +105,7 @@ export class CompiledFunction {
 
   constructor(fn: TraceFn, shapeless = true) {
     this.#traceId = nextTraceId++;
-    traceRegistry.set(this.#traceId, { fn, count: 0 });
+    traceRegistry.set(this.#traceId, { fn, count: 0, shapeless });
     // payload is the trace id smuggled through the void* (never deref'd);
     // dtor is null — nothing to free on the C side.
     const raw = C.mlx_closure_new_func_payload(trampoline.ptr, this.#traceId as never, null);

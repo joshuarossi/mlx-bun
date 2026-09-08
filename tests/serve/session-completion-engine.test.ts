@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
+import { createInferenceEngine } from "../../src/engine/engine";
 import type { GenerateStats } from "../../src/generate";
 import type { CompletionEngine } from "../../src/serve/completion-executor";
 import type { RequestShape } from "../../src/serve/generation-gateway";
-import { createSessionCompletionEngine } from "../../src/serve/session-completion-engine";
+import { createCompletionMethod, createSessionCompletionEngine } from "../../src/serve/session-completion-engine";
 
 const shape: RequestShape = {
   hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false,
@@ -114,4 +115,28 @@ test("engine close cancels a running method and waits for its resources", async 
   await closing;
   expect(cleaned).toBe(true);
   expect((await result).name).toBe("AbortError");
+});
+
+test("the completion method preserves EOS at its output budget", async () => {
+  const runtime: CompletionEngine = {
+    place: shape => ({ shape, mechanism: "serial" }),
+    async run(_prompt, _options, onToken) {
+      await onToken(1);
+      return { ...stats(2), finishReason: "stop" };
+    },
+  };
+  const method = createCompletionMethod(runtime, {
+    prompt: [0], options: { maxTokens: 2 }, shape, placement: runtime.place(shape),
+  });
+  const engine = createInferenceEngine({ async plan() {
+    return { id: "eos-budget", outputTokenLimit: 2, method };
+  } }, { timer: { after(ms, callback) { const id = setTimeout(callback, ms); return () => clearTimeout(id); } } });
+  try {
+    const outcome = await (await engine.open({}, { output: "collect" })).result;
+    expect(outcome.status).toBe("completed");
+    if (outcome.status !== "completed") throw new Error("EOS request did not complete");
+    expect([...outcome.output!]).toEqual([1]);
+    expect(outcome.result.finishReason).toBe("stop");
+    expect(outcome.result.metrics.generatedTokens).toBe(2);
+  } finally { await engine.close(); }
 });

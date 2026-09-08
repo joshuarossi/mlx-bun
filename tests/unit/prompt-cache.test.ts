@@ -1,11 +1,12 @@
 // PromptCache unit tests (fast tier — stub caches, no weights).
 //
-// Since prefix sharing (2026-07-05), take() is NON-CONSUMING: it serves
-// zero-copy clones and leaves the donor entry in the cache (killing the
-// cannibalization where one agent's prefix match destroyed another's
-// entry), and put() supersedes same-ns prefix-ancestors when the new
-// entry is trimmable. Tests inject a stub cloner (the real one,
-// kv-store.cloneKvCaches, switches on real cache classes).
+// Since prefix sharing (2026-07-05), take() is NON-CONSUMING for trimmable
+// caches: it serves zero-copy clones and leaves the donor entry in the cache.
+// Qwen hybrid entries containing recurrent SSM state transfer ownership on
+// an exact-boundary hit to avoid an extra resident recurrent snapshot. put()
+// supersedes same-ns prefix-ancestors when the new entry is trimmable. Tests
+// inject a stub cloner (the real one, kv-store.cloneKvCaches, switches on real
+// cache classes).
 
 import { describe, expect, spyOn, test } from "bun:test";
 import { PromptCache } from "../../src/prompt-cache";
@@ -14,11 +15,11 @@ import type { Cache } from "../../src/model/gemma4";
 
 function stubCache(
   nbytes: number, disposed: { count: number }, trimmable = true,
-  trims: number[] = [],
+  trims: number[] = [], signature = "test:stub",
 ): Cache {
   return {
     offset: 0,
-    signature: () => "test:stub",
+    signature: () => signature,
     updateAndFetch: () => { throw new Error("unused"); },
     makeMask: () => ({ mode: "", arr: null }),
     state: () => [{ nbytes } as never],
@@ -111,6 +112,42 @@ describe("PromptCache", () => {
     expect(sibling.count).toBe(1);
     expect(backing).toBe(0); // do not unmap backing when cache disposal failed
     expect(() => pc.clear()).not.toThrow();
+  });
+
+  test("memory pressure synchronously persists and releases LRU entries without spill clones", () => {
+    const disposed = { count: 0 };
+    const stored: number[][] = [];
+    let queued = 0;
+    const pc = new PromptCache(8 * 1024 ** 3, {
+      spillOwned: () => { queued++; },
+    }, {
+      find: () => null,
+      restore: () => null,
+      store: (tokens) => { stored.push(tokens); },
+    });
+    pc.put([1], [stubCache(100, disposed, false)]);
+    pc.put([2], [stubCache(100, disposed, false)]);
+    pc.put([3], [stubCache(100, disposed, false)]);
+    expect(pc.relievePressure(() => disposed.count < 2)).toBe(2);
+    expect(stored).toEqual([[1], [2]]);
+    expect(queued).toBe(0);
+    expect(pc.totalBytes).toBe(100);
+    expect(pc.maxBytes).toBe(8 * 1024 ** 3);
+    expect(pc.findExact([3])).not.toBeNull();
+    pc.clear();
+  });
+
+  test("pressure relief retains an entry when synchronous persistence throws", () => {
+    const disposed = { count: 0 };
+    const pc = new PromptCache(1000, null, {
+      find: () => null, restore: () => null,
+      store: () => { throw new Error("disk unavailable"); },
+    });
+    pc.put([1], [stubCache(100, disposed, false)]);
+    expect(() => pc.relievePressure(() => true)).toThrow("disk unavailable");
+    expect(disposed.count).toBe(0);
+    expect(pc.size).toBe(1);
+    pc.clear();
   });
 
   test("longest usable prefix wins; donor stays in the cache (non-consuming)", () => {
@@ -439,19 +476,69 @@ describe("PromptCache — Layer 0 tiering", () => {
     expect(d.count).toBe(0);
   });
 
-  // The oracle invariant (2026-07-06 gemma cache fixes): a trim-free
-  // STRICT-PREFIX entry is the only reuse path an untrimmable (wrapped
-  // ring) model has — an exact repeat must hit it with zero trims.
-  test("untrimmable strict-prefix entry serves an exact repeat without trims", () => {
+  // A trim-free STRICT-PREFIX entry is the only reuse path Qwen's
+  // untrimmable recurrent cache has. It transfers ownership instead of cloning;
+  // the caller puts the extended entry back after generation.
+  test("untrimmable strict-prefix entry transfers an exact hit without cloning", () => {
     const { pc, cloneTrims } = mk();
     const d = { count: 0 };
     const prompt = Array.from({ length: 600 }, (_, i) => i);
     // the boundary snapshot: prompt[:-1], untrimmable (rings already wrapped)
-    pc.put(prompt.slice(0, 599), [stubCache(10, d, false)]);
+    const donor = stubCache(10, d, false, [], "ssm");
+    pc.put(prompt.slice(0, 599), [donor]);
     const hit = pc.take(prompt); // exact repeat of the full prompt
     expect(hit?.tokens).toHaveLength(599); // prompt.length-1 — no trim needed
+    expect(hit?.caches[0]).toBe(donor);
     expect(cloneTrims).toEqual([]);
-    expect(pc.size).toBe(1);
+    expect(pc.size).toBe(0);
+    expect(d.count).toBe(0); // ownership moved to the caller, never disposed
+  });
+
+  test("consuming a recurrent boundary stores it before transferring ownership", () => {
+    const cold = fakeCold(false);
+    const { pc, cloneDisposed } = mkTiered(cold);
+    const disposed = { count: 0 };
+    let backing = 0;
+    const donor = stubCache(10, disposed, false, [], "ssm");
+    pc.put([1, 2], [donor], "agent", () => { backing++; });
+    const hit = pc.take([1, 2, 3], "agent")!;
+    expect(cold.stored).toEqual([{ tokens: [1, 2], ns: "agent" }]);
+    expect(hit.caches[0]).toBe(donor);
+    expect(pc.size).toBe(0);
+    expect(disposed.count).toBe(0);
+    expect(cloneDisposed.count).toBe(0);
+    expect(backing).toBe(0);
+    // The old boundary remains usable after the live state has moved on.
+    const repeat = pc.take([1, 2, 4], "agent")!;
+    expect(repeat.tokens).toEqual([1, 2]);
+    expect(cold.restores.count).toBe(1);
+    for (const c of repeat.caches) c.dispose();
+    repeat.retain?.();
+    for (const c of hit.caches) c.dispose();
+    hit.retain?.();
+    expect(disposed.count).toBe(1);
+    expect(backing).toBe(1);
+  });
+
+  test("a failed recurrent boundary store retains the donor and backing", () => {
+    for (const throws of [false, true]) {
+      const cold = fakeCold(false), disposed = { count: 0 };
+      let backing = 0;
+      const pc = new PromptCache(1e9, null, { ...cold.tier, store() {
+        if (throws) throw new Error("disk full");
+        return false;
+      } });
+      const donor = stubCache(10, disposed, false, [], "ssm");
+      pc.put([1, 2], [donor], "", () => { backing++; });
+      expect(() => pc.take([1, 2, 3])).toThrow(throws ? "disk full" : "failed to persist recurrent boundary");
+      expect(pc.findExact([1, 2])?.caches[0]).toBe(donor);
+      expect(pc.size).toBe(1);
+      expect(disposed.count).toBe(0);
+      expect(backing).toBe(0);
+      pc.clear();
+      expect(disposed.count).toBe(1);
+      expect(backing).toBe(1);
+    }
   });
 
   test("exact-duplicate put replaces the old entry even when untrimmable", () => {

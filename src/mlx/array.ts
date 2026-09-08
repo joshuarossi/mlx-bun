@@ -46,17 +46,16 @@ let nextPinId = 1;
 // do nothing — a dtor mlx can safely call from ANY thread. The pointed-to
 // memory's lifetime is the CALLER's contract (weight mmaps live for the
 // process; restored KV is COPIED at load since 2026-07-07 — see kv-store.ts
-// loadKvCache — so no restore mapping needs pinning anymore). The address
-// comes via dlsym because
-// bun:ffi's symbol .ptr returns the pointer bit-cast to float64
-// (lab/repro/bun-ffi-f64) — passing that back truncates to NULL.
-const libcDlsym = dlopen("/usr/lib/libSystem.B.dylib", {
-  dlsym: { args: ["u64", "ptr"], returns: "u64" },
+// loadKvCache — so no restore mapping needs pinning anymore). Bun >= 1.4
+// returns a numeric function address from .ptr; verified against dlsym on
+// 1.4.0 and 1.4.2. Keep the library open for every native destructor's lifetime.
+const libcFree = dlopen("/usr/lib/libSystem.B.dylib", {
+  free: { args: ["ptr"], returns: "void" },
 });
-const FREE_NAME = Buffer.from("free\0");
-const RTLD_DEFAULT = 0xfffffffffffffffen;
-const freeFnAddr = Number(libcDlsym.symbols.dlsym(RTLD_DEFAULT, ptr(FREE_NAME)));
-if (!freeFnAddr) throw new Error("dlsym(free) failed — zero-copy arrays need a native no-op dtor");
+// The pinned bun-types predates the runtime's numeric .ptr property.
+const freeFnAddr = Number(Reflect.get(libcFree.symbols.free, "ptr"));
+if (!Number.isSafeInteger(freeFnAddr) || freeFnAddr <= 0)
+  throw new Error("free.ptr is invalid — zero-copy arrays need a native no-op dtor");
 
 export function pinnedBufferCount(): number {
   return pinned.size;

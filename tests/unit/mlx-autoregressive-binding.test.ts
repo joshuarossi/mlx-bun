@@ -57,6 +57,93 @@ test("an independent binding runs without a RuntimeModel or class-based dispatch
   expect(seen).toEqual({ forwards: 4, steps: 0, allocations: 1, disposals: 1 });
 });
 
+for (const early of [false, true]) {
+  test(`first-token scheduling uses the captured binding policy: early=${early}`, async () => {
+    const { binding, seen } = fixture();
+    const generation = generateAutoregressive({ ...binding,
+      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: early ? "1" : "0" }),
+    }, [0, 1], { temperature: 0, maxTokens: 5, prefillChunkSize: 1,
+      logprobs: true, topLogprobs: 3 });
+    const restore = configureRuntime({ MLX_BUN_EARLY_FIRST_TOKEN: early ? "0" : "1" });
+    try {
+      const iter = generation[Symbol.asyncIterator]();
+      const first = await iter.next();
+      expect(first.value).toMatchObject({ token: 2, index: 0 });
+      expect(first.value?.logprobs).toBeDefined();
+      expect(seen.forwards).toBe(early ? 2 : 3);
+      await iter.return(undefined);
+      expect(generation.stats!.generatedTokens).toBe(1);
+      expect(generation.stats!.cacheTokens).toEqual(early ? [0, 1] : [0, 1, 2]);
+      expect(seen.disposals).toBe(1);
+    } finally { restore(); }
+  });
+}
+
+for (const maxTokens of [1, 2, 3]) {
+  test(`early first-token yield preserves the ${maxTokens}-token budget`, async () => {
+    const { binding, seen } = fixture();
+    const generation = generateAutoregressive({ ...binding,
+      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+    }, [0, 1], { temperature: 0, maxTokens, prefillChunkSize: 1 });
+    const emitted = [];
+    for await (const token of generation) emitted.push([token.index, token.token]);
+    expect(emitted).toEqual([[0, 2], [1, 3], [2, 4]].slice(0, maxTokens));
+    expect(generation.stats!.generatedTokens).toBe(maxTokens);
+    expect(generation.stats!.cacheTokens).toEqual([0, 1, ...[2, 3].slice(0, maxTokens - 1)]);
+    expect(seen.disposals).toBe(1);
+  });
+}
+
+test("cancellation after an early first yield starts no further forward", async () => {
+  const { binding, seen } = fixture();
+  const abort = new AbortController();
+  const generation = generateAutoregressive({ ...binding,
+    runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+  }, [0, 1], { temperature: 0, maxTokens: 5, prefillChunkSize: 1, signal: abort.signal });
+  const iter = generation[Symbol.asyncIterator]();
+  expect((await iter.next()).value).toMatchObject({ token: 2, index: 0 });
+  abort.abort(new Error("cancelled at first yield"));
+  await expect(iter.next()).rejects.toThrow("cancelled at first yield");
+  expect(seen.forwards).toBe(2);
+  expect(seen.disposals).toBe(1);
+  expect(generation.stats).toBeNull(); // Aborted runs do not publish final stats.
+});
+
+test("an early first token precedes cancellation inside the following decode", async () => {
+  const { binding, seen, advance, logits } = fixture();
+  const abort = new AbortController();
+  let closed = 0;
+  const generation = generateAutoregressive({ ...binding,
+    runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+    createDecode: () => ({ close() { closed++; }, tryStep(token, state) {
+      seen.steps++;
+      advance(state, 1);
+      abort.abort(new Error("cancelled in next decode"));
+      return { logits: logits(token.toIntTokens()), evalWith: [] };
+    } }),
+  }, [0, 1], { temperature: 0, maxTokens: 5, prefillChunkSize: 1, signal: abort.signal });
+  const iter = generation[Symbol.asyncIterator]();
+  expect((await iter.next()).value).toMatchObject({ token: 2, index: 0 });
+  expect(abort.signal.aborted).toBe(false);
+  await expect(iter.next()).rejects.toThrow("cancelled in next decode");
+  expect(seen.steps).toBe(1);
+  expect(seen.disposals).toBe(1);
+  expect(closed).toBe(1);
+});
+
+test("an initial EOS remains invisible and counted with early first-token scheduling", async () => {
+  const { binding, seen } = fixture();
+  const generation = generateAutoregressive({ ...binding,
+    runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+  }, [5, 6], { temperature: 0, maxTokens: 5, prefillChunkSize: 1 });
+  const tokens = [];
+  for await (const token of generation) tokens.push(token.token);
+  expect(tokens).toEqual([]);
+  expect(generation.stats!.generatedTokens).toBe(1);
+  expect(generation.stats!.finishReason).toBe("stop");
+  expect(seen.disposals).toBe(1);
+});
+
 test("bound kernels and early-close cleanup retain runtime settings across consumer awaits", async () => {
   const { binding, seen } = fixture();
   const observed: string[] = [];

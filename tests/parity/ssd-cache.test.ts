@@ -192,6 +192,20 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("an infinite cap keeps unrelated entries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ssd-"));
+    const s = new SsdCacheStore(OPTS(dir, Number.POSITIVE_INFINITY));
+    for (const tokens of [[1, 2, 3], [9, 8, 7]]) {
+      const caches = mkCaches(4);
+      expect(s.store(tokens, caches)).toBe(true);
+      for (const cache of caches) cache.dispose();
+    }
+    s.evictToCap();
+    expect(s.entries).toBe(2);
+    expect(s.maxBytes).toBe(Number.POSITIVE_INFINITY);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   test("oversized entry refused; scan reaps .tmp orphans", () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore({ ...OPTS(dir), maxBytes: 64 }); // absurdly small
@@ -319,45 +333,68 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  // The 2026-07-07 decode@ctx fix: storeAsync's flush must gate EVERY
-  // per-tensor step (including the first) on the caller's waitTurn — a
-  // flush step is a blocking GPU sync + writeSync, and ungated steps
-  // interleaved with active decodes (the bench's contaminated ctx repeats).
-  test("storeAsync awaits waitTurn before every tensor step and still stores", async () => {
+  // The SSD flush must own EVERY per-tensor step (including the first). An
+  // idle check followed by an unguarded next() has a check/use race with a
+  // newly admitted request because next() performs the blocking MLX sync.
+  test("storeAsync runs every tensor step inside the caller's exclusive runner", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore(OPTS(dir));
     const caches = mkCaches(); // 2 caches × [k, v] = 4 tensor steps
     let gateCalls = 0;
     let gateOpen = false;
-    const waitTurn = async (): Promise<void> => {
+    const runStep = async <T>(step: () => T): Promise<T> => {
       gateCalls++;
-      // the first call happens BEFORE any bytes hit disk (the .tmp is only
-      // opened inside the first step) — hold the gate one macrotask and
-      // verify nothing was written while it was shut
+      // The first runner call happens before the generator opens its .tmp.
       if (gateCalls === 1) {
         expect(readdirSync(join(dir, "fp-test", "base")).length).toBe(0);
         await new Promise<void>((r) => setTimeout(r, 5));
         gateOpen = true;
       }
       expect(gateOpen).toBe(true);
+      return step();
     };
-    expect(await s.storeAsync([1, 2, 3, 4], caches, "", waitTurn)).toBe(true);
-    // 4 yields → 5 next() calls, each preceded by the gate
+    expect(await s.storeAsync([1, 2, 3, 4], caches, "", runStep)).toBe(true);
+    // 4 yields -> 5 next() calls, each owned by the runner.
     expect(gateCalls).toBe(5);
     for (const c of caches) c.dispose();
     expect(s.entries).toBe(1);
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("a throwing waitTurn is swallowed — the flush completes ungated", async () => {
+  test("a throwing exclusive runner aborts the store instead of flushing ungated", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore(OPTS(dir));
     const caches = mkCaches();
-    const bad = (): Promise<void> => Promise.reject(new Error("gate broke"));
-    expect(await s.storeAsync([1, 2, 3], caches, "", bad)).toBe(true);
+    const bad = async <T>(_step: () => T): Promise<T> => { throw new Error("lock broke"); };
+    expect(await s.storeAsync([1, 2, 3], caches, "", bad)).toBe(false);
     for (const c of caches) c.dispose();
-    expect(s.entries).toBe(1);
+    expect(s.entries).toBe(0);
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("a lease rejected between tensors unwinds the suspended writer", async () => {
+    const { saveKvCacheAsync } = await import("../../src/kv-store");
+    const dir = mkdtempSync(join(tmpdir(), "ssd-lease-"));
+    const path = join(dir, "partial.mlxkv");
+    const caches = mkCaches();
+    let steps = 0;
+    try {
+      await expect(saveKvCacheAsync(path, [1, 2, 3, 4], caches, {}, async (step) => {
+        if (++steps === 2) {
+          expect(existsSync(`${path}.tmp`)).toBe(true);
+          throw new Error("lease closed");
+        }
+        return step();
+      })).rejects.toThrow("lease closed");
+      expect(steps).toBe(2);
+      expect(readdirSync(dir)).toEqual([]);
+      // The caller still owns the input state and can retry it.
+      await saveKvCacheAsync(path, [1, 2, 3, 4], caches);
+      expect(existsSync(path)).toBe(true);
+    } finally {
+      for (const cache of caches) cache.dispose();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -484,8 +521,10 @@ function durabilityFixture(
   isAlreadyDurable: (tokens: number[], ns: string) => boolean = () => false,
 ) {
   const source = fakeCaches(10);
+  const calls = { find: 0, clone: 0 };
   const promptCache = {
     findExact(tokens: number[], ns = "") {
+      calls.find++;
       const hit = entries.find((e) =>
         (e.ns ?? "") === ns && e.tokens.length === tokens.length &&
         e.tokens.every((token, i) => token === tokens[i]));
@@ -505,12 +544,12 @@ function durabilityFixture(
     gateway,
     promptCache as never,
     queue,
-    (() => fakeCaches(10) as never) as never,
+    (() => { calls.clone++; return fakeCaches(10) as never; }) as never,
     isAlreadyDurable,
     1,
     60_000,
   );
-  return { coordinator, gateway, queue, stored };
+  return { coordinator, gateway, queue, stored, calls };
 }
 
 describe("SsdDurabilityCoordinator", () => {
@@ -570,12 +609,57 @@ describe("SsdDurabilityCoordinator", () => {
   });
 
   test("reports a boundary snapshot that vanished from RAM", async () => {
-    const f = durabilityFixture([]);
+    let durable = false;
+    const f = durabilityFixture([], undefined, () => durable);
     f.coordinator.schedule([9, 9]);
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const result = await f.coordinator.flush();
+      expect(result.durable).toBe(false);
+      expect(result.missingSnapshots).toBe(1);
+      expect(result.pendingSnapshots).toBe(1);
+    }
+    durable = true;
+    const recovered = await f.coordinator.flush();
+    expect(recovered.durable).toBe(true);
+    expect(recovered.pendingSnapshots).toBe(0);
+    expect(f.stored).toEqual([]);
+  });
+
+  test("an already durable RAM entry does not clone or enqueue another copy", async () => {
+    const f = durabilityFixture(undefined, undefined, () => true);
+    f.coordinator.schedule([1, 2, 3]);
+    expect((await f.coordinator.flush()).durable).toBe(true);
+    expect(f.calls).toEqual({ find: 0, clone: 0 });
+    expect(f.stored).toEqual([]);
+  });
+
+  test("one flush does not retry a failed record when another record succeeds", async () => {
+    let attempts = 0;
+    const f = durabilityFixture([{ tokens: [1] }, { tokens: [2] }], async ({ tokens }) => {
+      attempts++;
+      return tokens[0] === 2 || attempts > 2;
+    });
+    f.coordinator.schedule([1]);
+    f.coordinator.schedule([2]);
+    const first = await f.coordinator.flush();
+    expect(first.durable).toBe(false);
+    expect(first.pendingSnapshots).toBe(1);
+    expect(attempts).toBe(2);
+    expect((await f.coordinator.flush()).durable).toBe(true);
+    expect(attempts).toBe(3);
+  });
+
+  test("a replacement scheduled during a write receives its own flush attempt", async () => {
+    let attempts = 0;
+    const f = durabilityFixture(undefined, async () => {
+      if (++attempts === 1) f.coordinator.schedule([1, 2, 3]);
+      return true;
+    });
+    f.coordinator.schedule([1, 2, 3]);
     const result = await f.coordinator.flush();
-    expect(result.durable).toBe(false);
-    expect(result.missingSnapshots).toBe(1);
+    expect(result.durable).toBe(true);
     expect(result.pendingSnapshots).toBe(0);
+    expect(attempts).toBe(2);
   });
 
   test("accepts a vanished RAM snapshot when SSD already covers its prefix", async () => {
@@ -585,6 +669,40 @@ describe("SsdDurabilityCoordinator", () => {
     expect(result.durable).toBe(true);
     expect(result.missingSnapshots).toBe(0);
     expect(result.pendingSnapshots).toBe(0);
+  });
+
+  test("one flush recognizes an ancestor covered by a later snapshot write", async () => {
+    let stored = false;
+    const f = durabilityFixture(
+      [{ tokens: [1, 2, 3] }],
+      async () => { stored = true; return true; },
+      (tokens, ns) => stored && ns === "" && tokens.every((token, i) => token === [1, 2, 3][i]),
+    );
+    // A trimmable descendant superseded the short RAM entry before flushing.
+    f.coordinator.schedule([1, 2]);
+    f.coordinator.schedule([1, 2, 3]);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(true);
+    expect(result.pendingSnapshots).toBe(0);
+    expect(result.missingSnapshots).toBe(0);
+    expect(f.stored).toEqual([":1,2,3"]);
+  });
+
+  test("a later snapshot cannot clear an uncovered missing prefix", async () => {
+    let stored = false;
+    const f = durabilityFixture(
+      [{ tokens: [1, 2, 3] }],
+      async () => { stored = true; return true; },
+      (tokens, ns) => stored && ns === "" && tokens.every((token, i) => token === [1, 2, 3][i]),
+    );
+    f.coordinator.schedule([9, 9]);
+    f.coordinator.schedule([1, 2], "other-adapter");
+    f.coordinator.schedule([1, 2, 3]);
+    const result = await f.coordinator.flush();
+    expect(result.durable).toBe(false);
+    expect(result.pendingSnapshots).toBe(2);
+    expect(result.missingSnapshots).toBe(2);
+    expect(f.stored).toEqual([":1,2,3"]);
   });
 });
 

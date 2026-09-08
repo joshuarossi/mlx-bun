@@ -184,6 +184,369 @@ comment on `TurboQuantKVCache` still calls deferred-InvFWHT a non-goal; the
 method exists two screens below it — the comment is stale, the code is
 authoritative.)
 
+## Packed-value decode fusion investigation
+
+The Mac-quant video follow-up in decode-speed-program §7.11 exposed an
+unpack/gather/scale chain that also exists in our shipped KV decoder. A
+research-only Metal prototype reads the byte-packed values and fp16 group
+scales directly from the active cache window, gathers the existing f32
+Lloyd-Max centroids and multiplies in f32. The eager path keeps the native
+inverse Hadamard, sign multiplication and bf16 cast. The deferred path casts
+the same f32 values to bf16. Keys and the quantized representation stay the
+same. The four-dimensional launch reads cache strides without copying its
+capacity slice; context length, capacity and head count remain runtime inputs.
+There is no specialization for each new token position.
+
+On the M4 Pro 24 GB, the initial 140 cases preserve 280 flat/grid comparisons
+across value bits 2/3/4/5/8, head dimensions 64/128/256/512, multiple batch/head
+counts, strided cache windows and both rotation paths. Three six-process
+repeats preserve another 1,440 candidate comparisons and every cross-process
+fixture/output hash. These add fp16 scales and the production 32-value group
+to the initial bf16/f32 and 64-value-group operation coverage. Every process
+returns to its primed native sign/centroid-cache allocation. The all-dimension
+screen retains 5,104 bytes; each D256 repeat retains 2,288 bytes. The generated
+kernel keys stay constant across the three tested context lengths.
+
+The last repeat uses synthetic [1,8,N,256] caches with fp16 scales and groups
+of 32. For eager V3 decode, paired median operation time falls 46.72% at N128,
+77.43% at N2048 and 81.37% at N8192. V5 falls 54.66%, 82.12% and 84.93%. Every
+V3/V5 pair improves. At N8192, peak temporary allocation falls about 250 MiB
+for V3 and 282 MiB for V5. The repeat checks outputs before timing and after
+the last rep of each arm; the earlier screen read the output on the CPU
+between every rep, which changed the timing regime. Raw screens are retained.
+These are operation diagnostics on a loaded machine, not RSS or full-model
+speed claims. This Qwen artifact has four KV heads, so the next gate runs the
+actual model. The experimental full-model branch keeps V8 on its native path
+while the larger low-bit gain is assessed.
+
+Evidence in reports/qwen38-rd: tq-value-grid.json,
+tq-value-repeat{,-review}.json, tq-value-f16-repeat{,-review}.json and
+tq-value-production-repeat{,-review}.json. Full-model logits, live cache and
+recurrent state, seeded generation, actual HTTP timing, fallback/lifetime and
+quiet acceptance are required before production integration or a default.
+
+The first Qwen k8v3 full-model pair now preserves all 20 forward/state and
+continuation comparisons plus four greedy/seeded-sampled generations at
+128/2048 input tokens. Both arms make 4,880 cache-value calls. The candidate
+uses one D256/V3/group32/fp16-scale specialization across every context length;
+final active allocation is identical at 1,016,898 bytes. Timing is mixed:
+single-token forwards improve, while three of four complete generations lose.
+During the candidate process, one-minute load rises from 2.80 to 7.57 and
+system swap grows about 323 MiB, so this pair cannot isolate the cause of the
+slowdown. It is retained in full, and no production/default decision follows.
+Evidence: tq-value-full{,-review}.json. Actual Bun HTTP comparisons follow.
+
+An additional 270 finite-scale-boundary cases preserve 540 comparisons,
+including zero, signed zero, fp16 subnormals and large scales at every head
+dimension, with the actual four-KV-head shape included. All allocations return
+to the primed 5,104-byte global cache. Evidence: tq-value-edge.json. The first
+actual HTTP pair preserves all five responses, call maps and final allocation.
+Measured complete time falls 0.77% for the 58-token code prompt and 1.38% for
+the 1,806-token inventory prompt. The latter improves decode throughput 7.57%
+but worsens TTFT 3.80%; it is a screening pair, not acceptance. Six alternating
+fresh-server pairs now preserve all 30 paired responses, call maps, source
+hashes and process exits. Each server ends with the same 11,936,577,410 active
+bytes, which includes the retained model. Paired median complete time falls
+0.82% on the short prompt, all six pairs, and 2.87% on the long prompt, four of
+six pairs. Long-prompt decode throughput rises 7.33%, five of six pairs; TTFT
+worsens 0.75% in the paired median and is split three wins/three losses. Per-
+request sampled RSS differences are small and inconsistent, so this is not a
+physical-memory claim. Retain both losing long-prompt pairs. Evidence:
+tq-value-http-repeat{,-review}.json. Test decode-only eligibility to separate
+prefill scheduling from decode, then broader context/quant/cache and quiet
+acceptance. No production/default change yet.
+
+A separate decode-only V arm also preserves 20 forward/state cases and four
+generations. Exact call maps show 4,480 fused M1 reads and 400 native
+multi-token reads; active allocation remains 1,016,898 bytes. Evidence:
+tq-value-decode-full{,-review}.json. A first timing pair improves complete
+generation, but it is not the policy decision.
+
+The next prototype decodes packed K and V in one launch, retaining K's f32
+addition before multiplication and V's f32 centroid multiplication. It passes
+720 initial pair comparisons. An expanded screen checks all 20 served K/V bit
+combinations with distinct key/value scales, including finite boundary values,
+and preserves all 2,400 comparisons. Equal scale values in the initial
+synthetic fixtures could not detect a swapped scale input; the expanded
+fixtures close that gap. Actual-model scales were already independent.
+
+Six fresh-process operation repeats preserve another 432 comparisons. With
+actual four-head D256 caches, fp16 scales and group32, joint k8v3 decoding is
+9.60%, 22.80% and 43.19% faster than V-only fusion at N128/2048/8192 in the
+paired median, all six pairs at each context. These include the native inverse
+rotation. Peak temporary allocation falls another 0.53/8.5/34 MiB. The full
+Qwen pair preserves 20 forward/state comparisons and four generations, all
+4,880 cache calls, one generated specialization and identical final active
+allocation. Source and raw evidence: tq-kv-screen.json,
+tq-kv-independent.json, tq-kv-repeat{,-review}.json and
+tq-kv-full{,-review}.json.
+
+The actual Bun HTTP follow-up completes all six arm orders across 18 fresh
+servers. Its 90 requests preserve all 60 candidate/control response comparisons,
+call and eligibility maps, process exits and source hashes. Every server retains
+the same 11,936,577,410 active bytes. Each candidate uses one shader specialization
+across both prompt lengths. These runs use the same R6 weights, k8v3 cache,
+serial execution, greedy seed42 and no prompt reuse or speculative draft.
+
+| Candidate versus original | 58-token prompt: complete time | 1,806-token prompt: complete time | Long-prompt decode throughput | Long-prompt TTFT |
+|---|---|---|---|---|
+| V fusion only on M1 appends | −0.81%, 6/6 wins | −3.42%, 5/6 wins | +7.53%, 5/6 wins | −0.14%, 5/6 wins |
+| Joint K/V at all append shapes | −0.76%, 5/6 wins | −4.57%, 6/6 wins | +10.35%, 6/6 wins | −0.17%, 5/6 wins |
+
+Values are medians of paired changes, not ratios of unpaired medians. Joint
+decoding also improves long-prompt complete time over decode-only V by 1.20%,
+all six pairs; its short-prompt median is 0.08% slower. The first joint short
+request loses 3.70%, and the first decode-only long request loses 2.30%; both
+remain in the report. TTFT is effectively flat. Observed RSS deltas remain
+small and do not establish physical-memory savings. Evidence:
+tq-kv-policy-http{,-review}.json. Extend the exact gates to 8,192 context tokens,
+RTN4 and deferred-rotation consumers, then check integrated lifetime/fallback
+behavior. These are M4 Pro diagnostics with existing system swap; quiet
+acceptance and a production/default decision remain open.
+
+The 8,192-token R6 gate also passes: six full forward/state/continuation cases
+at M1/4/128 and two 64-token greedy/sampled generations are exact. Both arms
+make 2,960 cache calls and finish at 1,016,898 active bytes; the candidate still
+uses one shader key. In this single pair, complete generation time falls 9.11%
+and 7.43%, and native peak allocation falls 126.97 MiB. The measured M1 forward
+falls from 200.84 to 118.87 ms. These are screening timings, not repeated HTTP
+acceptance or physical-memory savings. Evidence: tq-kv-long-full{,-review}.json.
+
+A further prototype folds inverse Hadamard, normalization, signs and bf16 cast
+into the joint decoder. It copies the exact radix-16 butterfly and indexing from
+MLX 0.31.2's MIT-licensed Metal Hadamard implementation. All 480 shape/bit/dtype/
+finite-boundary cases preserve both candidate comparisons. Six fresh processes
+then preserve all 36 performance cells, but the literal one-row threadgroup
+layout loses to joint decode plus native rotation: k8v3 paired median operation
+time rises 12.76%/20.11%/24.67% at N128/2048/8192. Lower temporary allocation
+alone does not justify this version. The follow-up tests independent rows in
+one threadgroup, preserving each row's arithmetic and participation in barriers
+at partial tails. Evidence: tq-kv-rotation-screen.json and
+tq-kv-rotation-repeat{,-review}.json. No full-model run is justified for the
+losing layout.
+
+Grouping independent rows into one threadgroup preserves the same 960 boundary
+comparisons, including partially occupied tail groups. Six fresh-process repeats
+preserve all 36 timing cells. At N8192, this version improves over joint decode
+plus native rotation by 22.28% for k8v3 and 23.20% for k4v3, all six pairs, while
+halving the operation's peak temporary allocation from 64 to 32 MiB. It remains
+slower at N128 and N2048; for k8v3 the paired medians are +4.08% and +20.43%.
+Only a long-context candidate is justified for full-model/request testing.
+Evidence: tq-kv-rotation-rows-screen.json and
+tq-kv-rotation-rows-repeat{,-review}.json. The baseline layout does not advance.
+
+Joint decoding also passes the RTN4 full-model counterpart: 18 forward/state/
+continuation cases at context128/2048/8192 and four generations are exact, with
+5,536 matching cache calls, one specialization and 1,000,514 final active bytes
+per arm. Its first paired generation timings improve, but repeated RTN4 HTTP
+acceptance remains. A nonfinite follow-up preserves 960 additional comparisons
+across every served bit pair, all head dimensions and scale dtypes, including
+NaNs, infinities and arbitrary f32 zero-point fractions. This covers the
+reference codec's documented zero-scale/infinite-fp16-zero behavior.
+
+The MiniCPM5-1B counterpart exercises deferred V rotation: all 20 forward/state
+cases, four generations and 7,320 cache calls match. Both arms finish at 524,860
+active bytes; the candidate uses one D128 specialization. These are correctness
+and first-pair timing gates, not repeated cross-model serving claims. Evidence:
+tq-kv-rtn4-full{,-review}.json, tq-kv-nonfinite.json and
+tq-kv-minicpm-full{,-review}.json. Gemma D512 and integrated operation/fallback/
+lifetime checks follow.
+
+Gemma-4-e4b's D512 deferred consumer also passes: 20 forward/state cases, four
+generations and 1,220 matching cache reads, one specialization and 1,057,864
+final active bytes per arm. Evidence: tq-kv-gemma-e4b-full{,-review}.json.
+
+The joint decoder is now integrated as an experimental opt-in. The environment
+setting and supported inputs are documented in server-config.md. A shared
+`src/mlx/turboquant-kv-decode.ts` owns only the packed Metal operation; the existing
+codec owns inverse rotation and the cache captures operation selection once.
+Request/execution interfaces, quantization and persistence remain unchanged.
+The original codec remains the fallback and correctness reference. Five new
+operation tests pass 1,102 assertions across served bit combinations, head
+dimensions, independent group sizes, nonfinite values, strided storage, fallback
+and shapeless-trace behavior, borrowing and exact post-disposal allocation.
+All three typechecks pass. With fusion enabled, the existing 26 codec/cache
+tests also pass, including growth, trim and mixed-cache persistence. Their
+snapshot helpers now release temporary casts and owned state views instead of
+letting test-only allocations obscure the lifecycle checks. The integrated
+model/HTTP evidence follows; prototype timings above are not automatically
+attributed to the production dispatch.
+
+The integrated R6 gate now preserves all 20 forward/state/continuation cases,
+four generations, 4,880 cache reads and 1,016,898 final active bytes per arm.
+Passive observation confirms that every enabled read reaches the production
+kernel, with one specialization. The full model-free tier passes 1,873 tests
+with 10 skips; typechecks and pure hygiene also pass. Evidence:
+tq-kv-integrated-full{,-review}.json and tq-kv-integrated-code-checks.json.
+The integrated RTN4 counterpart also preserves all 20 forward/state cases,
+four generations, 4,880 reads and 1,000,514 final active bytes. Its first-pair
+timings are mixed: three complete-generation cells regress 0.44–1.88%, while
+the 2,048-token sampled cell improves 4.33%. Exactness alone does not establish
+a speed gain. Evidence: tq-kv-integrated-rtn4-full{,-review}.json.
+
+Six integrated R6 HTTP pairs preserve all 30 response comparisons, call maps,
+one candidate specialization and equal post-exit active allocation. Paired
+medians for the 58-token prompt are −0.74% complete time and +0.75% decode,
+both six wins. At 1,806 prompt tokens they are −3.61% complete time, four wins,
+and +10.33% decode, five wins. Long-prompt TTFT is +1.81%, three wins. Both
+complete-time losses, +0.55% and +10.95%, remain in the result. This repeat is
+noisier than the prototype, with no established TTFT improvement.
+
+The same run stops after its first RTN4 pair on a 10,944-byte difference in
+post-exit active allocation, with less retained in the candidate. All five
+responses and the cache call maps match. The original run remains marked
+incomplete; the later allocation investigation and revised assessment appear
+below. Every child exits
+cleanly and all 547 recorded source hashes remain unchanged. Evidence:
+tq-kv-integrated-http{,-review}.json. A separate instrumented allocation/GC
+diagnostic follows; its timings cannot be compared with ordinary serving.
+
+The HTTP extension keeps the existing RSS collector and adds the calibrated
+native process reader. R6's whole-server sampled physical-footprint maximum
+falls in every pair, with a median difference of 2.04 GiB; this includes
+startup, warmups and both prompt shapes. Measured-request RSS is nearly flat.
+These observations do not identify per-request physical peaks or prove
+savings across models. Longer-context, pressure, repeated deferred-model
+serving and quiet acceptance remain before any default decision.
+
+A fresh six-pair RTN4 repeat completes all 60 requests with all 30 response
+comparisons and cache call maps exact. Both prompt shapes improve complete
+time and decode throughput in every pair. At 58 prompt tokens the paired
+medians are −3.07% complete time and +3.35% decode; at 1,806 they are −5.95%
+and +15.47%. TTFT medians are about −0.63% in both cells. These use k8v3 KV,
+serial execution and 128 generated tokens, without a speculative draft.
+
+The repeat still fails its exact process-exit allocation gate. The candidate
+retains 15,135,029,250 bytes in all six servers; four controls match, while
+the last two retain 18,624 and 6,976 fewer bytes. Together with the earlier
+smaller candidate observation, this varies in both arms. An array-tracked
+diagnostic preserves 1,851 live wrappers and identical allocation before and
+after explicit GC, but does not reproduce the variation. It establishes no
+GC fix or kernel leak. The lighter observation below resolves the acceptance
+metric, while preserving these failed reports. Evidence:
+tq-kv-integrated-rtn4-http{,-review}.json and tq-kv-memory{,-review}.json.
+
+The lighter array observer reproduces a 2,560-byte capacity difference while
+both servers retain exactly 1,851 wrappers with matching dtype/shape counts
+and logical bytes, before and after GC. This exposes a flaw in the exact-byte
+gate: MLX's Metal allocator counts `MTLBuffer.length`, and its cache can reuse
+a larger buffer for a smaller request. A controlled native reproduction gives
+identical 4,096-byte arrays with either 4,096 or 6,144 active bytes. Clearing
+unused buffers preserves that difference; disposing the live array releases
+it completely. See the pinned allocator.cpp and buffer_cache.h plus
+allocator-capacity-repro.json. The server's individual backing capacities were
+not enumerated, so reuse explains the metric's limitation without attributing
+every byte. Ownership acceptance uses the matching live-array inventory and
+the exact native/cache disposal gates; active capacity remains a reported
+measurement. Original failed reports remain unchanged. The revised assessment
+is tq-kv-integrated-rtn4-http-acceptance.json.
+
+The integrated 8K R6 gate also passes all six forward/state/continuation cases
+and both 64-token greedy/sampled generations, with 2,960 matching cache reads,
+one specialization and equal final allocation. In the first three-arm block,
+joint decoding improves complete generation by 8.63%/7.59% versus the original.
+Adding row-grouped inverse rotation only at N≥8192 preserves all results and
+improves a further 1.25%/0.90% over integrated joint decoding. Its 2,256 rotation
+calls exactly match eligibility, with 704 ordinary joint calls. The operation's
+lower temporary allocation does not reduce the whole generation's peak further.
+These are screening timings; the repeated long-context HTTP result follows. Evidence:
+tq-kv-rotation-long{,-review}.json.
+
+The six-block long-context HTTP repeat completes all 18 fresh servers and 54
+requests in all six arm orders. At 8,846 prompt tokens and 128 generated tokens,
+joint decoding versus the original codec improves paired-median decode by
+83.87% and complete time by 12.77%. Adding row-grouped inverse rotation improves
+a further 5.39% decode and 1.05% complete time over the integrated joint decoder.
+Every paired complete-time and decode comparison improves. The incremental
+TTFT median is −0.24%, with four of six wins; sampled request RSS is slightly
+higher, so this establishes no RSS saving. All response text, usage, finish
+reasons, call/eligibility maps and retained capacity match; all children exit
+cleanly and all 547 recorded source hashes remain fixed. These are R6/k8v3,
+serial, greedy seed42 diagnostics on the M4 Pro, without a draft. They do not
+apply to bf16-cache rows. Evidence: tq-kv-rotation-long-http{,-review}.json.
+
+That result justifies integrating the inverse operation into the same opt-in.
+The numeric module `src/mlx/turboquant-kv-inverse.ts` owns a single D256 shader,
+with 16 rows per threadgroup, unrolled radix16 butterflies and exact 1/16
+normalization. The codec selects it only for the measured eager k8v3, B1/H4,
+fp16/group32 regime at N≥8192; other calls retain joint decoding or the original
+codec. Packed arrays and codec-table strides are explicit. N changes the grid,
+never the shader specialization, and padded rows participate in every barrier.
+The updated operation suite passes nine tests and 1,226 assertions, including
+threshold/partial-row, nonfinite, strided-table, fallback and ownership checks.
+Actual integrated model and serving acceptance against the saved prior joint
+codec remain separate from the prototype's timing evidence. The R6 native
+integration gate passes twelve forward/state/continuation cases and four
+64-token greedy/sampled generations at contexts 2048/8192. Logits, tokens,
+logprobs, complete cache states, prefix snapshots and usage are identical.
+The candidate's 2,256 inverse calls match eligibility exactly, with 3,088 joint
+calls; both arms release to the same retained allocation. Source hashes remain
+fixed and both children exit cleanly. A brief concurrent CPU build prevents
+accepting this gate's timing. Evidence:
+tq-kv-inverse-integrated-r6-full{,-review}.json.
+
+The MLX 0.32.2 controls now pass the same integrated model gate on both R6 and
+RTN4. Every full logit/state/continuation case and greedy/sampled generation is
+exact, with matching call maps, equal final active allocation and clean exits.
+The version-specific records are mlx-upgrade-0.32.2/{r6,rtn4}-kv-inverse-full.json.
+The integrated serving repeat now completes six usable timing pairs per quant
+on the M4 Pro 24 GB, with the same 8,846-token prompt, k8v3, greedy seed42 and
+128 generated tokens. Inverse rotation improves the paired-median HTTP decode
+rate by 4.69% on R6 and 5.98% on RTN4; every decode pair improves. Complete
+request time improves 0.79% on R6, with all six pairs improving. RTN4's complete
+time is inconclusive: its median improves 0.38%, but only three pairs improve
+and prefill variation exceeds the incremental saving. Neither result establishes
+a general RSS reduction. All 78 responses across the original and replacement
+runs match text, usage and finish reason. Call/eligibility maps match, all 26
+servers exit cleanly and source/library hashes stay fixed. One original R6
+timing pair was excluded after an MLX unit test overlapped its warmup; the
+predeclared replacement supplies that pair. These are loaded-machine
+diagnostics, not canonical acceptance. Evidence:
+mlx-upgrade-0.32.2/inverse-kv-http{,-replacement,-review,-isolation}.json.
+Combined pressure and quiet acceptance remain.
+
+The consolidated 0.32.2 runtime also passes six paired actual HTTP blocks per
+MiniCPM5-1B and Gemma4-e4b with the joint decoder off/on. Their deferred value
+paths use D128 and D512 respectively. All 120 responses, including warmups,
+match in text, usage and finish reason; every call map matches and all 24
+servers exit cleanly. Source and native-library hashes remain fixed. Both
+models improve complete request time in every measured pair. MiniCPM improves
+substantially at both tested prompt lengths; Gemma's benefit is larger on the
+longer prompt. Sampled RSS establishes no reduction. The server-exit observer
+still sees resident model arrays, so its active capacity is not a disposal-to-
+zero test. Native operation and full-model ownership gates remain separate.
+These are M4 Pro 24 GB diagnostics with k8v3, greedy seed 42 and 128 generated
+tokens. TurboQuant KV requires serial placement in the existing execution
+planner. Evidence: mlx-upgrade-0.32.2/deferred-kv-http{,-review}.json. This closes
+the deferred-model serving comparison; broader pressure and quiet gates remain.
+
+Direct packed-key attention is closed as an additional speed candidate. A
+research port of MLX 0.31.2's two-pass vector attention replaces each K load
+with the existing signed-k8 zero/scale arithmetic and bf16 rounding. It keeps
+the native block selection, score reduction, online softmax, bf16 partial
+output and final reduction order. The dense source port and packed-key variant
+both match all 72 operation cases at D256, one query, GQA 6 and N1024 through
+16384, including group32/64, fp16/bf16/f32 metadata and strided arrays. Every
+owned allocation is released. Scope is M4 Pro, no mask or sinks, with eager
+V already decoded; this does not cover arbitrary SDPA inputs.
+
+Six fresh-process repeats then measure the complete eager k8v3 decode plus
+attention using actual encoder output. All 72 cells preserve their inputs
+and both candidate outputs, with 3,888 timed operations and matching source
+hashes. Fixture allocations return to the same warmed codec-table baseline
+after every cell. Direct key loads with the earlier fused V decoder improve
+over the original operations, but lose against the integrated joint K/V
+decoder plus native attention. Paired median regressions are about 14% at
+N1024/1025, 19% at N2048, 6% at N8192/8193 and 8% at N16384, for contiguous
+and strided caches. All six pairs lose except two noisy N2048 contiguous
+cells. Peak temporary allocation falls by the removed bf16 K window, about
+16 MiB at N8192 and 32 MiB at N16384, without a measured whole-model memory
+benefit. The initial key-only improvement therefore does not justify a new
+model/cache dispatch or production kernel. Evidence: tq-key-sdpa-screen.json
+and tq-key-sdpa-complete-repeat{,-review}.json. The pinned source is MLX's
+MIT-licensed sdpa_vector.h and scaled_dot_product_attention.cpp under
+upstream/mlx-0.31.2; the closed research helpers are removed.
+
 ## Gates — all passed 2026-07-06 (M1 Max 32 GB)
 
 1. **Quantizer parity (bit-exact, the hard gate):** encode indices, scales,
@@ -747,6 +1110,11 @@ fastest; M4-class → compact is smaller AND faster. Compact 32k prefill
 
 ## Weights-leg non-goals
 
+The original W recipe's scope below does not limit the 2026-09 Qwen performance
+program. Custom formats, kernels, alternative algorithms and online-transform
+candidates are now in scope under the gates in
+[decode-speed-program.md](decode-speed-program.md#7-qwen38-27b-research-program).
+
 Mirrors the PLAN.md phase: no custom Lloyd-Max weight format / new qmm
 kernels; no activation quantization; no runtime weight rotation of any kind
 (weights fold offline; online rotation remains the KV codec's job); no
@@ -866,7 +1234,13 @@ group per output row, lanes stride consecutive coded positions → coalesced,
 `simd_sum`), `scatter` (axis 0, 32 lanes = 32 consecutive outputs of one
 block, loop over inputs, split-K ×16 partials summed by one mlx op), and
 `expand` (whole tensor → bf16 for M>4, then a stock matmul; ≤178 MB
-transient). The reconstructed weight is bf16(f32(lut[state])·f32(scale)) in
+per expanded tensor). Packed prefill evaluates each projection before
+building the next. Qwen also evaluates each layer's cache outputs: the
+copied conv tail otherwise retains the whole chunk's conv input until
+end-of-chunk cache evaluation. Decode remains lazy and uses packed kernels.
+These evaluation boundaries bound temporary buffer lifetimes; disposing a
+JS tensor handle alone does not release a lazy consumer's references.
+The reconstructed weight is bf16(f32(lut[state])·f32(scale)) in
 every path — bit-identical to the fake-quant artifact's stored bf16 (unit test
 `tests/unit/trellis-linear.test.ts`: host unpack + expand kernel exact for
 k∈{2,3,4}; matvecs within 2e-3 of a bf16 matmul). Engine wiring is additive:
@@ -970,6 +1344,668 @@ other tensor through byte-identical: 23 GiB, loads in 24 s, dense KL 0.1568
 vs 0.1553 streamed (+1%, identity confirmed). All task columns for trellis
 arms are measured on the carrier. NOT a shipping format — the real footprint
 needs Q2b (packed trellis + Metal decode kernel).
+
+## Packed kernel experiments (2026-09-05, M4 Pro 24 GB)
+
+Experimental `MLX_BUN_TRELLIS_VARIANT=7` reuses each decoded gate/up weight
+across M=2..4 input vectors. The new kernels live in
+`src/model/trellis-shared-m.ts`; the original kernels remain the default
+(variant 6). Variant 7 keeps the same two-accumulator order, reductions and
+bf16 activation boundaries. M=1, scatter/down and M>4 expansion retain the
+variant-6 decoder and kernels. No weight format or crossover changed.
+
+The kernel diagnostic now loads an individual layer's real packed tensors
+with `--model-path`, selecting a gate bit-width via `--k` (and optionally
+`--layer`). It records the actual per-role geometry, tensor SHA-256 hashes,
+source identity, every timing sample and memory. `--variants 6,7` compares
+the implementations; `--reference-variant 6` checks outputs separately from
+timing. `--m`, `--seed`, `--reps` and `--pipe` control the micro-workload;
+`--skip-affine` excludes synthetic affine controls, which are not a quality
+comparison. `--json reports/<name>.json` preserves results. Its complete-MLP
+cell retains gate/up → SwiGLU → down dependencies and production barriers.
+`--kernel-module` permits isolated candidate modules with the same exports.
+
+The first screen covers the packed artifact's k2/k3/k4 matrices at
+M=1/2/3/4/5/8. Shared-M reduce and fused gate/up prototypes match the observed
+outputs at M=1..4. Six sequential AB/BA blocks with different activation seeds
+retain the gain in the complete MLP. Raw evidence is under
+`reports/qwen38-rd/paired-shared-m/`; integrated variant-7 checks are under
+`reports/qwen38-rd/variant7/`. Unit tests also compare exact output bytes for
+bf16/f32, both axes, fused activation, the complete MLP and the M=4/5 boundary.
+The complete packed 27B also passes candidate/current equality for all logits,
+live KV/recurrent state and a subsequent token at M=1..5. Six AB/BA full-model
+forward blocks at M=2/4 preserve state/logit identity on distinct token inputs;
+results are in `reports/qwen38-rd/shared-m-full-model.json`. These timings
+project every position from a short shared prefix. They do not measure HTTP
+generation or strict fill's last-position-only head. The machine fails the
+quiet/swap gate, so user-workload A/B and quiet M4 Pro evidence remain required
+before a default. `tests/parity/trellis-shared-m.test.ts` retains the native
+gate behind `MLX_BUN_TEST_TRELLIS_MODEL`; `MLX_BUN_TRELLIS_AB_REPORT` optionally
+records the diagnostic forward timings.
+
+Experimental variant 8 combines variant 7 with balanced 3-bit scatter in
+`src/model/trellis-balanced-scatter.ts`. The incumbent assigns one packed word
+per lane and leaves eight SIMD lanes idle for a 3-bit block. The candidate
+assigns eight outputs to each of all 32 lanes, loads adjacent packed words
+and aligns them once before constant-shift decoding. It preserves each
+output's row/FMA order, all split boundaries, partial reduction and final
+cast. This path requires k=3, T=256 and L<=12; other geometries retain the
+incumbent scatter. M>4 still expands. The default remains variant 6.
+
+Balanced lanes alone improve the diagnostic screen; aligning words improves
+it further. Row-loop unrolling does not materially improve the aligned
+candidate, so it is not retained. The unroll screen has no repeatable-win
+verdict for k2/k4. Raw screens: `reports/qwen38-rd/balanced3-screen/`,
+`scatter-unroll-screen/` and `aligned3-screen/`. Six blocks comparing
+variants 6/7/8 at k3 and M=1/2/4 retain the down/complete-MLP gain with exact
+observed outputs (`variant8-paired/`). Native packed-model logits, live state
+and subsequent-token checks also pass M=1..5. Six full-model A/B blocks at
+M=1/2/4 retain the gain (`variant8-full-model.json`). Select this gate with
+`MLX_BUN_TRELLIS_AB_VARIANT=8`; these remain short-prefix diagnostics.
+
+`MLX_BUN_TRELLIS_AB_LAST=1` selects a native append screen at
+M=1/2/3/4/5/8/9/16 with only the last vocabulary projection, closer to strict
+fill's work. The variant-7 screen preserves state/logit identity and confirms
+the M=4/5 cost discontinuity (`shared-m-append-lengths.json`). Splitting a long
+span crosses the packed-f32/expanded-bf16 paths and is a separate numerical
+experiment; the timing curve does not authorize that change.
+
+A device lookup table of variant-6 f32 code values also matched the observed
+outputs but slowed the M=1 kernels for every tested bit width. That candidate
+is a measured loss on this chip/regime (`reports/qwen38-rd/lut6-*.json`). The
+M=4/5 gate-projection cost discontinuity remains; changing the crossover also
+changes the accumulation/precision path and needs separate numerical gates.
+
+The smaller-table follow-up also loses on the M4 Pro. A constant-address-space
+table stores all 4,096 integer code values in signed 16-bit entries, preserving
+the reciprocal, scaling and reduction arithmetic. It matches the k3 M=1
+checks but slows both projections and complete MLP execution. Device and
+threadgroup tables store the same integers exactly in fp16, avoiding the
+double rounding of fp16 normalized code values. Both lose at M=1/4; the
+threadgroup version is the less costly choice. Those two experiments change
+gate/up decoding while retaining the aligned k3 scatter's computed decoder.
+None proceeds to full-model integration. Evidence: `trellis-constant-short-k3-m1.json`,
+`trellis-device-half-k3-m1.json`, `trellis-device-half-k3-m4.json`,
+`trellis-threadgroup-half-k3-m1.json` and `trellis-threadgroup-half-k3-m4.json`
+under `reports/qwen38-rd/`, with source manifests and every timing sample.
+
+A later scatter-specific table experiment starts from the interleaved
+variant-13 artifact. Each threadgroup computes the exact 4,096 integer code
+values into an 8 KiB signed-short table; packed float multiplication and the
+original dense-expansion LUT remain unchanged. An initial 45-process screen
+across bf16/f16/f32 and M1/2/4/5/8 preserves all output hashes. Changing all
+decode sites still loses because gate/up slows. The apparent M1 scatter gain
+does not survive the narrower repeated control.
+
+Restricting the table to the balanced scatter kernels completes 72 processes
+with exact separate-process output hashes, including complete MLP outputs
+and M5/8 fallback. Six alternating bf16 pairs on the M4 Pro 24 GB change
+complete-MLP time by +1.28% at M1, -0.62% at M2 and -4.12% at M4. All M1
+pairs lose and all M2/M4 pairs improve. A 20-process M3 follow-up also preserves
+every output hash; its six bf16 pairs improve the down projection by a median
+8.02% and the complete MLP by 2.52%. The smaller fp16/fp32 screens preserve
+identity but do not establish retention. Each native/candidate pair reaches
+the same final active-allocation baseline. These are diagnostic operation
+timings, with fixed sources and all samples retained. The next full-model
+prototype targets only M3/4 for the tested k3/L12/T256 interleaved down shape.
+Ordinary M1 stays procedural. Full-model state, generation and actual serving
+acceptance remain before integration. Evidence: `trellis-threadgroup-codebook.json`,
+`trellis-threadgroup-scatter{,-review}.json` and
+`trellis-threadgroup-scatter-m3{,-review}.json` in the campaign directory.
+
+The narrow full-model screen then preserves all 24 forward comparisons,
+including every vocabulary row at M1..8, live attention/recurrent state and
+the next token's logits/state. It also preserves four greedy/seeded-sampled
+generation streams and their log-probabilities, counts and final cache bytes.
+The prefix snapshot stays unchanged. Both fresh processes exit cleanly with
+fixed sources, equal scatter-call counts and the same 1,015,814-byte final
+active counter after model/cache disposal. The first pair's measured M3/4
+forwards improve by 1.6–2.8%; ordinary 64-token generation changes by less
+than 0.1%. This is an initial screen. Six balanced process pairs and actual
+MTP serving comparisons remain before retaining the prototype. Evidence:
+`trellis-scatter-full{,-review}.json`.
+
+Six balanced fresh-process pairs preserve all 144 forward/logit/state and
+24 generation comparisons, with fixed sources, identical call counts and
+the same final active allocation. Taking the two measured forward samples
+within each process before pairing, median M3/M4 forward changes are
+-1.44/-2.00%, improving every pair. Ordinary 64-token greedy/sampled complete
+times change by +0.045/-0.125%. The unchanged M128 prefill control is 2.59%
+slower in this sequence and loses all six pairs. A focused M128-only control
+tests whether that regression requires preceding M3/4 work. The initial actual MTP HTTP pair preserves all seven responses,
+7,100 eligible scatter calls per arm and equal final active counters, but
+its complete-time changes are mixed. Evidence:
+`trellis-scatter-full-repeat{,-review}.json` and
+`trellis-scatter-http{,-review}.json`.
+
+Six subsequent balanced MTP HTTP pairs preserve all 42 paired responses,
+call maps and final active allocations. Median complete-request changes are
+-1.53% for code, -1.29% for explanation and -1.04% for JSON. Code and explanation
+improve in every pair; JSON improves in four of six. TTFT changes by less than
+0.71% and median paired sampled peak RSS increases by 2.16 MiB. These are
+M4 Pro 24 GB diagnostic results, with static swap still failing preflight.
+They support a small serving benefit in this scope, not ordinary M1 decode.
+The separate four-pair M128-only control executes no eligible M3/4 scatter
+calls. All 20 forward/state comparisons remain exact and final active memory
+is 16,390 bytes in every process. Its median paired time increases by 0.52%,
+with individual process-median differences from 0.06% to 1.01%. This does not
+reproduce the earlier 2.59% magnitude, but does not identify its cause either.
+Keep both results and inspect scheduling before integration. Evidence:
+`trellis-scatter-http-repeat{,-review}.json` and
+`trellis-scatter-prefill{,-review}.json`.
+
+A four-pair sequence control adds 80 exact forward/state/continuation cases,
+with the same 16,390-byte final active counter in all eight processes. M3/M4
+forwards improve by median 1.45/1.73%, in every pair. The same-input M128
+measurement immediately before and after those calls changes by -0.92/-1.77%
+between arms; the after-versus-before difference does not show the suspected
+slowdown. The unchanged M512 control instead changes by +1.11%, losing three
+of four pairs. These controls do not reproduce the original M128 result or
+establish a prefill benefit. Keep prefill variation in the uncertainty of this
+small candidate and require integrated, combined and quiet acceptance.
+Evidence: `trellis-scatter-sequence{,-review}.json`.
+
+The normal-scheduling recorder preserves the three HTTP responses and all
+scatter calls in a separate JSON pair. The measured request has 76,928
+dispatches, 3,153 command buffers with dispatches, 50,001 barriers and 3,870
+concurrent dispatches in both arms. Temporary-reference counts and bytes also
+match. Buffers without dispatches and fence waits differ slightly. Candidate
+command-span union falls by about 51 ms, while gaps between those spans grow
+by about 72 ms; instrumented complete time increases by 0.32%. Command spans
+include internal waits and do not measure active GPU utilization. This pair
+shows how scheduling gaps can cancel a small operation gain; it does not
+override the six normal-library serving pairs or prove the cause of the
+prefill difference. Evidence: `trellis-scatter-http-trace{,-review}.json`.
+
+The first ordinary four-request serving pair also preserves all 12 paired
+responses, submitted-row counts, scatter-call maps and final active allocation.
+The measured 256-token cohort completes in 11.342 versus 11.778 seconds,
+3.70% faster, with 4,050 eligible M4 scatter calls across its three cohorts.
+This is one M4 Pro 24 GB diagnostic pair, not a repeat verdict. Explicit API
+seeds require the serial lane, so this fixture uses temperature-zero argmax
+without an explicit seed. The initial seeded attempt is retained as a rejected
+batch fixture. Evidence: `trellis-scatter-cohort-v2{,-review}.json`.
+
+The codebook is now part of experimental variant 13. Qwen's MLP loader enables
+it for the 5120/17408 down projection. `TrellisLinear` further requires bf16,
+k3/L12/T256, two-block interleaving and M3/4. The generic shared scatter kernel
+receives that decision as a compile-time integer. The table is initialized
+before the threadgroup's bounds return, and no new MLX allocation or graph
+boundary is introduced. Request and execution interfaces do not select it.
+The 23 focused tests and all three typechecks pass. The new test compares
+actual output bytes and dispatch eligibility across three dtypes, variants
+6/10/13, M1/2/3/4/5/8 and an incomplete row tile. Evidence:
+`trellis-scatter-integration-source-change.json`,
+`trellis-scatter-integration-focused-tests-final.txt` and
+`trellis-scatter-integration-typecheck.txt`.
+
+The integrated full-model gate preserves all 24 forward/logit/state and four
+generation comparisons, the immutable prefix, call maps and final allocation.
+M3/M4 each exercise 150 table calls in the candidate. Timing also improves in
+unchanged control shapes during an unrelated CPU workload burst; those broad
+changes cannot be attributed to this kernel. Six integrated MTP HTTP pairs
+then preserve all 42 responses and the same final active counter. Median
+complete-time changes are -1.07/-1.27/-1.19% for code/explanation/JSON, with
+5/6, 5/6 and 4/6 pairs improving. TTFT changes remain below 0.46%. Retain every
+losing pair and the diagnostic classification. Repeated ordinary four-request
+serving, combined/pressure and quiet M4 Pro acceptance remain. Evidence:
+`trellis-scatter-integrated-full{,-review}.json` and
+`trellis-scatter-integrated-http{,-review}.json`.
+
+Six integrated ordinary four-request serving pairs preserve all 72 paired
+responses, counts and finish reasons. Every cohort admits four batched rows,
+uses the eligible M4 kernel and returns to the same final active counter.
+Median measured cohort time changes by -1.49%, improving four of six pairs.
+Four measured pairs have identical per-cohort call maps; their median is also
+-1.49%, with three improving. The other two retain arrival-dependent M1/M2
+work differences. Report all pairs and the work-matched subset separately;
+do not silently discard scheduling differences or losing samples. The first
+integrated attempt preserved all responses but failed its stricter total-call
+map gate, motivating snapshots collected outside timed cohorts. This remains
+diagnostic evidence, with combined/pressure and quiet acceptance open. Evidence:
+`trellis-scatter-integrated-cohort.json` and
+`trellis-scatter-integrated-cohort-v2{,-review}.json`.
+
+Sharing activation loads across multiple gate/up output rows per SIMD group
+also loses in the k3 M=1 screen. Every tested layout preserves the incumbent
+output bytes. One row per group reproduces the incumbent timing; two, four
+and eight rows increase complete-MLP time. Reducing the threadgroup to one
+or two SIMD groups does not rescue the two/four-row candidates. The original
+row mapping remains. Evidence: `trellis-shared-rows-k3-r*-m1.json` and
+`trellis-shared-rows-k3-r*-s*-m1.json` in the campaign report directory.
+
+An integer arithmetic rewrite replaces the final byte-pair sum and subtraction
+with `as_type<int>(p * 65537u - (510u << 16)) >> 16`. If
+`p = a + (b << 16)`, with both byte-pair sums at most 510, this returns
+`a + b - 510` exactly. Host exhaustive-state/edge/random checks and all real
+k2/k3/k4 M=1/4 operation checks pass. The timing screen gives no useful
+additional gain, so the readable existing expression remains. Evidence:
+`trellis-y-mad-manifest.json` and `trellis-y-mad-k*-m*.json`.
+
+The activation audit identifies a separate numerical distinction in the
+existing Lab path. Its fused kernel uses a float32 precise-exp sigmoid,
+whereas compiled MLX uses a dtype-specific abs/exp expression. Real k3 inputs
+at M=1/4 differ for bf16 and f32. Applying the old activation independently
+to the two projection outputs reproduces the fused result exactly, isolating
+the difference to the activation. Earlier small-input tolerance tests did
+not establish bit identity here. Existing variant-to-variant identity results
+still compare the same packed activation. Changing it requires a separately
+declared numerical/quality experiment; no default is changed by this audit.
+Evidence: `trellis-activation-audit.json`.
+
+Variant 9 tests evaluation barriers separately. It keeps the variant-8
+kernels but lets the three expanded projections remain lazy until the
+existing layer-end hidden/state evaluation. The native last-head sweep
+preserves logits and live state at all observed lengths. M>4 improves while
+peak allocation grows; small M is unchanged. Evidence is in
+`reports/qwen38-rd/variant9-full-model.json`, with per-arm memory peaks.
+Larger prefill and the frozen long-agent pressure replay remain required.
+The default's per-projection barriers remain in place.
+
+The variant-13 follow-up fixes the interleaved artifact and all kernels,
+then changes only the returned expanded projection's evaluation. It compares
+blocking evaluation, deferral to the existing layer boundary and asynchronous
+submission followed by that same layer boundary. All 35 warm/measured cases
+at M1/8/16/128/512 preserve logits, live state and continuation. Six balanced
+blocks exercise 64 expansion boundaries at M16 and 192 at M128/512; M1/8
+have none and are controls. Deferred evaluation reduces median paired time
+by 2.46%, 5.15% and 2.03% at M16/128/512; asynchronous evaluation reduces it
+by 2.39%, 6.56% and 2.89%. Every affected pair improves. M128/512 peak MLX
+allocation grows by about 362/380 MB for deferral and 368/403 MB for async.
+These M4 Pro 24 GB diagnostics do not remove the memory gate.
+Evidence: `reports/qwen38-rd/trellis-v13-boundary-full-model{,-review}.json`.
+
+The serial HTTP follow-up completes six balanced three-arm blocks with 18
+clean server exits, fixed sources and 126 requests. All 84 paired response
+texts, usage counts and finish reasons match. At 128/512 prompt tokens,
+deferral reduces median paired TTFT by 2.88%/0.53%; asynchronous submission
+reduces it by 4.10%/1.41%, with all six pairs improving in each cell. Async
+complete-response time falls by 0.90%/0.67%. Six-token TTFT and all decode
+cells stay approximately flat. Per-server peak RSS is approximately flat;
+the separately measured MLX transient-allocation increase still applies.
+Evidence: `trellis-v13-boundary-http-serial{,-review}.json`.
+
+The saved-agent pressure gate rejects unrestricted deferral on this M4.
+The synchronous control completes all seven requests, including 14,465 prompt
+tokens, 12,953 cached tokens and a 512-token response, followed by a durable
+SSD flush and clean exit. Deferral preserves the first five responses but
+fails on the sixth request at 12,954 prompt tokens. Native tracing reports
+Metal command-buffer insufficient memory and the child exits with SIGTRAP.
+Sources remain fixed. The asynchronous and mapped arms had not started;
+their outcome cannot be inferred from this failure. Keep per-projection
+barriers while testing bounded alternatives. Evidence:
+`qwen-long-boundary-serial{,-review}.json` and its deferred server trace.
+
+A fresh synchronous/asynchronous pair reaches the same result. The control
+again completes all seven requests with a durable final flush and clean exit.
+Async preserves the first five responses, then fails the sixth request with
+the same Metal insufficient-memory error. Source fingerprints remain fixed.
+Thus both unrestricted alternatives fail this pressure gate despite their
+short-prompt timing gains. A further candidate must retain blocking evaluation
+when available headroom is insufficient. Evidence:
+`qwen-long-async-serial{,-review}.json` and its async server trace.
+
+The next policy submits asynchronously only while MLX active allocation is
+below 75% of the device's recommended working set, retaining blocking
+evaluation above that ceiling. It still evaluates at the existing layer
+boundary. All 35 native warm/measured cases preserve logits, live cache bytes
+and continuation. The short native sweep stays below the ceiling and exercises
+asynchronous submission at every expanded projection. Median paired time
+falls 2.00%/5.40%/3.07% at M16/128/512, with six wins per cell; M1/8 controls
+are approximately flat. The short sweep does not exercise the pressure fallback.
+Evidence: `trellis-v13-bounded-full-model{,-review}.json`.
+
+The bounded policy also passes a fresh serial saved-agent pair. All seven
+responses and usage counts match, both servers exit cleanly, and the final
+SSD flush reports durable state with no pending, missing or failed writes.
+The candidate submits 1,152 expanded projections asynchronously and evaluates
+2,112 synchronously, exercising both branches. Its maximum observed active
+allocation is 17.216 GB; the 14.302 GB threshold controls scheduling, not total
+allocation. Peak sampled RSS is 13.370/13.743 GB for control/candidate.
+This single pair establishes the pressure gate, not a timing or RSS win.
+The default scheduler pressure gate remains.
+Evidence: `qwen-long-bounded-serial{,-review}.json`.
+
+Six fresh serial HTTP pairs then complete 84 requests with fixed sources,
+clean exits and all 42 paired responses identical. The bounded policy reduces
+median paired TTFT by 4.42%/1.78% at 128/512 prompt tokens, with six wins in
+each cell. Complete-response time falls 0.95%/0.80%; decode speed and the
+six-token control are approximately flat. Median per-server sampled peak
+RSS is 12.364/12.362 GB for synchronous/bounded evaluation. Each candidate
+server exercises 768 asynchronous boundaries in this short sweep. These M4
+diagnostics retain the separate native transient-allocation increase and
+do not replace the default scheduler or quiet-machine gates. Evidence:
+`trellis-v13-bounded-http-serial{,-review}.json`.
+
+The actual continuous-scheduler follow-up completes six pairs and 84 requests.
+All 42 paired response texts, usage counts and finish reasons match; each
+request reports `"batched"` and increments scheduler submissions. Sources
+remain fixed and all 12 servers exit cleanly. Median paired TTFT falls
+4.46% at 128 tokens with six wins and 1.30% at 512 with five wins.
+Complete-response time falls 0.96%/0.60%. Decode and six-token controls remain
+approximately flat; median sampled peak RSS is 12.381/12.352 GB. MLX is seeded
+to 42 at startup with greedy sampling; request-level seed is omitted because
+it selects serial placement. Evidence:
+`trellis-v13-bounded-http-default{,-review}.json`.
+
+The continuous saved-agent gate also passes all seven paired responses with
+fixed sources. Every request reports the batched lane and a scheduler
+submission. Both servers finish durable SSD flushes with no pending, missing
+or failed writes and exit cleanly. The candidate again uses 1,152 async and
+2,112 blocking expansion boundaries; maximum observed active allocation is
+17.265 GB. Sampled peak RSS is 12.842/12.992 GB for control/candidate.
+This one pair closes the prototype's continuous pressure gate, not a timing
+or memory-saving claim. Evidence: `qwen-long-bounded-default{,-review}.json`.
+
+The integrated opt-in `MLX_BUN_TRELLIS_ASYNC_EXPAND` now applies that policy
+to variant 13. It reads the execution's existing runtime snapshot and caches
+only the fixed device threshold per linear layer. It preserves layer barriers
+and blocks expanded projections above the threshold. Default remains off;
+other variants retain their current behavior. Typechecks, hygiene and all
+1,822 model-free tests pass. Integrated native, both short HTTP repeats and both
+long-agent pressure gates pass on the M4 Pro. Evidence:
+`trellis-async-integrated-{typecheck,hygiene,model-free}.txt`.
+
+The integrated native sweep preserves all 35 logit/live-cache/continuation
+cases with fixed sources. An observer records the implementation's own async
+and blocking calls without substituting a scheduling decision. Median paired
+forward time falls 2.09%/6.19%/2.80% at M16/128/512, with all six pairs
+improving. M1/M8 exercise no expansion boundaries; their paired timings are
++1.16%/-0.21%, so the M1 control variation remains visible. M128/512 peak
+MLX allocation again grows about 368/403 MB. Integrated serving and pressure
+gates remain. Evidence: `trellis-async-production-full-model{,-review}.json`.
+
+The integrated serial HTTP repeat also passes all 42 paired responses across
+12 clean server exits with fixed sources. Median paired TTFT falls 4.00% at
+128 prompt tokens in all six pairs and 1.43% at 512 in five pairs. Request
+wall time falls 0.88%/0.63%; decode and the six-token control remain flat.
+Median sampled peak RSS is 12.331/12.355 GB for control/candidate. Each
+candidate server exercises 768 async boundaries, with no blocking fallback
+in these short prompts. These are M4 Pro diagnostics; pressure and quiet
+acceptance remain. Evidence:
+`trellis-async-production-http-serial{,-review}.json`.
+
+The integrated continuous repeat passes another 42 paired responses and
+12 clean exits with fixed sources. Every request reports the batched lane
+and exactly one scheduler submission. Median paired TTFT falls 3.96%/1.40%
+at 128/512 prompt tokens, with six/five improving pairs. Wall time falls
+0.87%/0.63% in five/four pairs. Decode and the six-token control remain flat.
+Median sampled peak RSS is 12.353/12.349 GB. Short prompts exercise the async
+branch only; integrated long-agent pressure gates are next. Evidence:
+`trellis-async-production-http-default{,-review}.json`.
+
+The integrated serial saved-agent gate preserves all seven paired responses
+and usage records with fixed sources and clean exits. Both SSD flushes finish
+durably with no pending, missing or failed snapshots and a longest durable
+prefix of 14,976 tokens. The candidate uses 1,151 async and 2,113 blocking
+boundaries; its maximum observed active allocation is 17.227 GB. Sampled peak
+RSS is 13.550/13.544 GB for control/candidate. The longest request prefills
+14,465 tokens, reuses 12,953 and generates 512. This is a single pressure
+gate under system swap, without a performance or memory-saving claim.
+Continuous pressure acceptance remains. Evidence:
+`trellis-async-production-long-serial{,-review}.json`.
+
+The integrated continuous saved-agent pair also passes all seven responses,
+usage records, source hashes and clean exits. Every request uses the batched
+lane with one scheduler submission. Both final flushes are durable, with
+14 snapshots, a 14,976-token longest prefix and no pending, missing or failed
+writes. The candidate uses 1,152 async and 2,112 blocking boundaries; maximum
+observed active allocation is 17.253 GB. Sampled peak RSS is 12.994/12.873 GB
+for control/candidate. This completes the integrated M4 pressure gates; the
+one-pair RSS difference is not a memory-saving claim. Broader callers, combined
+optimizations and quiet M4 Pro acceptance remain. Evidence:
+`trellis-async-production-long-default{,-review}.json`.
+
+Variant 10 shares scatter weight decoding and scales across M=2..4 in
+`src/model/trellis-shared-scatter.ts`. It uses aligned k3 decoding where
+eligible and the incumbent packed-word mapping for other bit widths. Every
+output retains its row/FMA order, split boundaries, sum and cast. M=1 uses
+the existing variant-8 path; M>4 keeps the projection barriers. Variant 10
+does not combine the variant-9 memory experiment.
+
+Real k2/k3/k4 screens improve down and complete-MLP time with exact observed
+outputs. Unit checks cover both axes, bf16/f32 inputs, M=1..5 and the complete
+MLP. The packed 27B passes exact logits, live state and continuation checks
+at M=1..5. Six native A/B blocks against variant 8 improve M=2..4 while M=1
+is unchanged. Raw evidence is in `shared-scatter-screen/`,
+`shared-scatter-all-screen/` and `variant10-full-model.json` under
+`reports/qwen38-rd/`. The native gate accepts
+`MLX_BUN_TRELLIS_AB_BASELINE=8 MLX_BUN_TRELLIS_AB_VARIANT=10`.
+
+Variant 11 combines variant 10 with tiled axis-1 prefill at M=5..32.
+`src/model/trellis-tiled-prefill.ts` reconstructs bf16 weights in threadgroup
+storage and consumes them through SIMD-group matrix operations. Its shared
+operation accepts other compatible matrix shapes; automatic experimental
+dispatch is limited to the measured 5120-to-17408 geometry, bf16, T=256,
+L=12 and k=2/3/4. Down projections keep stock expansion and matmul.
+Dense expansion and layer-end evaluation boundaries remain in place.
+
+The initial computed-code prototype failed the full model despite matching
+the sampled synthetic matrices. Expansion consumes the precise host LUT,
+whereas variant-6 packed matvec uses an unrefined reciprocal. Refining that
+reciprocal before scaling reproduces expansion's bf16 weights. The corrected
+prototype passes logits, live cache state and continuation at M=1/4/5/8/16/32;
+six paired native blocks improve M=5..32 without a larger observed peak.
+Evidence: `trellis-tiled-initial-review.json`,
+`trellis-tiled-refined-gate-model.json` and its review under
+`reports/qwen38-rd/`. The integrated kernel repeats the full-model gate in
+`variant11-full-model.json`. Six process A/B blocks per serving method also
+improve first-token and complete-request latency on one six-token raw prompt,
+with identical output at eight and 64 generated tokens. Serial and continuous
+B=1 paths agree; this does not test concurrent users. Evidence:
+`trellis-v11-http.json` and its review. Broader native/HTTP workloads, pressure
+replay and quiet M4 Pro acceptance remain required. Variant 6 remains the default.
+
+Variant 12 also reconstructs axis-0 weights inside split-K matrix tiles at
+M=5..8. The shared `trellis-splitk-prefill.ts` operation follows MLX 0.31.2's
+partition geometry, float partials and ordered final sum, then rounds to bf16.
+The measured dispatch profile covers 17408-to-5120 matrices at k2/k3/k4.
+It avoids the dense down-projection weight allocation. Dense expansion and
+layer evaluation boundaries remain. Larger M, wider tiles, padding and a device
+lookup table did not give a consistent advantage in the initial sweep.
+
+Other-shape unit checks include transposed inputs and a longer final K
+partition. Both the prototype and integrated packed 27B preserve logits,
+live state and continuation. Six paired integrated blocks improve M=5/8;
+M=1..4/9/16/32 retain their existing path and timing. Evidence:
+`trellis-splitk-screen-review.json`, `trellis-splitk-tuning-review.json`,
+`trellis-splitk-full-model-review.json` and `variant12-full-model.json` under
+`reports/qwen38-rd/`. Combined native and HTTP results are recorded in
+decode-speed-program §7; quiet-machine acceptance remains open.
+
+The calibrated operation trace led to a second tile pass. At M=5..8, both
+direct kernels now use eight output rows and place all four SIMD groups
+across columns. This removes unused row work while preserving each output's
+matrix products, accumulation order, weight rounding and split reduction.
+Contiguous packed reads with transposed threadgroup writes were slower in
+the controlled screen; neither that layout nor padding is retained.
+
+Direct tiles also avoid per-projection evaluation. They keep activations and
+bounded partials without constructing a dense weight matrix, so the existing
+model layer boundary bounds their graph. Expansion paths retain their original
+projection evaluations. A four-arm full-model experiment separates tile
+geometry from synchronization: all logits, live cache bytes and continuation
+match across six blocks at M=1/4/5/8/16/32/128. The combination improves the
+eligible shapes with a small temporary-memory increase. A subsequent six-pair
+check at M=5/8 adds the smaller split-K tile with exact outputs and unchanged
+peak allocation. These changes remain within the experimental variants;
+variant 6 is unchanged. Evidence: `trellis-tile-layout-screen-review.json`,
+`trellis-tile-full-model-review.json`,
+`trellis-splitk-bm8-other-bits-review.json` and
+`trellis-splitk-bm8-full-model-review.json` under `reports/qwen38-rd/`.
+The first layout screen also changed evaluation boundaries and is excluded
+from isolated-kernel speed attribution. The integrated operation passes
+targeted units and ten old/new full-model append lengths. Six subsequent
+HTTP process pairs improve actual eight-request throughput and B=1 TTFT,
+with identical responses and verified scheduler activity. Evidence:
+`trellis-tile-integrated-forward-review.json` and `trellis-tile-http-review.json`.
+Six old/new native process pairs also preserve every emitted ID and finish
+reason, with lower first-token latency and a small complete-request gain;
+single-row decode is unchanged. All workers complete with fixed source hashes.
+Evidence: `trellis-tile-native-review.json`. These remain loaded-machine
+diagnostics, with quiet M4 Pro acceptance pending.
+
+A corrected larger-prefill sweep checks ten tile geometries, packed-load
+orders and threadgroup padding choices on actual k3 gate/down matrices at
+M=128 and 512. Every one of the 40 cases reproduces the expansion-plus-matmul
+output bytes, but none beats that existing path in six AB/BA timing pairs.
+Both arms include output evaluation and GPU synchronization; the candidate
+gets no pipeline-only timing advantage. Larger tiles and coalesced packed
+loads therefore remain rejected for these measured shapes. Keep MLX's native
+matrix multiplication and investigate the separate expansion operation.
+Evidence: `trellis-large-prefill-screen.json` and
+`trellis-large-prefill-screen-review.json` in the campaign report directory.
+
+A source audit also rejects an assumed fp16 throughput shortcut. In pinned
+[MLX 0.31.2 Steel GEMM](https://github.com/ml-explore/mlx/blob/v0.31.2/mlx/backend/metal/kernels/steel/gemm/kernels/steel_gemm_fused.metal),
+both half and bf16 instantiations explicitly select float accumulation.
+`BlockMMA` loads both input tiles into float matrix fragments before the
+matrix multiply. Changing storage dtype alone therefore does not select a
+half-fragment multiply in this path. This is a dispatch/arithmetic finding,
+not a measured bf16-versus-fp16 performance comparison; other native paths
+need their own inspection before making the same claim.
+
+Variant 13 builds on variant 12 with `trellis-vector-expand.ts`: four adjacent
+weights share two packed-word reads and the scale. An unrolled loop extracts
+their circular windows and refines the computed code value to reproduce the
+host f32 LUT before bf16 rounding. MLX's matrix multiplication and each dense
+projection's evaluation boundary remain unchanged. The operation is independent
+of the model; dispatch requires bf16 output, k2/k3/k4, T=256 and L=12. Other
+packing/dtypes retain their existing expansion.
+
+The actual-weight screen passes all 96 configurations across three bit widths
+and both projection axes. Four values per thread with 128 threads gives a
+consistent isolated improvement. Explicit wider output stores add little in
+a subsequent exact 24-case screen and are not retained. The initial full-model
+prototype preserves logits, all live cache bytes and continuation in seven
+blocks at M=1/8/16/128/512, including six measured AB/BA pairs. Eligible prefills
+improve; M=1 and M=8 retain the variant-12 path. The integrated kernel repeats
+those checks and passes the repository parity harness, whose variant-13 arm
+also exercises larger prefills. All HTTP responses match in two existing-suite
+pairs, but their timing is mostly flat; see decode-speed-program §7. Closed
+research helpers are removed after recording their results. These are M4 Pro
+diagnostics, with the
+default still variant 6. Evidence: `trellis-vector-expand-screen-review.json`,
+`trellis-vector-store-screen-review.json` and
+`trellis-vector-expand-full-model-review.json` in the campaign directory.
+
+The R6 layout screen rearranges groups of coded blocks across input rows,
+preserving the codes, payload size, arithmetic and split-K reduction order.
+All six actual k3 down-projection layouts invert to the original code bytes
+and produce identical output bytes. Two groupings improve the isolated
+operation; the original-order control is flat. Both full-model groupings
+preserve every eligible matrix's code bytes, logits, live cache state and
+continuation, with a small single-token forward improvement. Group two is
+simpler and group ten offers no additional model gain. The prototype
+retains both layouts to alternate A/B arms, so its additional residency and
+packing cost are recorded separately. Six subsequent production-generation
+pairs with a fixed seed and 64 outputs preserve every emitted ID, final live
+cache byte and continuation logit. The small gain survives the complete
+generation loop. Six fresh-server pairs in each of serial and default
+scheduling then preserve all 60 paired responses. Both prompt lengths retain
+the small decode and complete-request improvement; the default scheduler's
+longer-prompt TTFT is approximately flat. All servers exit cleanly, and
+telemetry proves the configured execution path. Both arms retain the extra
+code copy, so their flat RSS comparison is not a memory improvement. A stored
+format usable by every prefill, scatter and expansion reader remains open.
+No artifact or production dispatch is changed. Evidence:
+`trellis-block-interleave-screen-review.json` and
+`trellis-block-interleave-full-model-{g2,g10}-review.json`, plus
+`trellis-block-interleave-native-generation-g2-interface-review.json` in the
+campaign directory, plus `trellis-block-interleave-http-{serial,default}-review.json`.
+The first generation driver used the wrong iterator
+interface and failed before timing; its failed report remains separate.
+
+The replacement-layout reader prototype now preserves all 27 actual-matrix
+projection cases across bf16/f16/f32 and three dense expansions. It covers
+single-token and shared M2..4 scatter, M5..8 split-K and larger dense prefills,
+through M512. The operation timings show small-batch gains with marginal
+prefill regressions. The first full-model reader check preserves 63 cases,
+but its wrapper changes input disposal and output evaluation order. A repeat
+with the incumbent order preserves all 35 cases and retains the single-token
+gain; M8/16 are approximately flat, while M128/512 are slightly slower.
+Changing expansion threadgroup traversal preserves all five operation cases;
+moderate row tiles improve that reader slightly, while fully prioritizing
+contiguous code reads loses. The revised traversal preserves all 35 full-model
+cases, retains the small single-token gain and has approximately flat prefills
+in that repeat. The next gate uses a separate stored artifact through serving,
+with every reader consuming one resident code copy. Evidence:
+`trellis-interleaved-readers-screen-review.json`,
+`trellis-interleaved-readers-full-model-count-review.json`,
+`trellis-interleaved-readers-order-full-model-review.json`,
+`trellis-interleaved-vector-schedule-screen-review.json` and
+`trellis-interleaved-readers-schedule-full-model-review.json`. Those prototype
+measurements keep both code copies resident; the stored-artifact gate below
+removes that extra allocation.
+
+The integrated reader accepts an optional U32 code shape
+`[coded_columns / 512, stored_rows, 48]` for k3, T256, L12, 1MAD, axis0.
+Each 48-word row holds two original coded blocks; block groups precede rows.
+Scales retain their original one-value-per-stored-row representation. The
+existing 2D format retains its addressing. Shape validation rejects other
+3D geometries, and every scatter/expansion reader selects its address formula
+at compile time. Variant 13 also uses the measured moderate row traversal
+when rows divide its tile size; other shapes retain the original traversal.
+No request, scheduler or state interface changes. Focused tests preserve all
+14 variants, bf16/f16/f32 outputs, strided inputs and expansion, with explicit
+split-K partition-tail and malformed-format checks. Broader artifact and
+serving acceptance remain open; this is not a default artifact change. All three
+typechecks, hygiene and the complete model-free tier pass. A separately
+written artifact verifies all converted code inverses and every unchanged
+tensor payload. Native and HTTP comparisons load one artifact per process,
+without runtime repacking or duplicate codes. Closed layout prototype helpers
+are removed; their raw reports remain. The first native artifact driver fails
+before spawning a child because of an unsupported stdout option; its corrected
+file-descriptor version has a separate report. Evidence:
+`trellis-interleave-integrated-tests.txt`,
+`trellis-interleave-integrated-tail-tests.txt`,
+`trellis-interleave-model-free.txt` and `trellis-interleave-artifact-review.json`.
+The converter's header padding does not determine the kernel buffer's
+alignment. `Weights` uses native MLX safetensors loading, whose pinned
+`Load::eval_cpu` allocates its output buffer and reads the payload into it.
+The paired kernels therefore consume MLX-owned buffers in both artifacts;
+they do not access the file mapping at the tensor's raw header offset.
+The packed quantizer's optional `--interleave-codes` switch produces this
+layout for eligible tensors, including row-major tensors read through
+`--reuse`. Other tensors retain their layout. The shared codec helper only
+reorders words; the quantizer records the number of interleaved modules.
+Six fresh-process native artifact pairs now preserve all warm/measured
+forward logits, live states, continuations and generation IDs. Single-token
+and M4 forwards improve in every pair; M8 is slightly slower, M16 improves,
+and longer prefills are mixed. Complete 64-token generation improves in every
+pair with equal peak MLX allocation. One slower M512 sample remains included.
+This removes the prototype's duplicate-code residency from the comparison;
+HTTP RSS and timing have their own gate below. Evidence:
+`trellis-interleave-artifact-native-fd-review.json` and
+`trellis-interleave-encoder-tests.txt`. Native research helpers are removed
+after recording the finding; the artifact converter is superseded by the
+quantizer's layout option and the retained codec helper.
+
+Six fresh-server serial HTTP artifact pairs preserve all 42 paired responses,
+including warmups, usage, finish reasons and stream completion. Each process
+loads only its selected artifact, uses production readers at variant 13, and
+exits cleanly. Source hashes remain fixed. Decode improves in every measured
+pair at each actual prompt length of 6, 128 and 512 tokens; TTFT changes are
+small or mixed. RSS is approximately flat, with no retained duplicate code
+buffer. These M4 Pro diagnostics use cache-disabled requests and do not
+establish cached, pressure or quiet-machine acceptance. Six further pairs
+under the default continuous scheduler preserve another 42 paired responses
+with clean exits and fixed sources. Telemetry confirms the configured batch
+capacity of eight, one submitted row per request and no remaining active or
+pending rows. These are single-prompt measurements. Decode improves in every
+pair at all three lengths; TTFT changes remain small or mixed, and RSS is
+approximately flat. Evidence:
+`trellis-interleave-artifact-http-{serial,default}-review.json`.
+The completed HTTP research helper is removed; raw responses, telemetry,
+source hashes and server logs remain in the reports.
+
+A separate M<=8 crossover prototype improves complete-MLP time at M=5/8
+but changes output bytes for every tested bit width. It replaces expanded
+bf16 matrix arithmetic with packed f32 code-times-scale arithmetic, so this
+is a Lab precision change, not an exact optimization. The prototype is not
+retained in production dispatch. `reports/qwen38-rd/m8-screen/` records the
+timings and numerical differences. Quality and long-state checks must precede
+any use of the larger crossover or equivalent small-chunk span splitting.
 
 # Open items (weights leg — mirrors the PLAN.md phase boxes; PLAN.md owns status)
 

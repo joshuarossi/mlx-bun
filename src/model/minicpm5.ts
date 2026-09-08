@@ -30,7 +30,7 @@ import { runtimeValue } from "../runtime-config";
  *    `@partial(mx.compile, shapeless=True) def swiglu(gate, x): return nn.silu(gate) * x`
  *  mx.compile fuses sigmoid + mul + mul into ONE kernel (mlx-lm's decode
  *  `CV2ISigmoid…Multiply`) instead of our three separate dispatches. Traced
- *  once, replayed thereafter. Used on the decode (M=1) path only. */
+ *  once, replayed thereafter for decode and prefill. */
 let _swigluClosure: CompiledFunction | null = null;
 export function compiledSwiglu(gate: MlxArray, up: MlxArray): MlxArray {
   if (!_swigluClosure) {
@@ -200,15 +200,13 @@ export class LlamaMLP {
 
   /** MLP: returns mlp(x); the caller adds the residual when given. */
   forward(x: MlxArray, residual?: MlxArray): MlxArray {
-    const H = x.shape[x.shape.length - 1]!;
-    const M = x.shape.reduce((a, b) => a * b, 1) / H;
     const gate = this.gate.forward(x);
     const up = this.up.forward(x);
-    // Decode (M=1): fuse silu·up into one kernel (mlx_lm activations.py swiglu).
-    // Plain sigmoid+mul+mul otherwise (M>1 prefill/training, or inside a compile
-    // trace) — identical math either way. MLX_BUN_COMPILED_SWIGLU=0 disables.
+    // Match mlx_lm activations.py at every sequence length. Separate kernels
+    // differ numerically on MLX 0.32.2 at larger prefill shapes. An enclosing
+    // compiled trace owns fusion itself; the explicit opt-out stays available.
     let hidden: MlxArray;
-    if (M === 1 && !isCompiledTrace() && runtimeValue("MLX_BUN_COMPILED_SWIGLU") !== "0") {
+    if (!isCompiledTrace() && runtimeValue("MLX_BUN_COMPILED_SWIGLU") !== "0") {
       hidden = compiledSwiglu(gate, up);
       gate.dispose();
       up.dispose();

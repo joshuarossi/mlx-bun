@@ -218,15 +218,18 @@ export class SsdCacheStore {
    *  yields the event loop between tensors so serving interleaves.
    *  Caller passes zero-copy CLONES it owns (a consistent snapshot no
    *  matter what the live entry does meanwhile) and disposes them after.
-   *  `waitTurn` gates every per-tensor step (see saveKvCacheAsync) — the
-   *  server passes the gateway's onIdle so the flush only progresses while
-   *  the engine is idle, never mid-decode. */
-  async storeAsync(tokens: number[], caches: Cache[], ns = "", waitTurn?: () => Promise<void>): Promise<boolean> {
+   *  `runStep` owns every per-tensor step (see saveKvCacheAsync) — the
+   *  server passes the gateway's exclusive runner so a request cannot start
+   *  between an idle check and the blocking MLX readback. */
+  async storeAsync(
+    tokens: number[], caches: Cache[], ns = "",
+    runStep?: <T>(step: () => T) => Promise<T>,
+  ): Promise<boolean> {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns), waitTurn, this.#codecs);
+      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns), runStep, this.#codecs);
       return this.#indexStored(path, tokens, caches, ns);
     } catch (err) {
       return this.#storeFailed(path, err);

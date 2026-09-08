@@ -5,7 +5,8 @@
 // which token, so an APPENDED token is indistinguishable from a sampled one.
 // When the engine already knows the next m tokens (a chat template's tool-call
 // scaffold is a deterministic function of the request's `tools`), it appends
-// them itself with ONE chunked forward and resumes sampling after them. No
+// them itself in one append and resumes sampling after them. The append can
+// use several execution chunks while retaining the complete span. No
 // draft, no verify, no rollback, and no comparison against what the model
 // "would have" produced — nothing here routes through src/spec/.
 //
@@ -38,6 +39,13 @@ export interface FillRow {
    *  template rendering — never `encode(fragment)` in isolation. */
   emit: number[];
   kind: FillKind;
+  /** Template-derived rows need a parser-owned context before asserting. */
+  requiresContext?: true;
+}
+
+export interface StrictFillContext {
+  observe(ids: readonly number[]): void;
+  allows(row: FillRow): boolean;
 }
 
 /** Echo-tier (K3c) configuration; null disables the source entirely. */
@@ -123,6 +131,11 @@ export function fillMaxSpan(): number {
   return n >= 2 ? n : 2;
 }
 
+/** Assert-append chunk cap; zero selects the model's qualified limit. */
+export function fillAppendChunkSize(): number {
+  return Math.max(0, Math.floor(runtimeNumber("MLX_BUN_FILL_APPEND_CHUNK_SIZE", 0)));
+}
+
 /** Echo-tier knobs. k: anchor length (MLX_BUN_FILL_K, default 8 — the corpus
  *  study's token-level threshold). candidates: nearest-occurrence bucket cap
  *  (MLX_BUN_FILL_CANDIDATES, default 24). indexMax: token cap on the growing
@@ -182,7 +195,7 @@ export class StrictRowSource implements ProposalSource {
   get windowNeeded(): number { return this.maxTrigger; }
   #enabled = true;
 
-  constructor(rows: readonly FillRow[]) {
+  constructor(rows: readonly FillRow[], readonly context?: StrictFillContext) {
     for (const row of rows) {
       if (row.trigger.length === 0 || row.emit.length === 0) continue;
       this.maxTrigger = Math.max(this.maxTrigger, row.trigger.length);
@@ -199,6 +212,8 @@ export class StrictRowSource implements ProposalSource {
   get enabled(): boolean { return this.#enabled; }
   disable(): void { this.#enabled = false; }
 
+  observe(ids: readonly number[]): void { this.context?.observe(ids); }
+
   propose(view: TokenView): Proposal | null {
     if (!this.#enabled) return null;
     const tail = view.tail(this.maxTrigger);
@@ -214,7 +229,7 @@ export class StrictRowSource implements ProposalSource {
       for (let i = 0; i < t.length; i++) {
         if (tail[base + i] !== t[i]) { ok = false; break; }
       }
-      if (ok) {
+      if (ok && (!row.requiresContext || this.context?.allows(row))) {
         return {
           ids: [...row.emit],
           policy: "assert",
@@ -237,6 +252,8 @@ export class StrictRowSource implements ProposalSource {
  *  rollback here. */
 export class FillSession {
   readonly stats: FillStats = emptyStats();
+  /** Execution chunk size, independent of the number of tokens injected. */
+  readonly appendChunkSize: number;
   readonly #sources: ProposalSource[];
   readonly #strict: StrictRowSource;
   readonly #eos: Set<number>;
@@ -256,13 +273,22 @@ export class FillSession {
   constructor(
     readonly plan: FillPlan,
     promptIds: readonly number[],
-    options: { maxSpan?: number; sources?: ProposalSource[]; decode?: (ids: readonly number[]) => string } = {},
+    options: {
+      maxSpan?: number;
+      appendChunkSize?: number;
+      sources?: ProposalSource[];
+      decode?: (ids: readonly number[]) => string;
+      strictContext?: StrictFillContext;
+    } = {},
   ) {
     this.decode = options.decode ?? null;
+    this.appendChunkSize = options.appendChunkSize ?? fillAppendChunkSize();
+    if (!Number.isSafeInteger(this.appendChunkSize) || this.appendChunkSize < 0)
+      throw new Error("fill appendChunkSize must be a nonnegative safe integer");
     this.#eos = new Set(plan.eos);
     this.#delimiters = plan.delimiters ?? new Set<number>();
     this.#maxSpan = Math.max(2, Math.floor(options.maxSpan ?? fillMaxSpan()));
-    this.#strict = new StrictRowSource(plan.rows);
+    this.#strict = new StrictRowSource(plan.rows, options.strictContext);
     const echo = plan.echo
       ? new EchoSource(
         { ...plan.echo, maxSpan: this.#maxSpan, delimiters: this.#delimiters } as EchoConfig,

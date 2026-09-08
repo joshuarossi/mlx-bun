@@ -691,24 +691,26 @@ export function saveKvCache(path: string, tokens: number[], caches: Cache[], met
  *  serving interleaves with the flush. Caller owns `caches` lifetime for
  *  the duration (pass zero-copy clones, dispose after).
  *
- *  `waitTurn` (optional) is awaited BEFORE every step — including the first —
- *  so the caller can gate the flush's schedule (the server passes the
- *  gateway's onIdle: each tensor step is a blocking GPU sync on the decode
- *  stream + a synchronous multi-MB writeSync, and the old unconditional
- *  setImmediate pacing interleaved those slices exactly between decode
- *  tokens — the 2026-07-07 decode@ctx contamination. A request arriving
- *  MID-flush pauses the remaining tensors until idle again). Gate failures
- *  are swallowed: scheduling advice must never corrupt the write path
- *  (an early generator close inside the fd-open section would leak the fd). */
+ *  `runStep` (optional) runs each blocking tensor step inside the caller's
+ *  exclusion domain. Waiting for an idle observation is not sufficient: a
+ *  request can acquire the engine between that check and `steps.next()`,
+ *  putting rawBytesView's GPU sync on the decode stream during prefill. */
 export async function saveKvCacheAsync(
   path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
-  waitTurn?: () => Promise<void>, codecs: CacheCodecProvider = legacyCacheCodecs,
+  runStep?: <T>(step: () => T) => Promise<T>, codecs: CacheCodecProvider = legacyCacheCodecs,
 ): Promise<void> {
   const steps = saveKvCacheSteps(path, tokens, caches, meta, codecs);
-  while (true) {
-    if (waitTurn) await waitTurn().catch(() => {});
-    if (steps.next().done) break;
-    await new Promise<void>((r) => setImmediate(r));
+  try {
+    while (true) {
+      const next = runStep ? await runStep(() => steps.next()) : steps.next();
+      if (next.done) break;
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  } catch (error) {
+    // A rejected execution lease can leave the writer suspended with an
+    // open fd. Throw through it so its existing failure cleanup runs.
+    steps.throw(error);
+    throw error;
   }
 }
 
@@ -723,7 +725,7 @@ export interface SpillItem {
 /** Bounded write-behind queue (2026-07-07 post-merge review fix).
  *
  *  Pending spill/snapshot clones pin their entries' GPU buffers until the
- *  idle-gated flush gets a turn; the old bare promise chain queued them
+ *  generation-locked flush gets a turn; the old bare promise chain queued them
  *  WITHOUT BOUND, so under sustained traffic (gate starved, evictions
  *  ongoing) resident memory = prompt-cache cap + every queued clone —
  *  allocator pressure exactly under the load that caused the evictions.

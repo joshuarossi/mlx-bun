@@ -26,6 +26,17 @@ test("grammar and an explicit seed compose with speculative verification", () =>
   expect(plan).toMatchObject({ method: "speculative", mechanism: "serial", promptCache: false, checkpoint: false });
 });
 
+test("qualified speculative KV retains the serial verifier and other incompatibility guards", () => {
+  const qualified = { ...capabilities, speculativeKvQuant: true };
+  const draft = { ...request, hasDraft: true, kvQuant: true };
+  expect(resolveExecution(draft, qualified)).toMatchObject({
+    method: "speculative", mechanism: "serial", promptCache: false, checkpoint: false,
+  });
+  for (const key of ["hasVision", "hasAdapters", "wantsLogprobs", "turboQuant"] as const)
+    expect(resolveExecution({ ...draft, [key]: true }, qualified).method).toBe("autoregressive");
+  expect(resolveExecution(draft, qualified, { pagedKv: true, fill: false }).method).toBe("autoregressive");
+});
+
 test("per-layer KV batches; uniform and TurboQuant remain serial", () => {
   expect(resolveExecution({ ...request, kvQuant: true }, capabilities).mechanism).toBe("continuous");
   expect(resolveExecution({ ...request, kvQuant: true }, { ...capabilities, quantizedBatch: false }).mechanism).toBe("serial");

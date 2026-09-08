@@ -36,9 +36,9 @@ STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
 ## The rules
 
 1. **No dated artifacts in git.** Anything with a date or hostname in its
-   filename is a work product, not source. `scripts/bench-serve.ts all` and the bench
-   scripts write their dumps to the working dir — move them to `reports/`
-   or delete them; only distilled numbers enter `docs/reference/benchmarks.md`.
+   filename is a work product, not source. `scripts/bench-serve.ts all` writes
+   into `reports/` by default. Move other benchmark dumps there or delete them;
+   only distilled numbers enter `docs/reference/benchmarks.md`.
    The root allowlist gate fails CI on new tracked root files.
 2. **Models are outputs.** Quantized/folded/converted snapshots go to
    `~/models/<Name>/`. The repo never contains weights beyond the small
@@ -66,8 +66,8 @@ STATUS ≤150 / PLAN ≤800 line caps, and the generated `docs/README.md` map
    stay untracked forever (see `goldens/README.md` and the 179 MB → 20 MB
    history rewrite that rule came from).
 6. **External environments are not repos.** The pinned Python oracle
-   lives at `/Users/joshrossi/Code/mlx-lm/.venv` (mlx-lm + mlx-vlm
-   reference stacks; pins in `docs/reference/environment.md`). It is an
+   lives in an external venv selected by `tests/support/paths.ts` (mlx-lm +
+   mlx-vlm reference stacks; location and pins in `docs/reference/environment.md`). It is an
    environment, not a checkout, and nothing like it ever appears inside
    this repository.
 

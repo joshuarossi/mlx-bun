@@ -21,30 +21,48 @@
 // (held over from the verify tap). Computationally identical to mlx-vlm's
 // commit-time "seed" append, just performed at the top of the next round.
 //
-// Weights are plain bf16 (DenseLinear); the published drafter snapshots are
-// already sanitized (norms in runtime layout — no +1.0 shift here).
+// Companion projections may be dense or quantized according to their metadata.
+// Published drafter norms are already sanitized to runtime layout; no +1.0 shift.
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
+import { materializeCopy } from "../mlx/materialize";
 import { toLogprobs } from "../sampler";
 import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
-import { disposing, KVCache, RMSNorm, type Mask } from "../model/gemma4-base";
+import { disposing, KVCache, QuantizedLinear, RMSNorm, type Mask } from "../model/gemma4-base";
 import { DenseLinear } from "../model/universal/modules";
 import type { DraftProvider, DraftSource, QwenMtpTarget } from "./source";
+import type { Cache } from "../model/gemma4";
+import { cloneKvCaches } from "../kv-store";
+import { cacheBytes } from "../prompt-cache";
+import { disposeResources } from "../engine/resources";
+import { SpeculativePrefixStore, type SpeculativePrefixState } from "./prefix-state";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
 const DRAFT_PREFILL_CHUNK = 2048;
 
-/** Dense-weight clone of Qwen3Attention.forward (src/model/qwen3_5.ts —
- *  ops copied verbatim; only the projection flavor differs: the drafter is
- *  bf16, the target's class hardwires QuantizedLinear). */
+type MtpLinear = DenseLinear | QuantizedLinear;
+
+/** Projection tensors belong to Weights; dense transpose views belong to
+ *  the provider's resource stack. Quantized heads keep no dense copy. */
+function loadMtpLinear(
+  weights: Weights, path: string, config: ModelConfig, resources: DisposableStack,
+): MtpLinear {
+  if (weights.has(`${path}.scales`)) return QuantizedLinear.load(weights, path, config);
+  const layer = new DenseLinear(weights.tensor(`${path}.weight`), null);
+  resources.use(layer.wT);
+  return layer;
+}
+
+/** Qwen3Attention.forward with the companion's dense or quantized projections.
+ *  Attention operations follow src/model/qwen3_5.ts verbatim. */
 class MtpAttention {
-  readonly qProj: DenseLinear;
-  readonly kProj: DenseLinear;
-  readonly vProj: DenseLinear;
-  readonly oProj: DenseLinear;
+  readonly qProj: MtpLinear;
+  readonly kProj: MtpLinear;
+  readonly vProj: MtpLinear;
+  readonly oProj: MtpLinear;
   readonly qNorm: RMSNorm;
   readonly kNorm: RMSNorm;
   readonly nHeads: number;
@@ -54,7 +72,7 @@ class MtpAttention {
   readonly ropeDims: number;
   readonly ropeBase: number;
 
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+  constructor(weights: Weights, config: ModelConfig, prefix: string, resources: DisposableStack) {
     const t = config.text;
     this.nHeads = t.numAttentionHeads;
     this.nKvHeads = t.numKeyValueHeads;
@@ -62,12 +80,10 @@ class MtpAttention {
     this.scale = Math.pow(this.headDim, -0.5);
     this.ropeDims = Math.trunc(this.headDim * t.partialRotaryFactor);
     this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
-    const dense = (path: string): DenseLinear =>
-      new DenseLinear(weights.tensor(`${path}.weight`), null);
-    this.qProj = dense(`${prefix}.q_proj`);
-    this.kProj = dense(`${prefix}.k_proj`);
-    this.vProj = dense(`${prefix}.v_proj`);
-    this.oProj = dense(`${prefix}.o_proj`);
+    this.qProj = loadMtpLinear(weights, `${prefix}.q_proj`, config, resources);
+    this.kProj = loadMtpLinear(weights, `${prefix}.k_proj`, config, resources);
+    this.vProj = loadMtpLinear(weights, `${prefix}.v_proj`, config, resources);
+    this.oProj = loadMtpLinear(weights, `${prefix}.o_proj`, config, resources);
     this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
     this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
   }
@@ -120,28 +136,26 @@ class MtpAttention {
 
 /** The one MTP decoder block: fc-merge → attention → swiglu MLP → norm. */
 class MtpModule {
-  readonly fc: DenseLinear;
+  readonly fc: MtpLinear;
   readonly preFcNormEmbedding: RMSNorm;
   readonly preFcNormHidden: RMSNorm;
   readonly attn: MtpAttention;
-  readonly mlpGate: DenseLinear;
-  readonly mlpUp: DenseLinear;
-  readonly mlpDown: DenseLinear;
+  readonly mlpGate: MtpLinear;
+  readonly mlpUp: MtpLinear;
+  readonly mlpDown: MtpLinear;
   readonly inputNorm: RMSNorm;
   readonly postAttnNorm: RMSNorm;
   readonly finalNorm: RMSNorm;
 
-  constructor(weights: Weights, config: ModelConfig) {
+  constructor(weights: Weights, config: ModelConfig, resources: DisposableStack) {
     const eps = config.text.rmsNormEps;
-    const dense = (path: string): DenseLinear =>
-      new DenseLinear(weights.tensor(`${path}.weight`), null);
-    this.fc = dense("fc");
+    this.fc = loadMtpLinear(weights, "fc", config, resources);
     this.preFcNormEmbedding = new RMSNorm(weights.tensor("pre_fc_norm_embedding.weight"), eps);
     this.preFcNormHidden = new RMSNorm(weights.tensor("pre_fc_norm_hidden.weight"), eps);
-    this.attn = new MtpAttention(weights, config, "layers.0.self_attn");
-    this.mlpGate = dense("layers.0.mlp.gate_proj");
-    this.mlpUp = dense("layers.0.mlp.up_proj");
-    this.mlpDown = dense("layers.0.mlp.down_proj");
+    this.attn = new MtpAttention(weights, config, "layers.0.self_attn", resources);
+    this.mlpGate = loadMtpLinear(weights, "layers.0.mlp.gate_proj", config, resources);
+    this.mlpUp = loadMtpLinear(weights, "layers.0.mlp.up_proj", config, resources);
+    this.mlpDown = loadMtpLinear(weights, "layers.0.mlp.down_proj", config, resources);
     this.inputNorm = new RMSNorm(weights.tensor("layers.0.input_layernorm.weight"), eps);
     this.postAttnNorm = new RMSNorm(weights.tensor("layers.0.post_attention_layernorm.weight"), eps);
     this.finalNorm = new RMSNorm(weights.tensor("norm.weight"), eps);
@@ -161,7 +175,7 @@ class MtpModule {
     const x = this.fc.forward(joined);
     joined.dispose();
 
-    // Decoder layer (Qwen3Layer.forward shape, dense weights).
+    // Decoder layer (Qwen3Layer.forward shape).
     const L = x.shape[1]!;
     const mask = cache.makeMask(L, null);
     const xn = this.inputNorm.forward(x);
@@ -189,18 +203,33 @@ class MtpModule {
   }
 }
 
+class QwenMtpPrefixState implements SpeculativePrefixState {
+  constructor(readonly tokens: number[], readonly targetIdentity: object,
+    readonly namespace: string, readonly bytes: number, readonly target: Cache[],
+    public draft: KVCache | null, public hidden: MlxArray | null) {}
+
+  dispose(): void {
+    const resources = [...this.target.splice(0), this.draft, this.hidden];
+    this.draft = null;
+    this.hidden = null;
+    disposeResources(resources.filter((r) => r != null));
+  }
+}
+
 export class QwenMtpProvider implements DraftProvider {
   readonly id: string;
   readonly weightsBytes: number;
   readonly #module: MtpModule;
   readonly #config: ModelConfig;
+  readonly #resources: DisposableStack;
+  readonly #prefixStore = new SpeculativePrefixStore<QwenMtpPrefixState>();
 
-  private constructor(id: string, config: ModelConfig, weights: Weights, module: MtpModule) {
+  private constructor(id: string, config: ModelConfig, weightsBytes: number, module: MtpModule, resources: DisposableStack) {
     this.id = id;
     this.#config = config;
     this.#module = module;
-    this.weightsBytes = [...weights.shards.files.values()]
-      .reduce((a, f) => a + f.mmap.size, 0);
+    this.weightsBytes = weightsBytes;
+    this.#resources = resources;
   }
 
   static async load(dir: string): Promise<QwenMtpProvider> {
@@ -208,13 +237,20 @@ export class QwenMtpProvider implements DraftProvider {
     if (config.modelType !== "qwen3_5_mtp")
       throw new Error(`${dir}: not a qwen3_5_mtp drafter (model_type ${config.modelType})`);
     const weights = await Weights.open(dir);
+    using resources = new DisposableStack();
+    resources.defer(() => weights.dispose());
+    const weightsBytes = [...weights.shards.files.values()]
+      .reduce((a, f) => a + f.mmap.size, 0);
+    const module = new MtpModule(weights, config, resources);
     return new QwenMtpProvider(
       dir.split("/").filter(Boolean).at(-1) ?? "qwen-mtp",
-      config, weights, new MtpModule(weights, config),
+      config, weightsBytes, module, resources.move(),
     );
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
+    if (this.#resources.disposed)
+      throw new Error("qwen MTP provider is disposed");
     const target = opts.target.qwenMtp;
     if (!target)
       throw new Error("qwen MTP drafting requires a qwen3_5-family target");
@@ -224,12 +260,14 @@ export class QwenMtpProvider implements DraftProvider {
         `${target.hiddenSize} — split from a different checkpoint?`,
       );
     }
-    return new QwenMtpSource(target, this.#module, opts.sampler);
+    return new QwenMtpSource(target, this.#module, opts.sampler,
+      { store: this.#prefixStore, identity: opts.target.identity });
   }
 
   dispose(): void {
-    // Weights are mmap-backed and pinned for the process (house rule: no JS
-    // dtors into mlx); the provider owns no other native state.
+    // Release cached transpose views before their native weight maps. MLX
+    // retains buffers needed by outstanding GPU commands until completion.
+    disposeResources([this.#prefixStore, { dispose: () => this.#resources.dispose() }]);
   }
 }
 
@@ -245,7 +283,10 @@ export class QwenMtpSource implements DraftSource {
   readonly #target: QwenMtpTarget;
   readonly #module: MtpModule;
   readonly #sampler: Sampler;
-  readonly #cache = new KVCache();
+  #cache = new KVCache();
+  readonly prefix: DraftSource["prefix"];
+  #prefilledTokens = 0;
+  #hasDrafted = false;
   /** Target pre-norm hidden at the position preceding the next pending
    *  token: prefill's last tapped row, then each commit's vCtx row at the
    *  emitted position. draft() consumes it to build the pending row. [1,1,H] */
@@ -253,11 +294,55 @@ export class QwenMtpSource implements DraftSource {
   #roundAppended = 0;
   #closed = false;
 
-  constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler) {
+  constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler,
+    prefix?: { store: SpeculativePrefixStore<QwenMtpPrefixState>; identity: object }) {
     this.#target = target;
     this.#module = module;
     this.#sampler = sampler;
     this.tapLayers = [target.layerCount - 1];
+    if (prefix) this.prefix = {
+      restore: (prompt, caches, namespace, maxBytes) => {
+        this.#checkOpen();
+        if (this.#prefilledTokens !== 0 || this.#hasDrafted)
+          throw new Error("Qwen MTP prefix restore requires a fresh source");
+        const entry = prefix.store.take(prompt, prefix.identity, namespace, maxBytes);
+        if (!entry) return 0;
+        try {
+          if (entry.target.length !== caches.length || !entry.draft || !entry.hidden ||
+            entry.draft.offset !== entry.tokens.length - 1)
+            throw new Error("invalid paired Qwen MTP prefix state");
+          disposeResources(caches);
+          caches.splice(0, caches.length, ...entry.target.splice(0));
+          this.#cache.dispose();
+          this.#cache = entry.draft;
+          entry.draft = null;
+          this.#pendingTrueHidden?.dispose();
+          this.#pendingTrueHidden = entry.hidden;
+          entry.hidden = null;
+          return this.#prefilledTokens = entry.tokens.length;
+        } finally { entry.dispose(); }
+      },
+      capture: (tokens, caches, namespace, maxBytes) => {
+        this.#checkOpen();
+        if (tokens.length !== this.#prefilledTokens || !this.#pendingTrueHidden ||
+          this.#cache.offset !== tokens.length - 1 || this.#roundAppended !== 0)
+          throw new Error("Qwen MTP snapshot requires an aligned prefill boundary");
+        const bytes = cacheBytes([...caches, this.#cache]) + this.#pendingTrueHidden.nbytes;
+        if (bytes > maxBytes) { prefix.store.dispose(); return; }
+        const retained: Cache[] = [];
+        let draft: KVCache | null = null, hidden: MlxArray | null = null;
+        try {
+          retained.push(...cloneKvCaches(caches));
+          draft = cloneKvCaches([this.#cache])[0] as KVCache;
+          hidden = this.#pendingTrueHidden.slice([0, 0, 0], this.#pendingTrueHidden.shape);
+          const entry = new QwenMtpPrefixState([...tokens], prefix.identity, namespace,
+            bytes, retained.splice(0), draft, hidden);
+          draft = null;
+          hidden = null;
+          prefix.store.put(entry, maxBytes);
+        } finally { disposeResources([...retained, draft, hidden].filter((r) => r != null)); }
+      },
+    };
   }
 
   /** Drafter prefill: rows for positions 0..L-2, keyed (token_{p+1}, h_p) —
@@ -268,27 +353,43 @@ export class QwenMtpSource implements DraftSource {
     if (!ctxML)
       throw new Error("qwen MTP prefill requires the tapped pre-final-norm context");
     try {
-      if (this.#cache.offset !== 0)
-        throw new Error("qwen MTP source cannot be prefilled twice");
+      if (this.#hasDrafted)
+        throw new Error("qwen MTP prefill cannot follow drafting");
       const L = promptIds.length;
+      const start = this.#prefilledTokens;
       const H = ctxML.shape[2]!;
-      if (ctxML.shape[1]! !== L)
-        throw new Error(`qwen MTP tap covered ${ctxML.shape[1]} of ${L} prompt positions`);
-      this.#pendingTrueHidden = ctxML.slice([0, L - 1, 0], [1, L, H]);
-      for (let pos = 0; pos + 1 < L; pos += DRAFT_PREFILL_CHUNK) {
+      if (L <= start || ctxML.shape[1]! !== L - start)
+        throw new Error(`qwen MTP tap covered ${ctxML.shape[1]} of ${L - start} new prompt positions`);
+      if (start > 0) {
+        if (!this.#pendingTrueHidden || this.#cache.offset !== start - 1)
+          throw new Error("qwen MTP prefix state is not aligned");
+        this.#stepOne(promptIds[start]!, this.#pendingTrueHidden).dispose();
+      }
+      this.#pendingTrueHidden?.dispose();
+      // A slice would retain the complete prompt buffer in the saved prefix.
+      // Materialize this one row before handing off the prefill state.
+      using tail = ctxML.slice([0, L - start - 1, 0], [1, L - start, H]);
+      this.#pendingTrueHidden = materializeCopy(tail);
+      for (let pos = start; pos + 1 < L; pos += DRAFT_PREFILL_CHUNK) {
         const n = Math.min(DRAFT_PREFILL_CHUNK, L - 1 - pos);
         const shifted = promptIds.slice(pos + 1, pos + 1 + n);
         const ids = ops.fromInt32(shifted, [1, n]);
         const embeds = this.#target.embed(ids);
         ids.dispose();
-        const hiddens = ctxML.slice([0, pos, 0], [1, pos + n, H]);
+        const hiddens = ctxML.slice([0, pos - start, 0], [1, pos + n - start, H]);
         const out = this.#module.forward(embeds, hiddens, this.#cache);
         embeds.dispose();
         hiddens.dispose();
         out.dispose(); // prefill outputs are not seeds; only KV matters here
+        // Bound the lazy KV graph at each chunk. Evaluating the unused output
+        // would also execute attention and the MLP, which prefill does not need.
+        ops.evalAll(this.#cache.state());
       }
       if (this.#cache.offset !== L - 1)
         throw new Error(`qwen MTP prefill offset ${this.#cache.offset}, expected ${L - 1}`);
+      // Also covers a restored-prefix bridge with no subsequent full chunk.
+      ops.evalAll([this.#pendingTrueHidden, ...this.#cache.state()]);
+      this.#prefilledTokens = L;
     } finally {
       ctxML?.dispose(); // ownership per the seam contract
     }
@@ -296,6 +397,7 @@ export class QwenMtpSource implements DraftSource {
 
   async draft(feed: number[], n: number, stepBase: number): Promise<number[]> {
     this.#checkOpen();
+    this.#hasDrafted = true;
     if (this.#roundAppended !== 0)
       throw new Error("qwen MTP draft called before the prior round committed");
     if (n <= 0) return [];
@@ -315,8 +417,8 @@ export class QwenMtpSource implements DraftSource {
       this.#pendingTrueHidden.dispose();
       this.#pendingTrueHidden = null;
       this.#roundAppended++;
-      drafts.push(this.#sample(out, stepBase));
       chained = out;
+      drafts.push(this.#sample(out, stepBase));
       while (drafts.length < n) {
         const out = this.#stepOne(drafts.at(-1)!, chained!);
         chained!.dispose();
@@ -395,33 +497,29 @@ export class QwenMtpSource implements DraftSource {
 
   /** One module forward for (token, hidden) — appends one KV row. */
   #stepOne(token: number, hidden: MlxArray): MlxArray {
-    const ids = ops.fromInt32([token], [1, 1]);
-    const embed = this.#target.embed(ids);
+    using ids = ops.fromInt32([token], [1, 1]);
+    using embed = this.#target.embed(ids);
     ids.dispose();
-    const out = this.#module.forward(embed, hidden, this.#cache);
-    embed.dispose();
-    return out;
+    return this.#module.forward(embed, hidden, this.#cache);
   }
 
   /** Sample a draft token from the module output via the TARGET's lm head
    *  and the request sampler (per-step RNG stream discipline). */
   #sample(moduleOut: MlxArray, step: number): number {
-    const logits = this.#target.logitsFromHidden(moduleOut);
+    using logits = this.#target.logitsFromHidden(moduleOut);
     // Sampler contract is [1, V] (the main decode loop's shape). moduleOut
     // is [1, 1, H] → logits [1, 1, V]; without this reshape any sampler
     // that slices 2-D (top-k) throws "[slice] Invalid number of indices…
     // dimension 3" — the serve-lane MTP 500 (chat defaults carry the
     // model's top_k=20; the greedy bench harness never hit it).
     const V = logits.shape[logits.shape.length - 1]!;
-    const flat = ops.reshape(logits, [1, V]);
+    using flat = ops.reshape(logits, [1, V]);
     logits.dispose();
-    const logprobs = toLogprobs(flat);
+    using logprobs = toLogprobs(flat);
     flat.dispose();
-    const tok = this.#sampler(logprobs, step);
+    using tok = this.#sampler(logprobs, step);
     logprobs.dispose();
-    const id = ops.itemUint32(tok);
-    tok.dispose();
-    return id;
+    return ops.itemUint32(tok);
   }
 
   #checkOpen(): void {

@@ -161,7 +161,7 @@ export function parseToolCalls(text: string): ParsedToolCall[] {
 
 const TOOL_CALL_BLOCK_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi;
 const XML_FUNCTION_EQUALS_RE = /^\s*<function=([^>\s]+)>\s*([\s\S]*?)\s*<\/function>\s*$/i;
-const XML_PARAMETER_EQUALS_RE = /<parameter=([^>\s]+)>\s*([\s\S]*?)\s*<\/parameter>/gi;
+const XML_PARAMETER_EQUALS_RE = /<parameter=([^>\s]+)>([\s\S]*?)<\/parameter>/gi;
 const GLM52_ARG_KEY_RE = /<arg_key>/i;
 const GLM52_ARG_PAIR_RE = /<arg_key>\s*([\s\S]*?)\s*<\/arg_key>\s*<arg_value>\s*([\s\S]*?)\s*<\/arg_value>/gi;
 const XML_FUNCTION_ATTR_RE = /<function\s+name=["']([^"']+)["']\s*>\s*([\s\S]*?)\s*<\/function>/gi;
@@ -208,11 +208,9 @@ function toolParameterSchema(
   return null;
 }
 
-/** Oracle `_decode_tool_parameter_value`: string-typed params stay raw
- *  text (a path like "2025" must not become a number); everything else
- *  is JSON-decoded when possible. */
-function decodeToolValue(value: string, schema: Record<string, unknown> | null): unknown {
-  const text = decodeXml(value);
+/** Decode a value after its caller removes protocol-specific delimiters.
+ *  String-typed params stay raw; everything else is JSON-decoded when possible. */
+function decodeToolValue(text: string, schema: Record<string, unknown> | null): unknown {
   if (!text) return "";
   const types = schemaTypeNames(schema);
   if (types.size && [...types].every((t) => t === "string" || t === "null")) return text;
@@ -546,23 +544,59 @@ function parseJsonToolCall(block: string): ParsedToolCall | null {
   return repairs.length ? { ...call, repaired: true, repairs } : call;
 }
 
-function parseXmlEqualsToolCall(block: string, tools: ToolSpec[]): ParsedToolCall | null {
+function parseXmlEqualsToolCall(block: string, tools: ToolSpec[], strict = false): ParsedToolCall | null {
   const match = XML_FUNCTION_EQUALS_RE.exec(block);
   XML_FUNCTION_EQUALS_RE.lastIndex = 0;
   if (!match) return null;
+  if (strict && (match.index !== 0 || match[0].length !== block.length)) return null;
   const name = match[1]!.trim();
   const body = match[2]!;
   const args: Record<string, unknown> = {};
+  let cursor = 0;
   for (const param of body.matchAll(XML_PARAMETER_EQUALS_RE)) {
+    if (strict && body.slice(cursor, param.index).trim()) return null;
     const key = param[1]!.trim();
     if (!key) throw new Error(`tool '${name}' contains an empty parameter name`);
-    args[key] = decodeToolValue(param[2]!, toolParameterSchema(tools, name, key));
+    if (strict && Object.hasOwn(args, key)) return null;
+    // Qwen's format carries raw text, not XML entity-encoded text. Match
+    // mlx_lm.tool_parsers.qwen3_coder: remove one framing newline at each
+    // end, preserving indentation, literal entities and JSON string escapes.
+    const value = param[2]!.replace(/^\n|\n$/g, "");
+    args[key] = decodeToolValue(value, toolParameterSchema(tools, name, key));
+    cursor = param.index + param[0].length;
   }
   XML_PARAMETER_EQUALS_RE.lastIndex = 0;
+  if (strict && body.slice(cursor).trim()) return null;
   return { name, arguments: args };
 }
 
-function parseGlm52ToolCall(block: string, tools: ToolSpec[]): ParsedToolCall | null {
+/** One complete envelope, with full consumption and no syntax repair. Used
+ * to establish structural fill boundaries, never to verify model predictions. */
+export function parseStrictToolCall(text: string, tools: ToolSpec[]): ParsedToolCall | null {
+  const open = "<tool_call>", close = "</tool_call>";
+  if (!text.startsWith(open) || !text.endsWith(close)) return null;
+  const body = text.slice(open.length, -close.length).trim();
+  if (body.includes(open) || body.includes(close)) return null;
+  try {
+    let call: ParsedToolCall | null;
+    if (body.startsWith("{")) {
+      // JSON.parse must succeed before the existing payload interpretation.
+      JSON.parse(body);
+      call = parseJsonToolCall(body);
+    } else {
+      call = parseXmlEqualsToolCall(body, tools, true) ?? parseGlm52ToolCall(body, tools, true);
+    }
+    if (!call || call.repaired || !tools.some(tool => toolSpecName(tool) === call.name)) return null;
+    return call;
+  } catch { return null; }
+}
+
+/** A textual argument delimiter is complete only after its closing bracket. */
+export function hasCompleteToolValueDelimiter(text: string): boolean {
+  return /^(?:<\/parameter>|<\/arg_value>)/.test(text.trimStart());
+}
+
+function parseGlm52ToolCall(block: string, tools: ToolSpec[], strict = false): ParsedToolCall | null {
   const firstArg = block.search(GLM52_ARG_KEY_RE);
   const name = (firstArg < 0 ? block : block.slice(0, firstArg)).trim();
   if (!name || !/^[^\s<>]+$/.test(name)) return null;
@@ -576,7 +610,8 @@ function parseGlm52ToolCall(block: string, tools: ToolSpec[]): ParsedToolCall | 
     if (body.slice(cursor, pair.index).trim()) return null;
     const key = pair[1]!.trim();
     if (!key) throw new Error(`tool '${name}' contains an empty argument name`);
-    args[key] = decodeToolValue(pair[2]!, toolParameterSchema(tools, name, key));
+    if (strict && Object.hasOwn(args, key)) return null;
+    args[key] = decodeToolValue(decodeXml(pair[2]!), toolParameterSchema(tools, name, key));
     cursor = pair.index + pair[0].length;
     matched = true;
   }
@@ -594,7 +629,7 @@ function parseXmlAttrToolCalls(text: string, tools: ToolSpec[]): ParsedToolCall[
     for (const param of body.matchAll(XML_PARAM_ATTR_RE)) {
       const key = param[1]!.trim();
       if (!key) throw new Error(`tool '${name}' contains an empty parameter name`);
-      args[key] = decodeToolValue(param[2]!, toolParameterSchema(tools, name, key));
+      args[key] = decodeToolValue(decodeXml(param[2]!), toolParameterSchema(tools, name, key));
     }
     XML_PARAM_ATTR_RE.lastIndex = 0;
     calls.push({ name, arguments: args });
@@ -616,9 +651,11 @@ export function parseGeneratedToolCalls(text: string, tools: ToolSpec[]): Parsed
   const calls: ParsedToolCall[] = [];
   for (const block of text.matchAll(TOOL_CALL_BLOCK_RE)) {
     const body = block[1]!.trim();
-    const parsed = parseJsonToolCall(body) ??
-      parseXmlEqualsToolCall(body, tools) ??
-      parseGlm52ToolCall(body, tools);
+    // A valid Qwen parameter may itself contain JSON. Dispatch by the outer
+    // format before JSON repair can mistake that value for the tool envelope.
+    const parsed = /^<function=/i.test(body)
+      ? parseXmlEqualsToolCall(body, tools)
+      : parseJsonToolCall(body) ?? parseGlm52ToolCall(body, tools);
     if (!parsed) throw new Error("unsupported tool_call payload format");
     calls.push(parsed);
   }

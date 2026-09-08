@@ -56,46 +56,89 @@
 //   bun scripts/bench-serve.ts all [--models cpm5,e4b,12B,qwen27b] [--context 16384]
 //                                  [--tokens 192] [--no-serial] [--skip-context]
 //                                  [--arms mlx-bun,mlx-lm,...] [--out report.md]
+//                                  [--model-path /exact/artifact --label name]
+//                                  [--workload-seed campaign-block-0] [--dry-run]
+//                                  [--diagnostic] (records a non-quotable run)
+// Serial experiments (--arms mlx-bun-serial only) also accept:
+//   --draft-model PATH --draft-kind mtp --num-draft-tokens 2
+//   --kv-quant 4 --prompt-cache 4
 //
 // Engine-level legs (in-process kernels, gen-peak memory, kill-switch A/Bs)
 // remain in bench-h2h.ts / scripts/bench-serve.ts all --engine — different question
 // (kernel parity), different tool.
 
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { EvalDB, gitCommit } from "../src/evaldb";
+import { checkMachine } from "../src/preflight";
+import { ORACLE_VENV } from "../tests/support/paths";
 
-const VENV = `${process.env.HOME}/Code/mlx-lm/.venv/bin`;
+const VENV = `${ORACLE_VENV}/bin`;
 // The venv's console scripts carry STALE SHEBANGS (the venv was moved from
 // mlx-lm-example/ — found 2026-07-05: posix_spawn ENOENT on every script).
 // Invoke through the venv python instead; immune to relocation.
 const PY = `${VENV}/python`;
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 
-const argv = process.argv.slice(2);
-// `all` = THE quotable pass (was ./benchmark.sh): refuse headline numbers from
-// a loaded/swapped machine, and keep the Mac awake for the whole run.
-if (argv[0] === "all") {
-  const pre = Bun.spawnSync(["bun", new URL("./bench-h2h.ts", import.meta.url).pathname, "preflight"], { stdio: ["inherit", "inherit", "inherit"] });
-  if (pre.exitCode !== 0) process.exit(pre.exitCode ?? 1);
-  Bun.spawn(["caffeinate", "-dimsu", "-w", String(process.pid)], { stdio: ["ignore", "ignore", "ignore"] }).unref();
+// Explicit serial experiments keep their settings in the command manifest.
+// Restrict overrides so a configured cell cannot masquerade as a default or
+// same-policy oracle comparison, or replace benchmark-owned ports/models.
+export function serialBenchmarkArgs(args: string[]): string[] {
+  const allowed = new Set(["draft-model", "draft-kind", "num-draft-tokens", "kv-quant", "prompt-cache"]);
+  const result: string[] = [];
+  for (const name of allowed) {
+    const key = `--${name}`, index = args.indexOf(key);
+    if (index < 0) continue;
+    const value = args[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(`${key} requires a value`);
+    if (args.lastIndexOf(key) !== index) throw new Error(`${key} may only be supplied once`);
+    if (["num-draft-tokens", "prompt-cache"].includes(name) &&
+        (!Number.isSafeInteger(Number(value)) || Number(value) < (name === "prompt-cache" ? 0 : 1)))
+      throw new Error(`${key} requires ${name === "prompt-cache" ? "a nonnegative" : "a positive"} integer`);
+    result.push(key, value);
+  }
+  if (result.length) {
+    const index = args.indexOf("--arms");
+    if (index < 0 || args[index + 1] !== "mlx-bun-serial")
+      throw new Error("server configuration overrides require --arms mlx-bun-serial; run controls separately");
+  }
+  return result;
 }
+
+function benchmarkRuntimeEnvironment(): Record<string, string> {
+  const names = ["MLX_BUN_LIBMLXC", "MLX_BUN_TRELLIS", "MLX_BUN_TRELLIS_VARIANT",
+    "MLX_BUN_TRELLIS_ASYNC_EXPAND", "MLX_BUN_EARLY_FIRST_TOKEN", "MLX_BUN_FILL",
+    "MLX_BUN_MTP_PROMPT_CACHE", "MLX_BUN_QWEN_SPEC_KV4", "MLX_BUN_RD_CONTEXT_LIMIT",
+    "MLX_BUN_RD_PREFILL_CHUNK", "MLX_BUN_PREFILL_TAIL_SPLIT"];
+  return Object.fromEntries(names.flatMap((name) => process.env[name] === undefined
+    ? [] : [[name, process.env[name]!]]));
+}
+
+const argv = process.argv.slice(2);
 const opt = (name: string, dflt: string): string => {
   const i = argv.indexOf(`--${name}`);
   return i > -1 ? argv[i + 1]! : dflt;
 };
 const flag = (n: string): boolean => argv.includes(`--${n}`);
+const DIAGNOSTIC = flag("diagnostic");
 
 const DECODE_TOKENS = Number(opt("tokens", "192"));
 const CTX_TOKENS = Number(opt("context", "16384"));
-const DECODE_RUNS = 4;
+const DECODE_RUNS = 5;
 const TTFT_RUNS = 3;
 const AGG_STREAMS = 4;
 const AGG_TOKENS = 128;
 const SPREAD_TOL = 1.15;
-const STABLE_TOL = 1.05;
-const MAX_EXTRA = 4;
+const WORKLOAD_SEED = opt("workload-seed", "bench-serve-v2");
+
+/** Independent of engine/model: paired arms must receive identical requests.
+ * A retry has its own nonce so a partially completed cold phase cannot hit its
+ * own previous attempt's cache. Match samples by request hash, not array index. */
+export function workloadNonce(seed: string, phase: string, attempt: number, index: number): string {
+  return createHash("sha256").update(JSON.stringify([seed, phase, attempt, index])).digest("hex").slice(0, 12);
+}
 
 // ---- phase budgets (B1) ----------------------------------------------------
 // Bun fetch has an IMPLICIT 300 s timeout when no signal is passed — it
@@ -109,7 +152,9 @@ const CTX_MIN_BUDGET_MS = 180_000;
 const BUDGET_SAFETY = 4;
 const NO_MEASUREMENT_BUDGET_MS = 600_000; // rate unknown → be generous, never infinite
 const DRAIN_PROBE_BUDGET_MS = 30_000;
-const STDERR_TAIL_LINES = 30;
+// Native throw backtraces can exceed 64 lines before Bun prints its crash
+// footer. Keep the original exception text in bounded diagnostic reports.
+const STDERR_TAIL_LINES = DIAGNOSTIC ? 160 : 30;
 
 /** tokens/tps scaled budget with a floor; pure so the clamping is testable.
  *  tps ≤ 0 (leg that would have measured it failed) falls back generous. */
@@ -122,7 +167,39 @@ export function scaledBudgetMs(
 
 // ---- model registry (paths mirror tests/support/paths.ts conventions) -------------
 const HF = `${process.env.HOME}/.cache/huggingface/hub`;
-const MODELS: Record<string, { path: string; label: string; needsOptiqRegister?: boolean }> = {
+export interface BenchmarkModel {
+  path: string;
+  label: string;
+  needsOptiqRegister?: boolean;
+  packedTrellis?: boolean;
+  configSha256?: string;
+}
+
+/** Metadata only: selecting an artifact never loads MLX or tensor data. */
+export function localBenchmarkModel(path: string, label?: string): BenchmarkModel {
+  const resolved = realpathSync(path);
+  const bytes = readFileSync(join(resolved, "config.json"));
+  const config = JSON.parse(bytes.toString());
+  const quant = config.quantization ?? config.quantization_config ?? config.text_config?.quantization ?? {};
+  return {
+    path: resolved,
+    label: label || basename(resolved),
+    configSha256: createHash("sha256").update(bytes).digest("hex"),
+    packedTrellis: quant.mode === "trellis" || Object.values(quant).some((v) =>
+      v !== null && typeof v === "object" && (v as { mode?: string }).mode === "trellis"),
+    needsOptiqRegister: config.model_type === "gemma4_unified",
+  };
+}
+
+export function unsupportedBenchmarkArm(model: BenchmarkModel, arm: string): string | null {
+  if (!["mlx-bun", "mlx-bun-serial", "mlx-bun-mixed", "mlx-lm", "optiq-mixed"].includes(arm))
+    return `unknown arm ${arm}`;
+  if (model.packedTrellis && (arm === "mlx-lm" || arm === "optiq-mixed"))
+    return "packed trellis has no stock mlx-lm/optiq loader; an expanded carrier is a separate artifact, not a same-artifact oracle";
+  return null;
+}
+
+const MODELS: Record<string, BenchmarkModel> = {
   cpm5: {
     path: `${HF}/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78`,
     label: "MiniCPM5-1B",
@@ -165,18 +242,19 @@ interface Cell { model: string; arm: Arm }
 
 function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
   const m = MODELS[c.model]!;
+  if (unsupportedBenchmarkArm(m, c.arm)) return null;
   const kvCfg = `${m.path}/kv_config.json`;
   const ssd = ssdDir ? ["--ssd-cache", ssdDir] : [];
   switch (c.arm) {
     case "mlx-bun": // THE drop-in arm: real CLI, real defaults (+ SSD tier for the restart leg)
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", ...ssd];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", ...ssd];
     case "mlx-bun-isolated":
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--isolate", ...ssd];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--isolate", ...ssd];
     case "mlx-bun-serial":
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd, ...serialBenchmarkArgs(argv)];
     case "mlx-bun-mixed":
       if (!existsSync(kvCfg)) return null;
-      return ["bun", CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--kv-quant", "config", ...ssd];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--kv-quant", "config", ...ssd];
     case "mlx-lm":
       // Architectures plain mlx-lm lacks go through optiq's register()
       // (bf16 KV — optiq serve's default; the kv-quant hooks never run).
@@ -197,7 +275,19 @@ function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
 
 interface ReqResult {
   ttftMs: number;
+  headersMs: number;
+  firstByteMs: number;
+  firstEventMs: number;
+  /** Arrival times of content, reasoning or tool-call output events, not tokens. */
+  outputEventTimesMs: number[];
+  toolCallChunks: number;
+  doneSeen: boolean;
+  /** Observed content-stream interval; SSE chunks need not be single tokens. */
   decodeTps: number;
+  wallMs: number;
+  endToEndTps: number;
+  contentChunks: number;
+  finishReason: string | null;
   promptTokens: number;
   cachedTokens: number;
   genTokens: number;
@@ -214,17 +304,30 @@ interface ReqOpts {
   timeoutMs?: number;
 }
 
-/** One streamed chat completion; timings from the byte stream, token counts
- *  from usage when the stack emits it (all three do), chunk-count fallback
- *  otherwise. `content` should be nonce-prefixed by the caller when the
- *  stack's prompt cache must not help. */
-async function timedRequest(
+/** One streamed chat completion. Token counts require usage: a chunk can
+ * contain a burst of tokens, so counting chunks is not an admissible fallback.
+ * Record total request wall time separately from the visible stream interval. */
+export async function measureChatRequest(
   base: string, content: string, maxTokens: number, o: ReqOpts = {},
 ): Promise<ReqResult> {
+  return measureStreamRequest(base, "chat/completions", {
+    messages: [{ role: "user", content }], chat_template_kwargs: { enable_thinking: true },
+  }, maxTokens, o);
+}
+
+/** Raw completion timing uses the same framing and usage checks as chat. */
+export async function measureCompletionRequest(
+  base: string, prompt: string, maxTokens: number, o: ReqOpts = {},
+): Promise<ReqResult> {
+  return measureStreamRequest(base, "completions", { prompt }, maxTokens, o);
+}
+
+async function measureStreamRequest(base: string, route: "chat/completions" | "completions",
+  input: Record<string, unknown>, maxTokens: number, o: ReqOpts): Promise<ReqResult> {
   const t0 = performance.now();
   // The signal covers headers AND body streaming — one budget for the leg.
   const signal = AbortSignal.timeout(o.timeoutMs ?? FIXED_BUDGET_MS);
-  const r = await fetch(`${base}/v1/chat/completions`, {
+  const r = await fetch(`${base}/v1/${route}`, {
     method: "POST",
     signal,
     headers: {
@@ -233,65 +336,98 @@ async function timedRequest(
     },
     body: JSON.stringify({
       model: o.modelId ?? "bench", stream: true, max_tokens: maxTokens, temperature: 0,
-      messages: [{ role: "user", content }],
+      ...input,
       stream_options: { include_usage: true },
       ...(o.bodyExtra ?? {}),
     }),
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  const headersMs = performance.now() - t0;
   const reader = r.body!.getReader();
   const dec = new TextDecoder();
   let buf = "";
   let tFirst = 0;
   let tLast = 0;
   let chunkTokens = 0;
+  let toolCallChunks = 0;
+  let firstByteMs = 0;
+  let firstEventMs = 0;
+  let doneSeen = false;
+  const outputEventTimesMs: number[] = [];
   let text = "";
+  let finishReason: string | null = null;
   interface Usage {
     prompt_tokens?: number;
     completion_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
   }
   let usage: Usage | null = null;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line.startsWith("data:")) continue;
+  const parseLine = (line: string) => {
+      if (!line.startsWith("data:")) return;
+      const now = performance.now();
+      if (!firstEventMs) firstEventMs = now - t0;
       const payload = line.slice(5).trim();
-      if (payload === "[DONE]") continue;
+      if (payload === "[DONE]") { doneSeen = true; return; }
       let j: {
-        choices?: Array<{ delta?: { content?: string; reasoning?: string; reasoning_content?: string } }>;
+        choices?: Array<{ text?: string; delta?: { content?: string; reasoning?: string; reasoning_content?: string;
+          tool_calls?: Array<{ function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>;
         usage?: Usage | null;
+        error?: unknown;
       };
-      try { j = JSON.parse(payload); } catch { continue; }
+      try { j = JSON.parse(payload); } catch { throw new Error(`malformed SSE JSON: ${payload.slice(0, 120)}`); }
+      if (j.error) throw new Error(`SSE error: ${JSON.stringify(j.error).slice(0, 300)}`);
+      if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
       const delta = j.choices?.[0]?.delta;
       // CONCATENATE both fields (B2): a chunk can carry content AND
       // reasoning; `content ?? reasoning` half-dropped it. mlx-lm streams
       // reasoning as `reasoning`; some builds use `reasoning_content`.
-      const piece = (delta?.content ?? "") + (delta?.reasoning ?? delta?.reasoning_content ?? "");
-      if (piece) {
-        const now = performance.now();
+      const piece = route === "completions" ? (j.choices?.[0]?.text ?? "") :
+        (delta?.content ?? "") + (delta?.reasoning ?? delta?.reasoning_content ?? "");
+      const toolOutput = delta?.tool_calls?.some((call) => call.function?.name || call.function?.arguments);
+      if (piece || toolOutput) {
         if (!tFirst) tFirst = now;
         tLast = now;
-        chunkTokens++;
+        outputEventTimesMs.push(now - t0);
+        if (piece) chunkTokens++;
+        if (toolOutput) toolCallChunks++;
         text += piece;
       }
       if (j.usage && typeof j.usage.completion_tokens === "number") usage = j.usage;
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) { buf += dec.decode(); if (buf.trim()) parseLine(buf.trim()); break; }
+      if (value.byteLength && !firstByteMs) firstByteMs = performance.now() - t0;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        parseLine(line);
+      }
     }
-  }
-  const genTokens = usage?.completion_tokens ?? chunkTokens;
-  const promptTokens = usage?.prompt_tokens ?? 0;
-  const cachedTokens = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  } catch (error) { await reader.cancel(error).catch(() => {}); throw error; }
+  finally { reader.releaseLock(); }
+  const wallMs = performance.now() - t0;
+  // Assignments occur inside the stream parser callback.
+  const finalUsage = usage as Usage | null;
+  if (!finalUsage || !Number.isInteger(finalUsage.completion_tokens) || finalUsage.completion_tokens! < 0 ||
+      !Number.isInteger(finalUsage.prompt_tokens) || finalUsage.prompt_tokens! < 0)
+    throw new Error("missing/invalid token usage; SSE chunk counts cannot measure token throughput");
+  if (!doneSeen || !finishReason) throw new Error("incomplete SSE response: finish reason and [DONE] are required");
+  if (!tFirst) throw new Error(`no output; TTFT undefined (completion_tokens=${finalUsage.completion_tokens}, finish_reason=${finishReason})`);
+  const genTokens = finalUsage.completion_tokens!;
+  const promptTokens = finalUsage.prompt_tokens!;
+  const cachedTokens = finalUsage.prompt_tokens_details?.cached_tokens ?? 0;
   const dt = tLast - tFirst;
   return {
     ttftMs: tFirst - t0,
+    headersMs, firstByteMs, firstEventMs, outputEventTimesMs, toolCallChunks, doneSeen,
     decodeTps: genTokens > 1 && dt > 0 ? ((genTokens - 1) * 1000) / dt : 0,
+    wallMs, endToEndTps: genTokens * 1000 / wallMs, contentChunks: chunkTokens, finishReason,
     promptTokens, cachedTokens, genTokens,
-    usedUsage: usage !== null,
+    usedUsage: true,
     text,
   };
 }
@@ -324,9 +460,10 @@ async function completionProbe(base: string, prompt: string, o: ReqOpts): Promis
   return { text: j.choices?.[0]?.text ?? "", promptTokens: j.usage?.prompt_tokens ?? 0 };
 }
 
-async function waitReady(base: string, apiKey: string | undefined, timeoutMs: number): Promise<number> {
+async function waitReady(base: string, apiKey: string | undefined, timeoutMs: number, assertAlive?: () => void): Promise<number> {
   const t0 = performance.now();
   while (performance.now() - t0 < timeoutMs) {
+    assertAlive?.();
     try {
       const r = await fetch(`${base}/v1/models`, {
         headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
@@ -342,10 +479,9 @@ async function waitReady(base: string, apiKey: string | undefined, timeoutMs: nu
 const spreadOf = (xs: number[]): number =>
   xs.length < 2 ? 1 : Math.max(...xs) / Math.min(...xs);
 
-/** Filler sized in chars; ACTUAL length recorded from usage.prompt_tokens —
- *  the reported context is measured, never assumed. `charsPerTok` comes
- *  from the ~1k TTFT leg's measured ratio (tokenizer-dependent), so the
- *  long-context cell lands near its target without a calibration request. */
+/** Filler sized in chars; ACTUAL length recorded from usage.prompt_tokens.
+ * The fixed estimate keeps the exact input identical across stacks even if
+ * tokenizers drift. Do not calibrate each engine to a different prompt. */
 function fillerPrompt(targetTokens: number, nonce: string, charsPerTok = 3.6): string {
   const para = "Background context: the history of computation spans mechanical calculators, " +
     "vacuum tubes, transistors, integrated circuits, and modern GPU-accelerated systems " +
@@ -373,19 +509,32 @@ export function probeVerdict(
     const kind = probe === "completion" ? "TOKENIZER DRIFT" : "TEMPLATE/TOKENIZER DRIFT";
     return `- **parity ✗** ${tag}: ${kind} (${a.promptTokens} vs ${b.promptTokens}) — parity not attempted`;
   }
-  // Both zero = neither emitted usage; the precondition is unverifiable.
-  const usageCaveat = a.promptTokens === 0 ? " (no usage on either arm — token equality UNVERIFIED)" : "";
+  if (!(a.promptTokens > 0))
+    return `- **parity ?** ${tag}: prompt token counts UNVERIFIED; matching text cannot certify parity`;
   if (a.text === b.text)
-    return `- **parity ✓** ${tag}: 64 greedy tokens identical (prompt_tokens ${a.promptTokens} both)${usageCaveat}`;
+    return `- **parity ✓** ${tag}: observed greedy text identical (prompt_tokens ${a.promptTokens} both); token-ID/logit oracle still required`;
   let i = 0;
   while (i < Math.min(a.text.length, b.text.length) && a.text[i] === b.text[i]) i++;
-  return `- **parity ✗** ${tag}: same prompt bits (prompt_tokens ${a.promptTokens} both)${usageCaveat}, ` +
+  return `- **parity ✗** ${tag}: equal prompt token counts (prompt_tokens ${a.promptTokens} both), ` +
     `diverged at char ${i}: …\`${a.text.slice(Math.max(0, i - 20), i + 20)}\` vs …\`${b.text.slice(Math.max(0, i - 20), i + 20)}\``;
 }
 
 // ---- the per-cell measurement session --------------------------------------
 
 interface PhaseFailure { phase: string; error: string; stderrTail: string[] }
+
+interface RawRequest {
+  cell: Cell;
+  phase: string;
+  attempt: number;
+  index: number;
+  request: { content: string; maxTokens: number; bodyExtra: Record<string, unknown> };
+  requestSha256: string;
+  result?: ReqResult;
+  error?: string;
+  stderrTail?: string[];
+  processAtFailure?: { pid: number; exitCode: number | null; signal: string | null };
+}
 
 interface RestartDurability {
   durable: boolean;
@@ -473,7 +622,7 @@ function pumpStderr(stream: ReadableStream<Uint8Array>, ring: string[]): void {
   })();
 }
 
-async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: string): Promise<CellResult> {
+async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: string | undefined, raw: RawRequest[]): Promise<CellResult> {
   const cmd = cmdlineFor(c, port, ssdDir)!;
   const apiKey = c.arm === "optiq-mixed" ? "sk-optiq-bench" : undefined;
   // mlx_lm.server LOADS the request's model field as a repo id when it
@@ -493,6 +642,31 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   // bf16-KV; mixed-KV has NO valid HTTP oracle on this mlx-lm — per-layer
   // parity stays on the script-driven optiq path (goldens).
   const singleStreamExtra: Record<string, unknown> = {};
+  let activePhase = "startup";
+  let phaseAttempt = 0;
+  let phaseRequest = 0;
+  const nonce = (index = 0) => workloadNonce(WORKLOAD_SEED, activePhase, phaseAttempt, index);
+  const timedRequest = async (base: string, content: string, maxTokens: number, o: ReqOpts = {}): Promise<ReqResult> => {
+    const request = { content, maxTokens, bodyExtra: {
+      temperature: 0, chat_template_kwargs: { enable_thinking: true }, ...o.bodyExtra,
+    } };
+    const sample: RawRequest = {
+      cell: c, phase: activePhase, attempt: phaseAttempt, index: phaseRequest++, request,
+      requestSha256: createHash("sha256").update(JSON.stringify(request)).digest("hex"),
+    };
+    raw.push(sample); // retain failed requests and retries too
+    try {
+      sample.result = await measureChatRequest(base, content, maxTokens, o);
+      if (DIAGNOSTIC) sample.stderrTail = [...stderrTail];
+      return sample.result;
+    }
+    catch (e) {
+      sample.error = String(e);
+      sample.stderrTail = [...stderrTail];
+      sample.processAtFailure = { pid: proc.pid, exitCode: proc.exitCode, signal: proc.signalCode ?? null };
+      throw e;
+    }
+  };
 
   const stderrTail: string[] = [];
   // stdout "ignore": we never read it, and an unread pipe can block a
@@ -501,6 +675,10 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   let pid = proc.pid;
   pumpStderr(proc.stderr, stderrTail);
   const base = `http://127.0.0.1:${port}`;
+  const assertAlive = () => {
+    if (proc.exitCode !== null || proc.signalCode)
+      throw new Error(`server exited before ready: code=${proc.exitCode} signal=${proc.signalCode}; ${stderrTail.join("\n").slice(-2000)}`);
+  };
 
   // Peak-RSS sampler: cell-lifetime max PLUS a per-leg max that markLeg()
   // snapshots and re-seeds at each boundary (B4).
@@ -559,7 +737,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   /** Cheap 1-token request: is the server still answering at all? */
   const drainProbe = async (): Promise<boolean> => {
     try {
-      await timedRequest(base, "ok", 1, { apiKey, modelId, timeoutMs: DRAIN_PROBE_BUDGET_MS });
+      await measureChatRequest(base, "ok", 1, { apiKey, modelId, timeoutMs: DRAIN_PROBE_BUDGET_MS });
       return true;
     } catch { return false; }
   };
@@ -575,6 +753,9 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   // (the 2026-07-06b 12B/mlx-lm cell wasted ~15 min of dead waiting).
   let serverDeclaredDead = false;
   const runPhase = async <T>(name: string, fn: () => Promise<T>): Promise<T | null> => {
+    activePhase = name;
+    phaseAttempt = 0;
+    phaseRequest = 0;
     const errStr = (e: unknown): string => `${(e as Error).name}: ${(e as Error).message}`.slice(0, 300);
     const record = (msg: string): void => {
       console.log(`  [phase ${name}] FAILED: ${msg.slice(0, 160)}`);
@@ -582,6 +763,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
     };
     if (serverDeclaredDead) { record("skipped — server dead, respawn already used"); return null; }
     try { return await fn(); } catch (e1) {
+      const firstFailureStderr = [...stderrTail];
       if (!(await drainProbe())) {
         if (respawnUsed) {
           serverDeclaredDead = true;
@@ -593,13 +775,21 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
           await killProc();
           await Bun.sleep(1000);
           spawnProc();
-          await waitReady(base, apiKey, 600_000);
+          await waitReady(base, apiKey, 600_000, assertAlive);
         } catch (e2) {
           record(`${errStr(e1)} — respawn failed: ${errStr(e2)}`);
           return null;
         }
       }
-      try { return await fn(); } catch (e2) {
+      phaseAttempt = 1;
+      phaseRequest = 0;
+      try {
+        const result = await fn();
+        const error = `${errStr(e1)}; recovered on retry. Compare only matching attempts and request hashes.`;
+        console.log(`  [phase ${name}] RECOVERED: ${error.slice(0, 220)}`);
+        phaseFailures.push({ phase: name, error, stderrTail: firstFailureStderr });
+        return result;
+      } catch (e2) {
         record(`${errStr(e1)} — retry: ${errStr(e2)}`);
         return null;
       }
@@ -607,7 +797,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
   };
 
   try {
-    const readyMs = await waitReady(base, apiKey, 600_000);
+    const readyMs = await waitReady(base, apiKey, 600_000, assertAlive);
     const idleRssMB = sampleRss(pid);
     legPeakMB = idleRssMB;
 
@@ -646,28 +836,18 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
     });
     markLeg("parity");
 
-    // DECODE (short prompt; nonce so no arm's prefix cache distorts ttft
-    // bookkeeping — decode rate itself is cache-independent)
+    // Fixed-count decode sampling. Retain slow samples and mark instability;
+    // selecting the fastest subset biases comparisons upward.
     const decode = await runPhase("decode", async () => {
       const tps: number[] = [];
-      const one = async (): Promise<void> => {
+      const one = async (i: number): Promise<void> => {
         const res = await timedRequest(
-          base, `Run ${crypto.randomUUID().slice(0, 8)}: write a detailed essay about the history of computing.`,
+          base, `Run ${nonce(i)}: write a detailed essay about the history of computing.`,
           DECODE_TOKENS, { apiKey, modelId, timeoutMs: FIXED_BUDGET_MS, bodyExtra: singleStreamExtra });
         tps.push(res.decodeTps);
       };
-      for (let i = 0; i < DECODE_RUNS; i++) await one();
-      for (let extra = 0; extra < MAX_EXTRA &&
-        spreadOf(tps) > SPREAD_TOL &&
-        spreadOf([...tps].sort((a, b) => b - a).slice(0, 3)) > STABLE_TOL; extra++) await one();
-      let tag = "";
-      let picked = tps;
-      if (spreadOf(tps) > SPREAD_TOL) {
-        const top3 = [...tps].sort((a, b) => b - a).slice(0, 3);
-        if (spreadOf(top3) <= STABLE_TOL) { picked = top3; tag = `stabilized top3of${tps.length}`; }
-        else tag = `unstable spread=${spreadOf(tps).toFixed(2)}`;
-      }
-      return { picked, tag };
+      for (let i = 0; i < DECODE_RUNS; i++) await one(i);
+      return { picked: tps, tag: spreadOf(tps) > SPREAD_TOL ? `unstable spread=${spreadOf(tps).toFixed(2)}` : "" };
     });
     markLeg("decode");
     const decodeMedianTps = decode ? median(decode.picked) : 0;
@@ -680,20 +860,18 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
       const coldMs: number[] = [];
       const prefill1kTps: number[] = [];
       let lastColdPrompt = "";
-      let charsPerTok = 3.6;
       for (let i = 0; i < TTFT_RUNS; i++) {
-        lastColdPrompt = fillerPrompt(1024, crypto.randomUUID().slice(0, 8));
+        lastColdPrompt = fillerPrompt(1024, nonce(i));
         const res = await timedRequest(base, lastColdPrompt, 8,
           { apiKey, modelId, timeoutMs: FIXED_BUDGET_MS, bodyExtra: singleStreamExtra });
         coldMs.push(res.ttftMs);
         if (res.promptTokens > 0) {
           prefill1kTps.push((res.promptTokens * 1000) / res.ttftMs);
-          charsPerTok = lastColdPrompt.length / res.promptTokens; // measured ratio
         }
       }
       const warm = await timedRequest(base, lastColdPrompt, 8,
         { apiKey, modelId, timeoutMs: FIXED_BUDGET_MS, bodyExtra: singleStreamExtra });
-      return { coldMs, prefill1kTps, warmMs: warm.ttftMs, warmCachedTokens: warm.cachedTokens, charsPerTok };
+      return { coldMs, prefill1kTps, warmMs: warm.ttftMs, warmCachedTokens: warm.cachedTokens };
     });
     markLeg("ttft1k");
 
@@ -705,7 +883,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
     // is extrapolated from); repeat budgets from the measured ctx rate.
     let ctxPrompt = "";
     const ctx = withContext ? await runPhase("ctx", async () => {
-      ctxPrompt = fillerPrompt(CTX_TOKENS, crypto.randomUUID().slice(0, 8), ttft?.charsPerTok ?? 3.6);
+      ctxPrompt = fillerPrompt(CTX_TOKENS, nonce());
       const coldBudget = scaledBudgetMs(
         CTX_TOKENS, ttft ? median(ttft.prefill1kTps) : 0, CTX_MIN_BUDGET_MS, 6);
       const cold = await timedRequest(base, ctxPrompt, 64,
@@ -768,7 +946,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
       await killProc(c.arm.startsWith("mlx-bun") ? 180_000 : 5_000);
       await Bun.sleep(1000);
       spawnProc();
-      const readyMs2 = await waitReady(base, apiKey, 600_000);
+      const readyMs2 = await waitReady(base, apiKey, 600_000, assertAlive);
       const budget = scaledBudgetMs(ctx.promptTokens, ctx.prefillTps, CTX_MIN_BUDGET_MS);
       const afterRestart = await timedRequest(base, ctxPrompt, 8,
         { apiKey, modelId, timeoutMs: budget, bodyExtra: singleStreamExtra });
@@ -793,7 +971,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir?: str
       const t0 = performance.now();
       const rs = await Promise.all(
         Array.from({ length: AGG_STREAMS }, (_, i) =>
-          timedRequest(base, `Agent ${i} ${crypto.randomUUID().slice(0, 8)}: write a detailed essay about computers.`,
+          timedRequest(base, `Agent ${i} ${nonce(i)}: write a detailed essay about computers.`,
             AGG_TOKENS, { apiKey, modelId, timeoutMs: aggBudget })),
       );
       const wallS = (performance.now() - t0) / 1000;
@@ -837,13 +1015,26 @@ const median = (xs: number[]): number => {
 };
 
 async function main(): Promise<void> {
-  const models = opt("models", "cpm5,e4b,12B,qwen27b").split(",").filter((m) => {
+  serialBenchmarkArgs(argv); // fail before preflight or any server process
+  if (argv[0] !== "all" && !DIAGNOSTIC && !flag("dry-run"))
+    throw new Error("use all for the quiet benchmark, or --diagnostic for an explicitly non-quotable run");
+  if (![DECODE_TOKENS, CTX_TOKENS].every((n) => Number.isSafeInteger(n) && n > 0))
+    throw new Error("--tokens and --context must be positive integers");
+  if (!WORKLOAD_SEED || WORKLOAD_SEED.startsWith("--")) throw new Error("--workload-seed requires a value");
+  const localPath = opt("model-path", "");
+  if (localPath && argv.includes("--models"))
+    throw new Error("use --model-path for one exact artifact, or --models for registry entries");
+  if (argv.includes("--model-path") && (!localPath || localPath.startsWith("--")))
+    throw new Error("--model-path requires a local model directory");
+  if (localPath) MODELS.local = localBenchmarkModel(localPath, opt("label", ""));
+  const models = (localPath ? "local" : opt("models", "cpm5,e4b,12B,qwen27b")).split(",").filter((m) => {
     if (!MODELS[m] || !existsSync(`${MODELS[m]!.path}/config.json`)) {
       console.log(`[skip] unknown/missing model ${m}`);
       return false;
     }
     return true;
   });
+  if (!models.length) throw new Error("no benchmark models available");
   // mlx-bun-serial (--batch 1) is the CONTROL arm — it anchors both the
   // pure serial-vs-serial column against mlx-lm and the unified-engine-
   // vs-pinned-serial consistency check (perf + bit parity) that validates
@@ -860,6 +1051,36 @@ async function main(): Promise<void> {
   const armsRaw = opt("arms", "");
   if (armsRaw) arms = armsRaw.split(",") as Arm[];
   const withContext = !flag("skip-context");
+  for (const model of models) {
+    for (const arm of arms) {
+      const reason = unsupportedBenchmarkArm(MODELS[model]!, arm);
+      if (reason && (armsRaw || reason.startsWith("unknown arm")))
+        throw new Error(`${model}/${arm}: ${reason}`);
+      if (armsRaw && !cmdlineFor({ model, arm }, 8971))
+        throw new Error(`${model}/${arm}: required KV config or oracle executable missing`);
+    }
+  }
+  if (flag("dry-run")) {
+    console.log(JSON.stringify({
+      measurement: false, diagnostic: DIAGNOSTIC,
+      runtimeEnvironment: benchmarkRuntimeEnvironment(),
+      workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, enableThinking: true },
+      models: models.map((id) => ({ id, ...MODELS[id]! })),
+      cells: models.flatMap((model) => arms.map((arm) => ({
+        model, arm, command: cmdlineFor({ model, arm }, 8971, "<temporary-ssd-cache>"),
+        skipReason: unsupportedBenchmarkArm(MODELS[model]!, arm) ??
+          (cmdlineFor({ model, arm }, 8971) ? null : "required KV config or oracle executable missing"),
+      }))),
+    }, null, 2));
+    return;
+  }
+  // Validate and allow CPU-only inspection before the quotable-run preflight.
+  const machineBefore = checkMachine();
+  if (!DIAGNOSTIC) {
+    const pre = Bun.spawnSync([process.execPath, new URL("./bench-h2h.ts", import.meta.url).pathname, "preflight"], { stdio: ["inherit", "inherit", "inherit"] });
+    if (pre.exitCode !== 0) process.exit(pre.exitCode ?? 1);
+    Bun.spawn(["caffeinate", "-dimsu", "-w", String(process.pid)], { stdio: ["ignore", "ignore", "ignore"] }).unref();
+  }
 
   const db = new EvalDB();
   const commit = gitCommit();
@@ -867,24 +1088,52 @@ async function main(): Promise<void> {
   console.log(`bench-serve · ${machine}\n`);
   const results: CellResult[] = [];
   const failures: { cell: string; error: string; stderrTail?: string[] }[] = [];
+  const requests: RawRequest[] = [];
+  const out = opt("out", `reports/benchmarks-serve-${new Date().toISOString().slice(0, 10)}-${Bun.spawnSync(["hostname", "-s"]).stdout.toString().trim()}.md`);
+  mkdirSync(dirname(out), { recursive: true });
+  const rawPath = `${out}.json`;
+  const sourceDiff = () => createHash("sha256").update(Bun.spawnSync([
+    "git", "diff", "HEAD", "--", "src", "native", "scripts",
+  ]).stdout).digest("hex");
+  const sourceDiffStart = sourceDiff();
+  const sourceSnapshotStart = benchmarkSourceSnapshot();
+  const saveRaw = () => Bun.write(rawPath, JSON.stringify({
+    schemaVersion: 4, measurement: true, diagnostic: DIAGNOSTIC, canonical: false,
+    runtimeEnvironment: benchmarkRuntimeEnvironment(),
+    qualification: DIAGNOSTIC ? "diagnostic; not eligible for canonical results" : "quiet preflight passed; paired stability and correctness review still required",
+    machine, machineBefore, machineAtSave: checkMachine(), commit, bun: Bun.version,
+    sourceDiffStart, sourceDiffAtSave: sourceDiff(),
+    sourceSnapshotStart, sourceSnapshotAtSaveSha256: benchmarkSourceSnapshot().sha256,
+    identityNote: "Snapshot hashes tracked and untracked, non-ignored src/native/scripts plus package.json and bun.lock. External native binaries, oracle packages and weight content hashes belong in the campaign manifest.",
+    workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, enableThinking: true },
+    models: models.map((id) => ({ id, ...MODELS[id]! })),
+    commands: models.flatMap((model) => arms.map((arm) => ({ model, arm, command: cmdlineFor({ model, arm }, 8971, "<temporary-ssd-cache>") }))),
+    results, failures, requests,
+  }, null, 2));
 
   for (const model of models) {
     for (const arm of arms) {
       const c: Cell = { model, arm };
-      if (!cmdlineFor(c, 0)) { console.log(`[skip] ${model}/${arm} — not applicable`); continue; }
+      if (!cmdlineFor(c, 0)) {
+        console.log(`[skip] ${model}/${arm}: ${unsupportedBenchmarkArm(MODELS[model]!, arm) ?? "required KV config or oracle executable missing"}`);
+        continue;
+      }
       const key = `${model}/${arm}`;
       console.log(`=== ${key} ===`);
       const ssdDir = arm.startsWith("mlx-bun")
         ? mkdtempSync(join(tmpdir(), "mlxbun-bench-ssd-"))
         : undefined;
       try {
-        const res = await runCell(c, 8971, withContext, ssdDir);
+        const res = await runCell(c, 8971, withContext, ssdDir, requests);
         results.push(res);
         // Phase failures are cell-survivable (B1) but still land in the
         // report's failures section with the child's stderr tail.
         for (const pf of res.phaseFailures)
           failures.push({ cell: `${key} [phase ${pf.phase}]`, error: pf.error, stderrTail: pf.stderrTail });
         const decodeMed = res.decodeTps ? median(res.decodeTps) : null;
+        const actualOutputCounts = requests.filter((s) =>
+          s.cell.model === model && s.cell.arm === arm && s.phase === "decode" && s.result,
+        ).map((s) => s.result!.genTokens);
         console.log(
           `  ready ${(res.readyMs / 1000).toFixed(1)}s · coldStart ${res.coldStartMs != null ? (res.coldStartMs / 1000).toFixed(1) : "—"}s · rssPeak ${res.peakRssMB.toFixed(0)}MB · decode ${decodeMed?.toFixed(1) ?? "—"} tok/s ${res.decodeTag} · ` +
           (res.restart ? `restartCtxTtft ${res.restart.ctxTtftMs.toFixed(0)}ms (cached ${res.restart.cachedTokens}) · ` : "") +
@@ -896,13 +1145,13 @@ async function main(): Promise<void> {
           modelPath: MODELS[model]!.path,
           commitSha: commit,
           promptTokens: res.ctx?.promptTokens ?? 0,
-          generatedTokens: DECODE_TOKENS,
+          generatedTokens: actualOutputCounts.length ? median(actualOutputCounts) : 0,
           prefillTps: res.ctx?.prefillTps ?? (res.ttft ? median(res.ttft.prefill1kTps) : 0),
           decodeTps: decodeMed ?? 0,
           peakBytes: 0,
-          stack: arm.startsWith("mlx-bun") ? "mlx-bun" : arm === "mlx-lm" ? "mlx-lm" : "optiq",
+          stack: (arm.startsWith("mlx-bun") ? "mlx-bun" : arm === "mlx-lm" ? "mlx-lm" : "optiq") + (DIAGNOSTIC ? "-serve-diagnostic" : ""),
           machineState: machine,
-          notes: `serve-h2h arm=${arm} ` +
+          notes: `serve-h2h diagnostic=${DIAGNOSTIC} arm=${arm} seed=${WORKLOAD_SEED} raw=${rawPath} decode_metric=SSE-window output_count=median_actual requested=${DECODE_TOKENS} ` +
             (res.ttft ? `ttft_cold=${median(res.ttft.coldMs).toFixed(0)} ttft_warm=${res.ttft.warmMs.toFixed(0)} warm_cached=${res.ttft.warmCachedTokens} ` : "") +
             (res.agg ? `agg${AGG_STREAMS}=${res.agg.tps.toFixed(1)} agg_per=${res.agg.perStream.toFixed(1)} ` : "") +
             (res.ctx ? `ctx=${res.ctx.promptTokens} ctx_ttft=${res.ctx.ttftMs.toFixed(0)} ctx_decode=${median(res.ctx.decodeTps).toFixed(1)} ctx_rep_ttft=${res.ctx.cachedRepeatTtftMs.toFixed(0)} ` : "") +
@@ -923,6 +1172,7 @@ async function main(): Promise<void> {
         failures.push({ cell: key, error: (e as Error).message.slice(0, 300) });
       } finally {
         if (ssdDir) rmSync(ssdDir, { recursive: true, force: true });
+        await saveRaw();
       }
     }
   }
@@ -930,11 +1180,21 @@ async function main(): Promise<void> {
   // ---- markdown report ----
   const lines: string[] = [];
   lines.push(`# serve h2h — ${new Date().toISOString().slice(0, 10)}`);
+  if (DIAGNOSTIC) lines.push("", "Diagnostic run. These results are not eligible for canonical performance claims.");
   lines.push(``, `machine: ${machine}`, `commit: ${commit}`, `toolchain: Bun ${Bun.version}`, ``);
-  lines.push(`All numbers over HTTP against REAL servers at their real defaults`);
-  lines.push(`(mlx-bun arm = the actual CLI). ttft cold = nonce-busted ~1k prompt;`);
+  lines.push(`raw requests, counts, finish reasons, timings and retries: ${rawPath}`);
+  const serverArgs = serialBenchmarkArgs(argv);
+  if (serverArgs.length) lines.push(`Configured serial experiment: ${JSON.stringify(serverArgs)}. Compare separately recorded controls with matching policy.`);
+  lines.push(`Runtime overrides: ${JSON.stringify(benchmarkRuntimeEnvironment())}`);
+  lines.push(`workload seed: ${WORKLOAD_SEED}; five fixed decode samples, all retained.`);
+  lines.push(`All numbers over HTTP against REAL servers (mlx-bun = the actual CLI).`);
+  lines.push(`Requests pin enable_thinking=true on every arm. ttft cold = nonce-busted ~1k prompt;`);
   lines.push(`warm = exact repeat (each stack's own prompt cache). ctx figures from`);
   lines.push(`ONE measured prefill (usage.prompt_tokens), decode sampled on 64 tok.`);
+  lines.push(`Decode columns measure the visible SSE interval, not GPU time; chunk batching can distort them.`);
+  lines.push(`End-to-end throughput uses actual completion tokens divided by total request wall time.`);
+  lines.push(`Pair raw samples by phase/attempt/index and request hash; check cache state, prompt/output counts, finish reasons and output identity.`);
+  if (sourceDiffStart !== sourceDiff()) lines.push(`WARNING: tracked inference/benchmark source changed during this run; re-establish the baseline before quoting it.`);
   if (arms.includes("optiq-mixed")) {
     lines.push(`optiq-mixed cells are effectively **bf16 KV** (live-verified 2026-07-06,`);
     lines.push(`lab/repro/optiq-mixed-kv-inert): mlx-lm 0.31.3 routes all seedless text`);
@@ -953,6 +1213,18 @@ async function main(): Promise<void> {
     const rows = results.filter((r) => r.cell.model === model);
     if (!rows.length) continue;
     lines.push(`## ${MODELS[model]!.label}`, ``);
+    lines.push(`artifact: ${MODELS[model]!.path}`);
+    if (MODELS[model]!.configSha256) lines.push(`config sha256: ${MODELS[model]!.configSha256}`);
+    if (MODELS[model]!.packedTrellis)
+      lines.push(`Packed trellis is a Lab artifact. No stock mlx-lm/optiq same-artifact comparison; carrier quality checks do not establish packed-decode parity.`);
+    lines.push(``);
+    const decodeSamples = requests.filter((s) => s.cell.model === model && s.phase === "decode" && s.result);
+    lines.push(`short-prompt request wall time (includes prefill and stream completion):`, ``);
+    for (const arm of arms) {
+      const samples = decodeSamples.filter((s) => s.cell.arm === arm);
+      if (samples.length) lines.push(`- ${arm}: median ${median(samples.map((s) => s.result!.wallMs)).toFixed(0)} ms; median ${median(samples.map((s) => s.result!.endToEndTps)).toFixed(2)} tok/s; actual output counts ${samples.map((s) => s.result!.genTokens).join(",")}`);
+    }
+    lines.push(``);
     lines.push(`| arm | decode tok/s | ttft cold ms | ttft warm ms (cached) | prefill@1k tok/s | ctx tok | prefill@ctx tok/s | decode@ctx tok/s | ctx repeat ttft ms | restart ctx ttft ms (cached) | agg×${AGG_STREAMS} tok/s | peak RSS MB | cold start s | ready s |`);
     lines.push(`|---|---|---|---|---|---|---|---|---|---|---|---|---|---|`);
     for (const r of rows) {
@@ -1004,6 +1276,7 @@ async function main(): Promise<void> {
     const arm = (a: Arm) => rows.find((r) => r.cell.arm === a);
     const pairs: Array<[Arm, Arm, string]> = [
       ["mlx-bun", "mlx-lm", "bf16 drop-in (vs mlx-lm)"],
+      ["mlx-bun-serial", "mlx-lm", "serial control (vs mlx-lm)"],
       ["mlx-bun", "mlx-bun-serial", "unified engine vs --batch 1 pin"],
       ["mlx-bun", "mlx-bun-isolated", "direct vs isolated host"],
       ["mlx-bun-mixed", "optiq-mixed", "mixed-KV (vs optiq)"],
@@ -1058,10 +1331,23 @@ async function main(): Promise<void> {
     }
     lines.push(``);
   }
-  const out = opt("out", `benchmarks-serve-${new Date().toISOString().slice(0, 10)}-${Bun.spawnSync(["hostname", "-s"]).stdout.toString().trim()}.md`);
+  await saveRaw();
   await Bun.write(out, lines.join("\n"));
   console.log(`\nreport → ${out}`);
 }
 
-// Import-safe: tests import probeVerdict/scaledBudgetMs without running a bench.
+/** Include new kernels before they are staged; git diff alone cannot identify them. */
+export function benchmarkSourceSnapshot(cwd = process.cwd()): {
+  sha256: string; files: { path: string; sha256: string }[];
+} {
+  const listed = Bun.spawnSync(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+    "--", "src", "native", "scripts", "package.json", "bun.lock"], { cwd });
+  if (listed.exitCode !== 0) throw new Error("cannot identify benchmark source files");
+  const files = [...new Set(listed.stdout.toString().split("\0").filter(Boolean))].sort()
+    .filter((path) => existsSync(join(cwd, path)) && statSync(join(cwd, path)).isFile())
+    .map((path) => ({ path, sha256: createHash("sha256").update(readFileSync(join(cwd, path))).digest("hex") }));
+  return { sha256: createHash("sha256").update(JSON.stringify(files)).digest("hex"), files };
+}
+
+// Import-safe: tests import helpers without running a bench.
 if (import.meta.main) await main();

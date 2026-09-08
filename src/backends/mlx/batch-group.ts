@@ -5,6 +5,7 @@ import { disposeResources } from "../../engine/resources";
 import type { DisposableResource } from "../../contracts/resources";
 import { nextPrefillStep } from "../../inference/prefill";
 import { executeMlxPrefillStep } from "./prefill";
+import { enterMlxMemoryGuard, type MlxMemoryBudget } from "./memory-guard";
 // Continuous-batching scheduler for `--batch N` serving (phase S2, the engine
 // loop). Owns ONE running batch and drives it forward one decode step at a
 // time, admitting waiting requests and evicting finished ones between steps —
@@ -263,6 +264,8 @@ export interface ExclusiveLock {
 }
 
 export interface MlxBatchExecutionGroupOptions {
+  /** Shared with serial execution; checked under the GPU lease after cache take. */
+  memoryBudget?: MlxMemoryBudget;
   runtime?: RuntimeConfig;
   maxQueued?: number;
   stateCodecs?: import("../../kv-store").CacheCodecProvider;
@@ -337,6 +340,7 @@ export class MlxBatchExecutionGroup {
   readonly #prefillChunkSize: number;
   readonly #prefillTailSplit: boolean;
   readonly #kvBudgetBytes: number | undefined;
+  readonly #memoryBudget: MlxMemoryBudget | undefined;
   readonly #promptCache: RowPromptCache | undefined;
   /** Retain hook of the currently-ADOPTED row's cache entry (at most one:
    *  only a lone adopted row holds un-copied entry caches). Runs after the
@@ -369,6 +373,7 @@ export class MlxBatchExecutionGroup {
     this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
     this.#prefillTailSplit = this.#runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     this.#kvBudgetBytes = opts.kvBudgetBytes;
+    this.#memoryBudget = opts.memoryBudget;
     this.#promptCache = opts.promptCache;
     this.#kvScheme = opts.kvScheme;
     const proto = withRuntimeConfig(this.#runtime, () => model.makeCache()); // fresh caches hold no buffers
@@ -430,6 +435,14 @@ export class MlxBatchExecutionGroup {
           row.req.maxTokens,
           this.#kvScheme,
         );
+  }
+
+  async #withMemoryGuard<T>(promptTokens: number, run: () => Promise<T>): Promise<T> {
+    if (!this.#memoryBudget) return run();
+    const guard = enterMlxMemoryGuard(this.model, this.#memoryBudget,
+      promptTokens, this.#prefillChunkSize);
+    try { guard.check(); return await run(); }
+    finally { guard.close(); }
   }
 
   async #forwardHidden(ids: MlxArray, cache: Cache[]): Promise<MlxArray> {
@@ -553,7 +566,9 @@ export class MlxBatchExecutionGroup {
       canBurst: () => this.#kvBudgetBytes === undefined ||
         this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes,
       advancePreparation: () => this.#advancePreparation(),
-      advance: () => this.#step(),
+      advance: () => this.#withMemoryGuard(
+        Math.max(0, ...this.#running.map((row) => row.promptTokens + row.sampled)),
+        () => this.#step()),
       failActive: (error) => {
         for (const row of this.#running) row.reject(error);
         this.#applyFilter([], true); // failed state never enters the prefix store
@@ -570,7 +585,7 @@ export class MlxBatchExecutionGroup {
       await driveExecutionGroup(group, {
         now: () => performance.now(),
         yield: () => new Promise<void>((resolve) => setImmediate(resolve)),
-      });
+      }, this.#runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") === "1");
     } finally { this.#looping = false; }
   }
 
@@ -613,7 +628,7 @@ export class MlxBatchExecutionGroup {
   async #advancePreparation(): Promise<void> {
     const p = this.#prefill!;
     try {
-      if (await this.#prefillChunk(p)) {
+      if (await this.#withMemoryGuard(p.row.promptTokens, () => this.#prefillChunk(p))) {
         p.closePrefill?.();
         this.#prefill = null;
       }

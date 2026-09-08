@@ -117,3 +117,47 @@ test("cancellation while replaying a checkpoint stops before the next saved toke
   expect(f.released).toEqual(["cache", "context"]);
   expect(f.stored).toEqual([]);
 });
+
+for (const failAt of [0, 1, 2]) {
+  test(`serial memory guard owns its scope and state when check ${failAt} fails`, async () => {
+    const f = fixture();
+    const events: string[] = [];
+    const cache = new f.TrackedCache();
+    f.services.promptCache.take = () => {
+      events.push("take");
+      return { tokens: [0], caches: [cache], ns: "" };
+    };
+    let checks = 0;
+    const binding: MlxSerialBinding = { ...f.binding,
+      enterMemoryGuard(_budget, promptTokens, chunkSize) {
+        expect(promptTokens).toBe(2);
+        expect(chunkSize).toBe(128);
+        events.push("enter");
+        return {
+          check() {
+            events.push("check");
+            if (++checks === failAt) throw new Error("headroom exhausted");
+          },
+          close() { f.released.push("memory"); },
+        };
+      },
+    };
+    const services: MlxSerialServices = { ...f.services, memoryBudget: {
+      usableBytes: 1, kvOptions: {}, promptCache: { totalBytes: 0, relievePressure: () => 0 },
+    } };
+    const result = createMlxSerialExecutor(binding, services)([0, 1], { prefillChunkSize: 128 },
+      () => { events.push("emit"); }, undefined, undefined, execution);
+    if (failAt) {
+      await expect(result).rejects.toThrow("headroom exhausted");
+      expect(f.stored).toEqual([]);
+      expect(f.released).toEqual(failAt === 1 ? ["cache", "memory"] : ["cache", "context", "memory"]);
+    } else {
+      expect(await result).toEqual(f.stats);
+      expect(f.stored).toEqual([[cache]]);
+      expect(f.released).toEqual(["context", "memory"]);
+      cache.dispose();
+    }
+    expect(events).toEqual(failAt === 1 ? ["take", "enter", "check"] :
+      ["take", "enter", "check", "check", ...(!failAt ? ["emit"] : [])]);
+  });
+}

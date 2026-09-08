@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { MlxArray } from "../../src/mlx/array";
+import { Dtype } from "../../src/mlx/ffi";
+import * as ops from "../../src/mlx/ops";
 import {
   Glm52DsaSelectionState,
   glm52DsaScoresMlx,
@@ -151,6 +153,31 @@ describe("GLM-5.2 DSA primitives", () => {
       } finally {
         actual.dispose();
         scores.dispose();
+      }
+    }
+  });
+
+  test("device top-k preserves threshold ties across large strided score rows", () => {
+    const length = 8193;
+    const values = Float32Array.from({ length }, (_, index) => index % 7 - 3);
+    const expected = selectDsaThresholdTiesF32(values, 2048);
+    const interleaved = Float32Array.from({ length: length * 2 }, (_, index) =>
+      index % 2 ? values[index >> 1]! : 999);
+    for (const dtype of [Dtype.float32, Dtype.float16, Dtype.bfloat16]) {
+      const source = MlxArray.fromFloat32(interleaved, [length, 2]);
+      const converted = source.astype(dtype);
+      const column = converted.slice([0, 1], [length, 2]);
+      const scores = ops.reshape(column, [length]);
+      const selected = selectGlm52DsaDevice(scores, 2048);
+      try {
+        expect(selected.positions.toIntTokens()).toEqual(expected.selected);
+        expect(selected.threshold.toFloat32()[0]).toBe(expected.threshold);
+      } finally {
+        selected.dispose();
+        scores.dispose();
+        column.dispose();
+        converted.dispose();
+        source.dispose();
       }
     }
   });

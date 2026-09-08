@@ -3,7 +3,7 @@ status: landed
 axis: ON
 canonical-for: speculative-decoding
 plan-anchor: "Phase 14 — Qwen 3.x family bring-up `[~]`"
-last-verified: 2026-08-31
+last-verified: 2026-09-07
 ---
 
 # Speculative decoding — one verifier, every draft source
@@ -416,6 +416,415 @@ Drafts trained on the TQ artifact are married to its rotation basis (card
 note if published). `RadixArk/Qwen3.8-27B-DSpark` exists as a cross-check
 candidate (PLAN 14h, optional).
 
+### 4.7 Packed 27B MTP recheck after kernel changes (2026-09-05)
+
+The M4 Pro screen uses the actual packed k300 artifact and the existing
+folded MTP companion from the affine flagship. Their recorded R1 seed,
+hidden size and R2 setting agree; the head's documented final-gamma
+approximation remains a draft-quality limitation. No head was downloaded,
+trained or changed. The target verifies every MTP proposal; this is separate
+from strict fill's no-verification assertions.
+
+`tests/parity/qwen38-mtp.test.ts` now supports a warm native wall-time
+diagnostic via `MLX_BUN_TEST_MTP_REPORT`. Target/draft path overrides select
+the exact pair; `MLX_BUN_TEST_MTP_GAMMA` selects 1..4. The report records
+both token sequences, actual completion counts, first-token and full-request
+wall time, speculation counters, source and artifact identity, and machine
+state. It does not compare differently defined decode-rate counters.
+
+Six AB/BA blocks on the short enumeration fixture compare gamma 2 on variants
+6 and 8, then gamma 1/2/3/4 on variant 8. The optimized verification kernels
+improve MTP's economics on that fixture; gamma 4 loses when the target append
+crosses the packed/expanded boundary. Exact emitted-token identity holds in
+the observed cells. These are loaded-machine diagnostics under
+`reports/qwen38-rd/mtp-v*-gamma*.json`, not default-promotion evidence.
+
+A predeclared code, explanation, arithmetic, extraction, JSON and prose
+screen has one warm pair per prompt with alternating arm order. Four valid
+cases improve, while prose loses with lower draft acceptance. The extraction
+case ran past chat EOS and is excluded from serving comparisons. All six
+preserve the observed token IDs, including that invalid overrun. Reports and the frozen prompts are under
+`reports/qwen38-rd/mtp-corpus-screen/` and `mtp-screen-prompts.json`. The
+fixed output budget truncates some answers; this is not a task-quality eval.
+MTP remains opt-in. Repeat diverse longer sessions, include rejection/rollback
+cost and memory, and test a bounded adaptive policy on held-out prompts before
+changing that decision.
+
+The next adaptive screen stays within the existing `DraftSource` contract:
+start at two drafts, decrease after a partial acceptance and increase toward
+three only after two fully accepted rounds. Per-request state stays with the
+source. Keep one draft as the floor for this experiment. Qwen MTP's current
+`draft(n<=0)` returns without appending its pending cache row, and the
+zero-draft commit does not add that row. A skip/recovery policy therefore
+needs an explicit cache-advancement design before it can preserve the source's
+alignment. This is a source-audit constraint on a future policy, not a failure
+in the current fixed-positive-length path. Compare complete native/HTTP
+requests and memory against both fixed gamma and non-spec generation on new
+frozen prompts before retaining an adaptive policy.
+
+The subsequent three-arm serving gate freezes three new prompts and the
+adaptive rule before measurement. It uses the lossless interleaved packed
+artifact, variant 13 and shared affine dispatch, with one serial request at a
+time, temperature zero, seed 42, thinking disabled, no prompt/SSD cache and a
+128-token budget. Six balanced-order blocks start 18 fresh servers. All exit
+cleanly; measured sources remain fixed. Across 126 warm/measured responses,
+all 84 native-versus-MTP text, prompt-count and finish-reason comparisons
+match. The 12 JSON completion-count differences remain in the report. Native
+`generateInner` counts the stopping EOS before excluding it from content;
+`specRunInner` excludes it from both emitted content and `generatedTokens`.
+Thus JSON reports 112 versus 111 despite identical response text. Compare
+complete wall time for that cell, not the differently counted decode rates.
+
+On the M4 Pro 24 GB, these are diagnostic medians in seconds:
+
+| Frozen prompt | Native | Fixed two drafts | Adaptive one to three drafts |
+|---|---:|---:|---:|
+| TypeScript run-length encoder | 11.912 | 6.690 | 6.483 |
+| Composite database index explanation | 11.914 | 7.217 | 7.062 |
+| Normalize three records to JSON | 10.969 | 5.968 | 5.751 |
+
+Every fixed/native, adaptive/native and adaptive/fixed complete-time pair
+improves. Median paired adaptive/fixed time ratios are 0.9698, 0.9782 and
+0.9624 respectively. Fixed MTP also reduces observed TTFT by about 160 ms;
+adaptive/fixed TTFT is essentially unchanged. Median per-server peak RSS is
+12,370,534,400 bytes native, 13,045,129,216 fixed and 13,029,392,384 adaptive.
+The adaptive source exercises widths one, two and three; its policy state is
+per request through the existing provider interface. The earlier broad corpus
+and these held-out cells still do not establish a universal MTP gain. Code
+and explanation stop at the token budget, so this is not a task-quality eval.
+Machine preflight fails on existing swap use. Fixed MTP remains opt-in and
+the adaptive wrapper is research-only. Raw evidence and source identities are
+`reports/qwen38-rd/mtp-heldout-{plan,http,http-review}.json`. The native follow-up runs both arm orders and preserves every emitted token
+ID in all 18 runs. Its 500 draft rounds include 78 partial-acceptance commits
+and all three adaptive widths. Assertions check source offsets before and
+after each draft and all 488 commits; all 12 sources dispose cleanly. Both
+JSON runs emit exactly 111 IDs on every arm, confirming the separate native
+EOS accounting. This is an alignment and trajectory gate, not a claim of
+identical cache bytes between speculative and serial computation. The first
+native run includes loading, so its times do not form a warm performance
+comparison. Evidence: `reports/qwen38-rd/mtp-heldout-native{,-review}.json`.
+Longer contexts, other quants and both quiet-machine gates remain open.
+
+The EOS usage discrepancy is now fixed in the speculative serving loop.
+It counts a stopping EOS from the initial sample, accepted draft, correction,
+bonus or plain-decode fallback without emitting it. A callback or token-budget
+stop before that position excludes the unused suffix. This follows the pinned
+mlx-lm `stream_generate` final `generation_tokens=n+1` accounting. Nine
+model-free cases reproduce seven old failures and cover both early-stop
+controls. All typechecks, hygiene and 1,812 model-free tests pass. The fresh
+three-arm HTTP gate completes 21 requests with fixed sources, clean exits and
+no text, prompt-count, completion-count or finish-reason differences. JSON
+now reports 112 tokens on every arm. This single block checks the fix; the
+historical timing reports retain their original counts. Evidence:
+`spec-token-counts-{before,after,typecheck,hygiene,model-free}.txt` and
+`mtp-post-eos-http{,-review}.json` under the campaign reports.
+
+An observed EOS now survives the method and serving adapters as
+`finishReason: "stop"`. Native and speculative loops record it explicitly;
+the adapters use the observed cause before their legacy count-based fallback.
+Tool-call and explicit text-stop handling retain precedence. The first HTTP
+replay exposed two additional serving overrides: at the known 112-token JSON
+EOS budget, it still returned `"length"`. Three regression tests reproduced
+those failures before the adapter fix. The final fresh replay completes all
+21 requests with fixed sources, clean exits and unchanged text/counts.
+Native, fixed and adaptive MTP now report `"stop"` for that JSON response
+and `"length"` for the two genuinely budget-limited responses. All typechecks,
+hygiene and 1,820 model-free tests pass. The speculative tests also cover
+bonus EOS at the limit and early callback stops. Evidence:
+`spec-eos-serving-{before,after,typecheck,hygiene,model-free}.txt`, the failed
+`mtp-eos-budget-http{,-review}.json` gate and the passing
+`mtp-eos-budget-integrated-http{,-review}.json` replay.
+
+The continuous scheduler already records the terminal cause in `BatchStats`;
+the gateway now preserves it when returning `GenerateStats`. Two regression
+tests reproduce the dropped stop/length field before this correction. The
+expanded model-free tier passes 1,822 tests, with all typechecks and hygiene
+passing. Two fresh default-scheduler servers then preserve all six HTTP
+responses under synchronous/bounded projection evaluation. Both measured JSON
+responses count 112 tokens and finish with `"stop"`; every request reports
+the wire lane `"batched"` and increments the scheduler submission count.
+Sources stay fixed and both servers exit cleanly. The test seeds MLX to 42
+at startup and uses greedy sampling; an explicit request seed would force
+serial placement. The initial harness used the wrong wire enum and stopped
+at its routing assertion. Evidence:
+`spec-eos-continuous-{before,after,typecheck,hygiene,model-free}.txt`,
+`eos-budget-continuous-http.json` and
+`eos-budget-continuous-v2-http{,-review}.json`.
+
+The first draft-only quantization screen replaces the MTP head's eight dense
+projections with affine g64 8-bit or 4-bit matmuls. Target computation and
+fixed two-token verification are unchanged. Three fresh servers complete 21
+requests with identical response text, counts and finish reasons, fixed
+sources and clean exits. Relative to the dense draft, 8-bit complete time is
+flat on code and falls about 2% on explanation/JSON; 4-bit falls 0.92%, 3.15%
+and 3.06%. These are single-block diagnostics, requiring repeated pairs.
+Acceptance changes slightly, including an extra code verification round.
+The prototype retains dense buffers in every arm and adds 451/239 MB of
+quantized arrays, so it establishes no memory saving. Its preload explicitly
+disposes providers after request shutdown because normal CLI exit retains
+the resident provider; the initial experiment stopped on that cleanup check.
+Evidence: `mtp-quantized-draft-screen-http.json` and the completed
+`mtp-quantized-draft-screen-v2-http{,-review}.json` under campaign reports.
+
+The six-block repeat completes 126 requests across 18 fresh servers with
+all 84 paired response comparisons identical, fixed sources, clean exits
+and explicit provider disposal. Median paired request wall time with the
+4-bit draft falls 1.45% on code, 3.09% on explanation and 2.03% on JSON,
+with six/five/four improving pairs. The 8-bit reductions are 0.34%, 2.16%
+and 2.07%, with six/six/five improving pairs. TTFT is approximately flat.
+The retained dense buffers mean sampled RSS remains unsuitable evidence
+for the benefit of removing those weights. Quantized on-disk artifacts and
+their actual loader/serving/memory gates are next; broader prompts, quants
+and quiet acceptance remain. Evidence:
+`mtp-quantized-draft-repeat-http{,-review}.json`.
+
+The existing atomic CPU converter produces separate folded 4-bit and 8-bit
+MTP artifacts with 238,930,944 and 451,267,584 tensor bytes, respectively.
+Both retain all seven dense norm tensors and quantize exactly eight matrices.
+The 4-bit artifact fails the initial comparison against GPU quantization,
+but all 31 saved tensors match fresh CPU quantization or source passthrough.
+CPU/GPU results differ in 16 quantized tensors, totaling 810,927 differing
+bytes. The pinned Python oracle reproduces Bun's CPU and GPU hashes for all
+three fc tensors, and the original companion files are unchanged. MLX 0.31.2
+uses `std::rint` in the CPU affine quantizer and `round` in Metal; these
+artifacts therefore require fresh serving/acceptance gates rather than
+inheriting the GPU prototype's results. The 8-bit artifact passes all 31 CPU
+comparisons, with fixed sources and zero active allocation after cleanup.
+The provider now loads companion projections through the existing
+`QuantizedLinear` when scales are present and retains dense projection
+behavior otherwise. Its resource stack continues to own dense transpose
+views; quantized companions retain no dense matrices. No draft policy or
+target verification changes. The loader and initial serving/memory gates
+pass below. Evidence: `mtp-draft-artifact-q4-{build,audit}.json`,
+`mtp-draft-quant-oracle.json` and `mtp-draft-artifact-q8-build.json`.
+
+The integrated loader passes all three typechecks, hygiene and the existing
+1,822-test model-free suite. Its ownership file also passes a new malformed
+quantization-metadata case after earlier dense projections have loaded.
+Nine materialized provider cycles cover dense/8-bit/4-bit heads three times
+each. Loaded allocation is exactly 849,398,784/451,267,584/238,930,944 bytes,
+and every cycle returns to its initial zero active allocation after repeated
+disposal, without GC. The initial ownership helper read the counter before
+lazy weight materialization and failed its coverage assertion at zero/zero;
+it did not reproduce a leak. These are companion allocation measurements,
+not complete-server RSS. The additional typecheck after the new ownership
+case also passes. Evidence: `mtp-quantized-loader-{typecheck,hygiene,model-free}.txt`,
+`mtp-quantized-loader-typecheck-v2.txt`,
+`mtp-quantized-loader-ownership-tests-v2.txt` and
+`mtp-artifact-ownership{,-v2}.json`.
+
+The saved-artifact HTTP screen completes 21 responses across three fresh
+servers. All 14 dense-versus-quantized comparisons preserve text, prompt and
+completion counts, and finish reasons. Sources remain fixed; all servers exit
+cleanly. Observation confirms dense projections only in the dense arm and
+quantized projections only in the smaller arms. Explicit provider disposal
+releases exactly each companion's tensor allocation and reaches the same
+11,936,569,478-byte resident-target baseline. This proves the smaller heads
+load without retained dense matrices. Both quantized heads need one extra
+target call on the code prompt, so cheaper projections do not guarantee a
+faster request. Six balanced repeat blocks and instrumented native replay
+are the next gates. Evidence: `mtp-artifact-screen-http{,-review}.json`.
+
+Six balanced saved-artifact blocks then complete 126 responses from 18 fresh
+servers, with all 84 paired text/count/finish comparisons exact, fixed sources
+and clean exits. On the M4 Pro 24 GB, median paired complete-time changes
+for code/explanation/JSON are -1.48/-3.67/-2.95% for the 4-bit companion and
+-0.65/-2.29/-1.86% for 8-bit. The 4-bit arm wins 5/6, 6/6 and 5/6 pairs;
+8-bit wins all six pairs per fixture. TTFT is approximately flat. Median
+per-server peak RSS is 13,036,756,992 bytes dense, 12,740,034,560 bytes 8-bit
+and 12,531,777,536 bytes 4-bit. Unlike the earlier GPU projection prototype,
+these arms actually replace the dense companion tensors. Every explicit
+provider disposal releases exactly its companion's allocation to the same
+resident-target baseline. Existing system swap prevents canonical benchmark
+claims. Instrumented native token/logit/state checks, broader contexts/quants,
+pressure and quiet-machine acceptance remain. Evidence:
+`mtp-artifact-repeat-http{,-review}.json`.
+
+The subsequent native audit runs all three saved companions against the same
+full-prefill native generation on each short fixture. All nine emitted-ID,
+usage and terminal-cause comparisons pass. For every verification window,
+it clones the incoming target state and replays the same tokens individually
+with the same hidden taps. All 1,184 complete vocabulary-logit rows across
+395 windows match byte-for-byte. At the first three and every sixteenth
+window per request, every live attention and recurrent cache array also
+matches, covering 48 complete state samples. All 386 commits, including 58
+partial accepts, preserve the source position; all nine sources dispose.
+Three fresh children exit cleanly with fixed sources and the same 16,390-byte
+post-model-disposal active counter. This is instrumented correctness evidence,
+not a timing result. Longer fixtures and other quants remain separate gates.
+Evidence: `mtp-artifact-native{,-review}.json`.
+
+Two new warehouse-ledger fixtures extend that audit to 688 and 1,968 prompt
+tokens, using matching 2,048-token full-prefill chunks. Dense, 8-bit and 4-bit
+companions preserve all six native/MTP ID, count and finish comparisons.
+All 180 vocabulary-logit rows and 18 sampled complete cache states match;
+54 fully accepted commits preserve position. All twelve native/MTP outputs
+are valid JSON and contain the independently computed requested records.
+Each response counts 30 generation tokens. Sources stay fixed, all three
+children exit cleanly and each leaves the same 16,390-byte active counter.
+This extends correctness coverage; long serving pressure and other quants
+remain open. Evidence: `mtp-artifact-native-context{,-review}.json`.
+
+The matching saved-companion HTTP screen completes 15 warm/measured responses
+from three fresh servers at those two context lengths. All ten paired
+text/count/finish comparisons match, with fixed sources and clean exits.
+Both measured fixtures stop at 30 generation tokens. Dense and quantized
+projection counts and explicit provider release pass on every arm. This is
+one serving screen, not a repeated performance or long-agent pressure claim.
+Evidence: `mtp-artifact-context-screen-http.json`.
+
+Matched-prefill timing screens now separate native tail-split, native full
+prefill and dense fixed-two MTP in fresh HTTP servers. All 21 packed responses
+preserve text/count/finish across the three arms. The RTN4 screen also completes
+21 responses; MTP matches native full-prefill throughout, while the two measured
+code/explanation tail-split responses retain their known text differences.
+Both screens have fixed sources and clean exits. On the M4 Pro 24 GB, complete
+MTP request times improve 38.8–44.0% on packed and 27.6–38.1% on RTN4 relative
+to native full-prefill. Each is one block, pending balanced repeats. MTP's
+remaining TTFT advantage motivates checking native work before the first yield;
+its decode loop constructs the next step before emitting the current token.
+No default prefill policy changes. Evidence:
+`mtp-matched-prefill-{r6,rtn4}-screen-http{,-review}.json`.
+
+The packed matched-prefill repeat completes six balanced three-arm blocks,
+18 servers and 126 warm/measured responses. All text, token counts and finish
+reasons match across native tail-split, native full-prefill and fixed-two
+MTP. Sources stay fixed and all servers exit cleanly. Against native full
+prefill on the M4 Pro 24 GB, MTP changes median paired complete request time
+by -43.22% for code, -38.81% for explanation and -44.92% for JSON. Every pair
+improves. Corresponding TTFT changes are -7.36/-8.42/-5.47%. Median paired
+peak server RSS rises by 684,335,104 bytes, about 653 MiB; this samples startup
+and the whole request sequence, not each fixture's physical-memory demand.
+Native tail-split adds roughly 0.77–0.86% complete time and 7.37–10.46% TTFT
+relative to native full-prefill. Existing swap and background CPU activity
+in the final block keep these results diagnostic. All samples are retained.
+Broader workloads and quiet acceptance remain.
+Evidence: `mtp-matched-prefill-r6-repeat{,-review}.json`.
+
+The RTN4 repeat also completes six balanced blocks, 18 servers and 126
+responses with fixed sources and clean exits. MTP and native full-prefill
+match all text/count/finish comparisons. Native tail-split retains the code
+and explanation differences in every block. Relative to native full-prefill
+on the M4 Pro 24 GB, median paired MTP complete-time changes are -34.95% for
+code, -26.95% for explanation and -38.48% for JSON. Code and explanation
+improve in five of six pairs; JSON improves in all six. Median paired sampled
+peak server RSS rises by 850,173,952 bytes, about 811 MiB. The losing block
+overlaps another application's TypeScript and Playwright work, followed by
+system indexing and increased swap. Retain that block and the other samples;
+these diagnostic medians do not substitute for quiet acceptance. Evidence:
+`mtp-matched-prefill-rtn4-repeat{,-review}.json`.
+
+The RTN4 cross-quant screen uses its unrotated target and the original
+unrotated mlx-community MTP head, with the same three held-out prompts and
+fixed/adaptive policies. All three servers exit cleanly with fixed sources.
+Usage counts and finish reasons match, but both MTP arms differ from native
+on the measured code and explanation responses. Those timings do not establish
+identical-work speedups. The JSON response matches at 117 counted tokens;
+its single-block complete times are 8.292/5.042/4.776 seconds for native,
+fixed and adaptive MTP. Repeated timing and a first-divergence audit remain.
+Keep the packed result specific to its tested artifact and prompts. Evidence:
+`mtp-rtn4-screen-{plan,http,http-review}.json` under the campaign reports.
+
+The RTN4 native follow-up reproduces code/explanation divergence at emitted
+token indices 48/26 with seed 42 and greedy sampling. For each of 140 target
+verification windows, it clones the pre-forward cache and replays the same
+IDs through serial M1 forwards with the same hidden taps. All 420 projected
+logit rows have identical values, and all cache offsets agree. Instrumented
+MTP preserves the uninstrumented emitted IDs on all three fixtures. Thus a
+local verification-window arithmetic difference does not explain these
+responses. Native tail-split versus MTP full-prompt prefill and state
+accumulation require separate controls.
+Sources remain fixed. Evidence: `mtp-rtn4-divergence-v2-audit{,-review}.json`.
+
+Two fresh processes isolate the prefill choice using the existing
+`MLX_BUN_PREFILL_TAIL_SPLIT` setting. Native traces show 57+1, 53+1 and 91+1
+prompt forwards with splitting, versus 58, 54 and 92 without it. MTP uses
+full-prompt prefill in both processes. With splitting enabled, the earlier
+code/explanation token differences recur. With splitting disabled, every
+native emitted ID matches MTP on all three fixtures; MTP itself is unchanged
+across processes. Counts are 128/128/117 including JSON EOS. Both children
+exit cleanly and all source hashes stay fixed. This isolates the observed
+trajectory differences to the native prefill policy for these fixtures.
+Retain the original failed comparisons and add a native full-prefill arm
+when measuring MTP, so prefill savings and drafting savings are distinct.
+Changing that policy still needs its own oracle/quality gates. Evidence:
+`mtp-rtn4-prefill-control{,-review}.json` under the campaign reports.
+
+Variant 10 further shares small-M scatter work. Six warm AB/BA blocks at
+gamma 2 and 3 on both enumeration and the earlier losing prose prompt now
+retain an observed wall-time gain with identical token IDs. Enumeration
+prefers gamma 3; prose prefers gamma 2. This changes the measured cost of
+verification, not the recorded acceptance sequences. The reports are
+`reports/qwen38-rd/mtp-v10-{planets,prose}-gamma{2,3}.json`. These repeated
+fixtures are still diagnostic, with no general workload or quiet-machine
+verdict. Native request rows are recorded in the eval DB under
+`mlx-bun-native-diagnostic`, which does not replace the status page's
+ordinary inference measurements.
+
+The native MTP test now also uses the server's config-plus-tokenizer EOS set
+and records it. The repeated variant-10 enumeration/prose cells contain no
+additional EOS ID within their fixed budget, so that correction does not
+truncate those sequences. The broader corpus audit found chat-EOS overrun
+in extraction only. Its two DB rows and the old strict-fill rows now carry
+explicit exclusion notes; corrected strict-fill reports are recorded separately.
+
+The provider-lifetime audit found a separate cleanup bug. The Qwen provider's
+old no-op `dispose()` assumed process-lifetime mapped weights, but `Weights`
+now owns native MLX maps and each dense projection also retains a transpose
+view. Three bounded load/use/source-dispose/provider-dispose cycles retained
+849,398,784 additional MLX bytes each, including after garbage collection.
+The provider now owns a `DisposableStack`: weight-map cleanup is registered
+first, then each derived transpose view, so disposal releases views before
+maps. The same scope unwinds a partially constructed module. Disposal is
+idempotent and opening a source after provider disposal is rejected. The
+caller closes active request sources before unloading their provider, as for
+the other providers. Inference operations and their ordering are unchanged.
+
+The real 27B MTP-head probe returns active MLX memory to zero after each of
+three cycles, before GC. Model-free tests also cover map/view release, repeat
+disposal and failure at the final norm after earlier views have been created.
+Evidence: `reports/qwen38-rd/mtp-provider-dispose-{before,after}.json` and
+`mtp-provider-ownership-tests.txt`. All three typechecks, hygiene and the full
+model-free tier pass: 1,803 tests, 10 skips and no failures. The post-change serving
+gate completes all three native/fixed/adaptive servers with clean exits and
+matching response text on the frozen requests. Only the previously documented
+JSON EOS-count difference remains; sources stay fixed. Evidence:
+`reports/qwen38-rd/mtp-post-dispose-http.json`. This addresses drafter unload/replacement;
+it is separate from the already-fixed target-cache disposal and admission work.
+
+### 4.8 Paired Qwen MTP conversation state
+
+An isolated candidate adds an optional prefix-state interface to `DraftSource`.
+The Qwen provider retains one evaluated prefill boundary containing target KV
+and recurrent state, draft KV, the preceding target hidden row, and exact token
+IDs. Restore transfers ownership only when the incoming prompt extends those
+IDs under the same target and adapter namespace. A mismatch releases the old
+entry. Reuse never trims recurrent state to an arbitrary common prefix.
+
+The MTP cache is one position behind the target at a prefill boundary. Extending
+it first pairs the next incoming token with the saved preceding hidden row,
+then processes the remaining suffix. Future generation cannot alter the retained
+prefix. The candidate caps this one snapshot by the configured prompt-cache
+budget and disposes it with the provider. It does not yet retain completed
+generation state or participate in the ordinary cache's pressure eviction,
+SSD persistence, or byte telemetry. It remains experimental and separate from
+the default serving path.
+
+On the M4 Pro, the unit gate passes 18 tests. Native prompts at 128, 513 and
+2,051 tokens pass six restore checks with unchanged state hashes, token IDs
+and acceptance traces; repeated allocation is stable at each length. The HTTP
+gate completes eight responses with identical text, token counts and finish
+reasons across uncached and cached MTP policies, including repeated cache hits.
+The native restore check also passes with Luke's coding sampling recipe,
+temperature 0.6, top-p 0.95, top-k 20 and seed 42: six unchanged state restores
+and exact repeated continuations. Evidence: `mtp-prefix-luke-sampling.json`.
+These gates establish the initial composition, not complete long-task speed or
+pressure acceptance. The fresh thinking-off Pi task reused saved prefixes and
+finished generation without compaction, but its generated app failed acceptance.
+The task disposition and next frozen configuration are in decode-speed-program
+section 7.7. Raw evidence: `reports/qwen38-rd/mtp-cache-candidate-native.json` and
+`reports/qwen38-rd/mtp-cache-http-gate.json`.
+
 ## 5. Files
 
 - `src/spec/source.ts` — the seam. `src/spec/serve-loop.ts` — the executor.
@@ -489,7 +898,7 @@ buys nothing — it writes them into the KV itself with ONE chunked forward and
 resumes sampling after them. The model is consulted only for tokens it does
 not already know.
 
-**What "already knows" means (strict tier, the only one built).** A request's
+**What "already knows" means in the strict tier.** A request's
 `tools` array plus the model's own chat template determine large parts of the
 assistant turn: the tool-call opening scaffold, the remainder of a tool name
 after its first disambiguating token, the punctuation from the name to the
@@ -505,7 +914,7 @@ produces identical probes, an empty diff, and no rows — degrade to no-fill,
 never wrong output. Same technique as `request-prep.ts::stableLenFor` uses on
 the generation primer, applied to the assistant turn.
 
-**Why it is safe.**
+**Serialization and state invariants.**
 - **Every span is sliced from a rendering the model could actually produce** —
   real tool names, real schema keys. The diff only decides WHERE to cut; the
   ids always come from the real-name rendering, so every cut is a token
@@ -553,8 +962,10 @@ the generation primer, applied to the assistant turn.
 have been (the sampler is never asked about those positions). That is a
 behavior-policy deviation, not a numerics one, and it is why the feature is
 opt-in (`MLX_BUN_FILL=strict`, default off). At `temperature 0` the strict
-tier is token-identical by construction; the weights gate is
-`tests/parity/fill-strict.test.ts`.
+tier must demonstrate token identity against ordinary generation. A fixed
+template serialization does not prove that the unconstrained model chooses
+it. The weights gate is `tests/parity/fill-strict.test.ts`; section 7.4 states
+the stronger contract needed for a claim of guaranteed deterministic replay.
 
 **Mechanism.** `src/generate.ts::generateInner` — the same burst shape as the
 grammar `jumpEmit` branch, with the DEFERRED trigger (fill reads the token the
@@ -698,12 +1109,10 @@ identity at temperature 0, `tests/parity/fill-strict.test.ts`).
 
 **The showcase** runs ONE large tool-dense prompt ×3 interleaved and reports
 emitted vs decoded tok/s, the fill fraction, time-to-first-tool-call, and the
-bandwidth-ceiling check: a pure autoregressive decode reads every weight byte
-once per token, so decoded tok/s can never exceed `memoryBandwidth ÷
-weightBytes`. An EMITTED rate above that ceiling is proof — on the skeptic's own
-napkin — that those tokens never went through the weights. `apparent =
-decoded / (1 − fillFrac)` is arithmetic, not a claim; the ceiling is what makes
-it interesting.
+comparison with a one-token-per-forward bandwidth estimate. An emitted rate
+above that estimate can show amortized weight reads; the injected positions
+still pass through the state-update graph. `apparent = decoded / (1 − fillFrac)`
+omits append cost and is not a speedup measurement.
 
 The verdict math is model-free and unit-tested against a stub server
 (`tests/research/fill-echo-replay.test.ts`), including the ways it FAILS — a
@@ -742,8 +1151,8 @@ swapped, the 16 GB server plus the day's leftovers) where 19 is predicted;
 both arms saw the same conditions.
 
 **Strict tier, same day, corrected rows** (serial arms back to back, 32 paired
-turns): fill 5.3% of emitted tokens, **100% of proposed spans accepted**
-(assert policy, no readback), identical tool calls on every paired turn,
+turns): fill 5.3% of emitted tokens, all proposed strict spans injected
+(assert policy, no agreement readback), identical tool calls on every paired turn,
 median wall ×0.99 (the win is bounded by the fill fraction). The proposal
 trace (`MLX_BUN_FILL_TRACE=<file.jsonl>`, `bun scripts/fill.ts trace`) is
 what made the rows right: the first strict run's list showed the scaffold row
@@ -784,11 +1193,366 @@ User-facing mirror: `docs/reference/server-config.md` (`MLX_BUN_FILL`,
 `MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX`), `server-api.md`
 (`usage.fill`).
 
+### 7.4 No-verification replay contract and next experiments
+
+The 2026-09-04 Qwen performance program makes this a dedicated track.
+Production `assert` must remain free of verification. Separate correctness
+runs may inspect every skipped prediction; those instrumented runs cannot
+supply the performance number. `applyProposal` in `generate.ts` already
+implements this separation: `verify` or a trace filename computes logits at
+all appended positions, while normal `assert` projects only the final hidden
+state to resume sampling. It still forwards the span through model layers
+and updates attention KV and GDN state.
+
+This track appends serialization fixed by the current tool-call state. It
+does not predict unknown tokens. Once the protocol fixes a field following
+a selected tool name, that field can become context immediately; sampling
+resumes where the tool or argument value has a choice. Map fixed protocol
+fields through the model's own chat template, including the preceding token
+boundary. Pi's client-side tool representation and a model's wire rendering
+can differ. Parser state must distinguish structural fields from the same
+text inside argument strings, quoted examples or code. Offline parity audits
+validate the implementation; they do not add verification to served asserts.
+
+There are different possible guarantees:
+
+| source | what would justify an assertion |
+|---|---|
+| Enforced output grammar/protocol | All legal continuations share the emitted token span at the current parser state. Account for tokenizer boundaries and stop conditions. Grammar uniqueness over bytes does not automatically imply unique token IDs. |
+| Deterministic application transform | An explicit contract fixes the source span and transformation, such as escaping a selected literal. Choosing which source/value to emit remains a model/application decision. |
+| Cached continuation | Exact model/quant, prefix, recurrent state, positional metadata and sampler/constraint state establish an identical continuation. A matching short suffix is insufficient. |
+| Template/schema row | Establishes a valid serialization. Without enforced generation constraints, token identity with the model is an empirical gate and can fail even at temperature zero. |
+| Repeated text | Agreement among observed occurrences is evidence, not certainty; retain the existing Lab distinction for echo assertions. |
+
+Audit suffix triggers against real parser/role state, tool-name prefixes,
+optional/extra parameters, `additionalProperties`, multiple calls, quoted
+markup, code blocks, escaping, EOS and partial-burst cancellation. The original
+strict row source matched a token suffix without an independent parser-state
+guard. Do not interpret an all-assert `accepted` count as verified agreement.
+
+A CPU-only audit with the actual R6 tokenizer/template finds a concrete close
+boundary error in both thinking modes. The compiled close trigger ends at
+`</parameter`, before `>`. A valid bash argument containing
+`printf "%s" "</parameterization>"` therefore triggers the structural close
+inside argument data. Injecting the current row changes the parsed command to
+`printf "%s" "`. Both complete calls parse; the suffix alone cannot establish
+that the value ended. The audit constructs valid token streams from the exact
+compiled trigger IDs; it does not claim these are observed model trajectories
+or quantify their frequency. Scaffold/close rows also match reasoning, quoted
+prose and fenced examples without a role/parser guard. Evidence:
+fill-parser-boundary-r6.json. Keep fill off by default. Complete the delimiter
+and establish protocol state before asserting its continuation; runtime model
+verification is not the remedy for a missing structural proof.
+
+An isolated parser prototype now waits for the complete `</parameter>` or
+`</arg_value>` delimiter and requires a request-local tool-only assistant
+context, optionally following closed reasoning. It reuses the tool parser
+with full input consumption and no repair; quoted or fenced examples,
+nested reasoning, unfinished literals, duplicate XML/GLM keys and requests
+above the probe budget decline strict fills. Cached row plans create context
+from the current prompt and do not retain the first request's messages.
+The CPU-only real-R6-tokenizer audit rejects all sixteen negative contexts
+and preserves four positive rendered token streams across both thinking
+modes, including the original `</parameterization>` command. Each positive
+case injects nineteen tokens in two spans with zero verification events.
+The broader parser/stream suite passes 138 tests. Evidence:
+`fill-boundary-tokenizer-audit-v4.json` and `fill-boundary-cpu-tests-v8.log`.
+The parser and model-owned append method are integrated in the main tree.
+The gates below distinguish the original short-context integration from
+the subsequent attention-boundary correction.
+On the consolidated MLX 0.32.2 core with the interleaved R6 artifact and
+variant 13, the first weather fixture emits identical tokens but four-token
+appends change recurrent state and continuation logits. One-token appends
+restore exact state, all four continuation probes and disposal accounting,
+with the same twelve injected tokens and zero verification. The earlier
+four-token acceptance used a different runtime/artifact configuration;
+it does not establish this combination. Isolate the changed arithmetic
+before selecting an append shape. Evidence: `fill-boundary-native-r6.json`
+and `fill-boundary-native-m1-r6.json`. A first-layer operation audit localizes
+the drift to native affine projections: embedding and normalization match,
+but MLX's new multirow matvec differs from repeated M1. Broadcast weight
+views with input shape `[M,1,K]` select native batched M1 instead. All six
+boundary/chunk cases then match every captured intermediate and both state
+arrays exactly, without copying stored weights. The arithmetic prototype
+then passes seven full native fixtures per R6/RTN4 quant, with exact emitted
+IDs, complete state, four continuation probes, usage and disposal accounting.
+Runtime verification remains zero. RTN4's negative-intent code-block prompt
+produces a valid weather call in both arms; its original no-fill expectation
+is retained as a failed fixture assumption, and the rerun classifies that
+cell as a generated-call identity control. Forced-token negative contexts
+remain covered by the tokenizer/parser gates. Evidence:
+`fill-first-layer-shape-probe.json` and `fill-first-layer-batched-m1.json`.
+The full-model reports are `fill-boundary-native-batch1-r6.json` and
+`fill-boundary-native-batch1-v2-rtn4.json`.
+The original guarded-parser/arithmetic prototype also passes six balanced
+three-arm HTTP blocks per quant on the loaded M4 Pro 24 GB. All 144 responses
+match across 36 clean server exits, with fixed effective seed 42, empty prompt
+caches, identical tool calls and zero verification. Four-token append reduces
+paired-median complete time for weather/bash fixtures by 9.95%/15.24% on R6
+and 1.92%/3.34% on RTN4; every corresponding pair improves. M1 append is
+mostly flat, and RSS supplies no memory-reduction claim. Tool output is
+buffered until completion here, so these are complete-request and first
+meaningful-tool-output results, not decode-rate measurements. Source hashes
+remain fixed across the initial screen and five remaining order blocks.
+Evidence: `fill-boundary-http-{screen,repeat,review}.json`. The model-owned
+integration passes the same fourteen native cases and six balanced four-arm
+HTTP blocks per quant. All 192 responses match across 48 clean server exits.
+Paired-median weather/bash complete time improves by 9.87%/15.37% on R6
+and 1.97%/2.77% on RTN4, with every pair improving. Ordinary generation's
+before/after medians differ by at most 0.23%. These remain loaded M4 Pro
+diagnostics. The independent-row operator matches sequential M1 across
+720 shape/bit/group/dtype/layout cases, with unchanged stored weight bytes.
+The main-source state regression passes on both quants, and eight actual
+HTTP cancellations recover exact responses and steady active allocations.
+Evidence: `fill-append-integration.json`,
+`fill-append-http-integration-review.json`, `fill-append-main-native.json`
+and `fill-append-lifecycle.json`.
+
+A longer-context audit finds another native dispatch dependency. MLX 0.32.2
+changes its attention kernel and two-pass reduction block count according
+to sequence length and GPU architecture. The rules are in
+[MLX's attention dispatch](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/scaled_dot_product_attention.cpp).
+The qualified GQA-6/D256 path on
+`applegpu_g16s` must end chunks at inclusive KV lengths 1023, 1024, 8192,
+32768 and 65536. An unsplit append that crosses a transition can change
+arithmetic for its earlier positions. The first operation screen reproduces
+18 failures among 108 cases. The corrected model-owned limit is rechecked
+after every chunk; MLX still selects the kernels. Other architectures retain
+single-token appends pending their own qualification.
+
+All 225 corrected attention cases through 65,537 cached tokens are exact
+across bf16, fp16 and fp32, and active allocation returns to zero. Full R6
+and RTN4 models also match eight committed positions from identical prefixes
+of 1021 and 8189 tokens. Hidden rows, per-position M1 vocabulary projections,
+complete live state and four ordinary continuation probes match exactly;
+the borrowed prefix state and post-arm active allocation are unchanged.
+These teacher-forced checks establish arithmetic identity, not that the
+model would independently choose those committed IDs. Production regression
+coverage checks the attention boundaries and dynamic model limit. The final
+model-free suite passes 1,947 tests with ten skips and no failures; all three
+typechecks pass. The corrected path also passes eight actual HTTP
+cancellations, fourteen completed responses and exact steady allocation
+recovery across both quants. Final serving timing acceptance passes the
+internal-SSD diagnostic below; held-out, combined, pressure and quiet gates
+remain open.
+Evidence: `fill-sdpa-context-probe.json`,
+`fill-sdpa-context-boundaries.json`, `fill-append-context.json`,
+`fill-append-final-model-free.log` and `fill-append-lifecycle-boundaries.json`.
+The final-source timing attempts complete 116 responses with exact content,
+tool calls and usage comparisons. Two RTN4 first-request warmups hit Metal
+GPU timeouts, one with fill disabled and one with fill enabled. Neither
+executes an append forward. Keep both failed requests and the incomplete
+block in the evidence. Complete three-arm blocks cover six R6 pairs and
+three RTN4 pairs; every append-versus-native pair improves complete time on
+both fixtures. The dynamic boundary checks retain the earlier append benefit.
+Separate recovery, storage and loading controls do not fill missing timing
+cells. The failure investigation and its limits live in
+[environment.md](../reference/environment.md#external-storage-loading).
+Evidence: `fill-append-http-final.json`, `fill-append-http-resume.json` and
+`fill-append-http-final-partial-review.json`.
+
+After Josh specifies internal storage for active models, a separate final
+comparison uses byte-verified R6 and RTN4 copies with ordinary lazy loading.
+All 96 responses across 24 fresh servers match, with twelve balanced pairs,
+zero failures, zero verification calls and identical final active allocation.
+On the M4 Pro 24 GB, the median paired complete-time reductions are 9.83% and
+15.40% for R6's weather/bash fixtures, and 1.63% and 2.94% for RTN4. Every pair
+improves on each fixture. Tool output is buffered, so first visible output
+arrives near completion; these figures do not establish faster ordinary
+decode. The machine still fails the quiet preflight, so these are diagnostic
+results. Both external-drive failures remain recorded separately. Evidence:
+`fill-append-http-internal-repeat.json` and `fill-append-http-internal-review.json`.
+
+Quantized-KV composition remains disabled. A direct R6 append screen with
+TurboQuant k8v3 preserves hidden rows, logits, live cache state and four
+continuations at prefixes 128 and 1021, but exposes retained temporary state
+views between chunks. `appendFillHidden` now uses the existing
+`leaseCacheStates` ownership interface, as prefill does. Explicit release
+removes the extra 21,528,576 and 131,153,920 active bytes in those two checks;
+both ordinary and fused TurboQuant decoding then have identical post-arm
+allocation and numerical results. This fixes the research composition's
+view lifetime; the ordinary served path already excludes this combination.
+Seven targeted ownership tests and all three typechecks pass. The affine
+KV4 comparison fails both contexts, first changing recurrent state at layer
+4 after the first attention layer. Keep its failure and the composition
+guard. Other quant/cache modes, longer contexts and actual serving
+performance remain unqualified. Evidence:
+`fill-append-quant-cache-review.json` and
+`fill-append-state-ownership-native-test.log`.
+
+The literal/reasoning checks deliberately decline ambiguous text, including some
+otherwise valid prose with unmatched quote characters. This is bounded
+coverage, not proof for every unconstrained model trajectory.
+
+The schema-choice audit reproduced assertions that selected a first key or
+closed the call while other valid arguments remained. The compiler now uses
+a sole required key only when `additionalProperties: false` and no nonempty
+`patternProperties` map establish that no other key is legal. Optional keys
+may come before a required key. When no property is required, the common
+span also includes the empty-argument rendering. This follows the
+[JSON Schema object applicators](https://json-schema.org/draft/2020-12/json-schema-core#section-10.3.2),
+where omitting `additionalProperties` leaves those properties unconstrained.
+Open objects also compare an undeclared-key rendering, even when declared
+keys share a tokenizer prefix. Twenty-seven regressions across XML, JSON and
+GLM templates preserve these
+choices, alongside the existing positive fill cases. This is a compiler
+correctness fix, with no runtime verification or new inference operation.
+The real packed-Qwen and RTN4 tokenizers each pass 20 cases across thinking
+on/off with nonzero row matches. The packed weighted regression also retains
+token-identical output and nonzero injection with four-token appends. All
+1,867 model-free tests and three typechecks pass. Parser/role-state proof
+and the broader session corpus remain. Evidence is
+`fill-schema-open-objects-before.json`,
+`fill-schema-choices-original-control-corrected.txt`,
+`fill-schema-shared-prefix-merged-before.txt`,
+`fill-schema-choices-model-free-final.txt`,
+`fill-schema-tokenizer-{r6,rtn4}-final.json` and
+`fill-schema-choices-weighted-r6.json` in the campaign report directory.
+
+Run the actual artifact regression with
+`MLX_BUN_TEST_FILL_MODEL=<local-model-dir> MLX_BUN_FILL=strict bun test tests/parity/fill-strict.test.ts`.
+It selects one artifact per process and defaults to the small Qwen fixture
+when no override is set. This is an initial positive-fill identity check;
+extend it to the held-out 27B session/adversarial corpus before a default.
+Track token IDs and subsequent logits/state as well as parsed tool arguments.
+
+On 2026-09-05 the actual packed Qwen3.8-27B passes this regression on both
+trellis variants 6 and 7. Both runs perform nonzero assert injection with
+zero verification events and emit the same token IDs as their unfilled
+control. Logs: `reports/qwen38-rd/strict-fill-variant{6,7}.txt`. This is one
+weather/tool-call fixture; it does not establish universal determinism or a
+wall-time win. Test duration includes loading and warmup and is not the
+performance comparison. The older logs' `baselineForwardSteps` field contains
+the baseline generated-token count; the test now labels it accordingly.
+
+The native tests now union config EOS with tokenizer EOS, matching
+`loadRuntimeModel`. The packed config alone omits the chat terminator. Earlier
+`strict-fill-v10-{wall,max4-wall}.json` runs continued beyond the first chat
+turn and are excluded from serving-performance conclusions. This was a test
+policy error; the server already applies the union. The initial variant-6/7
+logs also used the config-only stop policy.
+
+Corrected variant-10 diagnostics warm complete answers and retain six
+alternating on/off pairs per cap. Both the default cap and the existing
+`MLX_BUN_FILL_MAX_SPAN=4` cap preserve the first-turn token IDs with nonzero
+assertions and no verification. Both improve observed request time; the
+shorter cap injects fewer tokens and avoids an expanded append. These are
+separate diagnostic sessions with prefill noise, not a default-policy verdict
+or a direct comparison of truncation against chunking. Corrected reports:
+`reports/qwen38-rd/strict-fill-v10-cap{32,4}-served-eos.json`.
+`MLX_BUN_TEST_FILL_REPORT` enables the retained test's paired diagnostic;
+`MLX_BUN_TEST_FILL_BLOCKS`, `MLX_BUN_TEST_FILL_PROMPT` and
+`MLX_BUN_TEST_FILL_REVERSE` select its workload and schedule. Reports record
+the cap, rows, prompt IDs, exact emitted IDs, counters and whole-request time.
+`MLX_BUN_TEST_FILL_THINKING=0|1` and `MLX_BUN_TEST_FILL_TOKENS` select the
+thinking policy and completion budget for broader fixtures. The test rejects
+emitted EOS IDs; its report records the effective stop set.
+The corrected variant-11 default-cap repeat also preserves first-turn IDs
+with nonzero injection, zero verification and lower complete-request time.
+Evidence: `reports/qwen38-rd/strict-fill-v11-cap32-served-eos.json`.
+The EOS-correct five-case audit (weather control plus four frozen adversarial
+prompts) preserves all emitted IDs, cache-token records and offsets. Quoted
+malformed markup and code blocks produce no injections and retain exact
+state/probe logits. The three injected cases preserve the response but differ
+in live state after longer appends; subsequent teacher-forced logits differ
+too. All verification counts remain zero. Explicit seed 42 reproduces those
+results; temperature-zero sampling uses argmax. Reducing the span cap to four
+restores exact state and four subsequent probes in the weather/multiple-call
+fixtures, while injecting fewer tokens. Evidence:
+`reports/qwen38-rd/fill-adversarial-state-v12-eos-review.json`,
+`fill-state-v12-cap4-eos.json` and
+`fill-state-v12-cap{32,4}-seed42.json` in the same directory.
+
+An isolated follow-up removes generation and sampling entirely. It copies a
+nine-token span from the unfilled model's recorded output and appends it to
+byte-identical cloned starting caches. Serial and repeated serial appends,
+full M3/4 appends, and chunks of at most four tokens agree exactly in state,
+final logits and the next teacher-forced probe. Full M5/9 appends reproduce
+the numerical difference. Restoring the saved serial cache preserves its
+bytes and next logits exactly. Thus copying a cached state works as expected;
+recomputing known tokens through a different graph shape changes numerics.
+The packed projection dispatch crosses from small-M matvec to prefill at
+M=5; that prefill path also rounds reconstructed weights to the activation
+dtype. This is a compute-path distinction, not a changed token span or seed.
+Evidence: `reports/qwen38-rd/fill-identical-input-append-review.json`.
+
+Four-token execution chunks now preserve every asserted token and pass all
+five complete-generation fixtures at seed 42. Emitted ids, cache-covered ids,
+live cache bytes and four subsequent teacher-forced logits are exact against
+ordinary generation. Positive cases still inject 12, 8 and 20 tokens with no
+verification; both negative cases inject zero. The production implementation
+passes the same audit, without the prototype model adapter. It is a shared
+MLX append operation, selected by a captured FillSession setting rather than
+model inspection in the generation loop. Verify proposals retain a single
+forward because recurrent rollback records one forward per round. Tests cover
+budget clamping, one final vocabulary projection, a consumer break inside the
+burst, cancellation, failed-chunk cleanup and recurrent verification rollback.
+The setting and default live in server-config.md.
+
+Six balanced three-arm blocks per positive timing fixture compare ordinary
+generation, existing full-span fill and four-token execution chunks. The full
+span is retained in both fill arms; every pair preserves emitted ids and
+cache-covered ids. The chunked prototype improves complete-request diagnostic
+timing in every pair, with higher peak allocation than ordinary generation.
+These are local M4 Pro observations with residual swap, not quiet benchmark
+rows or a universal determinism guarantee. Six production HTTP server pairs
+then preserve all 24 paired warm/measured responses, tool calls and injection
+counts. Every measured fixture pair improves complete-request time. Dispatch
+counters confirm chunking is used only by the candidate, all twelve servers
+exit cleanly, and source hashes remain fixed. HTTP uses greedy temperature zero
+without an explicit seed because explicit HTTP seeds currently exclude fill;
+the separate native acceptance uses seed 42. Broader held-out/parser, model
+and quiet/second-Mac gates remain. Evidence:
+`reports/qwen38-rd/fill-chunked-complete-requests-review.json`,
+`fill-chunked-state-v12-seed42-review.json`,
+`fill-integrated-state-v12-seed42-review.json` and
+`fill-integrated-http-packed-review.json`, plus
+`fill-chunked-integrated-{unit,model-free,typecheck,hygiene}.txt`.
+
+Performance experiments: eliminate redundant in-flight sampling/head work,
+merge adjacent determined spans, reuse compiled schema plans with exact
+identity keys, and choose append batch size from the packed-trellis M curve.
+For the discarded head, test scheduling the next model body first, reading
+the current token while that body runs, then projecting only when the fill
+decision requires a sampled continuation. The existing graph interface already
+separates body and head. Cache advancement must be tracked independently of
+a pending sample. Verify and trace policies still require their sampled
+position; assert must not acquire runtime verification. Check EOS, cancellation,
+budget limits and consumer breaks, and measure unfilled tokens for any loss
+of pipeline overlap before retaining this change.
+The first staged-body prototype passes 26 lifecycle/verification checks and
+all five frozen 27B fixtures. Both arms retain strict fill and four-token
+appends, with compiled decode disabled. Emitted IDs, cache-covered tokens,
+live cache bytes and all continuation probes match. The positive fixtures
+retain their injected spans with zero wasted samples and zero verification;
+the two negative fixtures still inject nothing. This establishes the staged
+path's tested correctness, not its speed or a universal forced-token proof.
+Six complete-request pairs per fixture include an enabled-fill negative
+fixture and an explicit fill-disabled control. All emitted IDs, cache-covered
+tokens and injection counts match. Timing is approximately flat in every
+fixture; the disabled control moves by as much as the best positive fixture.
+Peak allocation is unchanged or slightly higher. Close this staging prototype
+without integration: removing discarded samples does not establish a useful
+complete-request gain. Evidence: `reports/qwen38-rd/fill-staged-unit.txt`,
+`fill-staged-state-v13-seed42-review.json` and
+`fill-staged-complete-requests-review.json`. Closed staging helpers are removed.
+Superseded chunking/state/HTTP research helpers are removed; their frozen
+fixtures, raw reports and the retained production append helper remain.
+On default variant 6, M>4 triggers dense expansion. Experimental variants
+11/12 add direct tiles and change that cost curve; span policy needs the
+selected variant's measured append costs. A longer known span is not
+necessarily cheaper per token. Inspect cache writes and resume logits in traces, then
+time with `MLX_BUN_FILL_TRACE` unset. Measure emitted/predicted counts, total
+wall time, first-tool-call latency and task success. Extend the current
+grammar/KV/batch/logprobs/seed exclusions individually after their own gates.
+The full experimental matrix and completion rule are in
+[decode-speed-program.md](decode-speed-program.md#7-qwen38-27b-research-program).
+
 ## 8. Open items
 
-- K3 (fill): strict tier measured on the 27B (5.3% fill, 100% acceptance,
-  ×0.99 median wall) — its default-on gate is token identity on the 27B
-  (`tests/parity/fill-strict.test.ts`); echo-tier policy levers before any
+- K3 (fill): the packed 27B positive-fill token-identity fixture passes;
+  held-out/adversarial token and state identity plus a paired wall-time win
+  remain before default-on (§7.4). Echo-tier policy levers before any
   rerun (§7.3); a multi-turn showcase fixture (the single-prompt one fills
   0%); the turn-8 server-crash repro (`lab/repro/serve-crash-turn8`).
 

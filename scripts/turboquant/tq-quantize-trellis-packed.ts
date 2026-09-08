@@ -14,6 +14,7 @@
 //       [--no-trellis] [--no-rotate] [--layers N] [--dry-run]
 //       [--ldlq <hdir>] [--k-map <trellis-kmap.json> [--k-budget 3.00]]
 //       [--down-axis out|in] [--reuse <packed-dir>]
+//       [--interleave-codes]
 //
 // --down-axis: which dim of down_proj the trellis runs along. `out` (default,
 // the Q3 record) is the ROTATED dim (R1 acts on down's output) but makes the
@@ -23,6 +24,8 @@
 // --reuse: copy every trellis tensor whose geometry is unchanged (gate/up when
 // only --down-axis differs) from an existing packed artifact instead of
 // re-running its Viterbi (~1.5 h instead of ~4.3 h at 27B).
+// --interleave-codes: reorder eligible k3/T256/L12 axis0 codes into two-block
+// groups for the measured scatter layout. Other tensors keep their layout.
 
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,7 +40,7 @@ import { ShardedWriter } from "../../src/quantize/safetensors-writer";
 import {
   buildQuantizationBlock, writeQuantizedConfig, type PerLayerEntry,
 } from "../../src/quantize/config-writer";
-import { Trellis, packStates, wordsPerBlock } from "../../src/quantize/trellis";
+import { Trellis, packStates, wordsPerBlock, interleaveTrellisCodes } from "../../src/quantize/trellis";
 
 // ---------------------------------------------------------------- args -----
 const argv = process.argv.slice(2);
@@ -75,6 +78,7 @@ const ldlqDir = opt("ldlq", "");
 const kMapPath = opt("k-map", "");
 const downAxis: 0 | 1 = opt("down-axis", "out") === "in" ? 1 : 0;
 const reuseDir = opt("reuse", "");
+const interleaveCodes = flag("interleave-codes");
 const kBudget = opt("k-budget", "3.00");
 
 // ---------------------------------------------------------------- config ---
@@ -599,6 +603,7 @@ const reuseCfg = reuseDir
   ? (JSON.parse(readFileSync(join(reuseDir, "config.json"), "utf8")) as { quantization: Record<string, unknown> }).quantization
   : null;
 let reused = 0;
+let interleavedTensors = 0;
 /** Reuse when the module is a trellis entry in the source artifact with the SAME k and axis. */
 function reusable(base: string, k: number, axis: 0 | 1): boolean {
   if (!reuse || !reuseCfg) return false;
@@ -674,6 +679,12 @@ try {
         }
         trellisSeconds += (performance.now() - tt) / 1000;
         folded.dispose();
+        if (interleaveCodes && t.axis === 0 && t.k === 3 && BLOCK_T === 256 &&
+            TRELLIS_L === 12 && rec.codes.ndim === 2 && rec.codes.shape[1]! % 48 === 0) {
+          const packed = interleaveTrellisCodes(rec.codes);
+          packed.eval(); rec.codes.dispose(); rec.codes = packed;
+        }
+        if (rec.codes.ndim === 3) interleavedTensors++;
         writer.add(`${base}.weight`, rec.codes);
         writer.add(`${base}.scales`, rec.scales);
         perLayer.set(base!, {
@@ -770,6 +781,7 @@ try {
       scale: "per coded row, fp16 (QTIP uses one per-tensor Wscale after TWO-sided IP)",
       down_axis: downAxis === 1 ? "input (un-rotated intermediate dim; plain reduce kernel)" : "output (rotated dim; scatter kernel)",
       reused_from: reuse ? { dir: reuseDir, tensors: reused } : null,
+      interleaved_modules: interleavedTensors,
       packaging: "packed: uint32 bit-stream (reversed-time symbols, tail-biting window) + fp16 row scales; " +
         "config mode \"trellis\" (src/quantize/trellis.ts, src/model/trellis-linear.ts); mlx-lm cannot load it",
       modules: nTrellis, params: trellisParams,

@@ -87,3 +87,26 @@ describe("ToolAwareStream non-sentinel modes ignore gemma sentinel ids", () => {
     expect(r.toolCalls()).toEqual([]); // and no phantom text tool call either
   });
 });
+
+test("Qwen edit arrays stream as tool calls with literal entities intact", () => {
+  const tokenizer: LoadedTokenizer = {
+    encode: text => Array.from(text, ch => ch.charCodeAt(0)),
+    decode: ids => ids.map(id => String.fromCharCode(id)).join(""),
+    idToToken: id => String.fromCharCode(id), bosTokenId: null, eosTokenId: null,
+  };
+  const tools = [{ type: "function" as const, function: { name: "edit", parameters: {
+    type: "object", properties: { path: { type: "string" }, edits: { type: "array" } },
+    required: ["path", "edits"],
+  } } }];
+  const edits = [{ oldText: "return '&';\n", newText: "return '&amp; &quot;';\n" }];
+  const text = `Fixing the escaping.\n<tool_call>\n<function=edit>\n<parameter=path>\njs/utils.js\n</parameter>\n<parameter=edits>\n${JSON.stringify(edits)}\n</parameter>\n</function>\n</tool_call>`;
+  const stream = new ToolAwareStream(tokenizer, "buffered-text", tools);
+  let content = "";
+  for (const token of tokenizer.encode(text)) content += stream.push(token);
+  content += stream.flush();
+  expect(content).toBe("Fixing the escaping.\n");
+  const calls = stream.toolCalls();
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.function.name).toBe("edit");
+  expect(JSON.parse(calls[0]!.function.arguments)).toEqual({ path: "js/utils.js", edits });
+});

@@ -4,6 +4,7 @@
 // - decode pipelining via mx.async_eval: step n+1's graph is built and
 //   dispatched before step n's token is read back, so the GPU never idles
 //   on the JS round-trip
+// - opt-in early token-zero yield reduces latency before that pipeline starts
 // - sampling stays on-device; only the chosen token id crosses to JS
 
 import { appendFileSync } from "node:fs";
@@ -25,10 +26,11 @@ import { bindLegacyDenoisingModel, type MlxDenoisingBinding } from "./backends/m
 import type { RuntimeModel } from "./model/factory";
 import {
   assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
-  type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep,
+  type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep, type MlxTokenAppend,
 } from "./backends/mlx/autoregressive";
 import { nextPrefillStep } from "./inference/prefill";
 import { evalCacheState, executeMlxPrefillStep } from "./backends/mlx/prefill";
+import { appendFillHidden } from "./backends/mlx/fill-append";
 export { evalCacheState } from "./backends/mlx/prefill";
 import type { TokenLogprobs } from "./contracts/generation";
 export type { TokenLogprobs } from "./contracts/generation";
@@ -55,6 +57,8 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
+  /** RAM budget for a model-owned paired target/draft prompt snapshot. */
+  speculativeCacheBytes?: number;
   /** Resolved host policy. Direct compatibility calls resolve from their
    * captured binding when this is absent. */
   decodePolicy?: Readonly<Pick<import("./contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;
@@ -361,6 +365,8 @@ function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: n
 
 export interface GenerateStats {
   promptTokens: number;
+  /** An observed terminal cause takes precedence over the token-count limit. */
+  finishReason?: "stop" | "length";
   /** Prompt tokens skipped via a pre-warmed cache. */
   cachedTokens: number;
   generatedTokens: number;
@@ -831,12 +837,14 @@ async function* generateInner(
   let tDecode = 0;
   let decodeMs = 0;
   let generated = options.initialGeneratedTokens ?? 0;
+  let finishReason: GenerateStats["finishReason"];
   const forwarded: number[] = [];
   let pending: MlxArray | null = null;
   let nextPending: MlxArray | null = null;
   let pendingExtras: StepExtras | null = null;
   let nextExtras: StepExtras | null = null;
   let decoder: MlxDecodeStep | null = null;
+  let appender: MlxTokenAppend | null = null;
   let finished = false;
   let threw = false;
   let executionError: unknown;
@@ -845,6 +853,7 @@ async function* generateInner(
     promptTokens: options.originalPromptTokens ?? promptTokens.length,
     cachedTokens: Math.min(cachedTokens, options.originalPromptTokens ?? promptTokens.length),
     generatedTokens: generated,
+    ...(finishReason ? { finishReason } : {}),
     prefillMs,
     decodeMs,
     prefillTps: prefillMs > 0
@@ -953,12 +962,14 @@ async function* generateInner(
     let hf: MlxArray | null = null;
     let logitsAll: MlxArray | null = null;
     try {
-      const fillIds = ops.fromInt32(ids, [1, ids.length]);
-      try {
-        hf = await graph.forwardHidden(fillIds, cache);
-      } finally {
-        fillIds.dispose();
-      }
+      const chunkSize = (state: readonly Cache[]) => {
+        const maxChunk = appender?.maxChunkSize(state) ?? 1;
+        return fill.appendChunkSize > 0 ? Math.min(fill.appendChunkSize, maxChunk) : maxChunk;
+      };
+      hf = await appendFillHidden(
+        !verify && appender ? appender.forwardHidden.bind(appender) : graph.forwardHidden.bind(graph),
+        cache, ids, verify ? () => ids.length : chunkSize,
+      );
       const [, Lf, Hf] = hf.shape as [number, number, number];
       let pred: number[] | null = null;
       if (verify || fillTraceFile) {
@@ -1141,6 +1152,9 @@ async function* generateInner(
     decoder = options.decodePolicy?.compiledDecode === false ? null : binding.createDecode?.({
       hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
     }) ?? null;
+    appender = fillOn ? binding.createAppend?.({
+      hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
+    }) ?? null : null;
     let stop = false;
     /** Token id read eagerly at the top of the loop for grammar (reused for
      *  the yield, avoiding a second readback). -1 when grammar is off — the
@@ -1154,10 +1168,35 @@ async function* generateInner(
     // note on why this is opt-in). Excluded when logprobs are requested
     // (jumped tokens are never sampled, so they'd have no logprobs rows).
     const grammarJump = options.decodePolicy?.grammarJump ?? shouldUseGrammarJump(options, runtime);
+    // Yield token zero before its own decode forward. The captured runtime
+    // keeps this scheduling choice stable across consumer awaits.
+    const earlyFirstToken = runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") === "1" &&
+      maxTokens > 1 && !resuming && !fillOn && !options.grammar;
     while (!stop) {
       options.signal?.throwIfAborted();
       const cur = pending!;
-      const curExtras = pendingExtras;
+      const stepIndex = generated;
+      let curExtras = pendingExtras;
+      let yieldedEarly = false;
+      if (earlyFirstToken && stepIndex === 0) {
+        const firstToken = ops.itemUint32(cur);
+        options.signal?.throwIfAborted();
+        if (!eosTokenIds.includes(firstToken)) {
+          prefillMs = performance.now() - tPrefill;
+          closeTokenZero?.();
+          closeTokenZero = undefined;
+          tDecode = performance.now();
+          const logprobs = readExtras(curExtras);
+          curExtras = null;
+          pendingExtras = null;
+          // Count before yielding so an early return reports this token. Its
+          // KV is still absent; forwarded describes the prompt-only cache.
+          generated++;
+          yieldedEarly = true;
+          yield { token: firstToken, index: stepIndex, ...(logprobs ? { logprobs } : {}) };
+          options.signal?.throwIfAborted();
+        }
+      }
       // Keep current extras owned by the run until readback succeeds. A
       // forward/grammar failure must leave them reachable by finally.
       // Grammar advance (src/grammar.ts): acceptToken needs the token id as a
@@ -1180,11 +1219,11 @@ async function* generateInner(
       let jumpEmit: number[] | null = null;
       if (options.grammar) {
         grammarTok = ops.itemUint32(cur);
-        if (generated + 1 < maxTokens) {
+        if (stepIndex + 1 < maxTokens) {
           options.grammar.accept(grammarTok);
           await options.grammar.ready();
           if (grammarJump && !options.grammar.isTerminated) {
-            jumpEmit = options.grammar.jumpForward(maxTokens - (generated + 1));
+            jumpEmit = options.grammar.jumpForward(maxTokens - (stepIndex + 1));
             // jumpForward advanced the matcher and fired the post-jump mask
             // fill; it must be ready before this iteration's sampleStep.
             if (jumpEmit) await options.grammar.ready();
@@ -1212,7 +1251,7 @@ async function* generateInner(
         ids.dispose();
         // Every chunk token's KV is in the cache regardless of what follows.
         forwarded.push(...chunk);
-        const willGen = generated + 1 + jumpEmit.length;
+        const willGen = stepIndex + 1 + jumpEmit.length;
         if (willGen < maxTokens && !options.grammar!.isTerminated) {
           const [, Lj, Hj] = h.shape as [number, number, number];
           const hLast = h.slice([0, Lj - 1, 0], [1, Lj, Hj]);
@@ -1227,7 +1266,7 @@ async function* generateInner(
         } else {
           h.dispose(); // burst ends the generation (max_tokens or grammar done)
         }
-      } else if (generated + 1 < maxTokens && !options.grammar?.isTerminated) {
+      } else if (stepIndex + 1 < maxTokens && !options.grammar?.isTerminated) {
         maybeQuantizeKv(cache, options);
         pushHistory(cur);
         let logits: MlxArray | null = null;
@@ -1244,7 +1283,7 @@ async function* generateInner(
           logits = graph.projectLogits(h, { type: "all" });
           h.dispose();
         }
-        const sn = sampleStep(logits, generated + 1);
+        const sn = sampleStep(logits, stepIndex + 1);
         nextPending = sn.tok;
         nextExtras = sn.extras;
         logits.dispose();
@@ -1267,12 +1306,13 @@ async function* generateInner(
       }
       cur.dispose();
       pending = null;
-      generated++;
+      if (!yieldedEarly) generated++;
       // if a next-step graph was built, this token's KV entered the cache
       // (jump iterations pushed the whole chunk already)
       if (nextPending !== null && !jumpEmit) forwarded.push(token);
 
       if (eosTokenIds.includes(token)) {
+        finishReason = "stop";
         disposeStepExtras(curExtras);
         pendingExtras = null;
         nextPending?.dispose();
@@ -1283,7 +1323,7 @@ async function* generateInner(
       } else {
         // ---- token fast-forwarding (K3): APPEND, then yield ----------------
         // The engine already knows the next m tokens, so it writes them into
-        // the KV itself with ONE forward and resumes sampling after them. No
+        // the KV itself with an append and resumes sampling after them. No
         // draft, no verify, no rollback: an injected token is indistinguishable
         // to the model from one it sampled. The append happens BEFORE any of
         // the burst's yields, which is what makes a consumer break mid-burst
@@ -1309,7 +1349,7 @@ async function* generateInner(
         // the extras are already read and disposed.
         const logprobs = readExtras(curExtras);
         pendingExtras = null;
-        yield { token, index: generated - 1, ...(logprobs ? { logprobs } : {}) };
+        if (!yieldedEarly) yield { token, index: generated - 1, ...(logprobs ? { logprobs } : {}) };
         options.signal?.throwIfAborted();
         // mlx-lm generate_step: clear_cache after token 0 (drops the
         // remaining prefill transients) and every 256 tokens after

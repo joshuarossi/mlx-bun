@@ -1,6 +1,7 @@
 // Shared reference-environment paths (see PLAN.md "Reference environment").
 
 import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { MLX_CORE_VERSION } from "../../src/native-pack";
 
 /** Resolve a HF-cache snapshot dir for a repo by globbing snapshots/ for the
  *  one carrying config.json — so a freshly-downloaded model needs no hardcoded
@@ -17,30 +18,38 @@ export function hfSnapshot(repoDir: string): string {
   return `${base}/_unresolved`;
 }
 
-/** A venv is usable only if bin/python resolves to a real file — a venv
- *  whose interpreter symlink dangles (e.g. Homebrew bumped python 3.13→3.14
- *  and orphaned the venv) must be skipped, not picked: spawning it gives a
- *  confusing ENOENT at eval time rather than at resolution time. */
+/** The interpreter must exist and both native packages must match the engine.
+ * Avoid broken interpreter links and comparisons against an older MLX core. */
 function venvUsable(venv: string): boolean {
   try {
-    return existsSync(realpathSync(`${venv}/bin/python`));
+    if (!existsSync(realpathSync(`${venv}/bin/python`))) return false;
+    return readdirSync(`${venv}/lib`).some(dir => {
+      const packages = `${venv}/lib/${dir}/site-packages`;
+      return existsSync(`${packages}/mlx-${MLX_CORE_VERSION}.dist-info`) &&
+        existsSync(`${packages}/mlx_metal-${MLX_CORE_VERSION}.dist-info`);
+    });
   } catch {
-    return false; // missing dir or broken symlink chain
+    return false;
   }
 }
 
-/** Oracle venv root. Different laptops keep the reference environment in
- *  different directories (mlx-lm vs mlx-lm-example); pick the first
- *  candidate whose interpreter actually works. Override the search with
- *  MLX_BUN_ORACLE_VENV (still validated, so a typo'd override falls back). */
+/** Prefer the versioned reference matching the bundled macOS 14 build.
+ * An explicit override must match; it never silently selects another venv. */
 function resolveOracleVenv(): string {
   const home = process.env.HOME ?? "";
+  const explicit = process.env.MLX_BUN_ORACLE_VENV;
+  if (explicit) {
+    if (!venvUsable(explicit))
+      throw new Error(`MLX_BUN_ORACLE_VENV must contain a working Python with mlx and mlx-metal ${MLX_CORE_VERSION}: ${explicit}`);
+    return explicit;
+  }
   const candidates = [
-    process.env.MLX_BUN_ORACLE_VENV,
+    `${home}/Code/mlx-lm/.venv-mlx-${MLX_CORE_VERSION}-macos14`,
+    `${home}/Code/mlx-lm/.venv-mlx-${MLX_CORE_VERSION}`,
     `${home}/Code/mlx-lm/.venv`,
     `${home}/Code/mlx-lm-example/.venv`,
-  ].filter((v): v is string => !!v);
-  return candidates.find(venvUsable) ?? candidates[0] ?? `${home}/Code/mlx-lm/.venv`;
+  ];
+  return candidates.find(venvUsable) ?? candidates[0]!;
 }
 
 export const ORACLE_VENV = resolveOracleVenv();

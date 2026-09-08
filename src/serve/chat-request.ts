@@ -186,6 +186,11 @@ export function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
     if (Array.isArray(m.content) && !hasMediaPart(m.content)) {
       m = { ...m, content: contentPartsToText(m.content) };
     }
+    // Pi and mlx-lm return `reasoning`; Qwen templates read
+    // `reasoning_content`. Keep the original field and immutable history,
+    // and let an explicitly supplied canonical string (including "") win.
+    if (typeof m.reasoning_content !== "string" && typeof m.reasoning === "string")
+      m = { ...m, reasoning_content: m.reasoning };
     if (!m.tool_calls) return m;
     return {
       ...m,

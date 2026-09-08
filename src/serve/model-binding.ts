@@ -29,6 +29,8 @@ export interface ModelPromptBuilder {
 /** Model-owned native services. A replacement supplies this one binding;
  * routes and sessions consume it without requiring a concrete model class. */
 export interface ModelServingBinding {
+  /** Opaque identity of the backend numerics that produced persisted state. */
+  readonly stateCompatibility: string;
   readonly gateway: MlxGatewayBinding;
   createSerial(services: MlxSerialServices): SerialRun;
   readonly buildPrompt: ModelPromptBuilder;

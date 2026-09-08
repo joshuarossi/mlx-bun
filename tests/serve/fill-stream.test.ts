@@ -35,6 +35,7 @@ function armed(tokenizer: FakeTokenizer) {
   return new FillSession(
     { rows: plan.rows, echo: null, delimiters: new Set(plan.delimiters), eos: [EOS] },
     tokenizer.encode("<|im_start|>assistant\n"),
+    { strictContext: plan.createContext?.(tokenizer.encode("<|im_start|>assistant\n")) },
   );
 }
 

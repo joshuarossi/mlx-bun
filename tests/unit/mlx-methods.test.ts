@@ -197,3 +197,26 @@ for (const method of ["AR", "speculative", "denoising"] as const) {
     });
   });
 }
+
+for (const method of ["AR", "speculative"] as const) {
+  test(`${method} reports EOS at the token budget as stop`, async () => {
+    const f = fixture();
+    const options = { maxTokens: 2, temperature: 0 };
+    const registration = method === "AR"
+      ? createAutoregressiveMethod(f.ar, [4, 5], options)
+      : createSpeculativeMethod(f.spec, 2, [4, 5], options);
+    const engine = createInferenceEngine({ async plan() {
+      return { id: "eos-budget", outputTokenLimit: 2, method: registration };
+    } }, { timer });
+    try {
+      const result = await (await engine.open({}, { output: "collect" })).result;
+      expect(result.status).toBe("completed");
+      if (result.status !== "completed") throw new Error("EOS request did not complete");
+      expect([...result.output!]).toEqual([6]);
+      expect(result.result.finishReason).toBe("stop");
+      expect(result.result.metrics.generatedTokens).toBe(2);
+      expect(f.calls.caches).toBe(1);
+      if (method === "speculative") expect(f.calls.sources).toBe(1);
+    } finally { await engine.close(); }
+  });
+}

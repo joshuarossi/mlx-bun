@@ -186,6 +186,13 @@ Sampling defaults follow the model author's `generation_config.json`
 when a field is omitted (optiq serve's gen_config behavior); explicit
 request values always win. MiniCPM5 defaults to the no-think direct
 answer mode unless `chat_template_kwargs.enable_thinking` is `true`.
+
+Assistant history accepts `reasoning` as an alias for `reasoning_content`,
+including Pi's reasoning on tool-call messages. An explicit `reasoning_content`
+string takes precedence, even when empty. Normalization preserves the original
+message and exposes the canonical field to templates, so Qwen's
+`preserve_thinking: true` retains that history across tool turns.
+
 GLM-5.2 also defaults to no-think: its generation primer is
 `<think></think>`. Enabling thinking renders `Reasoning Effort: Max` in the
 system turn and leaves an open `<think>` primer for generation. The same
@@ -351,26 +358,37 @@ contributed accepted draft tokens to this reply, `"serial"` otherwise. It
 rides the SAME usage block on both streaming (final chunk before `[DONE]`) and
 non-streaming responses.
 
+`usage.completion_tokens` counts the stopping EOS token in both native and
+speculative serial generation, matching mlx-lm. EOS is excluded from response
+content. An early callback stop or token budget does not count a later EOS
+that happened to be evaluated in the same speculative burst.
+An observed EOS reports `finish_reason: "stop"`, including when its counted
+position equals `max_tokens`.
+
 Speculative decoding is a **server-level mode** (`serve --draft-model`,
 or the model-free `serve --draft-kind ngram`, which mounts no draft
 model); there is no per-request draft field. The `speculation` usage
 extension appears on chat and text completions alike, non-streaming and on
 the final stream chunk. Spec-eligible requests are text-only on base weights
-(no adapter, no logprobs capture, bf16 KV); ineligible ones decode
-normally and omit the field. The spec path bypasses the prompt cache
-(`cached_tokens` 0), and while a draft is mounted every request routes
+(no adapter or logprobs capture, bf16 KV by default); experimental Qwen
+uniform KV4 start=0 can qualify through `MLX_BUN_QWEN_SPEC_KV4=1`.
+Ineligible requests decode normally and omit the field. The spec path bypasses
+the ordinary prompt cache. Qwen MTP with `MLX_BUN_MTP_PROMPT_CACHE=1` can reuse
+a paired target/draft RAM prefix, reported in `cached_tokens`; the default is
+zero. These prefixes do not persist across restarts. While a draft is mounted every request routes
 through the serial lane (mlx_lm.server parity: `is_batchable = draft is
 None`) — speculation and `--batch N` are different modes.
 
 `usage.fill` reports **token fast-forwarding** (`MLX_BUN_FILL=strict|echo`).
-The default tier is not speculation: the engine appends token spans the
-request's `tools` + the chat template already determine, with no draft, verify,
-or rollback
+Strict mode appends structural spans from the request's tools and chat
+template at qualified parser boundaries, with no draft, verification or
+rollback. The model advances its hidden states and caches through the span,
+using its qualified append chunk size, then resumes sampling
 (design: [speculative-decoding.md](../design/speculative-decoding.md) §"Token
 fast-forwarding"). Injected tokens are billed in `completion_tokens` like any
-other generated token; `decodeSteps` is what the model actually sampled, so
-`injected / (injected + decodeSteps)` is the share of the reply that never
-touched the weights. The field is absent when the feature is off or the
+other generated token; `decodeSteps` counts ordinary sampling steps, so
+`injected / (injected + decodeSteps)` is the share appended without sampling.
+Injected positions still run through the model layers. The field is absent when the feature is off or the
 request's shape refuses it (fixed `seed`, `logprobs`, structured output,
 media, a mounted draft model, quantized KV).
 
@@ -429,9 +447,17 @@ decodable; text that could begin a `stop` sequence is held back until
 disambiguated, so no part of a stop sequence is ever streamed), then for
 tool calls a `{tool_calls: [{index, id, type, function}]}` delta; the last
 chunk carries `finish_reason` and `usage`. A generation error mid-stream is
-sent as `data: {"error":{"message":…}}` and the stream closes.
+sent as `data: {"error":{"message":…}}` and the stream closes. While a
+large tool-call body is buffered for parsing, the server sends SSE comment
+heartbeats (`: keep-alive`) so client idle timers do not terminate the call.
 
 ### Tool calls
+
+Qwen's `<parameter=...>` values are raw text. The parser preserves HTML
+entities, indentation and JSON string escapes, removing only one framing
+newline at either end. Array/object parameters are JSON-decoded according to
+the tool schema. The outer Qwen markup is parsed before generic JSON repair,
+so a nested edit array is not mistaken for the tool-call envelope.
 
 Tool round-trip: send the assistant message with its `tool_calls` back,
 followed by `{ "role": "tool", "tool_call_id": …, "content": … }`
@@ -517,6 +543,12 @@ path with the hint `grammar compilation disabled by MLX_BUN_GRAMMAR=0`.
 Design and fidelity notes: [docs/reference/server-api.md](./server-api.md).
 
 ### Errors
+
+Runtime memory pressure can fail a request even after prompt-length admission.
+The serial memory guard first reclaims older prompt-cache entries, persisting
+them to the SSD tier when configured. If insufficient GPU headroom remains,
+the normal request/stream error path reports the failure. Saved in-flight
+generation checkpoints remain available for an identical retry.
 
 All errors are `{ "error": { "message": …, ... } }`.
 
@@ -972,6 +1004,10 @@ Forces every pending SSD prompt-cache snapshot through the serial write queue
 and waits for the atomic temp-file/fsync/rename boundary. The response is `200`
 only when no snapshot or spill remains pending and no write failed during this
 flush; otherwise it is `503` with the counters that explain why.
+A snapshot missing from both RAM and usable SSD coverage remains pending
+across repeated flushes. Retrying does not turn a missing snapshot into a
+successful durability result. Already-durable prefixes avoid another clone
+and write.
 
 ```jsonc
 {

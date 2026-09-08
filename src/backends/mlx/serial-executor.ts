@@ -10,6 +10,7 @@ import type { SerialRun, Vision } from "../../serve/generation-gateway";
 import { generationCheckpointKey } from "../../serve/checkpoint-identity";
 import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { bindLegacySpeculativeModel } from "./speculative";
+import { enterMlxMemoryGuard, type MlxMemoryBudget } from "./memory-guard";
 
 /** Native serial execution depends on this bound port, never a model union.
  * Weights remain borrowed. The gateway supplies the exclusive runtime lease. */
@@ -19,7 +20,12 @@ export interface MlxSerialBinding {
   readonly speculate?: SerialRun;
   makeCache(): Cache[];
   enterMedia?(vision?: Vision): () => void;
+  enterMemoryGuard?(budget: SerialMemoryBudget, promptTokens: number,
+    prefillChunkSize?: number): { check(): void; close(): void };
 }
+
+/** Admission's ceiling and the cache that can release memory under the GPU lease. */
+export type SerialMemoryBudget = MlxMemoryBudget;
 
 /** Family-specific context is bound once at the compatibility boundary. */
 export function bindLegacySerialModel(
@@ -31,6 +37,9 @@ export function bindLegacySerialModel(
     runtime: runtimeConfig(),
     generate: bindGeneration(model),
     makeCache: model.makeCache.bind(model),
+    enterMemoryGuard(budget, promptTokens, prefillChunkSize) {
+      return enterMlxMemoryGuard(model, budget, promptTokens, prefillChunkSize);
+    },
     ...(speculative && draft ? { speculate: (async (prompt, options, onToken) => {
       const { specRun } = await import("../../spec/serve-loop");
       return specRun(speculative, draft.numDraftTokens, prompt, options, onToken);
@@ -44,10 +53,11 @@ export function bindLegacySerialModel(
 }
 
 export interface MlxSerialServices {
-  readonly promptCache: Pick<PromptCache, "take" | "put">;
+  readonly promptCache: Pick<PromptCache, "take" | "put"> & Partial<Pick<PromptCache, "maxBytes">>;
   readonly checkpoints: Pick<SsdCacheStore, "findGenerationCheckpoint" | "restore" |
     "storeGenerationCheckpoint" | "removeGenerationCheckpoints"> | null;
   readonly checkpointEveryTokens?: number;
+  readonly memoryBudget?: SerialMemoryBudget;
   /** Artifact, implementation, state ABI and codec identity captured at load. */
   readonly identity: unknown;
   adapterNamespace(adapters: string[]): string;
@@ -64,12 +74,14 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
     let caches: Cache[] = [];
     let retain: (() => void) | undefined;
     let closeMedia: (() => void) | undefined;
+    let memoryGuard: ReturnType<NonNullable<MlxSerialBinding["enterMemoryGuard"]>> | undefined;
     const cleanup = ownResource(null, () => disposeResources([
       { dispose() {
         disposeResources(caches);
         retain?.(); // backing release requires successful cache disposal
       } },
       { dispose: () => closeMedia?.() },
+      { dispose: () => memoryGuard?.close() },
       ...[options.grammar, vision?.embeddings, vision?.imageMask,
         vision?.multimodalMask, options.visionPixels].filter((value) => value != null),
     ]));
@@ -78,7 +90,11 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       if (!execution) throw new Error("serial execution requires a resolved plan");
       if (execution.method === "speculative") {
         if (!binding.speculate) throw new Error("resolved speculation requires a bound verifier");
-        return await binding.speculate(promptIds, options, onToken);
+        return await binding.speculate(promptIds, {
+          ...options,
+          speculativeCacheBytes: binding.runtime.flag("MLX_BUN_MTP_PROMPT_CACHE", false)
+            ? services.promptCache.maxBytes ?? 0 : 0,
+        }, onToken);
       }
       // Cache entries are adapter-specific: KV computed under one adapter
       // must never seed another's (or the base's) prefill.
@@ -144,6 +160,12 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       const snapshotBoundary =
         !skipPromptCache && !resuming && boundary >= 256 &&
         boundary > (entry?.tokens.length ?? 0);
+      if (services.memoryBudget) {
+        memoryGuard = binding.enterMemoryGuard?.(
+          services.memoryBudget, generationPromptIds.length, options.prefillChunkSize,
+        );
+        memoryGuard?.check();
+      }
       closeMedia = binding.enterMedia?.(vision);
       if (resuming) {
         const replay = generationPromptIds.slice(promptIds.length);
@@ -230,6 +252,7 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
           : {}),
       }, { trace, mechanism: "serial" });
       for await (const t of gen) {
+        if (t.index % 256 === 0) memoryGuard?.check();
         if ((await onToken(t.token, t.logprobs)) === false) break;
       }
       const s = gen.stats!; // set on completion AND on early break

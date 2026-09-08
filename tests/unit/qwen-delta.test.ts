@@ -10,11 +10,17 @@
 // end-to-end model parity is gated separately (run with Josh).
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
 import { gatedDeltaUpdate } from "../../src/model/qwen3-delta";
+import { goldenAt } from "../support/goldens";
 
-const g = await Bun.file(`${import.meta.dir}/../fixtures/qwen-delta-golden.json`).json();
+// Keep portable input data in fixtures; an explicitly regenerated per-chip
+// oracle takes precedence. Never regenerate from the implementation under test.
+const override = goldenAt("qwen-delta-golden.json");
+const g = await (await override.exists() ? override :
+  Bun.file(`${import.meta.dir}/../fixtures/qwen-delta-golden.json`)).json();
 
 const bf16 = (vals: number[], shape: number[]): MlxArray => {
   const f = MlxArray.fromFloat32(Float32Array.from(vals), shape);
@@ -50,9 +56,15 @@ describe("Qwen3.5 gated-DeltaNet vs mlx-lm gated_delta_update (model-free)", () 
 
     const [y1, s1] = run(g.prefill, null);
     expect(maxAbsDiff(y1, g.prefill.y)).toBe(0);
+    if (g.prefill.state_sha256)
+      expect(createHash("sha256").update(s1.rawBytesView()).digest("hex"))
+        .toBe(g.prefill.state_sha256);
 
     const [y2, s2] = run(g.decode, s1);
     expect(maxAbsDiff(y2, g.decode.y)).toBe(0);
+    if (g.decode.state_sha256)
+      expect(createHash("sha256").update(s2.rawBytesView()).digest("hex"))
+        .toBe(g.decode.state_sha256);
 
     for (const t of [aLog, dtBias, y1, s1, y2, s2]) t.dispose();
   });

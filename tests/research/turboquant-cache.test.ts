@@ -12,7 +12,7 @@ import { Dtype, activeMemory } from "../../src/mlx/ffi";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
 import * as tq from "../../src/mlx/turboquant-ops";
-import { TurboQuantKVCache, disposeTurboQuant } from "../../src/model/gemma4-base";
+import { TurboQuantKVCache, disposeTurboQuant, type Cache } from "../../src/model/gemma4-base";
 import { saveKvCache, loadKvCache, readKvHeader, cloneKvCaches } from "../../src/kv-store";
 
 const B = 1, H = 2, D = 64; // smallest supported head_dim
@@ -32,7 +32,15 @@ function randKV(L: number, seed: number): [MlxArray, MlxArray] {
 }
 
 function toFloatArr(a: MlxArray): number[] {
-  return [...a.astype(Dtype.float32).toFloat32()];
+  const converted = a.astype(Dtype.float32);
+  try { return [...converted.toFloat32()]; }
+  finally { converted.dispose(); }
+}
+
+function stateValues(cache: Cache): number[][] {
+  const arrays = cache.state();
+  try { return arrays.map(toFloatArr); }
+  finally { if (cache.stateNeedsDispose) for (const a of arrays) a.dispose(); }
 }
 
 /** Direct encode+decode of the same data via the codec ops, bypassing the
@@ -188,7 +196,7 @@ describe("TurboQuantKVCache — kv-store persistence roundtrip", () => {
     fk.dispose(); fv.dispose();
     k.dispose(); v.dispose();
 
-    const beforeState = cache.state().map(toFloatArr);
+    const beforeState = stateValues(cache);
     const stub = { makeCache: () => [new TurboQuantKVCache(8, 3)] };
     const dir = mkdtempSync(join(tmpdir(), "mlx-bun-tqkv-"));
     const file = join(dir, "x.mlxkv");
@@ -211,7 +219,7 @@ describe("TurboQuantKVCache — kv-store persistence roundtrip", () => {
     expect(restored.kBits).toBe(8);
     expect(restored.vBits).toBe(3);
 
-    const afterState = restored.state().map(toFloatArr);
+    const afterState = stateValues(restored);
     expect(afterState).toEqual(beforeState);
 
     for (const c of loaded.caches) c.dispose();
@@ -241,16 +249,16 @@ describe("TurboQuantKVCache — kv-store persistence roundtrip", () => {
       return c;
     };
     const caches = [mkTq(70), mkRot(), mkTq(71)];
-    const beforeStates = caches.map((c) => c.state().map(toFloatArr));
+    const beforeStates = caches.map(stateValues);
     // TurboQuant state() returns fresh views the caller must dispose;
     // rotating returns live arrays (see generate.ts evalCacheState).
-    // toFloatArr copies, so the snapshot above is safe either way.
+    // stateValues copies and releases only the owned views.
 
     // clone: per-kind dispatch must be independent of list position
     const clones = cloneKvCaches(caches);
     expect(clones[0]).toBeInstanceOf(TurboQuantKVCache);
     expect(clones[2]).toBeInstanceOf(TurboQuantKVCache);
-    expect(clones.map((c) => c.state().map(toFloatArr))).toEqual(beforeStates);
+    expect(clones.map(stateValues)).toEqual(beforeStates);
     for (const c of clones) c.dispose();
 
     // save/load: header records both kinds, restore is bit-identical per slot
@@ -264,7 +272,7 @@ describe("TurboQuantKVCache — kv-store persistence roundtrip", () => {
 
     const stub = { makeCache: () => [new TurboQuantKVCache(8, 3), new RotatingKVCache(16), new TurboQuantKVCache(8, 3)] };
     const loaded = loadKvCache(file, stub, { verify: true });
-    expect(loaded.caches.map((c) => c.state().map(toFloatArr))).toEqual(beforeStates);
+    expect(loaded.caches.map(stateValues)).toEqual(beforeStates);
     expect(loaded.caches[1]!.offset).toBe(6);
 
     for (const c of loaded.caches) c.dispose();

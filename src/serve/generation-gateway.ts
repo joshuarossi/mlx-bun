@@ -44,6 +44,7 @@ import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate"
 import type { KvScheme } from "../kv-scheme";
 import { makeStepSampler } from "../sampler";
 import type { RowPromptCache } from "../backends/mlx/batch-group";
+import type { MlxMemoryBudget } from "../backends/mlx/memory-guard";
 import { bindMlxGateway, type MlxGatewayBinding, type MlxBatchGroup } from "../backends/mlx/gateway-binding";
 import type { RuntimeConfig } from "../runtime-config";
 import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
@@ -171,6 +172,7 @@ export class GenerationGateway {
     private readonly serialRun: SerialRun,
     private readonly opts: {
       kvBudgetBytes?: number;
+      memoryBudget?: MlxMemoryBudget;
       checkpoints?: boolean;
       stateCodecs?: import("../kv-store").CacheCodecProvider;
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
@@ -183,6 +185,9 @@ export class GenerationGateway {
        *  back on finish. Safe to share with the serial lane — both use it
        *  only inside this gateway's mutual-exclusion domain. */
       promptCache?: RowPromptCache;
+      /** Finish cache writes before taking the generation lock. Writers
+       * need that same lock, so this hook must never run inside it. */
+      beforeSerial?: () => Promise<void>;
     } = {},
   ) {
     this.#binding = "createBatchGroup" in model ? model : bindMlxGateway(model);
@@ -366,19 +371,26 @@ export class GenerationGateway {
       let lastHop = performance.now();
       const hop = (): Promise<void> => new Promise<void>((r) => setImmediate(r));
       const hoppingOnToken: OnToken = (token, lp) => {
-        if (signal?.aborted) return false;
+        signal?.throwIfAborted();
         const r = onToken(token, lp);
         if (r === false) return false;
         if (performance.now() - lastHop < 25) return r;
         lastHop = performance.now();
         if (r instanceof Promise)
-          return r.then((v) =>
-            v === false || signal?.aborted ? false : hop().then(() => signal?.aborted ? false : v),
-          );
-        return hop().then(() => signal?.aborted ? false : r);
+          return r.then(async (v) => {
+            if (v === false) return false;
+            signal?.throwIfAborted();
+            await hop();
+            signal?.throwIfAborted();
+            return v;
+          });
+        return hop().then(() => {
+          signal?.throwIfAborted();
+          return r;
+        });
       };
       let started = false;
-      return this.runExclusive(async () => {
+      return Promise.resolve().then(() => this.opts.beforeSerial?.()).then(() => this.runExclusive(async () => {
         signal?.throwIfAborted();
         started = true;
         const stats = await this.serialRun(
@@ -386,7 +398,7 @@ export class GenerationGateway {
         );
         signal?.throwIfAborted();
         return stats;
-      }, trace, signal)
+      }, trace, signal))
         // Covers a serial waiter aborted before serialRun takes ownership.
         // generate() also disposes defensively; the operation is idempotent.
         .finally(() => {
@@ -442,6 +454,7 @@ export class GenerationGateway {
       promptTokens: st.promptTokens,
       cachedTokens: st.cachedTokens,
       generatedTokens: st.generatedTokens,
+      finishReason: st.finishReason,
       prefillMs: st.prefillMs,
       decodeMs: st.decodeMs,
       prefillTps: st.prefillMs > 0 ? ((st.promptTokens - st.cachedTokens) / st.prefillMs) * 1000 : 0,
@@ -457,6 +470,7 @@ export class GenerationGateway {
         maxBatch: this.#batch,
         stateCodecs: this.opts.stateCodecs,
         kvBudgetBytes: this.opts.kvBudgetBytes,
+        memoryBudget: this.opts.memoryBudget,
         // Phase 3.1: the batchable kvConfig composition is applied by the
         // scheduler (solo rows convert at serial chunk boundaries, then
         // merge as quantized triples). Only threaded when the scheme

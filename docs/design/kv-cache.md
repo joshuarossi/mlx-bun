@@ -207,16 +207,19 @@ Byte-capped LRU of whole prefix entries (`--prompt-cache <GB>`, default
 cache of multi-GB entries is an OOM footgun — still stands even though
 upstream is byte-capped now.
 
-**`take(prompt, ns)` — non-consuming prefix sharing.** Finds the entry with
-the longest usable common prefix (usable = common prefix capped at
-`prompt.length - 1`, so at least one token is forwarded; an entry longer
-than the match must be trimmable), clones it zero-copy (`cloneKvCaches`:
-slice views of the live arrays — safe because mlx cache updates are
-functional and the donor always holds a ref, so buffer donation never
-fires on shared bytes), trims the clones, and returns them with a
-ref-counted `retain` share. The donor stays in place: N agents sharing a
-system prompt clone from one prefill. The old consume-and-trim semantics
-cannibalized donors.
+**`take(prompt, ns)` — prefix sharing.** Finds the entry with the longest
+usable common prefix (usable = common prefix capped at `prompt.length - 1`,
+so at least one token is forwarded; an entry longer than the match must be
+trimmable). Trimmable entries are cloned zero-copy (`cloneKvCaches`: slice
+views of live arrays), trimmed, and returned with a ref-counted `retain`
+share; the donor stays in place, so N agents can share one prefill. An exact
+hit on a Qwen hybrid entry containing recurrent SSM state transfers the donor
+itself to bound resident snapshots; the request puts its extended state back
+on completion. With an SSD tier, `take` persists that exact boundary before
+transferring ownership. An already-durable prefix needs only an index check.
+The extended recurrent state cannot trim back to the consumed boundary, so
+keeping its SSD copy preserves later exact prompt repeats. A failed required
+store leaves the donor and backing owned by the cache and refuses the transfer.
 
 **Tier order inside `take()`.** The cold tier is consulted with
 `find(prompt, ns)` (index-only, no I/O) and wins only with a *strictly*
@@ -314,8 +317,27 @@ full prefill (GEMV-vs-GEMM reduction order). Both tiers share it.
   orphans reaped; disk-full is a warn-once soft-fail. Every failure path
   degrades to "no hit" / "not stored" — the tier can never take serving
   down.
+- **Numerical compatibility.** The serving fingerprint also includes a hash
+  of `ModelServingBinding.stateCompatibility`. The MLX backend supplies its
+  actual runtime version and GPU architecture at binding creation. The same
+  artifact produces different cache tensors in the recorded 0.31.2/0.32.2
+  RTN4 comparisons, so graph geometry and KV format alone cannot qualify
+  automatic reuse. A runtime/architecture change selects another directory;
+  previous snapshots remain intact. The binding owns this identity, keeping
+  backend details out of request parsing and portable model configuration.
+  A replacement-binding restart regression verifies matching reuse, isolation
+  and recovery of the original snapshot. Evidence:
+  `reports/qwen38-rd/mlx-upgrade-0.32.2/cross-runtime-cache-numerics-review.json`.
+  The real RTN4 HTTP gate also passes all eight responses across four
+  internal-SSD server starts. Its first requests reuse 0/352/0/352 tokens
+  under default/default/alternate/default identities; every second request
+  reuses 352. The alternate tag changes metadata only. All response content,
+  tool calls and usage counts other than cached tokens match. Exit allocation
+  includes a retained prompt cache with different fresh/restored capacity,
+  so this is not a post-disposal memory comparison. Evidence:
+  `reports/qwen38-rd/runtime-state-http-review.json`.
 - **D5 — Flags and interactions.** `--ssd-cache <dir>` (off unless set),
-  `--ssd-cache-max <GB>` (default 32 GiB), `--ssd-cache-verify`,
+  `--ssd-cache-max <GB>` (optional; `0` or unset = unlimited), `--ssd-cache-verify`,
   `--ssd-demote-idle <sec>` (default 300 with the tier on; `0` disables).
   Requires the RAM tier (`--prompt-cache 0` + `--ssd-cache` is a startup
   error). Sub-flags without `--ssd-cache` warn and are ignored.
@@ -362,32 +384,47 @@ Store-side supersession mirrors `PromptCache.put`: exact duplicates
 replaced; prefix-ancestors superseded only when the new entry is
 trimmable.
 
-### 5.4 Write-behind scheduling contract: flush only while idle
+### 5.4 Write-behind scheduling contract: own each tensor step
 
 Every per-tensor flush step is real GPU-stream and JS-thread work
 (`ops.contiguous` on the decode stream, a synchronous eval for
 `rawBytesView`, a synchronous multi-MB `writeSync`). Interleaving those
 between decode tokens taxed decode at long context, so:
 
-- `saveKvCacheAsync` / `SsdCacheStore.storeAsync` accept a per-step
-  `waitTurn` gate awaited before *every* tensor (including the first); the
-  server passes `() => gateway.onIdle()`. A request arriving mid-flush
-  pauses the remaining tensors. Gate failures are swallowed — scheduling
-  advice must never corrupt the write path.
+- `saveKvCacheAsync` / `SsdCacheStore.storeAsync` accept a per-step runner.
+  The server passes `gateway.runExclusive`, so the idle decision and the
+  blocking MLX readback are one atomic engine turn. The earlier
+  `gateway.onIdle()` check had a check/use race: a request could begin after
+  the check and overlap the next tensor sync. A request arriving mid-flush
+  previously could run between tensor writes. Serial generation now first
+  drains the durability coordinator outside the engine lock, so pending
+  snapshot clones release their buffers before the next prefill.
 - `GenerationGateway.busy` covers both lanes (serial mutex held/awaited or
   batch rows active/pending).
 - `MLX_BUN_SSD_WRITEBEHIND=0` disables write-behind snapshots entirely
   (kill switch + paired-A/B lever; restart survival then degrades to
   spill-on-evict).
 
-Accepted: durability waits for a quiet moment; one in-flight tensor step
-can land ahead of a just-arrived request.
+Serial requests may wait for outstanding snapshots to finish. The drain
+runs before acquiring the generation lock because the writer needs that
+same lock. Continuous batching retains per-tensor scheduling.
+
+The RAM cache's configured byte cap is only an upper bound. Serial serving
+checks MLX's live allocation count against the smaller of admission's usable
+memory and Metal's recommended working set, reserving prefill workspace and
+the prompt's KV footprint for growth/copy-on-write overlap. Pressure relief
+persists LRU entries synchronously before disposing them, avoiding deferred
+spill clones that would keep the memory resident. The selected request cache
+remains owned by the request; older entries remain reusable from SSD. Qwen
+checks between prefill layers, and serial decode checks every 256 tokens.
+If no reclaimable entries remain, the guard raises a request error instead
+of intentionally proceeding over that budget. In-flight checkpoints survive.
 
 ### 5.5 Bounded retention: `SpillQueue` (`kv-store.ts`)
 
 All three producers — eviction spills, idle demotions, write-behind
 snapshots — go through one serial, byte-capped queue. Pending clones pin
-their entries' GPU buffers until the idle-gated flush gets a turn; without
+their entries' GPU buffers until the generation-locked flush gets a turn; without
 a cap, sustained traffic (gate starved, evictions ongoing) made resident
 memory = prompt-cache cap + every queued clone. Policy: cap default 2 GiB
 (`MLX_BUN_SSD_SPILL_QUEUE_GB`; `0` keeps only the newest + in-flight
@@ -409,16 +446,23 @@ the write — the server implied durability it did not have.
 - `schedule(tokens, ns)` records a *dirty* key that includes the exact
   token sequence (two same-ns, same-length conversations cannot cancel
   each other) and arms the debounce.
-- An attempt snapshots the RAM entry under `gateway.runExclusive`
-  (`findExact` + `cloneKvCaches`) and enqueues it; a busy gateway re-arms;
+- An attempt checks SSD coverage under `gateway.runExclusive` before cloning.
+  Otherwise it snapshots the RAM entry (`findExact` + `cloneKvCaches`) and
+  enqueues it; a busy gateway re-arms;
   a dropped or failed store leaves the key dirty so it is retryable.
   A snapshot that vanished from RAM is "stored" only if the SSD index
-  already covers the prefix (`hasDurablePrefix`), else "missing".
+  already covers the prefix (`hasDurablePrefix`), else "missing" and still
+  dirty. A second flush cannot clear that failure without durable coverage.
 - `flush()` cancels timers, awaits in-flight attempts and `drain()`, then
-  forces each dirty key one at a time (so the queue cap cannot drop a
-  boundary snapshot while a large final snapshot is in flight). Result:
+  forces each dirty record version once, one at a time (so the queue cap
+  cannot drop a boundary snapshot while a large final snapshot is in flight).
+  A replacement scheduled during a write receives its own attempt. After
+  all writes settle, the coordinator checks missing ancestors against the
+  committed SSD index again: a later trimmable descendant may now cover a
+  superseded RAM prefix. Uncovered or foreign-namespace prefixes stay dirty;
+  this adds no duplicate snapshot write. Result:
   `durable` is true only when nothing is pending, nothing dropped or
-  failed during this flush, and nothing was missing.
+  failed during this flush, and no missing prefix remains uncovered.
 
 Surfaces: `POST /admin/cache/flush` returns 200 at the boundary (503
 otherwise) with pending/dropped/failed/entry-count/longest-prefix
@@ -454,6 +498,9 @@ state or response data that cannot yet be reconstructed by token replay.
 Only the newest successful checkpoint for a request is retained. The old file
 remains valid until the new file's fsync+rename completes; a crash mid-write
 therefore loses at most one interval. Normal completion removes the checkpoint.
+Client cancellation throws through the serial token callback and preserves the
+last checkpoint, so terminating a long-lived client does not erase its restart
+point.
 
 ### 5.8 Invalidation
 
