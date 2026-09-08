@@ -6,7 +6,7 @@
 #               allowlist + docs-map coverage (scripts/check-hygiene.ts).
 #  - typecheck: the hard gate (repo rule: zero tolerated errors, incl. scripts/).
 #  - tests:     the model-FREE subset on an Apple Silicon runner (macos-14 = M1,
-#    Metal available; mlx-c via brew). Tests that need downloaded checkpoints
+#    Metal available; pinned MLX/MLX-C build). Tests that need downloaded checkpoints
 #    are env-gated in-repo (MLX_BUN_TEST_*) and stay local-only by design —
 #    parity vs the oracle venv can't run here. Extend the list as suites prove
 #    runner-stable; keep it green, not aspirational.
@@ -45,8 +45,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - run: brew install mlx-c
+      - run: brew install cmake
       - run: bun install --frozen-lockfile
+      # The C API is pinned with the bundled core. Homebrew may ship an older
+      # wrapper even when its MLX dependency has updated. Build the candidate
+      # here so PR validation does not depend on an unpublished native pack.
+      - run: sh scripts/packaging/build-native-runtime.sh "$RUNNER_TEMP/mlx-runtime"
+      - run: echo "MLX_BUN_LIBMLXC=$RUNNER_TEMP/mlx-runtime/lib/libmlxc.dylib" >> "$GITHUB_ENV"
       # Model-free suites: pure math/logic + synthetic-checkpoint smokes.
       # No downloads, no cached-model dependencies, no oracle venv.
       - run: >

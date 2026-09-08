@@ -272,6 +272,52 @@ delta is the first "our-vs-our" axis. Lab experiment rows (no external
 oracle; KL/eval-gated) land here once one beats the L1 baseline in a
 paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
 
+### Standard serve matrix — M4 Pro 24 GB (2026-09-08, incomplete acceptance)
+
+Josh ran `bun scripts/bench-serve.ts all` at clean commit `86738ac` on
+`Joshs-MBP-2025.local`, Apple M4 Pro, 24 GB, Bun 1.4.0, with the matching
+MLX 0.32.2 reference. Quiet preflight passed. There were no runtime overrides;
+the workload used `bench-serve-v2`, thinking enabled, five 192-token decode
+requests and a requested context target of 16,384. The actual context probes
+contained 9,062 MiniCPM tokens and 9,589 Gemma tokens. This is one ordered
+suite, not an alternating before/after optimization comparison.
+
+| Model | Default mlx-bun decode tok/s | mlx-lm decode tok/s | Default mlx-bun request time | mlx-lm request time | Request-time reduction |
+|---|---:|---:|---:|---:|---:|
+| MiniCPM5-1B | 278.65 | 223.55 | 0.710 s | 0.936 s | 24.2% — output mismatch |
+| Gemma4-e4b | 57.86 | 53.63 | 3.402 s | 3.810 s | 10.7% |
+| Gemma4-12B | 26.14 | 25.40 | 7.576 s | 7.969 s | 4.9% |
+| Qwen3.8-27B 4/8-bit winner | 14.75 | 14.19 | 13.814 s | 14.523 s | 4.9% — output mismatch |
+
+The table uses medians of the same five requests, all with exactly 192 output
+tokens. Request hashes, input/output counts and cached-token counts match
+between these arms. Both Gemma models also match all five timed output texts
+and both short parity probes. MiniCPM and Qwen differ on all five timed
+outputs despite matching counts; Qwen's separate 64-token probes match, while
+MiniCPM's chat probe diverges. Their timing rows remain observations pending
+the exact-token/logit investigation. The Gemma12B reference command invokes
+OptiQ's model registration before its mlx-lm serving path.
+
+For Gemma e4b, cold/cached TTFT is 559/72 ms versus 707/212 ms in the
+reference, and the approximately 1K prefill estimate is 1,199 versus 947
+tok/s. For Gemma 12B those values are 2,531/157 ms versus 2,677/333 ms and
+265 versus 250 tok/s. The serial controls finish the same short requests in
+3.360 s and 7.514 s, respectively. Cached TTFT is one warm sample per cell.
+
+Acceptance is incomplete. Qwen hits Metal out-of-memory errors in both the
+approximately 1K and context phases, in default and serial serving. Its
+reference recovers an initial 1K timeout, then fails the context phase and
+skips concurrency. MiniCPM and Gemma12B each report missing SSD snapshots on
+the first restart-flush attempt in default and mixed serving; retries succeed.
+Mixed-KV rows are not compared for L1 identity against bf16 KV. The complete
+report retains eleven phase-failure records, including recovered failures.
+
+The Qwen artifact is the registry's 4/8-bit winner, not the required 12.14 GiB
+packed Trellis target. No MTP draft was configured. These numbers neither
+replace the Trellis/KV4/MTP measurements nor establish a Kanban task-time gain.
+Raw evidence: `reports/benchmarks-serve-2026-09-08-Joshs-MBP-2025.md` and its
+`.md.json` companion; source hashes are unchanged across the run.
+
 ### Current standard serve matrix — M1 Max 32 GB (2026-08-22)
 
 Real-server HTTP matrix on commit `4103ae1`, with the canonical preflight

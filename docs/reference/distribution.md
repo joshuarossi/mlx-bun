@@ -333,6 +333,14 @@ asset before publishing any package that uses this manifest. Runtime bindings
 match this one C API, and startup checks the linked core version. The old
 runtime and source controls remain separate for benchmark comparisons.
 
+CI builds that pinned C wrapper with
+`sh scripts/packaging/build-native-runtime.sh <new-output-directory>` and sets
+`MLX_BUN_LIBMLXC` to its `lib/libmlxc.dylib`. The script verifies the official
+macOS 14 MLX-Metal archive hash and checks out the exact MLX-C commit. It
+extracts native libraries and headers without running Python or compiling
+Metal sources. This also reproduces local native-pack build inputs before
+the candidate is published; Homebrew's C wrapper is not the CI runtime.
+
 Managed jobs in the compiled binary re-exec that binary through a private job
 entry, with the database/log paths passed in the environment. They do not depend
 on a Bun executable or a TypeScript source tree. The build runs

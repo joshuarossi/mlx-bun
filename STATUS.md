@@ -52,6 +52,10 @@ on every arm. Quiet-machine numbers are still owed before these enter
 
 ## Standing hazards (verified today)
 
+- The completed M4 Pro default suite has MiniCPM/Qwen output mismatches,
+  Qwen 4/8-bit prefill memory failures and retried SSD flush failures.
+  Acceptance and the separate packed Trellis configured suite remain open;
+  see the standard M4 Pro matrix in benchmarks.md and Phase 6 in PLAN.md.
 - The kv-quant RSS check in `bench-serve` misfires on large models with
   `--ssd-cache` (RSS accounting, not silent bf16) — confirm quantization via
   decode@ctx and restart-restore size instead.
