@@ -20,6 +20,7 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 - [investigations/kernel-perf-review-2026-07.md](../docs/archive/investigations/kernel-perf-review-2026-07.md) — Kernel/perf deep review — 2026-07-01 (condensed, tracked record)
 - [investigations/lab-build-journal.md](../docs/archive/investigations/lab-build-journal.md) — Build journal — mlx-bun Lab (web UI + native quantize/train/dataset + pi web chat)
 - [investigations/minicpm5-decode-megakernel.md](../docs/archive/investigations/minicpm5-decode-megakernel.md) — MiniCPM5 Decode Megakernel — end-to-end build plan (handoff)
+- [investigations/openjarvis-fit.md](../docs/archive/investigations/openjarvis-fit.md) — OpenJarvis research and fit with mlx-bun
 - [investigations/openwiki-evaluation.md](../docs/archive/investigations/openwiki-evaluation.md) — OpenWiki — evaluation & fit analysis
 - [investigations/optimization_plan.md](../docs/archive/investigations/optimization_plan.md) — mlx-bun: gemma4.ts decompose & optimize — action plan
 - [investigations/orpo-base-uf-experiment-and-directions.md](../docs/archive/investigations/orpo-base-uf-experiment-and-directions.md) — ORPO from-base on UltraFeedback (mixed-5bpw) — results + research directions
