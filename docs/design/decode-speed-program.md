@@ -2980,8 +2980,8 @@ continuation. All twelve cells are byte-exact against the matching MLX-LM
 reference. The two new-core builds also agree with each other in those cells.
 Source hashes stay fixed and every worker exits cleanly. Evidence:
 runtime-oracle-rtn4.json and runtime-oracle-rtn4-macos14.json.
-The working tree now selects the verified macOS 14 native-pack candidate
-0.4.0 from a local cache. It has not been published. Final-source acceptance
+The package selects the verified macOS 14 native pack 0.4.0, now published;
+distribution.md records the release. Final-source acceptance
 passes 16 RTN4 same-version reference cases (including actual 4K/8K prompts),
 36 Trellis forward/state/continuation cases and six Trellis generations.
 The Trellis control is the accepted new-core implementation; this is not a

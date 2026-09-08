@@ -134,10 +134,10 @@ eleven skips on the old core. The local native-pack
 candidate under `native-pack-candidate/` extracts into `native-pack-extracted/`;
 all five Mach-O files target 14.0, have valid ad-hoc signatures and load their
 non-system dependencies from siblings. These checks ran on macOS 27, not an
-actual macOS 14 host. The production native-pack manifest now targets this
-0.4.0 candidate and the verified local cache is
-`/Users/joshrossi/Library/Caches/mlx-bun/native-v0.4.0-arm64`. The candidate
-has not been published. The consolidated source passes 52 complete Qwen
+actual macOS 14 host. This build is published as native pack 0.4.0 and the
+verified local cache is
+`/Users/joshrossi/Library/Caches/mlx-bun/native-v0.4.0-arm64`. Publication
+details are in distribution.md. The consolidated source passes 52 complete Qwen
 forward/state/continuation cases and six Trellis generations, with fixed
 source/runtime/reference hashes and clean worker exits. The consolidated
 model-free suite passes 1,875 tests with ten skips; all typechecks pass.

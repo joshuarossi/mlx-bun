@@ -46,6 +46,7 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 - [planning/release-notes-v0.0.13.md](../docs/archive/planning/release-notes-v0.0.13.md) — v0.0.13 release notes
 - [planning/release-notes-v0.0.9.md](../docs/archive/planning/release-notes-v0.0.9.md) — v0.0.9 release notes (DRAFT — Josh edits + publishes)
 - [planning/release-notes-v0.2.0.md](../docs/archive/planning/release-notes-v0.2.0.md) — mlx-bun v0.2.0
+- [planning/release-notes-v0.3.0.md](../docs/archive/planning/release-notes-v0.3.0.md) — mlx-bun v0.3.0
 - [planning/web-ui-pass-plan.md](../docs/archive/planning/web-ui-pass-plan.md) — Web UI pass — ranked fix list (2026-07-01 audit)
 - [planning/website-readme-pass-plan.md](../docs/archive/planning/website-readme-pass-plan.md) — Website + README pass — audit findings and fix plan (2026-07-01)
 
@@ -70,7 +71,6 @@ Living product/vision docs (USING side).
 
 - [PRODUCT_ROADMAP.md](../docs/planning/PRODUCT_ROADMAP.md) — PRODUCT ROADMAP
 - [ResearchTopics.md](../docs/planning/ResearchTopics.md) — Research Topics
-- [release-notes-v0.3.0.md](../docs/planning/release-notes-v0.3.0.md) — mlx-bun v0.3.0
 - [video-series.md](../docs/planning/video-series.md) — mlx-bun video series
 
 ## docs/reference/

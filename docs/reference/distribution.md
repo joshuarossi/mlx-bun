@@ -186,6 +186,13 @@ npm if the version is live. Env overrides: `MLX_BUN_SIGN_IDENTITY`,
 `NOTARY_PROFILE`, `BUILD_DIR`, `OUT_DIR` (release); `OUT_DIR`, `REPO`,
 `TAP_REPO` (publish).
 
+For an SSH-driven release, a local keychain unlock may still leave
+`notarytool` reporting `keychainLocked` in the SSH session. The v0.3.0
+release succeeded by running `release-binary.sh` in the M1 Max's local
+Terminal, then `publish-release.sh` over SSH. Both steps used the same clean
+merged source and `OUT_DIR`. Check `npm whoami` from the actual release
+checkout too: a project `.npmrc` can override the user's configuration.
+
 ### The notarization lesson (v0.2.0, 2026-08-24)
 
 The first v0.2.0 submission came back **Invalid**. The release added
@@ -311,7 +318,7 @@ sh scripts/build-native-pack.sh <ver> dist-native
 gh release create native-v<ver> \
   dist-native/mlx-bun-native-v<ver>-arm64.tar.gz \
   dist-native/mlx-bun-native-v<ver>-arm64.tar.gz.sha256 \
-  --title "mlx-bun native runtime v<ver>" --notes "<what changed>"
+  --latest=false --title "mlx-bun native runtime v<ver>" --notes "<what changed>"
 ```
 
 `build-native-pack.sh` stages the same six files with the same
@@ -323,13 +330,13 @@ package. Pre-publish smoke: a fresh-cache extraction plus a real MLX
 `dlopen` (and, when the helpers changed, an expert read or a video decode).
 The pack is ad-hoc signed only — `build-native-pack.sh` never touches a
 Developer ID and nothing notarizes it; it is `dlopen`ed by the user's own Bun
-process, not by our signed executable. The most recent pack
-(`native-v0.3.0`, published 2026-08-22) added `mlx-bun-frame-extract`.
+process, not by our signed executable. Use `--latest=false` so a native pack
+does not replace the application release behind the direct installer's URL.
 
-The working tree targets native pack 0.4.0 with MLX 0.32.2 and MLX-C
-`c74db5307cc8ce122f48d97ef951b30578674e7f`. Its six-file macOS 14 candidate
-has been built and verified locally. It is not published. Release the native
-asset before publishing any package that uses this manifest. Runtime bindings
+Native pack 0.4.0 was published on 2026-09-08 with MLX 0.32.2 and MLX-C
+`c74db5307cc8ce122f48d97ef951b30578674e7f`. Its six-file macOS 14 archive
+was uploaded from the M1 Max and downloaded again; its checksum matches the
+package manifest. It was published before mlx-bun v0.3.0. Runtime bindings
 match this one C API, and startup checks the linked core version. The old
 runtime and source controls remain separate for benchmark comparisons.
 
@@ -338,8 +345,8 @@ CI builds that pinned C wrapper with
 `MLX_BUN_LIBMLXC` to its `lib/libmlxc.dylib`. The script verifies the official
 macOS 14 MLX-Metal archive hash and checks out the exact MLX-C commit. It
 extracts native libraries and headers without running Python or compiling
-Metal sources. This also reproduces local native-pack build inputs before
-the candidate is published; Homebrew's C wrapper is not the CI runtime.
+Metal sources. This also reproduces the native-pack build inputs;
+Homebrew's C wrapper is not the CI runtime.
 
 Managed jobs in the compiled binary re-exec that binary through a private job
 entry, with the database/log paths passed in the environment. They do not depend
