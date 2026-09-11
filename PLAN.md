@@ -104,7 +104,7 @@ neither is canonical; every recorded number carries its host.
 ## Phase 6 — Speed: change what gets computed `[~]`
 
 Canonical doc: [decode-speed-program.md](docs/design/decode-speed-program.md).
-Qwen3.8-27B is the current priority; section 7 owns its full matrix, experiment IDs and gates.
+Qwen3.8-27B is the current priority; section 7 owns its full matrix, experiment IDs and gates. Accepted PR #48 changes shipped in v0.4.0; the remaining program stays open.
 Per Josh, finish this campaign on the M4 Pro; M1 Max runs are outside its acceptance requirements.
 Josh clarified that isolated background CPU activity is not a blocker when memory and the GPU are available. Record the explicit audio-daemon CPU allowance, retain memory/thermal checks, and require stable alternating pairs; “quiet” gates below use that campaign policy.
 
