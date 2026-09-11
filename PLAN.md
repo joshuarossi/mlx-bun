@@ -16,7 +16,7 @@ Markers: `[ ]` todo, `[~]` in progress. Hard cap 800 lines, gate-enforced by
 
 Goal: first-visit clarity and reproducible correctness; upstream contribution, Discord, Show and tell, then listing. [Acceptance](docs/planning/public-readiness.md).
 
-- [~] P0: Verify both GPTQ indexing defects, prepare a minimal repro and patch, submit the reviewed upstream report.
+- [~] P0: Both GPTQ defects reproduced and reported with a proposed patch in [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1878); independent-reference regression test and follow-up remain.
 - [~] P1: Remove internal voice, restructure benchmarks and reconcile roster evidence; verify public presentation.
 - [ ] P2: Publish pinned oracle setup and same-machine fixture recipe; verify a clean-checkout small-model parity run.
 - [~] P3: Settle package/API ownership from dependency and asset evidence; preserve published imports.

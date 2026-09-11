@@ -27,8 +27,9 @@ with a proposed patch and a useful regression test.
 Acceptance: the reproduction runs against the cited revision, a reviewed
 issue or pull request is submitted when authorized, and the discussion is
 followed up. Upstream acceptance is not required to proceed with community
-feedback. The local reproduction and report draft live under
-[`lab/repro/mlx-lm-gptq-block-indexing`](../../lab/repro/mlx-lm-gptq-block-indexing/).
+feedback. Submitted as [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1878) with the complete CPU-only
+reproduction, observed results and proposed two-line correction. Follow-up
+and an independent-reference regression test remain open.
 
 ## P1. Make the first visit clear and credible
 

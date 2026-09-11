@@ -190,6 +190,7 @@ def gptq_quantize_lm(model, data, bits, group_size, fallback_bits, fallback_grou
                 # and its `err[..., k:k+1]` (global index on a group-local
                 # buffer) silently no-ops for every block after the first —
                 # the two defects partially cancel; both fixed here.
+                # Report: https://github.com/ml-explore/mlx-lm/issues/1878
                 W[..., k : j] -= e @ Hinv[k : k + 1, k : j]
                 err[..., k - i : k - i + 1] = e
                 mx.eval(err, W)
