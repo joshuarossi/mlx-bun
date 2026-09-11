@@ -1,3 +1,4 @@
+import type { CheckpointAttachment } from "./backends/mlx/checkpoint-state";
 // SSD cold tier for the prompt/KV cache (docs/design/kv-cache.md).
 //
 // Files ARE the database: no sidecar index. Layout
@@ -22,10 +23,11 @@ import { randomUUID } from "node:crypto";
 import { commonPrefixLength } from "./prompt-cache";
 import {
   saveKvCache, saveKvCacheAsync, loadKvCache, readKvHeader,
-  cacheHeadersTrimmable, legacyCacheCodecs, type CacheCodecProvider,
+  cacheHeadersTrimmable, cacheHeadersMinimumReusableOffset, legacyCacheCodecs, type CacheCodecProvider,
   type KvSaveMeta, type KvLoadExpect, type LoadedKvCache,
 } from "./kv-store";
 import type { Cache } from "./model/gemma4-base";
+import { minimumReusableOffset } from "./backends/mlx/state-views";
 
 export interface SsdIndexEntry {
   path: string;
@@ -39,6 +41,7 @@ export interface SsdIndexEntry {
    *  over a shorter usable one (the 2026-07-06 restart-0 defect: the
    *  [prompt+gen] file always won, always got rejected after restore). */
   trimmable: boolean;
+  minimumReusableOffset?: number;
   generationCheckpoint?: NonNullable<KvSaveMeta["generationCheckpoint"]>;
 }
 
@@ -92,7 +95,7 @@ export class SsdCacheStore {
    * trimmable descendant is equivalent to an exact boundary snapshot. */
   hasDurablePrefix(tokens: number[], ns = ""): boolean {
     return this.#index.some((entry) => {
-      if (entry.ns !== ns || entry.tokens.length < tokens.length) return false;
+      if (entry.ns !== ns || entry.tokens.length < tokens.length || tokens.length < (entry.minimumReusableOffset ?? 0)) return false;
       if (commonPrefixLength(entry.tokens, tokens) !== tokens.length) return false;
       return entry.tokens.length === tokens.length || entry.trimmable;
     });
@@ -129,7 +132,8 @@ export class SsdCacheStore {
           const st = statSync(path);
           this.#index.push({
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
-            trimmable: cacheHeadersTrimmable(h.caches, this.#codecs),
+            trimmable: !h.attachments?.length && cacheHeadersTrimmable(h.caches, this.#codecs),
+            minimumReusableOffset: cacheHeadersMinimumReusableOffset(h.caches),
             ...(h.generationCheckpoint
               ? { generationCheckpoint: h.generationCheckpoint }
               : {}),
@@ -157,7 +161,7 @@ export class SsdCacheStore {
     for (const e of this.#index) {
       if (e.ns !== ns) continue;
       const p = Math.min(commonPrefixLength(e.tokens, prompt), prompt.length - 1);
-      if (p === 0 || p <= bestLen) continue;
+      if (p === 0 || p <= bestLen || p < (e.minimumReusableOffset ?? 0)) continue;
       if (e.tokens.length - p > 0 && !e.trimmable) continue;
       bestLen = p;
       best = e;
@@ -201,13 +205,13 @@ export class SsdCacheStore {
    *  the same ns whose tokens are a PREFIX of the new entry are superseded
    *  (the agent-conversation pattern: one growing entry, not N generations
    *  of it). Returns true if stored. */
-  store(tokens: number[], caches: Cache[], ns = ""): boolean {
+  store(tokens: number[], caches: Cache[], ns = "", attachments?: CheckpointAttachment[]): boolean {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      saveKvCache(path, tokens, caches, this.#meta(ns), this.#codecs);
-      return this.#indexStored(path, tokens, caches, ns);
+      saveKvCache(path, tokens, caches, { ...this.#meta(ns), attachments }, this.#codecs);
+      return this.#indexStored(path, tokens, caches, ns, undefined, attachments);
     } catch (err) {
       return this.#storeFailed(path, err);
     }
@@ -224,13 +228,14 @@ export class SsdCacheStore {
   async storeAsync(
     tokens: number[], caches: Cache[], ns = "",
     runStep?: <T>(step: () => T) => Promise<T>,
+    attachments?: CheckpointAttachment[],
   ): Promise<boolean> {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
       mkdirSync(dir, { recursive: true });
-      await saveKvCacheAsync(path, tokens, caches, this.#meta(ns), runStep, this.#codecs);
-      return this.#indexStored(path, tokens, caches, ns);
+      await saveKvCacheAsync(path, tokens, caches, { ...this.#meta(ns), attachments }, runStep, this.#codecs);
+      return this.#indexStored(path, tokens, caches, ns, undefined, attachments);
     } catch (err) {
       return this.#storeFailed(path, err);
     }
@@ -260,25 +265,30 @@ export class SsdCacheStore {
    *  its rename succeeds, so a crash during a write leaves the prior point. */
   async storeGenerationCheckpoint(
     tokens: number[], caches: Cache[], checkpoint: NonNullable<KvSaveMeta["generationCheckpoint"]>,
+    runStep?: <T>(step: () => T) => Promise<T>,
   ): Promise<boolean> {
     const ns = `__generation_checkpoint__:${checkpoint.key}`;
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
-      mkdirSync(dir, { recursive: true });
+      if (runStep) await runStep(() => mkdirSync(dir, { recursive: true }));
+      else mkdirSync(dir, { recursive: true });
       await saveKvCacheAsync(path, tokens, caches, {
         ...this.#meta(ns), generationCheckpoint: checkpoint,
-      }, undefined, this.#codecs);
-      const stored = this.#indexStored(path, tokens, caches, ns, checkpoint);
-      if (stored) {
-        for (const entry of [...this.#index]) {
-          if (entry.path === path) continue;
-          if (entry.generationCheckpoint?.key === checkpoint.key) this.remove(entry.path);
+      }, runStep, this.#codecs);
+      const index = () => {
+        const stored = this.#indexStored(path, tokens, caches, ns, checkpoint);
+        if (stored) {
+          for (const entry of [...this.#index]) {
+            if (entry.path === path) continue;
+            if (entry.generationCheckpoint?.key === checkpoint.key) this.remove(entry.path);
+          }
         }
-      }
-      return stored;
+        return stored;
+      };
+      return runStep ? await runStep(index) : index();
     } catch (err) {
-      return this.#storeFailed(path, err);
+      return runStep ? await runStep(() => this.#storeFailed(path, err)) : this.#storeFailed(path, err);
     }
   }
 
@@ -299,6 +309,7 @@ export class SsdCacheStore {
   #indexStored(
     path: string, tokens: number[], caches: Cache[], ns: string,
     generationCheckpoint?: NonNullable<KvSaveMeta["generationCheckpoint"]>,
+    attachments?: CheckpointAttachment[],
   ): boolean {
     const st = statSync(path);
     if (st.size > this.#opts.maxBytes) {
@@ -306,7 +317,7 @@ export class SsdCacheStore {
       console.warn(`[ssd-cache] entry not stored: ${st.size} bytes exceeds the ${this.#opts.maxBytes}-byte cap`);
       return false;
     }
-    const trimmable = caches.every((c) => c.isTrimmable());
+    const trimmable = !attachments?.length && caches.every((c) => c.isTrimmable());
     // Exact duplicates (same tokens) are replaced regardless of
     // trimmability — the new file serves exactly the old one's matches.
     for (const e of [...this.#index]) {
@@ -321,12 +332,13 @@ export class SsdCacheStore {
     // unrestorable one landed.
     if (trimmable) {
       for (const e of [...this.#index]) {
-        if (e.ns !== ns || e.tokens.length >= tokens.length) continue;
+        if (e.ns !== ns || e.tokens.length >= tokens.length || e.tokens.length < minimumReusableOffset(caches)) continue;
         if (commonPrefixLength(e.tokens, tokens) === e.tokens.length) this.remove(e.path);
       }
     }
     this.#index.push({
       path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable,
+      minimumReusableOffset: minimumReusableOffset(caches),
       ...(generationCheckpoint ? { generationCheckpoint } : {}),
     });
     this.stats.spills++;

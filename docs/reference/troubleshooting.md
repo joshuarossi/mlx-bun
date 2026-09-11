@@ -123,9 +123,9 @@ starting.
 
 ### Will it fit? / decode is very slow on a model near the RAM ceiling
 
-**Cause.** A model whose weights plus KV cache exceed the wired-memory budget
-pages weights every token. The default budget is machine RAM × 0.75
-(`WIRED_FRACTION` in `src/fit.ts`; `--memory-budget` in `server-config.md`).
+Memory pressure can reduce speed or cause allocation failures. The default
+`fit` estimate uses machine RAM × 0.75 (`WIRED_FRACTION` in `src/fit.ts`).
+Serving treats that estimate as advisory; `--memory-budget` opts into a limit.
 
 **Fix.** Check first:
 
@@ -143,24 +143,16 @@ context window in the same budget. GLM-5.2 uses its own streamed-runtime plan
 
 ### Completion stops before my `max_tokens` (no error)
 
-**Cause.** This is memory admission clamping, not a bug. When the prompt fits
-but the client's `max_tokens` would push the reservation past the safe
-context, the server caps `max_tokens` to the remaining room and proceeds
-(`admitRequestContext()` in `src/server.ts`: `max_tokens` is a ceiling, not a
-promise). Earlier versions returned 400 for this case; the clamp shipped for
-GLM-5.2 fixed-context serving in v0.0.13 and for all memory admission in
-v0.2.0 (`docs/archive/planning/release-notes-v0.2.0.md`).
-
-**Fix.** Nothing is required. To get more room: shorten the prompt, raise
-`--memory-budget` if the machine allows, or serve with `--kv-quant 4|8`. The
-current ceiling is visible at `/stats` (`context_tokens`).
+Check `finish_reason`: `stop` means EOS or a stop condition; `length` means
+an output/context cap was reached. Default memory estimates do not shorten
+requests. Explicit `--memory-budget`, context settings and GLM-5.2's fixed
+layout can cap a completion. `/stats.admission.enforced_context_tokens` shows
+that cap, or null when none applies. `max_safe_context` is only an estimate.
 
 ### `400` with `"type": "memory_admission"`, `"code": "context_over_budget"`
 
-**Cause.** The prompt alone leaves no generation slot inside the safe context.
-Only this case is rejected; the alternative is an uncatchable GPU OOM
-(`server-api.md`, error table; `--memory-budget` in `server-config.md`).
-
-**Fix.** Same levers as above: shorter prompt, larger budget, quantized KV.
-The server never refuses to *start* over budget — a budget too small for any
-context logs a warning and serves, and requests then get this 400.
+This error applies to an explicitly configured budget/context cap or a fixed
+runtime layout. The prompt leaves no room to generate under that limit.
+Remove the optional budget/context cap to attempt the request without an
+estimated restriction, or adjust the limit you selected. See
+[server configuration](server-config.md#memory-admission-and-caches).

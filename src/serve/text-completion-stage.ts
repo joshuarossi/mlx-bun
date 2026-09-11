@@ -16,7 +16,7 @@ export class TextCompletionStage {
   constructor(
     private readonly ctx: ServingContext,
     private readonly prep: RequestPrep,
-    private readonly maxSafeContext: number,
+    private readonly contextLimit: number | null,
     /** `--max-tokens` / the GLM plan's reservation. No invented fallback:
      *  unset runs to EOS or the admitted context (with no template an EOS
      *  may never come — that run is bounded by admission, the real limit). */
@@ -81,7 +81,7 @@ export class TextCompletionStage {
         promptIds,
         options,
         requestedMaxTokens,
-        maxSafeContext: this.maxSafeContext,
+        contextLimit: this.contextLimit,
         stream: request.stream,
         wantLogprobs,
         topLogprobs,

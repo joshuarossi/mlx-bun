@@ -6,8 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { hostname, totalmem } from "node:os";
-import { checkMachine } from "../../src/preflight";
-import { ORACLE_VENV } from "../../tests/support/paths";
+import { checkMachine, type MachineState } from "../../src/preflight";
 import { inventoryModel } from "./model-inventory";
 
 export interface NativeBenchOptions {
@@ -62,6 +61,26 @@ export interface NativeBenchSample {
   memoryAfter?: { activeBytes: number; cacheBytes: number };
 }
 
+/** Keys main() writes to --json. Optional keys appear only for the stack or
+ *  outcome that produces them; scripts/bench/report.ts validates against this. */
+export interface NativeBenchReport {
+  schemaVersion: 1; kind: "native-inference-diagnostic"; canonical: boolean; httpMeasurement: boolean;
+  stack: "mlx-bun" | "mlx-lm"; artifact: string; options: NativeBenchOptions;
+  host: string; chip: string; ramBytes: number;
+  configSha256: string; indexSha256: string | null; weightFiles: unknown; identityNote: string;
+  sourceCommit: string; sourceDiffSha256: string; sourceFiles: Record<string, string>; harnessSha256: string;
+  variant: string; promptIds: number[]; promptSha256: string; kv: string; temperature: number;
+  machineBefore: MachineState; note: string;
+  measurement?: boolean; eosTokenIds?: number[];
+  nativeLibrary?: { path: string; sha256: string; dependencies: string };
+  memoryPolicy?: { wiring: string; wiredLimitBytes: number; clearBeforeRequest: boolean; note: string };
+  workerCommand?: string[]; workerSha256?: string; workerStdout?: string; workerStderr?: string;
+  warmups?: NativeBenchSample[]; samples?: NativeBenchSample[];
+  complete?: boolean; error?: string; machineAfter?: MachineState;
+  /** The pinned-oracle worker's own JSON is merged in verbatim. */
+  [key: string]: unknown;
+}
+
 async function main(options: NativeBenchOptions): Promise<void> {
   const modelPath = resolve(options.modelPath), jsonPath = resolve(options.jsonPath);
   if (!existsSync(`${modelPath}/config.json`)) throw new Error(`missing local model: ${modelPath}`);
@@ -82,7 +101,7 @@ async function main(options: NativeBenchOptions): Promise<void> {
     "src/mlx/array.ts", "src/mlx/ops.ts", "src/mlx/ffi.ts"];
   const sourceFiles = Object.fromEntries(await Promise.all(codePaths.map(async (p) => [p, sha(await Bun.file(p).bytes())])));
   const machineBefore = checkMachine();
-  const report: Record<string, unknown> = { schemaVersion: 1, kind: "native-inference-diagnostic", canonical: false,
+  const report: NativeBenchReport = { schemaVersion: 1, kind: "native-inference-diagnostic", canonical: false,
     httpMeasurement: false, stack: options.stack, artifact: modelPath, options,
     host: hostname(), chip: command(["sysctl", "-n", "machdep.cpu.brand_string"]), ramBytes: totalmem(),
     configSha256: inv.configSha256, indexSha256: inv.indexSha256, weightFiles: inv.files,
@@ -100,6 +119,7 @@ async function main(options: NativeBenchOptions): Promise<void> {
   await save();
   try {
     if (options.stack === "mlx-lm") {
+      const { ORACLE_VENV } = await import("../../tests/support/paths");
       const workerPath = new URL("../oracle/bench-native.py", import.meta.url).pathname;
       const workerOutput = `${jsonPath}.oracle.json`;
       const args = [`${ORACLE_VENV}/bin/python`, workerPath, "--model-path", modelPath,

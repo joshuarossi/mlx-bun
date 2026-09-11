@@ -1,0 +1,41 @@
+{
+ "ids": [
+  785,
+  8251,
+  7578,
+  389,
+  279,
+  8205,
+  11030,
+  483,
+  304,
+  279,
+  13354,
+  7015,
+  13,
+  151643
+ ],
+ "seqLen": 14,
+ "hidden": 2560,
+ "text": "The cat sat on the warm windowsill in the afternoon sun.",
+ "eod": 151643,
+ "oracle": {
+  "model": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--Qwen3-Embedding-4B-4bit-DWQ/snapshots/b5d88f1fe49b50d2ac01b4692ca2d387f14f9c72",
+  "mlx": "0.32.2",
+  "mlx_lm": "0.31.3",
+  "device": {
+   "device_name": "Apple M1 Max",
+   "max_recommended_working_set_size": 26800603136,
+   "memory_size": 34359738368,
+   "architecture": "applegpu_g13s",
+   "max_buffer_length": 20100448256,
+   "resource_limit": 499000
+  },
+  "config_sha256": "85a0a3797db970637a14cbf1f5ecbcc16126025157c2032e5cfdacbd5f98378a",
+  "replayed_meta_sha256": "48d575ef574cf06fb052c8cdb74b15a0db3ceed20897450f565d83e340ffcf8b",
+  "blobs": {
+   "hidden.bin": "0149d8cac5b82faa95666370aee95839dc0677e8d749dd72084eee093977386b",
+   "pooled.bin": "9139258be06a8b0028eb33764aadf85e31231858aaa4262820cd3d283d10ac3e"
+  }
+ }
+}

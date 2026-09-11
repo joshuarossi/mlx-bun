@@ -177,7 +177,7 @@ refuses otherwise. GLM-5.2's checkpoint-native MTP row mounts by default
 
 | kind | source | what fills the draft | target state used | draft sampler | default γ | oracle / gate |
 |---|---|---|---|---|---|---|
-| `two-model` | `src/spec/two-model.ts` | a full second model, autoregressive, own KV | none | request sampler | 3 (mlx_lm.server) | **L1**: mlx_lm.server `--draft-model`, same pair, greedy, token-for-token (spec-vs-spec). Draft-cache rewind `max(d − kAccept − 1, 0)`. Tokenizer-family probe at startup refuses mismatches (upstream silently accepts ~0%). |
+| `two-model` | `src/spec/two-model.ts` | a full second model, autoregressive, own KV | none | request sampler | 3 (mlx_lm.server) | **L1**: mlx_lm.server `--draft-model`, same pair, greedy, token-for-token (spec-vs-spec). Shared B1/B>1 autoregressive draft state retains independent attention/recurrent boundaries and the pending final-token lag; paired RAM/SSD checkpoints use backend cache codecs. Tokenizer-family probe at startup refuses mismatches (upstream silently accepts ~0%). |
 | `assistant` | `src/spec/assistant-source.ts` (+ `drafter.ts`) | Gemma "-assistant" Q-only 4-layer head | donor K/V (last sliding + last full layer) + anchor hidden, borrowed each step | greedy (own head) | 3 | **L2**: optiq `spec_generate` — e4b γ=2 identical 48-token output AND identical accept/reject trace (drafted 60 / accepted 17 / target calls 31), `scripts/oracle/oracle-spec.py`. Head picked by TENSOR PRESENCE (centroid vs tied-embedding) — optiq's config-based detection loads the 12B/26B unified drafters with zero-init centroids → 0% acceptance; ours 29% on the same artifact. |
 | `dspark` | `src/spec/dflash-source.ts` (+ `dspark/module-dflash.ts`) | our trained DSpark block drafter (KV injection + Markov + confidence) | multi-layer hidden tap (`tapLayers`, e4b {20,31,41,42}) grown into H_ctx | greedy | pinned to `cfg.gamma` | **Lab** (no external oracle for our checkpoints): CPU smoke, infer-loop bit-identity pins, real-weights serve gate. See §4. |
 | `deepspec` | `src/spec/deepspec-source.ts` (+ `dspark/deepspec-module.ts`) | DeepSeek's released `Gemma4DSparkModel` drafters (e.g. `dspark_gemma4_12b_block7`, γ=7) | tap `[5,17,29,41,46]` on the 12B, projected into an incremental context-KV cache; accepted rows only | argmax (temp-0 reference) | pinned to `block_size` | **DeepSpec reference** at temperature 0: its leaky rejection sampling degenerates to exact argmax token-match, RNG-free — round-for-round trace fixtures (`scripts/oracle/oracle-dspark-deepspec.py`; the compare script was deleted 2026-08-23, git history). |
@@ -794,23 +794,68 @@ it is separate from the already-fixed target-cache disposal and admission work.
 
 ### 4.8 Paired Qwen MTP conversation state
 
-An isolated candidate adds an optional prefix-state interface to `DraftSource`.
-The Qwen provider retains one evaluated prefill boundary containing target KV
-and recurrent state, draft KV, the preceding target hidden row, and exact token
-IDs. Restore transfers ownership only when the incoming prompt extends those
-IDs under the same target and adapter namespace. A mismatch releases the old
-entry. Reuse never trims recurrent state to an arbitrary common prefix.
+`DraftSource.checkpoint` supplies the method's companion state. Qwen captures
+draft KV and the preceding target hidden row; the executor pairs these with
+target KV/recurrent state and exact processed token IDs in the shared cache.
+Restore requires an exact prefix under the same compatibility namespace.
+RAM hits lend immutable views and preserve the donor. Reuse never trims
+recurrent state to an arbitrary common prefix.
 
 The MTP cache is one position behind the target at a prefill boundary. Extending
 it first pairs the next incoming token with the saved preceding hidden row,
 then processes the remaining suffix. Future generation cannot alter the retained
-prefix. The candidate caps this one snapshot by the configured prompt-cache
-budget and disposes it with the provider. It does not yet retain completed
-generation state or participate in the ordinary cache's pressure eviction,
-SSD persistence, or byte telemetry. It remains experimental and separate from
-the default serving path.
+prefix. The working-tree migration removes the provider's private store and
+separate budget. All tensors use the existing RAM budget, eviction and SSD
+queue. Native bf16/KV4 tests pass on M1 Max and M4 Pro through repeated RAM
+reuse and SSD cache/provider restart. Completed generated-state publication
+and matched performance remain open. Storage and identity details live in
+[kv-cache method companion state](kv-cache.md#method-companion-state).
 
-On the M4 Pro, the unit gate passes 18 tests. Native prompts at 128, 513 and
+`DraftProvider.grouped` now opens method-owned row state using the same
+companion checkpoint format. Its sampler is injected; the provider retains
+weights while the group owns draft KV and hidden rows. Prepared requests can
+join, retire, reorder, drain and rejoin without exposing tensor layouts to
+scheduling or introducing another cache store. Capture and membership changes
+occur between committed rounds. The request source and group share Qwen's
+attachment encoding and restoration.
+
+The provider interface is adopted in the working tree after bf16/KV4/KV8
+full-round controls at B=1/2/4 on both Macs, including rebuilt checkpoints,
+SSD restart continuations and both complete model-free suites. Extraction
+removes padding, so the continuation control also rebuilds its raw state to
+match attention geometry. The initial M4 comparison against retained padding
+changed subsequent draft KV despite matching tokens and target state; that
+result is retained. These are internal refactor controls. Coordinated
+target/draft admission now uses staged state publication, described in
+batching §7. Source
+identity and raw checks are in the composition-baseline reports under
+`mtp-provider-group-manifest.json`.
+
+
+The isolated serving candidate adds method preparation and advancement to the
+existing execution group. The scheduler retains its queue, execution lease and
+admission policy; the method owns target/draft state, acceptance and sampling.
+The gateway asks the binding for its supported grouped methods and forwards
+output metadata and speculative usage. No second MTP scheduler is introduced.
+Its real KV4 HTTP test passes on M1 Max and M4 Pro: four submitted requests
+reach a target verification graph with shape B=4, each returns seeded samples
+and logprobs, and the group drains. B=1 token and acceptance checks compare
+against the existing request producer. Callback-stop, failure, cancellation,
+EOS and shared RAM-prefix checks are included in the extended native gate.
+Mixed HTTP checks on both Macs compose structured JSON, seeded sampling and
+logprobs with ordinary requests in the same MTP group. Shared-method SSD
+restart preserves target/draft state, tokens and acceptance traces on both.
+An extended M1 native check also admits a shorter-lived request with a different
+prompt length while another request is decoding, then repeats the same schedule
+with matching outputs. Admission now publishes target state, draft state and
+executor membership together before releasing superseded state. A reproduced
+cleanup failure formerly left a rejected row active; the admission failure
+handler now retires that row before another method round. The candidate remains
+isolated pending complete composition and paired performance acceptance.
+Timing results and their limits live in benchmarks.md. Evidence:
+`reports/qwen38-closeout/composition-baseline/mtp-serving-method-manifest.json`.
+
+For the original private-cache candidate, the M4 Pro unit gate passed 18 tests. Native prompts at 128, 513 and
 2,051 tokens pass six restore checks with unchanged state hashes, token IDs
 and acceptance traces; repeated allocation is stable at each length. The HTTP
 gate completes eight responses with identical text, token counts and finish
@@ -871,12 +916,18 @@ section 7.7. Raw evidence: `reports/qwen38-rd/mtp-cache-candidate-native.json` a
 
 ## 6. Composition rules (as served)
 
-- A mounted draft routes EVERY request to the serial lane (B=1 latency
-  mode).
-- Quantized KV (any axis) wins over spec: drafted requests decode serially
-  WITHOUT speculation, with a startup warning (spec lane is bf16-KV-only).
+- Method selection precedes placement. Qualified Qwen MTP uses grouped
+  target/draft state, sampling and checkpoint interfaces in the shared
+  executor. Other draft providers still use the serial verifier.
+- KV policy stays with the request. Shared Qwen MTP supports bf16 and
+  start-zero uniform KV4/KV8/TurboQuant. Unsupported compositions select
+  ordinary decoding. Current defaults and qualifications live in server-config.md.
 - Structured output composes (the constrained verify walk).
-- Prompt-cache reuse is bypassed on the spec path.
+- Qwen MTP prefill state uses the shared RAM/SSD cache. The source supplies
+  draft KV and the pending hidden row through its checkpoint interface;
+  the cache owns retention and persistence. Other speculative sources still
+  begin with fresh state until they supply a checkpoint codec. Generated-output
+  capture remains R17 work.
 - Native GLM MTP and an explicit `--draft-model`/`--draft-kind` are mutually
   exclusive; one provider per request so two draft histories never advance
   target or grammar state twice.
@@ -1009,11 +1060,12 @@ gets assert fills; verify proposals are dropped and counted
 (`usage.fill.verifyUnsupported`). Checkpointing is real work (~48 DeltaNet
 states on Qwen3.8) and is measured: `usage.fill.checkpointMs`.
 
-**Not migrated (deliberate).** The shipped `DraftSource` roster (ngram, MTP,
-two-model, DSpark) keeps its own seam and executor. The adapter — a DraftSource
-wrapped as a verify-policy ProposalSource, so one apply primitive serves both
-lanes — is future work; rewiring it here would have put the spec lane's oracles
-at risk for no new capability.
+**Remaining fill integration.** Prompt lookup, Qwen MTP and standalone
+drafting now share the grouped method lifecycle at B1/B>1 for qualified
+target layouts (see batching.md). DSpark and other provider migrations remain.
+Unifying fill proposals with draft proposals through one apply primitive is
+still open; the existing fill implementation retains its cache transaction
+contract while that method composition is qualified.
 
 ### 7.2 The echo tier (K3c, Lab, `MLX_BUN_FILL=echo`)
 
@@ -1547,6 +1599,317 @@ wall time, first-tool-call latency and task success. Extend the current
 grammar/KV/batch/logprobs/seed exclusions individually after their own gates.
 The full experimental matrix and completion rule are in
 [decode-speed-program.md](decode-speed-program.md#7-qwen38-27b-research-program).
+
+### 7.5 Logical jump-ahead prefill
+
+Proposal by Josh Rossi, recorded 2026-09-08. Research proposal, not an
+implemented semantic intervention or a measured task-time improvement.
+This is the canonical write-up and proposed preprint question. The existing
+fixed-serialization implementation is described in §7.4. The broader
+proposal deliberately permits a different continuation.
+
+The governing [product objective](../planning/PRODUCT_ROADMAP.md#product-north-star),
+in Josh's words, is "The absolute BEST local AI experience on a mac". It
+covers the entire project, including simple installation, direct application
+integration and JavaScript/TypeScript development. A preprint is optional.
+This research serves that objective by finishing tasks sooner, producing
+better results, or making a more capable model practical on the same hardware.
+A hypothetical 30% reduction in task completion time would be a meaningful
+product improvement, not a measured result of this proposal. Evaluate the
+complete experience, including quality, reliability, latency and memory,
+rather than treating a token-rate increase or a publication as the goal.
+
+The model often spends time deciding what to do, writes relevant content
+in its reasoning, and then generates that content again inside a tool call.
+Josh proposes letting the runtime recognize the intended action, construct
+some or all of its tool-call representation, and append it through prefill.
+The model continues from the supplied history and actual tool result.
+The runtime does not ask the target model to verify that it would have
+sampled each supplied token.
+
+The research question has two parts:
+
+1. With perfect knowledge of an eligible continuation, how much decode time
+   can be replaced by cheaper prefill and construction work?
+2. With an imperfect predictor, how often can the model recover from an
+   unsuitable intervention, and what does that recovery cost?
+
+The deciding quantity is time saved by logical jump-ahead prefill minus time
+spent on recovery, with intervention overhead included and task quality held
+to an independently evaluated standard. Prediction errors do not by
+themselves rule out a useful speedup. Their consequences determine the cost.
+
+#### Context management is the broader premise
+
+Josh's framing is that working with LLMs is largely context management.
+For the local inference system under our control, the runtime owns every
+token supplied to the model. At each generation step, the abstraction is
+`token sequence in -> next-token distribution -> sampled token`.
+The KV and recurrent caches are computed representations of that history,
+not an independent record of the path the model might have taken.
+
+The runtime can construct, insert, replace, summarize or remove context.
+It can choose what the model needs to decide and what software can supply.
+The full original transcript need not remain the active inference context.
+It can remain in the audit log while a different sequence drives the next
+step. The resulting sequence still must be processed consistently by the
+model and preserve enough information for the task.
+
+Logical jump-ahead prefill and micro-compaction are two applications of this
+control. One supplies a continuation before it is redundantly generated.
+The other retires or rewrites material after its immediate purpose is served.
+Both should be judged by successful task completion, elapsed time and the
+cost of recovering from an inadequate context decision.
+
+#### Mechanism and example
+
+Suppose the reasoning contains a settled instruction to write `hello.txt`
+with the contents `hello, world!`. The normal path generates a tool name,
+argument names, path and escaped contents. The proposed path constructs that
+representation from the available trace, appends it as assistant tool-call
+content, and executes the call through the normal tool dispatcher.
+
+An intervention consists of:
+
+1. Detect an eligible boundary using only context available at that moment.
+2. Select an action or source span and construct the continuation, including
+   required escaping and protocol delimiters.
+3. Append the supplied tokens through the model's state-update path, then
+   resume generation at the next unresolved choice or dispatch a complete call.
+4. Return the actual tool outcome and allow the model to continue, including
+   correcting an unsuitable action when needed.
+
+The state update still runs model forward computation. Attention KV,
+recurrent state, positions and parser state must describe the new sequence.
+It saves sequential token decisions and can avoid intermediate vocabulary
+projections and verification work. Copying text from an earlier position
+does not generally permit copying that position's KV, because its context
+and position differ. Editing an existing prefix also requires invalidating
+and recomputing affected state. Appending at the current boundary is the
+smallest implementation to study.
+
+There is no hidden record of the alternate tokens the model would have
+sampled. Given consistent state for the supplied prefix, subsequent decoding
+conditions on that prefix. This does not imply that every supplied action is
+appropriate or that the model always recovers. Those are empirical questions.
+
+#### Perfect prediction and imperfect recovery
+
+Perfect prediction supplies an upper-bound experiment. Replacing a known
+span's serial generation with a cheaper append saves time. Span size,
+context length, kernel behavior and construction overhead determine the
+amount. Very short spans can cost more to detect and append than to decode.
+
+For the oracle experiment, use the saved future continuation to choose the
+span, while requiring the copied source content to exist before the jump.
+This deliberately uses hindsight to measure opportunity. It is not evidence
+that an online detector can identify those opportunities. An online policy
+must receive only the prefix available at the intervention boundary.
+
+With an imperfect policy, an action may still satisfy the task even when it
+differs from the saved continuation. Another action may require correction.
+For example, the runtime supplies `ls` in an unsuitable working directory.
+The returned listing fails to answer the model's question, so the model
+changes directory or asks for a different listing. The extra reasoning,
+request prefill, tool calls and tool execution count as recovery cost.
+
+Record errors the model fails to notice, persistent loops and unsuccessful
+tasks too. Recovery is possible, not guaranteed. A retry alone is not proof
+of recovery; the task must regain useful progress and ultimately meet its
+acceptance criteria. Identical sampled tokens are not required for success.
+
+#### Cost model
+
+For an intervention, define:
+
+| Symbol | Cost |
+|---|---|
+| `D` | Serial decode time avoided for the replaced span |
+| `P` | Time to prefill the supplied continuation and resume |
+| `H` | Detection, selection, serialization and other intervention overhead |
+| `R` | Additional downstream time caused by correction or other consequences |
+
+The local accounting model is:
+
+```text
+net saving = D - P - H - R
+```
+
+If a fraction `q` of interventions require recovery, and their mean added
+cost is `C`, a simplified expectation is:
+
+```text
+expected net saving = E[D - P - H] - q * C
+break-even recovery frequency = E[D - P - H] / C
+```
+
+The break-even expression assumes positive `C`, successful eventual recovery
+and no other downstream differences. Here `q` measures harmful interventions
+requiring recovery, not disagreement with a hypothetical sampled string.
+Span length, uncertainty and recovery cost may be correlated; measure their
+joint behavior rather than multiplying unrelated averages.
+
+This decomposition explains the mechanism. The authoritative measurement is
+complete task wall time against a paired baseline. A changed trajectory can
+alter later reasoning, tool latency, cache reuse and compaction. Those effects
+belong in the result even when they cannot be assigned to one jump. Do not
+double-count overlapping spans or add savings from dependent interventions
+as if each occurred in the original unmodified run.
+
+#### Evidence and first experiment
+
+The completed Kanban trace supplies a workload and an offline opportunity
+analysis. Generation-to-generation duplicate coverage and the narrower
+reasoning-to-tool coverage are recorded in the
+[completed Kanban benchmark](../reference/benchmarks.md#completed-fresh-pi-kanban-with-bounded-range-cache-m4-pro-2026-09-08).
+Those counts retain first occurrences, merge overlapping later positions and
+exclude replayed request history. They use retokenized payloads rather than
+the original sampled token stream, so they are opportunity estimates.
+The longest whole-file repeat was a write followed by a read. It does not
+establish that the model first wrote that whole file in reasoning.
+
+Start with these experiment arms:
+
+| Arm | Purpose |
+|---|---|
+| Ordinary decoding | Establish task success, timing and natural retry behavior |
+| Existing strict fill | Isolate savings from fixed serialization already supported |
+| Oracle content jumps | Estimate savings with hindsight and no selection mistakes |
+| Online logical jumps | Measure an implementable policy using only the current prefix |
+| Controlled mistaken jumps | Measure detection, recovery and failure under known perturbations |
+
+For the online arm, begin with complete literal content already in the trace
+and a partially generated tool call that identifies the destination. This
+reduces the decisions the runtime must infer. Then evaluate earlier action
+selection as a separate policy. Track changes in opportunity coverage and
+recovery cost as the policy becomes more permissive.
+
+Use fresh workspaces and matched prompts, models, quantization, tool access,
+context limits and hardware conditions. Preserve the same cache and decoding
+configuration across arms where supported. The Kanban configuration and
+strict fill currently have composition restrictions; establish a supported
+common control before attributing a difference to logical jumps. Keep the
+separate MLX-LM comparison as a reference experiment, not a substitute for
+this within-engine ablation.
+
+Record supplied and sampled tokens separately, source-span provenance,
+intervention boundaries, append cost, selection cost, tool outcomes, extra
+turns, recovery time, compactions and complete task time. Keep raw generated
+text and supplied text distinguishable in the audit log, while making the
+model-visible history consistent with the action actually executed.
+
+Repeat paired runs over multiple tasks and sampling trials. A matching seed
+does not preserve the trajectory after an intervention. Evaluate artifacts
+with independent task checks. Report success rate and the distribution of
+task times, including slow recoveries, timeouts and failures. Fast failed
+runs must not improve the reported time-to-success result. Where retries
+are allowed, include their cost under a predefined retry budget.
+
+#### Micro-compaction after tool execution
+
+Josh proposes replacing a long reasoning segment after its associated tool
+calls have completed. For example, the model may spend roughly 50,000 tokens
+planning and drafting, then write files and inspect the results. At that
+boundary, the runtime could replace the reasoning with a concise account of
+decisions, completed actions, observed results and unresolved work.
+
+This is selective compaction at a task boundary. It need not wait until the
+whole context window approaches its limit. A candidate procedure is:
+
+1. Identify the reasoning segment whose associated actions have completed.
+2. Preserve current requirements, decisions that still constrain the work,
+   observed failures and pending questions in a compact replacement.
+3. Retain the relevant tool-call/result pairs and references to written
+   artifacts. Keep the original trace available outside the active context.
+4. Build the revised token sequence, recompute affected model state, and
+   continue the task from that sequence.
+
+The replacement may come from a model-generated summary or deterministic
+extraction of completed actions and results. Compare these methods rather
+than assuming another long generation is necessary. A successful file write
+provides an artifact the model can read again; whether that makes the full
+earlier draft disposable depends on the remaining task. Missing rationale
+or a discarded constraint can require recovery even when the file survives.
+
+Removing earlier tokens changes the context for retained later tokens.
+Ordinary prefix caching can preserve the unchanged prefix, but it cannot
+generally reuse the old suffix state as if the removed reasoning were still
+present. Recompute that suffix under the new history. Any method that keeps
+stale state intentionally is a separate approximation to evaluate.
+
+Micro-compaction cannot recover the time already spent generating the long
+reasoning segment. It can reduce later context-processing work and memory
+use, and may change subsequent generation or avoid a larger compaction.
+Measure those effects over the remaining task:
+
+```text
+net saving = future context-processing and trajectory savings
+             - summary/extraction cost
+             - state-rebuild and management cost
+             - extra recovery cost
+```
+
+Because a warm prefix cache already avoids much repeated prefill, removed
+token counts alone do not establish savings. Context length can still affect
+subsequent attention work and capacity. Record actual cache reuse, rebuild
+time, memory, later decode time and rereads caused by missing information.
+
+Compare the existing compaction policy, post-tool micro-compaction,
+jump-ahead alone, and their combination. Use the same task checks and failure
+accounting as the jump experiment. Their gains need not add: removing a
+reasoning segment also removes a potential source for later content copying.
+An external source store could retain it, with retrieval cost included.
+
+#### Related work and the proposed preprint
+
+Josh identified the connection to structured output and grammars at the
+outset. [XGrammar](https://github.com/mlc-ai/xgrammar) implements efficient
+grammar-constrained generation. SGLang's
+[jump-forward decoding](https://www.lmsys.org/blog/2024-02-05-compressed-fsm/)
+directly prefills strings fixed by a grammar until the next branch. These
+are established relatives of fixed-serialization fill.
+
+[Copy-as-Decode](https://arxiv.org/abs/2604.18170), an April 2026 preprint,
+is direct prior art for unverified content prefill. The model emits an
+explicit instruction selecting input line ranges, then the runtime prefills
+their contents without probabilistic verification. It studies an oracle
+savings bound and span-selection errors. Editing belongs within this
+proposal's scope, including when edits are tool calls; the application label
+does not establish a separate invention. The relevant difference to study
+is runtime inference from reasoning or a partial call versus an explicit
+model-selected copy instruction, and the cost of subsequent agent recovery.
+The paper does not establish agentic multi-file coverage.
+
+Harness intervention is also established. AI SDK supports
+[custom tool-call repair](https://ai-sdk.dev/docs/ai-sdk-core/tools-and-tool-calling#tool-call-repair),
+Pydantic AI exposes
+[JSON and argument modification hooks](https://github.com/pydantic/pydantic-ai/blob/main/docs/capabilities/custom.md),
+and OpenClaw can
+[insert loop warnings and block repeated calls](https://docs.openclaw.ai/tools/loop-detection).
+These show that an agent system can alter actions or subsequent context
+outside the sampler. They do not measure this proposal's speedup.
+
+Exact [speculative sampling](https://proceedings.mlr.press/v202/leviathan23a.html)
+preserves the target distribution conditional on a given context and sampling
+policy. Logical jumps choose supplied context without that requirement.
+An exact speculative decoder could still accelerate free generation between
+jumps.
+
+The search so far has not identified a direct demonstration of runtime
+inference of a tool continuation from current reasoning, unverified prefill
+of that continuation, and whole-agent evaluation of savings against recovery
+cost. This is a bounded search finding, not a priority claim or proof of
+absence. The broader unverified-copy mechanism already has overlapping work.
+
+A working preprint title is **Logical jump-ahead prefill: trading redundant
+agent decoding for recovery cost**. The contribution to pursue is a defined
+intervention mechanism, an oracle opportunity bound, an online policy, and a
+measured relationship between saved decode time and recovery cost at retained
+task quality. A negative or workload-dependent result would still answer the
+question. The current trace analysis motivates that study; it does not yet
+establish the paper's performance result. A broader literature review and
+the controlled experiments above remain necessary before claiming novelty
+or a practical speedup.
 
 ## 8. Open items
 

@@ -27,7 +27,7 @@ import { BatchedRotatingQuantCache } from "../../src/model/batched-rotating-quan
 import { BatchScheduler, type RowPromptCache } from "../../src/serve/batch-scheduler";
 import { SSMCache } from "../../src/model/qwen3-delta";
 import type { RuntimeModel } from "../../src/model/factory";
-import { resolveKvScheme } from "../../src/kv-scheme";
+import { KvScheme, resolveKvScheme } from "../../src/kv-scheme";
 
 /** Contiguous raw bytes of a (possibly strided) view, as a plain array. */
 const bytes = (a: MlxArray): number[] => {
@@ -442,11 +442,11 @@ const soloReplay = (tokens: number[]): KVCache => {
 };
 
 describe("BatchScheduler per-row extraction (stub model)", () => {
-  test("rejects a scheme the scheduler cannot execute instead of serving bf16", () => {
+  test("rejects delayed affine conversion that cannot execute after rows merge", () => {
     expect(() =>
       new BatchScheduler(stubModel, {
         maxBatch: 2,
-        kvScheme: resolveKvScheme({ override: 8 }),
+        kvScheme: new KvScheme("affine-uniform", { kvBits: 4, quantizedKvStart: 5 }),
       }),
     ).toThrow("unsupported KV scheme");
   });

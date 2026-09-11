@@ -1,17 +1,20 @@
 // PromptCache unit tests (fast tier — stub caches, no weights).
 //
-// Since prefix sharing (2026-07-05), take() is NON-CONSUMING for trimmable
-// caches: it serves zero-copy clones and leaves the donor entry in the cache.
-// Qwen hybrid entries containing recurrent SSM state transfer ownership on
-// an exact-boundary hit to avoid an extra resident recurrent snapshot. put()
-// supersedes same-ns prefix-ancestors when the new entry is trimmable. Tests
-// inject a stub cloner (the real one, kv-store.cloneKvCaches, switches on real
-// cache classes).
+// take() lends zero-copy views and retains donors, including recurrent state.
+// Tests inject a stub cloner; the native parity suite exercises real caches.
 
 import { describe, expect, spyOn, test } from "bun:test";
-import { PromptCache } from "../../src/prompt-cache";
+import { PromptCache as MlxPromptCache } from "../../src/prompt-cache";
 import type { PromptCacheEntry } from "../../src/prompt-cache";
 import type { Cache } from "../../src/model/gemma4";
+
+// LRU policy fixtures have no native arrays; native ownership is tested with
+// the concrete cache in checkpoint-state.test.ts.
+class PromptCache extends MlxPromptCache {
+  constructor(...args: ConstructorParameters<typeof MlxPromptCache>) {
+    super(args[0], args[1], args[2], args[3], () => {});
+  }
+}
 
 function stubCache(
   nbytes: number, disposed: { count: number }, trimmable = true,
@@ -476,25 +479,25 @@ describe("PromptCache — Layer 0 tiering", () => {
     expect(d.count).toBe(0);
   });
 
-  // A trim-free STRICT-PREFIX entry is the only reuse path Qwen's
-  // untrimmable recurrent cache has. It transfers ownership instead of cloning;
-  // the caller puts the extended entry back after generation.
-  test("untrimmable strict-prefix entry transfers an exact hit without cloning", () => {
+  test("untrimmable strict-prefix entries lend untrimmed views", () => {
     const { pc, cloneTrims } = mk();
-    const d = { count: 0 };
+    const disposed = { count: 0 };
     const prompt = Array.from({ length: 600 }, (_, i) => i);
-    // the boundary snapshot: prompt[:-1], untrimmable (rings already wrapped)
-    const donor = stubCache(10, d, false, [], "ssm");
+    const donor = stubCache(10, disposed, false, [], "ssm");
     pc.put(prompt.slice(0, 599), [donor]);
-    const hit = pc.take(prompt); // exact repeat of the full prompt
-    expect(hit?.tokens).toHaveLength(599); // prompt.length-1 — no trim needed
-    expect(hit?.caches[0]).toBe(donor);
+    const hit = pc.take(prompt)!;
+    expect(hit.tokens).toHaveLength(599);
+    expect(hit.caches[0]).not.toBe(donor);
     expect(cloneTrims).toEqual([]);
-    expect(pc.size).toBe(0);
-    expect(d.count).toBe(0); // ownership moved to the caller, never disposed
+    expect(pc.size).toBe(1);
+    expect(disposed.count).toBe(0);
+    for (const c of hit.caches) c.dispose();
+    hit.retain?.();
+    pc.clear();
+    expect(disposed.count).toBe(1);
   });
 
-  test("consuming a recurrent boundary stores it before transferring ownership", () => {
+  test("recurrent RAM reuse does not persist or restore and releases backing after the last borrower", () => {
     const cold = fakeCold(false);
     const { pc, cloneDisposed } = mkTiered(cold);
     const disposed = { count: 0 };
@@ -502,42 +505,44 @@ describe("PromptCache — Layer 0 tiering", () => {
     const donor = stubCache(10, disposed, false, [], "ssm");
     pc.put([1, 2], [donor], "agent", () => { backing++; });
     const hit = pc.take([1, 2, 3], "agent")!;
-    expect(cold.stored).toEqual([{ tokens: [1, 2], ns: "agent" }]);
-    expect(hit.caches[0]).toBe(donor);
-    expect(pc.size).toBe(0);
-    expect(disposed.count).toBe(0);
-    expect(cloneDisposed.count).toBe(0);
-    expect(backing).toBe(0);
-    // The old boundary remains usable after the live state has moved on.
     const repeat = pc.take([1, 2, 4], "agent")!;
+    expect(hit.caches[0]).not.toBe(donor);
+    expect(repeat.caches[0]).not.toBe(hit.caches[0]);
     expect(repeat.tokens).toEqual([1, 2]);
-    expect(cold.restores.count).toBe(1);
+    expect(pc.size).toBe(1);
+    expect(cold.stored).toEqual([]);
+    expect(cold.restores.count).toBe(0);
+    pc.clear();
+    expect(disposed.count).toBe(1);
+    expect(backing).toBe(0);
     for (const c of repeat.caches) c.dispose();
     repeat.retain?.();
+    expect(backing).toBe(0);
     for (const c of hit.caches) c.dispose();
     hit.retain?.();
-    expect(disposed.count).toBe(1);
+    expect(cloneDisposed.count).toBe(2);
     expect(backing).toBe(1);
   });
 
-  test("a failed recurrent boundary store retains the donor and backing", () => {
+  test("an unavailable SSD never prevents recurrent RAM reuse", () => {
     for (const throws of [false, true]) {
       const cold = fakeCold(false), disposed = { count: 0 };
-      let backing = 0;
+      let stores = 0;
       const pc = new PromptCache(1e9, null, { ...cold.tier, store() {
+        stores++;
         if (throws) throw new Error("disk full");
         return false;
-      } });
+      } }, stubClone([], { count: 0 }));
       const donor = stubCache(10, disposed, false, [], "ssm");
-      pc.put([1, 2], [donor], "", () => { backing++; });
-      expect(() => pc.take([1, 2, 3])).toThrow(throws ? "disk full" : "failed to persist recurrent boundary");
+      pc.put([1, 2], [donor]);
+      const hit = pc.take([1, 2, 3])!;
+      expect(hit.tokens).toEqual([1, 2]);
+      expect(stores).toBe(0);
       expect(pc.findExact([1, 2])?.caches[0]).toBe(donor);
-      expect(pc.size).toBe(1);
-      expect(disposed.count).toBe(0);
-      expect(backing).toBe(0);
+      for (const c of hit.caches) c.dispose();
+      hit.retain?.();
       pc.clear();
       expect(disposed.count).toBe(1);
-      expect(backing).toBe(1);
     }
   });
 

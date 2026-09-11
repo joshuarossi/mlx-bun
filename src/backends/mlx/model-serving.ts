@@ -25,7 +25,7 @@ export function modelServingBinding(context: ServingContext): ModelServingBindin
   const embedding = isEmbeddingModel(model);
   return {
     stateCompatibility: `mlx-${MLX_VERSION}-${deviceArchitecture()}`,
-    gateway: bindMlxGateway(model),
+    gateway: bindMlxGateway(model, ctx.draft ?? undefined),
     createSerial: (services) => createMlxSerialExecutor(serial, services),
     buildPrompt: (body, tools, ownership, prep) => buildModelPrompt(ctx, prep, body, tools, ownership),
     restore: (store, entry) => store.restore(entry, model),

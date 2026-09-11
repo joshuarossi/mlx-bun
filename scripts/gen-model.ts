@@ -370,7 +370,10 @@ export const FINGERPRINT = "${fingerprint}";
 export let generatedForwardUses = 0;
 
 function disposeSharedKv(s: SharedKv): void {
-  if (s.kind === "plain") {
+  if (s.kind === "view") {
+    s.attention.dispose();
+    s.offsetArr?.dispose();
+  } else if (s.kind === "plain") {
     s.keys.dispose();
     s.values.dispose();
   } else {

@@ -45,11 +45,11 @@ import {
   RMSNorm,
   RotatingKVCache,
   RotatingQuantizedKVCache,
-  TurboQuantKVCache,
   quantizedSdpa,
   type Cache,
   type Mask,
   type SharedKv,
+  captureRopeOffsets,
   type LoraWeights,
 } from "./gemma4-base";
 import { Checkpoint } from "../mlx/checkpoint";
@@ -304,15 +304,11 @@ class Attention {
       }
 
       const offset = cache.offset;
-      // Capture the RoPE offset array ONCE (like `offset` above): the
-      // updateAndFetch below advances cache.offset, so re-reading
-      // cache.ropeOffsetArr for Q *after* the write would hand K and Q
-      // different positions. Harmless today (real caches leave it unset;
-      // compiled-decode passes a constant trace input), but a hard
-      // prerequisite for batched decode, where ropeOffsetArr carries per-row
-      // positions derived from the pre-write offset and MUST be identical for
-      // this step's K and Q.
-      const offsetArr = cache.ropeOffsetArr;
+      // Own the pre-write positions through every query and shared-KV
+      // consumer. Advancing a row cache may replace and release its borrowed
+      // offset array before Q's RoPE is built. The fetched shared state owns
+      // this retained handle and releases it with K/V at the end of the pass.
+      const offsetArr = captureRopeOffsets(cache);
 
       const kNormed = this.kNorm!.forward(k);
       const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
@@ -328,23 +324,29 @@ class Attention {
       if (v !== k) v.dispose();
       k.dispose();
 
-      if (cache instanceof QuantizedKVCache || cache instanceof RotatingQuantizedKVCache) {
-        const [kq, vq] = cache.updateAndFetchQuantized(kRoped, vT);
+      if (cache.attentionState) {
+        const attention = cache.attentionState.appendAndFetch(kRoped, vT);
+        kRoped.dispose(); vT.dispose();
+        shared = { kind: "view", attention, offset, offsetArr };
+      } else if (cache.quantizedAttention) {
+        const quantized = cache.quantizedAttention;
+        const [kq, vq] = quantized.updateAndFetchQuantized(kRoped, vT);
         kRoped.dispose();
         vT.dispose();
         shared = {
           kind: "quant", keys: kq, values: vq, offset,
-          groupSize: cache.groupSize, bits: cache.bits,
+          groupSize: quantized.groupSize, bits: quantized.bits,
           offsetArr,
         };
-      } else if (cache instanceof TurboQuantKVCache) {
+      } else if (cache.rotatedValueAttention) {
         // Deferred-V read: values stay rotated; the attention output is
         // un-rotated below (shared.vRotated) — including by KV-shared
         // consumer layers, which see the flag through sharedIn.
-        const [keys, values] = cache.updateAndFetchDeferredV(kRoped, vT);
+        const [keys, values] = cache.rotatedValueAttention.updateAndFetchDeferredV(kRoped, vT);
         kRoped.dispose();
         vT.dispose();
-        shared = { kind: "plain", keys, values, offset, offsetArr, vRotated: true };
+        shared = { kind: "plain", keys, values, offset, offsetArr, vRotated: true,
+          restoreValues: cache.rotatedValueAttention.captureValueTransform?.() };
       } else {
         const [keys, values] = cache.updateAndFetch(kRoped, vT);
         kRoped.dispose();
@@ -360,7 +362,9 @@ class Attention {
 
     let attn: MlxArray;
     const ta = getTrainingAttn();
-    if (shared.kind === "quant") {
+    if (shared.kind === "view") {
+      attn = shared.attention.attend(q, 1.0, mask);
+    } else if (shared.kind === "quant") {
       attn = quantizedSdpa(q, shared.keys, shared.values, 1.0, mask, shared.groupSize, shared.bits);
     } else if (
       ta === "flash" && flashSupported(q) && (mask.mode === "causal" || mask.mode === "array")
@@ -383,7 +387,7 @@ class Attention {
     if (shared.kind === "plain" && shared.vRotated) {
       // Attention is linear in V: one InvFWHT on the [B,H,L,D] output
       // replaces one per cached token (TurboQuant deferred-V).
-      attn = disposing(attn, tqUnrotateValues(attn));
+      attn = disposing(attn, shared.restoreValues ? shared.restoreValues(attn) : tqUnrotateValues(attn));
     }
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
@@ -851,6 +855,13 @@ export class Gemma4Model {
     );
   }
 
+  /** Computed model constants must retain their constructor arithmetic when
+   * a restored request enters compiled decode without a prefill first. */
+  materializeGraphConstants(): void {
+    const constants = this.layers.flatMap(layer => layer.attn.ropeFreqs ? [layer.attn.ropeFreqs] : []);
+    if (constants.length) ops.evalAll(constants);
+  }
+
   /** ids [1, L] → final-norm hidden states [1, L, hidden]. */
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
     let h = this.embed.encode(ids);
@@ -1000,13 +1011,7 @@ export class Gemma4Model {
     for (let i = 0; i < this.numDonors; i++) {
       const s = intermediates[i];
       if (!s) continue;
-      if (s.kind === "plain") {
-        s.keys.dispose();
-        s.values.dispose();
-      } else {
-        for (const t of [s.keys, s.values])
-          for (const a of [t.packed, t.scales, t.biases]) a.dispose();
-      }
+      Gemma4Model.disposeSharedKv(s);
     }
     for (const m of masks.values()) m.arr?.dispose();
 
@@ -1056,7 +1061,10 @@ export class Gemma4Model {
   /** Dispose a fetched donor K/V (plain or quantized) — mirrors forwardLayers'
    *  donor cleanup. */
   private static disposeSharedKv(s: SharedKv): void {
-    if (s.kind === "plain") {
+    s.offsetArr?.dispose();
+    if (s.kind === "view") {
+      s.attention.dispose();
+    } else if (s.kind === "plain") {
       s.keys.dispose();
       s.values.dispose();
     } else {

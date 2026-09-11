@@ -12,11 +12,23 @@ const capabilities: ExecutionCapabilities = {
   grammarBatch: true, checkpoints: true,
 };
 
+test("logprobs compose with continuous ordinary decoding", () => {
+  const plan = resolveExecution({ ...request, wantsLogprobs: true }, capabilities);
+  expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+  expect(plan.reasons).not.toContain("logprobs-require-serial");
+});
+
+test("an explicit seed composes with ordinary logprobs and grammar in continuous execution", () => {
+  const plan = resolveExecution({ ...request, userSeed: true, wantsLogprobs: true, hasGrammar: true }, capabilities);
+  expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+  expect(plan.reasons).not.toContain("explicit-seed-requires-serial");
+});
+
 test.each(["hasVision", "hasAdapters", "wantsLogprobs", "kvQuant", "turboQuant"] as const)(
   "%s uses AR and retains an explicit draft fallback reason", (key) => {
     const plan = resolveExecution({ ...request, hasDraft: true, [key]: true }, capabilities);
     expect(plan.method).toBe("autoregressive");
-    expect(plan.mechanism).toBe("serial");
+    expect(plan.mechanism).toBe(key === "wantsLogprobs" || key === "kvQuant" ? "continuous" : "serial");
     expect(plan.reasons).toContain("draft-incompatible-with-request");
   },
 );
@@ -37,7 +49,7 @@ test("qualified speculative KV retains the serial verifier and other incompatibi
   expect(resolveExecution(draft, qualified, { pagedKv: true, fill: false }).method).toBe("autoregressive");
 });
 
-test("per-layer KV batches; uniform and TurboQuant remain serial", () => {
+test("supported affine KV batches; unavailable layouts and TurboQuant remain serial", () => {
   expect(resolveExecution({ ...request, kvQuant: true }, capabilities).mechanism).toBe("continuous");
   expect(resolveExecution({ ...request, kvQuant: true }, { ...capabilities, quantizedBatch: false }).mechanism).toBe("serial");
   expect(resolveExecution({ ...request, turboQuant: true }, capabilities).mechanism).toBe("serial");
@@ -91,4 +103,55 @@ test("grammar jump belongs only to eligible serial AR requests", () => {
   for (const incompatible of [{ wantsLogprobs: true }, { hasDraft: true }])
     expect(resolveExecution({ ...grammar, ...incompatible }, serial, features).grammarJump).toBe(false);
   expect(resolveExecution(grammar, { ...serial, method: "denoising" }, features).grammarJump).toBe(false);
+});
+
+
+test("adapter-capable groups retain ordinary sampling features", () => {
+  const plan = resolveExecution({ ...request, hasAdapters: true, wantsLogprobs: true,
+    userSeed: true }, { ...capabilities, adapterBatch: true }, { pagedKv: false, fill: false, compiledDecode: true });
+  expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", compiledDecode: false });
+});
+
+test("registered grouped methods compose speculation with sampling and KV storage", () => {
+  const composed = { ...capabilities, groupedMethods: ["autoregressive", "speculative"],
+    speculativeLogprobs: true, speculativeKvQuant: true };
+  const plan = resolveExecution({ ...request, hasDraft: true, wantsLogprobs: true,
+    userSeed: true, hasGrammar: true, kvQuant: true }, composed);
+  expect(plan).toMatchObject({ method: "speculative", mechanism: "continuous" });
+  expect(plan.reasons).not.toContain("method-requires-serial");
+  expect(plan.reasons).not.toContain("draft-incompatible-with-request");
+});
+
+
+test("TurboQuant group capability composes with ordinary and speculative methods", () => {
+  const turbo = { ...request, turboQuant: true };
+  const supported = { ...capabilities, turboQuantBatch: true };
+  expect(resolveExecution(turbo, supported).mechanism).toBe("continuous");
+  const mtp = resolveExecution({ ...turbo, hasDraft: true }, { ...supported,
+    speculativeTurboQuant: true, groupedMethods: ["autoregressive", "speculative"] });
+  expect(mtp.method).toBe("speculative");
+  expect(mtp.mechanism).toBe("continuous");
+  expect(resolveExecution({ ...turbo, hasDraft: true }, supported).method).toBe("autoregressive");
+});
+
+test("qualified target-adapter speculation stays in the shared adapter context", () => {
+  const adapted = { ...request, hasDraft: true, hasAdapters: true, wantsLogprobs: true, userSeed: true, hasGrammar: true };
+  const supported = { ...capabilities, adapterBatch: true, sharedSpeculativeAdapters: true,
+    speculativeLogprobs: true, groupedMethods: ["autoregressive", "speculative"] };
+  expect(resolveExecution(adapted, supported)).toMatchObject({ method: "speculative", mechanism: "continuous" });
+  expect(resolveExecution(adapted, { ...supported, sharedSpeculativeAdapters: false }).method).toBe("autoregressive");
+  for (const disabled of [{ continuous: false }, { adapterBatch: false }, { grammarBatch: false }])
+    expect(resolveExecution(adapted, { ...supported, ...disabled })).toMatchObject({ method: "autoregressive", mechanism: "serial" });
+  expect(resolveExecution({ ...adapted, hasVision: true }, supported).method).toBe("autoregressive");
+});
+
+test("bound ordinary checkpoint capability qualifies shared requests without changing other methods", () => {
+  const supported = { ...capabilities, checkpoints: true, sharedCheckpoints: true };
+  expect(resolveExecution(request, supported)).toMatchObject({ mechanism: "continuous", checkpoint: true });
+  expect(resolveExecution(request, { ...supported, sharedCheckpoints: false }).checkpoint).toBe(false);
+  for (const excluded of [{ hasGrammar: true }, { wantsLogprobs: true }, { hasVision: true }])
+    expect(resolveExecution({ ...request, ...excluded }, supported).checkpoint).toBe(false);
+  expect(resolveExecution({ ...request, hasDraft: true }, { ...supported,
+    speculativeLogprobs: true, groupedMethods: ["autoregressive", "speculative"] }).checkpoint).toBe(false);
+  expect(resolveExecution(request, supported, { pagedKv: false, fill: true }).checkpoint).toBe(false);
 });

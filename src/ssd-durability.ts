@@ -1,10 +1,12 @@
+import { cloneAttachments } from "./backends/mlx/checkpoint-state";
+import { cleanupFailure, disposeResources } from "./engine/resources";
 import type { Cache } from "./model/gemma4";
 import type { PromptCacheEntry } from "./prompt-cache";
 import type { SpillItem, SpillQueue } from "./kv-store";
 
 export interface DurabilityGateway {
   readonly busy: boolean;
-  runExclusive<T>(fn: () => Promise<T>): Promise<T>;
+  runWhenIdle<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export interface DurabilityPromptCache {
@@ -128,15 +130,17 @@ export class SsdDurabilityCoordinator {
   async #store(rec: DirtySnapshot): Promise<StoreOutcome> {
     let snap: SpillItem | null = null;
     try {
-      snap = await this.gateway.runExclusive(async () => {
+      snap = await this.gateway.runWhenIdle(async () => {
         if (this.isAlreadyDurable(rec.tokens, rec.ns)) return null;
         const entry = this.promptCache.findExact(rec.tokens, rec.ns);
         if (!entry) return null;
-        return {
-          tokens: [...entry.tokens],
-          caches: this.cloneCaches(entry.caches),
-          ns: rec.ns,
-        };
+        const caches = this.cloneCaches(entry.caches);
+        try {
+          return { tokens: [...entry.tokens], caches, ns: rec.ns,
+            attachments: cloneAttachments(entry.attachments) };
+        } catch (error) {
+          return cleanupFailure(error, () => disposeResources(caches));
+        }
       });
     } catch {
       return "failed";

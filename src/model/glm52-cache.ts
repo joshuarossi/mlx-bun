@@ -11,6 +11,8 @@
 // row's logical position without reconstructing per-head K/V.
 
 import { MlxArray } from "../mlx/array";
+import { FullPrefillPadding } from "./full-prefill-padding";
+import type { PrefillPadding } from "./gemma4-base";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import {
@@ -210,6 +212,8 @@ export class Glm52Cache implements BatchableCache {
   batchSize: number | null = null;
   rowOffsets: number[] = [];
   leftPad: number[] = [];
+  #beforeRound: number[] | undefined;
+  readonly #padding = new FullPrefillPadding(1);
 
   constructor(geometry: MLACacheGeometry) {
     positiveInteger("MLA kvLoraRank", geometry.kvLoraRank);
@@ -482,6 +486,56 @@ export class Glm52Cache implements BatchableCache {
     this.rowOffsets = this.rowOffsets.map((value) => value - n);
   }
 
+  preparePrefill(padding: PrefillPadding): void { this.#padding.prepare(this, padding); }
+  finalizePrefill(): void {
+    const next = this.#padding.finalize(this.state(), this);
+    if (!next) return;
+    this.latent?.dispose(); this.rope?.dispose();
+    this.latent = next[0] ?? null; this.rope = next[1] ?? null;
+    if (this.dsa && next[2]) this.dsa.restoreState(next[2], this.offset);
+  }
+
+  specRoundBegin(): void { this.#beforeRound = [...this.rowOffsets]; }
+  specRoundCommit(): void { this.#beforeRound = undefined; }
+
+  /** Keep each accepted prefix in compressed form. Right alignment lets the
+   * next shared append reuse the existing MLA/DSA attention geometry. */
+  specRoundRollback(keep: number | readonly number[]): void {
+    const nextOffsets = this.#beforeRound!.map((before, row) => before +
+      (typeof keep === "number" ? keep : keep[row]!));
+    const rejected = this.rowOffsets.map((offset, row) => offset - nextOffsets[row]!);
+    if (rejected.every(count => count === rejected[0])) {
+      const count = this.batchSize!;
+      this.trim(rejected[0]!);
+      if (this.batchSize === null) {
+        const empty = this.makeEmptyBatch();
+        try { this.mergeRows(Array.from({ length: count }, () => empty)); }
+        finally { empty.dispose(); }
+      }
+      this.#beforeRound = undefined; return;
+    }
+    const width = this.offset;
+    const pads = this.leftPad.map((pad, row) => pad + rejected[row]!);
+    const removable = Math.min(...pads);
+    using indices = ops.fromInt32(rejected.flatMap(count =>
+      Array.from({ length: width }, (_, column) => (column - count + width) % width)),
+      [this.batchSize!, width, 1]);
+    const next: MlxArray[] = [];
+    try {
+      for (const array of this.state()) {
+        using shifted = ops.takeAlongAxis(array, indices, 1);
+        next.push(shifted.slice([0, removable, 0], [this.batchSize!, width, array.shape[2]!]));
+      }
+    } catch (error) { for (const array of next) array.dispose(); throw error; }
+    this.latent!.dispose(); this.rope!.dispose();
+    this.latent = next[0]!; this.rope = next[1]!;
+    if (this.dsa) this.dsa.restoreState(next[2]!, width - removable);
+    this.offset = width - removable;
+    this.rowOffsets = nextOffsets;
+    this.leftPad = pads.map(pad => pad - removable);
+    this.#beforeRound = undefined;
+  }
+
   /** Exact logical bytes of valid f32 compressed state. */
   get byteLength(): number {
     if (this.batchSize === null) return 0;
@@ -529,8 +583,16 @@ export class Glm52Cache implements BatchableCache {
         ) {
           throw new Error("MLA mergeRows cache geometry does not match");
         }
-        if (generic.batchSize === null || generic.offset === 0)
-          throw new Error("MLA mergeRows cannot merge an empty row");
+        if (generic.batchSize === null || generic.offset === 0) {
+          const count = generic.batchSize ?? 1;
+          for (let row = 0; row < count; row++) {
+            states.push({ latent: ops.zeros([1, 0, this.kvLoraRank], Dtype.float32),
+              rope: ops.zeros([1, 0, this.ropeHeadDim], Dtype.float32),
+              dsa: this.dsa ? ops.zeros([1, 0, this.dsa.headDim], Dtype.float32) : null });
+            offsets.push(0);
+          }
+          continue;
+        }
         for (let row = 0; row < generic.batchSize; row++) {
           states.push(generic.fetchRow(row));
           offsets.push(generic.rowOffset(row));
@@ -577,7 +639,10 @@ export class Glm52Cache implements BatchableCache {
       this.offset = width;
       this.rowOffsets = [...offsets];
       this.leftPad = offsets.map((value) => width - value);
-      if (this.dsa) this.dsa.restoreState(dsa!, width);
+      if (this.dsa) {
+        if (width) this.dsa.restoreState(dsa!, width);
+        else { this.dsa.data = dsa!; this.dsa.batchSize = offsets.length; }
+      }
     } finally {
       for (const state of states) {
         state.latent.dispose();
@@ -591,6 +656,7 @@ export class Glm52Cache implements BatchableCache {
   extractRow(row: number): Glm52Cache {
     if (this.batchSize === null) throw new Error("MLA cache is empty");
     validateRowIndex(row, this.batchSize, "MLA extract");
+    if (this.rowOffsets[row] === 0) return this.makeEmptyBatch();
     const state = this.fetchRow(row);
     const copy = (array: MlxArray): MlxArray => ops.mulScalar(array, 1);
     const latent = copy(state.latent);
@@ -666,7 +732,15 @@ export class Glm52Cache implements BatchableCache {
     this.offset = nextWidth;
     this.rowOffsets = nextOffsets;
     this.leftPad = selectedPad.map((value) => value - removablePad);
-    if (this.dsa) this.dsa.restoreState(dsa!, nextWidth);
+    this.#padding.filter(keep);
+    if (this.dsa) {
+      if (nextWidth) this.dsa.restoreState(dsa!, nextWidth);
+      else {
+        // A retained cold row still owns batch membership, even though the
+        // strict persisted-state restore contract requires nonempty tokens.
+        this.dsa.dispose(); this.dsa.data = dsa!; this.dsa.batchSize = keep.length;
+      }
+    }
   }
 
   projectedBytes(tokens: number): number {
@@ -709,6 +783,8 @@ export class Glm52Cache implements BatchableCache {
     this.batchSize = null;
     this.rowOffsets = [];
     this.leftPad = [];
+    this.#beforeRound = undefined;
+    this.#padding.clear();
   }
 }
 

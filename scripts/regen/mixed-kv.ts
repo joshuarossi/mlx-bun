@@ -65,7 +65,7 @@ const existing = NAME
   : ((await goldenAt("kv-quant.json").json()) as { prompt_ids: number[] });
 
 const py = `
-import sys, json, hashlib, os
+import sys, json, hashlib, os, importlib.metadata
 import mlx.core as mx
 from optiq.mlx_lm_patches._register import register
 register()
@@ -141,7 +141,8 @@ print(json.dumps({
     "oracle": {
         "mlx": mx.__version__,
         "mlx_lm": mlx_lm.__version__,
-        "optiq": optiq.__version__,
+        "optiq": importlib.metadata.version("mlx-optiq"),
+        "device": mx.device_info(),
         "model_revision": os.path.basename(os.path.realpath(snap)),
         "generator": "scripts/regen.ts mixed-kv",
     },

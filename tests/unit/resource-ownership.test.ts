@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cleanupFailure, disposeResources, ownResource } from "../../src/engine/resources";
+import { applyStateChanges, cleanupFailure, disposeResources, ownResource } from "../../src/engine/resources";
 import { RequestOwnership } from "../../src/serve/request-plan";
 import { leaseCacheState, leaseCacheStates } from "../../src/backends/mlx/state-views";
 import type { Cache } from "../../src/model/gemma4-base";
@@ -75,4 +75,36 @@ test("view lease preserves owned-before-borrowed evaluation order", () => {
   expect(view.borrow()).toEqual([owned, borrowed]);
   view.close(); view.close();
   expect(calls).toEqual(["owned"]);
+});
+
+test("state owners publish together before releasing old state, even when release fails", () => {
+  const live = ["old", "old"], released: number[] = [];
+  const failure = new Error("old allocation release failed");
+  expect(() => applyStateChanges([0, 1].map(row => () => ({
+    commit() { live[row] = "new"; },
+    dispose() {
+      expect(live).toEqual(["new", "new"]);
+      released.push(row);
+      if (row === 0) throw failure;
+    },
+  })))).toThrow(failure);
+  expect(released).toEqual([0, 1]);
+  expect(live).toEqual(["new", "new"]);
+});
+
+test("failed preparation releases unpublished state and preserves the preparation error", () => {
+  const execution = new Error("prepare failed"), cleanup = new Error("replacement release failed");
+  let committed = false, releases = 0;
+  try {
+    applyStateChanges([
+      () => ({ commit() { committed = true; }, dispose() { releases++; throw cleanup; } }),
+      () => { throw execution; },
+    ]);
+    throw new Error("expected failure");
+  } catch (error) {
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors).toEqual([execution, cleanup]);
+  }
+  expect(committed).toBe(false);
+  expect(releases).toBe(1);
 });

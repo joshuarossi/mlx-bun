@@ -65,16 +65,23 @@ oracle. See [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2).
 
 ### Memory, admission, and caches
 
-The RAM prompt-cache limit is an upper bound, not extra GPU memory beyond
-the model's budget. Serial requests finish outstanding SSD snapshots before
-generation. When live allocations leave too little room for prefill and KV
-growth, older RAM entries demote to SSD and remain reusable there. Serial and
-continuous execution check headroom after acquiring cached state, under the
-GPU lease. Qwen rechecks between prefill layers; serial decode rechecks every
-256 tokens. These checks inspect materialized allocations; a deferred graph
-can still exceed available memory when evaluated.
-If cache demotion cannot provide enough headroom, the request fails and
-retains its in-flight checkpoint. The configured SSD cap is unchanged.
+Memory estimates are advisory by default. The server attempts requests without
+rejecting a prompt or shortening `max_tokens` based on predicted GPU headroom.
+`fit` and `/stats.admission.max_safe_context` remain estimates; they do not
+set the default execution limit. Explicit `--memory-budget`, `--kv-budget`,
+and context caps remain opt-in restrictions. GLM-5.2's allocated context
+layout retains its configured capacity.
+
+When batch rows finish, full-attention caches drop padding shared by every
+surviving row, matching MLX-LM while preserving each row's absolute position.
+
+Qwen prefills longer than four tokens materialize each layer and its cache
+state before continuing, bounding deferred buffer lifetimes. Execution has
+no reservation checks between layers or during decode. Serial requests
+finish outstanding SSD snapshots before generation. The RAM prefix-cache
+cap controls retained entries; it does not promise that every workload fits.
+Actual allocation failures use the ordinary error path when recoverable;
+a native Metal allocation failure can terminate the process.
 With `--ssd-cache`, an exact recurrent-cache hit persists its boundary before
 transferring the live state to the request. This keeps that boundary reusable
 after the recurrent state advances. Already-durable boundaries need no write;
@@ -82,14 +89,14 @@ a failed required store retains the cache entry and refuses the transfer.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
-| `--memory-budget` | GB (decimal, ×10⁹) | machine RAM × `WIRED_FRACTION` (0.75, `src/fit.ts`); GLM-5.2: min(25 GiB, physical RAM) | both (per request) | Admission ceiling. A request whose prompt fits is always admitted: a broad client `max_tokens` is capped to the room left under the safe context; only a prompt that leaves no generation slot is rejected with **400** (`type: memory_admission`) — the alternative is an uncatchable GPU OOM. The safe-context ceiling bills the active `--kv-quant` scheme at its true bytes/element (`turbo` is billed bf16, conservatively). A budget too small for any context logs a warning and serves anyway. GLM-5.2 runs its header-only resource equation against this ceiling before opening any resident weights or expert slabs. Not an aggregate cap across batch rows — see `--kv-budget`. |
+| `--memory-budget` | GB (decimal, ×10⁹) | unset; memory estimates are advisory | both (per request) | Explicit opt-in budget. Sets the allocator limit and enforces the fit estimate: a prompt leaving no generation slot gets **400** (`type: memory_admission`); a broader completion cap is reduced to the remaining context. Estimates account for active KV quantization and prefill temporaries. Not an aggregate batch cap — see `--kv-budget`. GLM-5.2 also uses this value in its resource plan before loading. |
 | `--kv-budget` | GB (decimal) | off | batch | Aggregate KV budget across concurrently admitted batch rows: a joiner whose projected KV (prompt + `max_tokens`, window-capped) would exceed it **queues** until rows finish; a request over the budget alone is rejected. Without it, N large-context rows can collectively exceed memory. Reported in `/stats.batch.kv_budget_bytes`. |
-| `--prompt-cache` | GB (binary GiB) | `8` | both | RAM prefix-KV cache (byte-capped LRU). `--prompt-cache 0` disables it. Ordinary hits are **non-consuming**: a hit hands out zero-copy clones and leaves the donor entry intact, so N agents sharing a system prompt reuse one prefill. Exact Qwen hybrid hits containing recurrent SSM state transfer the entry to the request and put the extended state back afterward, avoiding an extra resident recurrent snapshot. Batch-lane joiners `take()` the longest usable prefix at admission; a row that finishes without ever merging `put()`s its caches back (merged rows' entries age out). |
+| `--prompt-cache` | GB (binary GiB) | `8` | both | RAM prefix-KV cache (byte-capped LRU). `--prompt-cache 0` disables it. RAM hits lend zero-copy views and leave the donor intact, including recurrent Qwen and method state. SSD persistence runs in the background; RAM reuse never waits for a write. Explicit cache flush and graceful shutdown wait for durability. Batch-lane joiners `take()` the longest usable prefix at admission; a row that finishes without ever merging `put()`s its caches back (merged rows' entries age out). |
 | `--ssd-cache` | dir | off | both | SSD cold tier under the prompt cache ([docs/design/kv-cache.md](../design/kv-cache.md)): prefix KV spills to disk on RAM eviction and idle demotion, is snapshotted after requests settle (debounced, each tensor step owns the generation lock so it cannot overlap inference; `MLX_BUN_SSD_WRITEBEHIND=0` disables), and **survives restarts**. Entries are keyed by model fingerprint + effective KV scheme + backend numerical identity + tokenizer hash + adapter namespace. MLX includes its runtime version and GPU architecture; older numerical identities use separate directories. `SIGINT`/`SIGTERM` drains active requests and flushes dirty snapshots before exit (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`); `POST /admin/cache/flush` is the explicit boundary. Requires the RAM cache. |
 | `--ssd-cache-max` | GB (binary GiB; `0` = unlimited) | unlimited | both | Optional SSD tier byte cap; oldest-mtime entries are evicted only when a positive cap is configured. Warns and is ignored without `--ssd-cache`. |
 | `--ssd-cache-verify` | (bool) | off | both | Verify every tensor hash on restore (reads all bytes eagerly, defeating lazy fault-in) — integrity paranoia only; the header hash is always verified. Warns and is ignored without `--ssd-cache`. |
 | `--ssd-demote-idle` | seconds | `300` with `--ssd-cache`, else off | both | Prompt-cache entries unused this long spill to the SSD tier and free their GPU memory; the next hit restores them. Swept only when the engine is fully idle. `0` disables. Warns and is ignored without `--ssd-cache`. |
-| `--generation-checkpoint` | output tokens | off | serial | Atomically snapshots an in-flight generation every N emitted tokens. Repeating the identical request after a restart replays the saved assistant prefix and continues from its already-sampled next token. Requires `--ssd-cache` and `--batch 1`; completed generations remove their checkpoint, while client cancellation preserves the latest checkpoint. |
+| `--generation-checkpoint` | output tokens | off | qualified requests | Queues an owned in-flight generation snapshot every N emitted tokens. Repeating the identical request after a restart replays the saved assistant prefix and continues from its already-sampled next token. Requires `--ssd-cache`. Shared execution qualifies ordinary requests with supported row-cache layouts, including Qwen, Llama, MiniCPM and Gemma4, with or without adapters, excluding media, grammar, fill, paging, logprobs or speculative methods; existing serial qualification remains available. Explicit cache flush drains queued writes. Completed generations remove their checkpoint, while client cancellation preserves the latest checkpoint. |
 
 Generation checkpoint identity includes stop strings, sampling/KV policy, the
 resolved execution method, compiled/grammar policy, and artifact/implementation
@@ -106,6 +113,17 @@ and retains a reservation through completion. At most one media preparation and
 queues each allow 64 waiting requests; overflow returns `429` before a response
 stream opens, or a terminal stream error after it opens. Disconnects release
 queued reservations and completed preparation resources.
+
+Ordinary requests in the continuous scheduler can join an ongoing prefill
+between chunks when their execution context is compatible and batch capacity
+is available. Scheduling also budgets the initial prefill work in a cohort, so
+long prompts can be prepared one at a time through the continuous executor
+while decode remains batched. Subsequent forwards process real-token chunks from admitted requests
+together. Each request keeps its own cache-maintenance and checkpoint boundaries.
+Arrival timing can change batch geometry and near-tie generated text. Qwen MTP,
+prompt lookup and standalone drafting use the same target prefill driver.
+Their providers prepare companion state through a separate interface;
+scheduling determines admission and work budgets.
 
 Disconnected serial requests leave the admission queue immediately. Active AR
 requests check cancellation between prefill chunks and decode steps; a native
@@ -128,39 +146,46 @@ operation already running completes before that boundary.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
-| `--kv-quant` | `config` \| `off` \| `4` \| `8` \| `turbo[:k<bits>v<bits>]` | `off` (bf16) | see row | KV-cache quantization. `off` = bf16 (the L1 default: quantized KV measured 5–20% slower decode than bf16 at ≤16k on both stacks, so it is an opt-in that buys **memory headroom**). `4`/`8` = **uniform** bits (group 64, start 0 — mlx-lm's `--kv-bits` scheme); with fused-sdpa off (the default for uniform) our unfused quantized SDPA is op-for-op mlx-lm's `quantized_scaled_dot_product_attention`, so uniform is **bit-exact L1**; uniform requests route **serial**. `config` = **per-layer mixed precision** from the model's `kv_config.json` — optiq-only → **L2**; per-layer configs **batch** on every shipped model (full-attention and rotating layers; gated bit-exact per row vs the serial composition). `turbo[:k<bits>v<bits>]` = **TurboQuant** ([docs/design/turboquant.md](../design/turboquant.md)): rotation-based KV quantization, default `k8v3`; `kBits` ∈ {2,4,5,8}, `vBits` ∈ {2,3,4,5,8}; a separate axis (mutually exclusive with `config`/`4`/`8`), v1 is dequantize-on-fetch via stock `ops.sdpa`, **full-attention layers only** (sliding-window layers stay bf16 with a one-time warning), refuses head dims outside `TURBOQUANT_HEAD_DIMS`, and is **solo-only** — `GenerationGateway.place` refuses continuous scheduling for it unconditionally. Any explicit `--kv-quant` overrides the tier preset. |
-| `--paged-kv` | (bool) | off | serial / gated bit-exact | **Optional vLLM-style paged KV cache** ([docs/design/kv-cache.md](../design/kv-cache.md)): full-attention layers store K/V in fixed-size block pools (host-side block table, gather back to contiguous before the stock SDPA; no new attention math). Env mirror `MLX_BUN_PAGED_KV=1`. With no explicit `--batch` the CLI pins `--batch 1`. `createServer` **refuses** (fails startup, never downgrades) `--batch N>1`, any `--kv-quant` (incl. turbo), `--draft-model`, and non-Gemma4 models. Media and adapter requests run the plain cache path per request. Paged requests bypass the prompt cache and run uncompiled decode; pool exhaustion is a typed error, never truncation. Gated bit-exact vs the plain path (`tests/parity/paged-kv-parity.test.ts`). |
-| `--paged-kv-block-size` | n | `256` | serial | Tokens per KV block (`--paged-kv` only); 256 = the plain cache's growth step. |
+| `--kv-quant` | `config` \| `off` \| `4` \| `8` \| `turbo[:k<bits>v<bits>]` | `off` (bf16) | see row | KV-cache quantization. `off` = bf16 (the L1 default: quantized KV measured 5–20% slower decode than bf16 at ≤16k on both stacks, so it is an opt-in that buys **memory headroom**). `4`/`8` = **uniform** bits (group 64, start 0 — mlx-lm's `--kv-bits` scheme); with fused-sdpa off (the default for uniform) our unfused quantized SDPA is op-for-op mlx-lm's `quantized_scaled_dot_product_attention`, so uniform is **bit-exact L1**; uniform requests use shared B=1/B>1 execution where the loaded cache layout supports affine conversion. `config` = **per-layer mixed precision** from the model's `kv_config.json` — optiq-only → **L2**; per-layer configs **batch** on every shipped model (full-attention and rotating layers; gated bit-exact per row vs the serial composition). `turbo[:k<bits>v<bits>]` = **TurboQuant** ([docs/design/turboquant.md](../design/turboquant.md)): rotation-based KV quantization, default `k8v3`; `kBits` ∈ {2,4,5,8}, `vBits` ∈ {2,3,4,5,8}; a separate axis (mutually exclusive with `config`/`4`/`8`), uses the existing decoded or deferred rotated-value attention path, **full-attention layers only** (sliding-window layers stay bf16 with a one-time warning), refuses head dims outside `TURBOQUANT_HEAD_DIMS`, and supports shared ordinary and grouped drafting execution at B=1/B>1 including positive library conversion thresholds when the cache layout qualifies. Any explicit `--kv-quant` overrides the tier preset. |
+| `--paged-kv` | (bool) | off | shared / gated bit-exact | **Optional vLLM-style paged KV cache** ([docs/design/kv-cache.md](../design/kv-cache.md)): full-attention layers store K/V in fixed-size block pools (host-side block table, gather back to contiguous before the stock SDPA; no new attention math). Env mirror `MLX_BUN_PAGED_KV=1`. Paging retains the configured batch size; request state owns independent block pools through the shared cache-layout interface. `createServer` **refuses** any `--kv-quant` (incl. turbo), `--draft-model`, and non-Gemma4 models. Media and adapter requests run the plain cache path per request. Paged requests bypass the prompt cache and run uncompiled decode; pool exhaustion is a typed error, never truncation. Gated bit-exact vs the plain path (`tests/parity/paged-kv-parity.test.ts`). |
+| `--paged-kv-block-size` | n | `256` | shared | Tokens per KV block (`--paged-kv` only); 256 = the plain cache's growth step. |
 
 ### Adapters and speculative decoding
 
-Qwen MTP has an experimental paired RAM prefix cache. Set
-`MLX_BUN_MTP_PROMPT_CACHE=1` to retain one aligned target/draft prefill snapshot
-within the prompt cache's byte budget. A hit transfers both states together;
-different targets, KV policies or non-extending histories miss. The cache is
-RAM-only and does not persist across restarts. `usage.cached_tokens` reports
-the reused target prefix. The default remains off.
+In the current unreleased source, Qwen MTP publishes aligned target/draft
+prefill snapshots through the shared prompt cache by default. The RAM budget
+includes the draft KV and pending hidden row; configured SSD persistence
+queues those tensors with the target state and supports reuse after restart.
+RAM hits retain immutable snapshots for later requests. Target, draft-weight,
+adapter-revision and KV-policy identities separate incompatible state.
+`usage.cached_tokens` reports the reused target prefix.
+`MLX_BUN_MTP_PROMPT_CACHE=0` disables this reuse. Generated-output snapshots
+remain unfinished.
 
-`MLX_BUN_QWEN_SPEC_KV4=1` qualifies Qwen uniform affine KV4 with
-`quantizedKvStart=0` for speculative execution. Recurrent state and the MTP
-cache keep their original precision. TurboQuant and per-layer KV remain
-incompatible. This composition has diagnostic coverage; final combined,
-pressure and quiet-machine acceptance remain open.
+In the current unreleased source, Qwen uniform affine KV4 with
+`quantizedKvStart=0` supports configured speculative execution by default.
+`MLX_BUN_QWEN_SPEC_KV4=0` restores the ordinary-decode compatibility control. Recurrent state and draft KV keep their original precision. Shared Qwen MTP
+also supports bf16, uniform KV8 and TurboQuant at start zero; per-layer mixed
+KV remains incompatible. Strict legacy serial speculation retains bf16/KV4.
+The KV4 control does not disable bf16, KV8 or TQ shared speculation. Six paired M4 Pro combined suites and two completed Kanban tasks support
+this default. Configuring a drafter and selecting KV4 remain explicit choices.
 
-For controlled experiments, `MLX_BUN_RD_PREFILL_CHUNK` sets the speculative
-target prefill chunk, default 2048, unless the library caller provides
-`prefillChunkSize`. `MLX_BUN_RD_CONTEXT_LIMIT` caps physical context admission
+For controlled experiments, `MLX_BUN_RD_PREFILL_CHUNK` sets the prefill chunk,
+default 2048. Shared ordinary and speculative methods use the group's captured
+default; an explicit group option overrides the environment and a library
+request's `prefillChunkSize` overrides that default for its request.
+`MLX_BUN_RD_CONTEXT_LIMIT` sets an explicit request context cap
 without enlarging it. Both require positive integers; the context cap is unset
 by default. These are benchmark controls, not changes to the published model
 profile or sampling policy.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
-| `--adapter` | dir | none | serial (adapter requests route serial) | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the id is the directory basename) and make it the default for requests without an `adapter` field. A request's explicit `adapter` — including `"none"` — wins; hot-swap via `/v1/adapters` is unchanged. A bad adapter fails startup. Alias `--adapter-path`. |
-| `--draft-model` | path \| query | none | serial (all requests) / per-drafter oracle | **Speculative decoding**: a drafter proposes tokens the target verifies in one forward — exact results, faster decode when drafts land. Resolves like the main model. Kind is auto-detected: a full same-tokenizer model (mlx_lm.server parity, L1 token-for-token; tokenizer-family mismatch fails startup), a Gemma `-assistant` KV-borrowing drafter (L2 vs optiq `spec_generate`), a locally trained **DSpark** checkpoint (`dspark.json`), or a released DeepSpec `Gemma4DSparkModel` drafter. Mounting a draft routes **every** request serial (upstream `is_batchable = draft is None`). Composes with structured output; ordinary prompt-cache reuse is bypassed on the spec path; Qwen MTP can opt into paired RAM prefixes with `MLX_BUN_MTP_PROMPT_CACHE=1`. Telemetry: `usage.speculation`. |
-| `--draft-kind` | `two-model` \| `assistant` \| `dspark` \| `deepspec` \| `mtp` \| `ngram` | auto | serial | Override drafter detection. `mtp` = a native multi-token-prediction head split from the target's release (`*_mtp` model_type; shares the target's embeddings/lm-head, defaults `--num-draft-tokens` to its trained `block_size − 1`, rolls DeltaNet caches back by snapshot/replay on partial rejects); `mtp` alone mounts the companion bundled at `<model>/mtp/` when present. Qwen MTP companions accept dense or affine-quantized projections using their checkpoint metadata; changing the draft can change acceptance and speed. `ngram` = **model-free prompt lookup** (drafts copied from the request's own prompt+generation; port of prompt-lookup decoding / vLLM's `ngram` proposer) — mount it **alone** (`--draft-kind ngram` with a `--draft-model` is refused, as is any other kind without one); lossless by the same verify, a no-match round degrades to one plain target step. Any other value fails startup. |
-| `--num-draft-tokens` | n (integer ≥ 1) | `3` (`ngram`: `10`; DSpark: pinned ≤ its trained `gamma`) | serial | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
-| `--ngram-max` / `--ngram-min` | k (integer ≥ 1) | `3` / `1` | serial | `--draft-kind ngram` only: longest/shortest trailing k-gram searched (longest first, first occurrence wins). `--ngram-min` > `--ngram-max` fails startup; either flag without `ngram` warns and is ignored. |
+| `--adapter` | dir | none | compatible adapter groups | Mount a LoRA adapter at startup (same machinery as `POST /v1/adapters`; the id is the directory basename) and make it the default for requests without an `adapter` field. A request's explicit `adapter` — including `"none"` — wins; hot-swap via `/v1/adapters` is unchanged. A bad adapter fails startup. Alias `--adapter-path`. |
+| `--draft-model` | path \| query | none | shared Qwen methods; full-attention/rotating lookup/standalone and Gemma assistant/DeepSpec/DSpark; other combinations serial | **Speculative decoding**: a drafter proposes tokens the target verifies in one forward — exact results, faster decode when drafts land. Resolves like the main model. Kind is auto-detected: a full same-tokenizer model (mlx_lm.server parity, L1 token-for-token; tokenizer-family mismatch fails startup), a Gemma `-assistant` KV-borrowing drafter (L2 vs optiq `spec_generate`), a locally trained **DSpark** checkpoint (`dspark.json`), or a released DeepSpec `Gemma4DSparkModel` drafter. Qwen MTP, prompt lookup and standalone drafting use the shared executor at one or several active rows, including logprobs. Supported full-attention and rotating targets, including Llama, MiniCPM and Gemma, also share bf16, uniform KV4/KV8 or per-layer affine KV or TurboQuant prompt lookup and standalone drafting. Rotating target transactions retain different accepted lengths across the sliding window and publish paired RAM/SSD state. Gemma assistant drafting shares the same execution at B1/B>1 with bf16, uniform KV4/KV8 or per-layer affine KV or TurboQuant target storage. Its hidden-state companion and target KV use the RAM/SSD cache; donor attention owns row validity while the assistant graph stays independent of storage. DeepSpec and DSpark share bf16, uniform KV4/KV8 or per-layer affine KV or TurboQuant target execution and projected-context RAM/SSD companions. DeepSpec supports bf16 or affine-quantized draft weights; DSpark supports its Markov/RNN heads. Confidence selects each row's proposal length independently. Other provider/target combinations still run serial. Unsupported speculative compositions use ordinary execution when their own features support it. Composes with structured output; Qwen MTP, prompt lookup, standalone, Gemma assistant, DeepSpec and DSpark drafting use the shared RAM/SSD prefix cache by default (`MLX_BUN_MTP_PROMPT_CACHE=0` disables); other speculative sources start fresh. Telemetry: `usage.speculation`. |
+| `--draft-kind` | `two-model` \| `assistant` \| `dspark` \| `deepspec` \| `mtp` \| `ngram` | auto | shared Qwen methods; full-attention/rotating lookup/standalone and Gemma assistant/DeepSpec/DSpark; other combinations serial | Override drafter detection. `mtp` = a native multi-token-prediction head split from the target's release (`*_mtp` model_type; shares the target's embeddings/lm-head, defaults `--num-draft-tokens` to its trained `block_size − 1`, rolls DeltaNet caches back by snapshot/replay on partial rejects); `mtp` alone mounts the companion bundled at `<model>/mtp/` when present. Qwen MTP companions accept dense or affine-quantized projections using their checkpoint metadata; changing the draft can change acceptance and speed. `ngram` = **model-free prompt lookup** (drafts copied from the request's own prompt+generation; port of prompt-lookup decoding / vLLM's `ngram` proposer) — mount it **alone** (`--draft-kind ngram` with a `--draft-model` is refused, as is any other kind without one); lossless by the same verify, a no-match round degrades to one plain target step. Any other value fails startup. |
+| `--num-draft-tokens` | n (integer ≥ 1) | `3` (`ngram`: `10`; DSpark: pinned ≤ its trained `gamma`) | method-dependent | Drafts per verify round (mlx_lm.server's default; `mlx_lm.generate`'s is 2). |
+| `--ngram-max` / `--ngram-min` | k (integer ≥ 1) | `3` / `1` | Qwen and full-attention targets shared / other models serial | `--draft-kind ngram` only: longest/shortest trailing k-gram searched (longest first, first occurrence wins). `--ngram-min` > `--ngram-max` fails startup; either flag without `ngram` warns and is ignored. |
 | `--mtp` | `on` \| `off` | `on` for GLM-5.2 | serial+spec | GLM-5.2 checkpoint-native MTP row as the server's drafter, using the bounded auxiliary expert tier and the exact serial verify loop (`usage.lane: "serial+spec"`). `off` removes the draft so ordinary GLM requests can use continuous batching. Other model families ignore it. |
 | `--context-length` | tokens (integer ≥ 1) | `4096` (GLM-5.2) | both | Context reserved by GLM-5.2's header-only resource equation; also the request-admission ceiling, reported in `/stats.glm52`. An impossible plan fails before committing model memory. Ignored by other families. |
 
@@ -172,7 +197,7 @@ profile or sampling policy.
 | `--temperature` | n ∈ [0, 5] | `generation_config.json`, else `0.7` | both | Server-wide sampling default; a per-request `temperature` wins; the browser chat (sends none) inherits it. Alias `--temp` (mlx_lm.server spelling — note its *default* there is `0.0`; pass `--temp 0` for that behavior). |
 | `--top-p` | n ∈ [0, 1] | `generation_config.json`, else `0` (off) | both | Server-wide top-p default (per-request `top_p` wins). |
 | `--top-k` | n ∈ [0, 1e6] | `generation_config.json`, else `0` (off) | both | Server-wide top-k default (per-request `top_k` wins). |
-| `--max-tokens` | n ∈ [1, 1e7] | GLM-5.2: `128` (memory-plan reservation); otherwise none — a request that omits `max_tokens` generates until EOS or the admitted context is exhausted (admission clamps to `maxSafeContext − promptLen`; an invented cap ahead of that could only stop work that would have succeeded) | both | Completion cap when a request omits `max_tokens` (mlx_lm.server flag). DEVIATION when unset: `mlx_lm.server` stops a defaulted request at 512 — `--max-tokens 512` reproduces it. For GLM-5.2 the value is also reserved by the pre-open resource equation and must fit inside `--context-length`. Note: `max_tokens` also feeds `--kv-budget` row projections (prompt + cap), so a defaulted request reserves worst-case and batches conservatively — clients that state `max_tokens` pack tighter. |
+| `--max-tokens` | n ∈ [1, 1e7] | GLM-5.2: `128` (memory-plan reservation); otherwise none — an omitted cap generates until EOS/stop or an explicitly configured limit | both | Completion cap when a request omits `max_tokens` (mlx_lm.server flag). DEVIATION when unset: `mlx_lm.server` stops a defaulted request at 512 — `--max-tokens 512` reproduces it. For GLM-5.2 the value is also reserved by the pre-open resource equation and must fit inside `--context-length`. Note: `max_tokens` also feeds `--kv-budget` row projections (prompt + cap), so an uncapped request cannot fit a finite explicit KV budget; set `--max-tokens` or send a request cap when using that budget. |
 | `--hlg-sampling` | `on`\|`off` | off | serial / Lab | Piecewise tone-curve (HLG) sampling: rolls off the top-token region, boosts the mids, gentles the tail; the gain folds from `--temperature`. Design: [docs/archive/hlg-sampling.md](../archive/hlg-sampling.md). |
 | `--hlg-width` | nats ∈ [0, 100] | `4` | serial | HLG mid-region half-width. Only with `--hlg-sampling on`. |
 | `--hlg-shoulder` | nats ∈ [0, 100] | `4` | serial | HLG highlight rolloff scale. Only with `--hlg-sampling on`. |
@@ -217,13 +242,19 @@ mlx-bun serve <model> --temp 0 --top-p 0 --top-k 0 --max-tokens 512 --batch 1
   `generation_config.json` (we inject its sampling defaults, optiq-style);
   its unset-request defaults are temperature 0.0, top-p/top-k off.
 - `--max-tokens 512` — its cap when a request omits `max_tokens` (ours is
-  none: run to EOS or the admitted context). Note a defaulted mlx-bun run's
-  first 512 tokens are byte-identical to mlx-lm's capped run — the cap only
-  moves the stopping point and `finish_reason`.
+  none: run to EOS/stop or an explicit operator limit). The cap changes the stopping
+  point and `finish_reason`.
 - `--batch 1` — strict serial, arrival-independent numerics. (`--batch N`
   is itself bit-parity with mlx-lm at B=N; pin 1 for golden regeneration.)
 - Already matching without flags: host/port, bf16 KV (`--kv-quant off`),
   the L1 kernel preset (`--l1` is the default), logprobs caps, error text.
+
+These flags align sampling and caps. Exact generated trajectories also need
+matching prefill and cache boundaries. Stock MLX-LM HTTP splits system and
+thinking segments before reserving the final token. Different forward shapes
+can change near-tie greedy choices even inside the same Python model.
+The benchmark's explicit `--reference-prefill unsplit` control and the saved
+MiniCPM/Qwen investigation are documented in [benchmarks.md](benchmarks.md).
 
 The kill switches are bit-exact A/B levers; **the naked default is the L1
 set** (2026-07-05: an output-changing lever earns a default only by beating
@@ -344,14 +375,14 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | Env var | CLI flag | Default | Effect |
 | --- | --- | --- | --- |
 | `MLX_BUN_COMPILED_DECODE` | `--compiled-decode` | on (`"0"` disables) | Compiled decode graph replay (serial lane; batch lane at B=1). |
-| `MLX_BUN_EARLY_FIRST_TOKEN` | — | off (`=1`) | Serial/native generation yields token zero before constructing the next decode step. This can reduce first visible output latency when token zero contains visible text. Later decode remains pipelined. Serial fill, grammar, checkpoint resume and single-token budgets retain their existing order. A native consumer stopping at the first yield leaves a prompt-only cache entry with matching usage. Reusing that cache with a longer suffix can change prefill shapes and subsequent numerics; reconciling this boundary remains a promotion gate. The continuous scheduler also yields after preparation creates its first active row when no other request is queued, allowing prepared output to flush before decode. It then rechecks cancellation, admission and shutdown; queued short admissions still group together. The setting is captured by generation and the batch runtime. Experimental pending broader cached/pressure and quiet-machine acceptance. |
-| `MLX_BUN_TURBOQUANT_FUSED_DECODE` | — | off (`=1`) | Experimental packed K/V decode fusion for an existing `--kv-quant turbo:...` cache, captured when each cache is created. A shared Metal operation unpacks keys and values, applies the existing key zero/scale and Lloyd-Max value scale, and preserves the codec's eager or deferred inverse rotation. It accepts supported bit widths, head dimensions 64/128/256/512 and 32/64-element groups with fp16/bf16/f32 metadata. Eager k8v3 with B1/H4, head dimension 256, fp16 metadata, group32 and at least 8192 cached tokens also fuses inverse rotation; other shapes keep the existing rotation path. Unsupported inputs, CPU streams and shapeless traces retain ordinary operations. Quantization, stored cache format and serving eligibility are unchanged. Joint-decoder Qwen native/serial and repeated long-context HTTP gates pass. The inverse operation passes both integrated Qwen model gates and six HTTP pairs per quant. MiniCPM/Gemma deferred-consumer serving gates also pass. Combined settings, pressure and quiet M4 Pro acceptance remain. |
+| `MLX_BUN_EARLY_FIRST_TOKEN` | — | off (`=1`) | Serial/native generation yields token zero before constructing the next decode step. This can reduce first visible output latency when token zero contains visible text. Later decode remains pipelined. Serial fill, grammar, checkpoint resume and single-token budgets retain their existing order. When a native consumer stops at the first yield and retains caller-owned caches, a non-aborted return completes that token’s M=1 forward before returning the cache. This preserves the ordinary pipeline’s boundary for later prefix reuse. Aborted requests do not start another forward; caches owned and disposed by the generation need no alignment. Native M1 packed-Qwen/MiniCPM/Gemma continuation gates pass; M4 packed/affine and serving acceptance remain. The continuous scheduler also yields after preparation creates its first active row when no other request is queued, allowing prepared output to flush before decode. It then rechecks cancellation, admission and shutdown; queued short admissions still group together. The setting is captured by generation and the batch runtime. Experimental pending broader cached/pressure and quiet-machine acceptance. |
+| `MLX_BUN_TURBOQUANT_FUSED_DECODE` | — | off (`=1`) | Experimental packed K/V decode fusion for an existing `--kv-quant turbo:...` cache, captured when each cache is created. A shared Metal operation unpacks keys and values, applies the existing key zero/scale and Lloyd-Max value scale, and preserves the codec's eager or deferred inverse rotation. It accepts supported bit widths, head dimensions 64/128/256/512 and 32/64-element groups with fp16/bf16/f32 metadata. Eager k8v3 with B1/H4, head dimension 256, fp16 metadata, group32 and at least 8192 cached tokens also fuses inverse rotation; other shapes keep the existing rotation path. Unsupported inputs, CPU streams and shapeless traces retain ordinary operations. Quantization, stored cache format and serving eligibility are unchanged. Joint-decoder Qwen native/serial and repeated long-context HTTP gates pass. The inverse operation passes both integrated Qwen model gates and six HTTP pairs per quant. MiniCPM/Gemma deferred-consumer serving gates also pass. The unreleased shared codec/layout supports ordinary and supported drafting groups without changing this kernel selection. Gemma now owns pre-write row positions across cache appends; the fix passes native checks on both Macs. Combined settings, pressure and strict M4 Pro acceptance remain. |
 | `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | follows `--kv-quant` | `=1` forces the stock unfused SDPA everywhere. |
 | `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`"0"` disables) | Gemma geglu via mlx-lm's `@mx.compile` closure. `=0` → uncompiled composition (same parity, slower). |
 | `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!== "0"`) | Compiled SwiGLU on MiniCPM5 decode and prefill, matching mlx-lm. An enclosing compiled graph owns its own fusion. qwen3/qwen3.5/universal compile unconditionally. |
 | `MLX_BUN_FORCE_WIRE` | `--force-wire` | off (`=1`) | Wire weights for the generation. |
 | `MLX_BUN_TRELLIS` | — | `kernel` (`=expand`) | Packed trellis-coded weights (`mode: "trellis"` modules, Q2b — design: `docs/design/turboquant.md`). `kernel` serves them through the Metal decode kernels (M≤4 matvec; larger M expands one tensor to bf16 and runs a stock matmul). `=expand` decodes every trellis tensor at LOAD into 8-bit g64 affine (+~4 GiB at 27B, the eval-carrier numerics) and serves it through the stock quantized path — the fallback for a machine where the kernels lose. |
-| `MLX_BUN_TRELLIS_VARIANT` | — | `6` | Trellis kernel variant (see [Q2b experiments](../design/turboquant.md)): `6` = code computed inline × reciprocal, weight served as f32 code×scale; `1` adds a residual step and bf16 rounding to reproduce the fake-quant artifact's weights. `0`/`2`/`3`/`4`/`5` are bench-only decoder variants. Experimental `7`–`13` retain variant-6 decode values and tune work assignment; `11` tiles eligible short axis-1 prefills, `12` adds split-K axis-0 prefill at M=5..8, and `13` also vectorizes remaining bf16 expansion for k2/k3/k4, T=256, L=12. On MLX 0.32.2/M3+ the axis-1 M5..15 path instead uses direct packed decoding with native wide-matvec arithmetic when Qwen's RMSNorm establishes aligned row-contiguous inputs; callers without that layout proof use native expansion/matmul. Qwen27B additionally selects an integer codebook for its interleaved k3 down projection at M=3/4 with bf16 activations; other calls retain the computed decoder. Prefill rounds weights to the activation dtype. |
+| `MLX_BUN_TRELLIS_VARIANT` | — | `13` | Trellis kernel variant (see [Q2b experiments](../design/turboquant.md)): `6` = code computed inline × reciprocal, weight served as f32 code×scale; `1` adds a residual step and bf16 rounding to reproduce the fake-quant artifact's weights. `0`/`2`/`3`/`4`/`5` are bench-only decoder variants. Variants `7`–`13` retain variant-6 decode values; `13` is the measured default. These variants tune work assignment; `11` tiles eligible short axis-1 prefills, `12` adds split-K axis-0 prefill at M=5..8, and `13` also vectorizes remaining bf16 expansion for k2/k3/k4, T=256, L=12. On MLX 0.32.2/M3+ the axis-1 M5..15 path instead uses direct packed decoding with native wide-matvec arithmetic when Qwen's RMSNorm establishes aligned row-contiguous inputs; callers without that layout proof use native expansion/matmul. Qwen27B additionally selects an integer codebook for its interleaved k3 down projection at M=3/4 with bf16 activations; other calls retain the computed decoder. Prefill rounds weights to the activation dtype. |
 | `MLX_BUN_TRELLIS_ASYNC_EXPAND` | — | off (`=1`) | Experimental variant-13 expansion scheduling. Submit an expanded projection asynchronously while MLX active allocation is below 75% of the device's recommended working set; retain blocking evaluation above it. Other variants are unchanged. Uses the execution's runtime-policy snapshot and preserves the caller's layer barriers. The threshold is not a total-memory cap. Qwen27B integrated native, repeated serial/continuous HTTP and both saved-agent pressure gates pass on M4 Pro 24 GB. Broader-model, combined-optimization and quiet M4 Pro acceptance remain. |
 | `MLX_BUN_PAGED_KV` | `--paged-kv` | off (`=1`) | Paged KV cache; the same refusals and prompt-cache bypass as the flag. |
 | `MLX_BUN_ALLOW_PRIVATE_MEDIA` | `--allow-private-media` | off (`=1`) | Permit media fetches to private/loopback/link-local hosts (timeout + size cap still apply). |
@@ -372,7 +403,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_BATCH_EXTEND` | — | on (`"0"` reverts) | Joining rows append to the running batch's KV in one pad+concat (mlx-lm `BatchKVCache.extend`). `=0` reverts to whole-batch re-merge (numerically equivalent, O(B·S)). |
 | `MLX_BUN_BATCH_VEC_SAMPLE` | — | on (`"0"` reverts) | Vectorized greedy batch sampling; `=0` falls back to per-row sampling (bit-equal A/B). |
 | `MLX_BUN_BATCH_NO_PIPELINE` | — | off (`=1`) | Read each batch step's tokens synchronously instead of pipelined (A/B lever; numerically equivalent, slower). Read once at module load. |
-| `MLX_BUN_SSD_WRITEBEHIND` | — | on (`"0"` disables) | `--ssd-cache`'s debounced write-behind snapshot (restart survival). Each tensor flush owns the generation lock, and requests can run between tensors. `=0` disables it; eviction and demotion spills still write. |
+| `MLX_BUN_SSD_WRITEBEHIND` | — | on (`"0"` disables) | `--ssd-cache`'s debounced write-behind snapshot (restart survival). Each tensor write waits for an idle engine, then owns the generation lock for that step. Pending writes do not drain active batches or delay request admission for a full flush. `=0` disables it; eviction and demotion spills still write. |
 | `MLX_BUN_SSD_SPILL_QUEUE_GB` | — | `2` (GiB; any finite value ≥ 0) | Byte cap on pending write-behind spill clones (they pin evicted entries' GPU memory until the generation-locked flush runs). Over cap the oldest queued spill drops and frees immediately; the durability coordinator keeps its snapshot dirty so an explicit or shutdown flush can retry. `=0` keeps only the newest + in-flight clone pinned. Counters in `/stats.ssd_cache`. |
 | `MLX_BUN_SHUTDOWN_TIMEOUT_MS` | — | `120000` (any finite value > 0) | Maximum time `serve` gives active requests plus the SSD durability flush after `SIGINT`/`SIGTERM`; on timeout it logs the remaining snapshot/spill counters and exits. |
 | `MLX_BUN_DSPARK_MINCONF` | — | checkpoint-driven | Overrides the DSpark/DeepSpec draft scheduler's minimum-confidence threshold (draft-length pruning). Spec lane only ([docs/design/speculative-decoding.md](../design/speculative-decoding.md)). |
@@ -440,6 +471,10 @@ it. Only a second concurrent request causes a batch layout to exist. The
 flag declares the concurrency cap; active rows select B=1 or B=N inside
 the scheduler.
 
+No flag is needed to enable this default. The cap is a maximum, not a minimum
+group size: a lone eligible request starts at B=1. The serial executor remains
+available through `--batch 1` and for unsupported request compositions.
+
 `--batch 1` pins the strict serialized single-queue path: one generation
 at a time, arrival-independent numerics (a request's bits never depend on
 what else was in flight). Pin it for golden regeneration and
@@ -454,8 +489,9 @@ row for bf16, and per-row oracle-gated for the quantized compositions:
 - **`--kv-quant config`** (per-layer mixed precision) **batches** on
   every shipped model — full-attention and rotating layers — applied per
   row, gated bit-exact for unpadded rows vs the serial composition.
-- **`--kv-quant 4|8`** (uniform bits) and **`turbo`** route those
-  requests to the serial lane.
+- **`--kv-quant 4|8`** uses shared affine conversion and batches on supported
+  full-attention, rotating and hybrid recurrent models.
+- **`turbo`** uses encoded shared rows for qualified start-zero full-attention caches; sliding layers stay bf16.
 
 ### Scheduling declaration (`GenerationGateway.place`)
 
@@ -471,12 +507,12 @@ GPU (one `AsyncMutex`).
 | Request property | Continuous scheduler? |
 | --- | --- |
 | vision / audio / video parts | ❌ serial — offset-0 single-sequence prefill + media masks |
-| LoRA `adapter` (resolves to ≥1) | ❌ serial — one active adapter per generation |
-| `logprobs` / `top_logprobs` | ❌ serial — the batched sampler doesn't capture logprob arrays |
-| explicit `seed` | ❌ serial — reproducibility ⇒ solo (matches mlx-lm) |
-| KV quant active | ✅ batches for per-layer `config` schemes; uniform bits → serial |
-| `--kv-quant turbo` | ❌ serial, unconditionally (novel `Cache` class, no batched merge/filter; explicit refusal in placement on top of the capability gate) |
-| `--draft-model` mounted | ❌ serial, server-wide (`is_batchable = draft is None`) |
+| LoRA `adapter` (resolves to ≥1) | ✅ identical ordered adapter sets share a group; different sets wait for the next group |
+| `logprobs` / `top_logprobs` | ✅ ordinary and qualified MTP/lookup/standalone-draft groups capture per-request probabilities; other exclusions still apply |
+| explicit `seed` | ✅ request-local random stream; reproducibility also depends on model arithmetic and batch composition |
+| KV quant active | ✅ batches for per-layer `config` and uniform `4`/`8` schemes on supported cache layouts |
+| `--kv-quant turbo` | ✅ qualified TQ layouts; ordinary and supported grouped drafting library requests also support delayed row-local conversion |
+| `--draft-model` mounted | ✅ qualified MTP, lookup, standalone, assistant, DeepSpec and DSpark/DFlash groups; provider and request capabilities determine eligibility; supported ordinary requests batch |
 | `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency penalties | ✅ batches — per-row logits processors over per-row device-side history (Qwen3.5 ships a *default* repetition penalty, so this is load-bearing) |
 | structured output (`response_format` / `guided_*`) | ✅ batches — per-row grammar matchers (`MLX_BUN_GRAMMAR_BATCH=0` forces serial) |
 | `temperature` / `top_p` / `top_k` | ✅ batches (each row samples with its own seed) |
@@ -508,22 +544,22 @@ declared composition may still require the serial mechanism as shown above.
 | Option | serial (`--batch 1`) | `--batch N` (N>1) |
 | --- | --- | --- |
 | `--kv-quant config` | ✅ applied to all requests | ✅ batches where the loaded cache capability supports the per-layer scheme; otherwise routes serial |
-| `--kv-quant 4`/`8` | ✅ applied to all requests | ⚠️ uniform-threshold semantics route requests serial |
-| `--kv-quant turbo[:k<bits>v<bits>]` | ✅ applied to all requests | ⚠️ applied, but forces **all** requests to the serial lane |
+| `--kv-quant 4`/`8` | ✅ applied to all requests | ✅ server start=0 converts during prefill and batches on supported cache layouts; delayed library thresholds still use serial |
+| `--kv-quant turbo[:k<bits>v<bits>]` | ✅ ordinary decode; strict serial speculation remains excluded | ✅ ordinary TQ, including delayed library conversion; supported grouped drafting also supports delayed library conversion |
 | `--kv-quant off` / unset | ✅ bf16 (the L1 default) | ✅ bf16 |
-| `--paged-kv` | ✅ (pinned here by default) | ❌ startup refusal |
+| `--paged-kv` | ✅ | ✅ Gemma4 bf16; prompt-cache bypass |
 | `--memory-budget` | ✅ per-request admission | ✅ per-request admission — not aggregate (use `--kv-budget`) |
 | `--kv-budget` | n/a | ✅ aggregate queue/reject across rows |
 | `--prompt-cache` / `--ssd-cache` | ✅ prefix reuse + SSD restore | ✅ on both lanes: joiners `take()` at admission; never-merged rows `put()` back |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
 | `--thinking` | ✅ | ✅ |
 | vision / audio / video request | ✅ | ✅ via serial lane |
-| LoRA `adapter` | ✅ | ✅ via serial lane |
+| LoRA `adapter` | ✅ | ✅ compatible groups on adapter-capable backends |
 | `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency | ✅ | ✅ (batches — per-row processors) |
-| `seed` | ✅ | ✅ via serial lane |
+| `seed` | ✅ | ✅ request-local sampling |
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
-| `--draft-model` / `--draft-kind` | ✅ spec decode (grammar composes) | ⚠️ mounts, but routes **every** request serial |
+| `--draft-model` / `--draft-kind` | ✅ eligible spec decode | ✅ qualified MTP/lookup/standalone-draft groups, including grammar/logprobs; other providers remain serial |
 | GLM `--mtp on` | ✅ native MTP spec decode | ⚠️ default-on MTP routes every request serial+spec; `--mtp off` exposes ordinary GLM batching |
 | `--compiled-decode` | ✅ | ✅ at **B=1 only**: a lone request's adopted serial-class caches replay the same compiled step; B>1 steps run the plain graph |
 | `--fused-sdpa` / `--force-wire` | ✅ (serial decode route) | n/a — compat mode, no perf flags by design |
@@ -552,17 +588,22 @@ model through `forwardHidden`/`logitsFromHidden` directly (not
 
 Deliberate v1 scope, not bugs:
 
-1. **Prompt cache on the SPEC path is bypassed.** A `--draft-model`
-   server re-prefills every request (the target+draft cache-entry
-   composition is designed in mlx-lm-tool-parity-plan §7.6, not built).
+1. **Other draft providers lack shared state.** Qwen MTP, prompt lookup and
+   standalone drafting reuse aligned prefill and completed-output state through
+   the common RAM/SSD cache. Supported full-attention targets also retain
+   lookup and standalone-draft state. Gemma assistant drafting retains its target hidden
+   and donor KV through the same cache. Other providers start fresh. Long-conversation timing and pressure
+   acceptance remain open.
 2. **Aggregate admission is opt-in** via `--kv-budget`; without it N
    large-context rows can collectively exceed memory.
-3. **Short-context only.** Verified pre-ring-wrap (rows < the 1024 sliding
-   window); long-context batched decode is a separate validation.
+3. **Coverage depends on composition.** Same-B Gemma oracle tests cover
+   sliding-window wrap and late joins. Broader media, resume, paged and method
+   combinations remain open in Phase 18.
 4. **bf16 by contract; mixed-KV batching beyond it.** mlx-lm's batched
    path *is* bf16. Per-layer `config` batching is a beyond-mlx-lm
    composition verified per row against the optiq oracle. Batched
-   uniform/turbo KV has no oracle and is deferred.
+   uniform/TurboQuant now has shared layouts; additional same-B external
+   oracle and feature-composition checks remain.
 5. **`extend` join** appends a joining request to the running batch's
    full-attention KV in one pad+concat (`MLX_BUN_BATCH_EXTEND=0` reverts
    to whole-batch re-merge); sliding-window layers still re-merge on join.
@@ -616,16 +657,16 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Runtime isolation (crash-isolated engine child behind a proxy parent) | off | both | — | `--isolate` |
 | Model pool (LRU-capped resident engines under `--isolate`) | 1 | both | — | `--model-pool <n>` |
 | Mixed-precision KV (`kv_config.json`, optiq's scheme) | off | serial + batch (per-layer configs batch) | L2 | `--kv-quant config`, `--l2` |
-| Uniform quantized KV (mlx-lm's `--kv-bits` scheme) | off | serial | L1 | `--kv-quant 4\|8` |
-| TurboQuant KV (rotation-based: affine keys + FWHT/Lloyd-Max values) | off | serial only (solo) | Lab (codec oracle-backed vs vllm-metal; cache class unvalidated) | `--kv-quant turbo[:k<bits>v<bits>]` (default `k8v3`) |
+| Uniform quantized KV (mlx-lm's `--kv-bits` scheme) | off | serial + batch | L1 | `--kv-quant 4\|8` |
+| TurboQuant KV (rotation-based: affine keys + FWHT/Lloyd-Max values) | off | serial + qualified shared ordinary/drafting | Lab (codec oracle-backed; composition gates apply) | `--kv-quant turbo[:k<bits>v<bits>]` (default `k8v3`) |
 | Compiled decode (bit-exact graph replay) | on | serial, batch at B=1 | L1/L2 | `--compiled-decode on\|off` |
 | Compiled activations (mlx-lm's `@mx.compile` geglu/swiglu) | on | both | L1 | `--compiled-activations on\|off` |
 | Fused SDPA (optiq-exact quantized-KV attention) | follows `--kv-quant` | serial | L2 | `--fused-sdpa on\|off` |
-| Paged KV (vLLM-style block pool, gather before the stock SDPA) | off | serial (pins `--batch 1`) | gated bit-exact vs plain `KVCache` | `--paged-kv`, `--paged-kv-block-size <n>` |
-| Speculative decoding (two-model / Gemma `-assistant` / DSpark / DeepSpec / native MTP head) | off | serial (forces all-serial) | per-drafter oracle (L1 two-model, L2 assistant, DeepSpec reference, Lab DSpark) | `--draft-model`, `--draft-kind`, `--num-draft-tokens` |
+| Paged KV (vLLM-style block pool, gather before the stock SDPA) | off | shared B1/B>1 | gated bit-exact vs plain `KVCache` | `--paged-kv`, `--paged-kv-block-size <n>` |
+| Speculative decoding (two-model / Gemma `-assistant` / DSpark / DeepSpec / native MTP head) | off | shared Qwen methods; full-attention/rotating lookup/standalone and Gemma assistant/DeepSpec/DSpark; other combinations serial | per-drafter oracle (L1 two-model, L2 assistant, DeepSpec reference, Lab DSpark) | `--draft-model`, `--draft-kind`, `--num-draft-tokens` |
 | GLM-5.2 checkpoint-native MTP | on for GLM-5.2 | serial+spec | oracle trajectory + synthetic HTTP gate | `--mtp on\|off` |
-| Model-free prompt-lookup speculation (vLLM `ngram` port) | off | serial (forces all-serial) | lossless by verify (gated vs non-spec greedy) | `--draft-kind ngram`, `--ngram-max`, `--ngram-min`, `--num-draft-tokens` (default 10) |
-| Memory admission (never GPU-OOM) | on (RAM × 0.75) | both | — | `--memory-budget <GB>` |
+| Model-free prompt-lookup speculation (vLLM `ngram` port) | off | Qwen and full-attention targets shared / other models serial | lossless by verify (gated vs non-spec greedy) | `--draft-kind ngram`, `--ngram-max`, `--ngram-min`, `--num-draft-tokens` (default 10) |
+| Estimated memory admission | off (advisory) | both | — | `--memory-budget <GB>` opts in |
 | Aggregate KV admission for batch rows | off | batch | — | `--kv-budget <GB>` |
 | Expert offload (MoE experts on mmap) | off | serial | Lab | `--expert-offload` |
 | Extend-join (O(1) batch admission) | on | batch | L1 (mlx-lm `extend`) | `MLX_BUN_BATCH_EXTEND=0` |
@@ -641,20 +682,20 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Token fast-forwarding for tool calls (template-determined spans in one forward) | off | serial only | opt-in; identity tested on covered fixtures, parser/held-out gates remain (`tests/parity/fill-strict.test.ts`) | `MLX_BUN_FILL=strict` |
 | Echo injection (session self-copy spans, verified against the same forward's logits) | off | serial only | Lab (paired A/B on task success + wall clock before any default) | `MLX_BUN_FILL=echo`, `MLX_BUN_FILL_K`, `MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX` |
 | `guided_grammar` (EBNF) / `guided_regex`¹ / `guided_choice` / `structured_outputs` | on | both | L2 | request fields |
-| Structured output × speculative decoding | on when both active | serial | Lab | — |
-| Quantized KV × speculative decoding | KV scheme wins by default. Qwen uniform KV4 with start=0 can opt into speculation with `MLX_BUN_QWEN_SPEC_KV4=1`; TurboQuant and per-layer schemes remain incompatible. | serial | experimental, default off | `MLX_BUN_QWEN_SPEC_KV4=1` with `--kv-quant 4` |
+| Structured output × speculative decoding | on when both active | Qwen grouped MTP, lookup and standalone drafting / eligible serial methods | Lab | — |
+| Quantized KV × speculative decoding | Shared Qwen supports uniform KV4/KV8 and TQ with zero or positive conversion thresholds; strict serial supports qualified KV4; per-layer mixed KV remains excluded | Qwen grouped MTP, lookup and standalone drafting / eligible serial methods | scheme and method gates | `MLX_BUN_QWEN_SPEC_KV4=0` disables the KV4 composition |
 | Tool calling (Gemma sentinel / CPM+Qwen XML / GLM `arg_key`+`arg_value`) + `role:"tool"` loops | on | both | — | request `tools` |
 | Vision (`image_url`; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on for models with a tower; SSRF guard on remote URLs | serial | L1/L2 | `--allow-private-media` |
 | Video input (`video_url`/`video`; AVFoundation sidecar, 2 fps, ≤768 frames, 256 MB body cap; never with audio) | on for Qwen3.5-family | serial | mlx-vlm oracle | `--allow-private-media`, `MLX_BUN_FRAME_EXTRACT` |
 | Audio input (`input_audio`/`audio`/`audio_url`; WAV native, mp3/m4a/flac/ogg/aiff via CoreAudio; ≤30 s per clip; mixes with images) | on for models with `audio_config` + sidecar tower (e4b) | serial³ | L2 (greedy stream exact vs optiq's internal model) | `--allow-private-media` |
-| LoRA adapters (mount at start / hot-swap) | off | serial | — | `--adapter <dir>`, `POST /v1/adapters` |
+| LoRA adapters (mount at start / hot-swap) | off | compatible groups | — | `--adapter <dir>`, `POST /v1/adapters` |
 | Sampling: temperature / top-p / top-k / min-p / XTC / logit_bias / presence+frequency+repetition penalties | per request | both | L1 (mlx-lm-faithful) | request fields / server defaults |
-| `logprobs` / `top_logprobs` | off | serial | L1 | request fields |
-| Fixed `seed` reproducibility | off | serial | — | request field |
+| `logprobs` / `top_logprobs` | off | both | L1 | request fields |
+| Fixed `seed` reproducibility | off | both | — | request field; compare the same execution composition |
 | Thinking-mode control (hybrid-reasoning models) | model default | both | — | `--thinking`, `chat_template_kwargs`, `reasoning_effort` |
 | Stop sequences / streaming / usage accounting | on | both | — | request fields |
 | HLG tone-curve sampling | off | serial | Lab | `--hlg-sampling on` |
-| Spec-decode telemetry (`usage.speculation`) | on with a draft | serial | — | — |
+| Spec-decode telemetry (`usage.speculation`) | on with a draft | Qwen shared MTP, lookup and standalone drafting / eligible serial methods | — | — |
 | Token-fast-forwarding telemetry (`usage.fill`) | on with `MLX_BUN_FILL=strict` | serial | — | — |
 | Per-turn lane telemetry (`usage.lane`: serial / serial+spec / batched) | on | both | — | — |
 
@@ -712,19 +753,26 @@ composition cells in one run).
   On 12B+ add `--draft-model <small-same-tokenizer>`.
 - *Several clients at once (throughput):*
   `mlx-bun serve <model> --batch 4 --ssd-cache <dir> --kv-budget <GB>` —
-  don't set uniform/turbo `--kv-quant` (it un-batches everything), don't
-  mount a draft.
+  supports qualified start-zero TurboQuant and a grouped Qwen MTP companion.
+  Other draft providers still use serial speculation.
 - *UI must never lag / survive engine crashes:* add `--isolate`
   (`--model-pool 2` to keep two models resident).
 - *Reproducibility:* bare / `--l1` (≡ mlx-lm), `--l1 --batch 1` (strict
   serial), `--l2` (≡ optiq).
 - *Memory-tight big model:* `--kv-quant config|4|8|turbo` +
   `--memory-budget <GB>` + `--ssd-cache <dir>`; MoE adds
-  `--expert-offload`. Uniform/turbo make this the serial recipe.
+  `--expert-offload`. Start-zero TurboQuant supports shared execution.
 
-**The two exclusions to remember:** batching excludes uniform/TurboQuant KV
-(per-layer `kv_config.json` does compose), and spec excludes prompt-cache
-reuse (v1 bypass).
+**Remaining exclusions:** media, paged KV, generation resume, fill and draft
+providers without grouped implementations still need shared execution work.
+Qwen ordinary, shared MTP and prompt lookup support positive library thresholds for uniform
+affine KV4/KV8 and TurboQuant. Ordinary Gemma supports positive affine KV4/KV8
+thresholds, including sliding-window layers. Other-model delayed affine remains
+open. Qwen MTP
+prefill and completed decode state use the common RAM/SSD cache. Generated
+checkpoints contain only processed tokens; persistence uses the existing
+queue. Strict serial deletion and complete feature parity
+remain acceptance work in Phase 6/18.
 
 ## Observability — `GET /stats`
 
@@ -750,3 +798,49 @@ preparation wait during that job. Shutdown cancels queued jobs and terminates th
 host's active job before releasing its lease. Resident model weights remain
 loaded. Under isolation, the parent coordinates all of its model-pool workers.
 This controls execution, not memory capacity or independently launched servers.
+
+### Delayed KV conversion in library requests
+
+The CLI keeps `quantizedKvStart=0`. A library `KvScheme("turbo", ...)` can
+set a positive threshold for ordinary or Qwen MTP shared execution. Every row converts
+at its own existing maintenance boundary. During the mixed phase, the
+cache retains plain and encoded rows independently while model attention
+still runs at the shared batch size. The fetched attention state restores
+only the rotated value rows; once all rows convert, the standard packed
+batch layout takes over. Shared MTP converts committed history before a
+verification round; crossing the threshold inside that round converts at
+resolution after rollback and before checkpoint publication. Rejected tokens
+cannot set the conversion offset.
+
+Qwen ordinary, shared MTP and prompt lookup also support positive `quantizedKvStart` with
+uniform affine KV4/KV8. Affine and TQ adapters share the same row-transition
+lifecycle. During mixed affine precision, each row uses its existing plain or
+quantized attention arithmetic; after conversion, the packed batch layout owns
+attention. The model binding declares this support; scheduling does not choose
+the codec or conversion boundary. Ordinary Gemma also supports delayed affine
+conversion in full and sliding-window layers. Rotating rows retain the same
+physical columns while converting independently, so shared attention masks stay
+aligned. Gemma speculative methods and other-model delayed affine remain open.
+
+A delayed conversion records the earliest reusable prefix offset. RAM and
+SSD reuse preserve earlier plain donors and never trim converted state
+below that boundary. Older TQ SSD files without this metadata remain
+usable at their stored offset, but cannot serve shorter prefixes. The
+start-zero default-group cache keys are unchanged; positive TQ and affine
+thresholds, and non-default affine group sizes, have distinct keys.
+No memory budget or admission default changes.
+
+
+Supported grouped draft providers also accept TurboQuant with positive library
+conversion thresholds. Full-attention layers use the selected codec; sliding
+layers stay bf16. Generated target and method-companion snapshots preserve
+precision through RAM and queued SSD persistence. Defaults are unchanged.
+Composition evidence and remaining gaps: [batching design](../design/batching.md).
+
+The programmatic `createServer` option `quantizedKvStart` sets the absolute
+per-row offset at which the selected KV scheme converts. Omission preserves
+the existing start-zero server policy. This option is resolved once with the
+KV scheme and shared by request preparation, execution, and checkpoint identity.
+Generation checkpoints preserve encoded state and each cache's earliest reusable
+offset; restoring a checkpoint does not re-quantize it. TurboQuant retains its
+existing full-attention scope, with sliding-window caches in bf16.

@@ -35,11 +35,18 @@ Markers: `[ ]` todo, `[~]` in progress. Hard cap 800 lines, gate-enforced by
   MoE family. Not parity with mlx-lm's dozens.
 - **Docs land WITH the feature.** A change to the served surface updates
   server-config.md / server-api.md / cli.md / README in the SAME commit.
+- **Separate concerns through interfaces.** Scheduling chooses work; inference
+  methods advance it; model backends execute it; the shared cache retains
+  reusable state from both prefill and decode. RAM/SSD placement belongs to
+  storage. Resolve configuration once by concern. Preserve fused execution,
+  buffer ownership and overlap; measure the complete request after extraction.
+  Reuse existing optimized kernels and keep developing faster specializations.
+  Fuse work, remove operations and avoid materialization where measurements
+  support it. Keep scheduling changes separate from kernel experiments in A/Bs.
 
 ## Reference environment
 
-Machines, oracle venv pins, weight snapshot paths, HF/network quirks, and the
-measured baselines live in one place: **[docs/reference/environment.md](docs/reference/environment.md)**.
+Machines, oracle venv pins, weight snapshot paths, HF/network quirks, and measured baselines live in **[docs/reference/environment.md](docs/reference/environment.md)**.
 Do not restate them here — a copy is a fork that rots. Two dev boxes exist and
 neither is canonical; every recorded number carries its host.
 
@@ -99,11 +106,58 @@ neither is canonical; every recorded number carries its host.
 Canonical doc: [decode-speed-program.md](docs/design/decode-speed-program.md).
 Qwen3.8-27B is the current priority; section 7 owns its full matrix, experiment IDs and gates.
 Per Josh, finish this campaign on the M4 Pro; M1 Max runs are outside its acceptance requirements.
+Josh clarified that isolated background CPU activity is not a blocker when memory and the GPU are available. Record the explicit audio-daemon CPU allowance, retain memory/thermal checks, and require stable alternating pairs; “quiet” gates below use that campaign policy.
 
-- [ ] **Completed default-suite follow-up:** resolve MiniCPM/Qwen timed-output divergence against the matched reference and Qwen 4/8-bit 1K/context Metal failures. Re-run affected exact requests before accepting those cells. SSD flush acceptance and the separate packed Trellis/KV4/MTP result are recorded in benchmarks.md.
+Current milestone, revised by Josh: use shared batching by default with
+effectively equal measured B1 performance; retain serial as an available option.
+Serving already defaults to `--batch 8`; a lone eligible request runs at B1
+inside the scheduler, while explicit `--batch 1` selects serial. No runtime
+default change is needed. Complete feature migrations through the existing
+interfaces, including R17, without making every combination or serial deletion
+a prerequisite for this milestone. Serial removal is deferred. Keep specialized
+kernels and configuration/default optimization in scope. Reuse completed
+evidence; rerun only for a named change, missing case or reproduced failure.
+
+- [~] **R17 shared output cache:** replace Qwen MTP's private prefill store
+  with the existing cache interface. Decode publishes processed-token state;
+  the cache chooses retention and RAM/SSD placement from its settings. The
+  shared contract and companion-state RAM/SSD storage are implemented and pass
+  focused checks on M1 Max and M4 Pro. Qwen prefill capture/restore now uses
+  that interface; bf16/KV4 RAM reuse and SSD restart continuations pass on both.
+  Shared generated-row publication is adopted; M1/M4 bf16/KV4/TQ tests retain
+  actual processed IDs and exact immutable RAM/SSD continuations at B4; HTTP tool turns pass RAM and fresh-process SSD reuse with thinking off/on. Final composition with the prefill-policy fix passes M4 native/HTTP, full-suite and matched short checks; long Kanban and pressure remain.
+  Exit: actual generated-ID alignment, immutable snapshots after continued
+  decode, RAM reuse, SSD eviction/restart restore, earlier-boundary fallback,
+  complete byte accounting and saved Kanban next-turn timing. Details: §7 R17.
+- [~] **Scheduling and method separation:** consolidate single-request execution
+  as B=1 through the same method/session contracts used at larger B. Keep batch
+  membership out of decode and cache placement out of scheduling. Method
+  selection now precedes placement; configured drafts no longer exclude
+  supported ordinary fallbacks from batching. Phase 18 owns
+  the feature matrix and missing batch implementations; a serial fallback does
+  not complete a batch-parity cell. Exit: one request lifecycle, same-B oracle
+  gates, request-feature parity, cancellation/ownership coverage and paired B=1
+  latency plus B=2/4/8 throughput on the M4 Pro. Freeze the existing serial path
+  as the control; compare identical artifacts, kernels, method/sampling settings,
+  inputs and initial cache state. A throughput gain cannot hide a B=1 latency
+  loss or a missing feature. Resolve each recorded regression separately; serial deletion is deferred and does not block the existing batching default.
+- [~] **Configuration consolidation:** inventory each flag's owner and effective
+  value, bind one configuration per concern, and remove duplicate path-specific
+  controls after their callers migrate. Keep existing CLI compatibility during
+  migration. Exit: every served setting reaches its owning interface, no decode
+  loop rereads mutable configuration, and docs describe actual supported
+  combinations. The shared prefill-default/request-override fix is adopted after M1 native sampling/MTP, full model-free and typecheck gates; M4 composed prefill checks and matched short timing pass. Architecture §12.5–12.7 owns the interface contract.
+- [~] **Measured defaults:** candidate source now selects Trellis v13, eligible
+  Qwen KV4 speculation and paired MTP prefill reuse without opt-in flags. These
+  changes are unreleased and need default-selection regression checks. R17
+  output persistence and unified execution remain unfinished. Compare MTP
+  depths 1/2/3/4 and ordinary decode: the short screen and four context repeats
+  are complete. Late-context 2048-token prefill failed; 256-token chunks complete at 78,678 prompt tokens with MTP1/2/3; the ordinary cached repeat OOMed and recovered only on a changed retry request; allocation investigation and balanced repeats remain before choosing a common-use default. Defaults: server-config.md; evidence: benchmarks.md.
+
+- [~] **Completed default-suite follow-up:** MiniCPM/Qwen timed-output divergence is traced to the reference server's thinking-segment prefill boundaries. The explicit unsplit reference control reproduces all ten saved Bun decode responses and usage; both first-request native traces match 192 complete logit vectors. These are correctness diagnostics, with one differing cache-reuse count. Qwen layer evaluation and full-batch reservation pass 38 retained-history/context/restart requests and twelve exact native oracle cases. Josh rejects predictive default refusals: keep estimates advisory, remove reservation hooks, and validate full requested work before repeating affected cells on M4 Pro. SSD flush acceptance and the separate packed Trellis/KV4/MTP result are recorded in benchmarks.md.
 
 - [~] **27B R0:** controls on `673b43f` plus local diff; six same-artifact native Bun/MLX-LM pairs per flagship/compact/RTN4 match 64 emitted IDs and complete timings are close. Graph boundaries, dispatch inventory and calibrated operation timestamps captured. Prioritize the existing serving suite's single-request decode, cold/cached TTFT, 1k/long prefill, RSS and readiness cells; retain separate native timings and GPU-memory accounting. Multi-dispatch/critical-path attribution and quiet serial/default/mlx-lm pairs remain. Unrelated refactor acceptance stays separate.
-- [~] **27B R1–R7:** variants 7/8/10 share small-M gate/up and scatter work. Variants 11/12 add direct short-prefill tiles, with native/HTTP state and response acceptance. The existing single-request suite confirms the v12/v6 decode improvement in two AB/BA pairs. Forty larger fused-tile cases are exact but slower. Variant 13 instead vectorizes bf16 expansion; operation, full-model and HTTP outputs are exact. Smaller native, serial HTTP and default-scheduler prefills improve, while existing-suite HTTP timing is mostly flat. R6 integrated readers and a lossless separate artifact preserve native generation and both HTTP paths with a small decode gain, flat RSS and no duplicate codes. Bounded v13 expansion scheduling is opt-in after native, both short HTTP repeats and both long-agent pressure gates pass; broader/combined and quiet acceptance remain. Broader batching/pressure and quiet M4 Pro gates remain. Variant 9 and the numerical M<=8 crossover remain Lab. Audit the packed activation distinction separately.
+- [~] **27B R1–R7:** variants 7/8/10 share small-M gate/up and scatter work. Variants 11/12 add direct short-prefill tiles, with native/HTTP state and response acceptance. The existing single-request suite confirms the v12/v6 decode improvement in two AB/BA pairs. Forty larger fused-tile cases are exact but slower. Variant 13 instead vectorizes bf16 expansion; operation, full-model and HTTP outputs are exact. Smaller native, serial HTTP and default-scheduler prefills improve, while existing-suite HTTP timing is mostly flat. R6 integrated readers and a lossless separate artifact preserve native generation and both HTTP paths with a small decode gain, flat RSS and no duplicate codes. Bounded v13 expansion scheduling is opt-in after native, both short HTTP repeats and both long-agent pressure gates pass; broader/combined and quiet acceptance remain. Six M4 Pro serial v6/v13 pairs now pass under the recorded audio-CPU allowance, with exact outputs and a fixed source; final-source native state and bf16/KV4 MTP-prefix gates also pass. Six continuous and six combined KV4/MTP pairs pass with matching outputs; broader pressure acceptance remains open. Variant 9 and the numerical M<=8 crossover remain Lab. Audit the packed activation distinction separately.
 - [~] **27B R15:** Parser guards and model-owned committed-token appends are integrated. Native affine row arithmetic and MLX attention-length transitions preserve one-token logits/state on qualified M4 Pro Qwen graphs. Operation, full-model boundary, model-free, typecheck and HTTP cancellation gates pass. The final internal-SSD comparison completes 96 exact responses across twelve balanced pairs with request-time gains on both quants and no failures. Both earlier external-drive warmup failures remain recorded separately; active models now use verified internal copies. Quantized-KV and speculative combinations remain gated. Reusing the existing state-view interface fixes retained append views; R6 ordinary/fused TurboQuant passes the initial numerical/allocation screen, while affine KV4 fails. Broader combination checks remain. Held-out, other-model, combined/pressure and quiet gates remain. Evidence: speculative-decoding §7.4.
 - [~] **27B R8–R14/R16:** Shared affine weight reuse improves RTN4 M3..8 and compact M4/8 full forwards and serving with exact outputs; M2 and unsupported head cells stay native. Final flag pairs, shapeless fallback, all typechecks and the complete model-free tier pass. Compiled-call caching is exact but its small native gain disappears in HTTP; no integration. A broader 4-bit prototype preserves full-model state on Gemma 12B/e4b, MiniCPM and Llama 1B/3B; only the larger Gemma cells improve. The narrower integrated selection passes native/live-input checks and Gemma HTTP timing pairs against both prior shared dispatch and native. B4/8 improve, B1 is flat; recorded B8 warmup response variation remains. Finish broader-model controls. Compact state copy passes packed gates; fused convolution, GDN fusion and affine layout screens have no compelling model win. Shared grammar masking preserves HTTP responses but timing is inconclusive. D256 attention fails one KL screen. The opt-in early first-token change passes native and sampled Q3/RTN4 gates. Continuous scheduling passes integrated HTTP acceptance after six exact prototype pairs; native Q3/RTN4 cache reuse and both long cached/SSD gates pass. Actual HTTP cancellation, independent recovery and overlapping arrival now pass on both Qwen quants and serving lanes. Reconcile the first-token cache boundary: the broader suffix screen changes some ordinary follow-ups, while explicit M=1 alignment restores exactness. Continue single-request graph/prefill work and the shared-operation audit.
 - [~] **27B R17–R24:** native MTP cost recheck finds workload-dependent results. Six three-arm held-out HTTP blocks on the interleaved packed artifact preserve response text and improve complete time for fixed/adaptive MTP, with additional RSS. The native follow-up preserves token IDs and source-cache alignment through 500 rounds; EOS usage now follows native/oracle accounting. Served EOS-at-budget checks pass. Six saved-companion blocks preserve all responses with modest request-time gains and lower RSS; native same-input logit/state gates pass; six matched-prefill blocks per packed/RTN4 quant preserve all MTP/native responses and median complete-time improvements, with known RTN4 tail-split differences retained separately. Longer sessions, other quants and quiet gates remain. Cache/scheduler, all quants, wider algorithms and combined frontier on the M4 Pro remain open.
@@ -111,7 +165,8 @@ Per Josh, finish this campaign on the M4 Pro; M1 Max runs are outside its accept
 - [~] **Video follow-ups:** Joint TurboQuant K/V decoding is integrated as an opt-in after operation, long-context, RTN4 and deferred-consumer state gates. Integrated R6/RTN4 native identity and six serial HTTP pairs per quant pass response gates. Allocation diagnostics distinguish live-array ownership from MLX buffer capacity. Finish combined/pressure and quiet acceptance. Six balanced long-context three-arm HTTP blocks preserve all responses and improve complete time. The narrower inverse-rotation operation passes both integrated model gates and six HTTP pairs per quant; every decode pair improves, R6 complete time improves and RTN4 complete time remains inconclusive. Grouped greedy readback is closed after six balanced three-arm HTTP blocks preserve responses but establish no broad request-time benefit. Direct packed-key attention is exact but slower than the integrated decoder in complete-operation repeats; that additional speed candidate is closed. The integrated R6 and RTN4 inverse-rotation gates pass on MLX 0.32.2. Six actual HTTP pairs each on MiniCPM/Gemma deferred consumers preserve responses and improve complete time on consolidated source. Current-artifact context/memory and Qwen DFlash2 architecture/selector work remain. Approximate prompt selection stays a separate quality-gated Lab arm. Details: decode-speed-program §7.11 and turboquant.md.
 - [~] **Latest MLX runtime:** MLX 0.32.2 and matching MLX-C are released in native pack 0.4.0, targeting macOS 14; matching references are installed. Same-version RTN4 logits/state pass all twelve cells on both old/new cores and both new-core builds. Model-free suites and all typechecks pass. The inverse-KV R6 gate passes on the new core. The replacement for changed native small-prefill arithmetic passes all 36 integrated forward/state cases, six generations and six HTTP pairs per serial/continuous lane exactly. Actual 4K/8K same-version logits/state/continuations pass. The 24-worker native runtime screen shows flat short decode and inconclusive long-prefill timing. The package selects native pack 0.4.0, binds one C API and removes obsolete old-core affine dispatch. Both benchmark entry points select a version-checked reference. Both inverse-KV model gates and all twelve deferred-model serving pairs pass. Consolidated model-free/typecheck/hygiene gates and all final-source Qwen identity cases pass. Integrated inverse-rotation serving also passes; all eighteen broader MiniCPM5/Llama/Gemma oracle cases pass after matching MiniCPM5 prefill SwiGLU. Complete combined/pressure acceptance. Frozen old/new source controls preserve earlier comparisons. Shapeless custom-kernel support remains absent upstream. Fixed-input proxies and ordinary fixed-shape recurrent groups can preserve full-model identity; balanced recurrent-group timing is nearly flat, so neither adds production graph machinery. The SSD compatibility key now includes backend runtime/GPU numerical identity; synthetic and real RTN4 restart gates pass. Details: decode-speed-program §7.12.
 - [~] **Kanban task acceptance:** The fresh Pi task on the required 12 GB artifact now completes and its untouched app passes functional browser checks. The published Luke Q3 128K xhigh profile, prompt and frozen sources pass the audit. The isolated KV4/MTP/paired-prefix path includes the verified history/parser fixes, bounded draft ownership and bounded range cache; sustained native replay preserves output and acceptance. Collect matched successful original/final comparisons before claiming a task-time speedup. The composed path is included in PR #47 behind opt-in flags; complete remaining native/serving gates before promoting it. Prioritize measured repeated-prefill and compaction costs, plus the queued native scheduling/kernel screens. Preserve failed attempts, raw lifecycle records and the corrected derived compaction count. Complete the portable Bun benchmark and HTML report at the final accepted revision. Protocol: decode-speed-program §7.7; measured result: benchmarks.md.
-- [ ] **Final benchmark and multi-machine HTML report:** after the optimization gates, consolidate the native and serving measurements into a versioned Bun benchmark with same-artifact MLX-LM baselines where supported. Cover single-request latency/throughput, prefill, startup, memory, cache reuse and sustained serving; retain correctness, quality, failures and complete provenance. Generate an offline HTML report from raw results, with per-machine comparisons and explicit unsupported cells. Reuse existing measurement and report interfaces. Protocol: decode-speed-program §7.10.
+- [ ] **Same-prompt Kanban on MLX-LM (Josh-requested future test):** Run the exact pinned Kanban prompt through the same Pi harness on MLX-LM in a fresh workspace. Freeze sampling/seed, thinking, context limits, compaction and tool access; record all cache/MTP differences. Select and record a supported reference artifact and available-memory fit before execution; our packed Trellis artifact is not a stock MLX-LM same-artifact control. Save complete JSONL/request/response traces and untouched app output. Compare independent functional quality, generated output/repetition, prompt/output/cached tokens, tool errors, compactions, peak memory and whole-task/TTFT/decode time against the successful run. Separate artifact/quant differences from engine effects; no engine-only speed ratio from unlike artifacts. Future work only, no server or inference launched for this request. Protocol: decode-speed-program §7.7.
+- [~] **Final benchmark and multi-machine HTML report:** offline native/serve import, HTML rendering, fixtures and full-output identity checks are implemented. Incompatible request, artifact, host, source and qualification cells cannot supply speed ratios; legacy failures and retries remain visible. The bounded M1 MiniCPM live smoke completes; concurrent reference output differences remain, and diagnostic timings cannot qualify. Paired block uncertainty and same-arm environment baselines are implemented and tested. Complete the frozen protocol, quality inputs and final quiet matrix after optimization gates. Cover single-request latency/throughput, prefill, startup, memory, cache reuse and sustained serving with same-artifact MLX-LM controls where supported. Protocol: decode-speed-program §7.10; current renderer limits: benchmarks.md.
 - [ ] **27B closeout:** separate native and serving acceptance, shared-operation eligibility and cross-model gates, evidence for every candidate, explicit unresolved blockers, held-out quality, project-wide kernel coverage and final source review. Audit pre/post-refactor request, adapter, scheduling and cleanup costs at fixed kernel settings; preserve the request/execution interfaces while removing measured overhead.
 
 Existing lever measurements retain their original model, machine and revision.
@@ -132,6 +187,8 @@ The merged interface refactor is not a new speed baseline.
 - **Exit criterion**: each lever CHARACTERIZED with quiet-box numbers in the
   eval DB, and the best configuration per (model, context) shipped as default.
   Compare same-model, same-context only.
+
+- [ ] **Logical jump-ahead prefill and micro-compaction (Josh's research proposal):** Evaluate oracle savings, online inference of continuations from reasoning/partial calls, and recovery cost at retained task quality. Compare post-tool reasoning micro-compaction separately and combined, including summary/state-rebuild costs and failed runs. Design and proposed preprint: [speculative-decoding §7.5](docs/design/speculative-decoding.md#75-logical-jump-ahead-prefill). Research is queued; this entry does not claim an implemented semantic policy or measured speedup.
 
 ## Phase 7 — Kernel experiments (research track) `[ ]`
 
@@ -163,10 +220,6 @@ and coverage, not capability.
 - [ ] **26B-A4B / 31B SigLIP**: same tower, never exercised — pick up by config
       and run the tier-a gate. Gemma video frames remain unbuilt (Qwen3.8 video
       is a separate, landed path).
-
-Landed so far:
-- 2026-06-17 — e4b tower + lazy loading + tier-a parity; findings in
-  [generic-model-support.md](docs/design/generic-model-support.md).
 
 ## Phase 14 — Qwen 3.x family bring-up `[~]`
 
@@ -208,15 +261,6 @@ the retirement of the superseded 3.6 target.
 - [ ] **14h — DSpark cross-check (optional).** `RadixArk/Qwen3.8-27B-DSpark` vs
       the native MTP head — measure, don't assume.
 
-Landed so far:
-- 2026-08-18 — MTP DeltaNet rollback solved via the spec-round contract;
-  [speculative-decoding.md](docs/design/speculative-decoding.md).
-- 2026-08-20 — DeltaNet prefill leak (`contiguous(view)` pinning whole chunk
-  buffers) found and fixed with `ops.copyOf`; environment.md hazards.
-- 2026-08-22 — vision + video serve paths and the `mlx-bun-frame-extract`
-  sidecar shipped; [generic-model-support.md](docs/design/generic-model-support.md).
-- 2026-08-24 — v0.2.0 published with the full Qwen3.8 serving path.
-
 ## Compat CLI surface + parity harness `[ ]`
 
 One set of verbs serving three depths (automatic / compat / stick-shift). mlx-lm
@@ -253,22 +297,39 @@ model errors clearly, it never silently misbehaves.
 
 Canonical docs: [batching.md](docs/design/batching.md), [kv-cache.md](docs/design/kv-cache.md).
 The continuous scheduler is LIVE and default: `place()` declares serial or
-continuous, active-row count picks B=1 or B=N, byte-budget admission clamps
-instead of rejecting, and injection/eviction happen mid-flight. All four L1
-decode cells are bit-parity with mlx-lm B=2. What remains is prefill shape,
-the wrap-around golden, and the tiers above L1.
+continuous, active-row count picks B=1 or B=N, and injection/eviction happen
+mid-flight. Default memory estimates are advisory; explicit user limits still
+apply. Separate serial execution and feature exclusions remain. Phase 6 keeps
+their consolidation as follow-up work after the batched-default milestone, alongside
+prefill shape, the wrap-around golden and the tiers above L1.
 
-- [ ] **S1a — true B-wide batched prefill.** The scheduler still prefills rows
-      solo and merges (that reduction-order difference is why the Gemma golden
-      moved to a KL gate). The training path already has the machinery,
-      parity-proven: `buildBatchedPadMask` / `BatchedMaskCache` in
-      `src/train/forward.ts` (`tests/parity/train-batch-e2e.test.ts`). Wire serving to
-      prefill B prompts in one forward. Exit: per-row logits bit-exact vs
-      mlx-lm B=N on the CPM cell, KL-gated on Gemma.
-- [ ] **Ring-wrap golden (> sliding window).** Every batched L1 cell was
-      verified short-context, pre-wrap. `RotatingKVCache` per-row masking is the
-      top correctness risk in the whole design. Exit: a `>window` batched golden
-      from the oracle venv, green on both Gemma cells.
+- [~] **Shared execution and feature parity:** audit and implement ordinary and
+      speculative decode, sampling/seed, logprobs, grammar/fill, adapters,
+      supported KV schemes, media, prefix/output cache, resume, usage and
+      cancellation through the same contracts at B=1 and B>1. Record each
+      supported, missing and unvalidated combination with its test. MTP with concurrent requests is in scope; the method implementation owns
+      differing accepted lengths, independently of scheduling policy. Keep numerical comparisons at the same B. Exit: no feature is
+      silently dropped to batch a request, no serial fallback is counted as
+      batched acceptance, and B=1 has no measured request-time regression.
+      TurboQuant's rotated KV layout and fused kernels must compose with ordinary and speculative groups; current affine KV4/KV8 checks do not qualify TurboQuant. An isolated TurboQuant codec/row-storage candidate passes focused byte-preservation and native Qwen target rollback/continuation controls on both Macs; ordinary/MTP serving, seeded logprobs, true B4, RAM/SSD reuse and the full suite pass on both Macs in isolation; MTP3 native coverage and the integrated short/context settings screen pass; the reviewed shared MTP/TQ patch and Gemma ownership fix are now adopted in the unreleased working tree. Late-context/default selection and M4 pressure remain open; both Gemma artifacts and complete suites pass on both Macs. Delayed ordinary TQ conversion and reuse-boundary handling pass both-machine multi-family and M4 composed MTP checks; the patch is adopted and the main full suite/typecheck pass. Delayed speculative TQ is now adopted after both-machine native/SSD checks and composed M4 full-suite/typecheck/hygiene acceptance; main full suite/typecheck pass. Delayed affine Qwen conversion is now adopted. Variable proposals pass M1/M4 correctness and alternating fixed-MTP timing controls, and the verifier is adopted and main suite/typecheck pass; its prompt-lookup provider passes both-machine bf16/KV4/KV8/TQ B4 serving, generated-prefix RAM/SSD, policy and MTP regression checks plus complete suites; Both M4 lookup arm orders preserve single-request outputs with small decode gains and new cache reuse, but concurrent outputs differ and observed throughput is lower; default depth-10 KV4 coverage now passes on both Macs. The lookup provider is adopted; main full-suite, typecheck and hygiene checks pass. A separate one-token prefill maintenance candidate passes M1/M4 continuation/suite checks; alternating M4 timing preserves outputs and lowers cached latency; direct serial/shared timing still shows a cached-latency regression. The 8k M1 allocation comparison preserves outputs with nearly unchanged peak live allocation and a larger final pool. Wider packed down-projection passes both-machine correctness but loses M4 concurrent throughput; not adopted. Delayed affine KV4/KV8 is now adopted through the shared TQ row-transition lifecycle after both-machine native rollback/continuation, seeded ordinary/MTP serving, SSD precision-boundary restoration, full-suite and typecheck checks. Alternating M4 fixed-settings timing preserves all outputs and is effectively flat. Main integration suite/typecheck/hygiene pass; delayed-affine prompt lookup also passes both-machine active-proposal checks. Captured attention views are now adopted after both-machine Gemma 12B/e4b and MiniCPM KV4/KV8 state/logit checks, Qwen rollback/MTP/lookup and SSD continuations. Both candidate suites/typechecks pass; M4 decode/cached/throughput timing is effectively flat, with the final control CPU-daemon flag retained under Josh's background-CPU policy. Main integration suite/typecheck/hygiene pass. Multi-token bf16/KV4/KV8 rotating storage is now adopted after both-machine block/state, Gemma ring-wrap, suite and typecheck checks; main typecheck/hygiene pass. Delayed rotating affine conversion is now adopted after both-machine Gemma 12B/e4b uniform/per-layer native state/logit, RAM/SSD continuation, seeded B1/B2/B3 serving, Qwen MTP/TQ/lookup regressions, complete suites and typechecks. Four alternating M4 benchmark arms preserve all responses with effectively flat decode/cached/throughput timing; main integration suite, typecheck and hygiene pass. The isolated singleton-admission candidate passes both-machine correctness and preserves M4 HTTP responses with lower cached latency, but the physical-copy explanation is disproven; attribution/repetition precede adoption. The same investigation exposes an actual recurrent-row retention bug: extraction aliases the entire group. The compact-extraction fix is adopted after both-machine allocation/native/generated RAM/SSD/suite/typecheck gates and exact four-arm M4 HTTP responses; main integration suite and typecheck pass. Startup equivalence remains open. MiniCPM prefix coverage now honors trimmable-donor supersession.
+      Standalone drafting is now integrated through one draft graph at B1/B>1: independent recurrent/attention snapshots, shared sampling and backend-coded RAM/SSD companions. Both-machine 27B serving/TQ generated-cache checks, pinned Llama oracle, full suites/types and existing MTP/lookup regressions pass. Four M4 arms with 2 GiB RAM plus SSD improve decode, cached latency and aggregate throughput; cold/startup cost, changed concurrent text and the 4 GiB allocation failure remain recorded. Main integration suite, typechecks and hygiene pass. Full-attention target capability binding is integrated after both-machine Llama/MiniCPM serving, generated RAM/SSD, wide same-B oracle, pinned shared Llama speculation and Qwen regressions. Four M4 arms improve Llama decode and concurrent throughput with paired cache reuse; cold-prefill cost and one changed concurrent response remain recorded. Main integration suite, all typechecks and full hygiene pass. Rotating target transactions are integrated after both-machine real-window Gemma continuation, default-depth lookup serving, padded same-B oracle, generated RAM/SSD, Qwen regressions and final suites/types. Four M4 arms improve concurrent throughput and cache reuse with effectively equal B1 decode; startup variation and changed concurrent trajectories remain recorded. Main integration suite, all typechecks and full hygiene pass. Assistant drafting is integrated after both-machine e4b/12B graph, serving/generated RAM/SSD, e4b optiq end-to-end and Qwen regression checks, full suites/types and four M4 arms. Decode, aggregate throughput and cache reuse improve; startup readiness, higher retained RSS and changed concurrent responses remain recorded. Strided weight views fix the pre-existing M4 hidden mismatch. Main integration suite, all typechecks and full hygiene pass. DeepSpec context rows and its shared graph are integrated after both-machine bf16/4-bit graph controls, real serving/generated RAM/SSD checks at depth seven, active real-window speculation, full suites/types and four M4 arms. Aggregate throughput and cached latency improve; startup cost and one changed concurrent response remain recorded. Main integration suite, all typechecks and full hygiene pass. DSpark/DFlash is integrated with shared projected-context ownership after both-machine seeded Markov/RNN serving/generated RAM/SSD, independent confidence/sampling, DeepSpec regressions, full suites and typechecks. Four M4 extraction arms preserve every response and usage record with a small measured performance cost; Josh confirms no DSpark/DFlash checkpoint has been trained yet; seeded fixtures validate execution, and trained-artifact performance remains unmeasured. Main integration suite, all typechecks and full hygiene pass. The shared artifact-identity memo is integrated after both-machine Qwen MTP/TQ, DeepSpec serving/generated RAM/SSD, mutation/restart tests, full suites/types and four exact M4 arms. It preserves existing cache namespaces and reduces repeat-load readiness, startup and retained RSS without changing decode; the main integration suite, all typechecks and full hygiene pass. Uniform start-zero KV4/KV8 rotating speculation and opaque assistant donor attention are integrated after both-machine provider serving/generated RAM/SSD checks, real-window transactions, same-width graph controls, pinned regressions, full suites/types and six M4 benchmark arms. Plain and encoded storage share rollback bookkeeping; the assistant compatibility source uses the shared row graph. The pinned oracle reproduces different-width affine rounding; live KV4 repeats are exact but can differ from the old ordinary fallback. Same-settings bf16 responses/usage remain exact with effectively unchanged throughput; KV4 improves aggregate throughput with changed text and slightly more prefill time. Main integration suite, all typechecks and full hygiene pass. TurboQuant donor composition is integrated and passes both-machine provider/SSD/precision-transition checks, independent assistant codec/graph controls and final suites/types. An M1 oracle failure exposed the existing centroid matmul shortcut; the candidate restores bf16 multiply/sum and lowest-token-ID tie selection. Twelve frozen M4 comparisons are complete; source-only costs and TQ setting tradeoffs are recorded. The TQ patch is integrated and main suite, typechecks and full hygiene pass. Delayed/per-layer affine rotating speculation is integrated after both-machine provider/native/SSD, donor ownership and real-window exact-logit checks, full suites/types and six M4 arms. Fresh pinned references resolve missing M4 blobs and the M1 stale-MLX continuation golden. Bf16 responses/usage remain exact; per-layer KV trades single-request gains for aggregate throughput. Main integration suite, types and full hygiene pass. GLM native MTP row/provider/cache composition is integrated from the tested isolate: both-machine tiny-model B1/B4 with DSA, native absorption, empty/unequal rows, generated SSD and full-suite/SSD/typechecks pass. Batch-wide sparse verification, shared selections and compressed attention padding match six independent same-B Python/MLX hidden/state cases per machine exactly. Final GLM-5.2 Colibri artifact testing is deferred by Josh; it is not a blocker for the remaining decode work. Paged storage is integrated through request-state policy and row-layout interfaces after both-machine native B1/B3 small/default-block exact-logit controls, HTTP sampling/logprobs/grammar, failure cleanup, full suites/types and eight M4 arms. Matching snapshot boundaries resolves the initial long-input comparison mismatch. Ordinary timing is effectively flat; shared paging improves aggregate throughput with effectively equal B1 decode, while cold prefill and changed concurrent text remain recorded. Main integration suite, typechecks and full hygiene pass. Adapter-plus-lookup capability composition is integrated after both-machine bf16/KV4/TurboQuant native, ordinary-adapter regressions, generated HTTP/RAM/SSD, exact token alignment, full suites/typechecks and eight M4 arms. Ordinary source cost is flat; enabled lookup has low acceptance and loses aggregate throughput, with eight stricter-match M4 arms complete and no setting dominating ordinary decoding. Defaults remain unchanged; main integration suite, typechecks and full hygiene pass. Ordinary continuation restore/capture hooks through the existing driver and a shared checkpoint-policy port pass isolated B1/B4 SSD restoration on both Macs; queued persistence passes both-machine ownership/race/native/full-suite/SSD/typechecks, plus M1 multi-family restart checks. Combined shared HTTP resume now passes both-machine compiled/uncompiled serial1/shared1/shared4 and mixed grammar controls, exact generated checkpoint restoration, full suites and typechecks. Ten M4 timing arms are complete: shared checkpoint execution improves aggregate throughput with effectively equal B1 decode; one concurrent response and prefix reuse differ. The tested continuation composition is now integrated for the PR. Both-machine immediate/delayed affine4/8, per-layer and TurboQuant resume pass; expanded compiled/mixed-grammar checks exposed and resolved adopted-row capture, restored-token dtype and lazy RoPE-constant compilation issues. Qwen/Llama/MiniCPM now pass native/HTTP shared resume through the same ports. Combined suites/SSD/typechecks pass on both machines and eight matched M4 timing arms are complete, with exact unchanged-setting responses/usage and effectively flat performance. These gates are complete and the candidate is integrated. The packed-27B native check passes; the HTTP fixture now opens fresh weight handles per model to remove its reused-materialized-weights setup failure. Adapter resume is integrated for the PR through the existing policy; its focused native/HTTP composition checks are separate from the completed ordinary matrix. The sampler-owned independent operation is integrated after both-machine numerical/native/SSD/full-suite/typechecks and twelve matched M4 arms. Ordinary throughput stays flat; lookup aggregate throughput improves without a default change. Main integration suite, typechecks and full hygiene pass. The end-to-end interface map in engine architecture §12.14 separates request policy, chat rendering, tokenization, scheduling, inference methods, sampling, state and RAM/SSD persistence; finish the remaining narrow ports and generated-output cache edge.
+      Ordinary logprobs and explicit seeds now use the shared sampler in groups; uniform affine KV now shares conversion and batch layouts.
+      Focused and M4 native/HTTP B=1/B=2/B=3 checks pass. Existing M1/M4 ordinary baselines are preserved. The row-transaction and MTP-graph interfaces are adopted in the working tree after native full-target/draft checks on both Macs. Device-chained draft rows and complete draft/verify/accept/commit steps now pass native B=1/2/4 checks on both Macs; the existing request adapter shares verification sampling. Model-free checks pass. Shared state membership now passes the same full-round controls. The shared output step handles independent consumer stops/failures before aligned state commit; final-source retirement/continuation checks pass on both Macs. Affine row layouts and zero-proposal rounds now compose with the same method; bf16/KV4/KV8 native checks and both complete suites pass. Provider-owned draft groups now reuse the companion checkpoint format; full-round, SSD and suite checks pass on both Macs. Coordinated target/draft admission is adopted after both-machine full-round and ownership/failure checks. An isolated method-interface candidate now executes four concurrent KV4 MTP HTTP requests on both Macs with seeded sampling and logprobs. Mixed grammar and SSD restoration pass on both Macs; late joins and admission-cleanup containment pass on M1. Readiness now lets scheduling flush method output before more preparation work; that integration is adopted, with strict timing acceptance open. Uniform replay retains its existing kernel; the uniform state-only optimization did not establish a serving win. New logprob comparisons expose cached-output latency work; same-B external oracle and broader compositions remain.
+
+- [~] **S1a — true B-wide batched prefill.** Ordinary cohorts are adopted.
+      Compatible late arrivals join between chunks, preserving each request's
+      maintenance/checkpoint/tail boundaries through the shared cache ports.
+      Same-B Qwen 27B/Gemma 12B full/sampler logits and cache checks pass on
+      both Macs, as do MTP regressions, full suites and typechecks in isolation.
+      Corrected four-arm M4 timing is flat with changed concurrent text;
+      admission-only control attributes the text changes to shared prefill.
+      Main integration suite/typecheck pass. Strict long-prefill timing remains open;
+      Admission budgeting, provider-owned MTP prefill and the common target driver for ordinary/MTP/lookup are now adopted. Both-machine suites/types and same-B target oracle pass, alongside native chunk-arrival, lifecycle, affine/TQ, lookup and generated RAM/SSD checks. Shared prefill initially retained deferred parent-batch snapshots and slowed decode; the common RAM cache now resolves target/companion snapshots at ownership transfer. Matched M4 runs recover expansion cost and improve concurrent throughput while preserving shared-preparation responses/usage. Main integration suite, typechecks and hygiene pass. Full-attention delayed affine/TQ padding is now integrated after both-machine pinned cache/model, seeded delayed-serving and generated RAM/SSD checks. Four M4 arms preserve all responses/usage, with a small measured throughput decrease recorded in benchmarks.md; strict dominance is not established. Main integration suite/typechecks pass. A fresh M4 Gemma staggered-long serial/shared comparison improves aggregate performance with effectively equal B1 decode, but first-request latency remains unresolved. Broader composed oracle coverage and strict long-prefill/B1 acceptance remain.
+      Exit: same-B oracle logits, lifecycle/cache parity and matched M4 timing.
+- [x] **Ring-wrap oracle (> sliding window).** The live same-B oracle now
+      checks unequal offsets, wrap during decode, retirement and a late join
+      already beyond the window. Gemma 12B and e4b pass full-vector equality
+      against the pinned same-B oracle on both M1 Max and M4 Pro.
 - [ ] **L2 parity layer** — quantized KV under batch, bit-exact vs optiq per
       row (composition inherits the scheme's oracle; never invent a KL gate for
       an oracle-backed scheme). Note the perf debt: the `[B,1,N,S]` array mask
@@ -277,18 +338,11 @@ the wrap-around golden, and the tiers above L1.
 - [ ] **L3 (Lab) layer** — our perf paths under batch, KL + quality gated, must
       degrade gracefully L3→L2→L1.
 - [ ] **S3+ — paged KV** (rung 3: paged-attention Metal kernel + block manager;
-      vLLM is the oracle) and **LoRA-group batching** (per-row adapters; today
-      mixed adapters drain to solo, which Josh accepted). Density upgrades, not
+      vLLM is the oracle). **LoRA-group batching** now passes native and same-B
+      oracle checks on M1/M4; performance acceptance remains. Density upgrades, not
       correctness.
 - **Exit**: throughput scales with concurrency to the slot count then queues;
   per-row output matches the same-B oracle at every tier.
-
-Landed so far:
-- 2026-06-14 — L1 batched decode complete, all 4 cells bit-parity with
-  mlx-lm B=2; [batching.md](docs/design/batching.md).
-- 2026-07-01 — batched goldens moved into the machine-layered `goldens/` path.
-- 2026-08-21 — continuous scheduler declared at the placement seam; byte-budget
-  admission clamps; [batching.md](docs/design/batching.md).
 
 ## Phase: agentic KV reuse — semantic anchors + free draft sources `[ ]` (opened 2026-08-30)
 
@@ -360,10 +414,10 @@ on unified memory; two ideas survive the port. Canonical docs on landing:
       the 27B. BUG found by the A/B (`lab/repro/serve-crash-turn8`): the 27B
       server died with a bare MLX C++ exception on a turn that resumed a
       prompt-cached prefix (qwen3_5 hybrid SSM+KV); `--prompt-cache 0`
-      served it. MITIGATED 2026-09-04: exact hits containing recurrent SSM state
-      transfer the cached entry instead of repeatedly cloning its native graph.
-      Three minimized fresh-process replays plus the original `max_tokens: 512`
-      case pass; ordinary trimmable KV entries retain non-consuming sharing.
+      served it. The earlier ownership-transfer mitigation is superseded by
+      immutable RAM views with eventual SSD persistence. Repeated-prefix and
+      restart-restore gates pass on both Macs, including the saved long prefix;
+      final paired serving and broader pressure acceptance remain open.
       SSD write-behind also had a check/use race, but its causal role in the
       native crashes was not established:
       `onIdle()` observed an idle gateway, then a request acquired the engine
@@ -505,13 +559,6 @@ mechanism unlocks.
   locality guarantee — experts stay resident there, and offload files stay
   separate from the batch work.
 
-Landed so far:
-- 2026-06-14 — mechanism de-risked (munmap returns RAM; `gather_qmm` reads a
-  page-aligned mmap bit-exactly; Metal does not wire clean file pages).
-- 2026-06-14 — E1a–E1d: converter, mmap load path, `--expert-offload` CLI;
-  measured phys_footprint 17.1 → 4.2 GB on the real 26B, decode unregressed,
-  80 tokens identical.
-
 ## Phase: audio input — gemma-4 audio tower `[ ]`
 
 Audio-in/text-out through the chat API on e4b, using the sidecar tensors we
@@ -525,10 +572,6 @@ already hold. A0–A4 are done and gated; only measurement and coverage remain.
 - **Non-goals (pinned):** TTS/STS/transcription endpoints, streaming audio,
   >30 s input, video, batched audio prefill, 26B-A4B/DiffusionGemma (no
   `audio_config` — architectural).
-
-Landed so far:
-- 2026-07-07 — A0–A4: mel features at 1 ulp, tower bit-exact (rel-RMSE 2.4e-8),
-  full greedy stream matching the oracle including EOS, HTTP serve gated.
 
 ## Phase: TurboQuant weights — rotation-folded quantization, Qwen3.8-27B target `[ ]` (opened 2026-08-17)
 
@@ -650,22 +693,6 @@ and [orpo-training.md](docs/design/orpo-training.md):
       sequence lengths. Adapters are rotation-basis-married to this artifact —
       say so on the card if published.
 
-Landed so far:
-- 2026-08-17 — W0 fold spike on Llama-3.2-1B through the unmodified engine
-  (two-model KL 0.00131, per-tensor max|w| down 3–5×).
-- 2026-08-18 — W1–W4: qwen3_5 corridor map, streaming fold at 27B scale, fold
-  proven through STOCK mlx-lm (worst KL 0.0035); verdict recorded — rotation-
-  only RTN loses at 4-bit, wins at ≤4 bpw.
-- 2026-08-18 — `~/.cache/huggingface/hub/models--mjriii--Qwen3.8-27B-TQ` (local hub-cache staging, 14 GB — verified 2026-08-24; NOT on `~/models/`, which does not exist) (3.86 bpw / 13.9 GB) validated
-  end-to-end: chat, vision over HTTP, MTP 71% accept and token-identical.
-- 2026-08-20 — MTP serve lane fixed (two defects in the one advertised
-  feature); eval-runner swap-thrash root-caused and fixed.
-- 2026-08-24 — `convert --rotate-weights` shipped in v0.2.0.
-- 2026-08-31/09-01 — Q0 instrument, Q1/Q2 arms measured, LDLQ + k-map drivers
-  (`scripts/turboquant/{tq-trellis,tq-quantize-trellis}.ts`, `tq-ldlq-hessians.py`).
-- 2026-09-02 — Q3 full recipe passed (KL 0.1553 @ 3.55 bpw, MMLU 88, tGSM 48,
-  rawGSM 44); `tq-repack-fakequant.ts` eval carrier.
-
 ## Interface-based engine refactor `[~]`
 
 Design and exit criteria: [engine architecture §12](docs/design/unified-engine-frontier-plan.md#12-interface-based-engine-refactor).
@@ -674,8 +701,8 @@ Goal: push speed/quality/size on Macs through replaceable graph/method/session
 contracts and aggressive quant-specific specialization. Interfaces must permit
 fused execution without extra copies, materialization, or synchronization.
 R1–R9 and the R10 code migration merged in `673b43f` (PR #46). Implementation
-and upstream test/diagnostic evidence: architecture §12.13. The local OOM
-guard is integrated into the new MLX serial binding; its native replay is owed.
+and upstream test/diagnostic evidence: architecture §12.13. Default memory estimates are advisory by Josh's instruction; native
+regressions confirm that a false-positive estimate does not refuse execution.
 
 - [ ] **R0/R10 acceptance:** use the 27B R0 matrix in Phase 6 for designated
       quants and quiet paired performance on the M4 Pro. Include the merged
@@ -703,13 +730,6 @@ exact revisions pinned and mismatches refusing rather than downgrading.
       composer recovery). Exit when checks are green, no server is left running,
       and this block closes; retain the canonical engine doc for the v2 refactor.
 
-Landed so far:
-- 2026-08-21 — S0/S1: `CompletionExecutor` + immutable `RequestShape`;
-  frozen `KvScheme` copies close the mutation holes.
-- 2026-08-21 — S2/S3: immutable model declaration; `serial` vs `continuous`
-  declared at the placement seam; raw `kvConfig` bypasses removed.
-- 2026-08-24 — merged and shipped in v0.2.0 (2,064 tests, 75 skips, 0 failures).
-
 ## Phase: Steel flash-CCE ORPO head + full ORPO training stack `[~]` (runs)
 
 Canonical doc: [orpo-training.md](docs/design/orpo-training.md). The `[M,V]`-free
@@ -726,12 +746,6 @@ a trained artifact is the only real proof.
       the chunk-eval score measures well-formedness, not accuracy.
 - [ ] The big CPM5 UF run and the e4b overnight, launched DETACHED (agent-spawned
       background runs are reaped by the runtime at ~47 min — not a crash).
-
-Landed so far:
-- 2026-06-19 — steel flash-CCE fwd+bwd in production: e4b backward 3687 → 754 ms,
-  peak 0.93 GB flat at M=8192, dh parity 0.40%/0.28%.
-- 2026-07-02 — coeff filter + blockMax skip default-ON at 1e-5 (1.71×/3.16×
-  backward) with a standing teacher-forced fidelity regression test.
 
 ## Memory / the Dreaming — open items
 
@@ -762,11 +776,6 @@ The write path, the nightly DAG, and the read tools are built (`src/memory/`,
       point `~/.mlx-bun/wiki` at it, enable the nightly job, and drop the
       non-portable `Reference/` symlinks into the repo.
 
-Landed so far:
-- 2026-08-23 — the pipeline design consolidated into one canonical doc
-  (supersedes memory-synthesis / write-pipeline-entity / bucketing-stage /
-  memory-system / memory-inference-path / the-dreaming-master-plan).
-
 ## Maintainability program
 
 What remains of the repo-taming campaign after phases 0–3 (docs, files, agent
@@ -788,9 +797,3 @@ separation and Lab import boundaries are implemented; their gates remain.
       for one flag); paged-KV; the DSpark triplets; compiled-decode
       (`src/model/compiled-decode.ts` + `src/mlx/compile.ts`). Pi provider
       wiring is consolidated into one builder; that D6 item is closed.
-
-Landed so far:
-- 2026-08-23 — `scripts/experiments/` (178 one-offs) and the `scripts/` root
-  cleanup deleted; live files homed under `scripts/{oracle,memory,turboquant}/`.
-- 2026-08-24 — one canonical doc per topic, generated docs map, front-matter
-  plan-anchor gate, STATUS/PLAN line caps, `tests/unit/docs-surface.test.ts`.

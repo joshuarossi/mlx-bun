@@ -20,6 +20,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { ORACLE_PYTHON } from "../support/paths";
 
 const optIn = process.env.MLX_BUN_TEST_SPEC_SERVE === "1";
 const snap = (repo: string): string | null => {
@@ -34,7 +35,25 @@ const snap = (repo: string): string | null => {
 };
 const TARGET = snap("Llama-3.2-3B-Instruct-4bit");
 const DRAFT = snap("Llama-3.2-1B-Instruct-4bit");
-const ORACLE_PY = "/Users/joshrossi/Code/mlx-lm/.venv/bin/python";
+const ORACLE_PY = ORACLE_PYTHON;
+
+/** Run the same oracle corpus through either execution adapter. */
+async function specServeRun(...args: Parameters<typeof import("../../src/spec/serve-loop").specServeRun>) {
+  if (Bun.env.MLX_BUN_TEST_SPEC_SERVE_GROUP !== "1") {
+    const legacy = await import("../../src/spec/serve-loop");
+    return legacy.specServeRun(...args);
+  }
+  const [model, provider, depth, promptIds, options, onToken] = args;
+  const { MlxBatchExecutionGroup } = await import("../../src/backends/mlx/batch-group");
+  const { bindSpeculativeGroupRequests } = await import("../../src/backends/mlx/speculative-group");
+  const group = new MlxBatchExecutionGroup(model, { maxBatch: 4 });
+  try {
+    return await group.submit({ method: bindSpeculativeGroupRequests(model, provider, depth)(options),
+      promptIds, maxTokens: options.maxTokens ?? 512,
+      eosTokenIds: options.eosTokenIds ?? model.config.eosTokenIds,
+      grammar: options.grammar, signal: options.signal, onToken });
+  } finally { await group.close(); }
+}
 
 describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spec, Llama 3B+1B)", () => {
   const PROMPT = "Briefly explain why the sky is blue.";
@@ -55,7 +74,6 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
 
   test("L1 + structure: spec stream matches mlx-lm spec; telemetry sane; truncation exact", async () => {
     const { model, weights, tok, provider } = await setup();
-    const { specServeRun } = await import("../../src/spec/serve-loop");
     try {
       const ids = tok.encode(PROMPT);
       const MAX = 48;
@@ -135,8 +153,7 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
     async () => {
       const { model, weights, tok, provider } = await setup();
       const { ChatTemplate } = await import("../../src/chat-template");
-      const { specServeRun } = await import("../../src/spec/serve-loop");
-      const template = await ChatTemplate.load(TARGET!);
+        const template = await ChatTemplate.load(TARGET!);
       try {
         for (const gamma of [2, 3]) {
           for (const p of [
@@ -177,7 +194,6 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
   // (3) early termination (guided_choice) finishes cleanly mid-spec.
   test("grammar × spec: valid JSON, equivalent to grammar-only, choice terminates", async () => {
     const { model, weights, tok, provider } = await setup();
-    const { specServeRun } = await import("../../src/spec/serve-loop");
     const { generate } = await import("../../src/generate");
     const { compileGrammarRequest } = await import("../../src/grammar");
     try {
@@ -244,7 +260,6 @@ describe.skipIf(!optIn || !TARGET || !DRAFT)("serve --draft-model (two-model spe
 
   test("long-prefix agreement vs non-spec generate()", async () => {
     const { model, weights, tok, provider } = await setup();
-    const { specServeRun } = await import("../../src/spec/serve-loop");
     const { generate } = await import("../../src/generate");
     try {
       const ids = tok.encode(PROMPT);

@@ -144,8 +144,6 @@ class Glm52DsaIndexer {
     forceDense = false,
   ): DsaStep {
     const [batch, tokens, hidden] = input.shape;
-    if (batch! > 1 && tokens !== 1)
-      throw new Error("batched DSA supports ordinary single-token decode only");
     if (hidden !== this.config.hiddenSize)
       throw new Error(`DSA hidden width ${hidden} != ${this.config.hiddenSize}`);
 
@@ -228,7 +226,10 @@ class Glm52DsaIndexer {
     }
     const contextLength = allKeys.shape[1]!;
     let selectedPositions: MlxArray | Glm52MlaBatchedSelection | null;
-    if (batch! > 1) {
+    if (forceDense || contextLength <= this.config.indexTopk) {
+      state.selectFullDense(this.layer, contextLength);
+      selectedPositions = null;
+    } else if (batch! > 1) {
       const rowSelections: Array<MlxArray | null> = [];
       for (let row = 0; row < batch!; row++) {
         const rowContext = (cache.rowOffsets[row] ?? 0) + tokens!;
@@ -269,15 +270,6 @@ class Glm52DsaIndexer {
         scores.dispose();
       }
       selectedPositions = { rows: rowSelections };
-    } else if (forceDense) {
-      state.selectFullDense(this.layer, contextLength);
-      selectedPositions = null;
-    } else if (contextLength <= this.config.indexTopk) {
-      state.selectFull(
-        this.layer,
-        new Float32Array(contextLength),
-      );
-      selectedPositions = null;
     } else {
       if (tokens !== 1) {
         if (allKeys !== key) allKeys.dispose();
@@ -533,6 +525,7 @@ export class Glm52DecoderLayer {
       this.inputNorm,
       this.config.rmsNormEps,
     );
+    const batch = input.shape[0]!;
     const tokens = input.shape[1]!;
     const denseBenchmarkPrefill =
       this.denseBenchmarkPrefillTokens > 0 &&
@@ -552,10 +545,10 @@ export class Glm52DecoderLayer {
           for (let token = 0; token < tokens; token++) {
             const row = normalized.slice(
               [0, token, 0],
-              [1, token + 1, this.config.hiddenSize],
+              [batch, token + 1, this.config.hiddenSize],
             );
             let dsaKey: MlxArray | null = null;
-            let positions: MlxArray | null = null;
+            let positions: MlxArray | Glm52MlaBatchedSelection | null = null;
             try {
               if (this.dsa) {
                 const step = this.dsa.projectAndSelect(
@@ -564,18 +557,12 @@ export class Glm52DecoderLayer {
                   dsaState,
                 );
                 dsaKey = step.key;
-                if (
-                  step.selectedPositions !== null &&
-                  !(step.selectedPositions instanceof MlxArray)
-                ) {
-                  throw new Error("serial DSA verification received batched selection");
-                }
                 positions = step.selectedPositions;
               } else {
-                positions = dsaState.selectSharedPositions(
-                  this.layer,
-                  cache.offset + 1,
-                );
+                positions = batch > 1
+                  ? { rows: Array.from({ length: batch }, (_, row) =>
+                      dsaState.selectSharedPositions(this.layer, (cache.rowOffsets[row] ?? 0) + 1, row)) }
+                  : dsaState.selectSharedPositions(this.layer, cache.offset + 1);
               }
               rows.push(this.mla.forward(
                 row,
@@ -609,7 +596,9 @@ export class Glm52DecoderLayer {
           dsaKey = step.key;
           positions = step.selectedPositions;
         } else if (dsaState) {
-          positions = cache.batchSize !== null && cache.batchSize > 1
+          positions = denseBenchmarkPrefill || cache.offset + tokens <= this.config.indexTopk
+            ? null
+            : cache.batchSize !== null && cache.batchSize > 1
             ? {
                 rows: cache.rowOffsets.map((offset, row) =>
                   dsaState.selectSharedPositions(
@@ -871,18 +860,13 @@ export class Glm52Model {
       tokenCount > GLM52_DSA_SPARSE_DECODE_BATCH_MAX &&
       firstOffset + tokenCount > this.glmConfig.indexTopk
     ) {
-      if (ids.shape.length !== 2 || ids.shape[0] !== 1) {
-        throw new Error(
-          "G2 DSA sparse prefill requires serial [1,T] token ids",
-        );
-      }
-      // Colibri selects independently for every query row. G2 preserves that
-      // behavior with a deliberately serial correctness fallback once a
-      // multi-token prefill crosses index_topk; G6 may vectorize it.
+      // Bound sparse-selection state for long prefills while retaining all
+      // request rows in each forward. Short verify windows keep the residual
+      // and expert graph batched across both requests and query positions.
       const rows: MlxArray[] = [];
       try {
         for (let token = 0; token < tokenCount; token++) {
-          const row = ids.slice([0, token], [1, token + 1]);
+          const row = ids.slice([0, token], [ids.shape[0]!, token + 1]);
           try {
             rows.push(this.forwardHidden(row, cache));
           } finally {
@@ -922,15 +906,10 @@ export class Glm52Model {
       tokenCount > GLM52_DSA_SPARSE_DECODE_BATCH_MAX &&
       firstOffset + tokenCount > this.glmConfig.indexTopk
     ) {
-      if (ids.shape.length !== 2 || ids.shape[0] !== 1) {
-        throw new Error(
-          "G3 DSA sparse prefill requires serial [1,T] token ids",
-        );
-      }
       const rows: MlxArray[] = [];
       try {
         for (let token = 0; token < tokenCount; token++) {
-          const row = ids.slice([0, token], [1, token + 1]);
+          const row = ids.slice([0, token], [ids.shape[0]!, token + 1]);
           try {
             rows.push(await this.forwardHiddenAsync(row, cache));
           } finally {

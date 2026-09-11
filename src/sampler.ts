@@ -11,6 +11,8 @@
 import { Dtype } from "./mlx/ffi";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
+import type { TokenLogprobs } from "./contracts/generation";
+import type { SampledToken, SamplingSession } from "./contracts/sampling";
 import { applyCurve, type CurveParams } from "./lab/curve/curve-sampler";
 
 /** Resolved HLG sampling config (the user-facing knobs). The mid gain is NOT
@@ -120,10 +122,7 @@ export interface StepExtras {
   topVals: MlxArray | null;
 }
 
-export interface StepSample<T> {
-  token: T;
-  extras: StepExtras | null;
-}
+export type StepSample<T> = SampledToken<T, StepExtras>;
 
 interface StepGrammar {
   readonly isTerminated: boolean;
@@ -161,25 +160,8 @@ export interface NumberStepSamplerConfig extends StepSamplerConfigBase {
   grammarWait: "before-sample";
 }
 
-export interface DeviceStepSampler {
-  readonly isPlainGreedy: boolean;
-  readonly needsHistory: boolean;
-  sample(logits: MlxArray, step: number): StepSample<MlxArray>;
-  seedHistory(tokens: readonly number[]): void;
-  commitDevice(token: MlxArray): void;
-  commitNumbers(tokens: readonly number[]): void;
-  dispose(): void;
-}
-
-export interface NumberStepSampler {
-  readonly isPlainGreedy: boolean;
-  readonly needsHistory: boolean;
-  sample(logits: MlxArray, step: number): Promise<StepSample<number>>;
-  seedHistory(tokens: readonly number[]): void;
-  commitDevice(token: MlxArray): void;
-  commitNumbers(tokens: readonly number[]): void;
-  dispose(): void;
-}
+export type DeviceStepSampler = SamplingSession<MlxArray, MlxArray, StepSample<MlxArray>>;
+export type NumberStepSampler = SamplingSession<MlxArray, MlxArray, Promise<StepSample<number>>>;
 
 const GOLDEN = 0x9e3779b97f4a7c15n;
 
@@ -786,7 +768,7 @@ export function makeLogitsProcessors(opts: LogitsProcessorOptions = {}): LogitsP
   return out;
 }
 
-/** Whether a whole [B,V] row can use the scheduler's vectorized argmax path. */
+/** Whether scores can use stateless greedy sampling across independent rows. */
 export function isPlainGreedy(
   opts: StepSamplerOptions,
   hasProcessors = makeLogitsProcessors(opts).length > 0,
@@ -807,6 +789,23 @@ export function disposeStepExtras(extras: StepExtras | null): void {
   extras.sel?.dispose();
   extras.topIdx?.dispose();
   extras.topVals?.dispose();
+}
+
+/** Read captured probabilities with their token, without adding casts behind
+ * the next decode step. Consumes the capture on success and failure. */
+export function readStepExtras(extras: StepExtras | null): TokenLogprobs | undefined {
+  if (!extras) return undefined;
+  try {
+    const out: TokenLogprobs = {};
+    if (extras.sel) out.logprob = extras.sel.toFloat32Host()[0]!;
+    if (extras.topIdx && extras.topVals) {
+      const ids = extras.topIdx.toIntTokens();
+      const vals = extras.topVals.toFloat32Host();
+      out.top = Array.from(ids, (id, i) => ({ id, logprob: vals[i]! }))
+        .sort((a, b) => b.logprob - a.logprob);
+    }
+    return out;
+  } finally { disposeStepExtras(extras); }
 }
 
 export function makeStepSampler(
@@ -941,7 +940,10 @@ export function makeStepSampler(
   if (config.initialHistory) seedHistory(config.initialHistory);
 
   const common = {
+    independent: isPlainGreedy(options, processors.length > 0) && !capture && !config.sampler
+      ? independentGreedySampling : undefined,
     isPlainGreedy: isPlainGreedy(options, processors.length > 0),
+    capturesLogprobs: capture,
     needsHistory: processors.length > 0,
     seedHistory,
     commitDevice,
@@ -989,7 +991,16 @@ export function makeStepSampler(
   };
 }
 
-/** logits [1, V] → logprobs [1, V] (logits - logsumexp). */
+/** Stateless sampling across rows or verification positions. Preserve the
+ * normalized-score argmax, including rounding-created ties. */
+export const independentGreedySampling = Object.freeze({
+  sample(logits: MlxArray): MlxArray {
+    using logprobs = toLogprobs(logits);
+    return ops.argmaxAxis(logprobs, -1);
+  },
+});
+
+/** logits [..., V] → logprobs [..., V] (logits - logsumexp). */
 export function toLogprobs(logits: MlxArray): MlxArray {
   const lse = ops.logsumexpAxis(logits, -1, true);
   const out = ops.sub(logits, lse);

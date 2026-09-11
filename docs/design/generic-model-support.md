@@ -23,8 +23,12 @@ Two tiers, one contract:
 
 - **Tier-0 GENERIC** — one config-driven "universal" module per architecture
   *family*. Runs any covered checkpoint at **L1 parity** (bit-exact vs mlx-lm
-  on this machine's GPU). Monolith path only: no compiled decode, no
-  kv-quant. Slow, never broken. Built: `src/model/universal/` (dense
+  on this machine's GPU). Monolith path only, without compiled decode.
+  Standard attention now uses the shared plain/affine KV port; the softcap
+  branch retains plain KV. Qualified full-attention targets compose delayed
+  affine conversion with standalone and lookup drafting through the same
+  cache transaction interface; rotating layouts use that interface for
+  per-layer conversion and assistant donors. Built: `src/model/universal/` (dense
   llama-family). Design only: UniversalMoE.
 - **Tier-1 TARGETED** — a model *graduates*: dedicated or generated forward,
   L2 (mlx-optiq) composition where an optiq artifact exists, Lab experiments
@@ -200,7 +204,9 @@ Key choices:
   or missing tensors are a LOAD ERROR naming them, never a silently-wrong
   model.
 - **KV cache** — `KVCache`/`RotatingKVCache` unchanged; `layer_types` /
-  `sliding_window` already normalized. No kv-quant at Tier-0.
+  `sliding_window` already normalized. Standard attention consumes the shared
+  cache-attention interface; qualified Llama uniform KV4/KV8 serving and
+  generated-cache coverage are described in batching.md.
 - **RuntimeModel surface** — the minimal contract `Qwen3Model` implements
   (config, weightsBytes, loraState, makeCache, forwardHidden,
   logitsFromHidden, forward, generate, loraTargets) so serving/eval/LoRA
@@ -335,6 +341,72 @@ design-relevant facts; phase logs live in PLAN.md at the named anchor.
   not a profile property).
 - Training reference model for segmented backward and ORPO
   (docs/design/orpo-training.md, orpo-training.md).
+
+#### 6.2.1 MiniCPM5-2B investigation
+
+Metadata and template inspection completed 2026-09-10. No weights were
+downloaded and no GPU inference was run. This checkpoint is a candidate,
+not an artifact with established parity or local performance results.
+
+Start with the official [OpenBMB MLX artifact](https://huggingface.co/openbmb/MiniCPM5-2B-MLX),
+revision `3d00c3da500debfe345e60e25a87ed2669f5b1ee`. Its config uses standard
+Llama blocks, 42 layers, hidden size 2048, intermediate size 6144, 16 query
+and 2 KV heads of dimension 128, untied embeddings, vocab 130560 and
+RoPE theta 5000000. Quantization is affine 4-bit with group size 64.
+Preserve both EOS IDs, `1` and `130073`, and the separate
+`chat_template.jinja`. The release is text-only and Apache-2.0.
+
+Current integration findings:
+
+- `isMiniCPM5Config` in `src/model/support.ts` matches the older 24-layer,
+  hidden-1536 artifact. The 2B config fails that predicate and qualifies for
+  generic Llama through `genericArgsFor`; `familyProfile` therefore selects
+  the universal graph. Do not widen the predicate before auditing dedicated
+  execution, training and cache assumptions against this shape.
+- A CPU-only smoke using the pinned config and template passed
+  `loadModelConfig`, `genericArgsFor`, `ChatTemplate.load` and rendering a
+  user → assistant tool call → tool result → user conversation. Explicit
+  thinking true/false both render correctly; the XML function call survives.
+  This checks rendering, not generated tool-call parsing or tokenizer parity.
+- `resolveEnableThinking` applies the MiniCPM no-thinking default through
+  the same exact-shape predicate. It does not apply to 2B. With no explicit
+  option, this artifact's prompt ends at the assistant header; true appends
+  an open think tag, false appends a closed empty think block. Set this
+  explicitly in comparisons. Template support for disabling thinking does
+  not establish no-thinking quality.
+
+Evaluation sequence:
+
+1. Pin an 8-bit or BF16 control alongside the official 4-bit candidate.
+   Establish tokenizer/prompt identity and same-machine logits against the
+   pinned mlx-lm oracle, then test multi-turn tool calls, reasoning splits,
+   EOS, cache reuse and batched continuation. Keep quantization quality
+   comparisons separate from same-artifact runtime parity.
+2. Compare with MiniCPM5-1B and Gemma e4b on held-out Dreaming segmentation,
+   extraction and source-grounded synthesis, plus bounded repository/tool
+   tasks. Score boundary/label accuracy and completed tasks, not just valid
+   JSON or XML. Use explicit thinking modes and equal token/time budgets.
+3. Record first-answer latency, complete task time, output/reasoning tokens,
+   repetition and truncation rates, memory and context scaling. Local
+   measurements belong only in `docs/reference/benchmarks.md`, with a named
+   quiet machine and the required serving benchmark procedure.
+4. Investigate the [released DSpark draft](https://huggingface.co/openbmb/MiniCPM5-2B-DSpark)
+   after ordinary inference passes. Its config declares `Qwen3DSparkModel`,
+   five draft layers, block size seven, and target taps `[1,10,20,30,39]`.
+   Existing Gemma DSpark support does not establish compatibility. Audit
+   the draft's architecture, target taps, weights and verifier before a
+   paired task-time comparison.
+
+Evidence to use when designing the quality checks:
+[OpenBMB's model card](https://huggingface.co/openbmb/MiniCPM5-2B) distinguishes
+internally reproduced scores from Artificial Analysis results. The
+[independent September 7 evaluation](https://artificialanalysis.ai/articles/openbmb-releases-minicpm5-2b)
+supports strong capability for its size but reports substantial reasoning
+token use and weak absolute terminal-task success. These evaluations do not
+validate MLX 4-bit quality. [Upstream issue 374](https://github.com/OpenBMB/MiniCPM/issues/374)
+reports repetition sensitivity in GGUF coding runs. That is an unreproduced
+cross-runtime hypothesis for our sweep, not evidence of the same MLX failure
+or a reason to change repetition defaults.
 
 ### 6.3 Qwen3 / Qwen3-MoE / Qwen3.5-family (3.6, 3.8) — `qwen3.ts`, `qwen3-moe.ts`, `qwen3_5.ts`
 
@@ -627,3 +699,7 @@ non-goals.
 - 2026-08-23 — This doc consolidated: audio-input-plan,
   diffusion-gemma-port, minicpm5-decode-megakernel, and the Colibri archive
   summarized here; ports become sections.
+
+
+Non-Qwen grouped TurboQuant drafting, including assistant donor attention, uses
+the shared cache interfaces. See [composition coverage](batching.md#turboquant-donor-attention-and-grouped-draft-composition).

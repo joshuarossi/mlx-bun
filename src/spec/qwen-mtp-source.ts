@@ -30,206 +30,40 @@ import { materializeCopy } from "../mlx/materialize";
 import { toLogprobs } from "../sampler";
 import { loadModelConfig, type ModelConfig } from "../config";
 import { Weights } from "../weights";
-import { disposing, KVCache, QuantizedLinear, RMSNorm, type Mask } from "../model/gemma4-base";
-import { DenseLinear } from "../model/universal/modules";
-import type { DraftProvider, DraftSource, QwenMtpTarget } from "./source";
+import { KVCache } from "../model/gemma4-base";
+import { MtpModule } from "./qwen-mtp-module";
+import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, QwenMtpTarget, TargetView } from "./source";
+import { QwenMtpRows, type MtpRowState } from "./qwen-mtp-rows";
+import { captureQwenMtpState, restoreQwenMtpState } from "./qwen-mtp-state";
 import type { Cache } from "../model/gemma4";
-import { cloneKvCaches } from "../kv-store";
-import { cacheBytes } from "../prompt-cache";
-import { disposeResources } from "../engine/resources";
-import { SpeculativePrefixStore, type SpeculativePrefixState } from "./prefix-state";
+import { applyStateChanges, cleanupFailure, disposeResources } from "../engine/resources";
+import { artifactIdentity } from "../model/artifact-identity";
+import { configFingerprint } from "../model/fingerprint";
+import type { PreparedStateChange } from "../contracts/resources";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
 const DRAFT_PREFILL_CHUNK = 2048;
 
-type MtpLinear = DenseLinear | QuantizedLinear;
-
-/** Projection tensors belong to Weights; dense transpose views belong to
- *  the provider's resource stack. Quantized heads keep no dense copy. */
-function loadMtpLinear(
-  weights: Weights, path: string, config: ModelConfig, resources: DisposableStack,
-): MtpLinear {
-  if (weights.has(`${path}.scales`)) return QuantizedLinear.load(weights, path, config);
-  const layer = new DenseLinear(weights.tensor(`${path}.weight`), null);
-  resources.use(layer.wT);
-  return layer;
-}
-
-/** Qwen3Attention.forward with the companion's dense or quantized projections.
- *  Attention operations follow src/model/qwen3_5.ts verbatim. */
-class MtpAttention {
-  readonly qProj: MtpLinear;
-  readonly kProj: MtpLinear;
-  readonly vProj: MtpLinear;
-  readonly oProj: MtpLinear;
-  readonly qNorm: RMSNorm;
-  readonly kNorm: RMSNorm;
-  readonly nHeads: number;
-  readonly nKvHeads: number;
-  readonly headDim: number;
-  readonly scale: number;
-  readonly ropeDims: number;
-  readonly ropeBase: number;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string, resources: DisposableStack) {
-    const t = config.text;
-    this.nHeads = t.numAttentionHeads;
-    this.nKvHeads = t.numKeyValueHeads;
-    this.headDim = t.headDim;
-    this.scale = Math.pow(this.headDim, -0.5);
-    this.ropeDims = Math.trunc(this.headDim * t.partialRotaryFactor);
-    this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
-    this.qProj = loadMtpLinear(weights, `${prefix}.q_proj`, config, resources);
-    this.kProj = loadMtpLinear(weights, `${prefix}.k_proj`, config, resources);
-    this.vProj = loadMtpLinear(weights, `${prefix}.v_proj`, config, resources);
-    this.oProj = loadMtpLinear(weights, `${prefix}.o_proj`, config, resources);
-    this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
-    this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
-  }
-
-  forward(x: MlxArray, mask: Mask, cache: KVCache): MlxArray {
-    const [B, L] = x.shape as [number, number, number];
-    const qp = this.qProj.forward(x);
-    const qpr = disposing(qp, ops.reshape(qp, [B, L, this.nHeads, this.headDim * 2]));
-    const [qHeads, gateHeads] = ops.split(qpr, [this.headDim], -1) as [MlxArray, MlxArray];
-    qpr.dispose();
-    const gate = disposing(gateHeads, ops.reshape(gateHeads, [B, L, this.nHeads * this.headDim]));
-
-    let k = this.kProj.forward(x);
-    let v = this.vProj.forward(x);
-
-    let q = this.qNorm.forward(qHeads);
-    qHeads.dispose();
-    q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
-    k = disposing(k, ops.reshape(k, [B, L, this.nKvHeads, this.headDim]));
-    k = disposing(k, this.kNorm.forward(k));
-    k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
-    v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
-    v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));
-
-    q = disposing(q, ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
-    k = disposing(k, ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
-
-    const [keys, values] = cache.updateAndFetch(k, v);
-    k.dispose();
-    v.dispose();
-    const attn = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
-    keys.dispose();
-    values.dispose();
-    q.dispose();
-
-    const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
-    attn.dispose();
-    const merged = ops.reshape(attnT, [B, L, -1]);
-    attnT.dispose();
-    const sig = ops.sigmoid(gate);
-    gate.dispose();
-    const gated = ops.mul(merged, sig);
-    merged.dispose();
-    sig.dispose();
-    const out = this.oProj.forward(gated);
-    gated.dispose();
-    return out;
-  }
-}
-
-/** The one MTP decoder block: fc-merge → attention → swiglu MLP → norm. */
-class MtpModule {
-  readonly fc: MtpLinear;
-  readonly preFcNormEmbedding: RMSNorm;
-  readonly preFcNormHidden: RMSNorm;
-  readonly attn: MtpAttention;
-  readonly mlpGate: MtpLinear;
-  readonly mlpUp: MtpLinear;
-  readonly mlpDown: MtpLinear;
-  readonly inputNorm: RMSNorm;
-  readonly postAttnNorm: RMSNorm;
-  readonly finalNorm: RMSNorm;
-
-  constructor(weights: Weights, config: ModelConfig, resources: DisposableStack) {
-    const eps = config.text.rmsNormEps;
-    this.fc = loadMtpLinear(weights, "fc", config, resources);
-    this.preFcNormEmbedding = new RMSNorm(weights.tensor("pre_fc_norm_embedding.weight"), eps);
-    this.preFcNormHidden = new RMSNorm(weights.tensor("pre_fc_norm_hidden.weight"), eps);
-    this.attn = new MtpAttention(weights, config, "layers.0.self_attn", resources);
-    this.mlpGate = loadMtpLinear(weights, "layers.0.mlp.gate_proj", config, resources);
-    this.mlpUp = loadMtpLinear(weights, "layers.0.mlp.up_proj", config, resources);
-    this.mlpDown = loadMtpLinear(weights, "layers.0.mlp.down_proj", config, resources);
-    this.inputNorm = new RMSNorm(weights.tensor("layers.0.input_layernorm.weight"), eps);
-    this.postAttnNorm = new RMSNorm(weights.tensor("layers.0.post_attention_layernorm.weight"), eps);
-    this.finalNorm = new RMSNorm(weights.tensor("norm.weight"), eps);
-  }
-
-  /** One block forward over [1,S,·]: token embeddings ([1,S,H], target
-   *  embed_tokens output) paired with hiddens ([1,S,H], target pre-final-norm
-   *  or the module's own chained output). Appends S rows to `cache`; returns
-   *  the module output [1,S,H] (post final norm — what the target lm_head
-   *  consumes AND what chains into the next step's `hidden`). */
-  forward(tokenEmbeds: MlxArray, hiddens: MlxArray, cache: KVCache): MlxArray {
-    const embNorm = this.preFcNormEmbedding.forward(tokenEmbeds);
-    const hidNorm = this.preFcNormHidden.forward(hiddens);
-    const joined = ops.concatAxis([embNorm, hidNorm], 2);
-    embNorm.dispose();
-    hidNorm.dispose();
-    const x = this.fc.forward(joined);
-    joined.dispose();
-
-    // Decoder layer (Qwen3Layer.forward shape).
-    const L = x.shape[1]!;
-    const mask = cache.makeMask(L, null);
-    const xn = this.inputNorm.forward(x);
-    const r = this.attn.forward(xn, mask, cache);
-    xn.dispose();
-    mask.arr?.dispose();
-    const h = ops.add(x, r);
-    x.dispose();
-    r.dispose();
-    const hn = this.postAttnNorm.forward(h);
-    const g = this.mlpGate.forward(hn);
-    const u = this.mlpUp.forward(hn);
-    hn.dispose();
-    const silu = ops.silu(g);
-    g.dispose();
-    const act = ops.mul(silu, u);
-    silu.dispose();
-    u.dispose();
-    const m = this.mlpDown.forward(act);
-    act.dispose();
-    const out = ops.add(h, m);
-    h.dispose();
-    m.dispose();
-    return disposing(out, this.finalNorm.forward(out));
-  }
-}
-
-class QwenMtpPrefixState implements SpeculativePrefixState {
-  constructor(readonly tokens: number[], readonly targetIdentity: object,
-    readonly namespace: string, readonly bytes: number, readonly target: Cache[],
-    public draft: KVCache | null, public hidden: MlxArray | null) {}
-
-  dispose(): void {
-    const resources = [...this.target.splice(0), this.draft, this.hidden];
-    this.draft = null;
-    this.hidden = null;
-    disposeResources(resources.filter((r) => r != null));
-  }
-}
-
 export class QwenMtpProvider implements DraftProvider {
+  readonly grouped: GroupedDraftProvider = {
+    open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
+    openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
+  };
   readonly id: string;
   readonly weightsBytes: number;
   readonly #module: MtpModule;
   readonly #config: ModelConfig;
   readonly #resources: DisposableStack;
-  readonly #prefixStore = new SpeculativePrefixStore<QwenMtpPrefixState>();
+  readonly #checkpointNamespace: string;
 
-  private constructor(id: string, config: ModelConfig, weightsBytes: number, module: MtpModule, resources: DisposableStack) {
+  private constructor(id: string, config: ModelConfig, weightsBytes: number, module: MtpModule, resources: DisposableStack, checkpointNamespace: string) {
     this.id = id;
     this.#config = config;
     this.#module = module;
     this.weightsBytes = weightsBytes;
     this.#resources = resources;
+    this.#checkpointNamespace = checkpointNamespace;
   }
 
   static async load(dir: string): Promise<QwenMtpProvider> {
@@ -242,16 +76,24 @@ export class QwenMtpProvider implements DraftProvider {
     const weightsBytes = [...weights.shards.files.values()]
       .reduce((a, f) => a + f.mmap.size, 0);
     const module = new MtpModule(weights, config, resources);
+    // Stable across restarts and distinct for differently folded/quantized
+    // companions. Hash once at provider load, outside inference execution.
+    const identity = await artifactIdentity(configFingerprint(config),
+      [...weights.shards.files].map(([name, shard]) => ({ name, path: shard.path })));
     return new QwenMtpProvider(
       dir.split("/").filter(Boolean).at(-1) ?? "qwen-mtp",
-      config, weightsBytes, module, resources.move(),
+      config, weightsBytes, module, resources.move(), `qwen-mtp-v1:${identity}`,
     );
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
+    return new QwenMtpSource(this.#target(opts.target), this.#module, opts.sampler, this.#checkpointNamespace);
+  }
+
+  #target(view: TargetView): QwenMtpTarget {
     if (this.#resources.disposed)
       throw new Error("qwen MTP provider is disposed");
-    const target = opts.target.qwenMtp;
+    const target = view.qwenMtp;
     if (!target)
       throw new Error("qwen MTP drafting requires a qwen3_5-family target");
     if (target.hiddenSize !== this.#config.text.hiddenSize) {
@@ -260,14 +102,50 @@ export class QwenMtpProvider implements DraftProvider {
         `${target.hiddenSize} — split from a different checkpoint?`,
       );
     }
-    return new QwenMtpSource(target, this.#module, opts.sampler,
-      { store: this.#prefixStore, identity: opts.target.identity });
+    return target;
   }
+
+  #openRows(view: TargetView, sampling: DraftRowSampling | null,
+    checkpoints: readonly (DraftRowCheckpoint | null)[]): DraftRowGroup & DraftPrefillGroup {
+    const target = this.#target(view);
+    const rows = new QwenMtpRows(target, this.#module, sampling, []);
+    const prepareAppend = (checkpoints: readonly (DraftRowCheckpoint | null)[]) => {
+      const states: Array<MtpRowState | null> = [];
+      let change: PreparedStateChange | undefined;
+      try {
+        for (const checkpoint of checkpoints) states.push(checkpoint ? restoreQwenMtpState(checkpoint) : null);
+        change = rows.prepareAppend(states);
+        disposeResources(states.splice(0).flatMap(state => state ? [state.cache, state.hidden] : []));
+        return change;
+      } catch (error) {
+        return cleanupFailure(error, () => disposeResources([
+          ...states.flatMap(state => state ? [state.cache, state.hidden] : []), ...(change ? [change] : []),
+        ]));
+      }
+    };
+    const append = (checkpoints: readonly (DraftRowCheckpoint | null)[]) => applyStateChanges([() => prepareAppend(checkpoints)]);
+    try { append(checkpoints); }
+    catch (error) { return cleanupFailure(error, () => rows.dispose()); }
+    return {
+      namespace: this.#checkpointNamespace, prefillMode: "full", tapLayers: [target.layerCount - 1],
+      get rowCount() { return rows.rowCount; },
+      append, prepareAppend, prefill: (tokens, context) => rows.prefill(tokens, context!), materialize: rows.materialize.bind(rows),
+      filterRows: rows.filterRows.bind(rows),
+      draft: rows.draft.bind(rows), commit: rows.commit.bind(rows),
+      capture(row) {
+        const state = rows.extractRow(row);
+        try { return captureQwenMtpState(state); }
+        finally { disposeResources([state.cache, state.hidden]); }
+      },
+      dispose: rows.dispose.bind(rows),
+    };
+  }
+
 
   dispose(): void {
     // Release cached transpose views before their native weight maps. MLX
     // retains buffers needed by outstanding GPU commands until completion.
-    disposeResources([this.#prefixStore, { dispose: () => this.#resources.dispose() }]);
+    this.#resources.dispose();
   }
 }
 
@@ -284,7 +162,7 @@ export class QwenMtpSource implements DraftSource {
   readonly #module: MtpModule;
   readonly #sampler: Sampler;
   #cache = new KVCache();
-  readonly prefix: DraftSource["prefix"];
+  readonly checkpoint: NonNullable<DraftSource["checkpoint"]>;
   #prefilledTokens = 0;
   #hasDrafted = false;
   /** Target pre-norm hidden at the position preceding the next pending
@@ -295,52 +173,29 @@ export class QwenMtpSource implements DraftSource {
   #closed = false;
 
   constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler,
-    prefix?: { store: SpeculativePrefixStore<QwenMtpPrefixState>; identity: object }) {
+    namespace = "qwen-mtp-v1") {
     this.#target = target;
     this.#module = module;
     this.#sampler = sampler;
     this.tapLayers = [target.layerCount - 1];
-    if (prefix) this.prefix = {
-      restore: (prompt, caches, namespace, maxBytes) => {
+    this.checkpoint = {
+      namespace,
+      restore: (tokens, attachment) => {
         this.#checkOpen();
         if (this.#prefilledTokens !== 0 || this.#hasDrafted)
-          throw new Error("Qwen MTP prefix restore requires a fresh source");
-        const entry = prefix.store.take(prompt, prefix.identity, namespace, maxBytes);
-        if (!entry) return 0;
-        try {
-          if (entry.target.length !== caches.length || !entry.draft || !entry.hidden ||
-            entry.draft.offset !== entry.tokens.length - 1)
-            throw new Error("invalid paired Qwen MTP prefix state");
-          disposeResources(caches);
-          caches.splice(0, caches.length, ...entry.target.splice(0));
-          this.#cache.dispose();
-          this.#cache = entry.draft;
-          entry.draft = null;
-          this.#pendingTrueHidden?.dispose();
-          this.#pendingTrueHidden = entry.hidden;
-          entry.hidden = null;
-          return this.#prefilledTokens = entry.tokens.length;
-        } finally { entry.dispose(); }
+          throw new Error("Qwen MTP checkpoint restore requires a fresh source");
+        const state = restoreQwenMtpState({ processedTokens: tokens, attachment });
+        try { disposeResources([this.#cache, ...(this.#pendingTrueHidden ? [this.#pendingTrueHidden] : [])]); }
+        catch (error) { return cleanupFailure(error, () => disposeResources([state.cache, state.hidden])); }
+        this.#cache = state.cache;
+        this.#pendingTrueHidden = state.hidden;
+        this.#prefilledTokens = tokens;
       },
-      capture: (tokens, caches, namespace, maxBytes) => {
+      capture: (tokens) => {
         this.#checkOpen();
-        if (tokens.length !== this.#prefilledTokens || !this.#pendingTrueHidden ||
-          this.#cache.offset !== tokens.length - 1 || this.#roundAppended !== 0)
-          throw new Error("Qwen MTP snapshot requires an aligned prefill boundary");
-        const bytes = cacheBytes([...caches, this.#cache]) + this.#pendingTrueHidden.nbytes;
-        if (bytes > maxBytes) { prefix.store.dispose(); return; }
-        const retained: Cache[] = [];
-        let draft: KVCache | null = null, hidden: MlxArray | null = null;
-        try {
-          retained.push(...cloneKvCaches(caches));
-          draft = cloneKvCaches([this.#cache])[0] as KVCache;
-          hidden = this.#pendingTrueHidden.slice([0, 0, 0], this.#pendingTrueHidden.shape);
-          const entry = new QwenMtpPrefixState([...tokens], prefix.identity, namespace,
-            bytes, retained.splice(0), draft, hidden);
-          draft = null;
-          hidden = null;
-          prefix.store.put(entry, maxBytes);
-        } finally { disposeResources([...retained, draft, hidden].filter((r) => r != null)); }
+        if (!this.#pendingTrueHidden || this.#cache.offset !== tokens - 1 || this.#roundAppended !== 0)
+          throw new Error("Qwen MTP snapshot requires an aligned committed boundary");
+        return captureQwenMtpState({ cache: this.#cache, hidden: this.#pendingTrueHidden }).attachment;
       },
     };
   }

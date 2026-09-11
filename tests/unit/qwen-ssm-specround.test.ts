@@ -20,6 +20,8 @@ import { describe, expect, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
 import { gatedDeltaUpdate, SSMCache } from "../../src/model/qwen3-delta";
+import { gatedDeltaState } from "../../src/model/qwen3-delta-state";
+import { createHash } from "node:crypto";
 import * as ops from "../../src/mlx/ops";
 
 const g = await Bun.file(`${import.meta.dir}/../fixtures/qwen-delta-golden.json`).json();
@@ -32,18 +34,18 @@ const bf16 = (vals: number[], shape: number[]): MlxArray => {
 };
 
 describe("gated-DeltaNet kernel prefix property (spec-round rollback replay)", () => {
-  test("full window == prefix replay + chained tail, bit-exact y and state", () => {
-    const { B, HK, HV, DK, DV } = g as {
-      B: number; HK: number; HV: number; DK: number; DV: number;
+  for (const B of [1, 2]) test(`full window == prefix replay + chained tail at B=${B}, bit-exact y and state`, () => {
+    const { HK, HV, DK, DV } = g as {
+      HK: number; HV: number; DK: number; DV: number;
     };
-    expect(B).toBe(1);
     const T = g.prefill.T as number;
     expect(T).toBeGreaterThan(1);
     const aLog = bf16(g.A_log, [HV]);
     const dtBias = bf16(g.dt_bias, [HV]);
 
     const slice = (vals: number[], perTok: number, from: number, to: number) =>
-      vals.slice(from * perTok, to * perTok);
+      Array.from({ length: B }, (_, row) =>
+        vals.slice(from * perTok, to * perTok).map(value => value * (row + 1))).flat();
     const load = (from: number, to: number) => ({
       q: bf16(slice(g.prefill.q, HK * DK, from, to), [B, to - from, HK, DK]),
       k: bf16(slice(g.prefill.k, HK * DK, from, to), [B, to - from, HK, DK]),
@@ -66,12 +68,9 @@ describe("gated-DeltaNet kernel prefix property (spec-round rollback replay)", (
       const [yTail, sTail] = run(load(keep, T), sPfx);
 
       const full = yFull.toFloat32();
-      const pfx = yPfx.toFloat32();
-      const tail = yTail.toFloat32();
-      const perTok = HV * DV;
-      for (let i = 0; i < keep * perTok; i++) expect(pfx[i]).toBe(full[i]);
-      for (let i = 0; i < (T - keep) * perTok; i++)
-        expect(tail[i]).toBe(full[keep * perTok + i]);
+      using chained = ops.concatAxis([yPfx, yTail], 1);
+      const replayed = chained.toFloat32();
+      for (let i = 0; i < full.length; i++) expect(replayed[i]).toBe(full[i]);
       const s1 = sFull.toFloat32();
       const s2 = sTail.toFloat32();
       for (let i = 0; i < s1.length; i++) expect(s2[i]).toBe(s1[i]);
@@ -81,6 +80,50 @@ describe("gated-DeltaNet kernel prefix property (spec-round rollback replay)", (
     aLog.dispose();
     dtBias.dispose();
   });
+});
+
+test("state-only batched replay matches each row's retained prefix, including zero and unequal lengths", () => {
+  const { HK, HV, DK, DV } = g;
+  const T = g.prefill.T as number, B = 2;
+  const load = (values: number[], shape: number[]) => bf16([...values, ...values.map(value => -value)], shape);
+  using q = load(g.prefill.q, [B, T, HK, DK]);
+  using k = load(g.prefill.k, [B, T, HK, DK]);
+  using v = load(g.prefill.v, [B, T, HV, DV]);
+  using a = load(g.prefill.a, [B, T, HV]);
+  using b = load(g.prefill.b, [B, T, HV]);
+  using aLog = bf16(g.A_log, [HV]);
+  using dtBias = bf16(g.dt_bias, [HV]);
+  using initial = MlxArray.fromFloat32(Float32Array.from({ length: B * HV * DV * DK },
+    (_, index) => Math.sin(index * 0.17) * 0.03), [B, HV, DV, DK]);
+  const digest = (array: MlxArray) => {
+    using contiguous = ops.contiguous(array);
+    return createHash("sha256").update(contiguous.rawBytesView()).digest("hex");
+  };
+  const row = (array: MlxArray, index: number, length?: number) => {
+    const lo = array.shape.map(() => 0), hi = [...array.shape];
+    lo[0] = index; hi[0] = index + 1;
+    if (length !== undefined) hi[1] = length;
+    return array.slice(lo, hi);
+  };
+  for (const state of [null, initial]) {
+    for (const lengths of [[0, T], [1, T - 1], [T - 1, 1], [T, T]]) {
+      using actual = gatedDeltaState(k, v, a, b, aLog, dtBias, state, lengths);
+      for (let index = 0; index < B; index++) {
+        using prior = state ? row(state, index) : ops.zeros([1, HV, DV, DK], Dtype.float32);
+        using found = row(actual, index);
+        const keep = lengths[index]!;
+        if (keep === 0) { expect(digest(found)).toBe(digest(prior)); continue; }
+        using qr = row(q, index, keep);
+        using kr = row(k, index, keep);
+        using vr = row(v, index, keep);
+        using ar = row(a, index, keep);
+        using br = row(b, index, keep);
+        const [output, expected] = gatedDeltaUpdate(qr, kr, vr, ar, br, aLog, dtBias, prior);
+        try { expect(digest(found)).toBe(digest(expected)); }
+        finally { output.dispose(); expected.dispose(); }
+      }
+    }
+  }
 });
 
 describe("SSMCache speculative round lifecycle", () => {
@@ -100,8 +143,9 @@ describe("SSMCache speculative round lifecycle", () => {
     r.a = tiny(9);
     r.b = tiny(9);
     r.replay = (cache, keep) => {
-      calls.push(keep);
-      cache.advance(keep);
+      calls.push(typeof keep === "number" ? keep : Math.max(...keep));
+      if (typeof keep === "number") cache.advance(keep);
+      else cache.advanceRows(keep);
     };
     const conv = tiny(101);
     const recurrent = tiny(102);
@@ -150,6 +194,27 @@ describe("SSMCache speculative round lifecycle", () => {
     c.dispose();
   });
 
+  test("batched rollback preserves independent row coverage for a common accepted prefix", () => {
+    const c = new SSMCache();
+    c.conv = tiny(1);
+    c.recurrent = tiny(2);
+    c.offset = 7;
+    c.offsets = [7, 3];
+    const calls: number[] = [];
+    c.specRoundBegin();
+    recordRound(c, 4, calls);
+    expect(c.offsets).toEqual([11, 7]);
+    c.specRoundRollback(2);
+    expect(c.offset).toBe(9);
+    expect(c.offsets).toEqual([9, 5]);
+    expect(calls).toEqual([2]);
+    c.specRoundBegin();
+    recordRound(c, 3, calls);
+    c.specRoundCommit();
+    expect(c.offsets).toEqual([12, 8]);
+    c.dispose();
+  });
+
   test("guard rails: unarmed rollback throws; re-begin drops a stale round; dispose is safe mid-round", () => {
     const c = new SSMCache();
     c.conv = tiny(1);
@@ -165,4 +230,20 @@ describe("SSMCache speculative round lifecycle", () => {
     c.dispose(); // mid-round dispose frees snapshot + recordings
     expect(c.specRound).toBeNull();
   });
+});
+
+
+test("retiring the longest recurrent row updates group coverage to its survivors", () => {
+  const cache = new SSMCache();
+  cache.conv = ops.zeros([2, 3, 6], Dtype.bfloat16);
+  cache.recurrent = ops.zeros([2, 1, 2, 2], Dtype.float32);
+  cache.offsets = [9, 3]; cache.offset = 9;
+  try {
+    cache.filterRows([1]);
+    expect(cache.offsets).toEqual([3]);
+    expect(cache.offset).toBe(3);
+    cache.advance(1);
+    expect(cache.offsets).toEqual([4]);
+    expect(cache.offset).toBe(4);
+  } finally { cache.dispose(); }
 });

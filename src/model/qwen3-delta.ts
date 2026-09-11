@@ -5,8 +5,8 @@
 // default (use_kernel = not training), and its float accumulation / simd_sum
 // reduction order differ from the pure-ops fallback — so BIT-EXACT parity with
 // mlx-lm requires the SAME kernel, dispatched with the SAME grid/threadgroup.
-// We port the non-vectorized, non-masked variant (g.ndim == 3, mask is None),
-// which is the B=1 single-stream path (ssm_mask is None at batch 1).
+// We port the non-vectorized variant (g.ndim == 3). Padded prefill selects
+// the oracle masked specialization; unpadded execution retains its kernel.
 //
 // Numerics (must match the reference dtypes exactly — mlx infers the kernel's
 // pointer element types from the input arrays):
@@ -20,10 +20,12 @@
 // GQA is handled inside the kernel (hk_idx = hv_idx / (Hv/Hk)); q/k stay at Hk.
 
 import { MlxArray } from "../mlx/array";
+import { materializeCopy } from "../mlx/materialize";
 import { Dtype } from "../mlx/ffi";
 import { MetalKernel } from "../mlx/metal-kernel";
 import { CompiledFunction } from "../mlx/compile";
 import * as ops from "../mlx/ops";
+import type { SsmPrefillPadding } from "./ssm-prefill-padding";
 import type { Cache, Mask } from "./gemma4-base";
 
 // Verbatim body of mlx-lm's gated_delta_step (has_mask=False, vectorized=False),
@@ -104,7 +106,15 @@ const SOURCE = String.raw`
 `;
 
 let kernel: MetalKernel | null = null;
-function getKernel(): MetalKernel {
+let maskedKernel: MetalKernel | null = null;
+function getKernel(masked = false): MetalKernel {
+  if (masked) return maskedKernel ??= new MetalKernel({
+    name: "gated_delta_step_mask",
+    inputNames: ["q", "k", "v", "g", "beta", "state_in", "Tin", "mask"],
+    outputNames: ["y", "state_out"],
+    source: SOURCE.replace("if (true)", "if (mask[b_idx * T + t])"),
+    ensureRowContiguous: true,
+  });
   if (!kernel)
     kernel = new MetalKernel({
       name: "gated_delta_step",
@@ -154,7 +164,7 @@ export function computeG(aLog: MlxArray, a: MlxArray, dtBias: MlxArray): MlxArra
  *   state: [B, Hv, Dv, Dk] f32 (or null → zeros) */
 export function gatedDeltaUpdate(
   q: MlxArray, k: MlxArray, v: MlxArray, a: MlxArray, b: MlxArray,
-  aLog: MlxArray, dtBias: MlxArray, state: MlxArray | null,
+  aLog: MlxArray, dtBias: MlxArray, state: MlxArray | null, mask: MlxArray | null = null,
 ): [MlxArray, MlxArray] {
   const [B, , Hk, Dk] = q.shape as [number, number, number, number];
   const [, , Hv, Dv] = v.shape as [number, number, number, number];
@@ -171,7 +181,9 @@ export function gatedDeltaUpdate(
 
   const T = q.shape[1]!;
   const tArr = MlxArray.fromInt32(new Int32Array([T]), [1]);
-  const [y, stateOut] = getKernel().apply([q, k, v, g, beta, stateIn, tArr], {
+  const inputs = [q, k, v, g, beta, stateIn, tArr];
+  if (mask) inputs.push(mask);
+  const [y, stateOut] = getKernel(mask !== null).apply(inputs, {
     outputs: [
       { shape: [B, T, Hv, Dv], dtype: q.dtype },
       { shape: [B, Hv, Dv, Dk], dtype: Dtype.float32 },
@@ -207,6 +219,7 @@ export interface SsmSpecRound {
   prevConv: MlxArray | null;
   prevRecurrent: MlxArray | null;
   prevOffset: number;
+  prevOffsets: number[] | null;
   /** Pre-conv in_proj output [B,S,convDim] — position-local. */
   qkv: MlxArray | null;
   /** Gate/beta projections [B,S,Hv] — position-local. */
@@ -216,14 +229,15 @@ export interface SsmSpecRound {
   S: number;
   /** Layer-bound prefix replay: called AFTER the snapshot is restored onto
    *  the cache; advances conv/recurrent/offset by `keep` tokens. */
-  replay: ((cache: SSMCache, keep: number) => void) | null;
+  replay: ((cache: SSMCache, keep: number | readonly number[]) => void) | null;
 }
 
 export class SSMCache implements Cache {
   conv: MlxArray | null = null;
   recurrent: MlxArray | null = null;
   offset = 0;
-  /** Live speculative verify round (serial spec lane only; null otherwise). */
+  prefillPadding: SsmPrefillPadding | null = null;
+  /** Live speculative verify round; null outside a verify transaction. */
   specRound: SsmSpecRound | null = null;
   /** Per-row token coverage (batch lane only; null on serial B=1 caches,
    *  where `offset` IS the row's count). mlx-lm's ArraysCache tracks no
@@ -248,20 +262,25 @@ export class SSMCache implements Cache {
     throw new Error("SSMCache has no KV updateAndFetch (gated-DeltaNet layer)");
   }
 
-  makeMask(_N: number, _windowSize: number | null): Mask {
-    // ssm_mask is None both single-stream and in the batch lane: rows
-    // solo-prefill UNPADDED at B=1 (state never sees pad tokens), and
-    // batched decode feeds one real token per row — so unlike mlx-lm's
-    // left-padded batch-prefill there is never a pad position to mask.
-    return { mode: "", arr: null };
+  makeMask(N: number, _windowSize: number | null): Mask {
+    const arr = this.prefillPadding?.makeMask(N) ?? null;
+    return { mode: arr ? "array" : "", arr };
   }
 
   advance(n: number): void {
+    if (this.prefillPadding) { this.advanceRows(this.prefillPadding.advance(n)); return; }
     this.offset += n;
     // Batched rows step together (one forward advances every row), so the
     // per-row counts move in lockstep; they DIFFER only in their merge-time
     // seeds (each row's prompt length).
     if (this.offsets) for (let i = 0; i < this.offsets.length; i++) this.offsets[i]! += n;
+  }
+
+  /** Methods may retain different verified prefixes for each active request. */
+  advanceRows(counts: readonly number[]): void {
+    if (!this.offsets) { this.offset += counts[0]!; return; }
+    for (let row = 0; row < this.offsets.length; row++) this.offsets[row]! += counts[row]!;
+    this.offset = Math.max(...this.offsets);
   }
 
   state(): MlxArray[] {
@@ -279,7 +298,7 @@ export class SSMCache implements Cache {
     throw new Error("SSMCache is not trimmable");
   }
 
-  // --- speculative verify-round support (serial spec lane, B=1) ------------
+  // --- speculative verify-round support -----------------------------------
   // The serve loop arms a round before the verify forward and resolves it
   // after the accept walk. The layer's forward, seeing an armed round, hands
   // its replaced state slots to the round instead of disposing them, records
@@ -294,6 +313,7 @@ export class SSMCache implements Cache {
       prevConv: null,
       prevRecurrent: null,
       prevOffset: this.offset,
+      prevOffsets: this.offsets ? [...this.offsets] : null,
       qkv: null,
       a: null,
       b: null,
@@ -306,12 +326,12 @@ export class SSMCache implements Cache {
     this.#dropSpecRound();
   }
 
-  specRoundRollback(keep: number): void {
+  specRoundRollback(keep: number | readonly number[]): void {
     const r = this.specRound;
     if (!r) throw new Error("SSMCache.specRoundRollback without an armed round");
     if (r.armed)
       throw new Error("SSMCache.specRoundRollback before the verify forward recorded");
-    if (keep < 0 || keep > r.S)
+    if (typeof keep === "number" ? keep < 0 || keep > r.S : keep.some(count => count < 0 || count > r.S))
       throw new Error(`SSMCache.specRoundRollback keep=${keep} outside window S=${r.S}`);
     // Restore the pre-round snapshot (ownership moves back to the cache).
     this.conv?.dispose();
@@ -321,9 +341,8 @@ export class SSMCache implements Cache {
     r.prevConv = null;
     r.prevRecurrent = null;
     this.offset = r.prevOffset;
-    if (this.offsets)
-      throw new Error("SSMCache.specRoundRollback on a batched cache (serial lane only)");
-    if (keep > 0) {
+    this.offsets = r.prevOffsets;
+    if (typeof keep === "number" ? keep > 0 : keep.some(count => count > 0)) {
       if (!r.replay) throw new Error("SSMCache.specRoundRollback with no recorded replay");
       r.replay(this, keep); // advances conv/recurrent/offset by `keep`
     }
@@ -347,6 +366,7 @@ export class SSMCache implements Cache {
     this.recurrent?.dispose();
     this.conv = null;
     this.recurrent = null;
+    this.prefillPadding = null;
   }
 
   // --- batch-lane dynamic-B ops (BatchScheduler only) ----------------------
@@ -386,25 +406,30 @@ export class SSMCache implements Cache {
 
   /** Evict rows not in `keep` (ascending row indices), in place. */
   filter(keep: number[]): void {
-    if (!this.conv || !this.recurrent) return;
-    const idx = ops.fromInt32(keep, [keep.length]);
-    const conv = ops.takeAxis(this.conv, idx, 0);
-    const recurrent = ops.takeAxis(this.recurrent, idx, 0);
-    idx.dispose();
-    this.conv.dispose();
-    this.recurrent.dispose();
-    this.conv = conv;
-    this.recurrent = recurrent;
-    if (this.offsets) this.offsets = keep.map((i) => this.offsets![i]!);
+    if (this.conv && this.recurrent) {
+      const idx = ops.fromInt32(keep, [keep.length]);
+      const conv = ops.takeAxis(this.conv, idx, 0);
+      const recurrent = ops.takeAxis(this.recurrent, idx, 0);
+      idx.dispose();
+      this.conv.dispose();
+      this.recurrent.dispose();
+      this.conv = conv;
+      this.recurrent = recurrent;
+    }
+    this.prefillPadding?.filter(keep);
+    if (this.offsets) {
+      this.offsets = keep.map((i) => this.offsets![i]!);
+      this.offset = Math.max(0, ...this.offsets);
+    }
   }
 
   filterRows(keep: readonly number[]): void { this.filter([...keep]); }
 
   /** Row `i` as a fresh SERIAL cache — port of mlx-lm ArraysCache.extract
    *  (cache.py:673-676: `cache.cache = [c[idx : idx + 1] for c in self.cache]`,
-   *  a B-axis slice of every state slot). Ours are OWNED contiguous copies
-   *  (the entry outlives the batch; the batched buffers must free when the
-   *  batch moves on — same rule as extractKVRow, batched-mask.ts). Offset =
+   *  a B-axis slice of every state slot). A proper subset gets compact storage
+   *  so retaining one row does not pin the other rows. A singleton retains an
+   *  independent handle over its complete allocation. Offset =
    *  the row's OWN coverage, not the shared max. */
   extractRow(i: number): SSMCache {
     if (!this.conv || !this.recurrent)
@@ -414,10 +439,8 @@ export class SSMCache implements Cache {
       lo[0] = i;
       const hi = [...a.shape];
       hi[0] = i + 1;
-      const view = a.slice(lo, hi);
-      const own = ops.copyOf(view); // TRUE copy: contiguous(view) is a no-op VIEW when already contiguous — pins the source buffer (2026-08-20 DeltaNet conv leak class)
-      view.dispose();
-      return own;
+      using view = a.slice(lo, hi);
+      return a.shape[0] === 1 ? ops.contiguous(view) : materializeCopy(view);
     };
     const out = new SSMCache();
     out.conv = cut(this.conv);

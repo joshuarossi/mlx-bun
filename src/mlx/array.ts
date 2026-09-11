@@ -232,7 +232,7 @@ export class MlxArray {
     );
   }
 
-  /** Raw bytes of the evaluated array (copy). bf16/f16/f32 only. */
+  /** Raw bytes of a supported floating-point or integer array (copy). */
   rawBytes(): Uint8Array {
     return this.rawBytesView().slice();
   }
@@ -253,6 +253,7 @@ export class MlxArray {
       : dt === Dtype.float16 ? C.mlx_array_data_float16(this.handle)
       : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
       : dt === Dtype.uint32 ? C.mlx_array_data_uint32(this.handle)
+      : dt === Dtype.int32 ? C.mlx_array_data_int32(this.handle)
       : dt === Dtype.uint8 ? C.mlx_array_data_uint8(this.handle)
       : dt === Dtype.int8 ? C.mlx_array_data_int8(this.handle)
       : null;

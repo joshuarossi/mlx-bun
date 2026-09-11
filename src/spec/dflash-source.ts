@@ -18,6 +18,8 @@
 // target verify decides). The richer rejection-sampling verify stays in the
 // standalone dflashGenerate for the measure script.
 
+import { artifactIdentity } from "../model/artifact-identity";
+import { projectedDraftGroups } from "./projected-draft-rows";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "../mlx/array";
@@ -37,20 +39,43 @@ function safetensorsBytes(dir: string): number {
 export class DflashProvider implements DraftProvider {
   readonly id: string;
   readonly weightsBytes: number;
+  readonly grouped: import("./source").GroupedDraftProvider;
   /** The trained block width — the server pins numDraftTokens to this so the
    *  serve loop never asks for more positions than the block was trained for. */
   readonly gamma: number;
 
-  private constructor(private readonly drafter: DflashDrafter, id: string, weightsBytes: number) {
+  private constructor(private readonly drafter: DflashDrafter, id: string, weightsBytes: number, namespace: string) {
     this.id = id;
     this.weightsBytes = weightsBytes;
     this.gamma = drafter.cfg.gamma;
+    this.grouped = projectedDraftGroups(target => {
+      if (!target.gemmaTaps) throw new Error("DSpark drafter requires a Gemma4 target");
+      const projection = target.gemmaTaps.projection;
+      const minConf = runtimeValue("MLX_BUN_DSPARK_MINCONF");
+      return {
+        namespace, schema: "dflash-context-v1",
+        layers: drafter.cfg.nLayers, tapLayers: drafter.cfg.tapLayers,
+        project: hidden => drafter.projectContextRows(hidden),
+        draft(context, pending, _positions, depth) {
+          return drafter.forwardRows(projection, null, pending, depth, {
+            collectLogits: false, collectConfidence: false,
+            thresholds: drafter.cfg.sts?.thresholds,
+            ...(minConf ? { minConf: Number(minConf) } : {}),
+          }, context).tokens;
+        },
+      };
+    });
   }
 
   static async load(modelDir: string): Promise<DflashProvider> {
     const drafter = loadDsparkDrafter(modelDir); // variant dispatch (dspark|legacy dflash)
     const id = modelDir.split("/").filter(Boolean).at(-1)!;
-    return new DflashProvider(drafter, id, safetensorsBytes(modelDir));
+    try {
+      const identity = await artifactIdentity(await Bun.file(`${modelDir}/dspark.json`).text(),
+        readdirSync(modelDir).filter(file => file.endsWith(".safetensors"))
+          .map(name => ({ name, path: join(modelDir, name) })));
+      return new DflashProvider(drafter, id, safetensorsBytes(modelDir), `dflash-context-v1:${identity}`);
+    } catch (error) { drafter.dispose(); throw error; }
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
@@ -58,8 +83,7 @@ export class DflashProvider implements DraftProvider {
   }
 
   dispose(): void {
-    // Unlike the assistant drafter (process-pinned mmaps), DflashDrafter
-    // materializes owned MlxArrays — free them on teardown.
+    // Provider-owned weights are released when the mounted draft is closed.
     this.drafter.dispose();
   }
 }

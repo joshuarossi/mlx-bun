@@ -79,6 +79,61 @@ for (const early of [false, true]) {
   });
 }
 
+test("an early consumer return aligns caller-owned caches before reuse", async () => {
+  const { binding, seen } = fixture();
+  const cache = binding.makeCache();
+  try {
+    const generation = generateAutoregressive({ ...binding,
+      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+    }, [0, 1], { cache, temperature: 0, maxTokens: 5, prefillChunkSize: 1 });
+    const iter = generation[Symbol.asyncIterator]();
+    expect((await iter.next()).value).toMatchObject({ token: 2, index: 0 });
+    expect(seen.forwards).toBe(2);
+    await iter.return(undefined);
+    expect(seen.forwards).toBe(3);
+    expect(generation.stats!.cacheTokens).toEqual([0, 1, 2]);
+    expect(cache[0]!.offset).toBe(3);
+    expect(seen.disposals).toBe(0);
+  } finally { for (const c of cache) c.dispose(); }
+});
+
+test("an aborted early consumer return does not advance caller-owned caches", async () => {
+  const { binding, seen } = fixture();
+  const cache = binding.makeCache(), abort = new AbortController();
+  try {
+    const generation = generateAutoregressive({ ...binding,
+      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+    }, [0, 1], { cache, temperature: 0, maxTokens: 5, prefillChunkSize: 1, signal: abort.signal });
+    const iter = generation[Symbol.asyncIterator]();
+    await iter.next(); abort.abort(); await iter.return(undefined);
+    expect(seen.forwards).toBe(2);
+    expect(cache[0]!.offset).toBe(2);
+  } finally { for (const c of cache) c.dispose(); }
+});
+
+test("retained-cache alignment failures close the decoder and publish no final stats", async () => {
+  const { binding, seen } = fixture();
+  const cache = binding.makeCache();
+  let closed = 0;
+  const forward = binding.graph.forwardHidden.bind(binding.graph);
+  try {
+    const generation = generateAutoregressive({ ...binding,
+      graph: { ...binding.graph, async forwardHidden(...args) {
+        if (seen.forwards === 2) throw new Error("alignment forward failed");
+        return forward(...args);
+      } },
+      createDecode: () => ({ tryStep: () => null, close() { closed++; } }),
+      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "1" }),
+    }, [0, 1], { cache, temperature: 0, maxTokens: 5, prefillChunkSize: 1 });
+    const iter = generation[Symbol.asyncIterator]();
+    await iter.next();
+    await expect(iter.return(undefined)).rejects.toThrow("alignment forward failed");
+    expect(closed).toBe(1);
+    expect(generation.stats).toBeNull();
+    expect(seen.disposals).toBe(0);
+  } finally { for (const c of cache) c.dispose(); }
+});
+
 for (const maxTokens of [1, 2, 3]) {
   test(`early first-token yield preserves the ${maxTokens}-token budget`, async () => {
     const { binding, seen } = fixture();

@@ -6,6 +6,22 @@ the evolving UI/UX/DX north star.
 
 ## Product north star
 
+Josh's guiding principle for the entire project is "The absolute BEST local
+AI experience on a mac". This governs installation, application development,
+everyday use and inference performance.
+
+Offer multiple simple installation methods without asking users to manage
+a Python virtual environment. Let developers import local AI into their
+applications without managing a separate inference sidecar. Make JavaScript
+and TypeScript first-class ways to build with local AI, without requiring
+Python. Make more capable models practical on the same Mac and reduce the
+time users wait for successful results.
+
+Every workstream must serve that experience. Evaluate engineering choices
+by the setup, integration and operating burden they remove, as well as the
+quality, reliability, speed and hardware efficiency they deliver. Research
+and publication can support the project; user benefit determines priority.
+
 Make the answer to "what is the best way to use local AI on my Mac?"
 boringly simple:
 

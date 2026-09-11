@@ -215,6 +215,23 @@ export interface ContextKV {
   v: MlxArray; // [1, nKvHeads, ctxLen, headDim] (v ≡ k when attention_k_eq_v)
 }
 
+/** Storage owns context validity; the graph supplies only Q and new block KV. */
+export interface DeepspecContextAttention {
+  attend(layer: number, query: MlxArray, blockKeys: MlxArray, blockValues: MlxArray): MlxArray;
+}
+export function plainDeepspecContext(context: readonly ContextKV[]): DeepspecContextAttention {
+  return { attend(layer, query, blockKeys, blockValues) {
+    using keys = ops.concatAxis([context[layer]!.k, blockKeys], 2);
+    using values = ops.concatAxis([context[layer]!.v, blockValues], 2);
+    return ops.sdpa(query, keys, values, 1, "", null);
+  } };
+}
+export interface DraftRowsResult {
+  tokens: number[][];
+  conf: number[][];
+  baseLogits?: MlxArray;
+}
+
 export interface DraftBlockResult {
   /** Sequentially-sampled draft tokens, length 0..gamma (0 iff confidence
    *  truncation fires at the very first position — EMPTY proposal). */
@@ -273,8 +290,8 @@ export class DeepspecDrafter {
     this.embedScale = Math.sqrt(cfg.hidden_size);
 
     const T = (name: string) => w.tensor(name);
-    // Lazy transpose VIEW — no contiguous copy. The src/spec/drafter.ts
-    // pattern (contiguous + eval) would materialize every matmul weight a
+    // Lazy transpose VIEW — no contiguous copy. Materializing would store
+    // every matmul weight a
     // second time: on the real 6.86 GB checkpoint that's ~+4.8 GB resident
     // (lm_head alone ~2 GB), decisive on a 24 GB box. mlx's steel GEMM
     // dispatches a transposed-B operand natively, so the view costs nothing
@@ -450,13 +467,18 @@ export class DeepspecDrafter {
    * concat-then-scale-less-norm, over k_proj's output — v gets NO rope).
    */
   projectContextKV(contextHidden: MlxArray, positions: number[]): ContextKV[] {
-    const L = contextHidden.shape[1]!;
-    if (positions.length !== L)
-      throw new Error(`projectContextKV: ${positions.length} positions for ${L} context rows`);
+    if (positions.length !== contextHidden.shape[1])
+      throw new Error(`projectContextKV: ${positions.length} positions for ${contextHidden.shape[1]} context rows`);
+    assertContiguous(positions);
+    return this.projectContextKVRows(contextHidden, positions[0]!);
+  }
+
+  projectContextKVRows(contextHidden: MlxArray, position: number | MlxArray): ContextKV[] {
+    const B = contextHidden.shape[0]!, L = contextHidden.shape[1]!;
     const out: ContextKV[] = [];
     for (const layer of this.#layers) {
       const kFlat = matmulW(contextHidden, layer.kProj); // [1,L,nKvHeads*headDim]
-      const k4 = ops.reshape(kFlat, [1, L, this.nKvHeads, this.headDim]);
+      const k4 = ops.reshape(kFlat, [B, L, this.nKvHeads, this.headDim]);
       kFlat.dispose();
       // v ≡ k pre-norm (attention_k_eq_v: v_ctx = k_ctx, same tensor before
       // the two norms diverge — v_norm has no weight).
@@ -469,14 +491,9 @@ export class DeepspecDrafter {
       const vT = ops.transposeAxes(vNormed, [0, 2, 1, 3]);
       vNormed.dispose();
 
-      // RoPE over context rows at their absolute positions. mx.fast.rope's
-      // static `offset` assumes contiguous positions starting at offset; our
-      // context rows ARE contiguous (0..L-1 by construction — the taps are
-      // read at the same prompt/verified positions every round), so a single
-      // rope(offset=positions[0]) call matches apply_gemma4_rotary_pos_emb
-      // row-for-row. Guard the assumption explicitly.
-      assertContiguous(positions);
-      const kRoped = ops.rope(kT, this.headDim, null, positions[0]!, this.ropeFreqs);
+      const kRoped = typeof position === "number"
+        ? ops.rope(kT, this.headDim, null, position, this.ropeFreqs)
+        : ops.ropeDynamic(kT, this.headDim, null, position, this.ropeFreqs);
       kT.dispose();
       out.push({ k: kRoped, v: vT });
     }
@@ -489,22 +506,19 @@ export class DeepspecDrafter {
    * transcribed inline per-layer below. Non-causal SDPA (scale=1.0) over
    * [ctx rows ++ block rows]; q uses only the block's own positions.
    *
-   * blockIds: token ids for the noise block, length gamma — [anchor, MASK,
+   * blockIds: token ids for each noise block, shape [B, gamma] — [anchor, MASK,
    * MASK, ..., MASK] (create_noise_embed: only position 0 gets the real
    * anchor token when block_keep_mask; MASK elsewhere — at inference every
    * anchor is "kept" so this is always [anchor, mask_token_id × (γ-1)]).
-   * blockPositions: absolute positions for the γ block rows (contiguous,
-   * anchorPos..anchorPos+γ-1 — create_position_ids's per-block arange).
+   * position: each row's initial absolute position. RoPE advances contiguous
+   * positions within the block.
    */
-  #forwardBackbone(ctxKV: ContextKV[], blockIds: number[], blockPositions: number[]): MlxArray {
-    const G = blockIds.length;
-    assertContiguous(blockPositions);
-    const idsArr = ops.fromInt32(blockIds, [1, G]);
-    const idsU32 = idsArr.astype(Dtype.uint32);
-    idsArr.dispose();
+  #forwardBackbone(context: DeepspecContextAttention, blockIds: MlxArray, position: number | MlxArray): MlxArray {
+    const B = blockIds.shape[0]!, G = blockIds.shape[1]!;
+    const idsU32 = blockIds.astype(Dtype.uint32);
     const embRaw = gatherW(this.#embed, idsU32); // [1,G,hidden] (gather over vocab axis)
     idsU32.dispose();
-    const embFlat = ops.reshape(embRaw, [1, G, this.hidden]);
+    const embFlat = ops.reshape(embRaw, [B, G, this.hidden]);
     embRaw.dispose();
     // Gemma4TextScaledWordEmbedding.forward: embed(ids) * embed_scale
     let h = ops.mulScalar(embFlat, this.embedScale);
@@ -512,31 +526,30 @@ export class DeepspecDrafter {
 
     for (let li = 0; li < this.#layers.length; li++) {
       const layer = this.#layers[li]!;
-      const { k: kCtx, v: vCtx } = ctxKV[li]!;
-      const ctxLen = kCtx.shape[2]!;
 
       const residual = h;
       const x = this.#rms(h, layer.inputNorm);
 
       // q = q_norm(q_proj(x).view(B,q_len,nHeads,headDim)).transpose(1,2)
       const qFlat = matmulW(x, layer.qProj); // [1,G,nHeads*headDim]
-      const q4 = ops.reshape(qFlat, [1, G, this.nHeads, this.headDim]);
+      const q4 = ops.reshape(qFlat, [B, G, this.nHeads, this.headDim]);
       qFlat.dispose();
       const qNormed = this.#rms(q4, layer.qNorm);
       q4.dispose();
       const qT = ops.transposeAxes(qNormed, [0, 2, 1, 3]); // [1,nHeads,G,headDim]
       qNormed.dispose();
       // rope on q uses the LAST q_len positions (cos[:, -q_len:, :]) — here
-      // q_len == G == the whole block, so "last q_len" is just the block's
-      // own positions, contiguous from blockPositions[0].
-      const qRoped = ops.rope(qT, this.headDim, null, blockPositions[0]!, this.ropeFreqs);
+      // q_len == G == the whole block, starting at each row's position.
+      const qRoped = typeof position === "number"
+        ? ops.rope(qT, this.headDim, null, position, this.ropeFreqs)
+        : ops.ropeDynamic(qT, this.headDim, null, position, this.ropeFreqs);
       qT.dispose();
 
       // k_noise = k_proj(x); norm+rope IDENTICALLY to the cached context
       // rows (concat-then-norm == norm-then-concat per the RMSNorm argument
       // in projectContextKV's doc comment).
       const kNoiseFlat = matmulW(x, layer.kProj);
-      const kNoise4 = ops.reshape(kNoiseFlat, [1, G, this.nKvHeads, this.headDim]);
+      const kNoise4 = ops.reshape(kNoiseFlat, [B, G, this.nKvHeads, this.headDim]);
       kNoiseFlat.dispose();
       const vNoiseNormed = this.#rms(kNoise4, null);
       const kNoiseNormed = this.#rms(kNoise4, layer.kNorm);
@@ -545,26 +558,18 @@ export class DeepspecDrafter {
       kNoiseNormed.dispose();
       const vNoiseT = ops.transposeAxes(vNoiseNormed, [0, 2, 1, 3]);
       vNoiseNormed.dispose();
-      const kNoiseRoped = ops.rope(kNoiseT, this.headDim, null, blockPositions[0]!, this.ropeFreqs);
+      const kNoiseRoped = typeof position === "number"
+        ? ops.rope(kNoiseT, this.headDim, null, position, this.ropeFreqs)
+        : ops.ropeDynamic(kNoiseT, this.headDim, null, position, this.ropeFreqs);
       kNoiseT.dispose();
       x.dispose();
 
-      // k = cat([k_ctx, k_noise], dim=seq); v = cat([v_ctx, v_noise], dim=seq)
-      const kFull = ops.concatAxis([kCtx, kNoiseRoped], 2); // [1,nKvHeads,ctxLen+G,headDim]
-      kNoiseRoped.dispose();
-      const vFull = ops.concatAxis([vCtx, vNoiseT], 2);
-      vNoiseT.dispose();
-
-      // non-causal SDPA, scale=1.0 (QK-norm replaces the usual 1/sqrt(d))
-      const attnOut = ops.sdpa(qRoped, kFull, vFull, 1.0, "", null);
-      qRoped.dispose();
-      kFull.dispose();
-      vFull.dispose();
-      void ctxLen;
+      const attnOut = context.attend(li, qRoped, kNoiseRoped, vNoiseT);
+      qRoped.dispose(); kNoiseRoped.dispose(); vNoiseT.dispose();
 
       const attnT = ops.transposeAxes(attnOut, [0, 2, 1, 3]); // [1,G,nHeads,headDim]
       attnOut.dispose();
-      const attnFlat = ops.reshape(attnT, [1, G, this.nHeads * this.headDim]);
+      const attnFlat = ops.reshape(attnT, [B, G, this.nHeads * this.headDim]);
       attnT.dispose();
       let attn = matmulW(attnFlat, layer.oProj);
       attnFlat.dispose();
@@ -613,12 +618,10 @@ export class DeepspecDrafter {
    *  bf16 `logits + bias` sum, and softcapped logits in [-30,30] have bf16
    *  steps ~0.125-0.25, so an f32 sum here reorders near-ties vs torch and
    *  derails the sequential block (2026-07-06 port review, fidelity fix). */
-  #markovStepBias(prevTok: number): MlxArray {
+  #markovStepBias(previous: MlxArray): MlxArray {
     if (!this.#markovW1 || !this.#markovW2)
       throw new Error("markovStepBias: markov_rank == 0 (no markov head)");
-    const idxArr = ops.fromInt32([prevTok], [1]);
-    const idxU32 = idxArr.astype(Dtype.uint32);
-    idxArr.dispose();
+    const idxU32 = previous.astype(Dtype.uint32);
     const e1 = gatherW(this.#markovW1, idxU32); // [1,rank]
     idxU32.dispose();
     const bias = matmulW(e1, this.#markovW2); // [1,vocab], model dtype
@@ -631,16 +634,14 @@ export class DeepspecDrafter {
    *  is nn.Linear(confDim,1) — proj.weight is [1,confDim]; we compute
    *  features @ proj.weight^T + bias without transposing storage (row-vector
    *  dot via matmul against a [confDim,1] view). */
-  #confidence(h1: MlxArray, prevTok: number): number {
+  #confidence(h1: MlxArray, previous: MlxArray): MlxArray {
     if (!this.#confProj || !this.#confB)
       throw new Error("confidence: confidence head disabled");
     let feat = h1;
     let ownFeat = false;
     if (this.cfg.confidence_head_with_markov) {
       if (!this.#markovW1) throw new Error("confidence_head_with_markov requires markov_rank > 0");
-      const idxArr = ops.fromInt32([prevTok], [1]);
-      const idxU32 = idxArr.astype(Dtype.uint32);
-      idxArr.dispose();
+      const idxU32 = previous.astype(Dtype.uint32);
       const e1 = gatherW(this.#markovW1, idxU32); // [1,rank]
       idxU32.dispose();
       const e1f = e1.dtype === h1.dtype ? e1 : disposing(e1, e1.astype(h1.dtype));
@@ -659,9 +660,7 @@ export class DeepspecDrafter {
     z = disposing(z, ops.add(z, this.#confB));
     if (z.dtype !== Dtype.float32) z = disposing(z, z.astype(Dtype.float32));
     z = disposing(z, ops.sigmoid(z));
-    const v = z.toFloat32()[0]!;
-    z.dispose();
-    return v;
+    return z;
   }
 
   /**
@@ -701,73 +700,49 @@ export class DeepspecDrafter {
    * anchorPos: its absolute sequence position (blockPositions[0]).
    */
   draftBlock(ctxKV: ContextKV[], anchorTok: number, anchorPos: number): DraftBlockResult {
-    const G = this.gamma;
-    const V = this.cfg.vocab_size;
-    const blockIds = [anchorTok, ...Array(G - 1).fill(this.cfg.mask_token_id)];
-    const blockPositions = Array.from({ length: G }, (_, i) => anchorPos + i);
+    const result = this.draftRows(plainDeepspecContext(ctxKV), [anchorTok], anchorPos, true);
+    return { tokens: result.tokens[0]!, conf: result.conf[0]!, baseLogits: result.baseLogits! };
+  }
 
-    const h = this.#forwardBackbone(ctxKV, blockIds, blockPositions); // [1,G,hidden]
-    const baseLogitsRaw = this.#computeLogits(h); // [1,G,vocab], softcapped, model dtype
-
-    // Pass 1: sequential Markov-biased argmax sampling over the FULL block —
-    // in MODEL dtype end to end (reference precision: modeling.py
-    // compute_logits → apply_step_logits → sample_tokens all run bf16; the
-    // argmax is over the bf16 sum. f32 here reordered near-ties vs torch —
-    // 2026-07-06 port review, fidelity fix).
-    const sampledTokens: number[] = [];
-    let prevTok = anchorTok;
-    for (let k = 0; k < G; k++) {
-      const base1 = baseLogitsRaw.slice([0, k, 0], [1, k + 1, V]);
-      const baseFlat = ops.reshape(base1, [1, V]);
-      base1.dispose();
-      let stepLogits = baseFlat;
-      if (this.#markovW1) {
-        const bias = this.#markovStepBias(prevTok); // [1,V], model dtype
-        stepLogits = ops.add(baseFlat, bias);
-        baseFlat.dispose();
-        bias.dispose();
+  /** The graph and sequential proposal head run at the active row count.
+   * Confidence selects each row's length after the full device chain. */
+  draftRows(context: DeepspecContextAttention, anchors: readonly number[], position: number | MlxArray,
+    collectLogits = false): DraftRowsResult {
+    const B = anchors.length, G = this.gamma, V = this.cfg.vocab_size;
+    using ids = ops.fromInt32(anchors.flatMap(anchor => [anchor, ...Array(G - 1).fill(this.cfg.mask_token_id)]), [B, G]);
+    using hidden = this.#forwardBackbone(context, ids, position);
+    using base = this.#computeLogits(hidden);
+    using anchorIds = ops.fromInt32([...anchors], [B]);
+    const sampled: MlxArray[] = [], confidence: MlxArray[] = [];
+    let previous = anchorIds;
+    try {
+      for (let step = 0; step < G; step++) {
+        using row = base.slice([0, step, 0], [B, step + 1, V]);
+        using logits = ops.reshape(row, [B, V]);
+        using bias = this.#markovW1 ? this.#markovStepBias(previous) : null;
+        using corrected = bias ? ops.add(logits, bias) : null;
+        const token = ops.argmaxAxis(corrected ?? logits, -1);
+        sampled.push(token); previous = token;
       }
-      const am = ops.argmaxAxis(stepLogits, -1);
-      const tok = ops.itemUint32(am);
-      am.dispose();
-      stepLogits.dispose();
-      sampledTokens.push(tok);
-      prevTok = tok;
-    }
-
-    // The returned artifact is an f32 COPY (callers read/compare host-side);
-    // sampling above never touches it.
-    const baseLogits =
-      baseLogitsRaw.dtype === Dtype.float32 ? baseLogitsRaw : disposing(baseLogitsRaw, baseLogitsRaw.astype(Dtype.float32));
-
-    // Pass 2: confidence over the full block, prev_token_ids = [anchor,
-    // sampled[:-1]] (_predict_confidence_logits) — independent of pass 1's
-    // truncation decision, computed for every position.
-    let proposalLen = G;
-    if (this.#confProj) {
-      const confVals: number[] = [];
-      let confPrev = anchorTok;
-      for (let k = 0; k < G; k++) {
-        const h1 = h.slice([0, k, 0], [1, k + 1, this.hidden]);
-        const h1Flat = ops.reshape(h1, [1, this.hidden]);
-        h1.dispose();
-        const cVal = this.#confidence(h1Flat, confPrev);
-        h1Flat.dispose();
-        confVals.push(cVal);
-        confPrev = sampledTokens[k]!;
+      // Serving does not consume confidence when truncation is disabled.
+      if (this.#confProj && (collectLogits || this.cfg.confidence_threshold > 0)) for (let step = 0; step < G; step++) {
+        using row = hidden.slice([0, step, 0], [B, step + 1, this.hidden]);
+        using flat = ops.reshape(row, [B, this.hidden]);
+        confidence.push(this.#confidence(flat, step ? sampled[step - 1]! : anchorIds));
       }
-      if (this.cfg.confidence_threshold > 0) {
-        const idx = confVals.findIndex((c) => c < this.cfg.confidence_threshold);
-        proposalLen = idx === -1 ? G : idx;
-      }
-      const tokens = sampledTokens.slice(0, proposalLen);
-      const conf = confVals.slice(0, proposalLen);
-      h.dispose();
-      return { tokens, conf, baseLogits };
-    }
-
-    h.dispose();
-    return { tokens: sampledTokens, conf: [], baseLogits };
+      using packed = ops.concatAxis(sampled, 0);
+      const tokens = packed.toIntTokens();
+      using packedConfidence = confidence.length ? ops.concatAxis(confidence, 0) : null;
+      const conf = packedConfidence?.toFloat32();
+      const rows = anchors.map((_, row) => {
+        const values = conf ? Array.from({ length: G }, (_, step) => conf[step * B + row]!) : [];
+        const below = this.cfg.confidence_threshold > 0 ? values.findIndex(value => value < this.cfg.confidence_threshold) : -1;
+        const length = below < 0 ? G : below;
+        return { tokens: Array.from({ length }, (_, step) => tokens[step * B + row]!), conf: values.slice(0, length) };
+      });
+      return { tokens: rows.map(row => row.tokens), conf: rows.map(row => row.conf),
+        ...(collectLogits ? { baseLogits: base.astype(Dtype.float32) } : {}) };
+    } finally { for (const array of [...sampled, ...confidence]) array.dispose(); }
   }
 
   dispose(): void {

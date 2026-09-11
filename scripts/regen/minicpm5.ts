@@ -1,6 +1,6 @@
 // Regenerate MiniCPM5-1B llama-family goldens from the Python oracle.
 // Explicit command:
-//   MLX_BUN_ORACLE_VENV=/Users/joshrossi/Code/mlx-lm-example/.venv \
+//   MLX_BUN_ORACLE_VENV=<matching venv from docs/reference/environment.md> \
 //     bun scripts/regen.ts minicpm5
 //
 // Writes:
@@ -19,7 +19,8 @@ const MAX_TOKENS = 100;
 const LOGIT_STEPS = MAX_TOKENS;
 
 const py = `
-import sys, json
+import sys, json, hashlib, importlib.metadata
+from pathlib import Path
 import mlx.core as mx
 from mlx_lm import load
 from mlx_lm.models.cache import make_prompt_cache
@@ -50,6 +51,15 @@ out = {
     "greedy_ids": greedy,
     "logit_steps": logit_steps,
     "vocab_size": int(last.shape[0]),
+    "oracle": {
+        "mlx": mx.__version__,
+        "mlx_lm": importlib.metadata.version("mlx-lm"),
+        "device": mx.device_info(),
+        "config_sha256": hashlib.sha256(Path(snap, "config.json").read_bytes()).hexdigest(),
+        "blobs": {f"minicpm5-logits-step{i}.bin": hashlib.sha256(
+            Path(outdir, f"minicpm5-logits-step{i}.bin").read_bytes()).hexdigest()
+            for i in range(logit_steps)},
+    },
 }
 print(json.dumps(out))
 `;

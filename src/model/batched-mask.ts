@@ -259,13 +259,21 @@ export function extractKVRow(cache: KVCache, leftPad: number, i: number): KVCach
 
 /** mlx-lm `filter`: keep only `keep` (sorted row indices) along the batch
  *  axis — eviction of finished sequences from a batched [B,H,S,D] buffer.
- *  Caller owns the result; inputs are not disposed. */
+ *  `trimLeft` removes padding shared by all survivors (the caller updates
+ *  offsets and per-row padding). Caller owns the result; inputs stay owned. */
 export function filterKVRows(
-  keys: MlxArray, values: MlxArray, keep: number[],
+  keys: MlxArray, values: MlxArray, keep: number[], trimLeft = 0,
 ): { keys: MlxArray; values: MlxArray } {
   const idx = MlxArray.fromInt32(Int32Array.from(keep), [keep.length]);
-  const k = ops.takeAxis(keys, idx, 0);
-  const v = ops.takeAxis(values, idx, 0);
+  const take = (a: MlxArray) => {
+    const rows = ops.takeAxis(a, idx, 0);
+    if (trimLeft === 0) return rows;
+    const trimmed = rows.slice([0, 0, trimLeft, 0], rows.shape);
+    rows.dispose();
+    return trimmed;
+  };
+  const k = take(keys);
+  const v = take(values);
   idx.dispose();
   return { keys: k, values: v };
 }

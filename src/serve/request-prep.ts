@@ -92,10 +92,8 @@ export function createRequestPrep(input: {
       ? Math.min(genTemp, NO_THINK_TEMPERATURE)
       : genTemp;
     return {
-      // No invented cap: unset means "generate until EOS or the admitted
-      // context is exhausted" — admission (planRequest) is the real limit
-      // and clamps to maxSafeContext − promptLen. Only an explicit request
-      // max_tokens or the operator's --max-tokens narrows it further.
+      // Unset means generate until EOS/stop. Only a client cap or an explicit
+      // operator limit constrains completion length; fit estimates do not.
       maxTokens: req.max_completion_tokens ?? req.max_tokens ??
         defaultGeneratedTokens,
       temperature: req.temperature ?? serverOptions.defaultTemperature ?? defaultTemp,

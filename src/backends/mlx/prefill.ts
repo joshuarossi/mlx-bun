@@ -9,7 +9,7 @@ import { withResource } from "../../engine/resources";
 /** State views with explicit ownership are released even on deferred errors.
  * Owned views precede borrowed state, preserving the serial eval ordering. */
 export function evalCacheState(cache: Cache[]): void {
-  withResource(leaseCacheStates(cache), (state) => ops.evalAll([...state]));
+  withResource(leaseCacheStates(cache), (state) => { if (state.length) ops.evalAll([...state]); });
 }
 
 /** Forward once. Drains evaluate state, apply KV maintenance, then clear the

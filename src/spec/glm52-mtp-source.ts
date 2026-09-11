@@ -13,8 +13,11 @@ import * as ops from "../mlx/ops";
 import { toLogprobs } from "../sampler";
 import { Glm52DecoderLayer, Glm52Model } from "../model/glm52";
 import { MLACache } from "../model/glm52-cache";
-import { rmsNormF32Mlx } from "../model/glm52-mla";
-import type { DraftProvider, DraftSource } from "./source";
+import { Glm52MtpGraph } from "./glm52-mtp-graph";
+import type { DraftProvider, DraftSource, GroupedDraftProvider, TargetView, DraftRowSampling, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup } from "./source";
+import { Glm52MtpRows, type Glm52MtpRowState } from "./glm52-mtp-rows";
+import { captureGlm52MtpState, restoreGlm52MtpState } from "./glm52-mtp-state";
+import { applyStateChanges, disposeResources } from "../engine/resources";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
@@ -26,6 +29,10 @@ function lastToken(feed: readonly number[]): number {
 }
 
 export class Glm52NativeMtpProvider implements DraftProvider {
+  readonly grouped: GroupedDraftProvider = {
+    open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
+    openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
+  };
   readonly id = "glm52-native-mtp";
   readonly weightsBytes = 0;
   readonly #layer: Glm52DecoderLayer;
@@ -62,6 +69,34 @@ export class Glm52NativeMtpProvider implements DraftProvider {
     return new Glm52NativeMtpSource(this.model, this.#layer, opts.sampler);
   }
 
+  #openRows(target: TargetView, sampling: DraftRowSampling | null,
+    checkpoints: readonly (DraftRowCheckpoint | null)[]): DraftRowGroup & DraftPrefillGroup {
+    if (target.identity !== this.model) throw new Error("native MTP provider was opened for a different target");
+    const rows = new Glm52MtpRows(new Glm52MtpGraph(this.model, this.#layer), sampling);
+    const prepareAppend = (checkpoints: readonly (DraftRowCheckpoint | null)[]) => {
+      const states: (Glm52MtpRowState | null)[] = [];
+      try {
+        for (const checkpoint of checkpoints) states.push(checkpoint ? restoreGlm52MtpState(checkpoint, () => rows.makeCache()) : null);
+        return rows.prepareAppend(states);
+      } finally { disposeResources(states.flatMap(state => state ? [state.cache, state.hidden] : [])); }
+    };
+    const append = (states: readonly (DraftRowCheckpoint | null)[]) => applyStateChanges([() => prepareAppend(states)]);
+    try { append(checkpoints); } catch (error) { rows.dispose(); throw error; }
+    return {
+      namespace: "glm52-native-mtp-v1", prefillMode: "full", tapLayers: [],
+      get rowCount() { return rows.rowCount; },
+      append, prepareAppend, prefill: (tokens, context) => rows.prefill(tokens, context!),
+      materialize: rows.materialize.bind(rows), filterRows: rows.filterRows.bind(rows),
+      draft: rows.draft.bind(rows), commit: rows.commit.bind(rows),
+      capture(row) {
+        const state = rows.extractRow(row);
+        try { return captureGlm52MtpState(state); }
+        finally { state.cache.dispose(); state.hidden.dispose(); }
+      },
+      dispose: rows.dispose.bind(rows),
+    };
+  }
+
   dispose(): void {
     // The target model owns every shared/MTP weight and the expert tier.
   }
@@ -72,6 +107,7 @@ export class Glm52NativeMtpSource implements DraftSource {
   readonly pinTargetKernelFamily = true;
   readonly weightsBytes = 0;
   #cache: MLACache;
+  readonly #graph: Glm52MtpGraph;
   #roundStart = 0;
   #lastDraftCount = 0;
   #closed = false;
@@ -81,6 +117,7 @@ export class Glm52NativeMtpSource implements DraftSource {
     readonly layer: Glm52DecoderLayer,
     readonly sampler: Sampler,
   ) {
+    this.#graph = new Glm52MtpGraph(model, layer);
     this.#cache = new MLACache({
       kvLoraRank: model.glmConfig.kvLoraRank,
       ropeHeadDim: model.glmConfig.qkRopeHeadDim,
@@ -256,142 +293,22 @@ export class Glm52NativeMtpSource implements DraftSource {
     hidden: MlxArray,
     sampleStep: number,
   ): Promise<{ hidden: MlxArray; token: number }> {
-    const config = this.model.glmConfig;
-    const ids = ops.fromInt32([token], [1, 1]);
-    let embedded: MlxArray | null = null;
-    let embeddedNorm: MlxArray | null = null;
-    let hiddenNorm: MlxArray | null = null;
-    let joined: MlxArray | null = null;
-    let projected: MlxArray | null = null;
-    let output: MlxArray | null = null;
-    let headInput: MlxArray | null = null;
-    let logits: MlxArray | null = null;
-    let logprobs: MlxArray | null = null;
-    let sampled: MlxArray | null = null;
-    try {
-      embedded = this.model.weights.embedding(
-        ids,
-        "model.embed_tokens.weight",
-        config.vocabSize,
-        config.hiddenSize,
-      );
-      embeddedNorm = rmsNormF32Mlx(
-        embedded,
-        this.model.weights.tensor(
-          `model.layers.${config.numHiddenLayers}.enorm.weight`,
-        ),
-        config.rmsNormEps,
-      );
-      hiddenNorm = rmsNormF32Mlx(
-        hidden,
-        this.model.weights.tensor(
-          `model.layers.${config.numHiddenLayers}.hnorm.weight`,
-        ),
-        config.rmsNormEps,
-      );
-      joined = ops.concatAxis([embeddedNorm, hiddenNorm], 2);
-      projected = this.model.weights.linear(
-        joined,
-        `model.layers.${config.numHiddenLayers}.eh_proj.weight`,
-        config.hiddenSize,
-        2 * config.hiddenSize,
-      );
-      output = await this.layer.forwardAsync(projected, this.#cache, null);
-      headInput = rmsNormF32Mlx(
-        output,
-        this.model.weights.tensor(
-          `model.layers.${config.numHiddenLayers}.shared_head.norm.weight`,
-        ),
-        config.rmsNormEps,
-      );
-      logits = this.model.logitsFromHidden(headInput);
-      // Sampler contract is [1, V] — same 3-D top-k hazard as
-      // qwen-mtp-source #sample (2026-08-20); see the comment there.
-      {
-        const V = logits.shape[logits.shape.length - 1]!;
-        const flat = ops.reshape(logits, [1, V]);
-        logits.dispose();
-        logits = flat;
-      }
-      logprobs = toLogprobs(logits);
-      sampled = this.sampler(logprobs, sampleStep);
-      return {
-        hidden: ops.contiguous(output),
-        token: ops.itemUint32(sampled),
-      };
-    } finally {
-      ids.dispose();
-      embedded?.dispose();
-      embeddedNorm?.dispose();
-      hiddenNorm?.dispose();
-      joined?.dispose();
-      projected?.dispose();
-      output?.dispose();
-      headInput?.dispose();
-      logits?.dispose();
-      logprobs?.dispose();
-      sampled?.dispose();
-    }
+    using ids = ops.fromInt32([token], [1, 1]);
+    using output = await this.#graph.forward(ids, hidden, this.#cache);
+    using logits = this.#graph.project(output);
+    // Sampling consumes [B,V], independently of the graph's token dimension.
+    using flat = ops.reshape(logits, [1, logits.shape.at(-1)!]);
+    using logprobs = toLogprobs(flat);
+    using sampled = this.sampler(logprobs, sampleStep);
+    return { hidden: ops.contiguous(output), token: ops.itemUint32(sampled) };
   }
 
-  async #absorb(
-    acceptedTokens: readonly number[],
-    verifiedHidden: MlxArray,
-  ): Promise<void> {
-    const config = this.model.glmConfig;
-    const k = acceptedTokens.length;
-    const ids = ops.fromInt32([...acceptedTokens], [1, k]);
-    let embedded: MlxArray | null = null;
-    let embeddedNorm: MlxArray | null = null;
-    let trueRows: MlxArray | null = null;
-    let hiddenNorm: MlxArray | null = null;
-    let joined: MlxArray | null = null;
-    let projected: MlxArray | null = null;
-    let output: MlxArray | null = null;
-    try {
-      embedded = this.model.weights.embedding(
-        ids,
-        "model.embed_tokens.weight",
-        config.vocabSize,
-        config.hiddenSize,
-      );
-      embeddedNorm = rmsNormF32Mlx(
-        embedded,
-        this.model.weights.tensor(
-          `model.layers.${config.numHiddenLayers}.enorm.weight`,
-        ),
-        config.rmsNormEps,
-      );
-      trueRows = verifiedHidden.slice(
-        [0, 0, 0],
-        [1, k, config.hiddenSize],
-      );
-      hiddenNorm = rmsNormF32Mlx(
-        trueRows,
-        this.model.weights.tensor(
-          `model.layers.${config.numHiddenLayers}.hnorm.weight`,
-        ),
-        config.rmsNormEps,
-      );
-      joined = ops.concatAxis([embeddedNorm, hiddenNorm], 2);
-      projected = this.model.weights.linear(
-        joined,
-        `model.layers.${config.numHiddenLayers}.eh_proj.weight`,
-        config.hiddenSize,
-        2 * config.hiddenSize,
-      );
-      output = await this.layer.forwardAsync(projected, this.#cache, null);
-      output.eval();
-    } finally {
-      ids.dispose();
-      embedded?.dispose();
-      embeddedNorm?.dispose();
-      trueRows?.dispose();
-      hiddenNorm?.dispose();
-      joined?.dispose();
-      projected?.dispose();
-      output?.dispose();
-    }
+  async #absorb(acceptedTokens: readonly number[], verifiedHidden: MlxArray): Promise<void> {
+    const count = acceptedTokens.length;
+    using ids = ops.fromInt32([...acceptedTokens], [1, count]);
+    using trueRows = verifiedHidden.slice([0, 0, 0], [1, count, this.model.glmConfig.hiddenSize]);
+    using output = await this.#graph.forward(ids, trueRows, this.#cache);
+    output.eval();
   }
 
   #checkOpen(): void {

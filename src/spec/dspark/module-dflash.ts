@@ -74,6 +74,10 @@ export interface DflashTrainOut { draftLogits: MlxArray; conf: MlxArray }
  *  positions — ABSENT when the caller passed collectLogits:false (the loop
  *  never materialized/concatenated the per-position logits). */
 export interface DflashDraftBlock { tokens: number[]; conf: number[]; draftLogits?: MlxArray }
+export interface DflashDraftRows { tokens: number[][]; conf: number[][]; draftLogits?: MlxArray; }
+export interface DflashContextAttention {
+  attend(layer: number, query: MlxArray, keys: MlxArray, values: MlxArray, scale: number): MlxArray;
+}
 export interface DflashDraftOpts {
   sample?: DSparkSampleConfig;
   keys?: KeyStream;
@@ -92,6 +96,8 @@ export interface DflashDraftOpts {
    *  path runs its own verify lm-head and never reads it — pass false there
    *  to skip the dead concat + a host-unrelated GPU alloc every round. */
   collectLogits?: boolean;
+  /** Return confidence telemetry; pruning still computes it when needed. */
+  collectConfidence?: boolean;
 }
 
 const CDT = Dtype.float32;
@@ -245,7 +251,7 @@ export class DflashDrafter {
   }
 
   // --- Eq 3: one KV-injection layer. H_ctx read-only; H_d is queries+updated ---
-  #layer(i: number, H_d: MlxArray, H_ctx: MlxArray, maskBias: MlxArray | null, A: number, Lctx: number): MlxArray {
+  #layer(i: number, H_d: MlxArray, H_ctx: MlxArray, maskBias: MlxArray | null, A: number, Lctx: number, context?: DflashContextAttention): MlxArray {
     const { dDraft, nHeads, gamma } = this.cfg;
     const hd = dDraft / nHeads;
     const eps = this.dims.eps;
@@ -253,24 +259,34 @@ export class DflashDrafter {
 
     const residual = H_d;
     const nd = ops.rmsNorm(H_d, this.get(`bb.${i}.attn_norm`), eps);
-    const nc = ops.rmsNorm(H_ctx, this.get(`bb.${i}.attn_norm`), eps); // SAME norm as block
+    const nc = context ? null : ops.rmsNorm(H_ctx, this.get(`bb.${i}.attn_norm`), eps); // SAME norm as block
 
     // Q from block only
     let q = ops.matmul(nd, this.get(`bb.${i}.q`)); // [A,γ,d]
     q = disposing(q, ops.reshape(q, [A, gamma, nHeads, hd]));
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3])); // [A,nHeads,γ,hd]
 
-    // K/V = [Wk·H_ctx ; Wk·H_d]  (context first, then block)
-    const kc = ops.matmul(nc, wk), kd = ops.matmul(nd, wk);
-    const vc = ops.matmul(nc, wv), vd = ops.matmul(nd, wv);
-    nd.dispose(); nc.dispose();
-    const shape4 = (x: MlxArray) => { const r = ops.reshape(x, [A, Lctx + gamma, nHeads, hd]); x.dispose(); const t = ops.transposeAxes(r, [0, 2, 1, 3]); r.dispose(); return t; };
-    let K = ops.concatAxis([kc, kd], 1); kc.dispose(); kd.dispose(); // [A,Lctx+γ,d]
-    let V = ops.concatAxis([vc, vd], 1); vc.dispose(); vd.dispose();
-    K = shape4(K); V = shape4(V); // [A,nHeads,Lctx+γ,hd]
-
-    let attn = ops.sdpa(q, K, V, Math.pow(hd, -0.5), maskBias ? "array" : "", maskBias);
-    q.dispose(); K.dispose(); V.dispose();
+    const kd = ops.matmul(nd, wk), vd = ops.matmul(nd, wv); nd.dispose();
+    let attn: MlxArray;
+    if (context) {
+      const shape = (array: MlxArray) => {
+        using rows = ops.reshape(array, [A, gamma, nHeads, hd]);
+        return ops.transposeAxes(rows, [0, 2, 1, 3]);
+      };
+      using keys = shape(kd), values = shape(vd); kd.dispose(); vd.dispose();
+      attn = context.attend(i, q, keys, values, Math.pow(hd, -0.5));
+    } else {
+      const kc = ops.matmul(nc!, wk), vc = ops.matmul(nc!, wv); nc!.dispose();
+      const shape = (array: MlxArray) => {
+        using rows = ops.reshape(array, [A, Lctx + gamma, nHeads, hd]);
+        return ops.transposeAxes(rows, [0, 2, 1, 3]);
+      };
+      using k = ops.concatAxis([kc, kd], 1), v = ops.concatAxis([vc, vd], 1);
+      kc.dispose(); kd.dispose(); vc.dispose(); vd.dispose();
+      using keys = shape(k), values = shape(v);
+      attn = ops.sdpa(q, keys, values, Math.pow(hd, -0.5), maskBias ? "array" : "", maskBias);
+    }
+    q.dispose();
     attn = disposing(attn, ops.transposeAxes(attn, [0, 2, 1, 3])); // [A,γ,nHeads,hd]
     attn = disposing(attn, ops.reshape(attn, [A, gamma, dDraft]));
     attn = disposing(attn, ops.matmul(attn, this.get(`bb.${i}.o`)));
@@ -290,15 +306,33 @@ export class DflashDrafter {
   }
 
   /** hCtx [A,Lctx,m*H], anchorEmb [A,H], ctxMask [A,Lctx]|null → block [A,γ,d]. */
-  #backbone(hCtx: MlxArray, anchorEmb: MlxArray, ctxMask: MlxArray | null, A: number): MlxArray {
-    const Lctx = hCtx.shape[1]!;
-    const H_ctx = this.#buildContext(hCtx);
+  #backbone(hCtx: MlxArray | null, anchorEmb: MlxArray, ctxMask: MlxArray | null, A: number, context?: DflashContextAttention): MlxArray {
+    const Lctx = hCtx?.shape[1] ?? 0;
+    const H_ctx = context ? null : this.#buildContext(hCtx!);
     let H_d = this.#buildBlock(anchorEmb, A);
     const maskBias = this.#maskBias(ctxMask, A, Lctx);
-    for (let i = 0; i < this.cfg.nLayers; i++) H_d = disposing(H_d, this.#layer(i, H_d, H_ctx, maskBias, A, Lctx));
-    H_ctx.dispose(); maskBias?.dispose();
+    for (let i = 0; i < this.cfg.nLayers; i++) H_d = disposing(H_d, this.#layer(i, H_d, H_ctx!, maskBias, A, Lctx, context));
+    H_ctx?.dispose(); maskBias?.dispose();
     H_d = disposing(H_d, ops.rmsNorm(H_d, this.get("out_norm"), this.dims.eps));
     return H_d;
+  }
+
+  /** Context projection is independent of the block and can be retained. */
+  projectContextRows(hidden: MlxArray): { k: MlxArray; v: MlxArray }[] {
+    const { nHeads, dDraft } = this.cfg, B = hidden.shape[0]!, N = hidden.shape[1]!;
+    using projected = this.#buildContext(hidden);
+    using pending = new DisposableStack();
+    const pairs = Array.from({ length: this.cfg.nLayers }, (_, layer) => {
+      using normalized = ops.rmsNorm(projected, this.get(`bb.${layer}.attn_norm`), this.dims.eps);
+      const plane = (name: string) => {
+        using flat = ops.matmul(normalized, this.get(name));
+        using rows = ops.reshape(flat, [B, N, nHeads, dDraft / nHeads]);
+        return pending.use(ops.transposeAxes(rows, [0, 2, 1, 3]));
+      };
+      return { k: plane(`bb.${layer}.k`), v: plane(`bb.${layer}.v`) };
+    });
+    pending.move();
+    return pairs;
   }
 
   #baseLogits(model: DraftProjection, block: MlxArray): MlxArray {
@@ -401,167 +435,89 @@ export class DflashDrafter {
     }
   }
 
-  /** Inference: parallel backbone once, then sequential Markov sampling.
-   *  hCtx [1,Lctx,m*H] (full current context), anchorTok the bonus token.
-   *
-   *  Host-sync discipline (docs/archive/investigations/dspark-handoff.md item 3): the
-   *  greedy path's token recurrence stays ON-DEVICE across positions — the
-   *  argmax result [1] uint32 feeds directly into the next position's
-   *  takeAxis, no itemUint32 in the loop. Per-position token arrays are
-   *  collected and resolved to host numbers with exactly ONE concat +
-   *  toIntTokens() after the loop. Confidence is the one read the pruning
-   *  ALGORITHM inherently needs per position (Alg 1 must decide whether to
-   *  stop NOW) — so it stays per-position whenever thresholds/minConf are
-   *  actually active; when pruning is inactive there is no such need, so
-   *  confidence is deferred the same way (collect [1] arrays, one concat +
-   *  one toFloat32 after the loop). The sampling path already forces a host
-   *  read every position (sampleToken draws from a device RNG key) — that
-   *  path is unchanged. */
-  forwardInfer(model: DraftProjection, hCtx: MlxArray, anchorTok: number, gamma: number, opts: DflashDraftOpts = {}): DflashDraftBlock {
-    const { dDraft, markovRank: r } = this.cfg;
-    const V = this.dims.vocabSize;
+  /** Single-request callers use the same graph and proposal head at B1. */
+  forwardInfer(model: DraftProjection, hCtx: MlxArray, anchor: number, gamma: number, opts: DflashDraftOpts = {}): DflashDraftBlock {
+    const result = this.forwardRows(model, hCtx, [anchor], gamma, opts);
+    return { tokens: result.tokens[0]!, conf: result.conf[0]!, draftLogits: result.draftLogits };
+  }
+
+  forwardRows(model: DraftProjection, hCtx: MlxArray | null, anchors: readonly number[], gamma: number,
+    opts: DflashDraftOpts = {}, context?: DflashContextAttention): DflashDraftRows {
+    const B = anchors.length, { dDraft, markovRank: r } = this.cfg, V = this.dims.vocabSize;
     const sample = opts.sample && opts.sample.temperature > 0 ? opts.sample : null;
-    const keys = opts.keys ?? new KeyStream(opts.sample?.seed ?? 0);
-    const collectLogits = opts.collectLogits ?? true;
-    const pruningActive = opts.thresholds !== undefined || opts.minConf !== undefined;
-
-    const ids = ops.fromInt32([anchorTok], [1, 1]);
-    const ae3 = model.embed.encode(ids); ids.dispose();
-    const anchorEmb = ops.reshape(ae3, [1, this.dims.hiddenSize]); ae3.dispose();
-    const block = this.#backbone(hCtx, anchorEmb, null, 1); // [1,γ,d]
-    anchorEmb.dispose();
-    const U = this.#baseLogits(model, block);
-    const Uf = U.astype(CDT); U.dispose();
-
-    const w1 = this.get("markov.w1"), w2 = this.get("markov.w2");
+    const keys = sample ? anchors.map((_, row) => row === 0 && opts.keys ? opts.keys : new KeyStream(opts.sample?.seed ?? 0)) : [];
+    const collect = opts.collectLogits ?? true, pruning = opts.thresholds !== undefined || opts.minConf !== undefined;
+    using ids = ops.fromInt32([...anchors], [B, 1]);
+    using embeddings = model.embed.encode(ids);
+    using anchorEmb = ops.reshape(embeddings, [B, this.dims.hiddenSize]);
+    using block = this.#backbone(hCtx, anchorEmb, null, B, context);
+    using raw = this.#baseLogits(model, block);
+    using base = raw.astype(CDT);
     const isRnn = this.cfg.seqHead === "rnn";
-    const wH = isRnn ? this.get("rnn.wH") : null;
-    const bH = isRnn ? this.get("rnn.bH") : null;
-    const wO = isRnn ? this.get("rnn.wO") : null;
-    let s: MlxArray | null = isRnn ? zerosArray([1, r]) : null; // s_{-1} = 0, carried across k
-    const conf: number[] = [];
-    const perPos: MlxArray[] = []; // per-position [1,1,V] draft logits (collectLogits only)
-    const tokArrs: MlxArray[] = []; // per-position [1] device token ids, greedy path only
-    const confArrs: MlxArray[] = []; // per-position [1] device confidences, deferred (no pruning) only
-    let tokens: number[] = [];
-    let prevIdx: MlxArray = ops.fromInt32([anchorTok], [1]); // device token id fed to takeAxis
-    let ownPrevIdx = true; // false once prevIdx aliases a tokArrs/argmax entry we must not double-dispose
-    // Iteration-local temps register here at creation so the catch can reach
-    // them on a mid-flight throw; drained (length=0) at the bottom of each
-    // iteration once everything in it was disposed on the normal path.
-    // dispose() idempotence makes catch-side re-disposal of the already-freed
-    // ones inert.
-    const pending: MlxArray[] = [];
+    let state: MlxArray | null = isRnn ? zerosArray([B, r]) : null;
+    const tokens: MlxArray[] = [], confidence: MlxArray[] = [], logits: MlxArray[] = [];
+    const lengths: Array<number | undefined> = anchors.map(() => undefined);
+    const hostConfidence: number[][] = [];
+    const needConfidence = pruning || opts.collectConfidence !== false;
+    using first = ops.fromInt32([...anchors], [B]); let previous = first;
     try {
-      for (let k = 0; k < gamma; k++) {
-        const UkS = Uf.slice([0, k, 0], [1, k + 1, V]); pending.push(UkS);
-        const Uk = ops.reshape(UkS, [1, V]); pending.push(Uk);
-        UkS.dispose();
-        const e1 = ops.takeAxis(w1, prevIdx, 0); pending.push(e1); // [1,r], shared embedding either way
-        if (ownPrevIdx) { prevIdx.dispose(); ownPrevIdx = false; } // consumed; prevIdx reassigned below
-        let Bk: MlxArray;
+      for (let step = 0; step < gamma; step++) {
+        using row = base.slice([0, step, 0], [B, step + 1, V]);
+        using flat = ops.reshape(row, [B, V]);
+        using e1 = ops.takeAxis(this.get("markov.w1"), previous, 0);
+        let bias: MlxArray;
         if (isRnn) {
-          const sh = ops.matmul(s!, wH!); pending.push(sh);
-          s!.dispose(); s = null;
-          let sNext = ops.add(sh, e1); pending.push(sNext);
-          sh.dispose();
-          sNext = disposing(sNext, ops.add(sNext, bH!)); pending.push(sNext);
-          sNext = disposing(sNext, ops.tanh(sNext)); pending.push(sNext);
-          s = sNext; // s_k, survives to the next iteration (covered by the s slot from here)
-          Bk = ops.matmul(s, wO!); pending.push(Bk);
-        } else {
-          Bk = ops.matmul(e1, w2); pending.push(Bk);
-        }
-        const logitsK = ops.add(Uk, Bk); pending.push(logitsK);
-        Uk.dispose(); Bk.dispose();
-        // prevIdx becomes the SINGLE tracked owner of the next token id the
-        // moment it exists — no separate local for the catch to miss.
+          using recurrent = ops.matmul(state!, this.get("rnn.wH"));
+          using sum = ops.add(recurrent, e1);
+          using shifted = ops.add(sum, this.get("rnn.bH"));
+          const next = ops.tanh(shifted); state!.dispose(); state = next;
+          bias = ops.matmul(state, this.get("rnn.wO"));
+        } else bias = ops.matmul(e1, this.get("markov.w2"));
+        using correction = bias;
+        using scores = ops.add(flat, correction);
+        let token: MlxArray;
         if (sample) {
-          const sc = processLogits(logitsK, sample); pending.push(sc);
-          const tok = sampleToken(sc, keys.next()); sc.dispose();
-          tokens.push(tok);
-          prevIdx = ops.fromInt32([tok], [1]); ownPrevIdx = true;
-        } else {
-          const am = ops.argmaxAxis(logitsK, -1); // [1] uint32, ON-DEVICE — no itemUint32 here
-          tokArrs.push(am);
-          prevIdx = am; ownPrevIdx = false; // aliases tokArrs[k] — that collection owns it
-        }
-        if (collectLogits) perPos.push(ops.reshape(logitsK, [1, 1, V]));
-        logitsK.dispose();
-        const hkS = block.slice([0, k, 0], [1, k + 1, dDraft]); pending.push(hkS);
-        const hk = ops.reshape(hkS, [1, dDraft]); pending.push(hk);
-        hkS.dispose();
-        const ci = ops.concatAxis([hk, e1], 1); pending.push(ci);
-        hk.dispose(); e1.dispose();
-        let cz = ops.matmul(ci, this.get("conf.w")); pending.push(cz);
-        ci.dispose();
-        cz = disposing(cz, ops.add(cz, this.get("conf.b"))); pending.push(cz);
-        cz = disposing(cz, ops.sigmoid(cz)); pending.push(cz);
-
-        // Alg 1 (single-user): drop position k when its predicted acceptance
-        // is below the calibrated/manual threshold — the target then
-        // verifies a shorter window. Position 0 always survives (sources
-        // return ≥1 token). Pruning inherently needs the confidence value
-        // THIS position, on the host, to decide whether to stop — no way
-        // around that read when active. When inactive, defer it (device
-        // array, resolved once after the loop) since nothing this iteration
-        // depends on its value.
-        const thr = opts.thresholds?.[k] ?? opts.minConf;
-        if (pruningActive) {
-          const cVal = cz.toFloat32()[0]!; cz.dispose();
-          if (thr !== undefined && k > 0 && cVal < thr) {
-            // Drop position k SYMMETRICALLY on both paths so tokens/conf/
-            // draftLogits stay aligned (the DflashDraftBlock contract —
-            // verifySampling slices draftLogits per token). Greedy: pop the
-            // device array (prevIdx aliases it — one dispose via the owning
-            // collection). Sample: pop the host token + free the standalone
-            // fromInt32.
-            if (!sample) tokArrs.pop()!.dispose(); // also frees prevIdx (same array)
-            else { prevIdx.dispose(); tokens.pop(); }
-            ownPrevIdx = false; // dead either way — post-loop/catch must not re-dispose
-            if (collectLogits) perPos.pop()!.dispose(); // logits row for the dropped position
-            break;
+          const sampled = anchors.map((_, index) => {
+            if (lengths[index] !== undefined) return 0;
+            using one = scores.slice([index, 0], [index + 1, V]);
+            using processed = processLogits(one, sample);
+            return sampleToken(processed, keys[index]!.next());
+          });
+          token = ops.fromInt32(sampled, [B]);
+        } else token = ops.argmaxAxis(scores, -1);
+        tokens.push(token); previous = token;
+        if (collect) logits.push(ops.reshape(scores, [B, 1, V]));
+        if (needConfidence) {
+          using h = block.slice([0, step, 0], [B, step + 1, dDraft]);
+          using hFlat = ops.reshape(h, [B, dDraft]);
+          using joined = ops.concatAxis([hFlat, e1], 1);
+          using product = ops.matmul(joined, this.get("conf.w"));
+          using shifted = ops.add(product, this.get("conf.b"));
+          const conf = ops.sigmoid(shifted); confidence.push(conf);
+          if (pruning) {
+            const values = conf.toFloat32(), threshold = opts.thresholds?.[step] ?? opts.minConf;
+            hostConfidence.push(Array.from(values));
+            if (step > 0 && threshold !== undefined) values.forEach((value, row) => {
+              if (lengths[row] === undefined && value < threshold) lengths[row] = step;
+            });
+            if (lengths.every(length => length !== undefined)) break;
           }
-          conf.push(cVal);
-        } else {
-          confArrs.push(cz);
         }
-        pending.length = 0; // everything above was disposed (or handed to a collection)
       }
-      pending.length = 0; // early-break path: the broken iteration's temps are all freed too
-      if (ownPrevIdx) prevIdx.dispose(); // last iteration's fresh sample-path array, unused past the loop
-      s?.dispose(); // final on-device state (loop end or early break — both leave s live)
-      Uf.dispose(); block.dispose();
-
-      if (!sample) {
-        const allToks = ops.concatAxis(tokArrs, 0); // [nKept] uint32, ONE host read below
-        for (const a of tokArrs) a.dispose();
-        tokens = allToks.toIntTokens(); allToks.dispose();
+      using packed = ops.concatAxis(tokens, 0); const values = packed.toIntTokens();
+      using packedConfidence = !pruning && confidence.length ? ops.concatAxis(confidence, 0) : null;
+      const conf = packedConfidence?.toFloat32();
+      const sizes = lengths.map(length => length ?? tokens.length);
+      let draftLogits: MlxArray | undefined;
+      if (collect) {
+        using full = ops.concatAxis(logits, 1);
+        draftLogits = full.slice([0, 0, 0], [B, Math.max(...sizes), V]);
       }
-      if (!pruningActive && confArrs.length) {
-        const allConf = ops.concatAxis(confArrs, 0); // [nKept,1]
-        for (const a of confArrs) a.dispose();
-        const flat = allConf.toFloat32(); allConf.dispose();
-        for (const v of flat) conf.push(v);
-      }
-      const draftLogits = collectLogits ? ops.concatAxis(perPos, 1) : undefined;
-      if (collectLogits) for (const a of perPos) a.dispose();
-      return { tokens, conf, draftLogits };
-    } catch (err) {
-      // Cleanup on a mid-flight throw — the collections, the carried state,
-      // AND the current iteration's registered temps (`pending`). dispose()
-      // is idempotent (array.ts #disposed guard) so re-disposing an array the
-      // try block already freed (or that aliases one of these collections,
-      // e.g. prevIdx === tokArrs[k]) is inert, never a double-free bug.
-      for (const a of pending) a.dispose();
-      if (ownPrevIdx) prevIdx.dispose();
-      for (const a of tokArrs) a.dispose();
-      for (const a of confArrs) a.dispose();
-      for (const a of perPos) a.dispose();
-      s?.dispose();
-      Uf.dispose(); block.dispose();
-      throw err;
-    }
+      return {
+tokens: sizes.map((length, row) => Array.from({ length }, (_, step) => values[step * B + row]!)),
+        conf: sizes.map((length, row) => opts.collectConfidence === false ? [] : Array.from({ length }, (_, step) => pruning ? hostConfidence[step]![row]! : conf![step * B + row]!)), draftLogits
+};
+    } finally { state?.dispose(); for (const array of [...tokens, ...confidence, ...logits]) array.dispose(); }
   }
 
   save(dir: string): void {

@@ -117,8 +117,8 @@ Request body (OpenAI chat schema; unknown fields ignored):
   "stream": false,
   "max_tokens": 1024,            // or max_completion_tokens (wins); unset =
                                  // no cap — generate until EOS or the
-                                 // admitted context is exhausted (admission
-                                 // clamps; --max-tokens sets a server default)
+                                 // an explicit operator limit is reached;
+                                 // --max-tokens sets a server default
   "temperature": 0.7,            // 0 = greedy
   "top_p": 0, "top_k": 0,        // 0 = off
   "seed": 1234,                  // omit for time-derived
@@ -369,15 +369,34 @@ Speculative decoding is a **server-level mode** (`serve --draft-model`,
 or the model-free `serve --draft-kind ngram`, which mounts no draft
 model); there is no per-request draft field. The `speculation` usage
 extension appears on chat and text completions alike, non-streaming and on
-the final stream chunk. Spec-eligible requests are text-only on base weights
-(no adapter or logprobs capture, bf16 KV by default); experimental Qwen
-uniform KV4 start=0 can qualify through `MLX_BUN_QWEN_SPEC_KV4=1`.
-Ineligible requests decode normally and omit the field. The spec path bypasses
-the ordinary prompt cache. Qwen MTP with `MLX_BUN_MTP_PROMPT_CACHE=1` can reuse
-a paired target/draft RAM prefix, reported in `cached_tokens`; the default is
-zero. These prefixes do not persist across restarts. While a draft is mounted every request routes
-through the serial lane (mlx_lm.server parity: `is_batchable = draft is
-None`) — speculation and `--batch N` are different modes.
+the final stream chunk. Spec-eligible requests are text-only on base weights.
+In the unreleased shared executor, Qwen grouped MTP, prompt lookup and standalone drafting support logprobs and
+bf16, uniform KV4/KV8 or per-layer affine KV, or TurboQuant. Qwen MTP and prompt lookup also support
+positive library conversion thresholds for uniform KV4/KV8. Per-layer mixed KV and
+adapters remain incompatible with speculation. Strict legacy serial execution
+retains its narrower bf16/KV4 policy. The KV4 compatibility control is
+`MLX_BUN_QWEN_SPEC_KV4=0`.
+Ineligible requests decode normally and omit the field. Qwen MTP reuses paired
+target/draft prefill and completed decode state through the shared RAM/SSD cache by default in the
+unreleased source, reported in `cached_tokens`. Configured SSD persistence
+supports reuse after restart; `MLX_BUN_MTP_PROMPT_CACHE=0` disables reuse.
+Generated checkpoints cover processed tokens and use queued SSD persistence.
+Long-conversation performance acceptance remains open. Qwen prompt lookup also
+retains prefill and completed-output state in the common RAM/SSD cache, with
+its committed token history stored as a companion attachment. Standalone drafting
+on Qwen targets stores the draft model’s attention/recurrent state and pending
+last draft token as companion state, including restoration after restart. Qualified Qwen
+MTP, prompt lookup and standalone drafting use shared execution at one or several active rows and
+report `usage.lane: "batched"`. Supported full-attention and rotating targets, including
+Llama, MiniCPM and Gemma, use shared bf16, uniform KV4/KV8 or per-layer affine KV or TurboQuant lookup and standalone drafting, with
+logprobs and generated RAM/SSD checkpoints. Delayed and per-layer affine rotating speculation uses the same row lifecycle; positive conversion thresholds are a library setting, while served schemes default to zero. Gemma assistant drafting also shares execution with bf16, uniform KV4/KV8 or per-layer affine KV or TurboQuant target storage and stores its
+last true target hidden alongside generated RAM/SSD prefixes. Donor attention
+handles row validity independently of the draft graph. DeepSpec and DSpark also use these shared target layouts and the common RAM/SSD cache
+for projected context, with independent confidence-based proposal lengths.
+Other provider/target combinations still
+use the serial executor.
+Prompt-lookup concurrent performance acceptance remains open. Ineligible requests can use continuous ordinary execution
+when their features support it, even while a draft is mounted.
 
 `usage.fill` reports **token fast-forwarding** (`MLX_BUN_FILL=strict|echo`).
 Strict mode appends structural spans from the request's tools and chat
@@ -399,6 +418,13 @@ their rejected tail rewound — so `verifyAccepted + verifyRejected` is what the
 echo index proposed and `injected` is what survived. `wastedSamples` counts
 only ASSERT fills (a verify fill consumes the in-flight sample as its first
 position's check instead of discarding it).
+
+An explicit `seed` controls a request-local random stream and can use
+continuous execution. Repeating a request reproduces sampling at the same
+model arithmetic and batch composition. Different batch shapes can change
+floating-point results even with identical random draws; `--batch 1` retains
+the existing fixed-shape control. This differs from mlx-lm's policy of routing
+explicit seeds to its single-request generator.
 
 ### logprobs / top_logprobs
 
@@ -432,8 +458,8 @@ penalties), **before** the sampler's temperature/top-p/top-k/min-p/XTC.
 mlx-lm's top-k order is unspecified (argpartition); ours is sorted
 descending — the same set, so the entry is deterministically the argmax.
 Stream chunks never carry logprobs (mlx-lm's streaming responses don't
-either). Requests with logprobs run on the serial lane under `--batch N`
-(like the other mlx-lm sampler extensions). Invalid values are rejected
+either). Requests with logprobs can use ordinary continuous execution under
+`--batch N`; other feature exclusions still apply. Invalid values are rejected
 with mlx-lm's exact messages (see Errors).
 
 ### Streaming
@@ -544,11 +570,10 @@ Design and fidelity notes: [docs/reference/server-api.md](./server-api.md).
 
 ### Errors
 
-Runtime memory pressure can fail a request even after prompt-length admission.
-The serial memory guard first reclaims older prompt-cache entries, persisting
-them to the SSD tier when configured. If insufficient GPU headroom remains,
-the normal request/stream error path reports the failure. Saved in-flight
-generation checkpoints remain available for an identical retry.
+Memory estimates do not reject or shorten requests by default. Actual runtime
+failures use the request/stream error path when recoverable; native Metal
+allocation failure can terminate the process. Saved generation checkpoints
+remain available for an identical retry.
 
 All errors are `{ "error": { "message": …, ... } }`.
 
@@ -567,10 +592,12 @@ All errors are `{ "error": { "message": …, ... } }`.
   'low', 'medium', 'high', 'xhigh'`).
 - `400` with `"type": "memory_admission"`, `"code":
   "context_over_budget"` — the PROMPT itself leaves no generation slot
-  within the max safe context (`src/serve/request-plan.ts`). A prompt that
+  within an explicitly configured context/budget limit (`src/serve/request-plan.ts`). A prompt that
   fits is never rejected for a broad `max_tokens`: the upper bound is
   capped to the remaining room (`max_tokens` is a ceiling, not a promise)
-  and generation proceeds. The ceiling is visible at `/stats`.
+  and generation proceeds. This is opt-in via an operator budget/context cap
+  (or the fixed GLM-5.2 layout), never enforced from default fit estimates.
+  `/stats.admission.enforced_context_tokens` is null when no cap applies.
 - `429` with `"type": "resource_admission"`, `"code": "queue_full"` when
   a preparation or generation queue has 64 waiting requests. If SSE headers
   are already sent, the stream emits its terminal error instead.
@@ -590,7 +617,7 @@ and adapter selection as chat.
   "prompt": "Once upon a time",  // REQUIRED, non-empty string only (token
                                  // arrays rejected, matching mlx_lm.server)
   "max_tokens": 512,             // unset = no cap: generate until EOS or the
-                                 // admitted context (DEVIATION: mlx_lm.server
+                                 // an explicit operator limit (DEVIATION: mlx_lm.server
                                  // defaults 512 — pass --max-tokens 512 to
                                  // reproduce); max_completion_tokens wins
   "stream": false,
@@ -849,8 +876,9 @@ vision/audio, adapters, and training are not emulated by the serving port.
                  "pending_spill_bytes": 0, "dropped_spills": 0,
                  "failed_spills": 0, "longest_durable_prefix_tokens": 0 },
   "admission": {
-    "max_safe_context": 0,            // tokens; requests above this 400
-    "memory_budget_bytes": null,      // explicit budget, or null (machine default)
+    "max_safe_context": 0,            // advisory fit estimate, tokens
+    "enforced_context_tokens": null,  // explicit cap or fixed layout; null = none
+    "memory_budget_bytes": null,      // explicit budget, or null
     "usable_bytes": 0,
     "weights_bytes": 0
   },
@@ -924,7 +952,7 @@ generic all-resident SKU estimator is inapplicable
 ```jsonc
 {
   "machine": { "chip": "M4 Pro", "ram_bytes": 0, "bandwidth_gbs": 0.0 },
-  "context_tokens": 8192,          // current admission ceiling
+  "context_tokens": 8192,          // estimated context capacity
   "typical_context_tokens": 8192,  // min(8192, context_tokens)
   "typical_decode_tps": 0.0,       // predicted at typical_context_tokens
   "measured_decode_tps": null,     // real number from eval DB, or null
@@ -959,7 +987,11 @@ generic all-resident SKU estimator is inapplicable
 ## Adapters (LoRA hot-swap)
 
 Routes in `src/serve/model-admin-routes.ts`; the manager is
-`AdapterManager` in `src/lora.ts`.
+`AdapterManager` in `src/lora.ts`. Requests selecting the same ordered adapter
+set can share a continuous group. Different sets wait for the current group
+to finish and then use the same executor. Prefix-cache identity is resolved
+under the execution lease, so replacing an adapter while a request is queued
+cannot reuse state from its previous weights.
 
 - `GET /v1/adapters` — `{ adapters: [{ id, path, rank, scale, size_bytes,
   mounted_layers, ram_bytes }] }` — currently-mounted adapters only.
@@ -1719,3 +1751,25 @@ Under `--isolate`, the parent owns Responses continuation history and exposes it
 bounded store counters in `GET /engine` as `response_store`. Model-worker restart
 or eviction preserves that history; restarting the parent clears it. Direct
 serving retains the same process-local TTL and byte limits.
+
+
+Supported grouped TurboQuant drafting retains `usage.speculation`, seeded
+sampling, logprobs, structured output and generated RAM/SSD continuations.
+The cache codec does not select the scheduler or sampler implementation.
+Composition coverage: [batching design](../design/batching.md).
+
+With paged KV enabled, supported Gemma4 bf16 text requests report the batched lane when submitted through continuous scheduling. Seeded sampling, logprobs and grammar use the same interfaces. These requests bypass prompt-cache lookup/publication; paging does not provide SSD persistence.
+
+Ordinary adapter checkpoints are isolated by ordered adapter IDs and mounted
+content revisions. Base-model requests cannot restore or remove an adapter checkpoint.
+With generation checkpointing enabled, repeating an identical eligible request
+replays its saved completion prefix and resumes from the saved pending token.
+Cancellation retains queued snapshots; successful completion removes them.
+`POST /admin/cache/flush` drains both prompt spills and generation checkpoints,
+and its elapsed time and durability statistics include both queues. A hard
+process exit can lose snapshots that have not drained.
+
+For resumed generation checkpoints, `usage.prompt_tokens_details.cached_tokens`
+counts only the reused original prompt, bounded by `usage.prompt_tokens`. Saved
+completion tokens are replayed as completion output and do not increase that
+prompt-cache usage counter.

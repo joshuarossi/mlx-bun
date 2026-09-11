@@ -533,7 +533,7 @@ function durabilityFixture(
   };
   const gateway = {
     busy: false,
-    async runExclusive<T>(fn: () => Promise<T>): Promise<T> { return fn(); },
+    async runWhenIdle<T>(fn: () => Promise<T>): Promise<T> { return fn(); },
   };
   const stored: string[] = [];
   const queue = makeQueue(1_000, async (item) => {

@@ -17,11 +17,9 @@
 //    trimmable mid-generation; a serve endpoint must not 500 mid-stream, so
 //    we STOP SPECULATING and finish the generation with plain single-token
 //    decode (bit-equivalent continuation — the target's own samples).
-//  - Prompt-cache reuse is BYPASSED in v1 (fresh caches per spec request,
-//    cachedTokens=0). mlx-lm composes spec with its LRU prompt cache
-//    (target+draft caches per entry); wiring that through our PromptCache +
-//    SSD tier is a tracked follow-up in the integration plan, not silently
-//    absent.
+//  - Sources with checkpoint support use the injected prefix-cache service.
+//    Target and companion state share the existing RAM/SSD lifecycle. Other
+//    sources begin with fresh state until they supply a checkpoint codec.
 //
 // Grammar × spec (Phase C, the constrained verify walk — novel: NO runtime
 // serves both; mlx-lm has no grammar, oMLX no spec): the drafter runs FREE
@@ -40,14 +38,18 @@
 // false halts the generation mid-burst.
 
 import { MlxArray } from "../mlx/array";
+import { sampleSpeculativeRows } from "../backends/mlx/speculative-round";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
 import { cleanupFailure, disposeResources } from "../engine/resources";
 import type { DisposableResource } from "../contracts/resources";
 import { assertMlxSpeculativeBinding, bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "../backends/mlx/speculative";
 import type { RuntimeModel } from "../model/factory";
+import { cloneKvCaches } from "../kv-store";
+import { disposeAttachments, type CheckpointAttachment } from "../backends/mlx/checkpoint-state";
 import type { Cache } from "../model/gemma4";
-import { maybeQuantizeKv, withModelUsageFlush, withModelWiredLimit, type GenerateOptions, type GenerateStats } from "../generate";
+import { withModelUsageFlush, withModelWiredLimit, type GenerateOptions, type GenerateStats } from "../generate";
+import { createKvMaintenance } from "../backends/mlx/kv-maintenance";
 import { runtimeConfig, withRuntimeConfig } from "../runtime-config";
 import { makeSampler, makeStepSampler } from "../sampler";
 import type { OnToken } from "../serve/generation-gateway";
@@ -72,6 +74,13 @@ export interface SpecServeExtras {
   acceptedByPos: number[];
 }
 
+export interface SpecRunServices {
+  readonly prefixCache?: import("../backends/mlx/checkpoint-state").MlxPrefixCache;
+  /** Mounted adapter revision, resolved while the execution lease is held. */
+  readonly cacheNamespace?: string;
+  readonly cloneState?: (caches: Cache[]) => Cache[];
+}
+
 export async function specServeRun(
   model: RuntimeModel,
   provider: DraftProvider,
@@ -79,8 +88,9 @@ export async function specServeRun(
   promptIds: number[],
   options: GenerateOptions & { stopSequences?: string[] },
   onToken: OnToken,
+  services: SpecRunServices = {},
 ): Promise<GenerateStats> {
-  return specRun(bindLegacySpeculativeModel(model, provider), numDraftTokens, promptIds, options, onToken);
+  return specRun(bindLegacySpeculativeModel(model, provider), numDraftTokens, promptIds, options, onToken, services);
 }
 
 /** The verifier consumes a bound target and source factory, independent of
@@ -91,9 +101,10 @@ export async function specRun(
   promptIds: number[],
   options: GenerateOptions & { stopSequences?: string[] },
   onToken: OnToken,
+  services: SpecRunServices = {},
 ): Promise<GenerateStats> {
   return withRuntimeConfig(binding.runtime ?? runtimeConfig(), () => {
-    const run = () => specRunInner(binding, numDraftTokens, promptIds, options, onToken);
+    const run = () => specRunInner(binding, numDraftTokens, promptIds, options, onToken, services);
     return binding.memory
       ? withModelWiredLimit(binding.memory, () => withModelUsageFlush(binding.memory!, run))
       : run();
@@ -106,8 +117,10 @@ async function specRunInner(
   promptIds: number[],
   options: GenerateOptions & { stopSequences?: string[] },
   onToken: OnToken,
+  services: SpecRunServices = {},
 ): Promise<GenerateStats> {
   const maxTokens = options.maxTokens ?? 512;
+  const maintainKv = createKvMaintenance(options);
   const eos = options.eosTokenIds ?? [...binding.eosTokenIds];
   const sampler = makeSampler(options);
   const stepSampler = makeStepSampler(options, {
@@ -129,6 +142,7 @@ async function specRunInner(
   // and turned a config error into a per-request 500. loadContext now
   // probe-opens the pairing at startup, so a throw here is belt+suspenders.
   let caches: Cache[] = [];
+  let prefixRetain: (() => void) | undefined;
   let source: import("./source").DraftSource | null = null;
   let tapLayers: number[] | undefined;
   // Target final hidden [1,1,H] at the anchor position — the assistant source
@@ -175,16 +189,6 @@ async function specRunInner(
   const samplePos = async (logits1V: MlxArray, step: number): Promise<number> =>
     (await stepSampler.sample(logits1V, step)).token;
 
-  /** The [1,V] logits row at position `pos` of a hidden window — batched
-   *  lm-head is applied by the caller ONCE; this slices its output. */
-  const logitsRow = (logitsWindow: MlxArray, pos: number): MlxArray => {
-    const V = logitsWindow.shape[logitsWindow.shape.length - 1]!;
-    const sl = logitsWindow.slice([0, pos, 0], [1, pos + 1, V]);
-    const flat = ops.reshape(sl, [1, V]);
-    sl.dispose();
-    return flat;
-  };
-
   const forwardTokens = async (tokens: number[], taps?: number[]) => {
     const ids = ops.fromInt32(tokens, [1, tokens.length]);
     try { return await binding.forward(ids, caches, taps); }
@@ -197,25 +201,50 @@ async function specRunInner(
     if (!Number.isSafeInteger(prefillChunk) || prefillChunk < 1)
       throw new Error("speculative prefill chunk must be a positive integer");
     assertMlxSpeculativeBinding(binding);
-    if (options.turboQuant || options.kvConfig?.length ||
-        (options.kvBits && (options.kvBits !== 4 || options.quantizedKvStart !== 0)))
-      throw new Error("speculative KV requires the qualified uniform KV4 start=0 policy");
+    if (options.kvConfig?.length ||
+        (options.turboQuant && (options.quantizedKvStart ?? 0) !== 0) ||
+        (options.kvBits && ((options.kvBits !== 4 && options.kvBits !== 8) || options.quantizedKvStart !== 0)))
+      throw new Error("speculative KV requires uniform KV4/KV8 or TurboQuant start=0");
     caches = binding.makeCache();
     const src = binding.openDraft(sampler, caches);
     source = src;
     tapLayers = src.tapLayers;
-    const prefixBudget = Math.max(0, options.speculativeCacheBytes ?? 0);
-    const prefix = src.prefillMode === "full" ? src.prefix : undefined;
-    const prefixNamespace = JSON.stringify({ adapters: options.adapters ?? [],
-      kvBits: options.kvBits ?? null, kvGroupSize: options.kvGroupSize ?? 64,
-      quantizedKvStart: options.quantizedKvStart ?? null });
-    const cached = prefix?.restore(promptIds, caches, prefixNamespace, prefixBudget) ?? 0;
+    const checkpoint = src.prefillMode === "full" ? src.checkpoint : undefined;
+    const prefixCache = checkpoint ? services.prefixCache : undefined;
+    const prefixNamespace = JSON.stringify({ method: checkpoint?.namespace,
+      adapters: services.cacheNamespace ?? options.adapters ?? [], kvBits: options.kvBits ?? null,
+      kvGroupSize: options.kvGroupSize ?? 64, quantizedKvStart: options.quantizedKvStart ?? null,
+      turboQuant: options.turboQuant ?? null });
+    let cached = 0;
+    const hit = prefixCache?.take(promptIds, prefixNamespace);
+    if (hit) {
+      try {
+        disposeResources(caches);
+        caches.splice(0, caches.length, ...hit.caches.splice(0));
+        prefixRetain = hit.retain;
+        hit.retain = undefined;
+        checkpoint!.restore(hit.tokens.length, hit.attachments![0]!);
+        cached = hit.tokens.length;
+      } finally {
+        disposeResources([...hit.caches, { dispose: () => disposeAttachments(hit.attachments) },
+          { dispose: () => hit.retain?.() }]);
+      }
+    }
     stats.cachedTokens = cached;
-    const snapshotAt = prefix && prefixBudget > 0
-      ? Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1)
-      : -1;
-    if (prefix && prefixBudget > 0 && cached > 0 && snapshotAt <= cached)
-      prefix.capture(promptIds.slice(0, cached), caches, prefixNamespace, prefixBudget);
+    const capture = (tokens: number[]) => {
+      let state: Cache[] = [];
+      let attachments: CheckpointAttachment[] = [];
+      try {
+        state = (services.cloneState ?? cloneKvCaches)(caches);
+        attachments.push(checkpoint!.capture(tokens.length));
+        prefixCache!.put(tokens, state, prefixNamespace, undefined, attachments);
+        state = []; attachments = [];
+      } finally {
+        disposeResources([...state, { dispose: () => disposeAttachments(attachments) }]);
+      }
+    };
+    const snapshotAt = prefixCache
+      ? Math.min(options.snapshotAt ?? promptIds.length, promptIds.length - 1) : -1;
     const seedSource = async (end: number) => {
       if (ctxParts.length === 1) prefillCtx = ctxParts[0]!;
       else if (ctxParts.length > 1) {
@@ -275,7 +304,7 @@ async function specRunInner(
             anchorHidden = h.slice([0, L - 1, 0], [1, L, H]); // position len-2
           }
         } finally { h.dispose(); } // no logits during the drain
-        maybeQuantizeKv(caches, options);
+        maintainKv(caches);
         clearCache();
         pos += n;
         if (pos < end) await new Promise<void>((resolve) => setImmediate(resolve));
@@ -300,10 +329,10 @@ async function specRunInner(
             lastLogits = ops.reshape(lg, [1, V]);
           } finally { lg.dispose(); }
         } } finally { h.dispose(); }
-        maybeQuantizeKv(caches, options);
+        maintainKv(caches);
         if (end === snapshotAt && snapshotAt > cached) {
           await seedSource(end);
-          prefix!.capture(promptIds.slice(0, end), caches, prefixNamespace, prefixBudget);
+          capture(promptIds.slice(0, end));
         }
         clearCache();
         off = end;
@@ -460,39 +489,12 @@ async function specRunInner(
       // accept while it reproduces the draft. Sampling is sequential because
       // the processor history (and, in Phase C, the grammar mask) at position
       // i depends on the tokens accepted at positions < i.
-      let kAccept = 0;
-      let correction: number | null = null; // target's token at first mismatch (or bonus)
-      let sawEos = false;
+      const [result] = await sampleSpeculativeRows([{
+        pending, step: stats.generatedTokens, remaining: maxTokens - stats.generatedTokens,
+        eosTokenIds: eos, sampling: stepSampler, grammarDone: () => grammar?.isTerminated ?? false,
+      }], [drafts], vLogits!);
+      const { accepted: kAccept, correction, sawEos, emitted, grammarDone } = result!.acceptance;
       let halted = false;
-      const emitted: number[] = [];
-      let grammarDone = false;
-      for (let i = 0; i <= d; i++) {
-        roundRow = logitsRow(vLogits!, i);
-        const tok = await samplePos(roundRow, stats.generatedTokens + emitted.length);
-        roundRow.dispose();
-        roundRow = null;
-        if (i < d && tok === drafts[i]) {
-          kAccept++;
-          // EOS is never content — even when it arrives as an ACCEPTED DRAFT
-          // (the correction/bonus branch below always excluded it; this
-          // branch pushed-then-broke, leaking the EOS through onToken —
-          // caught by the 2026-07-07 live oracle gate: streams were
-          // bit-identical, ours emitted one extra "content" token: <|eot_id|>).
-          if (eos.includes(tok)) { sawEos = true; break; }
-          emitted.push(tok);
-          // grammar termination mid-burst truncates the round — nothing may
-          // be sampled past a satisfied grammar (the all--inf guarantee).
-          if (grammar?.isTerminated) { grammarDone = true; break; }
-          if (stats.generatedTokens + emitted.length >= maxTokens) break;
-          continue;
-        }
-        // mismatch (target replaces the draft) or bonus (i === n)
-        correction = tok;
-        if (!eos.includes(tok)) emitted.push(tok);
-        else sawEos = true;
-        if (grammar?.isTerminated) grammarDone = true;
-        break;
-      }
       vLogits!.dispose();
       vLogits = null;
       extras.accepted += kAccept;
@@ -575,7 +577,7 @@ async function specRunInner(
   } finally {
     const resources = [anchorHidden, lastLogits, prefillCtx, ...ctxParts,
       vLogits, roundRow, vHidden, vCtxML, ...caches, source, stepSampler,
-      options.grammar, { dispose: clearCache }]
+      options.grammar, { dispose: () => prefixRetain?.() }, { dispose: clearCache }]
       .filter((resource): resource is DisposableResource => resource != null);
     if (failure) cleanupFailure(failure.error, () => disposeResources(resources));
     else disposeResources(resources);

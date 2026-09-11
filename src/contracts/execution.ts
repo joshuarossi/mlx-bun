@@ -17,9 +17,20 @@ export interface ExecutionCapabilities {
   readonly continuous: boolean;
   readonly quantizedBatch: boolean;
   readonly grammarBatch: boolean;
+  readonly adapterBatch?: boolean;
+  readonly pagedBatch?: boolean;
   readonly checkpoints: boolean;
+  /** Bound ordinary driver can restore/capture this request configuration. */
+  readonly sharedCheckpoints?: boolean;
   /** Model-qualified speculative execution can retain this request's KV codec. */
   readonly speculativeKvQuant?: boolean;
+  readonly speculativeTurboQuant?: boolean;
+  readonly turboQuantBatch?: boolean;
+  readonly speculativeLogprobs?: boolean;
+  /** The grouped provider supports the target's mounted adapter context. */
+  readonly sharedSpeculativeAdapters?: boolean;
+  /** Methods supplied by the model's shared execution binding. */
+  readonly groupedMethods?: readonly string[];
   /** A graph-owned compiled step exists; cache geometry can still decline it. */
   readonly compiledDecode?: boolean;
 }

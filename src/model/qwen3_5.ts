@@ -10,6 +10,7 @@
 // shared maybeQuantizeKv path).
 
 import type { ModelConfig } from "../config";
+import { gatedDeltaState } from "./qwen3-delta-state";
 import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
 import { Dtype, deviceArchitecture } from "../mlx/ffi";
@@ -23,7 +24,6 @@ import {
   disposing,
   KVCache,
   LoraState,
-  QuantizedKVCache,
   QuantizedEmbedding,
   QuantizedLinear,
   quantizedSdpa,
@@ -155,16 +155,20 @@ export class GatedDeltaNet {
     this.normWeight = weights.tensor(`${prefix}.norm.weight`);
   }
 
-  #convolve(qkv: MlxArray, state: MlxArray): [MlxArray, MlxArray] {
-    if (this.convolution) return this.convolution(qkv, state, this.convWeight);
-    const [B, S, D] = qkv.shape as [number, number, number];
-    const nKeep = this.convKernel - 1;
+  #convolve(qkv: MlxArray, state: MlxArray, rowLengths?: readonly number[]): [MlxArray, MlxArray] {
+    if (this.convolution) {
+      const result = this.convolution(qkv, state, this.convWeight);
+      if (!rowLengths) return result;
+      using input = ops.concatAxis([state, qkv], 1);
+      const tail = this.#convTail(input, qkv.shape[1]!, rowLengths);
+      result[1].dispose();
+      return [result[0], tail];
+    }
+    const [, S, D] = qkv.shape as [number, number, number];
     const input = ops.concatAxis([state, qkv], 1);
     // MLX copy and contiguous can both alias the whole prefill buffer.
     // Materialize only the tail so cache residency follows its logical size.
-    const view = input.slice([0, S, 0], [B, S + nKeep, D]);
-    const tail = materializeCopy(view);
-    view.dispose();
+    const tail = this.#convTail(input, S, rowLengths);
     const conv = ops.conv1d(input, this.convWeight, 1, 0, 1, D);
     input.dispose();
     const out = compiledSilu(conv);
@@ -172,7 +176,19 @@ export class GatedDeltaNet {
     return [out, tail];
   }
 
-  forward(x: MlxArray, cache: SSMCache, independentRows = false): MlxArray {
+  #convTail(input: MlxArray, processed: number, rowLengths?: readonly number[]): MlxArray {
+    const [B, , D] = input.shape as [number, number, number];
+    const nKeep = this.convKernel - 1;
+    if (rowLengths) {
+      using indices = ops.fromInt32(rowLengths.flatMap(length =>
+        Array.from({ length: nKeep }, (_, position) => length + position)), [B, nKeep, 1]);
+      return ops.takeAlongAxis(input, indices, 1);
+    }
+    using view = input.slice([0, processed, 0], [B, processed + nKeep, D]);
+    return materializeCopy(view);
+  }
+
+  forward(x: MlxArray, cache: SSMCache, independentRows = false, mask?: MlxArray | null): MlxArray {
     const [B, S] = x.shape as [number, number, number];
     const convDim = this.keyDim * 2 + this.valueDim;
     const nKeep = this.convKernel - 1;
@@ -194,7 +210,7 @@ export class GatedDeltaNet {
     }
 
     const t0 = prof ? performance.now() : 0;
-    const qkv = this.inProjQkv.forward(x, independentRows); // [B,S,convDim]
+    let qkv = this.inProjQkv.forward(x, independentRows); // [B,S,convDim]
     let z = this.inProjZ.forward(x, independentRows);
     z = disposing(z, ops.reshape(z, [B, S, this.numVHeads, this.headVDim]));
     const b = this.inProjB.forward(x, independentRows); // [B,S,numVHeads]
@@ -202,10 +218,19 @@ export class GatedDeltaNet {
     if (prof) { ops.evalAll([qkv, z, b, a]); prof.proj = (prof.proj ?? 0) + performance.now() - t0; }
     const tc = prof ? performance.now() : 0; // [B,S,numVHeads]
 
-    // Causal depthwise conv with the conv-state prefix (B=1: no ssm mask).
+    // The model shares one padding mask across recurrent layers. Direct layer
+    // callers can request the same cache-owned mask without a model wrapper.
+    using localMask = mask === undefined ? cache.prefillPadding?.makeMask(S) ?? null : null;
+    const ssmMask = mask ?? localMask;
+    if (ssmMask) {
+      using expanded = ops.reshape(ssmMask, [B, S, 1]);
+      using zero = MlxArray.fromBytesCopy(new Uint8Array(qkv.dtype === Dtype.float32 ? 4 : 2), [], qkv.dtype);
+      qkv = disposing(qkv, ops.where(expanded, qkv, zero));
+    }
+    // Convolution keeps each row's last real-token tail, including empty rows.
     const convState =
       cache.conv ?? ops.zeros([B, nKeep, convDim], x.dtype);
-    const [convOut, newConv] = this.#convolve(qkv, convState);
+    const [convOut, newConv] = this.#convolve(qkv, convState, cache.prefillPadding?.convolutionLengths(S));
     if (!cache.conv) convState.dispose();
     if (spec) spec.qkv = qkv;
     else qkv.dispose();
@@ -236,7 +261,7 @@ export class GatedDeltaNet {
     const tk = prof ? performance.now() : 0;
 
     const [out, newState] = gatedDeltaUpdate(
-      q, k, v, a, b, this.aLog, this.dtBias, cache.recurrent,
+      q, k, v, a, b, this.aLog, this.dtBias, cache.recurrent, ssmMask,
     );
     if (prof) { ops.evalAll([out]); prof.kernel = (prof.kernel ?? 0) + performance.now() - tk; }
     const to = prof ? performance.now() : 0;
@@ -275,18 +300,21 @@ export class GatedDeltaNet {
    *  recurrent state is BIT-EXACTLY what a forward over only the accepted
    *  prefix would have produced. Output projections (z / out_proj) are state-
    *  free and skipped: only the states matter here. */
-  #replaySpecPrefix(cache: SSMCache, keep: number): void {
+  #replaySpecPrefix(cache: SSMCache, keep: number | readonly number[]): void {
     const r = cache.specRound;
-    if (!r || !r.qkv || !r.a || !r.b)      throw new Error("GatedDeltaNet replay without recorded round inputs");
+    if (!r || !r.qkv || !r.a || !r.b)
+      throw new Error("GatedDeltaNet replay without recorded round inputs");
     const B = r.qkv.shape[0]!;
+    const count = typeof keep === "number" ? keep : Math.max(...keep);
+    const rowLengths = typeof keep === "number" ? undefined : keep;
     const convDim = this.keyDim * 2 + this.valueDim;
     const nKeep = this.convKernel - 1;
 
-    const qkvPfxView = r.qkv.slice([0, 0, 0], [B, keep, convDim]);
+    const qkvPfxView = r.qkv.slice([0, 0, 0], [B, count, convDim]);
     const qkvPfx = ops.contiguous(qkvPfxView);
     qkvPfxView.dispose();
     const convState = cache.conv ?? ops.zeros([B, nKeep, convDim], qkvPfx.dtype);
-    const [convOut, newConv] = this.#convolve(qkvPfx, convState);
+    const [convOut, newConv] = this.#convolve(qkvPfx, convState, rowLengths);
     if (!cache.conv) convState.dispose();
     qkvPfx.dispose();
     cache.conv?.dispose();
@@ -296,36 +324,45 @@ export class GatedDeltaNet {
       convOut, [this.keyDim, 2 * this.keyDim], -1,
     ) as [MlxArray, MlxArray, MlxArray];
     convOut.dispose();
-    let q = ops.reshape(qFlat, [B, keep, this.numKHeads, this.headKDim]);
+    let q = rowLengths ? null : ops.reshape(qFlat, [B, count, this.numKHeads, this.headKDim]);
     qFlat.dispose();
-    let k = ops.reshape(kFlat, [B, keep, this.numKHeads, this.headKDim]);
+    let k = ops.reshape(kFlat, [B, count, this.numKHeads, this.headKDim]);
     kFlat.dispose();
-    const v = disposing(vFlat, ops.reshape(vFlat, [B, keep, this.numVHeads, this.headVDim]));
+    const v = disposing(vFlat, ops.reshape(vFlat, [B, count, this.numVHeads, this.headVDim]));
     const invScale = Math.pow(this.headKDim, -0.5);
-    q = disposing(q, ops.rmsNorm(q, null, 1e-6));
-    q = disposing(q, ops.mulScalar(q, invScale * invScale));
+    if (q) {
+      q = disposing(q, ops.rmsNorm(q, null, 1e-6));
+      q = disposing(q, ops.mulScalar(q, invScale * invScale));
+    }
     k = disposing(k, ops.rmsNorm(k, null, 1e-6));
     k = disposing(k, ops.mulScalar(k, invScale));
 
-    const aPfxView = r.a.slice([0, 0, 0], [B, keep, this.numVHeads]);
+    const aPfxView = r.a.slice([0, 0, 0], [B, count, this.numVHeads]);
     const aPfx = ops.contiguous(aPfxView);
     aPfxView.dispose();
-    const bPfxView = r.b.slice([0, 0, 0], [B, keep, this.numVHeads]);
+    const bPfxView = r.b.slice([0, 0, 0], [B, count, this.numVHeads]);
     const bPfx = ops.contiguous(bPfxView);
     bPfxView.dispose();
 
-    const [y, newState] = gatedDeltaUpdate(
-      q, k, v, aPfx, bPfx, this.aLog, this.dtBias, cache.recurrent,
-    );
-    q.dispose();
+    let newState: MlxArray;
+    if (rowLengths) {
+      // Unequal prefixes need a row-length-aware recurrence. The state-only
+      // kernel omits query/output work. Uniform replay retains its measured
+      // kernel until the separate optimization demonstrates a serving win.
+      newState = gatedDeltaState(k, v, aPfx, bPfx, this.aLog, this.dtBias, cache.recurrent, rowLengths);
+    } else {
+      const [output, state] = gatedDeltaUpdate(q!, k, v, aPfx, bPfx, this.aLog, this.dtBias, cache.recurrent);
+      output.dispose(); newState = state;
+    }
+    q?.dispose();
     k.dispose();
     v.dispose();
     aPfx.dispose();
     bPfx.dispose();
-    y.dispose(); // only the state advance matters on the rollback path
     cache.recurrent?.dispose();
     cache.recurrent = newState;
-    cache.advance(keep);
+    if (typeof keep === "number") cache.advance(keep);
+    else cache.advanceRows(keep);
   }
 
   private rmsNormGated(hidden: MlxArray, gate: MlxArray): MlxArray {
@@ -415,11 +452,16 @@ export class Qwen3Attention {
     }
 
     let attn: MlxArray;
-    if (cache instanceof QuantizedKVCache) {
-      const [keys, values] = cache.updateAndFetchQuantized(k, v);
+    const quantized = cache.quantizedAttention;
+    if (cache.attentionState) {
+      const view = cache.attentionState.appendAndFetch(k, v);
+      k.dispose(); v.dispose();
+      try { attn = view.attend(q, this.scale, mask); } finally { view.dispose(); }
+    } else if (quantized) {
+      const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
       v.dispose();
-      attn = quantizedSdpa(q, keys, values, this.scale, mask, cache.groupSize, cache.bits);
+      attn = quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
       disposeTriple(keys);
       disposeTriple(values);
     } else {
@@ -517,10 +559,10 @@ export class Qwen3Layer {
     this.postAttnNorm = new RMSNorm(weights.tensor(`${prefix}.post_attention_layernorm.weight`), config.text.rmsNormEps);
   }
 
-  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false): MlxArray {
+  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null): MlxArray {
     const xn = this.inputNorm.forward(x);
     const r = this.isLinear
-      ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows)
+      ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows, ssmMask)
       : this.selfAttn!.forward(xn, faMask, cache, independentRows);
     xn.dispose();
     const h = ops.add(x, r);
@@ -647,8 +689,6 @@ export class Qwen35Model {
    *  the bit-exact fast-rope path). While set, forwardLayers installs the
    *  per-forward interleaved cos/sin consumed by every full-attn layer. */
   mrope: MropeRequestState | null = null;
-  /** Serving's memory-pressure check, scoped to the serial request. */
-  prefillMemoryGuard: (() => void) | null = null;
   #mropeInvFreq: MlxArray | null = null;
 
   /** Vision prefill: spliced input embeddings [1, L, H] (image features
@@ -687,6 +727,7 @@ export class Qwen35Model {
     // One full-attention mask shared by all full layers (same offset); linear
     // layers see no ssm mask at B=1.
     const faMask = cache[this.faIdx]!.makeMask(L, null);
+    using ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(L) ?? null;
     // Vision requests: one interleaved-mRoPE cos/sin table per forward,
     // shared by all 12 full-attention layers (positions are layer-invariant).
     let mropeFwd: ReturnType<typeof buildMropePositions> | null = null;
@@ -706,14 +747,13 @@ export class Qwen35Model {
       | undefined;
     try {
       for (let i = 0; i < this.layers.length; i++) {
-        if (L > 1) this.prefillMemoryGuard?.();
         const tl = prof ? performance.now() : 0;
-        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows);
+        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows, ssmMask);
         h.dispose();
         h = next;
-        const mlp = this.layers[i]!.mlp;
-        if (L > TRELLIS_MATVEC_MAX_M &&
-            [mlp.gate, mlp.up, mlp.down].some((p) => p instanceof TrellisLinear && !p.fallback)) {
+        if (L > TRELLIS_MATVEC_MAX_M) {
+          // Affine prefills also need bounded evaluation: a retained prefix
+          // history can leave too little room for the entire deferred graph.
           // Materialize the cache outputs too. In particular, the tiny
           // copied conv tail is not a dependency of `h`; leaving it lazy
           // pins the whole prefill conv buffer until the chunk ends.

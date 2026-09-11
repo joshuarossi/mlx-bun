@@ -73,10 +73,9 @@ export interface ServerContext<Model = RuntimeModel> {
    *  optiq serve injects these as server defaults (gen_config.py);
    *  explicit request fields always win. */
   genDefaults: GenSamplingDefaults;
-  /** Speculative decoding (`serve --draft-model`, mlx_lm.server parity).
-   *  Server-level: when set, EVERY request routes to the serial lane
-   *  (upstream: is_batchable = draft is None) and spec-eligible ones decode
-   *  through src/spec/serve-loop.ts. null = no draft configured. */
+  /** Spec-eligible requests use src/spec/serve-loop.ts; ordinary fallbacks
+   *  use their own feature-compatible scheduling mechanism.
+   *  null = no draft configured. */
   draft?: {
     provider: import("../spec/source").DraftProvider;
     numDraftTokens: number;

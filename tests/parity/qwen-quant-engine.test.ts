@@ -95,9 +95,7 @@ describe.skipIf(!enabled)("Qwen3.8-27B quant: engine contracts", () => {
           const entry = prefixStore.take(prompt);
           expect(entry?.tokens.length).toBe(8);
           if (!entry) throw new Error("prefix cache did not retain the snapshot");
-          // take() transfers untrimmable recurrent entries. Retain a test
-          // snapshot before extension to seed the next independent control.
-          prefixStore.put(entry.tokens, cloneKvCaches(entry.caches));
+          expect(prefixStore.size).toBe(1);
           try {
             const resumed = generate(model, prompt, { ...options, cache: entry.caches });
             const tokens: number[] = [];

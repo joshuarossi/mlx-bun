@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { ModelConfig } from "../../src/config";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
@@ -57,6 +57,16 @@ function matrix(rows: number, columns: number, seed: number): Float32Array {
       Math.sin((index + 1) * (seed + 0.23)) * 0.27 +
       Math.cos((index + 2) * 0.31) * 0.09,
     ));
+}
+
+function addDsaWeights(weights: TinyGlmWeights, layer = 0): TinyGlmWeights {
+  const p = `model.layers.${layer}.self_attn.indexer`;
+  weights.put(`${p}.wq_b.weight`, matrix(4, Q_RANK, 91), [4, Q_RANK]);
+  weights.put(`${p}.wk.weight`, matrix(2, HIDDEN, 92), [2, HIDDEN]);
+  weights.put(`${p}.weights_proj.weight`, matrix(2, HIDDEN, 93), [2, HIDDEN]);
+  weights.put(`${p}.k_norm.weight`, new Float32Array([1.1, 0.9]), [2]);
+  weights.put(`${p}.k_norm.bias`, new Float32Array([0.05, -0.03]), [2]);
+  return weights;
 }
 
 function rows(values: Float32Array, output: number, input: number): Float32Array[] {
@@ -884,7 +894,7 @@ test("native GLM MTP provider rejects incomplete model wiring", () => {
   }
 });
 
-test("native GLM MTP serves through the serial speculative lane", async () => {
+test("native GLM MTP serves through the shared speculative executor", async () => {
   const glm = {
     ...config(true),
     numNextnPredictLayers: 1,
@@ -940,8 +950,7 @@ test("native GLM MTP serves through the serial speculative lane", async () => {
   try {
     const models = await (await fetch(`${base}/models`)).json() as any;
     expect(models.data[0]).toMatchObject({
-      // Capability stays batch; native MTP is a per-request serial route and
-      // is reported authoritatively in usage.lane below.
+      // The bound native provider now composes with the shared executor.
       batch_mode: "batch",
       mtp: true,
     });
@@ -959,7 +968,8 @@ test("native GLM MTP serves through the serial speculative lane", async () => {
       status: 200,
       body: { object: "chat.completion" },
     });
-    expect(body.usage.lane).toBe("serial+spec");
+    expect(body.usage.lane).toBe("batched");
+    expect(body.usage.speculation.rounds).toBeGreaterThan(0);
     expect(targetBackend.calls).toBeGreaterThan(0);
     expect(mtpBackend.calls).toBeGreaterThan(0);
   } finally {
@@ -1495,7 +1505,7 @@ test("GLM scheduler joins, cancels, extracts, and admits compressed bytes", asyn
   }
 });
 
-test("GLM gateway truthfully reports batch mode while native MTP stays serial", () => {
+test("GLM gateway uses ordinary batching and keeps an unbound draft request serial", () => {
   const glm = config(false);
   const model = new Glm52Model(
     buildWeights(glm),
@@ -1691,3 +1701,182 @@ test("forwardEmbeddings leaves caller-owned embeddings alive", () => {
     model.dispose();
   }
 });
+
+test("native MTP row graph preserves B1 proposal, absorption and zero-proposal state", async () => {
+  const { Glm52MtpGraph } = await import("../../src/spec/glm52-mtp-graph");
+  const { Glm52MtpRows } = await import("../../src/spec/glm52-mtp-rows");
+  const glm = { ...config(true), numNextnPredictLayers: 1, indexShareForMtpIteration: true };
+  const model = new Glm52Model(addMtpWeights(buildWeights(glm), glm), runtimeConfig(glm), glm,
+    { dsa: false, mtpMetadata: true });
+  const layer = new Glm52DecoderLayer(glm, model.weights, glm.numHiddenLayers, false, null);
+  const group = new Glm52MtpRows(new Glm52MtpGraph(model, layer), {
+    sample(scores) { return ops.argmaxAxis(scores, -1); },
+  });
+  const provider = new Glm52NativeMtpProvider(model);
+  const source = provider.open({ target: { identity: model }, sampler: makeSampler({ temperature: 0 }) }) as Glm52NativeMtpSource;
+  const cache = model.makeCache();
+  let anchor: MlxArray | null = null;
+  try {
+    using prompt = ops.fromInt32([2], [1, 1]);
+    anchor = model.forwardHidden(prompt, cache);
+    group.append([null]); group.prefill(prompt, anchor); source.prefill([2]);
+    let processed = 1, draftOffset = 0;
+    for (const [depth, accepted] of [[0, 0], [1, 1], [3, 2], [2, 0]] as const) {
+      const expected = await source.draft([3], depth, processed, anchor);
+      expect(await group.draft([3], depth, [processed])).toEqual([expected]);
+      using ids = ops.fromInt32([3, ...expected], [1, depth + 1]);
+      using verified = model.forwardHidden(ids, cache);
+      await source.commit(depth, accepted, undefined, verified, expected.slice(0, accepted));
+      await group.commit([accepted], verified);
+      for (const row of cache) row.trim(depth - accepted);
+      processed += accepted + 1; draftOffset += accepted + Number(depth > 0);
+      const state = group.extractRow(0);
+      try {
+        expect(state.processedTokens).toBe(processed); expect(state.cache.offset).toBe(draftOffset);
+        using nextAnchor = verified.slice([0, accepted, 0], [1, accepted + 1, HIDDEN]);
+        expect([...state.hidden.toFloat32()]).toEqual([...nextAnchor.toFloat32()]);
+        if (draftOffset) {
+          const old = source.clonePersistentCache();
+          try { expect(state.cache.state().map(a => [...a.toFloat32()])).toEqual(old.state().map(a => [...a.toFloat32()])); }
+          finally { old.dispose(); }
+        }
+        anchor.dispose(); anchor = ops.contiguous(nextAnchor);
+      } finally { state.cache.dispose(); state.hidden.dispose(); }
+    }
+  } finally { anchor?.dispose(); group.dispose(); source.dispose(); provider.dispose(); for (const row of cache) row.dispose(); model.dispose(); }
+});
+
+for (const dsa of [false, true]) test(`native GLM MTP composes B4, late admission, retirement and cached preparation (DSA=${dsa})`, async () => {
+  const { MlxBatchExecutionGroup } = await import("../../src/backends/mlx/batch-group");
+  const { bindSpeculativeGroupRequests } = await import("../../src/backends/mlx/speculative-group");
+  const { PromptCache } = await import("../../src/prompt-cache");
+  const glm = { ...config(true), numNextnPredictLayers: 1, indexShareForMtpIteration: true,
+    ...(dsa ? { indexTopk: 4, indexNumHeads: 2, indexHeadDim: 2 } : {}) };
+  const weights = addMtpWeights(buildWeights(glm), glm);
+  if (dsa) addDsaWeights(weights);
+  const model = new Glm52Model(weights, runtimeConfig(glm), glm,
+    { dsa, mtpMetadata: true });
+  const provider = new Glm52NativeMtpProvider(model);
+  const bind = bindSpeculativeGroupRequests(model, provider, 3);
+  const options = { temperature: 0.7, seed: 42, logprobs: true, topLogprobs: 3 };
+  const run = async (late = false) => {
+    const group = new MlxBatchExecutionGroup(model, { maxBatch: 4 });
+    const output: number[][] = Array.from({ length: 4 }, () => []);
+    let maxRows = 0, joiner: Promise<unknown> | undefined;
+    const submit = (row: number) => group.submit({ method: bind(options),
+      promptIds: Array.from({ length: row + 3 }, (_, i) => i % 3 + 2), maxTokens: 24,
+      eosTokenIds: [], onToken(token, metadata) {
+        output[row]!.push(token); maxRows = Math.max(maxRows, group.activeRows);
+        expect(Number.isFinite(metadata?.logprob)).toBe(true);
+        if (late && row === 0 && output[0]!.length === 6) joiner = submit(1);
+        if (row === 2 && output[row]!.length === 8) return false;
+      } });
+    try {
+      const stats = await Promise.all(Array.from({ length: late ? 1 : 4 }, (_, row) => submit(row)));
+      await joiner;
+      expect(maxRows).toBe(late ? 2 : 4);
+      for (const row of stats) expect(row.spec!.rounds).toBeGreaterThan(0);
+      expect(group.activeRows + group.pendingRows).toBe(0);
+      return output;
+    } finally { await group.close(); }
+  };
+  try {
+    expect(await run()).toEqual(await run());
+    expect(await run(true)).toEqual(await run(true));
+    const cache = new PromptCache(1024 * 1024), group = new MlxBatchExecutionGroup(model, { maxBatch: 4, promptCache: cache });
+    let savedIds: number[] = [], namespace = "";
+    const put = cache.put.bind(cache);
+    const probe = spyOn(cache, "put").mockImplementation((...args) => {
+      if (args[0].length > savedIds.length) { savedIds = [...args[0]]; namespace = args[2]!; }
+      return put(...args);
+    });
+    try {
+      const output: number[][] = [[], []];
+      for (let repeat = 0; repeat < 2; repeat++) {
+        const stats = await group.submit({ method: bind(options), promptIds: [2, 3, 4], maxTokens: 16, eosTokenIds: [],
+          onToken(token) { output[repeat]!.push(token); } });
+        expect(stats.cachedTokens).toBe(repeat ? 2 : 0);
+      }
+      expect(output[0]).toEqual(output[1]);
+      expect(savedIds.length).toBeGreaterThan(3);
+      expect(savedIds).toEqual([2, 3, 4, ...output[0]!.slice(0, savedIds.length - 3)]);
+      const hit = cache.take([...savedIds, 3], namespace)!;
+      expect(hit.tokens).toEqual(savedIds);
+      const { saveKvCache, loadKvCache } = await import("../../src/kv-store");
+      const { disposeAttachments } = await import("../../src/backends/mlx/checkpoint-state");
+      const { mkdtempSync, rmSync } = await import("node:fs");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const directory = mkdtempSync(join(tmpdir(), "glm-mtp-prefix-"));
+      try {
+        const path = join(directory, "prefix.kv");
+        saveKvCache(path, hit.tokens, hit.caches, { attachments: hit.attachments });
+        const restored = loadKvCache(path, model, { verify: true });
+        try {
+          expect(restored.tokens).toEqual(hit.tokens);
+          expect(restored.caches.map(c => c.state().map(a => [...a.toFloat32()])))
+            .toEqual(hit.caches.map(c => c.state().map(a => [...a.toFloat32()])));
+          const open = (attachment: NonNullable<typeof hit.attachments>[number]) => provider.grouped.open({
+            target: { identity: model }, sampling: { sample: scores => ops.argmaxAxis(scores, -1) },
+            checkpoints: [{ processedTokens: hit.tokens.length, attachment }],
+          });
+          const ram = open(hit.attachments![0]!), disk = open(restored.attachments![0]!);
+          try { expect(await disk.draft([3], 3, [0])).toEqual(await ram.draft([3], 3, [0])); }
+          finally { ram.dispose(); disk.dispose(); }
+        } finally { for (const c of restored.caches) c.dispose(); disposeAttachments(restored.attachments); }
+      } finally {
+        for (const c of hit.caches) c.dispose(); disposeAttachments(hit.attachments); hit.retain?.();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    } finally { probe.mockRestore(); await group.close(); cache.clear(); }
+  } finally { provider.dispose(); model.dispose(); }
+});
+
+for (const topk of [1, 4, 64]) for (const width of [3, 9])
+  test(`DSA verify preserves all requests and shared-layer selections (topk=${topk}, T=${width})`, async () => {
+    const glm: Glm52Config = { ...config(false), numHiddenLayers: 2, firstKDenseReplace: 2,
+      indexTopk: topk, indexNumHeads: 2, indexHeadDim: 2, indexerTypes: ["full", "shared"] };
+    const weights = addDsaWeights(buildWeights(config(false)));
+    for (const [name, value] of [...weights.host]) if (name.startsWith("model.layers.0.") && !name.includes(".indexer."))
+      weights.put(name.replace("model.layers.0.", "model.layers.1."), value.data.slice(), [...value.shape]);
+    const model = new Glm52Model(weights, runtimeConfig(glm), glm, { dsa: true, mtpMetadata: false });
+    const separate = [model.makeCache(), model.makeCache()], merged = model.makeCache();
+    const blocks = [Array.from({ length: width }, (_, i) => i % 3 + 2),
+      Array.from({ length: width }, (_, i) => (i + 1) % 3 + 2)];
+    try {
+      for (const [row, prefix] of [[0, [2]], [1, [2, 3, 4]]] as const)
+        model.forward([...prefix], separate[row]!).dispose();
+      for (let layer = 0; layer < merged.length; layer++) merged[layer]!.mergeRows(separate.map(row => row[layer]!));
+      using ids = ops.fromInt32(blocks.flat(), [2, width]);
+      for (const cache of merged) cache.specRoundBegin();
+      using actual = await model.forwardHiddenAsync(ids, merged);
+      for (let row = 0; row < 2; row++) {
+        using oneIds = ops.fromInt32(blocks[row]!, [1, width]);
+        using expected = await model.forwardHiddenAsync(oneIds, separate[row]!);
+        using actualRow = actual.slice([row, 0, 0], [row + 1, width, HIDDEN]);
+        // Different B/physical lengths can choose absorbed vs reconstructed
+        // dense attention and a different f32 matrix kernel. Exact same-B
+        // hidden/state equality is checked by the independent pinned oracle.
+        const got = actualRow.toFloat32(), want = expected.toFloat32();
+        expect(Math.max(...got.map((value, i) => Math.abs(value - want[i]!)))).toBeLessThan(1e-6);
+        using gotLogits = model.logitsFromHidden(actualRow), wantLogits = model.logitsFromHidden(expected);
+        using gotIds = ops.argmaxAxis(gotLogits, -1), wantIds = ops.argmaxAxis(wantLogits, -1);
+        expect(gotIds.toIntTokens()).toEqual(wantIds.toIntTokens());
+      }
+      const kept = [1, width - 1];
+      for (const cache of merged) cache.specRoundRollback(kept);
+      for (let row = 0; row < 2; row++) for (let layer = 0; layer < merged.length; layer++) {
+        separate[row]![layer]!.trim(width - kept[row]!);
+        const extracted = merged[layer]!.extractRow(row);
+        try {
+          expect(extracted.rowOffsets).toEqual(separate[row]![layer]!.rowOffsets);
+          const expected = separate[row]![layer]!.state();
+          for (const [plane, value] of extracted.state().entries()) {
+            expect(value.shape).toEqual(expected[plane]!.shape);
+            const got = value.toFloat32(), want = expected[plane]!.toFloat32();
+            expect(Math.max(...got.map((v, i) => Math.abs(v - want[i]!)))).toBeLessThan(1e-6);
+          }
+        } finally { extracted.dispose(); }
+      }
+    } finally { for (const cache of [...separate.flat(), ...merged]) cache.dispose(); model.dispose(); }
+  });

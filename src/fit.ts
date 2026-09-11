@@ -13,12 +13,12 @@ import type { ModelConfig } from "./config";
 import type { MemoryPlan } from "./admission-plan";
 import {
   kvBytesAt,
-  kvGeometry,
   kvQuantBytesPerElement,
+  sdpaFallbackBytes,
   type KvSchemeOptions,
 } from "./kv-scheme";
 
-export { kvBytesAt, kvQuantBytesPerElement } from "./kv-scheme";
+export { kvBytesAt, kvQuantBytesPerElement, sdpaFallbackBytes } from "./kv-scheme";
 export type FitKvScheme = KvSchemeOptions;
 
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
@@ -161,23 +161,37 @@ export function fit(
   kvScheme?: FitKvScheme,
 ): FitReport {
   const usable = usableBytes ?? machine.ramBytes * WIRED_FRACTION;
-  const transient = Math.min(chunk, ctx) * TRANSIENT_PER_TOKEN;
+  // Prefill transient = the calibrated per-chunk-token constant + the
+  // SDPA-fallback scores tensor (heads × min(chunk, ctx) × ctx × 2 B) for
+  // attention layers whose head dim MLX cannot fuse (kv-scheme.ts). The
+  // second term is what grows with context on Qwen3.x (head_dim 256) and
+  // Gemma 4 (256/512) and was unbilled before 2026-09-08.
+  const transientAt = (n: number) =>
+    Math.min(chunk, n) * TRANSIENT_PER_TOKEN + sdpaFallbackBytes(config, chunk, n);
+  const transient = transientAt(ctx);
   const kv = kvBytesAt(config, ctx, kvScheme);
   const total = weightsBytes + kv + transient;
 
-  // solve max context: weights + kv(ctx) + transient ≤ usable.
-  // Below the window both KV terms are linear in ctx; above it the
-  // sliding term saturates and only full-attention layers keep growing.
-  const g = kvGeometry(config, kvScheme);
-  const fixed = weightsBytes + chunk * TRANSIENT_PER_TOKEN + g.linearStateBytes;
+  // solve max context: weights + kv(n) + transient(n) ≤ usable. The same
+  // formula `fits` uses, so the solved ceiling always fits. It is monotone
+  // in n (KV linear, sliding saturating at the window, scores quadratic
+  // below the chunk then linear), so bisect over [0, maxPositionEmbeddings].
+  const totalAt = (n: number) => weightsBytes + kvBytesAt(config, n, kvScheme) + transientAt(n);
   let maxCtx = 0;
-  if (usable > fixed) {
-    const budget = usable - fixed;
-    const linear = Math.floor(budget / (g.fullBytesPerToken + g.slidingBytesPerToken));
-    maxCtx = linear <= g.window
-      ? linear
-      : Math.floor((budget - g.slidingBytesPerToken * g.window) / g.fullBytesPerToken);
-    maxCtx = Math.min(maxCtx, config.text.maxPositionEmbeddings);
+  {
+    let lo = 0;
+    let hi = Math.max(0, Math.floor(config.text.maxPositionEmbeddings));
+    if (totalAt(hi) <= usable) lo = hi;
+    else {
+      // invariant: totalAt(lo) ≤ usable (lo = 0 may itself not fit → 0)
+      if (totalAt(0) > usable) hi = 0;
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (totalAt(mid) <= usable) lo = mid;
+        else hi = mid;
+      }
+    }
+    maxCtx = lo;
   }
 
   // decode reads all weights + the KV cache once per token — except MoE

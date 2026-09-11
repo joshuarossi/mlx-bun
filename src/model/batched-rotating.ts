@@ -6,12 +6,10 @@
 // column is the same for every row), with PER-ROW `offset` (absolute position,
 // drives RoPE) and `leftPad` (padding columns in the buffer, masked out).
 //
-// SCOPE: only the pieces the scheduler needs — `merge` (assemble from solo
-// prefills), the N=1 decode update (`_update_in_place`), `make_mask`, `filter`,
-// and temporalView (extract). The N>1 batched-PREFILL path
-// (`_update_concat`/`finalize`/`_lengths`) is NOT ported: the scheduler
-// solo-prefills each request (single-stream RotatingKVCache) then merges, so
-// this cache only ever sees N=1 updates. Positions (offset/leftPad/_idx/_offset/
+// Includes merge, one-token writes, block prefill, padding finalization, masks
+// and row extraction. Prefill preparation is a storage capability; the serving
+// scheduler's use of whole prompt cohorts is a separate concern.
+// Positions (offset/leftPad/_idx/_offset/
 // rotated) are tracked on the HOST (small deterministic ints) so make_mask is
 // built in JS like buildBatchedDecodeMask; only K/V live on device.
 //
@@ -24,12 +22,14 @@
 
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
-import { RotatingKVCache, type Cache, type Mask } from "./gemma4-base";
-import { BatchedRotatingState } from "./batched-rotating-state";
+import { RotatingKVCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "./gemma4-base";
+import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
 import {
+  appendRotatingStorage,
   mergeStorageRows,
   plainRowStorage,
   temporalStorageView,
+  rowRollIndices,
 } from "./batched-row-storage";
 
 const STEP = 256;
@@ -45,14 +45,14 @@ const STEP = 256;
  *  update's decrement is the persistent one, applied separately by the cache). */
 export function buildBatchedRotatingMask(
   B: number, N: number, leftPad: number[],
-  maxSize: number, window: number, idx: number, offsetScalar: number, rotated: boolean,
+  maxSize: number, window: number, idx: number, offsetScalar: number, rotated: boolean, block = N > 1,
 ): MlxArray {
   const off = Math.min(maxSize - 1, offsetScalar);
   const S = off + N;
 
   // Local (non-persisted) leftPad for the mask: trim + rotation shrink it.
-  const trimSize = idx - maxSize + (N > 1 ? 1 : 0);
-  const isRot = N === 1 && (rotated || idx >= maxSize);
+  const trimSize = idx - maxSize + (block ? 1 : 0);
+  const isRot = !block && (rotated || idx >= maxSize);
   const lp = leftPad.map((x) => x - (trimSize > 0 ? trimSize : 0) - (isRot ? 1 : 0));
 
   // roll(shift): physical column = (temporal column + shift) mod S.
@@ -80,8 +80,9 @@ export function buildBatchedRotatingMask(
   return mask;
 }
 
-/** Faithful port of mlx-lm BatchRotatingKVCache (decode-only — see file header). */
-export class BatchedRotatingCache implements Cache {
+/** Port of mlx-lm BatchRotatingKVCache; padded singleton chunks use its
+ * concat operation with the matching block mask until finalization. */
+export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
   readonly #rows: BatchedRotatingState;
@@ -102,6 +103,29 @@ export class BatchedRotatingCache implements Cache {
    *  everywhere is isRowBatchCache FIRST, so the shared string never
    *  misroutes a batched cache into a serial-only path. */
   signature(): string { return "kv:rotating-plain"; }
+
+  get positionSnapshot(): RotatingPositionSnapshot { return this.#rows.snapshot(); }
+  validOffset(row: number): number { return this.#rows.validOffset(row); }
+  preparePrefill(padding: PrefillPadding, rightPaddedBatch?: boolean): void { this.#rows.preparePrefill(padding, rightPaddedBatch); this.releaseRopeArr(); }
+  finalizePrefill(): void {
+    const shifts = this.#rows.prefillRoll();
+    if (shifts?.some(shift => shift !== 0) && this.keys && this.values) {
+      using indices = rowRollIndices(this.keys.shape[2]!, shifts);
+      const keys = plainRowStorage.rollRows(this.keys, indices);
+      let values: MlxArray;
+      try { values = plainRowStorage.rollRows(this.values, indices); }
+      catch (error) { keys.dispose(); throw error; }
+      this.keys.dispose(); this.values.dispose(); this.keys = keys; this.values = values;
+    }
+    this.#rows.finalizePrefill(); this.releaseRopeArr();
+  }
+  /** Adopt owned tensors without changing their physical ring columns. */
+  static adoptPhysical(keys: MlxArray | null, values: MlxArray | null, position: RotatingPositionSnapshot): BatchedRotatingCache {
+    const cache = new BatchedRotatingCache(position.maxSize, [...position.leftPad]);
+    cache.#rows.restore(position); cache.keys = keys; cache.values = values;
+
+    return cache;
+  }
 
   get offsetArr(): number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
@@ -133,7 +157,7 @@ export class BatchedRotatingCache implements Cache {
       mode: "array",
       arr: buildBatchedRotatingMask(
         this.#B, N, this.leftPad, this.maxSize, window,
-        this.#rows.ringIndex, this.offset, this.#rows.rotated,
+        this.#rows.ringIndex, this.offset, this.#rows.rotated, N > 1 || this.#rows.hasPendingPadding,
       ),
     };
   }
@@ -142,8 +166,7 @@ export class BatchedRotatingCache implements Cache {
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
     const [B, H, S, D] = k.shape as [number, number, number, number];
     const vD = v.shape[3]!;
-    if (S !== 1)
-      throw new Error("BatchedRotatingCache supports N=1 decode updates only (solo-prefill then merge)");
+    if (S !== 1 || this.#rows.hasPendingPadding) return this.#updateConcat(k, v);
     const prev = this.offset;
 
     // Grow the buffer (in STEP chunks) until it reaches maxSize.
@@ -202,6 +225,21 @@ export class BatchedRotatingCache implements Cache {
     ];
   }
 
+  #updateConcat(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const keys = appendRotatingStorage(plainRowStorage, this.keys, k, this.#rows);
+    let values: MlxArray;
+    try { values = appendRotatingStorage(plainRowStorage, this.values, v, this.#rows); }
+    catch (error) { keys.dispose(); throw error; }
+    const history = this.keys ? this.#rows.activeLength : 0;
+    this.keys?.dispose(); this.values?.dispose();
+    this.keys = keys; this.values = values;
+    this.#rows.commitConcat(k.shape[2]!, history);
+    return [
+      plainRowStorage.slice(keys, 0, this.#B, 0, this.#rows.ringIndex),
+      plainRowStorage.slice(values, 0, this.#B, 0, this.#rows.ringIndex),
+    ];
+  }
+
   /** Free the per-step RoPE array without disposing KV (wrapper-rebuild path). */
   releaseRopeArr(): void {
     this.#ropeArr?.dispose();
@@ -213,8 +251,12 @@ export class BatchedRotatingCache implements Cache {
   temporalView(): [MlxArray, MlxArray] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     return [
-      temporalStorageView(plainRowStorage, this.keys, this.#rows),
-      temporalStorageView(plainRowStorage, this.values, this.#rows),
+      temporalStorageView(plainRowStorage, this.keys, this.#rows, {
+        from: Math.max(0, this.#rows.activeLength - this.maxSize), to: this.#rows.activeLength,
+      }),
+      temporalStorageView(plainRowStorage, this.values, this.#rows, {
+        from: Math.max(0, this.#rows.activeLength - this.maxSize), to: this.#rows.activeLength,
+      }),
     ];
   }
 
@@ -228,15 +270,15 @@ export class BatchedRotatingCache implements Cache {
    *  oracle's `cache._idx = cache.keys.shape[2]`. Bit-exact vs a solo run:
    *  merge/decode/filter keep each row's ring bytes identical to the serial
    *  cache's (tests/batched-rotating) and this is a pure slice+copy. */
-  extractRow(i: number): RotatingKVCache | null {
+  extractRow(i: number, limit?: number): RotatingKVCache | null {
     if (!this.keys || !this.values) return null;
-    const pad = Math.max(0, this.leftPad[i]!);
+    const pad = Math.max(0, this.leftPad[i]!, limit === undefined ? 0 : this.#rows.activeLength - limit);
     const c = new RotatingKVCache(this.maxSize);
     const k = temporalStorageView(plainRowStorage, this.keys, this.#rows, {
-      row: i, from: pad, copy: true,
+      row: i, from: pad, to: this.#rows.activeLength, copy: true,
     });
     const v = temporalStorageView(plainRowStorage, this.values, this.#rows, {
-      row: i, from: pad, copy: true,
+      row: i, from: pad, to: this.#rows.activeLength, copy: true,
     });
     c.restoreState(k, v, this.offsetArr[i]!, k.shape[2]!);
     return c;

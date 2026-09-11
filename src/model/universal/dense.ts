@@ -1,8 +1,10 @@
+import { captureKvAttention } from "../kv-attention-view";
 // UniversalDense — the Tier-0 config-driven dense llama-family module
 // (docs/design/generic-model-support.md §3.1). One module, shaped exactly
 // like qwen3.ts, with every arch delta selected by the UniversalArgs
 // descriptor (archs.ts). Monolith path only: no compiled
-// decode, no kv-quant — slow, never broken. The bar is L1 bit-exactness
+// decode. Standard attention uses the shared plain/affine KV port; the
+// softcap branch retains plain KV. The bar is L1 bit-exactness
 // vs mlx-lm on this machine's GPU (tests/parity/universal-parity.test.ts).
 //
 // Porting discipline: each branch transcribes its mlx-lm source op-for-op
@@ -154,19 +156,18 @@ class UniversalAttention {
       ? this.rope.applyDynamic(k, offArr)
       : this.rope.apply(k, cache.offset));
 
-    const [keys, values] = cache.updateAndFetch(k, v);
-    k.dispose();
-    v.dispose();
-
     let attn: MlxArray;
-    if (a.attnLogitSoftcap !== null) {
-      attn = this.#softcapAttention(q, keys, values, mask, B, L);
-    } else {
-      attn = ops.sdpa(q, keys, values, a.attnScale, mask.mode, mask.arr);
-    }
-    keys.dispose();
-    values.dispose();
-    q.dispose();
+    try {
+      if (a.attnLogitSoftcap !== null) {
+        const [keys, values] = cache.updateAndFetch(k, v);
+        try { attn = this.#softcapAttention(q, keys, values, mask, B, L); }
+        finally { keys.dispose(); values.dispose(); }
+      } else {
+        const view = captureKvAttention(cache, k, v);
+        try { attn = view.attend(q, a.attnScale, mask); }
+        finally { view.dispose(); }
+      }
+    } finally { k.dispose(); v.dispose(); q.dispose(); }
 
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();

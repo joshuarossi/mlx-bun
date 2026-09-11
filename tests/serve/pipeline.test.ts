@@ -41,7 +41,7 @@ class ScriptedEngine implements CompletionEngine {
   }
 }
 
-function harness(overrides: { maxSafeContext?: number; defaultAdapter?: string; preparation?: import("../../src/serve/preparation").PreparationExecutor } = {}) {
+function harness(overrides: { contextLimit?: number; defaultAdapter?: string; preparation?: import("../../src/serve/preparation").PreparationExecutor } = {}) {
   const tokenizer: LoadedTokenizer = {
     encode: () => [7, 8, 9],
     decode: (ids) => ids.map((id) => `t${id}`).join(" "),
@@ -70,11 +70,11 @@ function harness(overrides: { maxSafeContext?: number; defaultAdapter?: string; 
   const engine = new ScriptedEngine();
   const peeks: number[][] = [];
   const prep = createRequestPrep({ ctx, serverOptions: {}, kvScheme: {}, defaultGeneratedTokens: undefined });
-  const maxSafeContext = overrides.maxSafeContext ?? 4096;
+  const contextLimit = overrides.contextLimit ?? 4096;
   const chat = new ChatStage(
     ctx, prep, { peekPrefixLen: (ids: number[]) => { peeks.push(ids); return 0; } },
-    maxSafeContext, overrides.defaultAdapter, overrides.preparation);
-  const text = new TextCompletionStage(ctx, prep, maxSafeContext, undefined, overrides.defaultAdapter);
+    contextLimit, overrides.defaultAdapter, overrides.preparation);
+  const text = new TextCompletionStage(ctx, prep, contextLimit, undefined, overrides.defaultAdapter);
   const inference = new InferenceStage(new CompletionExecutor(engine));
   return { chat, text, inference, engine, peeks, resolvedSpecs, prep };
 }
@@ -140,7 +140,7 @@ describe("ChatStage: ChatRequest → InferenceRequest", () => {
     const req = await chat.run(new ChatRequest({ messages: user, max_tokens: 8, temperature: 0 }), "chatcmpl-x");
     expect(req).toMatchObject({
       requestId: "chatcmpl-x", stream: false, warnings: [],
-      plan: { promptIds: [7, 8, 9], requestedMaxTokens: 8, maxSafeContext: 4096, adapterIds: [], hasVision: false, userSeed: false },
+      plan: { promptIds: [7, 8, 9], requestedMaxTokens: 8, contextLimit: 4096, adapterIds: [], hasVision: false, userSeed: false },
     });
     expect(req.plan.options).toMatchObject({ temperature: 0, maxTokens: 8 });
     // The server-wide adapter default reaches the resolver; the request's
@@ -202,7 +202,7 @@ describe("InferenceStage: admit, then run", () => {
     expect(content).toBe("t1 t2");
   });
   test("admission: a prompt with no generation room is refused before any run", async () => {
-    const { chat, inference, engine } = harness({ maxSafeContext: 3 });
+    const { chat, inference, engine } = harness({ contextLimit: 3 });
     const req = await chat.run(new ChatRequest({ messages: user }));
     rejects(() => inference.admit(req), 400, "safe context");
     let caught: RequestError | undefined;

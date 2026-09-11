@@ -414,12 +414,12 @@ satisfy, with the state of `GenerationGateway.#supportsContinuous` as read on
 | layer | today (src) | end state |
 |---|---|---|
 | dedicated per-model graph | both mechanisms (profile-routed) | unchanged |
-| mixed-precision KV (`affine-config`) | continuous when every configured layer is a plain or rotating KVCache the scheme can convert (`KvScheme.batchable` + the gateway's cache probe); uniform `kvBits`, SSM-layer configs, and TurboQuant route serial | one active scheme per server, any B |
-| LoRA adapters | serial only (`shape.hasAdapters`) | per-slot adapter state (vLLM Punica/SGMV pattern: every row runs the adapter math, non-adapter rows at scale 0) |
-| speculative decoding (two-model · assistant · dspark · deepspec · native MTP · ngram) | serial only; a mounted draft routes every request serial (`shape.hasDraft`, mlx_lm.server's `is_batchable = draft is None`); GLM-5.2 MTP is on by default and pins the serial verify lane (`--mtp off` restores batching) | per-slot drafting behind the `DraftSource` seam |
+| mixed-precision KV (`affine-config`) | supported per-layer and uniform affine KV use continuous groups; incompatible layouts remain open | one active scheme per server, any B |
+| LoRA adapters | compatible ordered adapter sets share a group; context and cache identity bind under the execution lease | per-slot adapter state (vLLM Punica/SGMV pattern: every row runs the adapter math, non-adapter rows at scale 0) |
+| speculative decoding (two-model · assistant · dspark · deepspec · native MTP · ngram) | actual speculation uses the serial verifier; supported ordinary requests can batch with a mounted draft | per-slot drafting behind the `DraftSource` seam |
 | structured output (grammar) | both (per-row matchers; `MLX_BUN_GRAMMAR_BATCH=0` forces serial) | unchanged; keep the conformance gate |
-| sampling (temp/top-p/top-k/min-p/XTC/penalties/HLG/seed) | per-row `StepSampler` batches, including repetition penalty and logits extras; a user-fixed `seed` forces serial (mlx-lm's `_is_batchable`) | fully per-row, seeds included |
-| logprobs capture | serial only (`shape.wantsLogprobs`) | per-row readback in the scheduler |
+| sampling (temp/top-p/top-k/min-p/XTC/penalties/HLG/seed) | per-row sampling sessions, including explicit seeds, repetition penalty and logits extras | fully per-row, seeds included |
+| logprobs capture | shared row sampling and readback in continuous groups | preserve method composition |
 | vision / audio media prompts | serial only (`shape.hasVision`; embeddings-prefill bypasses the prompt cache) | batched media prefill |
 | prompt cache / SSD tier | both: scheduler joiners `take()` the longest usable prefix at admission, never-merged rows `put()` back on finish; the cold tier restores inside `take()` | block-granular sharing across rows |
 | paged KV (`--paged-kv`) | serial only, Gemma4 bf16, refuses `--batch N>1`, `--kv-quant`, `--draft-model`; bypasses the prompt cache | block-level CoW prefix sharing (vLLM oracle) |
@@ -472,132 +472,13 @@ entries so a caller cannot mutate conversion or accounting after resolution.
    `BatchScheduler.#prefillChunk` in `src/serve/batch-scheduler.ts` (the same
    conventions re-implemented over `PrefillState` for interleaved admission).
    Both are gated bit-exact, but a convention change must land in two places.
-2. **Spec eligibility is decided after placement.** `planRequest` only knows
-   `hasDraft = !!ctx.draft` (server-level), which routes every request serial
-   while a draft is mounted. The real per-request eligibility — text-only, no
-   adapters, no logprobs capture, bf16 KV (no `kvBits`/`kvConfig`/`turboQuant`),
-   not paged — is evaluated inside `runGeneration` after `place()`; ineligible
-   requests silently fall through to plain serial decode, and the lane label is
-   corrected from `serial+spec` to `serial` only when `stats.spec` is absent
-   (`finalLane` in the executor). Resolving this means lifting the eligibility
-   predicate into `RequestShape` so placement and the lane label are decided
-   once.
+2. **Method selection now precedes placement.** `resolveExecution` selects
+   speculative or ordinary decoding from the actual request and backend
+   capabilities. Configuring a draft no longer forces supported ordinary work
+   into the serial executor. The final design has one shared executor; changing
+   method must not select a retired execution path. Concurrent speculation is
+   still an implementation gap, tracked in batching.md.
 
-Other seams worth knowing: `runGeneration` also decides the prompt-cache
-bypass (media, paged) and the adapter cache namespace; `--isolate` wraps the
-ENTIRE server as an engine child behind a proxy (`src/serve/isolate.ts`,
-`ModelPool` for `--model-pool` LRU residency and model switching by the
-request's `model` field) — the inter-process API is the /v1 surface itself, no
-second protocol.
-
-## 7. The flag surface (src truth, grouped by layer)
-
-Read from `SERVER_FLAGS` and `applyDecodeRoute` in `src/cli.ts`. Every
-`MLX_BUN_*` value is read through the immutable runtime snapshot
-(`src/runtime-config.ts` `runtimeValue/runtimeFlag`, `src/flags.ts` `flagOn`);
-feature code never reads `process.env`, and the CLI installs tier/fork
-overrides with `configureRuntime()` before model modules load.
-
-**Parity tier (aliases):** `--l1` (default) · `--l2`. `--l3` hard-errors with a
-pointer to this doc.
-
-**L2 — quantization:** `--kv-quant config|off|4|8|turbo[:k<bits>v<bits>]`
-(default off). An older draft of this doc listed only `config|4|8|off`; the
-`turbo` axis is real and mutually exclusive with the affine modes.
-
-**L3 — scheduler / decode policy:** `--batch <n>` (default 8;
-`--decode-concurrency` alias) · `--kv-budget <GB>` · `--draft-model <query>` ·
-`--draft-kind two-model|assistant|dspark|deepspec|mtp|ngram` ·
-`--num-draft-tokens` · `--ngram-max` / `--ngram-min` · `--mtp on|off`
-(GLM-5.2 native MTP, on by default) · `--context-length` (GLM-5.2 reservation)
-· `--paged-kv` / `--paged-kv-block-size` (env `MLX_BUN_PAGED_KV=1`).
-
-**L4 — serving surface:** `--model` · `--host` · `--port` · `--memory-budget`
-· `--prompt-cache <GB>` · `--ssd-cache <dir>` · `--ssd-cache-max` ·
-`--ssd-demote-idle` · `--ssd-cache-verify` · `--isolate` · `--model-pool` ·
-`--unix` (internal) · `--no-open` · `--allow-private-media` · `--adapter`
-(`--adapter-path` alias) · `--thinking` · `--temperature`/`--temp` · `--top-p`
-· `--top-k` · `--max-tokens` · the HLG sampler family (`--hlg-sampling`,
-`--hlg-width`, `--hlg-shoulder`, `--hlg-toe`, `--hlg-pivot-offset`).
-
-**Kill switches (bit-exact A/B levers, each selects a slower same-parity
-path):** `--compiled-decode on|off` (`MLX_BUN_COMPILED_DECODE`) ·
-`--compiled-activations on|off` (`MLX_BUN_COMPILED_GEGLU` +
-`MLX_BUN_COMPILED_SWIGLU`; only gemma geglu and MiniCPM5 swiglu have an
-uncompiled form — qwen3/qwen3.5/universal compile unconditionally) ·
-`--fused-sdpa on|off` (`MLX_BUN_NO_FUSED_SDPA`, inverted; default follows
-`--kv-quant`) · `--force-wire` (`MLX_BUN_FORCE_WIRE`) · `--expert-offload`
-(`MLX_BUN_EXPERT_OFFLOAD`). An older draft said these were env-only; the three
-decode kill switches are CLI flags as well.
-
-**Lab / diagnostic env flags (no CLI flag; live with a bench and an expiry):**
-`MLX_BUN_GRAMMAR_JUMP=1` (jump-forward decoding, serial non-spec loop),
-`MLX_BUN_GRAMMAR_BATCH=0` (grammar back to serial), `MLX_BUN_BATCH_SSM=0`
-(SSM caches back to serial), `MLX_BUN_BATCH_NO_PIPELINE`,
-`MLX_BUN_BATCH_STEP_TRACE`, `MLX_BUN_BATCH_VEC_SAMPLE`, `MLX_BUN_BATCH_EXTEND`,
-`MLX_BUN_PREFILL_TAIL_SPLIT`, `MLX_BUN_FLASH_MIN_M`, the `MLX_BUN_CCE_*`
-training-kernel switches, and the memory/trace loggers. Anything
-output-changing is Lab by definition.
-
-**Deleted (2026-07-05, §11):** `--fused-decode`, `--fused-gelu`,
-`--perf-kernel`, `--l3`, and their env twins. None exist in `src/`.
-
-## 8. Design invariants proven en route (durable, not changelog)
-
-- **Readbacks in a pipelined loop must not create ops.** `toFloat32()` on the
-  int token array enqueued a cast BEHIND the next dispatched step, stalling the
-  "overlapped" read a full GPU step per token. Use `MlxArray.toIntTokens()`.
-- **A lone row keeps bare serial-class caches.** `KVCache.makeMask(1)` is the
-  empty mask and scalar rope; the batched step then dispatches the same graph
-  the serial loop builds. The per-layer `BatchedDecodeMaskCache` wrapper is
-  only for padded batches.
-- **Rope-array step-stability contract.** A batched cache's `ropeOffsetArr`
-  must be stable within a decode step and refresh only at `releaseRopeArr()`;
-  re-reading it mid-update ropes K and Q one position apart.
-- **Generated-file guards accept batched subclasses.** The generated forwards'
-  per-layer `instanceof` guards pass any batched cache that subclasses a
-  serial class, so an all-quant gemma batch decodes through the generated
-  fast path — a feature (B=1 proved bit-exact) but a contract: batched caches
-  must behave serially under re-reads. Test with FULL configs; one bf16 layer
-  anywhere fails the guard and drops to the monolith.
-- **Quantization packs along HEAD_DIM**, so token-axis batch surgery over
-  (packed, scales, biases) triples is byte-safe; solo rows convert at serial
-  chunk boundaries (bit-exact by construction).
-- **A scheme-less path must refuse, never silently drop quantization.** The
-  gateway only threads a `KvScheme` to the scheduler when it is batchable; the
-  scheduler refuses an unsupported scheme at construction.
-- **Prefix sharing is non-consuming.** `PromptCache.take()` serves zero-copy
-  clones (ref-counted retain so a demoted donor never unmaps pages a clone
-  reads); the donor stays put; `put()` supersedes same-namespace prefix
-  ancestors when the new entry is trimmable. Kills the cannibalization flaw
-  (agent B consuming agent A's entry). v1 shares COMPUTE and durability;
-  concurrent rows still hold separate physical KV — one shared physical prefix
-  across rows is the block-KV frontier item, and whole-entry duplication in
-  the disk tier is the block-granularity revisit trigger.
-- **Prompt-boundary snapshot.** The prompt+generation entry is untrimmable
-  past a wrapped ring or under quantized KV, so every substantial request also
-  snapshots a strict prompt prefix (cap `len-1`), the mlx-lm
-  `insert_segments` invariant; a re-rendered next turn always matches.
-- **Never a JS callback as an mlx buffer destructor** — last-ref `Data` dtors
-  run on the Metal completion thread (native `dlsym(free)` dtor, process-pinned
-  mmaps).
-- **Isolation proxies the whole server**, not the gateway: grammar WASM,
-  vision arrays, and sampler closures don't serialize; the /v1 surface is the
-  IPC.
-
-## 9. The frontier program (order matters)
-
-Ranked by expected frontier shift (memory ↓ / intelligence ↑ first, then
-speed). Each item is a Lab program with its own doc; `decode-speed-program.md`
-ranks the speed levers and is the only doc that does.
-
-1. **Mixed-precision weights** — knapsack `--target-bpw` (ours; OptiQ-style
-   sensitivity port in `src/quantize/sensitivity.ts`) and rotation-folded
-   quantization (`docs/design/turboquant.md`, `--rotate-weights`). Gate:
-   perplexity + frozen 6-task eval at equal bpw.
-2. **TurboQuant KV** (`docs/design/turboquant.md`, landed v1) — orthogonal to
-   allocation: mixed precision is the ALLOCATION axis, TurboQuant the
-   QUANTIZER axis; they compose. Solo-only in v1.
 3. **Speculative decoding depth** — DFlash/DSpark, native MTP, behind the
    `DraftSource` seam (`docs/design/speculative-decoding.md`).
 4. **Per-model graph work from the baseline** — unroll a model's flat DAG,
@@ -833,8 +714,11 @@ Small stateless ports may be implemented by functions or object literals.
 | Interface | Owns | Must not own |
 |---|---|---|
 | `CompletionClient` | Semantic completion request, event stream, terminal result, cancellation | Tensor/state handles, model class selection |
-| `PromptPreparer` | Template/tokenizer policy, token IDs, validated media descriptors, stable-prefix boundary | GPU scheduling or request-global model mutation |
-| `ExecutionPlanner` | Effective immutable policy, implementation selection, capability negotiation, fallback reasons, plan identity | Starting generation or inventing new feature support |
+| `PromptPreparer` | Coordinate renderer, tokenizer and media preparation; produce token IDs and a stable-prefix boundary | Template syntax, tokenizer algorithms, GPU scheduling or request-global model mutation |
+| `RequestPolicyResolver` | Resolve defaults and explicit overrides once into immutable policy | Executing model work or resampling defaults inside a token loop |
+| `ChatTemplateRenderer` | Render messages, tools and reasoning markers; identify stable rendered boundaries | Tokenizer algorithms, scheduling or cache retention |
+| `Tokenizer` | Encode/decode, token metadata and incremental encoding | Chat-template policy, sampling or scheduling |
+| `ExecutionPlanner` | Effective immutable policy, implementation selection, capability negotiation, declared implementation choices, plan identity | Starting generation or inventing new feature support |
 | `InferenceEngine` | Session creation, runtime coordination, shutdown | Per-family forward math |
 | `GenerationSession` | Lifecycle, committed output, result, cancellation and close | Token-at-a-time assumption, KV offsets, concrete method branches |
 | `InferenceMethod` | AR/speculative/diffusion algorithm and private per-run state | HTTP framing or application sessions |
@@ -1010,14 +894,20 @@ inside forward/decode after binding. Experiment commands construct separate
 bindings with explicit snapshots. Diagnostics may observe a running request
 but cannot change its numeric policy halfway through execution.
 
-Admission is two-stage: validate metadata and reserve a conservative preparation
-budget before compiling grammar or running media towers; then refine the
-reservation using prepared sizes before execution. Count shared resident
-weights once, per-run state, draft resources, media/preparation transients,
-compiled state, pending output, and retained snapshot/write-behind buffers.
-Reservation ownership transfers across stages and releases on every failure.
-Keep prompt/context clamping semantics and aggregate KV limits consistent with
-current policy. A rejected prompt must not first allocate its full GPU payload.
+Configuration follows ownership: scheduling owns concurrency and queue policy;
+methods own sampling, speculation and stopping; backends own kernels and state
+layouts; storage owns cache budgets, tiers and persistence. The application
+composition root binds these interfaces. A single-request caller supplies the
+same method configuration as a batched caller. Consolidate duplicate controls
+as implementations migrate, retaining documented CLI aliases where needed.
+
+Default memory estimates are advisory by Josh's instruction. Attempt the
+requested work without predicted-memory refusals or automatic token clamping.
+Explicit user limits and actual layout requirements still apply. Account for
+shared weights once, live state, draft resources, preparation transients and
+retained/write-behind buffers. Release actual resources on failure; a
+conservative estimate does not establish that execution is impossible. This
+supersedes the earlier mandatory reservation-before-preparation design.
 
 ### 12.6 State, ownership, and persistence
 
@@ -1074,10 +964,34 @@ and define read-old/write-new compatibility or explicit invalidation per change.
 ### 12.7 Scheduling and inference methods
 
 Keep policy independent from mechanics. Scheduler chooses eligible work,
-fairness, queue bounds, active-row limits, and resource reservations. A method's
+fairness, queue bounds and active-row limits. A method's
 scheduling adapter creates execution groups and implements join/leave/advance
 over its own state. Native batch merge and filter stay inside the MLX adapter.
 Scheduler must not import KV classes or perform a per-layer tensor loop.
+
+The consolidation target is single-request execution as a batch of one through
+these same contracts. Methods publish reusable checkpoints through the shared
+cache interface at completed boundaries. The cache owns prefix selection,
+retention and RAM/SSD placement; scheduling does not choose a storage tier, and
+decode does not inspect the request queue. Model/method codecs describe the
+state needed to restore a prefix, including draft state when applicable.
+Prefill and generated tokens populate the same cache. R17 in the decode-speed
+program owns the current implementation and acceptance work.
+
+Full batch feature parity is required, including speculation. The current
+serial exclusions are migration work, not the target architecture. Keep an
+explicit feature matrix in the batching design and retire duplicate request
+lifecycles only after the batched implementation covers every serial feature
+and equals or beats serial performance in matched measurements. B=1 latency
+and feature-specific costs must pass independently of aggregate throughput.
+The optimized kernels already built remain behind the backend interface;
+scheduling policy does not choose or reimplement their arithmetic. Continue
+building faster specializations, fusing operations, removing work and avoiding
+materialization. Interfaces must permit complete fused work units rather than
+force one call or intermediate tensor per logical operation. Measure kernel
+changes separately from composition refactors so their effects are attributable. Interface
+extraction must not force tensor copies, materialization, synchronization or
+additional dispatches; compare B=1 latency and B>1 throughput at fixed settings.
 
 An advancement is a bounded safe unit, not necessarily a token: one prefill
 chunk, a pipelined decode step, one verify round, or one denoising iteration.
@@ -1876,3 +1790,91 @@ existing placement and numerical defaults. Their independent experiment programs
 still own promotion/deletion decisions. Quiet performance, exact target quants,
 unavailable oracle/drafter fixtures and the second machine remain acceptance
 work, not missing interface code. No frontier advance is claimed by this refactor.
+
+### 12.14 Request flow and interface ownership
+
+This is the target responsibility map for Phase 6/18. A request carries one
+resolved policy: measured defaults plus explicit user overrides. Each component
+consumes its own part of that policy. The table below distinguishes existing
+contracts from implementation and migration work still in progress.
+
+```mermaid
+flowchart TB
+    client["Client: chat, Pi, API or library"]
+    server["Server adapter<br/>receive requests and send responses"]
+    policy["Request policy interface<br/>resolve defaults and user overrides once"]
+    template["Chat template interface<br/>messages and tools → rendered prompt"]
+    tokenizer["Tokenizer interface<br/>rendered prompt → token IDs"]
+    session["InferenceEngine / GenerationSession<br/>own request lifecycle and cancellation"]
+    scheduler["Scheduler / ExecutionGroup<br/>choose when ready work runs"]
+    method["InferenceMethod<br/>ordinary decode or MTP proposal / verification"]
+    graph["Model graph interface<br/>prefill, forward passes and specialized kernels"]
+    sampler["SamplingSession<br/>apply settings and grammar; select tokens"]
+    output["Response interface<br/>decode committed tokens; emit text and tool events"]
+    state["Active state interface<br/>target KV, recurrent state, draft state and positions"]
+    cache["PrefixCache interface<br/>restore and retain aligned token / state checkpoints"]
+    ram["RAM cache<br/>retain reusable checkpoints"]
+    persistence["Persistence interface<br/>queue background writes and restore from SSD"]
+
+    client --> server --> policy --> template --> tokenizer --> session
+    session -->|ready work| scheduler
+    scheduler -->|admit and advance a batch of 1 or more| method
+    method -->|inputs and state| graph
+    graph -->|device logits| sampler
+    sampler -->|selected tokens or proposals| method
+    method -->|committed tokens only| output
+    output -->|response events| server
+    method <-->|borrow, update, snapshot, rollback| state
+    session <-->|restore / publish prefill checkpoint| cache
+    method -.->|publish generated checkpoint: still open| cache
+    cache <-->|fast reuse| ram
+    ram <-->|spill and restore when needed| persistence
+```
+
+The scheduler chooses **when** work runs and which requests are active. The
+inference method chooses **what numerical work** advances them. A batch of one
+uses the same method and state contracts as a larger batch. The final design
+has one shared executor and no separate serial executor to fall back to.
+
+The model graph returns logits to the sampler. The sampler applies temperature,
+penalties, grammar, sampling filters and RNG policy, and returns selected tokens
+with requested logprobs. MTP keeps proposals private until verification commits
+them. The response formatter sees committed tokens only.
+
+Live KV is working state for the current computation. A reusable checkpoint
+contains token IDs plus the corresponding target, recurrent and optional draft
+state. Both prefill and generated output must feed the same cache interface.
+Only an exact, rendered-stable token boundary can be published for state that
+cannot be trimmed. RAM retention, eviction, asynchronous SSD writes and restart
+restore belong behind that interface. Scheduling does not wait for an ordinary
+SSD spill; an explicit durability flush can wait for persistence.
+
+| Piece | Current code or contract | Remaining work |
+|---|---|---|
+| Server / response adapters | `CompletionEngine`, `CompletionSink`, `GenerationOutput` | Preserve the same semantics through the final shared-executor cutover. |
+| Request policy | `RequestPlan`, request preparation and execution planning | Consolidate configuration into one resolved policy; choose measured defaults for typical multi-turn use and retain user overrides. |
+| Chat template | `ChatTemplate.render` | Expose the renderer as its own narrow port instead of requiring a concrete serving context. Record rendered-stable boundaries for generated checkpoint alignment. |
+| Tokenizer | `LoadedTokenizer` | Reuse the same encode/decode contract across preparation, caching and output. Keep incremental encoding inside this component. |
+| Session / scheduling | `InferenceEngine`, `GenerationSession`, `ExecutionGroup`, `SchedulingClock` | Close all feature and performance gaps before deleting the remaining serial executor. |
+| Inference method | `InferenceMethod`; shared MTP method in the isolated candidate | Complete every shared-method composition and acceptance gate. Draft depth belongs here, independently of queue policy. |
+| Numerical graph / kernels | `AutoregressiveGraph`, `GraphFactory`, backend bindings | Continue hardware-specific fusion and kernel optimization behind these contracts. |
+| Sampler | `SamplingSession` | Retain one set of sampling/history/logprob semantics for ordinary and speculative execution. |
+| Active state / codec | `Cache`, `KvAttentionState` / `KvAttentionView`, row layouts, `SpeculativeTransaction`, checkpoint attachments | Appending and attending are separate operations. One captured view can serve multiple model layers while retaining pre-write positions and tensor ownership. Delayed rotating affine and broader model/layout composition remain open. |
+| Reusable cache | `PrefixCache.take/put`, shared `PromptCache` | Generated-output checkpoints and next-request token alignment remain open. Prefill reuse is already implemented. |
+| Persistence | `ColdTier`, `SpillSink`, `SsdCacheStore`, `SsdDurabilityCoordinator` | Complete combined M4 pressure/restart acceptance. RAM and SSD remain interchangeable retention tiers behind cache operations. |
+
+An interface boundary does not require copying tensors, downloading logits,
+or adding an RPC or synchronization per token. Device handles can stay lazy;
+the backend may fuse compatible graph and sampling operations while preserving
+policy, ownership and observable results. Each component can improve its own
+implementation without adding model, cache or sampling decisions to scheduling.
+
+Contract sources: [generation](../../src/contracts/generation.ts),
+[scheduling](../../src/contracts/scheduling.ts),
+[sampling](../../src/contracts/sampling.ts),
+[prefix cache](../../src/contracts/prefix-cache.ts),
+[graph](../../src/inference/graph.ts),
+[tokenizer](../../src/tokenizer.ts),
+[cache tiers](../../src/prompt-cache.ts).
+Performance evidence and default selection live in
+[benchmarks.md](../reference/benchmarks.md); open acceptance remains in Phase 6/18.

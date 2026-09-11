@@ -160,3 +160,64 @@ test("cleanup failure still releases every scheduling reservation exactly once",
   expect(f.events.slice(-3)).toEqual(["close", "release-execution", "release-memory"]);
   expect(f.events.filter((e) => e === "close")).toHaveLength(1);
 });
+
+test("published preparation output yields through the readiness interface without a method-specific policy", async () => {
+  const f = fixture([1]);
+  Object.defineProperty(f.group, "preparationPublishedOutput", { value: true });
+  await f.run();
+  expect(f.events.slice(0, 6)).toEqual(["reserve", "acquire", "admit", "prepare:1", "yield", "advance:1"]);
+  expect(f.events.filter(event => event === "acquire")).toHaveLength(1);
+});
+
+test("published preparation still groups queued short jobs before advancing", async () => {
+  const f = fixture([1, 1]);
+  Object.defineProperty(f.group, "preparationPublishedOutput", { value: true });
+  await f.run();
+  expect(f.events.slice(0, 9)).toEqual(["reserve", "acquire", "admit", "prepare:1", "yield", "admit", "prepare:1", "yield", "advance:2"]);
+  expect(f.events).not.toContain("advance:1");
+});
+
+test("preparation work budgets group short requests and run oversized requests in the same executor", async () => {
+  const pending = [5000, 1200, 1200, 16, 8], preparing: number[] = [], forwards: number[][] = [];
+  let active = 0, closed = false, admitted = 0;
+  const group: ExecutionGroup = {
+    get active() { return active; }, get queued() { return pending.length; },
+    get preparing() { return preparing.length > 0; }, get preparingRows() { return preparing.length; },
+    canPrepareMore: true, get preparingTokens() { return preparing.reduce((a, b) => a + b, 0); },
+    get nextPreparationTokens() { return pending[0] ?? 0; }, maxPreparationTokens: 2048,
+    maxActive: 4, admissionHeld: false, get closed() { return closed; },
+    pruneCancelled() {}, canBurst: () => true,
+    admitNext() { preparing.push(pending.shift()!); admitted++; return true; },
+    async advancePreparation() { forwards.push([...preparing]); active += preparing.length; preparing.splice(0); },
+    async advance() { active = 0; },
+    failActive(error) { throw error; }, failAll(error) { if (!closed) throw error; },
+    reserveResidency: () => () => {}, async waitForWork() { closed = true; },
+  };
+  await driveExecutionGroup(group, { now: () => 0, async yield() {} });
+  expect(admitted).toBe(5);
+  expect(forwards).toEqual([[5000], [1200], [1200, 16], [8]]);
+});
+
+test("remaining preparation work can admit a late request after an earlier chunk finishes", async () => {
+  const pending = [3000, 1000], preparing: number[] = [], forwards: number[][] = [];
+  let active = 0, closed = false;
+  const group: ExecutionGroup = {
+    get active() { return active; }, get queued() { return pending.length; },
+    get preparing() { return preparing.length > 0; }, get preparingRows() { return preparing.length; },
+    canPrepareMore: true, get preparingTokens() { return preparing.reduce((a, b) => a + b, 0); },
+    get nextPreparationTokens() { return pending[0] ?? 0; }, maxPreparationTokens: 2048,
+    maxActive: 2, admissionHeld: false, get closed() { return closed; },
+    pruneCancelled() {}, canBurst: () => true,
+    admitNext() { preparing.push(pending.shift()!); return true; },
+    async advancePreparation() {
+      forwards.push([...preparing]);
+      if (forwards.length === 1) preparing[0]! -= 2048;
+      else { active += preparing.length; preparing.splice(0); }
+    },
+    async advance() { active = 0; },
+    failActive(error) { throw error; }, failAll(error) { if (!closed) throw error; },
+    reserveResidency: () => () => {}, async waitForWork() { closed = true; },
+  };
+  await driveExecutionGroup(group, { now: () => 25, async yield() {} });
+  expect(forwards).toEqual([[3000], [952, 1000]]);
+});

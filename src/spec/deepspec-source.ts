@@ -22,6 +22,8 @@
 // Context rows are cached post-norm-post-rope — bit-equivalent to their
 // in-round concat (per-row RMSNorm/RoPE; argued in projectContextKV's doc).
 
+import { artifactIdentity } from "../model/artifact-identity";
+import { deepspecGroups, bindDeepspecTarget } from "./deepspec-rows";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "../mlx/array";
@@ -39,20 +41,27 @@ function safetensorsBytes(dir: string): number {
 export class DeepspecProvider implements DraftProvider {
   readonly id: string;
   readonly weightsBytes: number;
+  readonly grouped: import("./source").GroupedDraftProvider;
   /** Trained block width (config block_size, e.g. 7) — the server pins
    *  numDraftTokens to this. */
   readonly gamma: number;
 
-  private constructor(private readonly drafter: DeepspecDrafter, id: string, weightsBytes: number) {
+  private constructor(private readonly drafter: DeepspecDrafter, id: string, weightsBytes: number, namespace: string) {
     this.id = id;
     this.weightsBytes = weightsBytes;
     this.gamma = drafter.gamma;
+    this.grouped = deepspecGroups(drafter, namespace);
   }
 
   static async load(modelDir: string): Promise<DeepspecProvider> {
     const drafter = await DeepspecDrafter.load(modelDir);
     const id = modelDir.split("/").filter(Boolean).at(-1)!;
-    return new DeepspecProvider(drafter, id, safetensorsBytes(modelDir));
+    try {
+      const identity = await artifactIdentity(await Bun.file(`${modelDir}/config.json`).text(),
+        readdirSync(modelDir).filter(file => file.endsWith(".safetensors"))
+          .map(name => ({ name, path: join(modelDir, name) })));
+      return new DeepspecProvider(drafter, id, safetensorsBytes(modelDir), `deepspec-context-v1:${identity}`);
+    } catch (error) { drafter.dispose(); throw error; }
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
@@ -72,14 +81,7 @@ export class DeepspecSource implements DraftSource {
 
   constructor(private readonly drafter: Pick<DeepspecDrafter,
     "cfg" | "tapLayers" | "projectContext" | "projectContextKV" | "draftBlock">, target: TargetView) {
-    if (!target.gemmaTaps)
-      throw new Error("DeepSpec drafter requires a Gemma4 target");
-    const nLayers = target.gemmaTaps.layerCount;
-    if (nLayers !== drafter.cfg.num_target_layers)
-      throw new Error(
-        `DeepSpec drafter was trained for a ${drafter.cfg.num_target_layers}-layer target; ` +
-          `this model has ${nLayers} layers — wrong (target, drafter) pairing`,
-      );
+    bindDeepspecTarget(target, drafter);
     this.tapLayers = drafter.tapLayers;
   }
 

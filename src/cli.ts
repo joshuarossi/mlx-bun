@@ -120,10 +120,11 @@ const SERVER_FLAGS = `Server options:
   --ssd-cache-verify        Verify tensor hashes on every restore (reads all
                             bytes eagerly — integrity paranoia only)
   --generation-checkpoint <tokens>
-                            Snapshot an in-flight serial generation to the SSD
+                            Queue an in-flight generation snapshot to the SSD
                             cache every N emitted tokens. Repeating the same
                             request after restart replays and resumes it.
-                            Requires --ssd-cache and --batch 1.
+                            Requires --ssd-cache; supports ordinary requests
+                            with shared cache layouts.
   --isolate                 Run the inference engine as a CHILD process and
                             keep this process a pure UI/API proxy — the UI
                             stays instant under GPU load and survives engine
@@ -169,8 +170,8 @@ Model & quality:
                             auto-detected — a full same-tokenizer model
                             (mlx_lm.server parity), a Gemma "-assistant"
                             KV-borrowing drafter, or a DSpark checkpoint.
-                            Serial lane only — with --batch N a mounted draft
-                            routes every request serial, like mlx_lm.server.
+                            Supported draft providers use shared batched
+                            execution; ordinary requests can batch too.
   --draft-kind <kind>       Override draft-artifact detection:
                             two-model | assistant | dspark | deepspec | mtp | ngram
                             (deepspec = DeepSeek's released Gemma4DSparkModel
@@ -205,9 +206,8 @@ Model & quality:
                             only; sliding-window layers stay bf16)]
   --paged-kv                OPTIONAL vLLM-style paged KV storage (block pool +
                             gather before the stock SDPA; env MLX_BUN_PAGED_KV=1).
-                            v1: serial only (pins --batch 1 unless --batch is
-                            given), Gemma4-family, bf16 — refuses --batch N>1,
-                            --kv-quant, --draft-model; bypasses the prompt
+                            Gemma4-family, bf16; supports --batch N.
+                            Refuses --kv-quant and --draft-model; bypasses the prompt
                             cache; runs uncompiled decode. Bit-exact with the
                             plain path; expect a small decode cost at batch=1
                             (the gather copy). docs/design/kv-cache.md
@@ -1012,16 +1012,11 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   if (route.kvQuant !== undefined) serverOptions.kvQuant = route.kvQuant;
   if (route.turboQuant !== undefined) serverOptions.turboQuant = route.turboQuant;
   // --paged-kv (env: MLX_BUN_PAGED_KV=1): OPTIONAL vLLM-style block-pool KV
-  // storage, default off (docs/design/kv-cache.md). Serial-only in v1:
-  // with no explicit --batch, pin --batch 1 (the default is 8); an explicit
-  // --batch N>1 is refused loudly by createServer rather than downgraded.
+  // storage, default off (docs/design/kv-cache.md). The state policy owns
+  // block pools and cache reuse; paging preserves the selected batch size.
   if (flag("paged-kv") || runtimeValue("MLX_BUN_PAGED_KV") === "1") {
     const bsRaw = opt("paged-kv-block-size");
     serverOptions.pagedKv = bsRaw !== null ? { blockSize: Number(bsRaw) } : {};
-    if (batchRaw === null) {
-      serverOptions.batch = 1;
-      console.log("[paged-kv] serial-only in v1 — pinning --batch 1");
-    }
   }
   // Bind loopback unless asked otherwise (mlx_lm.server parity); --host
   // 0.0.0.0 is the explicit opt-in for LAN exposure. The chat-UI open and
@@ -1646,25 +1641,6 @@ switch (cmd) {
     const config = await loadModelConfig(m.path);
     const report = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
     sFit.done(`${style.bold(m.repoId)} ${style.dim(`· ${gb(m.sizeBytes)} · ~${report.predictedDecodeTps.toFixed(0)} tok/s predicted`)}${picked ? style.dim(" · auto-picked (override: mlx-bun serve <query>)") : ""}`);
-    // Near-ceiling advisory (admission doctrine: advise, never refuse). A
-    // model near the DEFAULT Metal wired ceiling (~75% of RAM) dies with an
-    // UNCATCHABLE async-GPU-OOM on long prefills (M4 24 GB × 17 GB model,
-    // 2026-08-20) — surface the standard remedy up front instead.
-    {
-      const { maxRecommendedWorkingSetSize } = await import("./mlx/ffi");
-      const ceiling = maxRecommendedWorkingSetSize();
-      const sysctlRaw = Bun.spawnSync(["sysctl", "-n", "iogpu.wired_limit_mb"]).stdout.toString().trim();
-      const limitIsDefault = sysctlRaw === "0" || sysctlRaw === "";
-      if (limitIsDefault && ceiling > 0 && m.sizeBytes > 0.8 * ceiling) {
-        const ramGb = Number(Bun.spawnSync(["sysctl", "-n", "hw.memsize"]).stdout.toString().trim()) / 2 ** 30;
-        const suggestMb = Math.floor((ramGb - 2.5) * 1024);
-        console.error(style.dim(
-          `  ! ${gb(m.sizeBytes)} model vs ~${gb(ceiling)} default GPU ceiling — long prompts can\n` +
-          `    hit an uncatchable Metal OOM. If that happens, raise the limit first:\n` +
-          `      sudo sysctl iogpu.wired_limit_mb=${suggestMb}   (resets on reboot)`,
-        ));
-      }
-    }
     const sNative = step("native runtime");
     await ensureNative(sNative);
     sNative.done("native runtime ready");
@@ -1684,9 +1660,8 @@ switch (cmd) {
     }
     // Speculative decoding (mlx_lm.server parity): --draft-model <path|query>
     // resolves like the main model; --num-draft-tokens defaults to 3 (the
-    // server's default upstream — mlx_lm.generate's is 2). Serial-lane-only:
-    // with --batch N, a mounted draft routes every request serial (upstream
-    // is_batchable = draft is None).
+    // server's default upstream — mlx_lm.generate's is 2). Qualified providers
+    // use shared execution; ordinary requests retain their own placement.
     const draftQuery = opt("draft-model");
     let draftModelDir: string | undefined;
     if (draftQuery !== null) {

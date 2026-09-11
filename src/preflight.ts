@@ -32,6 +32,9 @@ export interface MachineState {
   /** Foreign processes holding > bigRssMB resident (excludes kernel,
    *  WindowServer, and our own bun/python benchmark processes). */
   bigProcesses: { rssMB: number; command: string }[];
+  /** Explicitly permitted CPU-only background commands; RSS limits still apply. */
+  allowedCpuProcesses?: string[];
+  backgroundCpuProcesses?: { rssMB: number; command: string }[];
   ok: boolean;
   problems: string[];
   at: string;
@@ -41,6 +44,29 @@ export interface PreflightLimits {
   maxSwapUsedMB?: number;   // default 512
   minFreePercent?: number;  // default 35
   bigRssMB?: number;        // default 2048
+  allowCpuProcesses?: string[];
+}
+
+export function foreignProcessFindings(output: string, limits: PreflightLimits = {}) {
+  const bigProcesses: { rssMB: number; command: string }[] = [];
+  const backgroundCpuProcesses: { rssMB: number; command: string }[] = [];
+  for (const line of output.split("\n")) {
+    const m = line.match(/^\s*([\d.]+)\s+(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const cpuPct = Number(m[1]);
+    const rssMB = Number(m[2]) / 1024;
+    const command = m[3]!;
+    if (rssMB < (limits.bigRssMB ?? 2048) && cpuPct < 50) continue;
+    if (/(bun|\.venv\/bin\/python|mlx_lm|optiq)/.test(command) ||
+        /(kernel_task|WindowServer|launchd|mds|spotlight)/i.test(command)) continue;
+    const finding = { rssMB: Math.round(rssMB),
+      command: command.slice(0, 80) + (cpuPct >= 50 ? ` (${cpuPct.toFixed(0)}% cpu)` : "") };
+    // Exact command match; permission to tolerate CPU activity never permits
+    // that process to consume the benchmark's memory headroom.
+    const allowed = rssMB < (limits.bigRssMB ?? 2048) && limits.allowCpuProcesses?.includes(command);
+    (allowed ? backgroundCpuProcesses : bigProcesses).push(finding);
+  }
+  return { bigProcesses, backgroundCpuProcesses };
 }
 
 function sh(cmd: string[]): string {
@@ -51,7 +77,6 @@ function sh(cmd: string[]): string {
 export function checkMachine(limits: PreflightLimits = {}): MachineState {
   const maxSwap = limits.maxSwapUsedMB ?? 512;
   const minFree = limits.minFreePercent ?? 35;
-  const bigRss = limits.bigRssMB ?? 2048;
   const problems: string[] = [];
 
   // swap: "vm.swapusage: total = 7168.00M  used = 6413.06M  free = ..."
@@ -95,26 +120,15 @@ export function checkMachine(limits: PreflightLimits = {}): MachineState {
   // one clean sample doesn't prove absence (the run-spread stability
   // policy in bench-h2h.ts is the direct signal); a hot sample here is
   // still a cheap early warning.
-  const SELF_PATTERN = /(bun|\.venv\/bin\/python|mlx_lm|optiq)/;
-  const SYSTEM_PATTERN = /(kernel_task|WindowServer|launchd|mds|spotlight)/i;
-  const BIG_CPU_PCT = 50;
-  const bigProcesses: { rssMB: number; command: string }[] = [];
-  for (const line of sh(["ps", "axo", "pcpu=,rss=,command="]).split("\n")) {
-    const m = line.match(/^\s*([\d.]+)\s+(\d+)\s+(.*)$/);
-    if (!m) continue;
-    const cpuPct = Number(m[1]);
-    const rssMB = Number(m[2]) / 1024;
-    const command = m[3]!.slice(0, 80);
-    if (rssMB < bigRss && cpuPct < BIG_CPU_PCT) continue;
-    if (SELF_PATTERN.test(command) || SYSTEM_PATTERN.test(command)) continue;
-    bigProcesses.push({ rssMB: Math.round(rssMB), command: cpuPct >= BIG_CPU_PCT ? `${command} (${cpuPct.toFixed(0)}% cpu)` : command });
-  }
+  const { bigProcesses, backgroundCpuProcesses } = foreignProcessFindings(
+    sh(["ps", "axo", "pcpu=,rss=,command="]), limits);
   for (const p of bigProcesses)
     problems.push(`big process: ${p.rssMB} MB — ${p.command}`);
 
   return {
     swapUsedMB, freePercent, cpuSpeedLimit, gpuWiredLimitMB, loadAvg1m,
     bigProcesses,
+    allowedCpuProcesses: limits.allowCpuProcesses ?? [], backgroundCpuProcesses,
     ok: problems.length === 0,
     problems,
     at: new Date().toISOString(),
@@ -136,6 +150,8 @@ export function machineStateJson(s: MachineState): string {
     gpu_wired_mb: s.gpuWiredLimitMB,
     load1m: s.loadAvg1m,
     big_procs: s.bigProcesses.length,
+    allowed_cpu_processes: s.allowedCpuProcesses ?? [],
+    background_cpu_processes: s.backgroundCpuProcesses ?? [],
     ok: s.ok,
     at: s.at,
   });

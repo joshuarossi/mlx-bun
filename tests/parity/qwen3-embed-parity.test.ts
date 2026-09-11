@@ -21,10 +21,11 @@ import { Qwen3Model } from "../../src/model/qwen3";
 import { Weights } from "../../src/weights";
 import * as ops from "../../src/mlx/ops";
 import { SNAPSHOT_QWEN3_EMBED, snapshotQwen3EmbedAvailable } from "../support/paths";
+import { goldenPath } from "../support/goldens";
 
-const GOLD_DIR = "goldens/qwen3-embed";
+const GOLD_DIR = goldenPath("qwen3-embed");
 const haveWeights = await snapshotQwen3EmbedAvailable();
-const haveGoldens = existsSync(`${GOLD_DIR}/meta.json`);
+const haveGoldens = ["meta.json", "hidden.bin", "pooled.bin"].every(name => existsSync(`${GOLD_DIR}/${name}`));
 const skip = !haveWeights || !haveGoldens;
 
 interface Meta {
@@ -88,9 +89,15 @@ describe.skipIf(skip)("Qwen3-Embedding parity (vs mlx-lm qwen3)", () => {
     const hRel = relRmse(ourHidden, refHidden);
     const hMax = maxAbs(ourHidden, refHidden);
     const pRel = relRmse(ourPooled, refPooled);
-    let dot = 0;
-    for (let i = 0; i < H; i++) dot += ourPooled[i]! * refPooled[i]!;
-    const cos = dot; // both L2-normalized
+    let dot = 0, oursNorm2 = 0, refNorm2 = 0;
+    for (let i = 0; i < H; i++) {
+      dot += ourPooled[i]! * refPooled[i]!;
+      oursNorm2 += ourPooled[i]! ** 2;
+      refNorm2 += refPooled[i]! ** 2;
+    }
+    // bf16 normalization need not produce an exactly unit-length vector.
+    // Normalize the dot product before calling it cosine similarity.
+    const cos = dot / Math.sqrt(oursNorm2 * refNorm2);
 
     // eslint-disable-next-line no-console
     console.log(
@@ -100,8 +107,7 @@ describe.skipIf(skip)("Qwen3-Embedding parity (vs mlx-lm qwen3)", () => {
 
     // The whole graph is BIT-EXACT vs mlx-lm on the reference machine (GQA + q/k
     // norm + full-head RoPE + swiglu + tied head); hold the strong L1 bar like the
-    // other models. (cos is ~1.0006 — the pooled vector matches ref byte-for-byte;
-    // the >1 is just the L2-norm's bf16 rounding, not a vector difference.)
+    // other models. The cosine check does not replace exact vector identity.
     expect(hMax).toBe(0);
     expect(hRel).toBe(0);
     expect(pRel).toBe(0);

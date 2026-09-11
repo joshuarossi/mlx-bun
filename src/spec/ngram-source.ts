@@ -39,7 +39,79 @@
 // JS scan (~µs against 30k-token histories).
 
 import { flagOn } from "../runtime-config";
-import type { DraftProvider, DraftSource } from "./source";
+import type { MlxArray } from "../mlx/array";
+import * as ops from "../mlx/ops";
+import type { CheckpointAttachment } from "../backends/mlx/checkpoint-state";
+import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, GroupedDraftProvider } from "./source";
+import { applyStateChanges } from "../engine/resources";
+
+/** The matching policy is independent of the executor's feed convention. */
+function proposeNgram(h: readonly number[], max: number, min: number, n: number): number[] {
+  const L = h.length;
+  for (let k = Math.min(max, L - 1); k >= min; k--) {
+    const tailAt = L - k;
+    search: for (let i = 0; i + k < L; i++) {
+      for (let j = 0; j < k; j++) if (h[i + j] !== h[tailAt + j]) continue search;
+      return h.slice(i + k, i + k + n);
+    }
+  }
+  return [];
+}
+
+const namespace = (max: number, min: number) => `ngram-history-v1:${max}:${min}`;
+const captureHistory = (history: readonly number[], max: number, min: number): CheckpointAttachment => ({
+  schema: "ngram-history-v1", metadata: { max, min }, tensors: [ops.fromInt32([...history], [history.length])],
+});
+function restoreHistory(state: DraftRowCheckpoint, max: number, min: number): number[] {
+  const { attachment, processedTokens } = state;
+  if (attachment.schema !== "ngram-history-v1" || attachment.metadata.max !== max || attachment.metadata.min !== min ||
+      attachment.tensors.length !== 1 || attachment.tensors[0]!.shape.length !== 1 || attachment.tensors[0]!.shape[0] !== processedTokens)
+    throw new Error("ngram checkpoint does not match its token coverage or lookup policy");
+  return attachment.tensors[0]!.toIntTokens();
+}
+
+/** Each row owns only its committed token history. Verification and sampling
+ * remain in the shared method; target storage and scheduling are not needed. */
+class NgramRows implements DraftRowGroup, DraftPrefillGroup {
+  readonly prefillMode = "tail-split" as const;
+  readonly tapLayers: readonly number[] = [];
+  readonly namespace: string;
+  #histories: number[][] = [];
+  #drafts: number[][] = [];
+  constructor(readonly max: number, readonly min: number, checkpoints: readonly (DraftRowCheckpoint | null)[]) {
+    this.namespace = namespace(max, min);
+    this.append(checkpoints);
+  }
+  get rowCount() { return this.#histories.length; }
+  prepareAppend(checkpoints: readonly (DraftRowCheckpoint | null)[]) {
+    let next = [...this.#histories, ...checkpoints.map(state => state ? restoreHistory(state, this.max, this.min) : [])];
+    return { commit: () => { const old = this.#histories; this.#histories = next; next = old; }, dispose: () => { next = []; } };
+  }
+  append(checkpoints: readonly (DraftRowCheckpoint | null)[]) { applyStateChanges([() => this.prepareAppend(checkpoints)]); }
+  filterRows(keep: readonly number[]) { this.#histories = keep.map(row => this.#histories[row]!); this.#drafts = []; }
+  prefill(tokens: MlxArray): void {
+    using packed = ops.contiguous(tokens);
+    const ids = packed.toIntTokens(), length = tokens.shape[1]!;
+    for (let row = 0; row < this.rowCount; row++) this.#histories[row]!.push(...ids.slice(row * length, (row + 1) * length));
+  }
+  materialize(): void {}
+  draft(pending: readonly number[], depth: number): number[][] {
+    this.#drafts = this.#histories.map((history, row) => {
+      history.push(pending[row]!);
+      return proposeNgram(history, this.max, this.min, depth);
+    });
+    return this.#drafts;
+  }
+  commit(accepted: readonly number[]) {
+    for (let row = 0; row < this.rowCount; row++) this.#histories[row]!.push(...this.#drafts[row]!.slice(0, accepted[row]!));
+    this.#drafts = [];
+  }
+  capture(row: number): DraftRowCheckpoint {
+    const history = this.#histories[row]!;
+    return { processedTokens: history.length, attachment: captureHistory(history, this.max, this.min) };
+  }
+  dispose() { this.#histories = []; this.#drafts = []; }
+}
 
 export interface NgramOptions {
   /** Longest suffix k-gram tried first (Saxena max_ngram_size). */
@@ -53,6 +125,11 @@ export class NgramProvider implements DraftProvider {
   readonly weightsBytes = 0;
   readonly max: number;
   readonly min: number;
+  readonly grouped: GroupedDraftProvider = {
+    supportsTargetAdapters: true,
+    open: options => new NgramRows(this.max, this.min, options.checkpoints),
+    openPrefill: options => new NgramRows(this.max, this.min, options.checkpoints),
+  };
 
   constructor(opts: NgramOptions = {}) {
     this.max = Math.max(1, opts.max ?? 3);
@@ -73,24 +150,33 @@ class NgramSource implements DraftSource {
   readonly weightsBytes = 0;
   #hist: number[] = [];
   #lastDrafts: number[] = [];
+  readonly #tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+  readonly checkpoint: NonNullable<DraftSource["checkpoint"]>;
 
   constructor(
     private readonly max: number,
     private readonly min: number,
-  ) {}
+  ) {
+    this.checkpoint = {
+      namespace: namespace(max, min),
+      capture: () => captureHistory(this.#hist, this.max, this.min),
+      restore: (processedTokens, attachment) => {
+        this.#hist = restoreHistory({ processedTokens, attachment }, this.max, this.min);
+      },
+    };
+  }
 
   /** Test hook — the reconstructed prompt+emitted stream (see header). */
   get history(): readonly number[] {
     return this.#hist;
   }
 
-  prefill(promptIds: number[]): void {
+  prefill(promptIds: number[], _context?: Parameters<DraftSource["prefill"]>[1], processedTokens?: number): void {
     // Mirror the serve loop's prefill shape (two-model.ts does the same): under
     // the oracle tail split the last prompt token is never prefilled — it IS
     // the first feed. Legacy shape (kill switch / 1-token prompt): full prompt,
     // and the sampled token0 arrives as the first feed.
-    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
-    const upTo = tailSplit && promptIds.length > 1 ? promptIds.length - 1 : promptIds.length;
+    const upTo = processedTokens ?? (this.#tailSplit && promptIds.length > 1 ? promptIds.length - 1 : promptIds.length);
     this.#hist = promptIds.slice(0, upTo);
   }
 
@@ -111,21 +197,7 @@ class NgramSource implements DraftSource {
   /** Longest-k-first, first-occurrence prompt lookup (Saxena/vLLM order):
    *  find the trailing k-gram earlier in history, propose what followed it. */
   #propose(n: number): number[] {
-    const h = this.#hist;
-    const L = h.length;
-    const kTop = Math.min(this.max, L - 1);
-    for (let k = kTop; k >= this.min; k--) {
-      const tailAt = L - k;
-      // First occurrence, left to right; i + k < L both excludes the trailing
-      // self-match and guarantees at least one continuation token.
-      search: for (let i = 0; i + k < L; i++) {
-        for (let j = 0; j < k; j++) {
-          if (h[i + j] !== h[tailAt + j]) continue search;
-        }
-        return h.slice(i + k, i + k + n);
-      }
-    }
-    return [];
+    return proposeNgram(this.#hist, this.max, this.min, n);
   }
 
   dispose(): void {}

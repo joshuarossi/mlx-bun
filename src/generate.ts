@@ -10,6 +10,7 @@
 import { appendFileSync } from "node:fs";
 import { MlxArray, gpuStream } from "./mlx/array";
 import {
+  Dtype,
   activeMemory,
   clearCache,
   maxRecommendedWorkingSetSize,
@@ -18,8 +19,9 @@ import {
   synchronize,
 } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
-import { KVCache, RotatingKVCache, TurboQuantKVCache, type Cache } from "./model/gemma4";
-import { PagedKVCache } from "./lab/paged-kv/paged-kv";
+import { KVCache, RotatingKVCache, type Cache } from "./model/gemma4";
+import { maybePageKv } from "./backends/mlx/request-state-policy";
+export { maybePageKv } from "./backends/mlx/request-state-policy";
 import { DiffusionGemmaModel } from "./model/diffusion-gemma";
 import { denoiseAsync } from "./diffusion/diffusion-generate";
 import { bindLegacyDenoisingModel, type MlxDenoisingBinding } from "./backends/mlx/diffusion";
@@ -28,6 +30,7 @@ import {
   assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
   type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep, type MlxTokenAppend,
 } from "./backends/mlx/autoregressive";
+import { createKvMaintenance } from "./backends/mlx/kv-maintenance";
 import { nextPrefillStep } from "./inference/prefill";
 import { evalCacheState, executeMlxPrefillStep } from "./backends/mlx/prefill";
 import { appendFillHidden } from "./backends/mlx/fill-append";
@@ -40,6 +43,7 @@ import { runtimeConfig, runtimeValue, withRuntimeConfig, type RuntimeConfig } fr
 import {
   disposeStepExtras,
   makeStepSampler,
+  readStepExtras,
   stepExtrasArrays,
   type LogitsProcessorOptions,
   type SamplerOptions,
@@ -57,8 +61,6 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
-  /** RAM budget for a model-owned paired target/draft prompt snapshot. */
-  speculativeCacheBytes?: number;
   /** Resolved host policy. Direct compatibility calls resolve from their
    * captured binding when this is absent. */
   decodePolicy?: Readonly<Pick<import("./contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;
@@ -121,14 +123,13 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  Caller keeps ownership. */
   multimodalMask?: MlxArray;
   /** Quantize full-attention KV caches to this many bits (4 or 8).
-   *  Rotating (sliding-window) caches stay bf16 — they're window-capped
-   *  and upstream rotating-cache quantization is NYI. */
+   *  Full-attention and rotating caches both convert when populated. */
   kvBits?: number;
   kvGroupSize?: number;
   /** Per-layer mixed-precision KV from kv_config.json (config.kvQuant).
    *  Overrides kvBits, like optiq serve's --kv-config. layerIdx indexes
-   *  the cache list (== layer index for the donor prefix); entries for
-   *  rotating/sliding caches are skipped until Phase 9. */
+   *  the cache list (== layer index for the donor prefix), including
+   *  rotating/sliding caches. */
   kvConfig?: KvQuantSpec[];
   /** Convert once a cache's offset reaches this (uniform-kvBits default
    *  5000 = mlx-lm; kvConfig default 0 = optiq serve). */
@@ -136,14 +137,14 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** TurboQuant scheme (docs/design/turboquant.md): rotation-based KV
    *  quantization, a CLI-only runtime lever in the same class as uniform
    *  kvBits (mutually exclusive with kvBits/kvConfig — maybeQuantizeKv
-   *  checks kvBits/kvConfig first, so set at most one). Full-attention
+   *  checks turboQuant first, so set at most one). Full-attention
    *  KVCache layers convert via TurboQuantKVCache.fromKVCache;
    *  RotatingKVCache (sliding-window) layers stay bf16 in v1 — a one-time
    *  warning names the limitation, never a throw. */
   turboQuant?: TurboQuantScheme;
   /** OPTIONAL paged KV storage (docs/design/kv-cache.md): fresh
    *  full-attention KVCache layers are replaced with PagedKVCache (block
-   *  pool + gather-to-contiguous) before prefill. v1 scope: serial batch=1
+   *  pool + gather-to-contiguous) before prefill. Scope: B1/B>1
    *  Gemma4-family, bf16 — mutually exclusive with kvBits/kvConfig/
    *  turboQuant/draft/compiled decode (callers refuse the combos; the
    *  cache swap itself only ever touches plain empty KVCache entries).
@@ -230,87 +231,11 @@ export function shouldUseFill(
     options.turboQuant === undefined;
 }
 
-/** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
- *  per-layer patched variant (incl. patch_rotating_to_quantized: rotating
- *  caches convert too — Phase 9):
- *  - per-layer bits/group_size selection (kvConfig overrides kvBits,
- *    matching optiq's --kv-config precedence; shipped kv_config.json
- *    files cover EVERY cache-owning layer, sliding ones included —
- *    verified 12B 48/48, 26B 30/30, e4b 24/24 distinct caches — so
- *    rotating quantization engages straight from the config; uniform
- *    kvBits — like optiq --kv-bits — reaches them too), and
- *  - STREAMING conversion (optiq streaming_kv_quant / serve.py
- *    patched_maybe_quantize): eval each layer's quantized triples and
- *    clear the buffer pool before building the next layer's conversion.
- *    Lazily batching every layer's toQuantized into one eval pins ALL
- *    layers' bf16 K/V as graph inputs alongside ALL quantized outputs —
- *    the exact transient optiq's fix kills (16.35 → 7.60 GB at 32k on a
- *    24 GB Mac). Numerics untouched: same quantize math, only the eval
- *    ordering is forced (tests/parity/kv-quant.test.ts, tests/parity/rotating-kvq.test.ts). */
+/** Compatibility entry point for callers that perform a single conversion.
+ * Execution sessions compose createKvMaintenance once and reuse it. */
 export function maybeQuantizeKv(cache: Cache[], options: GenerateOptions): void {
-  const { kvBits, kvConfig, turboQuant } = options;
-  if (turboQuant) {
-    maybeTurboQuantizeKv(cache, turboQuant, options.quantizedKvStart ?? 0);
-    return;
-  }
-  if (!kvBits && !kvConfig?.length) return;
-  const start = options.quantizedKvStart ?? (kvConfig?.length ? 0 : 5000);
-  const byLayer = kvConfig?.length
-    ? new Map(kvConfig.map((e) => [e.layerIdx, e]))
-    : null;
-  for (let i = 0; i < cache.length; i++) {
-    const c = cache[i]!;
-    if (!(c instanceof KVCache || c instanceof RotatingKVCache) || c.offset < start) continue;
-    // OptiQ's mixed-KV hook skips empty caches: the first prompt prefill
-    // runs bf16, then the populated cache is quantized before decode.
-    // Converting empty caches at start=0 makes prefill itself quantized
-    // and diverges from the oracle path.
-    if (c.offset === 0) continue;
-    if (byLayer) {
-      const e = byLayer.get(i);
-      if (!e) continue;
-      cache[i] = c.toQuantized(e.groupSize, e.bits);
-    } else {
-      cache[i] = c.toQuantized(options.kvGroupSize ?? 64, kvBits!);
-    }
-    // Streaming half: materialize THIS layer's conversion now so its bf16
-    // source (already released by toQuantized) frees before the next layer
-    // converts — the transient stays ~one layer, not the whole cache.
-    ops.evalAll(cache[i]!.state());
-    clearCache();
-  }
+  createKvMaintenance(options)(cache);
 }
-
-/** Paged-KV conversion (docs/design/kv-cache.md): swap each FRESH
- *  plain full-attention KVCache for a PagedKVCache sized to hold
- *  `capacityTokens` (prompt + maxTokens — known exactly at generate()
- *  setup, so pool exhaustion is unreachable absent an accounting bug).
- *  Same in-place-mutation shape as maybeQuantizeKv, but runs ONCE before
- *  prefill: paging changes storage layout, not arithmetic, so there is no
- *  "convert when populated" trigger. Sliding-window (RotatingKVCache)
- *  layers keep today's scheme — mixed paged-full + rotating-sliding is
- *  the supported v1 shape. Pre-warmed caches (offset > 0) skip conversion
- *  entirely: the serve lane bypasses prompt-cache reuse for paged
- *  requests, so this only guards library callers. */
-export function maybePageKv(
-  cache: Cache[], options: GenerateOptions, capacityTokens: number,
-): void {
-  if (!options.pagedKv) return;
-  if (cache.some((c) => c.offset > 0)) return;
-  const blockSize = options.pagedKv.blockSize ?? PagedKVCache.DEFAULT_BLOCK_SIZE;
-  for (let i = 0; i < cache.length; i++) {
-    if (cache[i] instanceof KVCache) {
-      cache[i]!.dispose(); // fresh (offset 0) — nothing stored yet
-      cache[i] = new PagedKVCache(capacityTokens, blockSize);
-    }
-  }
-}
-
-/** Emitted once per process: RotatingKVCache (sliding-window) layers are a
- *  documented v1 non-goal (docs/design/turboquant.md) — they stay bf16
- *  rather than throwing, so mixed full-attention/sliding-window models (e.g.
- *  Gemma) still serve correctly under --kv-quant turbo. */
-let warnedTurboRotating = false;
 
 /** Emitted once per process: token fast-forwarding skips models with
  *  sliding-window layers in v1 (see the gate in generateInner). */
@@ -329,39 +254,6 @@ type RewindableCache = {
   specRoundRollback?(keep: number): void;
 };
 const rewindable = (c: unknown): RewindableCache => c as RewindableCache;
-
-/** TurboQuant conversion chokepoint (mirrors the uniform/config branch
- *  above): only plain full-attention KVCache instances convert, via
- *  TurboQuantKVCache.fromKVCache — RotatingKVCache stays bf16 (warn once,
- *  never throw). Same offset===0 skip-empty-cache rule as the affine path. */
-function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: number): void {
-  for (let i = 0; i < cache.length; i++) {
-    const c = cache[i]!;
-    if (c instanceof RotatingKVCache) {
-      if (!warnedTurboRotating) {
-        warnedTurboRotating = true;
-        console.warn(
-          "[turbo-quant] sliding-window (RotatingKVCache) layers stay bf16 in v1 " +
-          "(full-attention only) — docs/design/turboquant.md.",
-        );
-      }
-      continue;
-    }
-    if (!(c instanceof KVCache) || c.offset < start || c.offset === 0) continue;
-    const tq = TurboQuantKVCache.fromKVCache(c, scheme.kBits, scheme.vBits);
-    cache[i] = tq;
-    // state() allocates fresh trimmed slice views for this cache kind
-    // (see evalCacheState) — dispose after materializing (throw included),
-    // or they leak.
-    const state = tq.state();
-    try {
-      ops.evalAll(state);
-    } finally {
-      for (const a of state) a.dispose();
-    }
-    clearCache();
-  }
-}
 
 export interface GenerateStats {
   promptTokens: number;
@@ -455,9 +347,11 @@ export class Generation implements AsyncIterable<GeneratedToken> {
 // Scope semantics match the reference: set → generate → synchronize →
 // restore; nothing stays pinned between generations. Re-entrant: only
 // the outermost wiring scope touches the limit.
-// macOS 26.6 reports a 24.96 GiB recommended set on this 24 GB machine.
-// The old 0.75 fraction therefore stopped wiring the 13-16 GiB Qwen/GLM
-// models even though they page heavily without an explicit wired limit.
+// macOS 26.6 reports a 26.8e9 B (24.96 GiB, 0.78 × RAM) recommended set on
+// a 32 GB M1 Max (2026-09-08; the earlier "24 GB machine" attribution was
+// wrong — 24.96 GiB exceeds a 24 GB box's RAM). At 0.75 × that the old
+// fraction stopped wiring the 13-16 GiB Qwen/GLM models even though they
+// page heavily without an explicit wired limit.
 // Keep smaller 8-9 GiB models unwired while covering the large-model class.
 const WIRE_THRESHOLD = 0.5;
 let wiredScopeDepth = 0;
@@ -719,6 +613,7 @@ async function* generateInner(
     throw error;
   }
   const graph = binding.graph;
+  const maintainKv = createKvMaintenance(options);
 
   // logprobs capture (mlx_lm.server semantics — see GenerateOptions.logprobs).
   // Everything below is gated: when neither flag is set, no extra ops, evals,
@@ -797,25 +692,6 @@ async function* generateInner(
     (c) => c.isTrimmable() || typeof rewindable(c).specRoundRollback === "function",
   );
   closeBatchSetup?.();
-  /** Device-side logprob capture for one step, computed from the SAME lp the
-   *  sampler saw (post-processors, pre-truncation) — read back lazily with the
-   *  token so decode pipelining is preserved. */
-  /** Read extras back to JS (forces eval — they were async-dispatched with the
-   *  token) without appending casts behind the next decode step. */
-  const readExtras = (e: StepExtras | null): TokenLogprobs | undefined => {
-    if (!e) return undefined;
-    const out: TokenLogprobs = {};
-    if (e.sel) out.logprob = e.sel.toFloat32Host()[0]!;
-    if (e.topIdx && e.topVals) {
-      const ids = e.topIdx.toIntTokens();
-      const vals = e.topVals.toFloat32Host();
-      out.top = Array.from(ids, (id, i) => ({ id, logprob: vals[i]! })).sort(
-        (a, b) => b.logprob - a.logprob,
-      );
-    }
-    disposeStepExtras(e);
-    return out;
-  };
 
   // logits [1,1,V] → sampled token array [1] (+ optional logprob capture,
   // all on-device)
@@ -848,6 +724,7 @@ async function* generateInner(
   let finished = false;
   let threw = false;
   let executionError: unknown;
+  let earlyUnforwardedToken: number | null = null;
   let closeTokenZero: (() => void) | undefined;
   const makeStats = (): GenerateStats => ({
     promptTokens: options.originalPromptTokens ?? promptTokens.length,
@@ -948,7 +825,7 @@ async function* generateInner(
     nextExtras = null;
     // No-op under the fill exclusions (kv quant refuses fill); kept so the
     // boundary stays correct if those exclusions ever loosen.
-    maybeQuantizeKv(cache, options);
+    maintainKv(cache);
 
     let checkpointMs = 0;
     let roundOpen = false;
@@ -1061,7 +938,10 @@ async function* generateInner(
       // pending token was sampled from that exact state before the snapshot,
       // so resume starts directly at the decode loop without another forward.
       if (needsTokenHistory) stepSampler.seedHistory(promptTokens);
-      pending = ops.fromInt32([options.initialPendingToken!], [1]);
+      // Device samplers return uint32. Preserve that signature on restore so
+      // compiled decode does not trace a different signed-token graph first.
+      using restoredToken = ops.fromInt32([options.initialPendingToken!], [1]);
+      pending = restoredToken.astype(Dtype.uint32);
       ops.asyncEvalAll([pending]);
       prefillMs = 0;
       closePrefill?.();
@@ -1072,7 +952,7 @@ async function* generateInner(
       mechanism: diagnostics.mechanism ?? "serial",
       boundary: "initial",
     });
-    maybeQuantizeKv(cache, options);
+    maintainKv(cache);
     closeInitialKv?.();
     tPrefill = performance.now();
     let h0: MlxArray;
@@ -1096,7 +976,7 @@ async function* generateInner(
         : undefined;
       const tailSplit = runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
       const forward = graph.forwardHidden.bind(graph);
-      const maintain = () => maybeQuantizeKv(cache, options);
+      const maintain = () => maintainKv(cache);
       while (true) {
         options.signal?.throwIfAborted();
         const step = nextPrefillStep({ length: promptTokens.length, position: pos,
@@ -1186,14 +1066,16 @@ async function* generateInner(
           closeTokenZero?.();
           closeTokenZero = undefined;
           tDecode = performance.now();
-          const logprobs = readExtras(curExtras);
+          const logprobs = readStepExtras(curExtras);
           curExtras = null;
           pendingExtras = null;
           // Count before yielding so an early return reports this token. Its
           // KV is still absent; forwarded describes the prompt-only cache.
           generated++;
           yieldedEarly = true;
+          earlyUnforwardedToken = firstToken;
           yield { token: firstToken, index: stepIndex, ...(logprobs ? { logprobs } : {}) };
+          earlyUnforwardedToken = null;
           options.signal?.throwIfAborted();
         }
       }
@@ -1242,7 +1124,7 @@ async function* generateInner(
         // contract); the next sampled token, if the budget and grammar allow
         // one, comes from its last position. Compiled decode resumes on the
         // following iteration (supports() re-checks the grown caches).
-        maybeQuantizeKv(cache, options);
+        maintainKv(cache);
         pushHistory(cur);
         stepSampler.commitNumbers(jumpEmit);
         const chunk = [grammarTok, ...jumpEmit];
@@ -1267,7 +1149,7 @@ async function* generateInner(
           h.dispose(); // burst ends the generation (max_tokens or grammar done)
         }
       } else if (stepIndex + 1 < maxTokens && !options.grammar?.isTerminated) {
-        maybeQuantizeKv(cache, options);
+        maintainKv(cache);
         pushHistory(cur);
         let logits: MlxArray | null = null;
         let evalWith: MlxArray[] = [];
@@ -1347,7 +1229,7 @@ async function* generateInner(
         }
         // readExtras before the yield: if the consumer breaks at this yield,
         // the extras are already read and disposed.
-        const logprobs = readExtras(curExtras);
+        const logprobs = readStepExtras(curExtras);
         pendingExtras = null;
         if (!yieldedEarly) yield { token, index: generated - 1, ...(logprobs ? { logprobs } : {}) };
         options.signal?.throwIfAborted();
@@ -1412,31 +1294,53 @@ async function* generateInner(
     executionError = e;
     throw e;
   } finally {
-    if (!finished) {
-      pending?.dispose();
-      nextPending?.dispose();
-      disposeStepExtras(pendingExtras);
-      disposeStepExtras(nextExtras);
-    }
     try {
-      const closing = decoder?.close();
-      if (closing) await closing;
+      // An early consumer return leaves token zero outside the retained KV.
+      // Finish that one M=1 forward before handing caller-owned caches back,
+      // matching the ordinary pipeline's boundary. Otherwise a later prefix
+      // hit folds the token into an M>1 prefill and changes native reductions.
+      // Aborted requests and caches owned by this run need no retained state.
+      if (!ownsCache && !threw && !options.signal?.aborted && earlyUnforwardedToken !== null) {
+        maintainKv(cache);
+        const ids = ops.reshape(pending!, [1, 1]);
+        try {
+          const hidden = await graph.forwardHidden(ids, cache);
+          try { evalCacheState(cache); }
+          finally { hidden.dispose(); }
+        } finally { ids.dispose(); }
+        forwarded.push(earlyUnforwardedToken);
+      }
     } catch (error) {
-      if (threw) throw new AggregateError([executionError, error],
-        "AR execution and decoder cleanup failed", { cause: executionError });
+      threw = true;
+      executionError = error;
       throw error;
     } finally {
-      if (ownsCache) for (const c of cache) c.dispose();
-      // TokenizerInfo is process-cached; this request owns the matcher.
-      options.grammar?.dispose();
-      stepSampler.dispose();
-    }
-    if (!finished && !threw) {
-      // forced early return (consumer break at a yield): still report
-      // stats — `forwarded` only lists tokens whose KV actually entered
-      // the cache, so cacheTokens stays exact for PromptCache.put().
-      decodeMs = performance.now() - tDecode;
-      return makeStats();
+      if (!finished) {
+        pending?.dispose();
+        nextPending?.dispose();
+        disposeStepExtras(pendingExtras);
+        disposeStepExtras(nextExtras);
+      }
+      try {
+        const closing = decoder?.close();
+        if (closing) await closing;
+      } catch (error) {
+        if (threw) throw new AggregateError([executionError, error],
+          "AR execution and decoder cleanup failed", { cause: executionError });
+        throw error;
+      } finally {
+        if (ownsCache) for (const c of cache) c.dispose();
+        // TokenizerInfo is process-cached; this request owns the matcher.
+        options.grammar?.dispose();
+        stepSampler.dispose();
+      }
+      if (!finished && !threw) {
+        // forced early return (consumer break at a yield): still report
+        // stats — `forwarded` only lists tokens whose KV actually entered
+        // the cache, so cacheTokens stays exact for PromptCache.put().
+        decodeMs = performance.now() - tDecode;
+        return makeStats();
+      }
     }
   }
 }
