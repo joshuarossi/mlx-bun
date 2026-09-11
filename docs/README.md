@@ -73,6 +73,7 @@ Living product/vision docs (USING side).
 
 - [PRODUCT_ROADMAP.md](../docs/planning/PRODUCT_ROADMAP.md) — PRODUCT ROADMAP
 - [ResearchTopics.md](../docs/planning/ResearchTopics.md) — Research Topics
+- [release-notes-v0.4.0.md](../docs/planning/release-notes-v0.4.0.md) — mlx-bun v0.4.0
 - [video-series.md](../docs/planning/video-series.md) — mlx-bun video series
 
 ## docs/reference/
