@@ -950,7 +950,7 @@ since e·Hinv[k,k] = w−q) and `err[..., k:k+1]` indexes a group-local buffer
 with the GLOBAL k (mlx out-of-range slice assignment silently no-ops →
 cross-group propagation lost after block 0). Fixing only err
 DOUBLE-compensates [j, k+j) and REGRESSES below RTN (measured: 7.22/7.50);
-fixing both = paper GPTQ. Worth an upstream report. Fork:
+fixing both = paper GPTQ. The CPU-only [upstream reproduction and draft](../../lab/repro/mlx-lm-gptq-block-indexing/) now demonstrate both defects against mlx-lm 0.31.3 and upstream `e5962529`; submission remains pending. Fork:
 `scripts/turboquant/tq-gptq.py` (also restricts GPTQ+fallback to language
 modules — vision H is a zero scalar and stays bf16).
 

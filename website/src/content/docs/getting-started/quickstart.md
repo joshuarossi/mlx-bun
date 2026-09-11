@@ -15,7 +15,8 @@ mlx-bun
 Bare `mlx-bun` is an alias for `mlx-bun serve`. On a fresh machine it pulls the
 MLX runtime (if not bundled), downloads the sub-GB `MiniCPM5-1B` starter, serves
 it, and opens the chat UI at `http://localhost:8080/#/chat`. Download time
-depends on your connection.
+depends on your connection. This starter is separate from the preferred model
+used after suitable weights are available; see [automatic selection](/reference/models/#automatic-model-selection).
 
 Pass `--no-open` to skip launching the browser.
 

@@ -14,13 +14,14 @@ Markers: `[ ]` todo, `[~]` in progress. Hard cap 800 lines, gate-enforced by
 
 ## Public readiness
 
-Goal: MLX Discord engagement first, then a community-project comment. [Scope and acceptance](docs/planning/public-readiness.md).
+Goal: first-visit clarity and reproducible correctness; upstream contribution, Discord, Show and tell, then listing. [Acceptance](docs/planning/public-readiness.md).
 
-- [~] P1: Overview/navigation and contributor pass checked; finish reference capability reconciliation.
-- [~] P2: Audit dependencies and settle package/API boundaries; complete any justified pre-outreach extraction.
-- [ ] P3: Verify candidate packaging, first-run and library/demo paths; reuse applicable release/performance evidence.
-- [ ] P4: Prepare and review the Discord introduction, post when authorized, and triage feedback.
-- [ ] P5: Incorporate feedback, prepare and submit the reviewed community-project comment when authorized.
+- [~] P0: Verify both GPTQ indexing defects, prepare a minimal repro and patch, submit the reviewed upstream report.
+- [~] P1: Remove internal voice, restructure benchmarks and reconcile roster evidence; verify public presentation.
+- [ ] P2: Publish pinned oracle setup and same-machine fixture recipe; verify a clean-checkout small-model parity run.
+- [~] P3: Settle package/API ownership from dependency and asset evidence; preserve published imports.
+- [ ] P4: Verify candidate packaging, first-run/library demo and repository metadata; reuse matching evidence.
+- [ ] P5: Review and post Discord intro, incorporate feedback in Show and tell, then submit the listing comment.
 
 ## Design principles
 

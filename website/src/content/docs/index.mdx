@@ -11,8 +11,8 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 <section class="mlx-hero">
   <div class="mlx-hero-copy">
     <p class="mlx-eyebrow">Local LLMs on Apple Silicon · No Python</p>
-    <h1>Run a model on your Mac.<br/><span class="grad g-hero">One command.</span></h1>
-    <p class="mlx-lede">Local chat, an OpenAI/Anthropic-compatible server, and a TypeScript inference library built on MLX. Continuous batching, reusable RAM/SSD cache state, and a signed executable.</p>
+    <h1>MLX inference.<br/><span class="grad g-hero">In TypeScript.</span></h1>
+    <p class="mlx-lede">A TypeScript/Bun library for local MLX inference, with a signed executable serving OpenAI/Anthropic-compatible APIs. Bit-exact logit tests against mlx-lm for validated configurations.</p>
     <div class="mlx-cmd"><code>curl -fsSL https://mlx-bun.dev/install.sh | sh</code></div>
     <p class="mlx-altruns">or <code>brew install joshuarossi/tap/mlx-bun</code> · <code>bunx mlx-bun</code> · <a href="/getting-started/installation/">from source →</a></p>
   </div>
@@ -21,7 +21,7 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
     <div class="mlx-term-bar"><i></i><i></i><i></i><b>mlx-bun — zsh</b></div>
     <div class="mlx-term-body">
       <div><span class="p">$</span> mlx-bun</div>
-      <div class="s">↓ MLX runtime ready · MiniCPM5-1B</div>
+      <div class="s">↓ First-run starter · MiniCPM5-1B</div>
       <div class="s">↻ serving on http://localhost:8080</div>
       <div class="s">↗ opening /#/chat</div>
       <div class="spacer"></div>
@@ -38,50 +38,28 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
   <a class="note" href="/about/correctness/">Numerical contracts and tested scope →</a>
 </div>
 
-## Why it's different
+## Build with it
 
 <div class="mlx-features">
   <div class="mlx-feature">
-    <p class="lbl">Runtime</p>
-    <h3>No Python</h3>
-    <p>Bun calls <code>mlx-c</code> through <code>bun:ffi</code>. Run inference inside a Bun app or use the self-contained executable.</p>
+    <p class="lbl">Library</p>
+    <h3>Inference in your process</h3>
+    <p>Load a model and generate tokens inside a Bun application through <code>mlx-bun/engine</code>. Use the executable as a local worker when your app runs elsewhere.</p>
   </div>
   <div class="mlx-feature">
     <p class="lbl">Correctness</p>
-    <h3>Bit-exact</h3>
-    <p>Forward-pass comparisons against pinned mlx-lm and mlx-optiq oracles. Each cache scheme and execution mode has a documented numerical contract.</p>
+    <h3>Compare the logits</h3>
+    <p>Pinned mlx-lm and mlx-optiq oracles, artifact-specific fixtures, and explicit cache and execution settings. Read the coverage and limits alongside the results.</p>
   </div>
   <div class="mlx-feature">
-    <p class="lbl">Speed</p>
+    <p class="lbl">Execution</p>
     <h3>Reuse computed work</h3>
-    <p>Shared execution, speculative methods, specialized kernels, and RAM/SSD cache reuse. See the measured comparisons for each workload.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Protocols</p>
-    <h3>Use familiar APIs</h3>
-    <p>OpenAI chat completions, Anthropic Messages, and OpenAI Responses, with supported fields and compatibility settings documented in the API reference.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Multimodal</p>
-    <h3>Tools &amp; vision</h3>
-    <p>Native tool-calling parsed into OpenAI <code>tool_calls</code>; image input via native OS codecs (HEIC, AVIF, WebP…) on vision models.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Shape</p>
-    <h3>Library-first</h3>
-    <p>The server is one consumer of a TypeScript API. Import generation into a Bun process, or embed the binary as a Mac-app sidecar.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Memory</p>
-    <h3>Personal memory</h3>
-    <p>A local, git-tracked Markdown wiki your assistant can read for durable context. Inspect and edit it in your preferred editor.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">The lab</p>
-    <h3>An open playground</h3>
-    <p>LoRA/ORPO fine-tuning on your Mac, speculative decoding research, and an interactive sampling-curve designer at <code>/curves</code>.</p>
+    <p>Continuous batching, speculative methods, specialized kernels, and RAM/SSD cache reuse. Measured comparisons identify where each combination helps.</p>
   </div>
 </div>
+
+Also in the box: a browser chat app, [training tools](/reference/training/),
+[personal memory](/guides/memory/), and [experimental tools](/about/lab/).
 
 ## Inspect the evidence
 
@@ -101,8 +79,8 @@ references. Read [how mlx-bun uses them](/about/comparison/) and the
 	<LinkCard title="Installation" href="/getting-started/installation/" description="Four ways in: Homebrew, curl, bunx, or source." />
 	<LinkCard title="Quickstart" href="/getting-started/quickstart/" description="First run, the chat UI, and the OpenAI-compatible API." />
 	<LinkCard title="The HTTP API" href="/reference/server-api/" description="Chat completions, tools, vision, prompt caching, LoRA." />
-	<LinkCard title="Personal memory" href="/guides/memory/" description="A local wiki your assistant reads — durable, git-tracked, yours." />
-	<LinkCard title="The lab" href="/about/lab/" description="Fine-tuning, speculative decoding, and the curve designer." />
+	<LinkCard title="TypeScript library" href="/guides/library/" description="Load models and generate tokens inside a Bun application." />
+	<LinkCard title="Correctness" href="/about/correctness/" description="Reference implementations, tested configurations, and limits." />
 	<LinkCard title="How it compares" href="/about/comparison/" description="Where mlx-bun sits next to mlx-lm and mlx-optiq." />
 </CardGrid>
 

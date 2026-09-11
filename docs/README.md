@@ -13,7 +13,7 @@ Generated index. Update with `bun scripts/check-hygiene.ts --write-docs-map`.
 
 User-facing reference — the ONLY home for flags, routes, models, numbers, and environment facts.
 
-- [benchmarks.md](../docs/reference/benchmarks.md) — mlx-bun benchmark results (curated)
+- [benchmarks.md](../docs/reference/benchmarks.md) — mlx-bun benchmark results
 - [cli.md](../docs/reference/cli.md) — CLI reference
 - [distribution.md](../docs/reference/distribution.md) — Distributing mlx-bun — build, sign, notarize, publish
 - [environment.md](../docs/reference/environment.md) — Reference environment and platform facts
@@ -56,6 +56,7 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 
 - [hlg-sampling.md](../docs/archive/hlg-sampling.md) — HLG sampling — a piecewise tone curve on the logits
 - [investigations/audio-input-plan.md](../docs/archive/investigations/audio-input-plan.md) — Audio input — design & implementation plan (gemma-4 audio tower)
+- [investigations/benchmark-ledger-through-v0.4.0.md](../docs/archive/investigations/benchmark-ledger-through-v0.4.0.md) — Benchmark ledger through v0.4.0
 - [investigations/chunk-finetune-experiment.md](../docs/archive/investigations/chunk-finetune-experiment.md) — Fine-tuning experiment: chunking task (2026-06-16)
 - [investigations/colibri-glm52-port.md](../docs/archive/investigations/colibri-glm52-port.md) — GLM-5.2 on a 32 GB Mac — native MLX port of the Colibri hierarchy
 - [investigations/colibri-oracle-pin.md](../docs/archive/investigations/colibri-oracle-pin.md) — Colibri oracle pin for the native GLM-5.2 port

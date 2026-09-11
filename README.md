@@ -1,9 +1,9 @@
 # mlx-bun
 
-A native MLX inference engine, local chat app, and OpenAI/Anthropic-compatible
-HTTP server for Apple Silicon. Run it as a signed, notarized executable or
-embed it in a Bun application through the TypeScript library. Inference runs
-in-process through MLX's C API and Metal kernels, with no Python dependency.
+MLX inference as a TypeScript/Bun library, with a signed executable serving
+OpenAI/Anthropic-compatible APIs on Apple Silicon. Embed generation in a Bun
+application or run the local server and browser chat app. The numerical tests
+compare logits bit-for-bit with mlx-lm for validated configurations.
 
 Docs: **[mlx-bun.dev](https://mlx-bun.dev)**
 
@@ -109,7 +109,6 @@ Each reference topic has one home:
 | Reference environment / oracle setup | [docs/reference/environment.md](./docs/reference/environment.md) |
 | Active engineering design docs | [docs/design/](./docs/README.md) |
 | Contributing / repo rules | [CONTRIBUTING.md](./CONTRIBUTING.md) |
-| Current engineering work | [STATUS.md](./STATUS.md) and [PLAN.md](./PLAN.md) |
 
 The numerical contract distinguishes stock mlx-lm parity, mlx-optiq parity
 for supported extensions, and experimental methods. Tests compare logits

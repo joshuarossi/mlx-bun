@@ -1,9 +1,8 @@
 # Reference environment and platform facts
 
-The canonical home for the oracle setup and the hard-won platform facts that
-agents and contributors need. CLAUDE.md points here; do not duplicate these
-facts elsewhere. Each fact is one paragraph with the evidence path that proves
-it — when you change the code, update the paragraph.
+Oracle configuration, native-runtime compatibility, and machine conditions
+for reproducing numerical and performance checks. Historical environment
+records below identify the versions used for their original comparisons.
 
 User-facing symptoms live in [troubleshooting.md](./troubleshooting.md).
 
@@ -21,8 +20,8 @@ Before asserting anything about RAM, OOM, or bandwidth, run
 reference `serve.sh` (below) hard-codes a 28 GB wired limit "of 32 GB", so it
 is written for the M1 Max.
 
-For the current M4 Pro optimization campaign, Josh specifies internal SSD
-storage for active models. The external SSD stores artifacts to copy when
+The M4 Pro optimization measurements use internal SSD storage for active
+models. The external SSD stores artifacts to copy when
 needed; external-drive loading performance is outside normal acceptance for
 the 12–17 GB models. Stage each needed artifact under `~/models/`, verify
 every file against its archive, and record that path in both benchmark arms.
@@ -34,7 +33,7 @@ user-local eval DB (`~/.cache/mlx-bun/evals.sqlite`) and promoted to
 `docs/reference/benchmarks.md` deliberately. `bun scripts/bench-serve.ts all`
 is the benchmark harness; it writes Markdown and raw JSON under `reports/`
 as gitignored outputs. Numbers on a loaded machine are
-garbage — run-to-run spread is the stability signal, and the harness retries
+diagnostic; run-to-run spread is the stability signal, and the harness retries
 unstable cells (`scripts/bench-serve.ts`; `benchmarks.md`, "Running the
 benchmark").
 
@@ -101,7 +100,7 @@ Qwen artifacts are also present under
 `/Volumes/MLX-Models/models/{Qwen,mjriii}/`; header-only inventories under
 `reports/qwen38-rd/` are machine-local and do not load the GPU.
 
-**Authorized M4 Pro runtime update, staged 2026-09-07:** MLX 0.32.2 with
+**M4 Pro runtime update, staged 2026-09-07:** MLX 0.32.2 with
 MLX-C `c74db5307cc8ce122f48d97ef951b30578674e7f` is built under
 `reports/qwen38-rd/mlx-upgrade-0.32.2/install/lib/`. Explicit
 `MLX_BUN_LIBMLXC=<that-directory>/libmlxc.dylib` selects it per process.

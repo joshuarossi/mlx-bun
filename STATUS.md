@@ -1,18 +1,15 @@
-# STATUS — live handoff
+# Project status
 
-**Governing product objective:** Josh's "The absolute BEST local AI experience on a mac". This covers simple installation, direct application integration, JavaScript/TypeScript development, everyday usability and inference quality/performance. The [product principle](docs/planning/PRODUCT_ROADMAP.md#product-north-star) governs every workstream.
+mlx-bun provides local MLX inference for Apple Silicon applications, a
+TypeScript/Bun library, and a signed server executable. This page tracks
+released work and remaining engineering tasks. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) to participate; [PLAN.md](PLAN.md) defines
+open milestones and [the docs index](docs/README.md) maps the references.
 
-The one "what's the state, what's next" doc (≤150 lines, gate-enforced).
-Open work with exit criteria: [PLAN.md](PLAN.md). Rules: [CONTRIBUTING.md](CONTRIBUTING.md).
-Docs map: [docs/README.md](docs/README.md). Superseded entries are deleted,
-not relocated — history is `git log -- STATUS.md`.
-
-**Fidelity contract:** L1 = mlx-lm bit-exact numerics (the naked default;
-behavior-policy defaults are ours — server-config.md "Reproducing
-mlx_lm.server" lists the compat flags) · L2 =
-mlx-optiq bit-exact (mixed-KV) · Lab = no external oracle, gated by KL/eval
-and a paired A/B win before any default
-([unified-engine-frontier-plan](docs/design/unified-engine-frontier-plan.md)).
+Numerical contracts and measured results live in
+[benchmarks.md](docs/reference/benchmarks.md). Supported artifact and cache
+combinations live in [models.md](docs/reference/models.md) and
+[server-config.md](docs/reference/server-config.md).
 
 ## Released: mlx-bun v0.4.0 (2026-09-11)
 
@@ -46,8 +43,8 @@ servers cannot load that artifact.
 
 | thread | state | next action | branch |
 |---|---|---|---|
-| Public readiness | First README/site/navigation and contributor pass validated. Package audit started; existing exports remain unchanged. | Finish reference capability reconciliation and package/API ownership decisions, then check the installed candidate and demo. Outreach order: MLX Discord feedback first, community-project comment second. [Scope and acceptance](docs/planning/public-readiness.md), boundary findings in engine architecture §12.15. Typechecks, ten focused docs/interface tests, full hygiene and website build pass; all built local links resolve. Source-import and package dry-run reports are under `reports/public-readiness/`. Clean-install/demo acceptance remains open. | chore/public-readiness |
-| Qwen3.8-27B inference performance | Phase 6/18 remain open; the accepted PR #48 work is released as v0.4.0. | **Current milestone, revised by Josh:** keep shared batching as the default with effectively equal measured B1 performance. Serving already defaults to cap eight and uses B1 for a lone eligible request. Explicit `--batch 1` retains serial; removal and complete feature parity are deferred follow-ups, not blockers for this default. **Integrated:** shared ordinary and speculative methods, sampling/lifecycle ports, generated RAM snapshots and queued SSD persistence, affine/TurboQuant row layouts including delayed precision, paged storage, adapters with lookup, and independent greedy verification sampling. Main suites, typechecks and full hygiene pass. **Current:** shared ordinary interrupted-generation resume is integrated, including queued persistence and affine/TurboQuant layouts. Both-machine native/HTTP compiled, uncompiled, delayed-precision and mixed-grammar controls, complete suites/SSD/types and the matched M4 timing comparisons are complete. The source-only timing comparison preserves every response/usage record with effectively flat performance. The packed-model HTTP fixture now gives each fresh model its own weight handles. Adapter resume and tiny/oracle-tested GLM shared MTP are also integrated from the remaining campaign checkouts. [PR #48](https://github.com/joshuarossi/mlx-bun/pull/48) contains the accumulated implementation, tests and evidence. All 80 secondary Git worktrees and 99 campaign source copies are archived and removed; both primary checkouts remain. Local typechecks, hygiene and focused integration checks pass; The implementation CI passed and v0.4.0 is published; remaining work follows the revised milestone. Retain serial as requested. **Remaining:** close specific unsupported media/fill/grammar-jump and adapter-resume combinations, resolve recorded B1/prefill/cache regressions, consolidate defaults/configuration, complete remaining kernel and long-task work. Serial removal is deferred. Existing provider/KV/paging correctness evidence remains accepted; umbrella L2/Lab entries need reconciliation with that evidence. Final GLM artifact testing is deferred by Josh. No DSpark/DFlash checkpoint has been trained yet; only seeded execution fixtures exist. Feature evidence: PLAN Phase 6/18 and batching.md; performance: benchmarks.md. | feature/perf/qwen-27b-closeout |
+| Public readiness | PR #49 presentation revisions are ready: benchmarks lead with parity and the latest h2h, public entry points use project language, and the GPTQ defects reproduce on CPU against pinned upstream source. The #654 list has been unmaintained since 2025-10 and Awni left Apple in 2026-02; the GPTQ defects are still on mlx-lm `main`. | Work [the handoff](docs/planning/public-readiness-handoff.md) T1–T8 in order: upstream report, voice scrub, site claims, roster evidence, reproducible oracle, package map, candidate/metadata, outreach drafts. [Acceptance](docs/planning/public-readiness.md). | chore/public-readiness |
+| Qwen3.8-27B inference performance | Phase 6/18 remain open; the accepted PR #48 work is released as v0.4.0. | **Current milestone:** keep shared batching as the default with effectively equal measured B1 performance. Serving already defaults to cap eight and uses B1 for a lone eligible request. Explicit `--batch 1` retains serial; removal and complete feature parity are deferred follow-ups, not blockers for this default. **Integrated:** shared ordinary and speculative methods, sampling/lifecycle ports, generated RAM snapshots and queued SSD persistence, affine/TurboQuant row layouts including delayed precision, paged storage, adapters with lookup, and independent greedy verification sampling. Main suites, typechecks and full hygiene pass. **Current:** shared ordinary interrupted-generation resume is integrated, including queued persistence and affine/TurboQuant layouts. Both-machine native/HTTP compiled, uncompiled, delayed-precision and mixed-grammar controls, complete suites/SSD/types and the matched M4 timing comparisons are complete. The source-only timing comparison preserves every response/usage record with effectively flat performance. The packed-model HTTP fixture now gives each fresh model its own weight handles. Adapter resume and tiny/oracle-tested GLM shared MTP are also integrated from the remaining campaign checkouts. [PR #48](https://github.com/joshuarossi/mlx-bun/pull/48) contains the accumulated implementation, tests and evidence. All 80 secondary Git worktrees and 99 campaign source copies are archived and removed; both primary checkouts remain. Local typechecks, hygiene and focused integration checks pass; The implementation CI passed and v0.4.0 is published; remaining work follows the revised milestone. Explicit serial remains supported. **Remaining:** close specific unsupported media/fill/grammar-jump and adapter-resume combinations, resolve recorded B1/prefill/cache regressions, consolidate defaults/configuration, complete remaining kernel and long-task work. Serial removal is deferred. Existing provider/KV/paging correctness evidence remains accepted; umbrella L2/Lab entries need reconciliation with that evidence. Final GLM artifact testing remains deferred. No DSpark/DFlash checkpoint has been trained yet; only seeded execution fixtures exist. Feature evidence: PLAN Phase 6/18 and batching.md; performance: benchmarks.md. | feature/perf/qwen-27b-closeout |
 | Repo taming (docs/files/agent instructions/seams) | Docs map, repository gates, request pipeline and shared prefill extraction landed; the engine refactor is merged. | D6 retention decisions still need workload measurements. True B-wide prefill remains Phase 18 S1a. | main |
 | TurboQuant weights — Q campaign (sub-4 bpw) | **Q3 PASSED** (KL 0.1553 @ 3.55 bpw; flagship 0.1646 @ 4.80; MMLU 88 / tGSM 48 / rawGSM 44). **Q2b packed format LANDED 2026-09-02**: 12.14 GiB artifact, decode bit-identical to the fake-quant, KL 0.1550 through our engine, coherent generation; M1 Max decode **9.3 tok/s vs 18.9** flagship after three kernel rounds. **down_proj axis settled — KEEP THE ROTATED AXIS**: `--down-axis in` is 11.3 vs 9.3 tok/s at identical KL/MMLU/tGSM but rawGSM **29/50 vs 44/50**, strictly nested (15 regressions, 0 gains), failure = immediate EOS — incoherence processing must reach the CODED axis (third instance of "KL is the screen, not the verdict"). Carry-forward: `…-k300-packed` (12.14 GiB, 9.3 tok/s) | Q5 2.75-budget arm; q2a/q2b task columns; rawGSM EOS-cliff root cause (now with two arms exhibiting it) | chore/tame-jungle |
 | Resumable long-agent generation | The merged path passes seven saved boundaries in both serial and continuous serving, with identical responses and durable final SSD flushes. The longest prompt has 14,465 tokens and generates 512. Earlier Pi stopped on an unparsed tool call and did not complete its app task. | Repeat pressure/reliability coverage as graph barriers or kernels change; investigate the separate affine transient-allocation control. Evidence: turn-8 repro and decode-speed-program §7. | main |
@@ -57,14 +54,13 @@ servers cannot load that artifact.
 | Memory / the Dreaming | write path + nightly synthesis built; ingest is NOT wired into the nightly run; `memory synthesize --since/--model` parsed but unapplied | wire ingest into `runPipeline`; decide the embeddings-as-instruments question; promote wiki-full to a real vault | main |
 | Audio input (Gemma-4) | A0–A4 served | A5 bench cells + 12B sidecar coverage | main |
 
-## Standing hazards (verified today)
+## Known limitations and measurement conditions
 
-- M4 Pro CPU allowance is explicit: Josh permits the busy audio daemon while
-  memory and GPU availability are preserved. The M4 reboot cleared swap and
-  the matched comparison completed using diagnostic mode after swap returned. Default fit estimates are now
-  advisory by Josh's instruction; only explicit limits and fixed cache layouts
-  restrict requests. Reservation prototypes are superseded, not acceptance.
-  Native allocation failures remain possible. Twelve Qwen oracle cases are exact.
+- Recent M4 comparisons used an exclusively allocated GPU with background CPU
+  activity and retained swap recorded in the reports. Diagnostic runs retain
+  that classification. Default fit estimates are advisory; explicit limits
+  and fixed cache layouts still constrain requests. Native allocation
+  failures remain possible. Twelve Qwen oracle cases are exact.
 - The old M1 Gemma solo-KL failure is explained by exact same-B oracle
   results. A separate mid-stream-join mismatch required porting mlx-lm's
   full-cache padding removal after eviction. The new protocol gate passes

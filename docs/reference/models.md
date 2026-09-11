@@ -4,6 +4,14 @@ The one supported-model list, plus how mlx-bun downloads, indexes, lists,
 and reclaims models. The store is the standard Hugging Face hub cache —
 nothing proprietary; `hf` and mlx-lm read/write the same tree.
 
+## Automatic model selection
+
+On a fresh install with no supported downloaded model, `serve` downloads and
+starts MiniCPM5-1B, then can download the device-recommended model in the
+background. Gemma e4b is the preferred general model once available and within
+the selection budget. `DEFAULT_REPO_ID` names that preference, not the
+first-download artifact. Explicit model selection bypasses this starter flow.
+
 ## Supported models
 
 The source of truth is code, not this table: `src/model/profile.ts`
@@ -16,17 +24,20 @@ is the bug.
 
 Scope is deliberate: a few families held to explicit oracle contracts
 (L1 = bit-exact vs mlx-lm, L2 = bit-exact vs mlx-optiq, L3 = measured, no
-oracle), plus a declared Tier-0 generic surface. There is no alias table —
+oracle), plus a declared Tier-0 generic surface. These are comparison
+contracts, not interchangeable claims about every artifact. The
+[coverage map](benchmarks.md#coverage-beyond-the-four-model-summary) identifies
+the test and remaining evidence limits for each roster row. There is no alias table —
 the "query" column is a substring that `resolve()` matches against
 already-downloaded repos (it must match exactly one repo; see
 [Query resolution rules](#query-resolution-rules-per-verb)).
 
 | `serve` query | Validated artifact (HF repo) | Family · load path · tier | Modalities | Draft sources | KV schemes | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `e4b` | `mlx-community/gemma-4-e4b-it-OptiQ-4bit` | Gemma 4 (`gemma4*`) · dedicated `gemma4` graph with a **generated** specialization keyed on the config fingerprint · L1 | text · **image** (SigLIP tower in the bf16 `optiq_vision.safetensors` sidecar) · **audio** (Conformer tower in the same sidecar) | two-model · Gemma `-assistant` (L2) · locally-trained DSpark (`dspark.json`) · ngram | bf16 · uniform 4/8 · `config` (kv_config.json, batches) · turbo · `--paged-kv` | **Default model** (`DEFAULT_REPO_ID`, src/fit.ts). The only audio-capable artifact. ~7.0 GB on disk (benchmarks.md legend, 2026-06-15). Trains (LoRA / ORPO / SFT). |
+| `e4b` | `mlx-community/gemma-4-e4b-it-OptiQ-4bit` | Gemma 4 (`gemma4*`) · dedicated `gemma4` graph with a **generated** specialization keyed on the config fingerprint · L1 | text · **image** (SigLIP tower in the bf16 `optiq_vision.safetensors` sidecar) · **audio** (Conformer tower in the same sidecar) | two-model · Gemma `-assistant` (L2) · locally-trained DSpark (`dspark.json`) · ngram | bf16 · uniform 4/8 · `config` (kv_config.json, batches) · turbo · `--paged-kv` | **Preferred model after download**; fresh installs first serve MiniCPM5. See [automatic selection](#automatic-model-selection). The only audio-capable artifact. ~7.0 GB on disk (benchmarks.md legend, 2026-06-15). Trains (LoRA / ORPO / SFT). |
 | `12B` | `mlx-community/gemma-4-12B-it-OptiQ-4bit` | Gemma 4 · generated specialization · L1 | text · **image** (encoder-free `gemma4_unified_vision` declared in config.json — no sidecar needed). No audio: the snapshot's sidecar is an audio **stub** (`embed_audio` only, no `audio_tower.*`) | two-model · `-assistant` · DSpark local · **DeepSpec released** (`deepseek-ai/dspark_gemma4_12b_block7`) · ngram | bf16 · uniform · `config` · turbo · `--paged-kv` | ~8.4 GB (2026-06-15). `largestRecommendedRepoId` pick for ≥ 24 GB RAM (src/fit.ts). Trains. |
 | `26B` | `mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit` | Gemma 4 MoE · generated specialization · L1 | text · image **only if** the snapshot ships the SigLIP sidecar (registry `has_vision_sidecar`; the tower is `gemma4_vision`). No `audio_config` → no audio | two-model · `-assistant` · ngram | bf16 · uniform · `config` · turbo · `--paged-kv` | ~18 GB (2026-06-15). `largestRecommendedRepoId` pick for ≥ 48 GB RAM. |
-| any other `gemma4*` config (1B, e2b, 31B, …) | — | Gemma 4 · the `Gemma4Model` monolith (no generated specialization) · L1 by family | per the registry's vision/audio flags | same as the family | same as the family | Loads by `model_type`; **no artifact is pinned in tests/support/goldens for these**, so treat as family-supported, artifact-unvalidated. |
+| any other `gemma4*` config (1B, e2b, 31B, …) | — | Gemma 4 · the `Gemma4Model` monolith (no generated specialization) · family support, artifact unvalidated | per the registry's vision/audio flags | same as the family | same as the family | Loads by `model_type`; **no artifact is pinned in tests/support/goldens for these**, so treat as family-supported, artifact-unvalidated. |
 | `MiniCPM5` | `mlx-community/MiniCPM5-1B-OptiQ-4bit` | MiniCPM5 · `model_type: llama` matched by exact shape (`isMiniCPM5Config`) → dedicated `minicpm5` graph · L1 / L2 | text | two-model · ngram | bf16 · uniform · `config` (batches — Phase 3.1) · turbo (quality curve measured 2026-07-06, benchmarks.md §3) | Sub-GB starter (benchmarks.md legend). Trains (segmented backward). Tool calling (XML). |
 | `Qwen3.5-4B` | `mlx-community/Qwen3.5-4B-OptiQ-4bit` | Qwen3.5 (`qwen3_5` / `qwen3_5_text`, dense hybrid gated-DeltaNet) · dedicated `qwen3.5` graph · L1 | text (image/video only when the artifact ships vision weights — see Qwen3.8) | two-model · ngram · `mtp` if a `qwen3_5_mtp` companion exists | bf16 (L1) · `config` (KV-ON parity passed 2026-06-15, PLAN 14e) | Thinking + tool calling. Batches on the SSM path (`MLX_BUN_BATCH_SSM=0` reverts). The MoE variant `qwen3_5_moe` is **not** supported. |
 | `Qwen3.8` | `mlx-community/Qwen3.8-27B-OptiQ-4bit` @ `b04599de95d7a9bfbd7f208d347c0f10d9432a42` | Qwen3.5 family · **exact artifact profile** `qwen3.8-27b-optiq-4bit` (safetensors + `qwen3.5` graph) · L1 | text · **image** · **video** (`image_url` / `video_url` parts; Qwen3-VL tower + mRoPE; video decodes via the AVFoundation sidecar `mlx-bun-frame-extract`, 2 fps, ≤ 768 frames). Video never combines with audio; no audio | **native MTP head** (`mlx-community/Qwen3.8-27B-MTP-bf16`, auto-detected `qwen3_5_mtp`; `--draft-kind mtp` with no `--draft-model` uses a bundled `mtp/` subfolder) · two-model · ngram | bf16 (L1) · `config` is **Lab** — policy copied from the same-topology Qwen3.6 artifact, no model-specific oracle (benchmarks.md, 2026-08-22) | `reasoning_effort` (xhigh/medium/low) + `preserve_thinking` + tool calling. `/v1/models` advertises vision. Shipped in v0.2.0. |
