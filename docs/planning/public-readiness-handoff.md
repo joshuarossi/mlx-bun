@@ -93,23 +93,28 @@ no long-running servers or multi-GB downloads from a session.
 
 ### T1 — Upstream GPTQ report (P0) — agent drafts, Josh submits
 
-1. Run `repro.py` under the pinned venv (`MLX_BUN_ORACLE_VENV`) and record
-   the max-abs / relative difference between original and corrected
-   quantized weights on the synthetic layer. Then run it against a fresh
-   checkout of mlx-lm `main` at 1b3594b; the source-match assert must pass
-   there too, or update the strings.
-2. Write the issue: title, two-sentence statement of each defect with the
-   line numbers, why they partially cancel, the repro command, the two-line
-   patch, and a regression test that fails on `main` (a group_size-32 layer
-   with correlated calibration columns where block ≥1 error propagation is
-   nonzero). Keep it about the numerics; do not mention mlx-bun beyond one
-   line of provenance.
-3. Prefer issue + PR together; the PR is small enough. Draft goes to Josh
-   for review; Josh files under his account.
+Filed 2026-09-11 as [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1878)
+(both defects, CPU-only fixture, observed result on 0.31.3 and upstream
+`e5962529`, proposed two-line patch). Recorded in
+[turboquant.md](../design/turboquant.md) and `scripts/turboquant/tq-gptq.py`.
 
-Acceptance: issue/PR URL recorded in
-[turboquant.md](../design/turboquant.md) next to the existing bug note
-(§ around line 949) and the `tq-gptq.py:190` comment updated to point at it.
+Remaining:
+
+1. **Open the PR.** Maintainers act on small PRs faster than on issues.
+   Contents: the two-line change in `mlx_lm/quant/gptq.py`; a test in
+   `tests/` that runs `gptq_quantize` on a synthetic linear layer with
+   correlated calibration columns and `group_size` small enough for several
+   groups, and compares the dequantized result against a plain-Python
+   per-column GPTQ reference (paper form, no block deferral) — plus a
+   single-group control that passes before and after the patch. Reference
+   the issue; keep the description to the numerics. Draft goes to Josh for
+   review; Josh opens it from his fork.
+2. **Follow up.** Check the issue/PR for maintainer questions every few
+   days; answer with the fixture output, not prose. Record the PR URL next
+   to the issue link in turboquant.md when opened.
+
+Acceptance: PR opened and linked from the issue; any maintainer question
+answered; outcome (merged, changed, declined) recorded in turboquant.md.
 
 ### T2 — Finish the internal-voice scrub (P1) — agent
 
