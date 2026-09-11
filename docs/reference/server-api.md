@@ -370,15 +370,15 @@ or the model-free `serve --draft-kind ngram`, which mounts no draft
 model); there is no per-request draft field. The `speculation` usage
 extension appears on chat and text completions alike, non-streaming and on
 the final stream chunk. Spec-eligible requests are text-only on base weights.
-In the unreleased shared executor, Qwen grouped MTP, prompt lookup and standalone drafting support logprobs and
+In the shared executor, Qwen grouped MTP, prompt lookup and standalone drafting support logprobs and
 bf16, uniform KV4/KV8 or per-layer affine KV, or TurboQuant. Qwen MTP and prompt lookup also support
 positive library conversion thresholds for uniform KV4/KV8. Per-layer mixed KV and
 adapters remain incompatible with speculation. Strict legacy serial execution
 retains its narrower bf16/KV4 policy. The KV4 compatibility control is
 `MLX_BUN_QWEN_SPEC_KV4=0`.
 Ineligible requests decode normally and omit the field. Qwen MTP reuses paired
-target/draft prefill and completed decode state through the shared RAM/SSD cache by default in the
-unreleased source, reported in `cached_tokens`. Configured SSD persistence
+target/draft prefill and completed decode state through the shared RAM/SSD
+cache by default in v0.4.0, reported in `cached_tokens`. Configured SSD persistence
 supports reuse after restart; `MLX_BUN_MTP_PROMPT_CACHE=0` disables reuse.
 Generated checkpoints cover processed tokens and use queued SSD persistence.
 Long-conversation performance acceptance remains open. Qwen prompt lookup also

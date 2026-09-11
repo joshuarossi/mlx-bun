@@ -1,43 +1,30 @@
 ---
 title: Introduction
-description: What mlx-bun is, what it's for, and its deliberate scope.
+description: Native MLX inference, a local chat app, and a TypeScript library.
 ---
 
-**mlx-bun** is native MLX inference for [Bun](https://bun.sh): run quantized
-LLMs on Apple Silicon from TypeScript — no Python, no sidecar server, one
-runtime. It is two things at once:
+mlx-bun runs local models on Apple Silicon through MLX. It includes a browser
+chat app, an OpenAI/Anthropic-compatible HTTP server, and a TypeScript library
+for embedding inference in Bun applications. The signed executable includes
+its runtime; inference does not require Python.
 
-- a **local LLM server** that speaks the OpenAI, Anthropic, and OpenAI
-  Responses protocols, so anything that talks to those APIs can point at it; and
-- a **TypeScript library** you can `import` to drive generation directly
-  inside a Bun process.
+The server uses continuous batching for eligible requests. Model execution,
+sampling, scheduling, and cache storage have separate responsibilities,
+including when only one request is active. See
+[server configuration](/reference/server-config/) for supported combinations.
 
-## The idea
+## Choose your starting point
 
-MLX is Apple's ML framework — hand-tuned Metal kernels for Apple Silicon,
-with official bindings for Python, C++, Swift, and C, but **no JavaScript
-story**. Today a JS/TS app that wants local MLX inference has to shell out to
-a Python server (mlx-lm, optiq) and accept that stack's fragility: venv setup,
-brittle download tooling, segfaults on exit, monkey-patched HTTP layers.
+- Use local chat: follow [installation](/getting-started/installation/) and
+  the [quickstart](/getting-started/quickstart/).
+- Build an application: read the [library API](/guides/library/) or
+  [HTTP API](/reference/server-api/).
+- Evaluate the engine: inspect the [correctness contract](/about/correctness/)
+  and [measured comparisons](/reference/benchmarks/).
 
-The performance-critical work — every matmul, every attention pass — lives in
-MLX's C++/Metal core and is exposed through `mlx-c`. The Python layer on top
-is pure orchestration: model loading, tokenization, the sampling loop,
-serving. That layer is performance-neutral (the GPU dominates), so it can be
-rewritten in any runtime without losing speed — and Bun is the right one.
-[Read the full rationale →](/about/why/)
+## Supported environment
 
-## Deliberate scope
-
-mlx-bun supports a **few model families held to bit-exact logit parity** with
-the Python reference, rather than dozens held to none. Currently MiniCPM5, the
-Gemma-4 OptiQ quants, and Qwen3.5 — see
-[Choosing a model](/reference/models/).
-
-## Requirements
-
-- An **Apple Silicon Mac** (MLX is Metal-only, so macOS only by design).
-- For the source/bunx paths: [Bun](https://bun.sh) ≥ 1.4.0. The Homebrew and
-  direct-download binaries bundle everything and need no toolchain.
-
-Ready? Head to [Installation](/getting-started/installation/).
+The native engine requires an Apple Silicon Mac running macOS 14 or later.
+Source and npm usage require Bun; the standalone bundle includes it.
+Use the [model roster](/reference/models/) for validated architectures and
+artifact formats. Compatibility depends on the exact model and configuration.

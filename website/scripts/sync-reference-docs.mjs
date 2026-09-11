@@ -33,23 +33,18 @@ const MAP = [
 ];
 
 function rewriteLinks(s) {
+	const routes = new Map(MAP.map(({ src, dest }) => [src, `/${dest.replace(/\.md$/, '')}/`]));
 	return s
 		.replaceAll('](../../', `](${GH}/`)
 		.replaceAll('](../design/', `](${GH}/docs/design/`)
 		.replaceAll('](../archive/', `](${GH}/docs/archive/`)
-		.replace(/\]\((?:\.\/)?server-api\.md\)/g, '](/reference/server-api/)')
-		.replace(/\]\((?:\.\/)?server-config\.md\)/g, '](/reference/server-config/)')
-		.replace(/\]\((?:\.\/)?training\.md\)/g, '](/reference/training/)')
-		.replace(/\]\((?:\.\/)?cli\.md\)/g, '](/reference/cli/)')
-		.replace(/\]\((?:\.\/)?library-api\.md\)/g, '](/guides/library/)')
-		.replace(/\]\((?:\.\/)?distribution\.md\)/g, '](/guides/distribution/)')
-		.replace(/\]\((?:\.\/)?troubleshooting\.md\)/g, '](/guides/troubleshooting/)')
-		.replace(/\]\((?:\.\/)?benchmarks\.md\)/g, '](/reference/benchmarks/)')
-		// environment.md is the maintainer's oracle/machine setup (local paths, pins) — not a site page; link to the source.
-		.replace(/\]\((?:\.\/)?environment\.md\)/g, `](${GH}/docs/reference/environment.md)`)
-		.replace(/\]\((?:\.\/)?glossary\.md\)/g, '](/reference/glossary/)')
-		.replace(/\]\((?:\.\/)?memory\.md\)/g, '](/guides/memory/)')
-		.replace(/\]\((?:\.\/)?models\.md\)/g, '](/reference/models/)');
+		.replace(/\]\((?:\.\/)?([\w-]+\.md)(#[^)]*)?\)/g, (link, file, anchor = '') => {
+			const route = routes.get(file);
+			if (route) return `](${route}${anchor})`;
+			// Maintainer-only references stay on GitHub, including their anchors.
+			if (file === 'environment.md') return `](${GH}/docs/reference/${file}${anchor})`;
+			return link;
+		});
 }
 
 export function syncReferenceDocs() {

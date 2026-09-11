@@ -3,8 +3,8 @@ title: Installation
 description: Four ways to install mlx-bun — direct download, Homebrew, bunx, or from source.
 ---
 
-You need an **Apple Silicon Mac** (MLX is Metal-only, so macOS only by
-design). There are four ways in — pick whichever fits.
+You need an **Apple Silicon Mac running macOS 14 or later**. Choose a
+standalone bundle, npm launcher, or source checkout.
 
 ## Direct download (recommended)
 
@@ -17,8 +17,7 @@ curl -fsSL https://mlx-bun.dev/install.sh | sh
 mlx-bun
 ```
 
-The bundle is self-contained (binary + MLX runtime) and notarized, so it runs
-without a Gatekeeper prompt. It installs to `~/.mlx-bun` by default — override
+The bundle includes the executable and MLX runtime and is signed and notarized. It installs to `~/.mlx-bun` by default — override
 with `MLX_BUN_INSTALL_DIR`, or pin a release with `MLX_BUN_VERSION=v0.0.8`.
 
 ## Homebrew
@@ -31,7 +30,7 @@ mlx-bun
 ```
 
 That's the whole thing. The bottle already bundles the MLX native runtime, so
-the only thing the first run fetches is the model. Upgrade later with
+the native runtime does not need a separate first-run download. Upgrade later with
 `brew upgrade mlx-bun`.
 
 ## bunx (no install)
@@ -79,8 +78,8 @@ everything for you:
 1. pulls the MLX native runtime (~52 MB) into `~/Library/Caches/mlx-bun/`
    (skipped on the Homebrew/direct-download installs — the runtime ships in
    the bundle);
-2. downloads the sub-GB `MiniCPM5-1B` starter and serves it, so you're chatting
-   in well under a minute;
+2. downloads the sub-GB `MiniCPM5-1B` starter and serves it; download time
+   depends on your connection;
 3. starts downloading `gemma-4-e4b` (the stronger 4B model) in the background —
    it becomes the default on your next `mlx-bun serve`, on a 16 GB+ Mac;
 4. opens the chat UI in your browser at `http://localhost:8080/#/chat`

@@ -12,43 +12,42 @@ Markers: `[ ]` todo, `[~]` in progress. Hard cap 800 lines, gate-enforced by
 - Headings quoted by a design doc's `plan-anchor:` are load-bearing —
   `grep -n 'plan-anchor:' docs/design/*.md` before renaming one.
 
+## Public readiness
+
+Goal: MLX Discord engagement first, then a community-project comment. [Scope and acceptance](docs/planning/public-readiness.md).
+
+- [~] P1: Overview/navigation and contributor pass checked; finish reference capability reconciliation.
+- [~] P2: Audit dependencies and settle package/API boundaries; complete any justified pre-outreach extraction.
+- [ ] P3: Verify candidate packaging, first-run and library/demo paths; reuse applicable release/performance evidence.
+- [ ] P4: Prepare and review the Discord introduction, post when authorized, and triage feedback.
+- [ ] P5: Incorporate feedback, prepare and submit the reviewed community-project comment when authorized.
+
 ## Design principles
 
-- **Logit parity is the oracle.** Every OptiQ model also runs on stock mlx-lm;
-  that shared subset is the FLOOR and mlx-lm is its bit-exact oracle (a
-  divergence is our bug until proven otherwise). optiq's additions (LoRA
-  hot-swap, rotating KV-quant, fused prefill, MTP, SigLIP, TurboQuant) are the
-  L2 ceiling, with the venv source as the reference.
-- **The oracle for a capability is whoever already ships it.** Read it, copy it
-  op-for-op, prove identity, then optimize. "No oracle" is the only place we
-  invent, and those go behind the Lab tier (KL/eval + a paired A/B win before
-  any default).
-- **Measure the limiting resource.** Weight traffic, decode arithmetic,
-  occupancy, dispatch, synchronization and memory pressure can each limit a
-  regime. Profile the critical path before choosing a kernel or host rewrite.
-- **Weight buffers are immutable and shared.** Read headers for inventory;
-  native MLX loads tensor bytes lazily into its own Metal-visible buffers.
-  Avoid extra resident copies in retained optimizations.
-- **Every perf claim gets a number on a quiet machine**, labeled host/chip/RAM,
-  recorded in the eval DB. Numbers off a loaded box are not quotable.
-- **Scope is the survival strategy.** Gemma (3/4), Qwen (3.x), GLM/Colibri, one
-  MoE family. Not parity with mlx-lm's dozens.
-- **Docs land WITH the feature.** A change to the served surface updates
-  server-config.md / server-api.md / cli.md / README in the SAME commit.
-- **Separate concerns through interfaces.** Scheduling chooses work; inference
-  methods advance it; model backends execute it; the shared cache retains
-  reusable state from both prefill and decode. RAM/SSD placement belongs to
-  storage. Resolve configuration once by concern. Preserve fused execution,
-  buffer ownership and overlap; measure the complete request after extraction.
-  Reuse existing optimized kernels and keep developing faster specializations.
-  Fuse work, remove operations and avoid materialization where measurements
-  support it. Keep scheduling changes separate from kernel experiments in A/Bs.
+- **Logit parity is the oracle.** Every OptiQ model also runs on stock mlx-lm; that shared subset is the FLOOR and mlx-lm is
+  its bit-exact oracle (a divergence is our bug until proven otherwise). optiq's additions (LoRA hot-swap, rotating KV-quant,
+  fused prefill, MTP, SigLIP, TurboQuant) are the L2 ceiling, with the venv source as the reference.
+- **The oracle for a capability is whoever already ships it.** Read it, copy it op-for-op, prove identity, then optimize. "No
+  oracle" is the only place we invent, and those go behind the Lab tier (KL/eval + a paired A/B win before any default).
+- **Measure the limiting resource.** Weight traffic, decode arithmetic, occupancy, dispatch, synchronization and memory
+  pressure can each limit a regime. Profile the critical path before choosing a kernel or host rewrite.
+- **Weight buffers are immutable and shared.** Read headers for inventory; native MLX loads tensor bytes lazily into its own
+  Metal-visible buffers. Avoid extra resident copies in retained optimizations.
+- **Every perf claim gets a number on a quiet machine**, labeled host/chip/RAM, recorded in the eval DB. Numbers off a loaded
+  box are not quotable.
+- **Scope is the survival strategy.** Gemma (3/4), Qwen (3.x), GLM/Colibri, one MoE family. Not parity with mlx-lm's dozens.
+- **Docs land WITH the feature.** A change to the served surface updates server-config.md / server-api.md / cli.md / README
+  in the SAME commit.
+- **Separate concerns through interfaces.** Scheduling chooses work; inference methods advance it; model backends execute it;
+  the shared cache retains reusable state from both prefill and decode. RAM/SSD placement belongs to storage. Resolve
+  configuration once by concern. Preserve fused execution, buffer ownership and overlap; measure the complete request after
+  extraction. Reuse existing optimized kernels and keep developing faster specializations. Fuse work, remove operations and
+  avoid materialization where measurements support it. Keep scheduling changes separate from kernel experiments in A/Bs.
 
 ## Reference environment
 
-Machines, oracle venv pins, weight snapshot paths, HF/network quirks, and measured baselines live in **[docs/reference/environment.md](docs/reference/environment.md)**.
-Do not restate them here — a copy is a fork that rots. Two dev boxes exist and
-neither is canonical; every recorded number carries its host.
+Machines, oracle venv pins, weight paths, HF/network quirks and baselines live in **[environment.md](docs/reference/environment.md)**.
+Do not duplicate them here. Neither dev box is canonical; every recorded number carries its host.
 
 ## Testing strategy
 

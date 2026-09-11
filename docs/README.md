@@ -1,4 +1,54 @@
-# docs/ map (generated — do not edit; `bun scripts/check-hygiene.ts --write-docs-map`)
+# Documentation
+
+Generated index. Update with `bun scripts/check-hygiene.ts --write-docs-map`.
+
+## Start here
+
+- Run mlx-bun: [quickstart](../README.md#quickstart), [models](reference/models.md), [CLI](reference/cli.md), [troubleshooting](reference/troubleshooting.md).
+- Build an application: [TypeScript library](reference/library-api.md), [HTTP API](reference/server-api.md), [server configuration](reference/server-config.md).
+- Assess the results: [benchmarks and correctness evidence](reference/benchmarks.md).
+- Contribute: [contribution guide](../CONTRIBUTING.md), [engine architecture](design/unified-engine-frontier-plan.md), [current work](../PLAN.md).
+
+## docs/reference/
+
+User-facing reference — the ONLY home for flags, routes, models, numbers, and environment facts.
+
+- [benchmarks.md](../docs/reference/benchmarks.md) — mlx-bun benchmark results (curated)
+- [cli.md](../docs/reference/cli.md) — CLI reference
+- [distribution.md](../docs/reference/distribution.md) — Distributing mlx-bun — build, sign, notarize, publish
+- [environment.md](../docs/reference/environment.md) — Reference environment and platform facts
+- [glossary.md](../docs/reference/glossary.md) — mlx-bun serving
+- [library-api.md](../docs/reference/library-api.md) — Library API
+- [memory.md](../docs/reference/memory.md) — Memory — the personal wiki
+- [models.md](../docs/reference/models.md) — Models: supported roster + management (get / scan / ls / gc)
+- [server-api.md](../docs/reference/server-api.md) — Server API
+- [server-config.md](../docs/reference/server-config.md) — Server configuration
+- [training.md](../docs/reference/training.md) — Training / fine-tuning reference
+- [troubleshooting.md](../docs/reference/troubleshooting.md) — Troubleshooting
+
+## docs/design/
+
+Active engineering design docs — one per topic; status lives in front matter + PLAN.md.
+
+- [batching.md](../docs/design/batching.md) — Batching — continuous scheduling for `--batch N`
+- [decode-speed-program.md](../docs/design/decode-speed-program.md) — Inference performance program
+- [dreaming-nightly-pipeline.md](../docs/design/dreaming-nightly-pipeline.md) — The Dreaming — memory write path + synthesis (canonical design)
+- [generic-model-support.md](../docs/design/generic-model-support.md) — Model support — run anything mlx-lm runs, and the ports we target
+- [kv-cache.md](../docs/design/kv-cache.md) — KV cache — residency and layout
+- [orpo-training.md](../docs/design/orpo-training.md) — Training — design (ORPO, flash-CCE head, prefix sharing, segmented backward)
+- [speculative-decoding.md](../docs/design/speculative-decoding.md) — Speculative decoding — one verifier, every draft source
+- [turboquant.md](../docs/design/turboquant.md) — TurboQuant — rotation-based quantization (KV leg landed, weights leg open)
+- [unified-engine-frontier-plan.md](../docs/design/unified-engine-frontier-plan.md) — Engine architecture — four layers, per-scheme oracles, one request path
+- [web-chat-redesign.md](../docs/design/web-chat-redesign.md) — Web chat — the built-in chat surface (canonical design)
+
+## docs/planning/
+
+Living product/vision docs (USING side).
+
+- [PRODUCT_ROADMAP.md](../docs/planning/PRODUCT_ROADMAP.md) — PRODUCT ROADMAP
+- [ResearchTopics.md](../docs/planning/ResearchTopics.md) — Research Topics
+- [public-readiness.md](../docs/planning/public-readiness.md) — Preparing mlx-bun for the MLX community
+- [video-series.md](../docs/planning/video-series.md) — mlx-bun video series
 
 ## docs/archive/
 
@@ -52,43 +102,3 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 - [planning/release-notes-v0.4.0.md](../docs/archive/planning/release-notes-v0.4.0.md) — mlx-bun v0.4.0
 - [planning/web-ui-pass-plan.md](../docs/archive/planning/web-ui-pass-plan.md) — Web UI pass — ranked fix list (2026-07-01 audit)
 - [planning/website-readme-pass-plan.md](../docs/archive/planning/website-readme-pass-plan.md) — Website + README pass — audit findings and fix plan (2026-07-01)
-
-## docs/design/
-
-Active engineering design docs — one per topic; status lives in front matter + PLAN.md.
-
-- [batching.md](../docs/design/batching.md) — Batching — continuous scheduling for `--batch N`
-- [decode-speed-program.md](../docs/design/decode-speed-program.md) — Inference performance program
-- [dreaming-nightly-pipeline.md](../docs/design/dreaming-nightly-pipeline.md) — The Dreaming — memory write path + synthesis (canonical design)
-- [generic-model-support.md](../docs/design/generic-model-support.md) — Model support — run anything mlx-lm runs, and the ports we target
-- [kv-cache.md](../docs/design/kv-cache.md) — KV cache — residency and layout
-- [orpo-training.md](../docs/design/orpo-training.md) — Training — design (ORPO, flash-CCE head, prefix sharing, segmented backward)
-- [speculative-decoding.md](../docs/design/speculative-decoding.md) — Speculative decoding — one verifier, every draft source
-- [turboquant.md](../docs/design/turboquant.md) — TurboQuant — rotation-based quantization (KV leg landed, weights leg open)
-- [unified-engine-frontier-plan.md](../docs/design/unified-engine-frontier-plan.md) — Engine architecture — four layers, per-scheme oracles, one request path
-- [web-chat-redesign.md](../docs/design/web-chat-redesign.md) — Web chat — the built-in chat surface (canonical design)
-
-## docs/planning/
-
-Living product/vision docs (USING side).
-
-- [PRODUCT_ROADMAP.md](../docs/planning/PRODUCT_ROADMAP.md) — PRODUCT ROADMAP
-- [ResearchTopics.md](../docs/planning/ResearchTopics.md) — Research Topics
-- [video-series.md](../docs/planning/video-series.md) — mlx-bun video series
-
-## docs/reference/
-
-User-facing reference — the ONLY home for flags, routes, models, numbers, and environment facts.
-
-- [benchmarks.md](../docs/reference/benchmarks.md) — mlx-bun benchmark results (curated)
-- [cli.md](../docs/reference/cli.md) — CLI reference
-- [distribution.md](../docs/reference/distribution.md) — Distributing mlx-bun — build, sign, notarize, publish
-- [environment.md](../docs/reference/environment.md) — Reference environment and platform facts
-- [glossary.md](../docs/reference/glossary.md) — mlx-bun serving
-- [library-api.md](../docs/reference/library-api.md) — Library API
-- [memory.md](../docs/reference/memory.md) — Memory — the personal wiki
-- [models.md](../docs/reference/models.md) — Models: supported roster + management (get / scan / ls / gc)
-- [server-api.md](../docs/reference/server-api.md) — Server API
-- [server-config.md](../docs/reference/server-config.md) — Server configuration
-- [training.md](../docs/reference/training.md) — Training / fine-tuning reference
-- [troubleshooting.md](../docs/reference/troubleshooting.md) — Troubleshooting

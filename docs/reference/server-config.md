@@ -152,17 +152,18 @@ operation already running completes before that boundary.
 
 ### Adapters and speculative decoding
 
-In the current unreleased source, Qwen MTP publishes aligned target/draft
+In v0.4.0, Qwen MTP publishes aligned target/draft
 prefill snapshots through the shared prompt cache by default. The RAM budget
 includes the draft KV and pending hidden row; configured SSD persistence
 queues those tensors with the target state and supports reuse after restart.
 RAM hits retain immutable snapshots for later requests. Target, draft-weight,
 adapter-revision and KV-policy identities separate incompatible state.
 `usage.cached_tokens` reports the reused target prefix.
-`MLX_BUN_MTP_PROMPT_CACHE=0` disables this reuse. Generated-output snapshots
-remain unfinished.
+`MLX_BUN_MTP_PROMPT_CACHE=0` disables this reuse. Completed decode also
+publishes checkpoints for processed tokens through the same cache.
+Long-conversation performance acceptance remains open.
 
-In the current unreleased source, Qwen uniform affine KV4 with
+In v0.4.0, Qwen uniform affine KV4 with
 `quantizedKvStart=0` supports configured speculative execution by default.
 `MLX_BUN_QWEN_SPEC_KV4=0` restores the ordinary-decode compatibility control. Recurrent state and draft KV keep their original precision. Shared Qwen MTP
 also supports bf16, uniform KV8 and TurboQuant at start zero; per-layer mixed
@@ -376,7 +377,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | --- | --- | --- | --- |
 | `MLX_BUN_COMPILED_DECODE` | `--compiled-decode` | on (`"0"` disables) | Compiled decode graph replay (serial lane; batch lane at B=1). |
 | `MLX_BUN_EARLY_FIRST_TOKEN` | — | off (`=1`) | Serial/native generation yields token zero before constructing the next decode step. This can reduce first visible output latency when token zero contains visible text. Later decode remains pipelined. Serial fill, grammar, checkpoint resume and single-token budgets retain their existing order. When a native consumer stops at the first yield and retains caller-owned caches, a non-aborted return completes that token’s M=1 forward before returning the cache. This preserves the ordinary pipeline’s boundary for later prefix reuse. Aborted requests do not start another forward; caches owned and disposed by the generation need no alignment. Native M1 packed-Qwen/MiniCPM/Gemma continuation gates pass; M4 packed/affine and serving acceptance remain. The continuous scheduler also yields after preparation creates its first active row when no other request is queued, allowing prepared output to flush before decode. It then rechecks cancellation, admission and shutdown; queued short admissions still group together. The setting is captured by generation and the batch runtime. Experimental pending broader cached/pressure and quiet-machine acceptance. |
-| `MLX_BUN_TURBOQUANT_FUSED_DECODE` | — | off (`=1`) | Experimental packed K/V decode fusion for an existing `--kv-quant turbo:...` cache, captured when each cache is created. A shared Metal operation unpacks keys and values, applies the existing key zero/scale and Lloyd-Max value scale, and preserves the codec's eager or deferred inverse rotation. It accepts supported bit widths, head dimensions 64/128/256/512 and 32/64-element groups with fp16/bf16/f32 metadata. Eager k8v3 with B1/H4, head dimension 256, fp16 metadata, group32 and at least 8192 cached tokens also fuses inverse rotation; other shapes keep the existing rotation path. Unsupported inputs, CPU streams and shapeless traces retain ordinary operations. Quantization, stored cache format and serving eligibility are unchanged. Joint-decoder Qwen native/serial and repeated long-context HTTP gates pass. The inverse operation passes both integrated Qwen model gates and six HTTP pairs per quant. MiniCPM/Gemma deferred-consumer serving gates also pass. The unreleased shared codec/layout supports ordinary and supported drafting groups without changing this kernel selection. Gemma now owns pre-write row positions across cache appends; the fix passes native checks on both Macs. Combined settings, pressure and strict M4 Pro acceptance remain. |
+| `MLX_BUN_TURBOQUANT_FUSED_DECODE` | — | off (`=1`) | Experimental packed K/V decode fusion for an existing `--kv-quant turbo:...` cache, captured when each cache is created. A shared Metal operation unpacks keys and values, applies the existing key zero/scale and Lloyd-Max value scale, and preserves the codec's eager or deferred inverse rotation. It accepts supported bit widths, head dimensions 64/128/256/512 and 32/64-element groups with fp16/bf16/f32 metadata. Eager k8v3 with B1/H4, head dimension 256, fp16 metadata, group32 and at least 8192 cached tokens also fuses inverse rotation; other shapes keep the existing rotation path. Unsupported inputs, CPU streams and shapeless traces retain ordinary operations. Quantization, stored cache format and serving eligibility are unchanged. Joint-decoder Qwen native/serial and repeated long-context HTTP gates pass. The inverse operation passes both integrated Qwen model gates and six HTTP pairs per quant. MiniCPM/Gemma deferred-consumer serving gates also pass. The shared codec/layout supports ordinary and supported drafting groups without changing this kernel selection. Gemma now owns pre-write row positions across cache appends; the fix passes native checks on both Macs. Combined settings, pressure and strict M4 Pro acceptance remain. |
 | `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | follows `--kv-quant` | `=1` forces the stock unfused SDPA everywhere. |
 | `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`"0"` disables) | Gemma geglu via mlx-lm's `@mx.compile` closure. `=0` → uncompiled composition (same parity, slower). |
 | `MLX_BUN_COMPILED_SWIGLU` | `--compiled-activations` | on (`!== "0"`) | Compiled SwiGLU on MiniCPM5 decode and prefill, matching mlx-lm. An enclosing compiled graph owns its own fusion. qwen3/qwen3.5/universal compile unconditionally. |

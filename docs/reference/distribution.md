@@ -15,9 +15,33 @@ Three install channels ship from one release:
 | Direct download (`curl -fsSL https://mlx-bun.dev/install.sh \| sh`) | the same bundle, into `~/.mlx-bun` | one tarball, via curl |
 | npm / bunx (`bunx mlx-bun`, `bun install -g mlx-bun`) | a launcher + the TypeScript source, run under the user's Bun | the package, then the native runtime pack on first run |
 
-[docs/reference/distribution.md](./distribution.md) covers the *sidecar* use of the same bundle
-inside a Tauri/Electron app; the build and signing facts it relies on are
-documented here.
+The same bundle can run as a local worker inside a desktop application.
+See [Embedding in a desktop application](#embedding-in-a-desktop-application).
+
+## Embedding in a desktop application
+
+Include the complete release bundle in the application's resources and launch
+its executable by absolute path. Keep the native libraries, Metal library,
+helpers, and Pi assets together as listed below. Copying only the executable
+does not produce a self-contained installation.
+
+For a Bun host, the [library API](library-api.md) documents `openIsolatedHost`
+and its explicit executable command. A desktop host in another runtime can
+manage the worker process and use the [HTTP API](server-api.md). Keep transport
+and worker lifecycle in the application; request scheduling belongs to the
+engine. Stop the worker when the application no longer owns it.
+
+The model weights are separate from the executable bundle. Select an existing
+artifact or use the [model download commands](models.md) before starting the
+worker with that model. Follow the documented cache-location settings when
+the application manages its own storage.
+
+Repackaging within an application requires that application's signing and
+notarization workflow. The executable's hardened-runtime entitlements and
+native signing requirements are documented below. Include the third-party
+attributions with the distributed application. Test the installed application
+bundle, including worker launch and runtime assets, rather than relying only
+on a source-checkout run.
 
 ## What ships in the bundle
 

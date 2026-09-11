@@ -1,30 +1,35 @@
 ---
 title: Correctness
-description: Bit-exact logit parity with the Python reference is the project's oracle.
+description: Numerical contracts, reference implementations, and their limits.
 ---
 
-Logit parity with mlx-lm (same weights, Python reference) is the project's
-**oracle**. The test suite holds the forward pass **bit-exact** against it —
-including every quantized-KV configuration (kv8, kv4, and the 26B's mixed
-per-layer scheme) and the fused quantized-attention prefill, which is bit-exact
-against optiq's reference implementation.
+mlx-bun compares forward-pass logits with pinned reference implementations.
+The comparison uses matching weights, cache state, execution shape, and
+numerical settings. The [benchmark ledger](/reference/benchmarks/) records
+which checks ran and where differences remain.
 
-Every ported helper follows the reference implementation's exact op composition,
-down to constants built at load time. The one latent divergence ever found —
-rope frequencies computed host-side instead of on-device — was root-caused and
-fixed (see the findings log in
-[PLAN.md](https://github.com/joshuarossi/mlx-bun/blob/main/PLAN.md)). Golden
-files are regenerated only by explicit scripts running the Python oracle.
+The project distinguishes three contracts:
 
-```sh
-bun test    # fast tier runs everywhere; model-loaded tests auto-skip
-            # unless the reference snapshot is in your HF cache
-```
+- L1 uses mlx-lm as the oracle for supported matching computations, including
+  its uniform affine KV quantization scheme.
+- L2 uses mlx-optiq for supported extensions such as per-layer mixed KV.
+- Lab methods without an external oracle require their own quality and
+  performance evidence. They do not inherit a bit-exact claim from L1 or L2.
 
-## Why this matters
+Oracle fixtures come from explicit reference runs. Tests compare against
+those fixtures; model output is not used to manufacture its own expected
+answer. Machine-specific fixtures account for native kernel differences.
+The [contribution guide](https://github.com/joshuarossi/mlx-bun/blob/main/CONTRIBUTING.md)
+explains how to run the relevant test tiers.
 
-A local model is only useful if it produces the *same* outputs as the reference
-implementation it claims to run. "Close enough" quantization or a subtly
-different attention kernel can silently change behavior — wrong tool calls,
-drifting reasoning, different refusals. Holding the forward pass bit-exact means
-mlx-bun's outputs are the reference's outputs, not an approximation of them.
+## What parity establishes
+
+Bit-exact logits establish numerical agreement for the computation tested.
+They do not guarantee identical full responses across different batching
+shapes, sampling policies, or cache schemes. They also do not establish the
+truth of a model's answer or rule out hallucinations.
+
+Server behavior defaults are a separate choice. Consult
+[server configuration](/reference/server-config/) for compatibility settings,
+and the [model roster](/reference/models/) for supported combinations and
+modality-specific limits.

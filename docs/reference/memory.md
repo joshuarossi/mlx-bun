@@ -254,7 +254,7 @@ routes never touch the agent-tool surface above.
 
 ## Related
 
-- [cli.md](cli.md#memory--the-personal-wiki) — the `memory` command in the full CLI reference.
+- [cli.md](cli.md#memory-alias-setup--the-personal-wiki) — the `memory` command in the full CLI reference.
 - [server-api.md](server-api.md#get-apimemory--post-apimemoryinit) — `/api/memory/*` wire format.
 - [dreaming-nightly-pipeline.md](../design/dreaming-nightly-pipeline.md) — the canonical pipeline design.
 - [docs/design/dreaming-nightly-pipeline.md](../design/dreaming-nightly-pipeline.md), [docs/design/dreaming-nightly-pipeline.md](../design/dreaming-nightly-pipeline.md) — synthesis internals and the local inference path.
