@@ -1,0 +1,15 @@
+name: Feature or design proposal
+description: Describe a use case or propose an improvement.
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task and where the current behavior gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested change
+      description: An API example, workflow, or alternative is useful if you have one.

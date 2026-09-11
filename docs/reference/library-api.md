@@ -14,10 +14,13 @@ everything else under `src/` is internal and may change without notice.
 Every export is documented below, grouped the way `src/index.ts` groups
 them.
 
-One rule everywhere: **one generation at a time per process** (one GPU).
-The server serializes through a queue (or, under `--batch N`, its
-continuous scheduler — a server scheduling mechanism, not a library
-surface); direct library callers must do the same.
+The server uses continuous batching by default for eligible requests.
+Its scheduler coordinates work on shared model resources, including a single
+active request. Direct callers of `generate` must coordinate access to the
+same model and mutable state; launching independent generators does not
+automatically create a batch. Use the serving integration for its scheduling
+and request preparation, or compose the engine with explicit execution ports.
+See [server configuration](server-config.md) for supported combinations.
 
 ## Export map
 

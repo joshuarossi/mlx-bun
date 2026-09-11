@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible problem with mlx-bun.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include the command or a small request/code example and relevant settings.
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Mac, memory, and macOS version
+      placeholder: M4 Pro, 24 GB unified memory, macOS version
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: mlx-bun version and installation method
+      description: Use mlx-bun --version. State Homebrew, direct download, bunx/npm, or source; include the commit for source builds.
+    validations:
+      required: true
+  - type: input
+    id: bun
+    attributes:
+      label: Bun version, if using bunx/npm or source
+      description: Use bun --version. Standalone executable users can leave this blank.
+  - type: textarea
+    id: model
+    attributes:
+      label: Model artifact and quantization
+      description: Include the exact repository/revision or local artifact name, weight format, and KV-cache settings if the issue involves a model.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Paste the relevant error or logs. Remove credentials and private prompt content before posting.
+      render: text

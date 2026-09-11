@@ -7,11 +7,14 @@
 //   <goldenOutDir>/minicpm5-parity.json
 //   <goldenOutDir>/minicpm5-logits-step<i>.bin
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { goldenOutDir } from "../../tests/support/goldens";
 import { ORACLE_PYTHON, SNAPSHOT_MINICPM5 } from "../../tests/support/paths";
 
 const OUT = goldenOutDir();
+for (const file of [ORACLE_PYTHON, `${SNAPSHOT_MINICPM5}/config.json`, `${SNAPSHOT_MINICPM5}/model.safetensors.index.json`]) {
+  if (!existsSync(file)) throw new Error(`Missing MiniCPM5 comparison input: ${file}. See docs/reference/environment.md#reproduce-the-minicpm5-logit-comparison`);
+}
 mkdirSync(OUT, { recursive: true });
 
 const PROMPT = "The capital of France is";
@@ -43,6 +46,10 @@ for step in range(max_tokens):
     greedy.append(tok)
     y = mx.array([[tok]])
 
+def file_hash(path):
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
 out = {
     "model": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
     "snapshot": snap,
@@ -52,10 +59,18 @@ out = {
     "logit_steps": logit_steps,
     "vocab_size": int(last.shape[0]),
     "oracle": {
+        "python": sys.version.split()[0],
         "mlx": mx.__version__,
+        "mlx_metal": importlib.metadata.version("mlx-metal"),
+        "mlx_metal_wheel": json.loads(importlib.metadata.distribution("mlx-metal").read_text("direct_url.json") or "null"),
         "mlx_lm": importlib.metadata.version("mlx-lm"),
         "device": mx.device_info(),
         "config_sha256": hashlib.sha256(Path(snap, "config.json").read_bytes()).hexdigest(),
+        "model_files_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(Path(snap).iterdir())
+            if p.suffix in (".json", ".jinja")},
+        "weights_sha256": {p.name: file_hash(p)
+            for p in sorted(Path(snap).glob("*.safetensors"))},
         "blobs": {f"minicpm5-logits-step{i}.bin": hashlib.sha256(
             Path(outdir, f"minicpm5-logits-step{i}.bin").read_bytes()).hexdigest()
             for i in range(logit_steps)},
@@ -74,5 +89,8 @@ const [out, err, code] = await Promise.all([
   proc.exited,
 ]);
 if (code !== 0) throw new Error(`MiniCPM5 oracle failed (${code}):\n${err}`);
-await Bun.write(`${OUT}/minicpm5-parity.json`, JSON.stringify(JSON.parse(out), null, 1));
+const manifest = JSON.parse(out);
+manifest.oracle.requirements_sha256 = new Bun.CryptoHasher("sha256")
+  .update(await Bun.file(new URL("../oracle/requirements.lock", import.meta.url)).arrayBuffer()).digest("hex");
+await Bun.write(`${OUT}/minicpm5-parity.json`, JSON.stringify(manifest, null, 1));
 console.log(`wrote ${OUT}/minicpm5-parity.json + minicpm5-logits-step*.bin`);

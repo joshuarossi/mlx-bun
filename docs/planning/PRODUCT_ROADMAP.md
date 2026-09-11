@@ -65,12 +65,11 @@ disclosure: appliance defaults at the front, sharp instruments underneath.
 
 ## The three modes (the organizing design law)
 
-mlx-bun has not published anything: the entire CLI, command, and flag
-surface is still ours to invent, and we are not married to any flag
-name. Where a de-facto standard name exists (mlx-lm's), we adopt it
-rather than reinvent. The surface is designed once, to serve three
-audiences at three depths — progressive disclosure over ONE set of
-verbs and one flag vocabulary, not three separate CLIs:
+mlx-bun is published. Existing commands, flags, and package exports are
+compatibility commitments; changes need documented migration behavior.
+Where an mlx-lm flag has matching semantics, prefer its established name.
+The CLI serves three audiences through one set of verbs, with more explicit
+configuration available as users need it:
 
 1. **Automatic mode** — first-time local-AI users. `mlx-bun` (and bare
    verbs) with zero flags. Smart, sane defaults from the device-profile

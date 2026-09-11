@@ -1,9 +1,8 @@
 # Reference environment and platform facts
 
-The canonical home for the oracle setup and the hard-won platform facts that
-agents and contributors need. CLAUDE.md points here; do not duplicate these
-facts elsewhere. Each fact is one paragraph with the evidence path that proves
-it — when you change the code, update the paragraph.
+Oracle configuration, native-runtime compatibility, and machine conditions
+for reproducing numerical and performance checks. Historical environment
+records below identify the versions used for their original comparisons.
 
 User-facing symptoms live in [troubleshooting.md](./troubleshooting.md).
 
@@ -21,8 +20,8 @@ Before asserting anything about RAM, OOM, or bandwidth, run
 reference `serve.sh` (below) hard-codes a 28 GB wired limit "of 32 GB", so it
 is written for the M1 Max.
 
-For the current M4 Pro optimization campaign, Josh specifies internal SSD
-storage for active models. The external SSD stores artifacts to copy when
+The M4 Pro optimization measurements use internal SSD storage for active
+models. The external SSD stores artifacts to copy when
 needed; external-drive loading performance is outside normal acceptance for
 the 12–17 GB models. Stage each needed artifact under `~/models/`, verify
 every file against its archive, and record that path in both benchmark arms.
@@ -34,7 +33,7 @@ user-local eval DB (`~/.cache/mlx-bun/evals.sqlite`) and promoted to
 `docs/reference/benchmarks.md` deliberately. `bun scripts/bench-serve.ts all`
 is the benchmark harness; it writes Markdown and raw JSON under `reports/`
 as gitignored outputs. Numbers on a loaded machine are
-garbage — run-to-run spread is the stability signal, and the harness retries
+diagnostic; run-to-run spread is the stability signal, and the harness retries
 unstable cells (`scripts/bench-serve.ts`; `benchmarks.md`, "Running the
 benchmark").
 
@@ -65,6 +64,65 @@ loading change is not integrated, and further external-drive tuning is
 deferred under the active-storage policy above. Evidence under `reports/qwen38-rd/`:
 `fill-append-http-final-partial-review.json`, `rtn4-storage-control-manifest.json`,
 `fill-append-storage-control-review.json` and `weights-loading-http.json`.
+
+## Reproduce the MiniCPM5 logit comparison
+
+From an Apple Silicon Mac running macOS 14 or later, install Bun 1.4.2 or
+newer and [uv](https://docs.astral.sh/uv/getting-started/installation/), then
+run these commands from a checkout of this repository:
+
+```sh
+bun install --frozen-lockfile && \
+  oracle_env="$(bash scripts/oracle/setup.sh)" && \
+  eval "$oracle_env" && \
+  bash scripts/oracle/compare-minicpm5.sh --download
+```
+
+The setup script creates an external Python 3.13.5 environment, installs the
+complete [reference lock](../../scripts/oracle/requirements.lock), checks its
+dependencies, and prints the `MLX_BUN_ORACLE_VENV` export. Its default location
+is `~/.cache/mlx-bun/oracle-mlx-0.32.2-py3.13.5`. Pass a directory to `setup.sh`
+to choose another location. Re-running it synchronizes that environment to
+the lock, removing packages outside the pinned set. It does not install model
+weights or run inference.
+
+The lock pins MLX 0.32.2, mlx-lm 0.31.3, mlx-optiq 0.2.7 and their installed
+dependencies. MLX-Metal uses the explicit macOS 14 wheel and SHA-256 from
+[the upstream release](https://pypi.org/project/mlx-metal/0.32.2/#files),
+matching native pack 0.4.0. Selecting only a package version could install a
+different Metal build on newer macOS releases.
+
+The comparison script downloads `mlx-community/MiniCPM5-1B-OptiQ-4bit` at
+revision `664aabaed233c653f82716d8dc822234d0091f78` when `--download` is supplied.
+Omit the flag to require a cached snapshot. Hugging Face cache environment
+settings are respected. Set `MLX_BUN_TEST_MINICPM5` to use an existing model
+directory instead; its config and weight hashes are recorded in the output.
+
+Each run creates a fresh fixture directory under
+`~/.cache/mlx-bun/comparisons/`, invokes the Python oracle through
+`scripts/regen/minicpm5.ts`, then runs
+`bun test tests/parity/minicpm5-parity.test.ts`. `MLX_BUN_GOLDEN_DIR` selects
+that directory for both generation and comparison, with no fallback to older
+fixtures. The manifest records the prompt, token IDs, Python/MLX/Metal/mlx-lm
+versions, device, model hashes, lock hash and per-vector hashes. The command
+prints the output directory and elapsed comparison time. Missing inputs,
+failed generation or mismatched logits produce a nonzero exit; skipped tests
+are not the acceptance result.
+
+This test compares the complete vocabulary logit vector before sampling at
+100 steps, plus all 100 greedy token IDs. It uses bf16 KV, one short prompt
+and single-row model forwards. It does not establish sampling-policy parity,
+batched scheduling correctness, mixed-KV parity or server performance. The
+[benchmark reference](benchmarks.md) links the separate
+coverage for those configurations.
+
+Fixtures must be generated on the comparison machine. The usual golden
+resolver selects `goldens/<machine-key>/` overrides; the reference machine
+uses the root `goldens/` directory. Metal kernels can differ across GPU
+families and runtime builds. In particular, the fast-SDPA dispatch boundary
+at sequence length L ≥ 16 can change floating-point operation order. This
+short-prompt recipe does not test that prefill boundary. Longer-prefill and
+batched comparisons need their corresponding same-machine oracle cases.
 
 ## The Python oracle
 
@@ -101,7 +159,7 @@ Qwen artifacts are also present under
 `/Volumes/MLX-Models/models/{Qwen,mjriii}/`; header-only inventories under
 `reports/qwen38-rd/` are machine-local and do not load the GPU.
 
-**Authorized M4 Pro runtime update, staged 2026-09-07:** MLX 0.32.2 with
+**M4 Pro runtime update, staged 2026-09-07:** MLX 0.32.2 with
 MLX-C `c74db5307cc8ce122f48d97ef951b30578674e7f` is built under
 `reports/qwen38-rd/mlx-upgrade-0.32.2/install/lib/`. Explicit
 `MLX_BUN_LIBMLXC=<that-directory>/libmlxc.dylib` selects it per process.

@@ -1,34 +1,37 @@
 ---
 title: Why mlx-bun
-description: Why rewrite the MLX serving layer in Bun instead of shelling out to Python.
+description: Local MLX inference inside a TypeScript application.
 ---
 
-MLX is Apple's ML framework: hand-tuned Metal kernels for Apple Silicon, with
-official bindings for Python, C++, Swift, and C — but **no JavaScript story**.
-Today, a JS/TS app that wants local MLX inference must shell out to a Python
-server (mlx-lm, optiq) and accept that stack's fragility: venv setup, brittle
-download tooling, segfaults on exit, monkey-patched HTTP layers.
+mlx-bun lets a TypeScript application run MLX inference in a Bun process.
+It uses MLX's C API through `bun:ffi`, so the application can load a model,
+generate tokens, and serve requests without a separate Python service.
 
-## The performance-neutral layer
+[MLX](https://github.com/ml-explore/mlx),
+[mlx-c](https://github.com/ml-explore/mlx-c), and
+[mlx-lm](https://github.com/ml-explore/mlx-lm) make this possible. mlx-lm
+and mlx-optiq also provide the reference implementations used in the
+project's numerical tests.
 
-The performance-critical work — every matmul, every attention pass — lives in
-MLX's C++/Metal core and is exposed through `mlx-c`. The Python layer on top is
-**pure orchestration**: model loading, tokenization, the sampling loop, serving.
-That layer is performance-neutral (the GPU dominates), so it can be rewritten in
-any runtime without losing speed.
+## Why Bun
 
-## Why Bun specifically
+Bun supplies the runtime, FFI, package manager, and test runner. Its native
+image codecs support the vision input path, and built-in SQLite supports
+the registry and evaluation database. The CLI can ship with Bun and the MLX
+runtime in a signed, notarized bundle.
 
-- **`bun:ffi`** — the lowest-overhead FFI of any JS runtime; binds `mlx-c`
-  directly, no node-gyp, no binding compilation.
-- **Lazy native weight loading** — MLX's loader materializes tensors on first
-  use, so opening an 8.9 GB model takes milliseconds, and warm restarts are
-  near-instant on cached pages.
-- **`Bun.Image`** — native OS image codecs (HEIC, AVIF, WebP, JPEG, …) for the
-  vision path, EXIF auto-orientation included.
-- **`bun:sqlite`** — built-in storage for the model registry and eval DB.
-- **One binary, one toolchain** — runtime, package manager, test runner.
+For application developers, the useful choice is how to integrate: call the
+[TypeScript library](/guides/library/) in-process, embed the executable as a
+local worker, or use the [HTTP API](/reference/server-api/) from another runtime.
 
-The result is a single binary with no Python anywhere — and, served over HTTP,
-[the fastest startup and TTFT of any stack tested](/about/benchmarks/), with
-[bit-exact correctness](/about/correctness/) against the Python reference.
+## Where performance comes from
+
+Native kernels do the tensor computation. Model execution, scheduling,
+sampling, and cache reuse determine how much work reaches those kernels
+and when. Those decisions affect latency, memory use, and throughput.
+
+mlx-bun develops specialized kernels and shared execution interfaces so each
+part can improve independently. The [benchmark ledger](/reference/benchmarks/)
+records the measured results and regressions. The
+[correctness contract](/about/correctness/) defines the comparisons those
+optimizations must preserve.

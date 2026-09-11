@@ -2,6 +2,10 @@
 
 Bit-exact oracle fixtures for the parity gates (L1 = mlx-lm, L2 = optiq).
 
+For the complete MiniCPM5 workflow, use the [pinned setup and comparison
+recipe](../docs/reference/environment.md#reproduce-the-minicpm5-logit-comparison).
+It writes fresh external fixtures and fails on missing inputs.
+
 **Two kinds, two policies:**
 
 - **`.json` manifests — tracked.** Machine-independent or cheap: prompts,
@@ -14,19 +18,20 @@ Bit-exact oracle fixtures for the parity gates (L1 = mlx-lm, L2 = optiq).
   2026-07-02). They are MACHINE-SPECIFIC (metallibs diverge across chips at
   the fast-SDPA dispatch boundary — see PLAN.md "goldens are
   machine-specific") and fully regenerable: each family has a
-  `scripts/regen-*.ts` generator that drives the oracle venv
-  (`/Users/joshrossi/Code/mlx-lm/.venv`). Tracking them put ~180 MB of
-  superseded blobs into git history. Tests gate on FILE PRESENCE (they skip
-  when a fixture is absent), so a fresh clone runs the model-free suite
-  untouched and grows its local fixtures by running the regen scripts.
+  `scripts/regen/` generator that drives the oracle selected through
+  `MLX_BUN_ORACLE_VENV`. Tracking them put ~180 MB of
+  superseded blobs into git history. Most gated tests skip when fixtures are absent. The explicit MiniCPM5
+  comparison fails instead, so missing inputs cannot look like a passing
+  comparison. The model-free suite needs no downloaded weights or goldens.
 
 **Layout** (`tests/support/goldens.ts` resolution): `goldens/<name>` is the
 reference set (the `REFERENCE_MACHINE` box, apple-m4-pro);
 `goldens/<machine-key>/<name>` overrides per machine (e.g. `apple-m1-max/`).
 
-**Regenerating on a new machine:** run the relevant `scripts/regen-*.ts`
-(each documents its oracle invocation), or the family's
-`scripts/gen-*-golden.py` under the oracle venv for batched/dynamic oracles.
+**Regenerating on a new machine:** use `bun scripts/regen.ts --help` for
+family commands, or the generators under `scripts/oracle/` for batched and
+dynamic oracles. `MLX_BUN_GOLDEN_DIR` selects an isolated directory for reads
+and writes, without fallback to the reference set.
 
 History note: `.bin` blobs committed before 2026-07-02 still occupy ~179 MB
 of git history; reclaiming that requires a one-time history rewrite

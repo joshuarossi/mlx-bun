@@ -1,5 +1,41 @@
 # Contributing / repo rules
 
+## Getting started
+
+Use an Apple Silicon Mac for native inference work. Start with the toolchain
+and setup in [distribution](docs/reference/distribution.md) and the pinned
+oracle instructions in [environment](docs/reference/environment.md) when a
+change needs numerical comparison.
+
+```sh
+bun install
+bun run typecheck
+bun test tests/unit tests/serve tests/using
+```
+
+The model-free tests do not require model downloads. For a small change, run
+the relevant tests first. Before submitting, run the repository hygiene gate
+and the checks appropriate to the change, as described below. Native tests
+need the matching artifacts and run separately.
+
+For a bug report, include a minimal reproduction, exact model artifact and
+settings, and the requested machine/version details in the issue form.
+For a substantial API or package change, open an issue describing the use
+case before investing in the implementation. A pull request should explain
+the resulting behavior and the checks you ran. Performance changes need a
+comparison with the same workload and settings.
+
+The [engine architecture](docs/design/unified-engine-frontier-plan.md#12-interface-based-engine-refactor)
+explains ownership and interfaces. [PLAN.md](PLAN.md) tracks open work;
+[STATUS.md](STATUS.md) identifies the active work. Public imports and their
+compatibility contract live in the [library API](docs/reference/library-api.md).
+
+For a reproducible small-model correctness check, follow the
+[MiniCPM5 oracle setup and comparison](docs/reference/environment.md#reproduce-the-minicpm5-logit-comparison).
+It installs the pinned reference and generates fresh local fixtures.
+
+## Repository scope
+
 mlx-bun is a **software project** — a tool. The repository holds the tool:
 source, tests, scripts, user-facing docs, and small tracked fixtures.
 It does not hold the tool's *outputs*. The reference for what a clean

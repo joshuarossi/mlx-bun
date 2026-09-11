@@ -44,6 +44,10 @@ function equalBytes(a: MlxArray, b: MlxArray): void {
   finally { ac.dispose(); bc.dispose(); }
 }
 
+// These matrices evaluate many Metal kernel variants. The macOS CI runner
+// took 4.2s and 5.6s respectively; allow compilation and runner variability.
+const MATRIX_TIMEOUT_MS = 30_000;
+
 test("packed KV fusion preserves every served bit combination on strided cache windows", () => {
   for (const kb of [2, 4, 5, 8]) for (const vb of [2, 3, 4, 5, 8]) {
     const f = fixture(256, kb, vb);
@@ -57,7 +61,7 @@ test("packed KV fusion preserves every served bit combination on strided cache w
       for (const a of f.inputs) expect(() => a.handle).not.toThrow();
     } finally { f.dispose(); }
   }
-});
+}, MATRIX_TIMEOUT_MS);
 
 test("packed KV fusion preserves head dimensions, independent groups, dtypes and nonfinite codec values", () => {
   for (const dim of [64, 128, 256, 512]) for (const dtype of [Dtype.float16, Dtype.bfloat16, Dtype.float32])
@@ -71,7 +75,7 @@ test("packed KV fusion preserves head dimensions, independent groups, dtypes and
         }
       } finally { f.dispose(); }
     }
-});
+}, MATRIX_TIMEOUT_MS);
 
 test("packed KV eligibility delegates unsupported streams, shapes, formats and empty windows", () => {
   const f = fixture(256, 8, 3);

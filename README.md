@@ -1,23 +1,27 @@
 # mlx-bun
 
-A Bun/TypeScript native inference engine and OpenAI-compatible HTTP server
-for MLX on Apple Silicon — no Python, no sidecar process. `mlx-bun serve` is
-a drop-in for `mlx_lm.server` (same port, endpoints, request fields, and
-flags); the correctness contract is logit parity with mlx-lm as the oracle,
-verified bit-exact by the test suite. Ships as one signed, notarized binary,
-plus a library-first TypeScript API for embedding generation directly in
-Bun, Tauri, or Electron apps.
+MLX inference as a TypeScript/Bun library, with a signed executable serving
+OpenAI/Anthropic-compatible APIs on Apple Silicon. Embed generation in a Bun
+application or run the local server and browser chat app. The numerical tests
+compare logits bit-for-bit with mlx-lm for validated configurations.
 
 Docs: **[mlx-bun.dev](https://mlx-bun.dev)**
 
 ## Scope
 
-Apple Silicon only — MLX is a Metal framework, so this runs on macOS on M-series
-chips by design, nothing else. Serving is single-user: one process serves one
-loaded model to one caller at a time (`--isolate --model-pool N` pools
-multiple single-model children behind a router; it isn't a multi-tenant
-scheduler). Model support is a curated, oracle-backed list, not a generic
-"any HF repo" loader — see the roster for what's validated.
+The engine requires an **Apple Silicon Mac running macOS 14 or later**.
+The standalone executable includes its runtime; npm and source usage require
+Bun. Node.js, Linux, and Windows cannot run the native engine.
+
+The server uses continuous batching by default. Eligible requests share the
+execution engine, including when only one request is active. Supported
+combinations and the explicit serial option are documented in
+[server configuration](./docs/reference/server-config.md).
+
+Use the [supported model roster](./docs/reference/models.md) to choose an
+artifact. Model architecture, weight format, and cache scheme determine
+compatibility. Arbitrary Hugging Face repositories and GGUF files are not
+automatically supported.
 
 ## Install
 
@@ -38,17 +42,24 @@ git clone https://github.com/joshuarossi/mlx-bun.git && cd mlx-bun
 bun install && bun run link-cli
 ```
 
-Every channel builds from the same bundle. Details, signing, and the native
-runtime resolution order: [docs/reference/distribution.md](./docs/reference/distribution.md).
+Homebrew and direct download install the same self-contained bundle. npm
+ships a launcher and TypeScript source, then fetches the native runtime pack
+on first use. See [distribution](./docs/reference/distribution.md) for details.
 
 ## Quickstart
 
-Bare `mlx-bun` aliases to `mlx-bun serve`; with no model named it downloads a
-sub-GB starter and opens a chat UI. To pick a model explicitly:
+Start the server and open the chat UI. With no model selected, the first run
+downloads a starter model:
 
 ```sh
-mlx-bun serve e4b --port 8080
+mlx-bun serve --port 8080
 ```
+
+Use `mlx-bun ls` to see downloaded models. For example, after downloading a
+matching model, `mlx-bun serve e4b` selects it by name. Model selection and
+downloads are documented in the [CLI reference](./docs/reference/cli.md).
+
+Send a request from the terminal:
 
 ```sh
 curl http://localhost:8080/v1/chat/completions \
@@ -69,13 +80,22 @@ Longer walkthroughs on the site:
 [Installation](https://mlx-bun.dev/getting-started/installation/) and
 [Quickstart](https://mlx-bun.dev/getting-started/quickstart/).
 
-## Reference docs
+## Find your way around
 
-Each fact about the project has exactly one home:
+- **Use the app or server:** start above, then consult the
+  [CLI](./docs/reference/cli.md), [models](./docs/reference/models.md), or
+  [troubleshooting](./docs/reference/troubleshooting.md).
+- **Build an application:** the [library API](./docs/reference/library-api.md)
+  documents in-process Bun integration and isolated hosts for desktop apps.
+  The [HTTP API](./docs/reference/server-api.md) works with other runtimes.
+- **Evaluate or contribute:** read the [benchmark evidence](./docs/reference/benchmarks.md)
+  and [contribution guide](./CONTRIBUTING.md). The [docs index](./docs/README.md)
+  separates reference material, active design, and history.
+
+Each reference topic has one home:
 
 | Topic | Doc |
 |---|---|
-| Current state, what's next | [STATUS.md](./STATUS.md) |
 | Benchmark numbers (parity / performance / quality) | [docs/reference/benchmarks.md](./docs/reference/benchmarks.md) |
 | Supported models roster | [docs/reference/models.md](./docs/reference/models.md) |
 | Server start flags, `MLX_BUN_*` env, defaults | [docs/reference/server-config.md](./docs/reference/server-config.md) |
@@ -90,20 +110,25 @@ Each fact about the project has exactly one home:
 | Active engineering design docs | [docs/design/](./docs/README.md) |
 | Contributing / repo rules | [CONTRIBUTING.md](./CONTRIBUTING.md) |
 
-Correctness is verified bit-exact against the Python mlx-lm reference as the
-project's oracle: [benchmarks.md § Parity](./docs/reference/benchmarks.md#1-parity-porting-correctness--bit-exact-vs-the-oracle).
+The numerical contract distinguishes stock mlx-lm parity, mlx-optiq parity
+for supported extensions, and experimental methods. Tests compare logits
+against pinned oracles under matching conditions; batching and sampling can
+change generated trajectories. See the evidence and limits in
+[benchmarks.md](./docs/reference/benchmarks.md#1-parity-porting-correctness--bit-exact-vs-the-oracle).
+Server policy defaults are documented separately in
+[server configuration](./docs/reference/server-config.md).
 
 ## Why
 
-MLX is Apple's ML framework — hand-tuned Metal kernels with official
-bindings for Python, C++, Swift, and C, but no JavaScript story. The
-performance-critical work (every matmul, every attention pass) lives in
-MLX's C++/Metal core, exposed through `mlx-c`; the layer on top — model
-loading, tokenization, sampling, serving — is pure orchestration and
-performance-neutral, so it can move to a better runtime without losing
-speed. Bun fits: `bun:ffi` binds `mlx-c` directly with no node-gyp step,
-`Bun.Image` gives native OS image codecs for vision input, and the result
-ships as one binary with no Python venv.
+mlx-bun brings MLX inference into a TypeScript application without a Python
+service. Bun's FFI calls `mlx-c` directly. Model implementations, scheduling,
+sampling, and reusable cache state live in the same process.
+
+Performance depends on both native kernels and how the engine uses them.
+The project develops specialized kernels, avoids repeated computation, and
+measures complete requests as well as decode throughput. The
+[benchmark ledger](./docs/reference/benchmarks.md) records the machines,
+settings, comparisons, and remaining regressions.
 
 ## License
 

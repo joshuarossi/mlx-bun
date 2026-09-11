@@ -28,7 +28,11 @@ describe("MiniCPM5 greedy decode parity", async () => {
       prompt_ids: number[];
       greedy_ids: number[];
       logit_steps: number;
+      vocab_size: number;
     };
+    expect(golden.logit_steps).toBe(STEPS);
+    expect(golden.greedy_ids.length).toBe(STEPS);
+    expect(golden.prompt_ids.length).toBeGreaterThan(0);
     let t = performance.now();
     const config = await loadModelConfig(SNAPSHOT_MINICPM5);
     const weights = await Weights.open(SNAPSHOT_MINICPM5);
@@ -51,6 +55,8 @@ describe("MiniCPM5 greedy decode parity", async () => {
           const ref = new Float32Array(
             await goldenAt(`minicpm5-logits-step${step}.bin`).arrayBuffer(),
           );
+          expect(ref.length).toBe(golden.vocab_size);
+          expect(ours.length).toBe(ref.length);
           let maxDiff = 0;
           for (let i = 0; i < ref.length; i++)
             maxDiff = Math.max(maxDiff, Math.abs(ours[i]! - ref[i]!));

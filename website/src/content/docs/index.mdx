@@ -11,9 +11,9 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
 <section class="mlx-hero">
   <div class="mlx-hero-copy">
     <p class="mlx-eyebrow">Local LLMs on Apple Silicon · No Python</p>
-    <h1>Run a model on your Mac.<br/><span class="grad g-hero">One command.</span></h1>
-    <p class="mlx-lede">A local LLM server and TypeScript library built on MLX — OpenAI- and Anthropic-compatible, bit-exact to the Python reference, shipped as a single signed binary.</p>
-    <div class="mlx-cmd"><code>curl -fsSL mlx-bun.dev/install.sh | sh</code></div>
+    <h1>MLX inference.<br/><span class="grad g-hero">In TypeScript.</span></h1>
+    <p class="mlx-lede">A TypeScript/Bun library for local MLX inference, with a signed executable serving OpenAI/Anthropic-compatible APIs. Bit-exact logit tests against mlx-lm for validated configurations.</p>
+    <div class="mlx-cmd"><code>curl -fsSL https://mlx-bun.dev/install.sh | sh</code></div>
     <p class="mlx-altruns">or <code>brew install joshuarossi/tap/mlx-bun</code> · <code>bunx mlx-bun</code> · <a href="/getting-started/installation/">from source →</a></p>
   </div>
 
@@ -21,12 +21,12 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
     <div class="mlx-term-bar"><i></i><i></i><i></i><b>mlx-bun — zsh</b></div>
     <div class="mlx-term-body">
       <div><span class="p">$</span> mlx-bun</div>
-      <div class="s">↓ MLX runtime ready · MiniCPM5-1B</div>
+      <div class="s">↓ First-run starter · MiniCPM5-1B</div>
       <div class="s">↻ serving on http://localhost:8080</div>
       <div class="s">↗ opening /#/chat</div>
       <div class="spacer"></div>
       <div class="u">› what runs on my machine here?</div>
-      <div class="r">All of it. The model runs on your Mac's GPU via Metal — no API key, no Python, nothing leaves the laptop.<span class="cur"></span></div>
+      <div class="r">The model runs on your Mac's GPU through MLX and Metal. Local inference needs no hosted-model API key or Python service.<span class="cur"></span></div>
     </div>
   </div>
 </section>
@@ -35,65 +35,43 @@ import { LinkCard, CardGrid } from '@astrojs/starlight/components';
   <span class="k">bit-exact</span>
   <span><span class="k">mlx-bun</span> <span class="eq">≡</span> mlx-lm <span class="note">(bf16 KV)</span></span>
   <span><span class="k">mlx-bun</span> <span class="eq">≡</span> mlx-optiq <span class="note">(mixed-precision KV)</span></span>
-  <span class="note">— matched mode for mode, not "close"</span>
+  <a class="note" href="/about/correctness/">Numerical contracts and tested scope →</a>
 </div>
 
-## Why it's different
+## Build with it
 
 <div class="mlx-features">
   <div class="mlx-feature">
-    <p class="lbl">Runtime</p>
-    <h3>No Python</h3>
-    <p>Bun + <code>mlx-c</code> over <code>bun:ffi</code>. No venv, no sidecar Python server, no segfaults on exit. One binary, one toolchain.</p>
+    <p class="lbl">Library</p>
+    <h3>Inference in your process</h3>
+    <p>Load a model and generate tokens inside a Bun application through <code>mlx-bun/engine</code>. Use the executable as a local worker when your app runs elsewhere.</p>
   </div>
   <div class="mlx-feature">
     <p class="lbl">Correctness</p>
-    <h3>Bit-exact</h3>
-    <p>Matched bit-for-bit to the reference it's run against — mlx-lm in bf16, mlx-optiq when quantized. Identical logits, not "approximately."</p>
+    <h3>Compare the logits</h3>
+    <p>Pinned mlx-lm and mlx-optiq oracles, artifact-specific fixtures, and explicit cache and execution settings. Read the coverage and limits alongside the results.</p>
   </div>
   <div class="mlx-feature">
-    <p class="lbl">Speed</p>
-    <h3>Fastest to first token</h3>
-    <p>Served over HTTP, the fastest TTFT and startup of any stack tested — 45–90 ms vs Python's 220–330 ms — with near-zero server tax.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Protocols</p>
-    <h3>Drop-in for mlx_lm.server</h3>
-    <p>Same port, endpoints, and request fields — plus Anthropic Messages and OpenAI Responses. Point any SDK, or Claude Code, at a local backend.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Multimodal</p>
-    <h3>Tools &amp; vision</h3>
-    <p>Native tool-calling parsed into OpenAI <code>tool_calls</code>; image input via native OS codecs (HEIC, AVIF, WebP…) on vision models.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Shape</p>
-    <h3>Library-first</h3>
-    <p>The server is one consumer of a TypeScript API. Import generation into a Bun process, or embed the binary as a Mac-app sidecar.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">Memory</p>
-    <h3>Personal memory</h3>
-    <p>A local, git-tracked Markdown wiki your assistant reads for durable context — yours, editable in Obsidian, never leaves the machine.</p>
-  </div>
-  <div class="mlx-feature">
-    <p class="lbl">The lab</p>
-    <h3>An open playground</h3>
-    <p>LoRA/ORPO fine-tuning on your Mac, speculative decoding research, and an interactive sampling-curve designer at <code>/curves</code>.</p>
+    <p class="lbl">Execution</p>
+    <h3>Reuse computed work</h3>
+    <p>Continuous batching, speculative methods, specialized kernels, and RAM/SSD cache reuse. Measured comparisons identify where each combination helps.</p>
   </div>
 </div>
 
-## Measured, not vibes
+Also in the box: a browser chat app, [training tools](/reference/training/),
+[personal memory](/guides/memory/), and [experimental tools](/about/lab/).
 
-Head-to-head on an M4 Pro (24 GB), same models, same day, against mlx-lm and mlx-optiq:
+## Inspect the evidence
 
-| | mlx-bun | mlx-lm | optiq |
-|---|---|---|---|
-| **TTFT, served (warm)** | **45–90 ms** | 219–224 ms | 222–331 ms |
-| **server start → ready** | **0.36–0.47 s** | 0.76–0.98 s | 0.79–1.00 s |
-| **server tax vs direct decode** | **≈ 0%** | −5…−7% | ≈ 0% |
+The [benchmark ledger](/reference/benchmarks/) records results on M1 Max and
+M4 Pro, including default batching, context growth, and SSD cache reuse.
+Each comparison identifies its model, settings, and machine conditions.
+Remaining regressions and unsupported combinations are recorded alongside
+successful results.
 
-The honest negatives are in the same table — see [Benchmarks](/about/benchmarks/).
+MLX, mlx-c, mlx-lm, and mlx-optiq provide the runtime foundations and numerical
+references. Read [how mlx-bun uses them](/about/comparison/) and the
+[correctness contract](/about/correctness/).
 
 ## Keep reading
 
@@ -101,8 +79,8 @@ The honest negatives are in the same table — see [Benchmarks](/about/benchmark
 	<LinkCard title="Installation" href="/getting-started/installation/" description="Four ways in: Homebrew, curl, bunx, or source." />
 	<LinkCard title="Quickstart" href="/getting-started/quickstart/" description="First run, the chat UI, and the OpenAI-compatible API." />
 	<LinkCard title="The HTTP API" href="/reference/server-api/" description="Chat completions, tools, vision, prompt caching, LoRA." />
-	<LinkCard title="Personal memory" href="/guides/memory/" description="A local wiki your assistant reads — durable, git-tracked, yours." />
-	<LinkCard title="The lab" href="/about/lab/" description="Fine-tuning, speculative decoding, and the curve designer." />
+	<LinkCard title="TypeScript library" href="/guides/library/" description="Load models and generate tokens inside a Bun application." />
+	<LinkCard title="Correctness" href="/about/correctness/" description="Reference implementations, tested configurations, and limits." />
 	<LinkCard title="How it compares" href="/about/comparison/" description="Where mlx-bun sits next to mlx-lm and mlx-optiq." />
 </CardGrid>
 

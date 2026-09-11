@@ -648,14 +648,12 @@ implementations throughout migration. New numerical work has separate paired
 validation, so structural changes cannot conceal a quality or performance
 tradeoff. §12.11 defines the shared frontier scorecard.
 
-Future design question (2026-09-05): consider a monorepo with the inference
-engine kept together as one package, and application modules such as memory
-and the web UI in separate packages. CLI/TUI and training boundaries can be
-considered in that discussion. This is an unplanned idea, not part of the
-current optimization campaign. Before choosing boundaries, map dependencies,
-native assets, builds, tests, and releases; preserve in-process execution and
-the single-binary distribution. Package boundaries should follow demonstrated
-ownership and dependency needs without adding abstractions to the decode path.
+Package organization is now a planned decision in the
+[public-readiness program](../../PLAN.md#public-readiness), separate from
+the optimization campaign. §12.15 records the initial boundary audit and
+remaining evidence needed before choosing a workspace layout. Preserve
+in-process execution and the single-binary distribution; package boundaries
+must follow ownership and dependency needs without adding decode overhead.
 
 ### 12.2 Dependency structure
 
@@ -1878,3 +1876,48 @@ Contract sources: [generation](../../src/contracts/generation.ts),
 [cache tiers](../../src/prompt-cache.ts).
 Performance evidence and default selection live in
 [benchmarks.md](../reference/benchmarks.md); open acceptance remains in Phase 6/18.
+
+### 12.15 Package boundaries before community outreach
+
+Initial audit, 2026-09-11. The public-readiness program owns the packaging
+work; the existing interface and optimization milestones retain their scope.
+The three published entry points need different treatment:
+
+| Entry or layer | Verified dependency boundary | Packaging consequence |
+|---|---|---|
+| `mlx-bun/client`, `src/client.ts` | Imports only completion/host contracts; uses standard Request, Response, fetch and cancellation APIs | A candidate for independent client installation. The current npm package still has Darwin/arm64 metadata and application dependencies; a portable source file alone does not change that install contract. |
+| `src/contracts/`, `src/engine/`, `src/inference/` | Separate TypeScript project excludes Bun and DOM types; the AST boundary test limits imports by layer | Keep these interfaces and policies together inside the engine. They do not each need a published package. |
+| `mlx-bun/engine`, `src/library.ts` | CPU-safe entry exports engine/client APIs, but `initializeMlx()` dynamically imports the broad root API; `openIsolatedHost()` imports serving isolation and locates the CLI | Preserve this compatibility entry. Separate native engine initialization from application/worker assembly before treating it as a standalone engine package. |
+| `mlx-bun`, `src/index.ts` | Re-exports concrete models, generation, downloads, registry, fit and server construction | Already a published compatibility API. A workspace move needs forwarding exports, not a silent reduction of available functionality. |
+| Browser application | Own TypeScript project; boundary test allows web code and contracts | A candidate private application workspace. Its assets still participate in the CLI/native bundle. |
+| Website | Already has its own package manifest and build; generates reference pages from canonical docs | Keep one source for reference facts. A root workspace declaration alone would not improve this ownership. |
+
+The source audit followed static imports, re-exports, type imports and literal
+`import()`/`require()` references using TypeScript module resolution. The
+client closure contained four source files and no external module imports.
+The high-level engine entry reached the broad root API, including Pi and web
+assets. This is a dependency inventory, not a claim that importing the
+CPU-safe entry eagerly loads those modules. Non-code assets and executable
+paths also need a packaging check; import analysis cannot establish that they
+ship correctly.
+
+Recommended direction for the remaining audit: one engine package containing
+models, native bindings, cache codecs, inference methods and their interfaces;
+application assembly outside it; a small client package if independent
+installation is useful. Keep specialized kernels and tensor ownership within
+that engine. Memory, Pi and training require their own dependency and asset
+review before deciding whether they become private workspaces. A general MLX
+array binding is a separate API commitment and is not implied by this split.
+
+Before choosing and implementing the layout, map the engine-to-application
+edges through server construction, native bootstrap, worker commands and
+bundled assets. Verify the package tarball and a consumer installed outside
+the repository. Public import compatibility and the single-binary release are
+acceptance requirements. The initial audit does not yet close the package
+organization milestone.
+
+The initial `bun pm pack --dry-run --ignore-scripts` also confirms that the
+package includes the whole `docs/` tree, including archived investigations
+and active plans. Review that allowlist during packaging work; these are not
+runtime dependencies. This dry run inventories the candidate but does not
+replace installation and asset checks against an actual tarball.

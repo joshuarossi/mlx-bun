@@ -460,8 +460,18 @@ function renderDocsMap(): string {
     "docs/planning": "Living product/vision docs (USING side).",
     "docs/archive": "Frozen history — read-only, never extended in place; recover raw data via git history.",
   };
-  const out = ["# docs/ map (generated — do not edit; `bun scripts/check-hygiene.ts --write-docs-map`)", ""];
-  for (const dir of Object.keys(groups).sort()) {
+  const out = [
+    "# Documentation", "",
+    "Generated index. Update with `bun scripts/check-hygiene.ts --write-docs-map`.", "",
+    "## Start here", "",
+    "- Run mlx-bun: [quickstart](../README.md#quickstart), [models](reference/models.md), [CLI](reference/cli.md), [troubleshooting](reference/troubleshooting.md).",
+    "- Build an application: [TypeScript library](reference/library-api.md), [HTTP API](reference/server-api.md), [server configuration](reference/server-config.md).",
+    "- Assess the results: [benchmarks and correctness evidence](reference/benchmarks.md).",
+    "- Contribute: [contribution guide](../CONTRIBUTING.md), [engine architecture](design/unified-engine-frontier-plan.md), [current work](../PLAN.md).", "",
+  ];
+  const order = ["docs/reference", "docs/design", "docs/planning", "docs/archive"];
+  const rank = (dir: string) => order.includes(dir) ? order.indexOf(dir) : order.length;
+  for (const dir of Object.keys(groups).sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))) {
     out.push(`## ${dir}/`, "");
     if (blurb[dir]) out.push(blurb[dir]!, "");
     for (const f of groups[dir]!.sort()) out.push(`- [${f.slice(dir.length + 1)}](../${f}) — ${firstHeading(f)}`);

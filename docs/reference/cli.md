@@ -68,7 +68,7 @@ Library requests support delayed uniform or per-layer affine conversion with
 qualified shared drafting providers, including rotating caches. CLI affine
 quantization starts at zero.
 
-The unreleased shared executor supports qualified Qwen MTP and start-zero
+The shared executor supports qualified Qwen MTP and start-zero
 TurboQuant at one or several active rows; `--batch 1` still selects the
 legacy serial control. No new CLI flag is required for the shared interfaces.
 Full-attention and rotating targets, including Llama, MiniCPM and Gemma, use shared bf16, uniform KV4/KV8, per-layer affine KV or TurboQuant

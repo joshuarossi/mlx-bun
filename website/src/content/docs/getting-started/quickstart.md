@@ -14,8 +14,9 @@ mlx-bun
 
 Bare `mlx-bun` is an alias for `mlx-bun serve`. On a fresh machine it pulls the
 MLX runtime (if not bundled), downloads the sub-GB `MiniCPM5-1B` starter, serves
-it, and opens the chat UI at `http://localhost:8080/#/chat`. You're chatting in
-under a minute.
+it, and opens the chat UI at `http://localhost:8080/#/chat`. Download time
+depends on your connection. This starter is separate from the preferred model
+used after suitable weights are available; see [automatic selection](/reference/models/#automatic-model-selection).
 
 Pass `--no-open` to skip launching the browser.
 
@@ -35,7 +36,7 @@ mlx-bun scan          # index your HF cache into the registry
 mlx-bun ls            # list models with size, params, quant, capabilities
 ```
 
-Not sure what fits your Mac? `fit` gives a deterministic answer:
+Not sure what fits your Mac? `fit` estimates memory needs:
 
 ```sh
 mlx-bun fit gemma --ctx 8192
@@ -45,8 +46,8 @@ See [Choosing a model](/reference/models/) for the full list.
 
 ## 3. Call the API
 
-The server is OpenAI-compatible — any OpenAI client works. The request's
-`model` field is ignored; the loaded model is served and echoed back.
+Point an OpenAI SDK client at the local server. Supported fields and model
+routing behavior are documented in the [HTTP API](/reference/server-api/).
 
 ```sh
 curl http://localhost:8080/v1/chat/completions \
