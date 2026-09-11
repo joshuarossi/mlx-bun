@@ -1,4 +1,5 @@
-import { leaseCacheState } from "./backends/mlx/state-views";
+import { type CheckpointAttachment, materializeCheckpoint, attachmentBytes, cloneAttachments, disposeAttachments } from "./backends/mlx/checkpoint-state";
+import { leaseCacheState, minimumReusableOffset } from "./backends/mlx/state-views";
 import { withResource, cleanupFailure, disposeResources, ownResource } from "./engine/resources";
 // Byte-capped LRU prompt cache — the RAM tier of the Layer-0 KV store.
 //
@@ -10,12 +11,9 @@ import { withResource, cleanupFailure, disposeResources, ownResource } from "./e
 //   const hit = cache.take(promptIds);   // longest-prefix match
 //   generate(model, promptIds, { cache: hit?.caches ?? fresh })
 //   cache.put([...promptIds, ...generated], caches, ns, hit?.retain);
-// take() is NON-CONSUMING for trimmable caches: it serves zero-copy clones
-// and leaves the donor in place, so N agents can share one prefill.
-// Qwen hybrid entries containing recurrent SSM state transfer ownership on
-// an exact hit, avoiding an extra resident recurrent snapshot. put() supersedes
-// same-ns prefix-ancestors (when the new entry is trimmable) so a conversation
-// stays one entry, not one per turn.
+// take() lends zero-copy views and leaves every RAM donor in place, including
+// recurrent and method state. SSD persistence runs independently of RAM reuse.
+// put() supersedes same-ns prefix-ancestors when the new entry is trimmable.
 //
 // TIERING (Layer 0, unified-engine plan): when a ColdTier is attached,
 // take() itself runs the two-tier dance — RAM peek vs cold find, restore
@@ -28,6 +26,7 @@ import { withResource, cleanupFailure, disposeResources, ownResource } from "./e
 // snapshot for both lanes.
 
 import type { Cache } from "./model/gemma4";
+import type { PrefixCache, PrefixCacheHit } from "./contracts/prefix-cache";
 import { cloneKvCaches } from "./kv-store";
 
 /** Reference-counted release: wraps an entry's `retain` (e.g. an mmap
@@ -68,10 +67,10 @@ export interface ColdTier {
   /** Materialize a found entry as GPU-visible caches (zero-copy COW mmap;
    *  pages fault in lazily). `retain` must run after the caches are
    *  disposed (it unmaps the backing file). Null on any failure. */
-  restore(handle: unknown): { tokens: number[]; caches: Cache[]; retain: () => void } | null;
+  restore(handle: unknown): { tokens: number[]; caches: Cache[]; attachments?: CheckpointAttachment[]; retain: () => void } | null;
   /** Borrow live caches and finish persistence before returning. A false
-   *  result prevents a required demotion or recurrent ownership transfer. */
-  store(tokens: number[], caches: Cache[], ns: string): boolean | void;
+   *  result prevents a required demotion. */
+  store(tokens: number[], caches: Cache[], ns: string, attachments?: CheckpointAttachment[]): boolean | void;
 }
 
 /** Spill sink for eviction/demotion (write-behind, 2026-07-06).
@@ -95,9 +94,7 @@ export interface SpillSink {
   spillSync?: (entry: PromptCacheEntry) => void;
 }
 
-export interface PromptCacheEntry {
-  tokens: number[];
-  caches: Cache[];
+export interface PromptCacheEntry extends PrefixCacheHit<Cache[], CheckpointAttachment[]> {
   /** Namespace key — adapter spec for LoRA requests ("" = base model).
    *  KV computed under one adapter must never seed another's prefill. */
   ns: string;
@@ -134,7 +131,7 @@ interface EntryRecord {
   share: { acquire(): () => void };
 }
 
-export class PromptCache {
+export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]> {
   readonly maxBytes: number;
   #entries: EntryRecord[] = [];
   #clock = 0;
@@ -161,6 +158,7 @@ export class PromptCache {
     spill: SpillSink | ((entry: PromptCacheEntry) => void) | null = null,
     cold: ColdTier | null = null,
     clone: (caches: Cache[]) => Cache[] = cloneKvCaches,
+    private readonly materialize: (caches: Cache[], attachments?: CheckpointAttachment[]) => void = materializeCheckpoint,
   ) {
     this.maxBytes = maxBytes;
     this.#spillOwned = typeof spill === "function" ? null : spill?.spillOwned ?? null;
@@ -185,23 +183,26 @@ export class PromptCache {
         // no backing mmap for retain to unmap, so nothing the clones
         // could alias goes away.
         let clones: Cache[] | null = null;
+        let attachments: CheckpointAttachment[] | undefined;
         try {
           clones = this.#clone(entry.caches);
-          this.#spillOwned({ tokens: [...entry.tokens], caches: clones, ns: entry.ns });
+          attachments = cloneAttachments(entry.attachments);
+          this.#spillOwned({ tokens: [...entry.tokens], caches: clones, ns: entry.ns, attachments });
         } catch {
           // Failure degrades to no-spill; eviction/demotion never unwinds.
           if (clones) for (const c of clones) try { c.dispose(); } catch {}
+          try { disposeAttachments(attachments); } catch {}
         }
       } else {
         const spill =
           this.#spillSync ??
           (this.#cold
-            ? (e: PromptCacheEntry) => this.#cold!.store(e.tokens, e.caches, e.ns)
+            ? (e: PromptCacheEntry) => this.#cold!.store(e.tokens, e.caches, e.ns, e.attachments)
             : null);
         if (spill) try { spill(entry); } catch {}
       }
     }
-    disposeResources(entry.caches);
+    disposeResources([...entry.caches, { dispose: () => disposeAttachments(entry.attachments) }]);
     entry.retain?.(); // backing release requires successful cache disposal
   }
 
@@ -227,7 +228,7 @@ export class PromptCache {
       // Keep the entry resident if persistence throws. A failed SSD write
       // must not be presented as a successful demotion.
       if (this.#cold) {
-        if (this.#cold.store(entry.tokens, entry.caches, entry.ns) === false) break;
+        if (this.#cold.store(entry.tokens, entry.caches, entry.ns, entry.attachments) === false) break;
       }
       else this.#spillSync?.(entry);
       this.#entries.splice(oldest, 1);
@@ -239,9 +240,9 @@ export class PromptCache {
   }
 
   /** Find the entry with the longest usable common prefix of `prompt`
-   *  across BOTH tiers. Trimmable RAM entries are served non-consumingly as
-   *  zero-copy clones; exact hits on Qwen hybrid entries containing recurrent
-   *  SSM state transfer the donor itself. The caller owns the returned caches —
+   *  across BOTH tiers. Every RAM entry lends zero-copy views and retains its
+   *  donor, including exact-boundary recurrent state and method attachments.
+   *  The caller owns the returned views —
    *  dispose them or put() an extended entry, honoring `retain` either way.
    *
    *  Usable prefix = common prefix capped at prompt.length - 1 (at least
@@ -262,9 +263,9 @@ export class PromptCache {
       const e = this.#entries[i]!.entry;
       if (e.ns !== ns) continue;
       const p = Math.min(commonPrefixLength(e.tokens, prompt), prompt.length - 1);
-      if (p <= bestLen) continue;
+      if (p <= bestLen || p < minimumReusableOffset(e.caches)) continue;
       const trimNeeded = e.tokens.length - p;
-      if (trimNeeded > 0 && !e.caches.every((c) => c.isTrimmable())) continue;
+      if (trimNeeded > 0 && (!!e.attachments?.length || !e.caches.every((c) => c.isTrimmable()))) continue;
       bestLen = p;
       bestIdx = i;
     }
@@ -283,7 +284,8 @@ export class PromptCache {
             this.#disposeEntry({ ...entry, ns }, false));
           const result = withResource(owner, (entry) => {
             const trimNeeded = entry.tokens.length - hit.prefixLen;
-            if (trimNeeded > 0 && !entry.caches.every((cache) => cache.isTrimmable())) {
+            if (hit.prefixLen < minimumReusableOffset(entry.caches)) return null;
+            if (trimNeeded > 0 && (!!entry.attachments?.length || !entry.caches.every((cache) => cache.isTrimmable()))) {
               console.warn(
                 `[prompt-cache] cold entry unusable: ${entry.tokens.length} tokens, ` +
                 `needs trim ${trimNeeded} but untrimmable (wrapped ring/SSM) — re-prefilling`,
@@ -312,28 +314,22 @@ export class PromptCache {
     const rec = this.#entries[bestIdx]!;
     rec.lastUsed = ++this.#clock;
     rec.lastUsedMs = Date.now();
-    // Qwen recurrent caches are untrimmable. Transfer the exact-boundary
-    // entry instead of retaining a second recurrent snapshot in RAM.
-    // This reduced memory pressure in the recorded multi-turn reproduction.
-    // Save the boundary before consumption: the extended recurrent state
-    // cannot be trimmed back, and a delayed writer can no longer find it
-    // in RAM after ownership moves. An already durable boundary is cheap.
-    if (rec.entry.caches.some((c) => c.signature() === "ssm")) {
-      if (this.#cold?.store(rec.entry.tokens, rec.entry.caches, ns) === false)
-        throw new Error("prompt-cache: failed to persist recurrent boundary before transfer");
-      this.#entries.splice(bestIdx, 1);
-      return rec.entry;
-    }
+    // Lend immutable views for every backend state. RAM retention and SSD
+    // durability remain cache responsibilities while the caller extends its
+    // own views. This keeps synchronous persistence out of a RAM hit.
     const clones = this.#clone(rec.entry.caches);
+    let attachments: CheckpointAttachment[] | undefined;
     const trimNeeded = rec.entry.tokens.length - bestLen;
     try {
+      attachments = cloneAttachments(rec.entry.attachments);
       if (trimNeeded > 0) for (const c of clones) c.trim(trimNeeded);
     } catch (error) {
-      cleanupFailure(error, () => disposeResources(clones));
+      cleanupFailure(error, () => disposeResources([...clones, { dispose: () => disposeAttachments(attachments) }]));
     }
     return {
       tokens: rec.entry.tokens.slice(0, bestLen),
       caches: clones,
+      attachments,
       ns,
       retain: rec.share.acquire(),
     };
@@ -346,9 +342,9 @@ export class PromptCache {
     for (const { entry: e } of this.#entries) {
       if (e.ns !== ns) continue;
       const p = Math.min(commonPrefixLength(e.tokens, prompt), prompt.length - 1);
-      if (p <= best) continue;
+      if (p <= best || p < minimumReusableOffset(e.caches)) continue;
       const trimNeeded = e.tokens.length - p; // same usability rule as take()
-      if (trimNeeded > 0 && !e.caches.every((c) => c.isTrimmable())) continue;
+      if (trimNeeded > 0 && (!!e.attachments?.length || !e.caches.every((c) => c.isTrimmable()))) continue;
       best = p;
     }
     return best;
@@ -368,10 +364,12 @@ export class PromptCache {
   /** Insert (or reinsert) an entry; evicts LRU entries over the byte cap
    *  (spilling each to the cold tier first, when one is attached). If the
    *  entry itself exceeds the cap it is spilled + disposed, not stored. */
-  put(tokens: number[], caches: Cache[], ns = "", retain?: () => void): void {
+  put(tokens: number[], caches: Cache[], ns = "", retain?: () => void, attachments?: CheckpointAttachment[]): void {
     // All cache-provided validation runs before ownership is adopted.
-    const bytes = cacheBytes(caches);
-    const trimmable = caches.every((cache) => cache.isTrimmable());
+    const bytes = cacheBytes(caches) + attachmentBytes(attachments);
+    const trimmable = !attachments?.length && caches.every((cache) => cache.isTrimmable());
+    // Storage takes resolved snapshots, independently of their producer.
+    this.materialize(caches, attachments);
     const discard = (entry: PromptCacheEntry, spill: boolean) => {
       try { this.#disposeEntry(entry, spill); }
       catch (error) {
@@ -380,7 +378,7 @@ export class PromptCache {
         console.warn(`[prompt-cache] entry cleanup failed: ${error}`);
       }
     };
-    const entry: PromptCacheEntry = { tokens, caches, ns, retain };
+    const entry: PromptCacheEntry = { tokens, caches, ns, retain, attachments };
     if (bytes > this.maxBytes) {
       discard(entry, true);
       return;
@@ -415,7 +413,7 @@ export class PromptCache {
     if (trimmable) {
       for (const old of [...this.#entries]) {
         if (old === rec || old.entry.ns !== ns) continue;
-        if (old.entry.tokens.length >= tokens.length) continue;
+        if (old.entry.tokens.length >= tokens.length || old.entry.tokens.length < minimumReusableOffset(caches)) continue;
         if (commonPrefixLength(old.entry.tokens, tokens) !== old.entry.tokens.length) continue;
         this.#entries = this.#entries.filter((r) => r !== old);
         discard(old.entry, false);

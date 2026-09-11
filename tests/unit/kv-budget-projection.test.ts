@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { KvQuantSpec, ModelConfig } from "../../src/config";
 import { kvBytesAt } from "../../src/fit";
-import { resolveKvScheme } from "../../src/kv-scheme";
+import { KvScheme, resolveKvScheme } from "../../src/kv-scheme";
 import { batchRowKvBytes } from "../../src/serve/kv-budget";
 
 const config = {
@@ -60,6 +60,12 @@ describe("batch KV budget projection", () => {
     const uniform = resolveKvScheme({ override: 8 });
     expect(uniform.options).toEqual({ kvBits: 8, quantizedKvStart: 0 });
     expect(uniform.batchable(config)).toBe(false);
+    expect(uniform.batchable(config, () => true)).toBe(true);
+    expect(uniform.batchable(config, () => false)).toBe(false);
+    expect(new KvScheme("affine-uniform", { kvBits: 8 }).batchable(config, () => true)).toBe(false);
+    expect(new KvScheme("affine-config", {
+      kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }], quantizedKvStart: 100,
+    }).batchable(config, () => true)).toBe(false);
   });
 
   test("resolved schemes do not retain mutable caller-owned configuration", () => {
@@ -87,4 +93,33 @@ describe("batch KV budget projection", () => {
     expect(turbo.cacheKey).toBe("turbo-k8v3");
     expect(Object.isFrozen(turbo.options.turboQuant)).toBe(true);
   });
+});
+
+
+test("TurboQuant batch conversion requires convertible cache layers", () => {
+  const config = { text: { numHiddenLayers: 2, layerTypes: ["full_attention", "linear_attention"] } } as ModelConfig;
+  const scheme = resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } });
+  expect(scheme.batchable(config, layer => layer === 0)).toBe(true);
+  expect(scheme.batchable(config, () => false)).toBe(false);
+  expect(scheme.batchable(config)).toBe(false);
+  expect(new KvScheme("turbo", { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 })
+    .batchable(config, () => true)).toBe(true);
+});
+
+test("delayed TQ persistence keys distinguish the conversion boundary", () => {
+  const zero = new KvScheme("turbo", { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 });
+  const delayed = new KvScheme("turbo", { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 });
+  expect(zero.cacheKey).toBe("turbo-k8v3");
+  expect(delayed.cacheKey).toBe("turbo-k8v3-start5");
+});
+
+
+test("affine cache identity separates precision schedules and group geometry", () => {
+  const immediate = new KvScheme("affine-uniform", { kvBits: 4, quantizedKvStart: 0 });
+  const delayed = new KvScheme("affine-uniform", { kvBits: 4, quantizedKvStart: 25 });
+  const otherGroup = new KvScheme("affine-uniform", { kvBits: 4, kvGroupSize: 128, quantizedKvStart: 25 });
+  expect(immediate.cacheKey).toBe("kv4");
+  expect(new Set([immediate.cacheKey, delayed.cacheKey, otherGroup.cacheKey]).size).toBe(3);
+  expect(delayed.batchable(config, () => true)).toBe(false);
+  expect(delayed.batchable(config, () => true, config.text.numHiddenLayers, { delayedAffine: true })).toBe(true);
 });

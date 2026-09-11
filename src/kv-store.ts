@@ -1,3 +1,4 @@
+import { type CheckpointAttachment, attachmentBytes, disposeAttachments } from "./backends/mlx/checkpoint-state";
 import { cleanupFailure, disposeResources } from "./engine/resources";
 // KV-cache persistence: save prompt caches to disk, reload by streamed copy.
 // The serialization core of the SSD cold tier (docs/design/kv-cache.md).
@@ -86,6 +87,7 @@ interface TensorSlot {
 export interface CacheHeaderEntry {
   kind: CacheKind;
   offset: number;
+  minimumReusableOffset?: number;
   /** rotating variants: ring write index */
   idx?: number;
   /** rotating variants: window size */
@@ -114,6 +116,7 @@ export interface CacheHeaderEntry {
 }
 
 export interface KvSaveMeta {
+  attachments?: CheckpointAttachment[];
   modelId?: string;
   /** configFingerprint(config) — covers every graph-shaping field incl.
    *  the kv-quant scheme, so a scheme flip invalidates naturally. */
@@ -139,10 +142,11 @@ export interface KvSaveMeta {
   };
 }
 
-export interface KvFileHeader extends KvSaveMeta {
+export interface KvFileHeader extends Omit<KvSaveMeta, "attachments"> {
+  attachments?: Array<Omit<CheckpointAttachment, "tensors"> & { tensors: TensorSlot[] }>;
   /** Absent in earlier v3 files, which used mlx-cache-v3. */
   codecProvider?: string;
-  formatVersion: 3;
+  formatVersion: 3 | 4;
   createdAt: number;
   tokens: number[];
   caches: CacheHeaderEntry[];
@@ -273,8 +277,8 @@ const CACHE_CODECS = {
     },
     clone: (cache, context) => {
       const c = cache as KVCache;
-      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
       const clone = new KVCache();
+      if (!c.keys || !c.values) return clone;
       clone.restoreState(
         context.liveView(c.keys, c.offset),
         context.liveView(c.values, c.offset),
@@ -305,8 +309,8 @@ const CACHE_CODECS = {
     },
     clone: (cache, context) => {
       const c = cache as RotatingKVCache;
-      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
       const clone = new RotatingKVCache(c.maxSize);
+      if (!c.keys || !c.values) return clone;
       clone.restoreState(context.view(c.keys), context.view(c.values), c.offset, c.ringIdx);
       return clone;
     },
@@ -332,8 +336,8 @@ const CACHE_CODECS = {
     },
     clone: (cache, context) => {
       const c = cache as QuantizedKVCache;
-      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
       const clone = new QuantizedKVCache(c.groupSize, c.bits);
+      if (!c.keys || !c.values) return clone;
       clone.restoreState(
         context.tripleView(c.keys, c.offset),
         context.tripleView(c.values, c.offset),
@@ -363,8 +367,8 @@ const CACHE_CODECS = {
     },
     clone: (cache, context) => {
       const c = cache as RotatingQuantizedKVCache;
-      if (!c.keys || !c.values) throw new Error("cannot clone an empty cache");
       const clone = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
+      if (!c.keys || !c.values) return clone;
       clone.restoreState(
         context.tripleView(c.keys, null), context.tripleView(c.values, null),
         c.offset, c.ringIdx,
@@ -515,6 +519,17 @@ export function createCacheCodecProvider(
 
 export const legacyCacheCodecs = createCacheCodecProvider("mlx-cache-v3", CACHE_CODECS);
 
+/** Old TQ files lack the conversion boundary. Keep them reusable at their
+ * stored offset, but never infer that an earlier precision state is valid. */
+export function cacheHeaderMinimumReusableOffset(entry: CacheHeaderEntry): number {
+  const offset = entry.minimumReusableOffset ?? (entry.kind === "turboquant" ? entry.offset : 0);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > entry.offset)
+    throw new Error("invalid cache minimum reusable offset");
+  return offset;
+}
+export const cacheHeadersMinimumReusableOffset = (caches: readonly CacheHeaderEntry[]): number =>
+  Math.max(0, ...caches.map(cacheHeaderMinimumReusableOffset));
+
 export const cacheHeadersTrimmable = (
   caches: readonly CacheHeaderEntry[], codecs: CacheCodecProvider = legacyCacheCodecs,
 ): boolean => caches.every((entry) => codecs.forHeader(entry).headerTrimmable(entry));
@@ -547,6 +562,7 @@ function snapshotCache(c: Cache, dataOffset: number, codecs: CacheCodecProvider)
 
   try {
     const entry = codecs.forCache(c).snapshot(c, { slots, push, liveSlice, liveMlaSlice, pushTriple });
+    if (c.minimumReusableOffset !== undefined) entry.minimumReusableOffset = c.minimumReusableOffset;
     return { entry, sources, next: cursor };
   } catch (error) {
     for (const source of sources) if (source.disposeAfter) source.arr.dispose();
@@ -588,7 +604,9 @@ export function cloneKvCaches(caches: Cache[], codecs: CacheCodecProvider = lega
   const out: Cache[] = [];
   try {
     for (const c of caches) {
-      out.push(codecs.forCache(c).clone(c, { view, liveView, mlaView, tripleView }));
+      const clone = codecs.forCache(c).clone(c, { view, liveView, mlaView, tripleView });
+      if (c.minimumReusableOffset !== undefined) clone.minimumReusableOffset = c.minimumReusableOffset;
+      out.push(clone);
       pending.length = 0; // transferred to the returned cache
     }
   } catch (err) {
@@ -615,10 +633,24 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
       dataOffset = s.next;
     }
 
+    const { attachments: liveAttachments, ...identity } = meta;
+    const attachments = liveAttachments?.map((attachment) => ({
+      schema: attachment.schema,
+      metadata: { ...attachment.metadata },
+      tensors: attachment.tensors.map((arr) => {
+        const slot: TensorSlot = { off: dataOffset, bytes: arr.nbytes,
+          shape: [...arr.shape], dtype: arr.dtype, hash: "0000000000000000" };
+        dataOffset = alignUp(dataOffset + slot.bytes);
+        sources.push({ arr, disposeAfter: false });
+        return slot;
+      }),
+    }));
+
     // Header size is final NOW: hashes are fixed-width placeholders that get
     // patched in place (same byte length) after the data pass computes them.
     const header: KvFileHeader = {
-      formatVersion: 3, createdAt: Date.now(), ...meta, codecProvider: codecs.id, tokens, caches: entries,
+      formatVersion: attachments?.length ? 4 : 3, createdAt: Date.now(), ...identity,
+      ...(attachments?.length ? { attachments } : {}), codecProvider: codecs.id, tokens, caches: entries,
     };
     const headerLen = new TextEncoder().encode(JSON.stringify(header)).length;
     const dataStart = alignUp(PREFIX_LEN + headerLen);
@@ -639,7 +671,7 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
       // pages, which makes them VISIBLE to ps RSS — accounting, not an
       // allocation (see bench-serve.ts' per-leg RSS note).
       let srcIdx = 0;
-      for (const e of entries) {
+      for (const e of [...entries, ...(attachments ?? [])]) {
         for (const slot of e.tensors) {
           const src = sources[srcIdx++]!;
           const c = ops.contiguous(src.arr);
@@ -717,6 +749,7 @@ export async function saveKvCacheAsync(
 /** One pending write-behind item: an entry's copied tokens + OWNED
  *  zero-copy cache clones (the queue disposes them on every exit path). */
 export interface SpillItem {
+  attachments?: CheckpointAttachment[];
   tokens: number[];
   caches: Cache[];
   ns: string;
@@ -761,6 +794,8 @@ export class SpillQueue {
     readonly store: (item: SpillItem) => Promise<unknown>,
     /** Clone disposal — frees the pinned GPU memory. */
     readonly disposeClones: (caches: Cache[]) => void,
+    /** Zero-byte control barriers may need to survive capacity shedding. */
+    readonly canDrop: (item: SpillItem) => boolean = () => true,
   ) {}
 
   /** Bytes pinned by queued (not yet flushed) clones. */
@@ -776,7 +811,7 @@ export class SpillQueue {
     const result = new Promise<boolean>((resolve) => { settle = resolve; });
     const rec: SpillRec = {
       ...item,
-      bytes: this.bytesOf(item.caches),
+      bytes: this.bytesOf(item.caches) + attachmentBytes(item.attachments),
       dropped: false,
       settle,
     };
@@ -784,7 +819,7 @@ export class SpillQueue {
     this.#bytes += rec.bytes;
     while (this.#bytes > this.capBytes) {
       const victim = this.#queue.find(
-        (p) => !p.dropped && p !== this.#inFlight && p !== rec,
+        (p) => !p.dropped && p !== this.#inFlight && p !== rec && this.canDrop(p),
       );
       if (!victim) break; // only the new item (or in-flight) left — soft cap
       this.#drop(victim);
@@ -803,10 +838,17 @@ export class SpillQueue {
       } finally {
         this.#inFlight = null;
         this.#remove(rec);
-        this.disposeClones(rec.caches);
+        disposeResources([{ dispose: () => this.disposeClones(rec.caches) },
+          { dispose: () => disposeAttachments(rec.attachments) }]);
       }
     });
     return result;
+  }
+
+  /** Cancel queued ownership, excluding the write already in flight. */
+  cancelWhere(matches: (item: SpillItem) => boolean): void {
+    for (const rec of [...this.#queue])
+      if (!rec.dropped && rec !== this.#inFlight && matches(rec)) this.#drop(rec);
   }
 
   /** Settles when everything enqueued so far has flushed or dropped
@@ -818,7 +860,8 @@ export class SpillQueue {
     this.#dropped++;
     rec.settle(false);
     this.#remove(rec);
-    this.disposeClones(rec.caches);
+    disposeResources([{ dispose: () => this.disposeClones(rec.caches) },
+          { dispose: () => disposeAttachments(rec.attachments) }]);
   }
 
   #remove(rec: SpillRec): void {
@@ -848,7 +891,7 @@ export function readKvHeader(path: string): KvFileHeader & { dataStart: number }
     if (BigInt(Bun.hash(body)) !== expectHash)
       throw new Error(`${path}: header hash mismatch (truncated or corrupt)`);
     const header = JSON.parse(new TextDecoder().decode(body)) as KvFileHeader;
-    if (header.formatVersion !== 3)
+    if (header.formatVersion !== 3 && header.formatVersion !== 4)
       throw new Error(`${path}: unsupported formatVersion ${header.formatVersion}`);
     return { ...header, dataStart };
   } finally {
@@ -857,6 +900,7 @@ export function readKvHeader(path: string): KvFileHeader & { dataStart: number }
 }
 
 export interface LoadedKvCache {
+  attachments?: CheckpointAttachment[];
   tokens: number[];
   header: KvFileHeader;
   caches: Cache[];
@@ -1026,20 +1070,30 @@ export function loadKvCache(
     ({ packed: arr(slots[at]!), scales: arr(slots[at + 1]!), biases: arr(slots[at + 2]!) });
 
   const caches: Cache[] = [];
+  const attachments: CheckpointAttachment[] = [];
   try {
     for (const e of header.caches) {
       const codec = codecs.forHeader(e);
-      caches.push(codec.load(e, { path, arr, grownArr, triple }));
+      const minimumOffset = cacheHeaderMinimumReusableOffset(e);
+      const cache = codec.load(e, { path, arr, grownArr, triple });
+      cache.minimumReusableOffset = minimumOffset;
+      caches.push(cache);
       // This entry's tensors are now owned by its cache — stop tracking them
       // (the catch must not double-free through both pending AND caches).
       pending.length = 0;
     }
+    for (const attachment of header.attachments ?? []) {
+      attachments.push({ schema: attachment.schema, metadata: { ...attachment.metadata },
+        tensors: attachment.tensors.map(arr) });
+      pending.length = 0;
+    }
   } catch (err) {
+    disposeAttachments(attachments);
     for (const a of pending) a.dispose(); // the mid-entry orphans
     for (const c of caches) c.dispose();
     throw err;
   } finally {
     mmap.unmap(); // every tensor was copied out — nothing aliases the file
   }
-  return { tokens: header.tokens, header, caches };
+  return { tokens: header.tokens, header, caches, ...(attachments.length ? { attachments } : {}) };
 }

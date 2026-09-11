@@ -2,10 +2,29 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { localBenchmarkModel, measureChatRequest, measureCompletionRequest, serialBenchmarkArgs, unsupportedBenchmarkArm, workloadNonce } from "../../scripts/bench-serve";
+import { aggregateBenchmarkPrompt, benchmarkLogprobsArgs, localBenchmarkModel, measureChatRequest, measureCompletionRequest, referenceServerCommand, engineBenchmarkArgs, unsupportedBenchmarkArm, workloadNonce } from "../../scripts/bench-serve";
 import { inventoryModel } from "../../scripts/bench/model-inventory";
 
 const dirs: string[] = [];
+test("capture benchmark settings are explicit, bounded and recorded in dry-run", () => {
+  expect(benchmarkLogprobsArgs([])).toEqual({});
+  expect(benchmarkLogprobsArgs(["--logprobs", "--top-logprobs", "3"]))
+    .toEqual({ logprobs: true, top_logprobs: 3 });
+  for (const args of [["--top-logprobs"], ["--top-logprobs", "12"]])
+    expect(() => benchmarkLogprobsArgs(args)).toThrow("requires");
+  const child = Bun.spawnSync([process.execPath, "scripts/bench-serve.ts", "all", "--model-path", packedFixture(),
+    "--arms", "mlx-bun-serial,mlx-bun", "--logprobs", "--top-logprobs", "3", "--dry-run"]);
+  expect(child.exitCode).toBe(0);
+  expect(JSON.parse(child.stdout.toString()).workload.captureSettings)
+    .toEqual({ logprobs: true, top_logprobs: 3 });
+});
+test("reference segmentation control is explicit and preserves the stock command", () => {
+  expect(referenceServerCommand("python", false, "server")).toEqual(["python", "-m", "mlx_lm.server"]);
+  expect(referenceServerCommand("python", true, "server")).toEqual(["python", "-c", "from optiq.cli import cli; cli()", "serve"]);
+  expect(referenceServerCommand("python", false, "unsplit")).toEqual(["python", expect.stringContaining("/oracle/serve-prefill-control.py")]);
+  expect(referenceServerCommand("python", true, "unsplit").slice(-2)).toEqual(["--optiq", "serve"]);
+  expect(() => referenceServerCommand("python", false, "guess")).toThrow("--reference-prefill");
+});
 function fixture(config: object): string {
   const dir = mkdtempSync(join(tmpdir(), "mlx-bench-model-"));
   dirs.push(dir);
@@ -79,25 +98,50 @@ describe("benchmark artifact selection", () => {
 });
 
 describe("benchmark measurement contract", () => {
-  test("configured experiments require an explicit serial arm and complete values", () => {
-    expect(() => serialBenchmarkArgs(["--draft-kind", "mtp"])).toThrow("--arms mlx-bun-serial");
-    expect(() => serialBenchmarkArgs(["--arms", "mlx-bun-serial,mlx-lm", "--kv-quant", "4"])).toThrow("controls separately");
+  test("long staggered aggregate workloads are explicit and preserve default request bodies", () => {
+    const child = Bun.spawnSync([process.execPath, "scripts/bench-serve.ts", "all",
+      "--model-path", packedFixture(), "--arms", "mlx-bun",
+      "--aggregate-context", "2048", "--aggregate-stagger-ms", "25", "--dry-run"]);
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stdout.toString()).workload.aggregate).toEqual({ contextTarget: 2048, staggerMs: 25 });
+    expect(aggregateBenchmarkPrompt(0, 2, "fixed")).toBe("Agent 2 fixed: write a detailed essay about computers.");
+    const a = aggregateBenchmarkPrompt(2048, 0, "cold-a"), b = aggregateBenchmarkPrompt(2048, 1, "cold-b");
+    expect(a.length).toBeGreaterThan(2048 * 3.6);
+    expect(a.startsWith("Session cold-a.")).toBe(true);
+    expect(b.startsWith("Session cold-b.")).toBe(true);
+    expect(a.endsWith("write a detailed essay about computers.")).toBe(true);
+  });
+  test("paired engine commands receive identical KV and prompt-cache overrides", () => {
+    const child = Bun.spawnSync([process.execPath, "scripts/bench-serve.ts", "all",
+      "--model-path", packedFixture(), "--arms", "mlx-bun-serial,mlx-bun",
+      "--kv-quant", "4", "--prompt-cache", "4", "--adapter", "/local/adapter", "--dry-run"]);
+    expect(child.exitCode).toBe(0);
+    const plan = JSON.parse(child.stdout.toString());
+    expect(plan.cells).toHaveLength(2);
+    for (const cell of plan.cells) {
+      expect(cell.command[cell.command.indexOf("--kv-quant") + 1]).toBe("4");
+      expect(cell.command[cell.command.indexOf("--prompt-cache") + 1]).toBe("4");
+    }
+  });
+  test("configured experiments require explicit engine arms and complete values", () => {
+    expect(() => engineBenchmarkArgs(["--draft-kind", "mtp"])).toThrow("--arms mlx-bun-serial");
+    expect(() => engineBenchmarkArgs(["--arms", "mlx-bun-serial,mlx-lm", "--kv-quant", "4"])).toThrow("controls separately");
     for (const args of [["--draft-kind"], ["--draft-model", "--dry-run"],
       ["--prompt-cache", "NaN"], ["--num-draft-tokens", "0"]])
-      expect(() => serialBenchmarkArgs(args)).toThrow("requires");
+      expect(() => engineBenchmarkArgs(args)).toThrow("requires");
   });
 
-  test("dry-run includes draft and KV arguments without a research preload", () => {
+  test("dry-run includes draft, KV and adapter arguments without a research preload", () => {
     const child = Bun.spawnSync([process.execPath, "scripts/bench-serve.ts", "all",
       "--model-path", packedFixture(), "--arms", "mlx-bun-serial",
       "--draft-model", "/local/draft", "--draft-kind", "mtp", "--num-draft-tokens", "2",
-      "--kv-quant", "4", "--prompt-cache", "4", "--dry-run"], {
+      "--kv-quant", "4", "--prompt-cache", "4", "--adapter", "/local/adapter", "--dry-run"], {
       env: { ...process.env, MLX_BUN_MTP_PROMPT_CACHE: "1", MLX_BUN_QWEN_SPEC_KV4: "1" },
     });
     expect(child.exitCode).toBe(0);
     const plan = JSON.parse(child.stdout.toString()), command = plan.cells[0].command as string[];
     for (const [flag, value] of [["--draft-model", "/local/draft"], ["--draft-kind", "mtp"],
-      ["--num-draft-tokens", "2"], ["--kv-quant", "4"], ["--prompt-cache", "4"]])
+      ["--num-draft-tokens", "2"], ["--kv-quant", "4"], ["--prompt-cache", "4"], ["--adapter", "/local/adapter"]])
       expect(command[command.indexOf(flag!) + 1]).toBe(value);
     expect(plan.runtimeEnvironment.MLX_BUN_QWEN_SPEC_KV4).toBe("1");
     expect(plan.measurement).toBe(false);
@@ -123,7 +167,8 @@ describe("benchmark measurement contract", () => {
         await Bun.sleep(5);
         send({ choices: [{ delta: { content: "b" }, finish_reason: "length" }] });
         await Bun.sleep(5);
-        send({ usage: { prompt_tokens: 20, completion_tokens: 100 } });
+        send({ usage: { prompt_tokens: 20, completion_tokens: 100, lane: "batched",
+          speculation: { drafted: 120, accepted: 80, rounds: 30 } } });
         controller.enqueue(enc.encode("data: [DONE]\n\n"));
         controller.close();
       } }));
@@ -132,6 +177,8 @@ describe("benchmark measurement contract", () => {
     try {
       const result = await measureChatRequest("http://mock", "prompt", 100);
       expect(result).toMatchObject({ text: "athink b", genTokens: 100, contentChunks: 2, finishReason: "length" });
+      expect(result.usage).toEqual({ prompt_tokens: 20, completion_tokens: 100,
+        lane: "batched", speculation: { drafted: 120, accepted: 80, rounds: 30 } });
       expect(result.endToEndTps).toBeCloseTo(100_000 / result.wallMs);
       expect(result.endToEndTps).toBeLessThan(result.decodeTps);
       expect(result.outputEventTimesMs).toHaveLength(2);

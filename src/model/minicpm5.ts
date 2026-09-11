@@ -14,7 +14,6 @@ import {
   KVCache,
   LoraState,
   QuantizedKVCache,
-  TurboQuantKVCache,
   QuantizedEmbedding,
   QuantizedLinear,
   quantizedSdpa,
@@ -143,23 +142,28 @@ export class LlamaAttention {
     q = disposing(q, ropeStep(q));
     k = disposing(k, ropeStep(k));
     let attn: MlxArray;
-    if (cache instanceof QuantizedKVCache) {
-      const [keys, values] = cache.updateAndFetchQuantized(k, v);
+    if (cache.attentionState) {
+      const view = cache.attentionState.appendAndFetch(k, v);
+      k.dispose(); v.dispose();
+      try { attn = view.attend(q, this.scale, mask); } finally { view.dispose(); }
+    } else if (cache.quantizedAttention) {
+      const quantized = cache.quantizedAttention;
+      const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
       v.dispose();
-      attn = quantizedSdpa(q, keys, values, this.scale, mask, cache.groupSize, cache.bits);
+      attn = quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
       disposeTriple(keys);
       disposeTriple(values);
-    } else if (cache instanceof TurboQuantKVCache) {
+    } else if (cache.rotatedValueAttention) {
       // Deferred-V: sdpa runs on rotated values, then one InvFWHT on the
       // output (linear in V) — see TurboQuantKVCache.updateAndFetchDeferredV.
-      const [keys, values] = cache.updateAndFetchDeferredV(k, v);
+      const [keys, values] = cache.rotatedValueAttention.updateAndFetchDeferredV(k, v);
       k.dispose();
       v.dispose();
       const rotated = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
       keys.dispose();
       values.dispose();
-      attn = tqUnrotateValues(rotated);
+      attn = cache.rotatedValueAttention.captureValueTransform?.()(rotated) ?? tqUnrotateValues(rotated);
       rotated.dispose();
     } else {
       const [keys, values] = cache.updateAndFetch(k, v);

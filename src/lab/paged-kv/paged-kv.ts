@@ -1,7 +1,7 @@
 // Paged KV cache — vLLM-style block-pool storage behind the standard Cache
 // interface (docs/design/kv-cache.md). OPTIONAL and default-off
-// (`--paged-kv` / GenerateOptions.pagedKv); v1 scope is serial batch=1
-// decode on Gemma4-family plain full-attention layers, bf16 only.
+// (`--paged-kv` / GenerateOptions.pagedKv); Gemma4-family plain full-attention
+// layers, bf16 only. PagedKvRows composes independent pools at B1/B>1.
 //
 // Storage: K/V live in fixed-size per-layer pool tensors
 // [numBlocks, H_kv, blockSize, headDim]; a host-side block table maps the
@@ -17,9 +17,8 @@
 // Motivation, which says this honestly).
 //
 // Deliberately NOT a KVCache subclass (the TurboQuantKVCache reasoning):
-// every instanceof gate in the tree — CompiledDecode.supports, the batch
-// gateway's #modelCachesBatchable, generated forwards' #matches() — must
-// EXCLUDE paged caches and fall back to the monolith/uncompiled path.
+// compiled graph adapters exclude the changing block-list geometry. The
+// cache-layout binding supplies dynamic rows independently of scheduling.
 
 import { MlxArray } from "../../mlx/array";
 import { Dtype } from "../../mlx/ffi";
@@ -58,16 +57,24 @@ export class BlockPool {
      *  reach v1's gemma4 scope, but the pool stays shape-honest). */
     vHeadDim?: number;
     dtype: Dtype;
-  }) {
+  }, source?: BlockPool) {
     this.numBlocks = opts.numBlocks;
     this.blockSize = opts.blockSize;
-    this.keys = ops.zeros(
+    this.keys = source ? ops.contiguous(source.keys) : ops.zeros(
       [opts.numBlocks, opts.numKvHeads, opts.blockSize, opts.headDim], opts.dtype);
-    this.values = ops.zeros(
+    this.values = source ? ops.contiguous(source.values) : ops.zeros(
       [opts.numBlocks, opts.numKvHeads, opts.blockSize, opts.vHeadDim ?? opts.headDim],
       opts.dtype);
     // LIFO free list, low indices first — deterministic layout for tests.
-    this.#free = Array.from({ length: opts.numBlocks }, (_, i) => opts.numBlocks - 1 - i);
+    this.#free = source ? [...source.#free] : Array.from({ length: opts.numBlocks }, (_, i) => opts.numBlocks - 1 - i);
+  }
+
+  /** Independent ownership and allocation metadata over immutable MLX buffers.
+   * Functional writes detach storage while another snapshot retains it. */
+  clone(): BlockPool {
+    return new BlockPool({ numBlocks: this.numBlocks, blockSize: this.blockSize,
+      numKvHeads: this.keys.shape[1]!, headDim: this.keys.shape[3]!,
+      vHeadDim: this.values.shape[3]!, dtype: this.keys.dtype }, this);
   }
 
   get freeBlocks(): number {
@@ -134,8 +141,7 @@ export class BlockPool {
  *  shape): head count / head dims / dtype come from the first k/v pair,
  *  so the wiring (maybePageKv) needs no per-model shape plumbing. */
 export class PagedKVCache implements Cache {
-  /** Distinct kind: paged layout is serial-only and never merges into a
-   *  batch, so no capability guard should ever match it as plain. */
+  /** Distinct storage kind; the row adapter preserves its block pools. */
   signature(): string { return "kv:paged"; }
   /** Matches KVCache.STEP: v1's growth granularity is a permutation of
    *  today's 256-token step into fixed reusable slots, not a new tuning
@@ -154,6 +160,14 @@ export class PagedKVCache implements Cache {
     readonly capacityTokens: number,
     readonly blockSize: number,
   ) {}
+
+  clone(): PagedKVCache {
+    const copy = new PagedKVCache(this.capacityTokens, this.blockSize);
+    copy.offset = this.offset;
+    copy.blockTable = [...this.blockTable];
+    copy.pool = this.pool?.clone() ?? null;
+    return copy;
+  }
 
   get #blockSize(): number {
     return this.blockSize;

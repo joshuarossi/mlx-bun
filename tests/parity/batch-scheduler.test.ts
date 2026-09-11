@@ -8,25 +8,17 @@
 // running batch, per-layer by attention type), the step loop, per-row sampling
 // + token accounting, and eviction (filter).
 //
-// METHODOLOGY — teacher-forced, NOT free-running greedy. Batched decode is not
-// bit-exact vs solo (left-padding shifts each row's attention reduction order),
-// so comparing free-running greedy *trajectories* measures chaos: one bf16
-// argmax flip cascades (see memory: teacher-forced-gating-for-non-bitexact-paths).
-// Instead we FORCE each row to follow its solo-greedy trajectory and compare the
-// scheduler's per-row *logits* to the solo teacher-forced logits via KL. Forcing
-// makes eviction/join timing deterministic; KL tolerates benign batch noise but
-// still catches a real bug (wrong leftPad after evict/join, mis-routed tokens)
-// as a logit shift. Plus a routing assertion: each row's emitted tokens, counts,
-// and finish reason are exactly what the schedule dictates.
-//
-// Two models: CPM (all full-attention) and Gemma 12B (interleaved sliding +
-// full — the mixed-layer path through the scheduler). Short prompts → the Gemma
-// sliding window doesn't wrap here; the ring-wrap math is gated bit-exact vs
-// mlx-lm model-free in tests/batched-rotating.test.ts.
+// METHODOLOGY — teacher-forced, matched-protocol oracle. Solo greedy tokens
+// are fixed inputs, not the numerical oracle: each scheduler forward is
+// replayed through pinned mlx-lm at the same B, with the same solo prefill,
+// cache merge, row eviction and mid-stream join. Full float32 logit hashes
+// must match exactly. Routing, output counts and finish reasons are checked
+// separately. No golden is regenerated during a test.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { SNAPSHOT, snapshotAvailable } from "../support/paths";
+import { createHash } from "node:crypto";
+import { SNAPSHOT, snapshotAvailable, ORACLE_PYTHON } from "../support/paths";
 
 const optIn = process.env.MLX_BUN_TEST_BATCH_DECODE === "1";
 const CPM_BASE =
@@ -35,8 +27,6 @@ const CPM_BASE =
   `664aabaed233c653f82716d8dc822234d0091f78`;
 const haveCpm = existsSync(`${CPM_BASE}/config.json`);
 const haveGemma = await snapshotAvailable();
-
-const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // KL(softmax(p) || softmax(q)) in nats — the "same distribution?" metric.
 const klDiv = (p: Float32Array, q: Float32Array): number => {
@@ -61,11 +51,8 @@ const PROMPTS = [
 const STEPS = 11;
 const MAXTOK = [5, 8, 11]; // staggered → rows evict at different steps
 
-/** Teacher-forced scheduler parity for one model: each of three rows is forced
- *  along its solo-greedy trajectory; the scheduler's per-row logits must match
- *  solo (KL, bound `klTol` — per-model, see the Gemma case); emitted
- *  tokens/counts/finish are exactly the schedule. Run twice — all-at-once
- *  (staggered eviction 3→2→1→0) and a mid-stream join. */
+/** Fixed teacher-forcing inputs; the separate protocol oracle supplies
+ *  expected logits for simultaneous admission and a controlled mid-stream join. */
 const argmaxF = (a: Float32Array): number => {
   let bi = 0;
   for (let i = 1; i < a.length; i++) if (a[i]! > a[bi]!) bi = i;
@@ -125,30 +112,83 @@ async function openHarness(base: string) {
   return { model, weights, MlxArray, soloGreedy };
 }
 
-async function schedulerParity(base: string, label: string, klTol = KL_TOL): Promise<void> {
+interface ProtocolFrame {
+  row: number | null;
+  shape: number[];
+  ids: number[];
+  samples: { row: number; step: number; hash: string }[];
+}
+
+async function schedulerParity(base: string, label: string, ringWrap = false, adapterPath?: string): Promise<void> {
   const { BatchScheduler } = await import("../../src/serve/batch-scheduler");
   const { model, weights, MlxArray, soloGreedy } = await openHarness(base);
   const eos = model.config.eosTokenIds;
+  const window = model.config.text.slidingWindow;
+  const prompts = ringWrap ? [window - 2, window - 4, window + 5].map((length, row) =>
+    Array.from({ length }, (_, position) => position < 2 ? PROMPTS[row]![position]!
+      : 100 + (position * 7 + row * 13) % 600)) : PROMPTS;
+  const schedulers: InstanceType<typeof BatchScheduler>[] = [];
+  let adapterManager: import("../../src/lora").AdapterManager | undefined;
+  let context: import("../../src/contracts/scheduling").ExecutionContext | undefined;
+  const schedules: ProtocolFrame[][] = [];
+  let frames: ProtocolFrame[] = [];
 
   try {
-    const ref = PROMPTS.map((p) => soloGreedy(p, STEPS));
-    for (let i = 0; i < PROMPTS.length; i++)
+    if (ringWrap) expect(window).toBeGreaterThan(4);
+    if (adapterPath) {
+      const { AdapterManager } = await import("../../src/lora");
+      const { bindMlxGateway } = await import("../../src/backends/mlx/gateway-binding");
+      adapterManager = new AdapterManager(model);
+      await adapterManager.mount("oracle-adapter", adapterPath);
+      context = bindMlxGateway(model).bindAdapterContext!(["oracle-adapter"],
+        adapterManager.cacheNamespace(["oracle-adapter"]));
+    }
+    // Fixed valid IDs are teacher-forcing inputs, not an output oracle. The
+    // ring case crosses the window during decode for rows 0/1 and begins
+    // beyond it for the late joiner; no extra long solo generation is needed.
+    const ref = ringWrap || adapterPath ? prompts.map((_, row) => ({
+      tokens: Array.from({ length: STEPS }, (_, step) => 600 + row * 17 + step),
+    })) : prompts.map((p) => soloGreedy(p, STEPS));
+    for (let i = 0; i < prompts.length; i++)
       for (let s = 0; s < MAXTOK[i]!; s++)
         if (eos.includes(ref[i]!.tokens[s]!))
           throw new Error(`[${label}] row ${i} EOSes at step ${s} within max_tokens — pick a longer prompt`);
 
-    const submitForced = (sched: InstanceType<typeof BatchScheduler>, i: number, maxTokens: number) => {
+    {
+      const cacheRows = new WeakMap<object, number>();
+      const forward = model.forwardHidden.bind(model);
+      model.forwardHidden = (ids, caches) => {
+        const values = [...ids.toFloat32()];
+        const first = caches[0]!;
+        let row: number | null = null;
+        if (first.constructor.name === "RotatingKVCache" || first.constructor.name === "KVCache") {
+          const index = cacheRows.get(first) ??
+            prompts.findIndex(p => p[0] === values[0] && p[1] === values[1]);
+          if (index >= 0) {
+            cacheRows.set(first, index);
+            row = index;
+          }
+        }
+        frames.push({ row, shape: [...ids.shape], ids: values, samples: [] });
+        return forward(ids, caches);
+      };
+    }
+
+    const submitForced = (sched: InstanceType<typeof BatchScheduler>, i: number, maxTokens: number, onEmit?: () => void) => {
       const captured: Float32Array[] = [];
       const got: number[] = [];
       const stats = sched.submit({
-        promptIds: PROMPTS[i]!,
+        promptIds: prompts[i]!,
+        context, ...(context ? { compiledDecode: false } : {}),
         maxTokens,
         eosTokenIds: eos,
         sample: (l, step) => {
           captured[step] = l.toFloat32();
+          frames.at(-1)!.samples.push({ row: i, step,
+            hash: createHash("sha256").update(captured[step]!).digest("hex") });
           return MlxArray.fromInt32(Int32Array.from([ref[i]!.tokens[step]!]), [1]);
         },
-        onToken: (t) => { got.push(t); },
+        onToken: (t) => { got.push(t); onEmit?.(); },
       });
       return { captured, got, stats };
     };
@@ -156,76 +196,103 @@ async function schedulerParity(base: string, label: string, klTol = KL_TOL): Pro
       expect(got).toEqual(ref[i]!.tokens.slice(0, maxTokens));
       expect(st.generatedTokens).toBe(maxTokens);
       expect(st.finishReason).toBe("length");
-      let maxKl = 0;
-      for (let s = 0; s < maxTokens; s++) maxKl = Math.max(maxKl, klDiv(ref[i]!.logits[s]!, captured[s]!));
-      console.log(`[sched ${label} row ${i}] maxKL=${maxKl.toExponential(2)} (steps=${maxTokens})`);
-      expect(maxKl).toBeLessThan(klTol);
     };
 
     // Scenario 1: all three at once → staggered eviction.
     const sched1 = new BatchScheduler(model, { maxBatch: 4 });
-    const s1 = PROMPTS.map((_, i) => submitForced(sched1, i, MAXTOK[i]!));
+    schedulers.push(sched1);
+    const s1 = prompts.map((_, i) => submitForced(sched1, i, MAXTOK[i]!));
     const st1 = await Promise.all(s1.map((s) => s.stats));
-    for (let i = 0; i < PROMPTS.length; i++) checkRow(i, MAXTOK[i]!, s1[i]!.captured, s1[i]!.got, st1[i]!);
+    for (let i = 0; i < prompts.length; i++) checkRow(i, MAXTOK[i]!, s1[i]!.captured, s1[i]!.got, st1[i]!);
+
+    await sched1.close();
+    schedules.push(frames);
+    frames = [];
 
     // Scenario 2: row 2 JOINS mid-stream (after 0,1 have stepped).
     const sched2 = new BatchScheduler(model, { maxBatch: 4 });
-    const a = submitForced(sched2, 0, MAXTOK[0]!);
+    schedulers.push(sched2);
+    let joinThird!: (row: ReturnType<typeof submitForced>) => void;
+    const third = new Promise<ReturnType<typeof submitForced>>(resolve => { joinThird = resolve; });
+    let emitted = 0;
+    const a = submitForced(sched2, 0, MAXTOK[0]!, () => {
+      if (++emitted === 2) joinThird(submitForced(sched2, 2, MAXTOK[2]!));
+    });
     const b = submitForced(sched2, 1, MAXTOK[1]!);
-    await delay(40);
-    const c = submitForced(sched2, 2, MAXTOK[2]!);
+    const c = await third;
     const st2 = await Promise.all([a.stats, b.stats, c.stats]);
     checkRow(0, MAXTOK[0]!, a.captured, a.got, st2[0]!);
     checkRow(1, MAXTOK[1]!, b.captured, b.got, st2[1]!);
     checkRow(2, MAXTOK[2]!, c.captured, c.got, st2[2]!);
+    await sched2.close();
+    schedules.push(frames);
   } finally {
-    weights.dispose();
+    try { await Promise.all(schedulers.map(scheduler => scheduler.close())); }
+    finally { adapterManager?.unmount("oracle-adapter"); weights.dispose(); }
   }
+  {
+    // Release native residency before starting the reference on the same GPU.
+    Bun.gc(true);
+    (await import("../../src/mlx/ffi")).clearCache();
+    const proc = Bun.spawn([ORACLE_PYTHON, "scripts/oracle/batch-scheduler-reference.py"], {
+      stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    });
+    const timeout = setTimeout(() => proc.kill(), ringWrap ? 480_000 : 180_000);
+    try {
+      proc.stdin.write(JSON.stringify({ model: base, adapter: adapterPath, schedules: schedules.map(fs => fs.map(f => ({
+        ...f, samples: f.samples.map(({ row, step }) => ({ row, step })),
+      }))) }));
+      proc.stdin.end();
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited,
+      ]);
+      if (code !== 0) throw new Error(`scheduler oracle exited ${code}: ${stderr}`);
+      if (ringWrap) {
+        expect(schedules.every(fs => fs.some(f => f.shape[0]! > 1))).toBe(true);
+        expect(prompts[0]!.length + MAXTOK[0]! - 1).toBeGreaterThan(window);
+        expect(prompts[1]!.length + MAXTOK[1]! - 1).toBeGreaterThan(window);
+        expect(prompts[2]!.length).toBeGreaterThan(window);
+      }
+      const expected = schedules.map(fs => fs.flatMap(f => f.samples));
+      expect(JSON.parse(stdout)).toEqual(expected);
+      console.log(`[sched ${label}] ${expected.flat().length} full logit vectors match the same-B oracle`);
+    } finally { clearTimeout(timeout); }
+  }
+
 }
 
 describe.skipIf(!optIn || !haveCpm)("batch scheduler — CPM L1 (full-attention)", () => {
-  test("teacher-forced: scheduled per-row logits == solo (evict + join)", async () => {
+  test("teacher-forced: same-B oracle logits through eviction and join", async () => {
     await schedulerParity(CPM_BASE, "CPM");
   }, 240_000);
 });
 
-// Gemma 12B (interleaved sliding + full): the mixed-layer scheduler path,
-// gated with the SAME teacher-forced KL/argmax pattern as the CPM case above —
-// forced tokens pin the schedule (admission merge, staggered eviction, join),
-// so the exact-token routing assertions in checkRow are the "argmax" half, and
-// KL on the per-row logits is the numerics half.
-//
-// Why not exact trajectories vs the mlx-lm B=2 golden (the previous gate)?
-// The scheduler prefills each row SOLO and merges its KV into the running
-// batch, while the golden ran one padded one-shot B=2 prefill — different
-// bf16 reduction orders, so token-for-token equality between the two
-// protocols is a machine-lucky coincidence (it held on the M4 Pro, not on
-// the M1 Max), not a contract. The one-shot-protocol path IS gated exactly,
-// per machine, in tests/batched-decode-parity.test.ts (realBatchedGreedy vs
-// batched-golden-gemma12b.json via tests/goldens.ts).
-//
-// KL BOUND: batched-vs-solo Gemma carries inherent left-pad reduction-order
-// noise at Gemma magnitudes (headDim 256, scale 1.0; see the parity harness
-// notes), NOT a bug: measured benign divergence is 1.5e-7–4.1e-2 here
-// (apple-m1-max, 2026-07-01) and up to ~2.6e-1 on padded rows historically —
-// even while bit-matching mlx-lm B=N. So the CPM bound (1e-2) is unusable for
-// Gemma; 5e-1 sits ~2x above the worst measured benign ceiling while still
-// failing on real orchestration faults (wrong leftPad after merge/filter,
-// mis-routed rows) — those attend to wrong content and shift KL to O(1)+.
-// This gate covers orchestration, not sub-bf16 numerics (the parity oracle
-// covers those).
-//
-// ALTERNATIVE (later, if a tighter gate is wanted): a protocol oracle — a gen
-// script driving mlx-lm's BatchKVCache.merge/.extract/.filter through the
-// scheduler's EXACT merged-solo-prefill + staggered-evict schedule (like
-// scripts/oracle/gen-batched-dynamic-golden.py does for the cache ops), regenerated
-// per machine via the goldens layer, would restore token-for-token equality.
-const GEMMA_KL_TOL = 5e-1;
+// Compare the actual merged-solo-prefill schedule against mlx-lm at the same B.
+// On M1 Max/MLX 0.32.2 the old solo KL gate reports 2.473 even when every
+// scheduled logit matches mlx-lm exactly. A larger tolerance would conceal
+// orchestration bugs; this live protocol oracle compares full-vector hashes.
 describe.skipIf(!optIn || !haveGemma)("batch scheduler — Gemma 12B (mixed sliding/full)", () => {
-  test("teacher-forced: scheduled per-row logits == solo (evict + join, KL gate)", async () => {
-    await schedulerParity(SNAPSHOT, "Gemma12B", GEMMA_KL_TOL);
+  test("teacher-forced: same-B oracle logits and exact routing through eviction and join", async () => {
+    await schedulerParity(SNAPSHOT, "Gemma12B");
   }, 300_000);
 });
+
+// Separate opt-in because the window-crossing prefills are much larger.
+const ringModel = Bun.env.MLX_BUN_TEST_BATCH_RING_MODEL ?? SNAPSHOT;
+test.skipIf(Bun.env.MLX_BUN_TEST_BATCH_RING_WRAP !== "1" || !existsSync(`${ringModel}/config.json`))(
+  "Gemma ring wrap: same-B oracle through unequal offsets, retirement and late join", async () => {
+    await schedulerParity(ringModel, "Gemma-ring-wrap", true);
+  }, 600_000,
+);
+
+const adapterModel = Bun.env.MLX_BUN_TEST_BATCH_ADAPTER_MODEL ??
+  `${Bun.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots/98d7dc6a93ae05583e8a10018c8099459b58aeeb`;
+test.skipIf(Bun.env.MLX_BUN_TEST_BATCH_ADAPTER_ORACLE !== "1" ||
+  !existsSync(`${adapterModel}/config.json`) || !existsSync("fixtures/adapters/upper/adapters.safetensors"))(
+  "adapter batch: same-B oracle through retirement and late join", async () => {
+    await schedulerParity(adapterModel, "Gemma-adapter", false, "fixtures/adapters/upper");
+  }, 300_000,
+);
 
 // ---- Phase 3.2 gates -------------------------------------------------------
 

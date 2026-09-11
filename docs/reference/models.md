@@ -34,7 +34,7 @@ already-downloaded repos (it must match exactly one repo; see
 | `Qwen3-30B` | `mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit` | Qwen3-MoE (`qwen3_moe`) · dedicated `qwen3-moe` graph · L1 (opt-in slow parity test, `MLX_BUN_TEST_QWEN3_MOE=1`) | text | two-model · ngram | bf16 (the artifact ships no kv_config.json) | Sparse top-k SwitchGLU experts. |
 | `diffusiongemma` | `mlx-community/diffusiongemma-26B-A4B-it-OptiQ-4bit` | DiffusionGemma (`diffusion_gemma`) · dedicated graph + **denoising loop** (non-autoregressive) · L2 (optiq) | text · **image** (single image; its own inline-quantized SigLIP tower). No video / audio | — (no AR verify loop) | — (canvas model; the `--kv-quant` axis does not apply) | Serial lane always. Diffusion-native LoRA trains. |
 | `GLM-5.2-colibri` | `mateogrgic/GLM-5.2-colibri-int4-with-int8-mtp` @ `3cc8db99b1b13fc79325d987ba3c1c430766b3b8` | GLM-5.2 (`glm_moe_dsa`) · **Colibri container loader** + dedicated `glm5.2` graph (streamed experts) · **exact artifact profile**, L3 | text | **checkpoint-native MTP** (`--mtp on`, the default; mutually exclusive with `--draft-model`) | checkpoint-native compressed **MLA/DSA** cache (its own scheme; SSD tier v3 persists it) | Fixed-context admission: `--context-length` (4096) and `--max-tokens` (128) are reserved by the header-only resource equation before weights open; `--memory-budget` defaults to min(25 GiB, RAM). `--mtp off` enables ordinary batching. Embeddings, vision/audio, adapters, and training are unsupported. See [below](#direct-container-artifacts-glm-5x). |
-| Tier-0 generic | validated manifest (`tests/support/universal-manifest.ts`): `Llama-3.2-1B-Instruct-4bit`, `Qwen2.5-0.5B-Instruct-4bit`, `Qwen3-0.6B-4bit`, `quantized-gemma-2b-it`, `gemma-2-2b-it-4bit`, `Phi-3.5-mini-instruct-4bit`, `GLM-4-9B-0414-4bit`, `granite-3.3-2b-instruct-4bit`, `starcoder2-3b-4bit`, `SmolLM3-3B-4bit` (all `mlx-community/`) and `ekryski/OLMo-2-0425-1B-Instruct-4bit` | 11 `model_type`s: `llama`, `smollm3`, `qwen2`, `qwen3`, `gemma`, `gemma2`, `phi3`, `olmo2`, `glm4`, `granite`, `starcoder2` (+ mlx-lm remaps `mistral`, `iquestcoder` → `llama`) · `universal-dense` graph · L1 | text | two-model · ngram | bf16 (the validated cell) | `ls` labels these `supported (generic)`. Batch only for plain full-attention archs (gated B=2 on Llama-3.2-3B); gemma2-family / sliding-window archs run serial. No compiled specialization. A `model_type` absent from the table refuses to load. |
+| Tier-0 generic | validated manifest (`tests/support/universal-manifest.ts`): `Llama-3.2-1B-Instruct-4bit`, `Qwen2.5-0.5B-Instruct-4bit`, `Qwen3-0.6B-4bit`, `quantized-gemma-2b-it`, `gemma-2-2b-it-4bit`, `Phi-3.5-mini-instruct-4bit`, `GLM-4-9B-0414-4bit`, `granite-3.3-2b-instruct-4bit`, `starcoder2-3b-4bit`, `SmolLM3-3B-4bit` (all `mlx-community/`) and `ekryski/OLMo-2-0425-1B-Instruct-4bit` | 11 `model_type`s: `llama`, `smollm3`, `qwen2`, `qwen3`, `gemma`, `gemma2`, `phi3`, `olmo2`, `glm4`, `granite`, `starcoder2` (+ mlx-lm remaps `mistral`, `iquestcoder` → `llama`) · `universal-dense` graph · L1 | text | two-model · ngram | bf16; unreleased Llama full-attention uniform KV4/KV8 | `ls` labels these `supported (generic)`. Shared full-attention execution is qualified on Llama-3.2-3B at B1/B4, including speculative KV4/KV8 and generated RAM/SSD state; gemma2-family / sliding-window archs run serial. No compiled specialization. A `model_type` absent from the table refuses to load. |
 
 Rules that apply across rows (all enforced in `src/server.ts`):
 
@@ -45,8 +45,11 @@ Rules that apply across rows (all enforced in `src/server.ts`):
   MTP is its own row. Qwen MTP companions may store dense or affine-quantized
   projections; the loader uses each module's quantization metadata. Target
   verification is unchanged, while draft acceptance and speed depend on the
-  companion. Any quantized KV scheme excludes the speculative lane
-  (requests keep the scheme and decode serially without speculation).
+  companion. In the unreleased shared executor, qualified plain, uniform,
+  per-layer affine and TurboQuant layouts compose with drafting through the
+  target/provider interfaces. Positive affine conversion thresholds are also
+  supported by library requests. The loaded model and provider determine
+  which combinations can execute.
 - **Qwen3.5-family checkpoint generations.** Both ship the same graph and both
   load: the mlx-lm-converted naming (`language_model.model.*`,
   `language_model.lm_head`, `vision_tower.*`) and the transformers-5.8 export
@@ -60,7 +63,9 @@ Rules that apply across rows (all enforced in `src/server.ts`):
 - **KV schemes.** `--kv-quant 4|8` (uniform, L1) and `config` (per-layer
   `kv_config.json`, L2) apply to the autoregressive families that ship the
   file; `turbo` additionally requires a full-attention `head_dim` in
-  {64, 128, 256, 512} (refused at startup otherwise) and is solo-only;
+  {64, 128, 256, 512} (refused at startup otherwise). Qualified TurboQuant
+  targets support shared ordinary and speculative execution; sliding layers
+  remain bf16;
   `--paged-kv` is Gemma 4 only, bf16, serial. Flag detail:
   [server-config.md](server-config.md).
 - **Modalities.** Image requests reach a Gemma 4 model only when
@@ -323,3 +328,7 @@ Safety rails:
 
 After a real deletion, gc re-scans so the registry drops the reaped
 rows immediately.
+
+
+Non-Qwen grouped TurboQuant drafting, including assistant donor attention, uses
+the shared cache interfaces. See [composition coverage](../design/batching.md#turboquant-donor-attention-and-grouped-draft-composition).

@@ -616,3 +616,55 @@ describe("DeepspecDrafter (quantized checkpoint)", () => {
     });
   });
 });
+
+
+test("DeepSpec shared context survives unequal commits, checkpoints and retirement", async () => {
+  const { deepspecGroups } = await import("../../src/spec/deepspec-rows");
+  const { disposeAttachments } = await import("../../src/backends/mlx/checkpoint-state");
+  await withTmpDir(async dir => {
+    buildCheckpoint(dir);
+    const drafter = await DeepspecDrafter.load(dir);
+    const groups = deepspecGroups(drafter,"test-deepspec");
+    const target = { identity: {}, gemmaTaps: { layerCount: drafter.cfg.num_target_layers, projection: {} as import("../../src/spec/source").DraftProjection } };
+    const prefill = groups.openPrefill({ target, checkpoints: [null,null] });
+    const sampling = { sample() { throw new Error("proposal graph owns greedy sampling"); } };
+    let active: ReturnType<typeof groups.open> | undefined;
+    const checkpoints: import("../../src/spec/source").DraftRowCheckpoint[] = [];
+    const raw = (width: number, seed: number) => {
+      using one = fakeTargetHiddens(rng(seed),width);
+      using two = fakeTargetHiddens(rng(seed+1),width);
+      return ops.concatAxis([one,two],0);
+    };
+    try {
+      using ids = ops.fromInt32([1,2,3,4,5,6],[2,3]);
+      using hidden = raw(3,71);
+      await prefill.prefill(ids,hidden);
+      checkpoints.push(prefill.capture(0),prefill.capture(1));
+      expect(checkpoints.map(checkpoint => checkpoint.processedTokens)).toEqual([3,3]);
+      active = groups.open({target,checkpoints,sampling});
+      drafter.cfg.confidence_threshold = 1;
+      expect(await active.draft([7,9],BLOCK,[0,0])).toEqual([[],[]]);
+      drafter.cfg.confidence_threshold = 0;
+      const first = await active.draft([7,9],BLOCK,[0,0]);
+      expect(first.map(row => row.length)).toEqual([BLOCK,BLOCK]);
+      expect(await active.draft([7,9],BLOCK,[0,0])).toEqual(first);
+      using verified = raw(BLOCK+1,93);
+      await active.commit([1,3],verified);
+      const saved = [active.capture(0),active.capture(1)]; checkpoints.push(...saved);
+      expect(saved.map(checkpoint => checkpoint.processedTokens)).toEqual([5,7]);
+      const next = await active.draft([11,13],BLOCK,[2,4]);
+      expect(next.map(row => row.length)).toEqual([BLOCK,BLOCK]);
+      expect(await active.draft([11,13],0,[2,4])).toEqual([[],[]]);
+      active.filterRows([1]); expect(active.rowCount).toBe(1);
+      const restored = groups.open({target,checkpoints:[saved[1]!],sampling});
+      try {
+        expect(await active.draft([13],BLOCK,[4])).toEqual(await restored.draft([13],BLOCK,[4]));
+      } finally { restored.dispose(); }
+      active.filterRows([]); expect(active.rowCount).toBe(0);
+      active.append([saved[0]!]); expect(active.rowCount).toBe(1);
+      expect((await active.draft([11],BLOCK,[2]))[0]!.length).toBe(BLOCK);
+    } finally {
+      active?.dispose(); prefill.dispose(); disposeAttachments(checkpoints.map(checkpoint=>checkpoint.attachment)); drafter.dispose();
+    }
+  });
+});

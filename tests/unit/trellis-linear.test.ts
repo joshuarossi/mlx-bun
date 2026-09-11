@@ -73,14 +73,12 @@ describe("packStates / stateAt", () => {
 });
 
 describe("TrellisLinear kernels", () => {
-  test("Qwen packed prefill evaluates cache outputs and checks memory between layers", () => {
+  test("Qwen prefill materializes cache outputs between layers", () => {
     const cached = MlxArray.fromFloat32(new Float32Array([1, 2]), [2]);
     const h = MlxArray.fromFloat32(new Float32Array(10), [1, 5, 2]);
     const packed = Object.create(TrellisLinear.prototype);
-    let checked = 0;
     const model = {
       faIdx: 0, mrope: null,
-      prefillMemoryGuard: () => { checked++; },
       layers: [{ mlp: { gate: packed }, forward: (x: MlxArray) => ops.copyOf(x) }],
       captureLayer: () => {},
       finalNorm: { forward: (x: MlxArray) => ops.copyOf(x) },
@@ -90,7 +88,6 @@ describe("TrellisLinear kernels", () => {
     let out: MlxArray | undefined;
     try {
       out = (Qwen35Model.prototype as any).forwardLayers.call(model, h, cache);
-      expect(checked).toBe(1);
       expect(evaluate.mock.calls.some(([arrays]) => arrays.includes(cached))).toBe(true);
       expect([...out!.toFloat32()]).toEqual(Array(10).fill(0));
     } finally {

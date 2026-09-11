@@ -277,7 +277,10 @@ function decodePhase(c: AnyCache): "concat" | "ring" {
 }
 
 function disposeShared(s: SharedKv): void {
-  if (s.kind === "plain") {
+  if (s.kind === "view") {
+    s.attention.dispose();
+    s.offsetArr?.dispose();
+  } else if (s.kind === "plain") {
     s.keys.dispose();
     s.values.dispose();
   } else {
@@ -381,6 +384,9 @@ export class CompiledDecode {
   readonly #segmented: boolean;
 
   private constructor(readonly model: Gemma4Model) {
+    // A fresh resume has no prefill to evaluate lazy FP32 constants. Capture
+    // their values, not their construction graph, in every compiled closure.
+    model.materializeGraphConstants();
     const t = model.config.text;
     this.#segmented =
       t.numKvSharedLayers === 0 && !t.enableMoeBlock && model.perLayerWidth === 0;

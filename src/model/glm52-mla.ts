@@ -484,7 +484,7 @@ export class Glm52Mla {
         }
         return this.attendAbsorbed(projection, state, selectedPositions);
       }
-      return this.attendReconstructed(projection, state);
+      return this.attendReconstructed(projection, state, cache.leftPad);
     } finally {
       disposeState(state);
       disposeProjection(projection);
@@ -495,6 +495,7 @@ export class Glm52Mla {
   attendReconstructed(
     projection: Pick<Glm52MlaProjection, "qNope" | "qRope">,
     state: Pick<MLACompressedState, "latent" | "rope">,
+    leftPadding: readonly number[] = [],
   ): MlxArray {
     const [batch, tokens] = projection.qNope.shape;
     const keys = state.latent.shape[1]!;
@@ -570,14 +571,19 @@ export class Glm52Mla {
 
     const prefixTokens = keys - tokens!;
     let maskedScores = scores;
-    if (tokens! > 1) {
-      const maskValues = new Float32Array(tokens! * keys);
-      for (let queryToken = 0; queryToken < tokens!; queryToken++) {
+    const padded = leftPadding.some(value => value > 0);
+    if (tokens! > 1 || padded) {
+      const maskRows = padded ? batch! : 1;
+      const maskValues = new Float32Array(maskRows * tokens! * keys);
+      for (let row = 0; row < maskRows; row++) for (let queryToken = 0; queryToken < tokens!; queryToken++) {
         const lastVisible = prefixTokens + queryToken;
+        const start = (row * tokens! + queryToken) * keys;
+        for (let keyToken = 0; keyToken < (leftPadding[row] ?? 0); keyToken++)
+          maskValues[start + keyToken] = -Infinity;
         for (let keyToken = lastVisible + 1; keyToken < keys; keyToken++)
-          maskValues[queryToken * keys + keyToken] = -Infinity;
+          maskValues[start + keyToken] = -Infinity;
       }
-      const mask = MlxArray.fromFloat32(maskValues, [1, 1, tokens!, keys]);
+      const mask = MlxArray.fromFloat32(maskValues, [maskRows, 1, tokens!, keys]);
       maskedScores = ops.add(scores, mask);
       mask.dispose();
       scores.dispose();

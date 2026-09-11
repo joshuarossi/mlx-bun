@@ -5,7 +5,7 @@ const base = () => ({
   promptIds: [1, 2, 3],
   options: { maxTokens: 100, stopSequences: [] },
   requestedMaxTokens: 100,
-  maxSafeContext: 50,
+  contextLimit: 50,
   stream: false,
   wantLogprobs: false,
   topLogprobs: 0,
@@ -18,7 +18,13 @@ const base = () => ({
 });
 
 describe("planRequest", () => {
-  test("clamps generation and derives the lane shape", () => {
+  test.each([100_000, Infinity])("default planning preserves requested cap %s", (requestedMaxTokens) => {
+    const result = planRequest({ ...base(), contextLimit: null, requestedMaxTokens });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.options.maxTokens).toBe(requestedMaxTokens);
+  });
+
+  test("an explicit context limit clamps generation and derives the lane shape", () => {
     const result = planRequest({
       ...base(),
       options: {
@@ -45,7 +51,7 @@ describe("planRequest", () => {
   });
 
   test("returns memory admission as data", () => {
-    const result = planRequest({ ...base(), maxSafeContext: 3 });
+    const result = planRequest({ ...base(), contextLimit: 3 });
     expect(result).toMatchObject({
       ok: false,
       status: 400,
@@ -77,7 +83,7 @@ describe("planRequest", () => {
     let disposed = 0;
     const rejectedOwner = new RequestOwnership();
     rejectedOwner.own({ dispose: () => { disposed++; } });
-    const rejected = planRequest({ ...base(), ownership: rejectedOwner, maxSafeContext: 3 });
+    const rejected = planRequest({ ...base(), ownership: rejectedOwner, contextLimit: 3 });
     expect(rejected.ok).toBe(false);
     rejected.dispose();
     expect(disposed).toBe(1);

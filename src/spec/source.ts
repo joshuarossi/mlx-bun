@@ -23,6 +23,9 @@
 import type { MlxArray } from "../mlx/array";
 import type { Dtype } from "../mlx/ffi";
 import type { Cache } from "../model/gemma4";
+import type { CheckpointAttachment } from "../backends/mlx/checkpoint-state";
+import type { MlxDraftRows } from "../backends/mlx/speculative-round";
+import type { PreparedStateChange } from "../contracts/resources";
 
 /** Numerical ports are backend-specific; returned arrays are caller-owned. */
 export interface DraftProjection {
@@ -33,11 +36,14 @@ export interface DraftProjection {
   logitsFromHidden(hidden: MlxArray): MlxArray;
 }
 
-export interface AssistantTarget {
-  position(): number;
-  embedScaled(token: number): MlxArray;
-  /** Retained temporal views; the draft round disposes every returned array. */
-  readDonors(): { sliding: [MlxArray, MlxArray]; full: [MlxArray, MlxArray] };
+/** Read-only target state and embedding, independent of draft scheduling. */
+export interface AssistantRowsTarget {
+  readonly hiddenSize: number;
+  embed(ids: MlxArray): MlxArray;
+  readDonors(): import("./drafter").AssistantDonors & {
+    readonly positions: readonly number[];
+    dispose(): void;
+  };
 }
 
 export interface QwenMtpTarget {
@@ -53,7 +59,7 @@ export interface QwenMtpTarget {
 export interface TargetView {
   /** Opaque identity for providers borrowing weights from one exact target. */
   readonly identity: object;
-  readonly assistant?: AssistantTarget;
+  readonly assistantRows?: AssistantRowsTarget;
   readonly gemmaTaps?: { readonly layerCount: number; readonly projection: DraftProjection };
   readonly qwenMtp?: QwenMtpTarget;
 }
@@ -61,12 +67,13 @@ export interface TargetView {
 /** A per-request draft-token producer. Created per generation (owns its own
  *  draft-side state), disposed by the serve loop's finally. */
 export interface DraftSource {
-  /** Optional paired target/draft prefill state. Restore transfers matching
-   * target state into the supplied array. Capture borrows evaluated state;
-   * the source owns its retained snapshot. Only full-prefill sources opt in. */
-  readonly prefix?: {
-    restore(prompt: readonly number[], caches: Cache[], namespace: string, maxBytes: number): number;
-    capture(tokens: number[], caches: Cache[], namespace: string, maxBytes: number): void;
+  /** Method-owned companion state, independent of retention and storage.
+   * Capture returns owned immutable views. Restore borrows its attachment;
+   * the source retains the views it needs before returning. */
+  readonly checkpoint?: {
+    readonly namespace: string;
+    capture(processedTokens: number): import("../backends/mlx/checkpoint-state").CheckpointAttachment;
+    restore(processedTokens: number, attachment: import("../backends/mlx/checkpoint-state").CheckpointAttachment): void;
   };
   /** Target prefill shape required by this source's oracle. Most mlx-lm
    *  sources leave the final prompt token pending; native Colibri MTP starts
@@ -86,8 +93,9 @@ export interface DraftSource {
   /** Process the prompt (two-model: prefill the draft model's cache;
    *  assistant/dflash: read the target's state — mostly a no-op, but DSpark
    *  seeds H_ctx from `ctxML`, the tapped prefill context [1,Lp,m*H], present
-   *  iff tapLayers is set). */
-  prefill(promptIds: number[], ctxML?: MlxArray): void | Promise<void>;
+   *  iff tapLayers is set). A composed prefill may supply its exact processed
+   *  token count, so a history source need not infer the target's boundary. */
+  prefill(promptIds: number[], ctxML?: MlxArray, processedTokens?: number): void | Promise<void>;
 
   /** Propose 0..n tokens (RETURN LENGTH IS AUTHORITATIVE — a source may
    *  return fewer than n, e.g. DSpark's confidence-scheduled draft-length
@@ -132,12 +140,69 @@ export interface DraftSource {
   dispose(): void;
 }
 
+export interface DraftRowSampling {
+  /** Borrow [B,V] log-probabilities; return owned [B] IDs on device. */
+  sample(logprobs: MlxArray, steps: readonly number[]): MlxArray;
+}
+
+export interface DraftRowCheckpoint {
+  readonly processedTokens: number;
+  readonly attachment: CheckpointAttachment;
+}
+
+/** Method-owned state membership, independent of scheduling and cache tiers.
+ * Open/append borrow checkpoints; capture returns owned immutable state.
+ * Membership changes and capture occur only between committed rounds.
+ * The caller retains the provider's residency lease for the group's lifetime. */
+export interface DraftRowGroup extends MlxDraftRows {
+  readonly namespace: string;
+  readonly tapLayers: readonly number[];
+  readonly rowCount: number;
+  append(checkpoints: readonly DraftRowCheckpoint[]): void;
+  prepareAppend(checkpoints: readonly DraftRowCheckpoint[]): PreparedStateChange;
+  filterRows(keep: readonly number[]): void;
+  capture(row: number): DraftRowCheckpoint;
+  dispose(): void;
+}
+
+/** Draft preparation consumes each target chunk at the same batch geometry.
+ * Inputs are borrowed and contain only new tokens/context, with equal chunk
+ * lengths across rows. A null checkpoint appends a cold request. The provider
+ * owns alignment and retained hidden state; scheduling and persistence do not.
+ * Membership and capture occur between prefill calls. Capture returns owned
+ * state after at least one target token has been consumed for that row. */
+export interface DraftPrefillGroup {
+  readonly namespace: string;
+  readonly prefillMode: NonNullable<DraftSource["prefillMode"]>;
+  readonly tapLayers: readonly number[];
+  readonly rowCount: number;
+  append(checkpoints: readonly (DraftRowCheckpoint | null)[]): void;
+  prepareAppend(checkpoints: readonly (DraftRowCheckpoint | null)[]): PreparedStateChange;
+  prefill(tokens: MlxArray, context?: MlxArray): void | Promise<void>;
+  /** Resolve borrowed backing before its external restore lease is released. */
+  materialize(): void;
+  filterRows(keep: readonly number[]): void;
+  capture(row: number): DraftRowCheckpoint;
+  dispose(): void;
+}
+
+export interface GroupedDraftProvider {
+  /** Draft state remains valid when target forwards run under a mounted
+   * adapter context. Unqualified learned draft graphs leave this absent. */
+  readonly supportsTargetAdapters?: boolean;
+  openPrefill(options: { target: TargetView;
+    checkpoints: readonly (DraftRowCheckpoint | null)[] }): DraftPrefillGroup;
+  open(options: { target: TargetView; sampling: DraftRowSampling;
+    checkpoints: readonly DraftRowCheckpoint[] }): DraftRowGroup;
+}
+
 /** Server-lifetime owner of the draft machinery (the loaded draft model);
- *  open() mints a per-request DraftSource. */
+ * open() mints a per-request DraftSource; grouped opens shared row state. */
 export interface DraftProvider {
   /** Human-readable id (registry id / path tail) for logs + cache namespacing. */
   readonly id: string;
   readonly weightsBytes: number;
+  readonly grouped?: GroupedDraftProvider;
   open(opts: {
     /** The request's sampler over logprobs [1,V] → token array [1] (the SAME
      *  sampler as the target — mlx-lm parity; greedy drafting under a

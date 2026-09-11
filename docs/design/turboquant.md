@@ -139,15 +139,16 @@ Code map:
   single conversion chokepoint (serve serial lane + generate + eval all flow
   through it); `TurboQuantKVCache.fromKVCache`; `RotatingKVCache` layers stay
   bf16 with a one-time warning; keeps the `quantizedKvStart` semantics.
-- `src/server.ts` — startup refusals: `--batch N` + turbo (serial-only);
-  head_dim not in `TURBOQUANT_HEAD_DIMS` (fail-fast at `createServer`, not on
-  first append — 2026-07-07 review); `--draft-model` + any quantized KV warns
-  and those requests decode serially WITHOUT speculation (spec-eligibility
-  gate excludes `turboQuant`; the spec loop builds fresh bf16 caches and would
-  otherwise silently drop the scheme). `turboQuant` and `kvQuant` are
-  mutually exclusive (turbo wins with a warning).
-- `src/serve/generation-gateway.ts` — explicit solo-only refusal in
-  placement (belt + braces on top of the instanceof exclusion).
+- `src/backends/mlx/kv-codec.ts` and `src/model/turboquant-codec.ts` separate
+  encoding and existing fused kernel selection from storage membership.
+- `KvTensorRows` owns arbitrary encoded planes; `BatchedTurboQuantKVCache`
+  binds the five TQ planes to shared positions and a rotated-value attention
+  port. Gemma owns pre-write row positions across cache appends and releases
+  shared positions with the shared attention state.
+- `src/backends/mlx/cache-layout.ts` supplies ordinary and target-transaction
+  layouts. The gateway binds start-zero TQ and grouped Qwen MTP capabilities;
+  the scheduler only chooses work. Server head-dimension validation remains.
+  `turboQuant` and `kvQuant` are mutually exclusive.
 - `src/kv-store.ts` — `CacheKind "turboquant"`; header carries kBits/vBits
   + head_dim; snapshot/restore/clone branches.
 - `src/model/fingerprint.ts` — NOT touched, by symmetry: uniform
@@ -580,18 +581,65 @@ upstream/mlx-0.31.2; the closed research helpers are removed.
 4. Whole-repo `tsc --noEmit` = 0; fast suite green; turbo requests route
    serial with a clear reason.
 
+The Phase 18 composition is integrated in the unreleased working tree;
+`~/.cache/mlx-bun/turboquant-composition-validation` remains a frozen comparison.
+It extracts the existing
+encode/decode operations behind a KV codec interface and applies that codec to
+one owner of five tensor fields with shared row positions. Merge, retirement,
+rollback and extraction operate on encoded bytes. A rotated-value attention
+port lets Gemma and MiniCPM consumers retain the existing deferred inverse
+rotation with either storage layout.
+
+On M1 Max and M4 Pro, the focused codec/kernel/row checks pass 29 tests and
+2,828 assertions. A native Qwen target test passes 2,824 assertions on each
+machine, comparing retained state and subsequent full logits at the same B=2
+shape across unequal accepted prefixes. Existing fused kernel selection is
+preserved. The subsequent MLX cache-layout binding now serves ordinary and
+Qwen MTP groups through those same encoded rows. Scheduling retains its
+method lifecycle; sampling and fused codec selection are unchanged. The
+method key and paired-prefix namespace include the TurboQuant scheme.
+Temporary extracted-state views use the existing lease interface.
+
+Fused K8/V3 serving passes on both Macs: MTP2 and MTP4 each prove true B4,
+seeded logprobs, mixed grammar, joins and retirement; ordinary tests prove
+B1/B2/B3 and immutable RAM donor reuse. Paired RAM and SSD restart tests
+preserve target/draft/hidden state and continuations. Full suites pass
+2,078 tests on M1 and 2,082 on M4, with typechecks clear. MTP3 also passes
+the M1 native/HTTP gate. On M1, all 21 saved-boundary requests match across
+8 GiB synchronous, 1 GiB synchronous and 1 GiB asynchronous RAM-cache arms,
+including full usage and acceptance. Each arm durably flushes all seven
+snapshots with no missing, pending, dropped or failed writes. The constrained
+arms cause six eviction spills; the async observer confirms 3,264 submissions.
+These sequential shared-server pressure checks cause substantial swapping;
+B4 correctness is a separate native gate, and no speed or memory-reduction
+claim follows. M4 pressure and strict paired performance acceptance remain open.
+The shared integration is now adopted in the unreleased working tree; the
+released v0.3.0 binary retains its earlier placement limits.
+Evidence: `reports/qwen38-closeout/composition-baseline/turboquant-composition-manifest.json`.
+Integration evidence: `reports/qwen38-closeout/composition-baseline/turboquant-serving/`.
+Broader family checks pass MiniCPM seeded/logprob serving but reproduce a
+Gemma e4b/12B failure: attention borrows the row-offset array across a cache
+append that releases it. The adopted ownership fix passes seeded/logprob and
+prefix checks on both Gemma families, MiniCPM/Qwen prefix controls, and the
+complete suites on both Macs. M4 acceptance also passes fused and unfused
+Gemma seeded sampling, affine KV4 controls and Qwen MTP3 B4 serving.
+MiniCPM prefix checks allow the existing policy to supersede trimmable donors
+while proving byte identity and continuation through retirement.
+
 ## KV-leg limits and non-goals (recorded so they don't creep)
 
 - Full-attention layers only; rotating/sliding-window layers stay bf16 (warn
   once, never throw). Head dims outside {64,128,256,512} refused at server
   start.
-- Solo-only: no batched TurboQuant (novel Cache class); paged-KV combos are
-  refused explicitly.
+- Shared ordinary execution supports row-local delayed TurboQuant; Qwen MTP
+  requires start zero. Delayed affine conversion and paged-KV combinations
+  remain unsupported.
 - No fused quantized-SDPA Metal kernel (remaining fetch cost is
   unpack+gather); no QJL residual stage; no entropy coding (the paper
   declined it too).
-- Speculative lane is bf16-KV-only: turbo + `--draft-model` keeps the KV
-  scheme and decodes serially without speculation.
+- Strict legacy serial speculation and draft providers without grouped TQ
+  support retain their existing exclusions. A shared server with one active
+  row is the TQ/MTP B1 path.
 - No speed claims: v1 dequant-on-fetch is expected slower per step at long
   context; this ships as a memory/context feature like uniform KV. Admission
   still bills turbo as bf16 (server-config.md says so).
@@ -2100,3 +2148,65 @@ any use of the larger crossover or equivalent small-chunk span splitting.
 - 2026-09-02 — Q3 full recipe (rot + LDLQ + k-map 3.00) PASSED: KL 0.1553 at
   3.55 bpw, MMLU 88 / tGSM 48 / rawGSM 44; eval-carrier repack tool; LDLQ
   loop-shadow bug fixed.
+
+## Delayed row conversion and reusable precision boundaries
+
+`DelayedTurboQuantKVCache` implements the existing batchable cache and
+rotated-value attention ports. It keeps serial row caches during a mixed
+plain/TQ phase and invokes the existing maintenance operation before each
+row's next append. `KvTensorRows` supplies positions and masks without
+dummy tensor planes. Once every row converts, `BatchedTurboQuantKVCache`
+owns the encoded rows. The scheduler invokes a generic preparation hook;
+it does not implement threshold, codec or inverse-rotation logic.
+
+The rotated-value port can capture an output transform for its fetched
+state. Plain value rows pass through unchanged, and TQ rows receive the
+existing inverse rotation. Gemma carries that transform through its donor
+KV consumers. Model projections and attention remain at B=N. Start-zero
+layouts and kernel selection retain their existing paths.
+
+A cache's `minimumReusableOffset` records an irreversible precision
+boundary. Delayed maintenance sets it to the actual conversion offset,
+which can exceed the configured threshold when a prefill chunk crosses it.
+Clone, row extraction and SSD metadata retain the bound. RAM/SSD selection
+and ancestor supersession check it independently of physical trimmability.
+Earlier plain donors remain reusable after a converted descendant appears.
+Old TQ SSD headers lacking the bound conservatively use their stored offset.
+
+Focused tests cover exact mixed-row bytes and output transforms through
+reordering, retirement and re-admission, plus RAM/SSD ancestor retention,
+restart, continuation and old-header compatibility. Native seeded/logprob
+and prefix gates accept positive thresholds via their test environment
+switches. Shared Qwen MTP also uses the delayed layout. Its transaction
+begins conversion from committed history before verification. A verify block
+may cross the configured threshold; resolution converts at the retained
+offset after rollback and before checkpoint publication, so rejected tokens
+never set the precision boundary.
+The draft provider retains its existing paired checkpoint format.
+
+Mixed rollback and final packed promotion preserve each row's physical left
+padding. Re-aligning it based on another row's accepted count changes SDPA
+reduction positions even when all live cache bytes match. Same-batch native
+controls check every target layer and subsequent hidden rows after unequal
+acceptance. Affine delayed speculation and the legacy serial TQ speculative
+path remain excluded. This implementation changes no defaults.
+
+### Wider split-K verification screen
+
+The current packed down-projection operation covers five through eight input
+vectors. An isolated candidate extended that operation through 32 vectors,
+using 8-, 16- or 32-row tiles while retaining the native split partition and
+accumulation order. Scheduler and speculation policy were unchanged.
+
+Actual 2-, 3- and 4-bit artifact projections pass exact expanded-weight
+controls at every new width and three input seeds on both Macs. Full Qwen
+logits, recurrent/KV state and continuation match the unchanged eligibility
+control at B1/B2/B4/B8 on both Macs. Call-count assertions prove the wider
+kernels ran. Updated unit coverage includes wider partition tails and
+noncontiguous inputs; both complete suites and typechecks pass.
+
+The alternating M4 prompt-lookup comparison preserves all requests but loses
+concurrent throughput. This wider eligibility is not adopted. Future work
+needs serving dispatch/cost attribution before additional tile tuning.
+Measurements: benchmarks.md. Evidence and source manifest:
+`reports/qwen38-closeout/composition-baseline/trellis-batch-width/`.

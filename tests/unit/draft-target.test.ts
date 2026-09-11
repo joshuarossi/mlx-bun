@@ -1,3 +1,4 @@
+import * as ops from "../../src/mlx/ops";
 import { expect, test } from "bun:test";
 import { AssistantSource } from "../../src/spec/assistant-source";
 import { DflashSource } from "../../src/spec/dflash-source";
@@ -11,16 +12,16 @@ test("an assistant uses an independent target's ports and releases each borrowed
   const positions: number[] = [];
   let step = 0;
   const source = new AssistantSource({
-    forward(_embedding, _hidden, _donors, position) {
-      positions.push(position);
-      return { token: 4 + step, nextHidden: tensor(20 + step++) };
+    forwardRows(_embedding, _hidden, _donors, position) {
+      positions.push(position as number);
+      const token = 4 + step;
+      return { tokens: ops.fromInt32([token], [1]), nextHidden: tensor(20 + step++) };
     },
   }, {
     identity: {},
-    assistant: {
-      position: () => 9,
-      embedScaled: (token) => tensor(token),
-      readDonors: () => ({ sliding: [tensor(10), tensor(11)], full: [tensor(12), tensor(13)] }),
+    assistantRows: {
+      hiddenSize: 1, embed: (ids) => tensor(ops.itemUint32(ids)),
+      readDonors: () => ({ positions: [9], sliding: {} as never, full: {} as never, dispose() { released.push(10, 11, 12, 13); } }),
     },
   });
   expect(source.draft([3], 2, 0, tensor(99))).toEqual([4, 5]);
@@ -34,10 +35,10 @@ test("an assistant uses an independent target's ports and releases each borrowed
 test("assistant draft failure releases retained donors and its current embedding", () => {
   const released: number[] = [];
   const tensor = (id: number) => ({ dispose() { released.push(id); } }) as MlxArray;
-  const source = new AssistantSource({ forward() { throw new Error("draft failed"); } }, {
-    identity: {}, assistant: {
-      position: () => 0, embedScaled: () => tensor(1),
-      readDonors: () => ({ sliding: [tensor(2), tensor(3)], full: [tensor(4), tensor(5)] }),
+  const source = new AssistantSource({ forwardRows() { throw new Error("draft failed"); } }, {
+    identity: {}, assistantRows: {
+      hiddenSize: 1, embed: () => tensor(1),
+      readDonors: () => ({ positions: [0], sliding: {} as never, full: {} as never, dispose() { released.push(2, 3, 4, 5); } }),
     },
   });
   expect(() => source.draft([1], 1, 0, tensor(99))).toThrow("draft failed");

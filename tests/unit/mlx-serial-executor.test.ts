@@ -34,6 +34,29 @@ function fixture() {
   return { binding, services, released, stored, stats, TrackedCache };
 }
 
+test("speculation receives the shared cache and current mounted adapter revision", async () => {
+  const f = fixture();
+  let revision = "upper:revision-1";
+  const namespaces: string[] = [];
+  const binding: MlxSerialBinding = { ...f.binding,
+    speculate: async (_prompt, _options, _onToken, services) => {
+      expect(services?.prefixCache).toBe(f.services.promptCache);
+      expect(services?.cloneState).toBe(f.services.cloneState);
+      namespaces.push(services!.cacheNamespace!);
+      return f.stats;
+    },
+  };
+  const run = createMlxSerialExecutor(binding, { ...f.services,
+    adapterNamespace: () => revision,
+  });
+  const speculative = { ...execution, method: "speculative" as const };
+  await run([0, 1], { adapters: ["upper"] }, () => {}, undefined, undefined, speculative);
+  revision = "upper:revision-2";
+  await run([0, 1], { adapters: ["upper"] }, () => {}, undefined, undefined, speculative);
+  await run([0, 1], {}, () => {}, undefined, undefined, speculative);
+  expect(namespaces).toEqual(["upper:revision-1", "upper:revision-2", ""]);
+});
+
 test("serial execution transfers completed state to the prefix store after an early stop", async () => {
   const f = fixture();
   const cache = new f.TrackedCache();
@@ -118,46 +141,22 @@ test("cancellation while replaying a checkpoint stops before the next saved toke
   expect(f.stored).toEqual([]);
 });
 
-for (const failAt of [0, 1, 2]) {
-  test(`serial memory guard owns its scope and state when check ${failAt} fails`, async () => {
-    const f = fixture();
-    const events: string[] = [];
-    const cache = new f.TrackedCache();
-    f.services.promptCache.take = () => {
-      events.push("take");
-      return { tokens: [0], caches: [cache], ns: "" };
-    };
-    let checks = 0;
-    const binding: MlxSerialBinding = { ...f.binding,
-      enterMemoryGuard(_budget, promptTokens, chunkSize) {
-        expect(promptTokens).toBe(2);
-        expect(chunkSize).toBe(128);
-        events.push("enter");
-        return {
-          check() {
-            events.push("check");
-            if (++checks === failAt) throw new Error("headroom exhausted");
-          },
-          close() { f.released.push("memory"); },
-        };
-      },
-    };
-    const services: MlxSerialServices = { ...f.services, memoryBudget: {
-      usableBytes: 1, kvOptions: {}, promptCache: { totalBytes: 0, relievePressure: () => 0 },
-    } };
-    const result = createMlxSerialExecutor(binding, services)([0, 1], { prefillChunkSize: 128 },
-      () => { events.push("emit"); }, undefined, undefined, execution);
-    if (failAt) {
-      await expect(result).rejects.toThrow("headroom exhausted");
-      expect(f.stored).toEqual([]);
-      expect(f.released).toEqual(failAt === 1 ? ["cache", "memory"] : ["cache", "context", "memory"]);
-    } else {
-      expect(await result).toEqual(f.stats);
-      expect(f.stored).toEqual([[cache]]);
-      expect(f.released).toEqual(["context", "memory"]);
-      cache.dispose();
-    }
-    expect(events).toEqual(failAt === 1 ? ["take", "enter", "check"] :
-      ["take", "enter", "check", "check", ...(!failAt ? ["emit"] : [])]);
-  });
-}
+test("serial generation preserves the output cap and attempts the full decode", async () => {
+  const f = fixture();
+  let emitted = 0;
+  const stats = { ...f.stats, generatedTokens: 300 };
+  const binding: MlxSerialBinding = { ...f.binding,
+    generate: (_prompt, options) => {
+      expect(options?.maxTokens).toBe(300);
+      return new Generation((async function* () {
+        for (let index = 0; index < 300; index++) yield { token: 2, index };
+        return stats;
+      })());
+    },
+  };
+  await createMlxSerialExecutor(binding, f.services)([0, 1], { maxTokens: 300 },
+    () => { emitted++; }, undefined, undefined, execution);
+  expect(emitted).toBe(300);
+  expect(f.released).toEqual(["context"]);
+  for (const cache of f.stored.flat()) cache.dispose();
+});

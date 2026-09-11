@@ -64,6 +64,24 @@ mlx-bun serve GLM-5.2 --context-length 4096
 semantics, and which combinations compose live in
 **[server-config.md](server-config.md)** — this page only names them.
 
+Library requests support delayed uniform or per-layer affine conversion with
+qualified shared drafting providers, including rotating caches. CLI affine
+quantization starts at zero.
+
+The unreleased shared executor supports qualified Qwen MTP and start-zero
+TurboQuant at one or several active rows; `--batch 1` still selects the
+legacy serial control. No new CLI flag is required for the shared interfaces.
+Full-attention and rotating targets, including Llama, MiniCPM and Gemma, use shared bf16, uniform KV4/KV8, per-layer affine KV or TurboQuant
+prompt lookup and standalone drafting, including generated RAM/SSD state.
+Gemma assistant drafting also shares these target layouts and caches its last true target
+hidden alongside target KV through the same RAM/SSD interfaces.
+DeepSpec and DSpark use the same executor and persist their projected context through those
+interfaces. DeepSpec accepts bf16 or affine-quantized weights; DSpark retains
+its Markov/RNN head and checkpoint confidence policy.
+
+Shared Qwen MTP retains completed decode state through the existing
+`--prompt-cache` and `--ssd-cache` settings.
+
 | Group | Flags |
 |---|---|
 | Network | `--host`, `--port`, `--no-open`, `--allow-private-media` |
@@ -71,12 +89,16 @@ semantics, and which combinations compose live in
 | Process model | `--isolate`, `--model-pool`, `--unix` (internal — the engine half of `--isolate`) |
 | Scheduling | `--batch` (`--decode-concurrency` accepted as the mlx_lm.server alias) |
 | KV cache | `--kv-quant`, `--paged-kv`, `--paged-kv-block-size` |
-| Adapters | `--adapter` (`--adapter-path` alias) |
-| Speculative decoding | `--draft-model`, `--draft-kind`, `--num-draft-tokens`, `--ngram-max`, `--ngram-min` |
+| Adapters (compatible sets can batch) | `--adapter` (`--adapter-path` alias) |
+| Speculative decoding (Qwen methods and full-attention/rotating lookup/standalone and Gemma assistant/DeepSpec/DSpark drafting share execution) | `--draft-model`, `--draft-kind`, `--num-draft-tokens`, `--ngram-max`, `--ngram-min` |
 | GLM-5.2 | `--mtp`, `--context-length` |
 | Sampling defaults | `--temperature` (`--temp` alias), `--top-p`, `--top-k`, `--max-tokens`, `--thinking`, `--hlg-sampling`, `--hlg-width`, `--hlg-shoulder`, `--hlg-toe`, `--hlg-pivot-offset` |
 | Parity tier | `--l1`, `--l2` (`--l3` errors — removed) |
 | Kill switches | `--compiled-decode`, `--compiled-activations`, `--fused-sdpa`, `--force-wire`, `--expert-offload` |
+
+Serving treats memory estimates as advisory by default and attempts the request.
+`--memory-budget` opts into estimated admission limits; `--kv-budget` opts
+into aggregate KV limits. `--max-tokens` supplies an explicit output cap.
 
 Endpoints: `/v1/chat/completions`, `/v1/completions`, `/v1/messages`,
 `/v1/responses`, `/v1/embeddings`, `/v1/models`, `/v1/adapters`, `/health`,
@@ -469,6 +491,11 @@ and optiq reference servers and writes a dated report:
 ```sh
 bun scripts/bench-serve.ts all
 bun scripts/bench-serve.ts all --models cpm5,e4b --arms mlx-bun,mlx-lm --out report.md
+bun scripts/bench-serve.ts all --models qwen27b --arms mlx-bun-serial,mlx-bun --logprobs --top-logprobs 3
+# Same KV settings on both executors
+bun scripts/bench-serve.ts all --models qwen27b --arms mlx-bun-serial,mlx-bun --kv-quant 4
+# Same adapter settings on both execution arms:
+bun scripts/bench-serve.ts all --models e4b --arms mlx-bun-serial,mlx-bun --adapter fixtures/adapters/upper
 ```
 
 Curated results: [benchmarks.md](benchmarks.md).
@@ -544,3 +571,15 @@ behind each "not covered" row is in
 Native verbs with no mlx-lm counterpart — `pi`, `harness pi`, `embed`,
 `fit`, `train-watch`, `memory`, `evals` — are the surface that makes mlx-bun
 more than a drop-in.
+
+
+`--kv-quant turbo` composes with grouped lookup, standalone, Gemma assistant,
+DeepSpec and DSpark drafting on supported targets. Sliding layers stay bf16.
+See [batching design](../design/batching.md) for composition evidence and limits.
+
+Paged KV retains the configured `--batch` size. Gemma4 bf16 requests use the shared executor and bypass the prompt cache; quantized KV and draft combinations remain unavailable. See [server configuration](server-config.md).
+
+`--generation-checkpoint N` requires `--ssd-cache` and queues owned snapshots
+for eligible ordinary requests. Shared continuation supports eligible Qwen, Llama, MiniCPM and Gemma4 requests with or without adapters, excluding media, grammar, fill, paging, logprobs or speculation.
+Repeat the identical request to replay and resume; flush before shutdown for
+eventual queued snapshots to become durable.

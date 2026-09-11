@@ -25,7 +25,7 @@ export class ChatStage {
     private readonly prep: RequestPrep,
     private readonly promptCache: Pick<PromptCache, "peekPrefixLen">,
     /** Admission ceiling (fit() / the GLM memory plan), resolved once. */
-    private readonly maxSafeContext: number,
+    private readonly contextLimit: number | null,
     /** `serve --adapter <dir>` startup default; a request's explicit
      *  `adapter` (incl. "none") wins. */
     private readonly defaultAdapter?: string,
@@ -165,7 +165,7 @@ export class ChatStage {
         promptIds,
         options,
         requestedMaxTokens,
-        maxSafeContext: this.maxSafeContext,
+        contextLimit: this.contextLimit,
         stream: request.stream,
         wantLogprobs,
         topLogprobs,

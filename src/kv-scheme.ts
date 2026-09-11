@@ -86,6 +86,42 @@ export function kvBytesAt(
     value.linearStateBytes;
 }
 
+/** Head dims MLX 0.32.2's fused multi-query SDPA kernel serves for L > 8
+ *  queries on M1–M4 GPUs (mlx/backend/metal/scaled_dot_product_attention.cpp
+ *  `use_fallback`: 192 and 256 always fall back off-NAX; `has_fused_kernel`
+ *  lists 64/72/80/96/128 for the full kernel). Every other head dim runs
+ *  mlx/fast.cpp's composed fallback, which materializes the bf16 scores
+ *  tensor [heads, L, S] plus a bool mask per full-attention layer. The
+ *  decode kernel (L ≤ 8) fuses 256, so this term is a prefill-only cost. */
+export const FUSED_SDPA_HEAD_DIMS: ReadonlySet<number> = new Set([64, 72, 80, 96, 128]);
+const SDPA_SCORES_BYTES = 2; // bf16 scores in q's dtype
+const SDPA_FUSED_MAX_QUERIES = 8;
+
+/** Peak bytes of the SDPA-fallback scores tensor live during one prefill
+ *  chunk of `chunk` queries against a `ctx`-token context: the last chunk
+ *  sees the longest keys, and the lazy graph keeps one layer's scores live
+ *  at a time. Zero when every attention layer's head dim fuses. Sliding
+ *  layers see at most `window + L` keys. Admission-only (fit and the
+ *  in-flight memory guard); nothing here changes what is computed. */
+export function sdpaFallbackBytes(config: ModelConfig, chunk: number, ctx: number): number {
+  const text = config.text;
+  const heads = text.numAttentionHeads || 0;
+  const queries = Math.min(chunk, ctx);
+  if (heads <= 0 || queries <= SDPA_FUSED_MAX_QUERIES) return 0;
+  let peak = 0;
+  const layers = text.numHiddenLayers || text.layerTypes.length;
+  for (let layer = 0; layer < layers; layer++) {
+    const type = text.layerTypes[layer] ?? "full_attention";
+    if (type === "linear_attention") continue;
+    const sliding = type === "sliding_attention" && text.slidingWindow > 0;
+    const headDim = sliding ? text.headDim : text.globalHeadDim;
+    if (FUSED_SDPA_HEAD_DIMS.has(headDim)) continue;
+    const keys = sliding ? Math.min(ctx, text.slidingWindow + queries) : ctx;
+    peak = Math.max(peak, heads * queries * keys * SDPA_SCORES_BYTES);
+  }
+  return peak;
+}
+
 export class KvScheme {
   readonly kind: KvSchemeKind;
   readonly options: Readonly<ResolvedKvSchemeOptions>;
@@ -112,10 +148,17 @@ export class KvScheme {
   get cacheKey(): string {
     if (this.kind === "turbo") {
       const turbo = this.options.turboQuant!;
-      return `turbo-k${turbo.kBits}v${turbo.vBits}`;
+      const start = this.options.quantizedKvStart ?? 0;
+      return `turbo-k${turbo.kBits}v${turbo.vBits}${start > 0 ? `-start${start}` : ""}`;
     }
-    if (this.kind === "affine-uniform") return `kv${this.options.kvBits}`;
-    if (this.kind === "affine-config") return "config";
+    if (this.kind === "affine-uniform") {
+      const start = this.options.quantizedKvStart ?? 5000, group = this.options.kvGroupSize ?? 64;
+      return `kv${this.options.kvBits}${group !== 64 ? `-g${group}` : ""}${start > 0 ? `-start${start}` : ""}`;
+    }
+    if (this.kind === "affine-config") {
+      const start = this.options.quantizedKvStart ?? 0;
+      return `config${start > 0 ? `-start${start}` : ""}`;
+    }
     return "bf16";
   }
 
@@ -154,14 +197,24 @@ export class KvScheme {
     return this.kind === "turbo" ? {} : this.generationOptions;
   }
 
-  /** The current batch engine accepts only per-layer affine schemes whose
-   * named cache instances can perform the required conversion. The capability
-   * probe is mandatory for quantized schemes so config shape alone can never
-   * authorize placement. */
-  batchable(config: ModelConfig, canConvert?: (layerIdx: number) => boolean): boolean {
+  /** Affine layouts convert during solo prefill. TQ also has a transitional
+   * row layout that preserves each request's delayed conversion boundary. */
+  batchable(config: ModelConfig, canConvert?: (layerIdx: number) => boolean,
+    cacheLayerCount = config.text.numHiddenLayers, capabilities: { delayedAffine?: boolean } = {}): boolean {
     if (this.kind === "bf16") return true;
-    if (this.kind !== "affine-config") return false;
+    if (this.kind !== "affine-config" && this.kind !== "affine-uniform" && this.kind !== "turbo") return false;
     if (!canConvert) return false;
+    const start = this.options.quantizedKvStart ?? (this.kind === "affine-uniform" ? 5000 : 0);
+    if (start > 0 && this.kind !== "turbo" && !capabilities.delayedAffine) return false;
+    if (this.kind === "affine-uniform" || this.kind === "turbo") {
+      // Some models share the donor prefix's KV in later layers. Probe the
+      // actual cache list, just as uniform conversion does.
+      for (let layer = 0; layer < cacheLayerCount; layer++) {
+        if (config.text.layerTypes[layer] === "linear_attention") continue;
+        if (!canConvert(layer)) return false;
+      }
+      return true;
+    }
     return this.options.kvConfig!.every((entry) => {
       if (entry.layerIdx < 0 || entry.layerIdx >= config.text.numHiddenLayers) return false;
       return (config.text.layerTypes[entry.layerIdx] ?? "full_attention") !== "linear_attention" &&
@@ -175,11 +228,15 @@ export function resolveKvScheme(input: {
   turboQuant?: TurboQuantScheme;
   config?: readonly KvQuantSpec[] | null;
   missingConfig?: "bf16" | "error";
+  quantizedKvStart?: number;
 }): KvScheme {
+  const start = input.quantizedKvStart;
+  if (start !== undefined && (!Number.isSafeInteger(start) || start < 0))
+    throw new Error("quantizedKvStart must be a nonnegative integer");
   if (input.turboQuant) {
     return new KvScheme("turbo", {
       turboQuant: input.turboQuant,
-      quantizedKvStart: 0,
+      quantizedKvStart: start ?? 0,
     });
   }
   if (input.override === "off" || input.override === undefined)
@@ -190,10 +247,11 @@ export function resolveKvScheme(input: {
         throw new Error("model has no kv_config.json (--kv-quant config)");
       return new KvScheme("bf16", {});
     }
-    return new KvScheme("affine-config", { kvConfig: [...input.config] });
+    return new KvScheme("affine-config", { kvConfig: [...input.config],
+      ...(start === undefined ? {} : { quantizedKvStart: start }) });
   }
   return new KvScheme("affine-uniform", {
     kvBits: input.override,
-    quantizedKvStart: 0,
+    quantizedKvStart: start ?? 0,
   });
 }

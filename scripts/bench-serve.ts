@@ -58,10 +58,12 @@
 //                                  [--arms mlx-bun,mlx-lm,...] [--out report.md]
 //                                  [--model-path /exact/artifact --label name]
 //                                  [--workload-seed campaign-block-0] [--dry-run]
+//                                  [--logprobs] [--top-logprobs 3]
+//                                  [--aggregate-context 2048] [--aggregate-stagger-ms 25]
 //                                  [--diagnostic] (records a non-quotable run)
-// Serial experiments (--arms mlx-bun-serial only) also accept:
+// Configured experiments (--arms mlx-bun-serial,mlx-bun) also accept:
 //   --draft-model PATH --draft-kind mtp --num-draft-tokens 2
-//   --kv-quant 4 --prompt-cache 4
+//   --kv-quant 4 --prompt-cache 4 --adapter PATH
 //
 // Engine-level legs (in-process kernels, gen-peak memory, kill-switch A/Bs)
 // remain in bench-h2h.ts / scripts/bench-serve.ts all --engine — different question
@@ -69,24 +71,25 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
+import { hostname, release, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { EvalDB, gitCommit } from "../src/evaldb";
 import { checkMachine } from "../src/preflight";
-import { ORACLE_VENV } from "../tests/support/paths";
-
-const VENV = `${ORACLE_VENV}/bin`;
+// Offline report consumers import the measurement helpers. Resolving the
+// reference here would make saved-result rendering depend on a local Python
+// installation, including any stale MLX_BUN_ORACLE_VENV override.
+let VENV = "";
 // The venv's console scripts carry STALE SHEBANGS (the venv was moved from
 // mlx-lm-example/ — found 2026-07-05: posix_spawn ENOENT on every script).
 // Invoke through the venv python instead; immune to relocation.
-const PY = `${VENV}/python`;
+let PY = "";
 const CLI = new URL("../src/cli.ts", import.meta.url).pathname;
 
-// Explicit serial experiments keep their settings in the command manifest.
+// Explicit engine experiments keep their settings in the command manifest.
 // Restrict overrides so a configured cell cannot masquerade as a default or
 // same-policy oracle comparison, or replace benchmark-owned ports/models.
-export function serialBenchmarkArgs(args: string[]): string[] {
-  const allowed = new Set(["draft-model", "draft-kind", "num-draft-tokens", "kv-quant", "prompt-cache"]);
+export function engineBenchmarkArgs(args: string[]): string[] {
+  const allowed = new Set(["draft-model", "draft-kind", "num-draft-tokens", "kv-quant", "prompt-cache", "adapter", "paged-kv-block-size", "ngram-min", "ngram-max", "generation-checkpoint"]);
   const result: string[] = [];
   for (const name of allowed) {
     const key = `--${name}`, index = args.indexOf(key);
@@ -94,15 +97,17 @@ export function serialBenchmarkArgs(args: string[]): string[] {
     const value = args[index + 1];
     if (!value || value.startsWith("--")) throw new Error(`${key} requires a value`);
     if (args.lastIndexOf(key) !== index) throw new Error(`${key} may only be supplied once`);
-    if (["num-draft-tokens", "prompt-cache"].includes(name) &&
+    if (["num-draft-tokens", "prompt-cache", "paged-kv-block-size", "ngram-min", "ngram-max", "generation-checkpoint"].includes(name) &&
         (!Number.isSafeInteger(Number(value)) || Number(value) < (name === "prompt-cache" ? 0 : 1)))
       throw new Error(`${key} requires ${name === "prompt-cache" ? "a nonnegative" : "a positive"} integer`);
     result.push(key, value);
   }
+  if (args.includes("--paged-kv")) result.push("--paged-kv");
   if (result.length) {
     const index = args.indexOf("--arms");
-    if (index < 0 || args[index + 1] !== "mlx-bun-serial")
-      throw new Error("server configuration overrides require --arms mlx-bun-serial; run controls separately");
+    const selected = args[index + 1]?.split(",");
+    if (index < 0 || !selected?.length || selected.some(arm => arm !== "mlx-bun-serial" && arm !== "mlx-bun"))
+      throw new Error("server configuration overrides require explicit --arms mlx-bun-serial and/or mlx-bun; run reference controls separately");
   }
   return result;
 }
@@ -111,7 +116,7 @@ function benchmarkRuntimeEnvironment(): Record<string, string> {
   const names = ["MLX_BUN_LIBMLXC", "MLX_BUN_TRELLIS", "MLX_BUN_TRELLIS_VARIANT",
     "MLX_BUN_TRELLIS_ASYNC_EXPAND", "MLX_BUN_EARLY_FIRST_TOKEN", "MLX_BUN_FILL",
     "MLX_BUN_MTP_PROMPT_CACHE", "MLX_BUN_QWEN_SPEC_KV4", "MLX_BUN_RD_CONTEXT_LIMIT",
-    "MLX_BUN_RD_PREFILL_CHUNK", "MLX_BUN_PREFILL_TAIL_SPLIT"];
+    "MLX_BUN_RD_PREFILL_CHUNK", "MLX_BUN_PREFILL_TAIL_SPLIT", "MLX_BUN_TURBOQUANT_FUSED_DECODE", "MLX_BUN_PAGED_KV"];
   return Object.fromEntries(names.flatMap((name) => process.env[name] === undefined
     ? [] : [[name, process.env[name]!]]));
 }
@@ -130,8 +135,45 @@ const DECODE_RUNS = 5;
 const TTFT_RUNS = 3;
 const AGG_STREAMS = 4;
 const AGG_TOKENS = 128;
+export function aggregateBenchmarkSettings(args: string[]): { contextTarget: number; staggerMs: number } {
+  const read = (name: string) => {
+    const index = args.indexOf(`--${name}`);
+    const value = index < 0 ? 0 : Number(args[index + 1]);
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error(`--${name} requires a nonnegative integer`);
+    return value;
+  };
+  return { contextTarget: read("aggregate-context"), staggerMs: read("aggregate-stagger-ms") };
+}
+const AGG_WORKLOAD = aggregateBenchmarkSettings(argv);
 const SPREAD_TOL = 1.15;
 const WORKLOAD_SEED = opt("workload-seed", "bench-serve-v2");
+const REFERENCE_PREFILL = opt("reference-prefill", "server");
+const ALLOWED_CPU_PROCESS = opt("allow-cpu-process", "");
+const PREFLIGHT_LIMITS = { allowCpuProcesses: ALLOWED_CPU_PROCESS ? [ALLOWED_CPU_PROCESS] : [] };
+
+/** Capture settings are shared by all arms, timed phases and request hashes. */
+export function benchmarkLogprobsArgs(args: string[]): { logprobs?: true; top_logprobs?: number } {
+  const result: { logprobs?: true; top_logprobs?: number } = {};
+  if (args.includes("--logprobs")) result.logprobs = true;
+  const index = args.indexOf("--top-logprobs");
+  if (index !== -1) {
+    const value = Number(args[index + 1]);
+    if (!Number.isInteger(value) || value < 0 || value > 11)
+      throw new Error("--top-logprobs requires an integer from 0 through 11");
+    result.top_logprobs = value;
+  }
+  return result;
+}
+
+/** Keep the stock server and the explicitly matched-boundary control distinct. */
+export function referenceServerCommand(python: string, optiq: boolean, prefill: string): string[] {
+  if (prefill !== "server" && prefill !== "unsplit")
+    throw new Error("--reference-prefill must be server or unsplit");
+  if (prefill === "unsplit") return [python,
+    new URL("./oracle/serve-prefill-control.py", import.meta.url).pathname,
+    ...(optiq ? ["--optiq", "serve"] : [])];
+  return optiq ? [python, "-c", "from optiq.cli import cli; cli()", "serve"] : [python, "-m", "mlx_lm.server"];
+}
 
 /** Independent of engine/model: paired arms must receive identical requests.
  * A retry has its own nonce so a partially completed cold phase cannot hit its
@@ -237,8 +279,8 @@ function snapshotOf(repoDir: string): string {
   }
 }
 
-type Arm = "mlx-bun" | "mlx-bun-isolated" | "mlx-bun-serial" | "mlx-bun-mixed" | "mlx-lm" | "optiq-mixed";
-interface Cell { model: string; arm: Arm }
+export type Arm = "mlx-bun" | "mlx-bun-isolated" | "mlx-bun-serial" | "mlx-bun-mixed" | "mlx-lm" | "optiq-mixed";
+export interface Cell { model: string; arm: Arm }
 
 function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
   const m = MODELS[c.model]!;
@@ -247,11 +289,11 @@ function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
   const ssd = ssdDir ? ["--ssd-cache", ssdDir] : [];
   switch (c.arm) {
     case "mlx-bun": // THE drop-in arm: real CLI, real defaults (+ SSD tier for the restart leg)
-      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", ...ssd];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", ...ssd, ...engineBenchmarkArgs(argv)];
     case "mlx-bun-isolated":
       return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--isolate", ...ssd];
     case "mlx-bun-serial":
-      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd, ...serialBenchmarkArgs(argv)];
+      return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--batch", "1", ...ssd, ...engineBenchmarkArgs(argv)];
     case "mlx-bun-mixed":
       if (!existsSync(kvCfg)) return null;
       return [process.execPath, CLI, "serve", "--model", m.path, "--port", String(port), "--no-open", "--kv-quant", "config", ...ssd];
@@ -260,10 +302,9 @@ function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
       // (bf16 KV — optiq serve's default; the kv-quant hooks never run).
       if (m.needsOptiqRegister) {
         if (!existsSync(`${VENV}/optiq`)) return null;
-        return [PY, "-c", "from optiq.cli import cli; cli()",
-          "serve", "--model", m.path, "--port", String(port)];
+        return [...referenceServerCommand(PY, true, REFERENCE_PREFILL), "--model", m.path, "--port", String(port)];
       }
-      return [PY, "-m", "mlx_lm.server", "--model", m.path, "--port", String(port)];
+      return [...referenceServerCommand(PY, false, REFERENCE_PREFILL), "--model", m.path, "--port", String(port)];
     case "optiq-mixed":
       if (!existsSync(kvCfg) || !existsSync(`${VENV}/optiq`)) return null;
       return [PY, "-c", "from optiq.cli import cli; cli()",
@@ -273,7 +314,9 @@ function cmdlineFor(c: Cell, port: number, ssdDir?: string): string[] | null {
 
 // ---- HTTP measurement primitives ------------------------------------------
 
-interface ReqResult {
+export interface ReqResult {
+  /** Full output identity, computed after the timed stream completes. */
+  textSha256?: string;
   ttftMs: number;
   headersMs: number;
   firstByteMs: number;
@@ -292,6 +335,9 @@ interface ReqResult {
   cachedTokens: number;
   genTokens: number;
   usedUsage: boolean;
+  /** Preserve engine-reported lane/method counters alongside token accounting.
+   * Captured after the timed stream; oracle-specific usage fields stay intact. */
+  usage?: Readonly<Record<string, unknown>>;
   text: string;
 }
 
@@ -356,7 +402,7 @@ async function measureStreamRequest(base: string, route: "chat/completions" | "c
   const outputEventTimesMs: number[] = [];
   let text = "";
   let finishReason: string | null = null;
-  interface Usage {
+  interface Usage extends Record<string, unknown> {
     prompt_tokens?: number;
     completion_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
@@ -428,7 +474,9 @@ async function measureStreamRequest(base: string, route: "chat/completions" | "c
     wallMs, endToEndTps: genTokens * 1000 / wallMs, contentChunks: chunkTokens, finishReason,
     promptTokens, cachedTokens, genTokens,
     usedUsage: true,
+    usage: finalUsage,
     text,
+    textSha256: createHash("sha256").update(text).digest("hex"),
   };
 }
 
@@ -491,6 +539,11 @@ function fillerPrompt(targetTokens: number, nonce: string, charsPerTok = 3.6): s
   return s + " In one short sentence, what is this text about?";
 }
 
+export function aggregateBenchmarkPrompt(contextTarget: number, index: number, nonce: string): string {
+  const task = `Agent ${index} ${nonce}: write a detailed essay about computers.`;
+  return contextTarget ? `${fillerPrompt(contextTarget, nonce)}\n${task}` : task;
+}
+
 // ---- parity verdicts (B2, pure — tested in tests/unit/bench-serve-verdict.test.ts)
 
 /** One verdict line for one probe of one arm pair. prompt_tokens equality
@@ -519,11 +572,21 @@ export function probeVerdict(
     `diverged at char ${i}: …\`${a.text.slice(Math.max(0, i - 20), i + 20)}\` vs …\`${b.text.slice(Math.max(0, i - 20), i + 20)}\``;
 }
 
+/** Arm pairs whose greedy probes are compared (candidate, baseline, label).
+ *  Shared by the Markdown writer here and scripts/bench/report.ts. */
+export const PARITY_PAIRS: ReadonlyArray<readonly [Arm, Arm, string]> = [
+  ["mlx-bun", "mlx-lm", "bf16 drop-in (vs mlx-lm)"],
+  ["mlx-bun-serial", "mlx-lm", "serial control (vs mlx-lm)"],
+  ["mlx-bun", "mlx-bun-serial", "unified engine vs --batch 1 pin"],
+  ["mlx-bun", "mlx-bun-isolated", "direct vs isolated host"],
+  ["mlx-bun-mixed", "optiq-mixed", "mixed-KV (vs optiq)"],
+];
+
 // ---- the per-cell measurement session --------------------------------------
 
-interface PhaseFailure { phase: string; error: string; stderrTail: string[] }
+export interface PhaseFailure { phase: string; error: string; stderrTail: string[] }
 
-interface RawRequest {
+export interface RawRequest {
   cell: Cell;
   phase: string;
   attempt: number;
@@ -536,7 +599,7 @@ interface RawRequest {
   processAtFailure?: { pid: number; exitCode: number | null; signal: string | null };
 }
 
-interface RestartDurability {
+export interface RestartDurability {
   durable: boolean;
   flushMs: number;
   pendingSnapshots: number;
@@ -547,7 +610,7 @@ interface RestartDurability {
   entries: number;
 }
 
-interface CellResult {
+export interface CellResult {
   cell: Cell;
   readyMs: number;
   /** RSS right after the server answers /v1/models — the loaded-but-idle
@@ -589,7 +652,8 @@ interface CellResult {
     promptTokens: number; prefillTps: number; ttftMs: number;
     decodeTps: number[]; cachedRepeatTtftMs: number;
   };
-  agg: null | { tps: number; perStream: number };
+  agg: null | { tps: number; perStream: number; wallMs?: number;
+    arrivalMs?: number[]; ttftMs?: number[]; promptTokens?: number[]; cachedTokens?: number[] };
   /** Phases that failed even after the drain-probe/retry policy — the
    *  cell KEEPS its measured phases and these render as footnoted "—". */
   phaseFailures: PhaseFailure[];
@@ -641,12 +705,13 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
   // live-verified. So the arm runs unseeded and its cells are labeled
   // bf16-KV; mixed-KV has NO valid HTTP oracle on this mlx-lm — per-layer
   // parity stays on the script-driven optiq path (goldens).
-  const singleStreamExtra: Record<string, unknown> = {};
+  const singleStreamExtra: Record<string, unknown> = benchmarkLogprobsArgs(argv);
   let activePhase = "startup";
   let phaseAttempt = 0;
   let phaseRequest = 0;
   const nonce = (index = 0) => workloadNonce(WORKLOAD_SEED, activePhase, phaseAttempt, index);
   const timedRequest = async (base: string, content: string, maxTokens: number, o: ReqOpts = {}): Promise<ReqResult> => {
+    o = { ...o, bodyExtra: { ...singleStreamExtra, ...o.bodyExtra } };
     const request = { content, maxTokens, bodyExtra: {
       temperature: 0, chat_template_kwargs: { enable_thinking: true }, ...o.bodyExtra,
     } };
@@ -959,7 +1024,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
     }) : null;
     markLeg("restart");
 
-    // AGGREGATE: 4 concurrent short generations (the sub-agents number).
+    // AGGREGATE: 4 concurrent generations, optionally long/staggered prefills.
     // Ours batches; stacks that queue serve them serially — either way the
     // number answers "what do 4 agents experience", same for everyone.
     // Budget = serial worst case at the measured decode rate. NO seed here
@@ -967,17 +1032,25 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
     // would serialize the very thing this leg measures) — footnoted as
     // batched-bf16 in the report.
     const agg = await runPhase("agg", async () => {
-      const aggBudget = scaledBudgetMs(AGG_TOKENS * AGG_STREAMS, decodeMedianTps, FIXED_BUDGET_MS);
+      const aggBudget = scaledBudgetMs(AGG_TOKENS * AGG_STREAMS, decodeMedianTps, FIXED_BUDGET_MS) +
+        (AGG_WORKLOAD.contextTarget ? scaledBudgetMs(AGG_WORKLOAD.contextTarget * AGG_STREAMS,
+          ttft ? median(ttft.prefill1kTps) : 0, CTX_MIN_BUDGET_MS, 6) : 0);
+      const prompts = Array.from({ length: AGG_STREAMS }, (_, i) => aggregateBenchmarkPrompt(AGG_WORKLOAD.contextTarget, i, nonce(i)));
+      const arrivalMs: number[] = [];
       const t0 = performance.now();
       const rs = await Promise.all(
-        Array.from({ length: AGG_STREAMS }, (_, i) =>
-          timedRequest(base, `Agent ${i} ${nonce(i)}: write a detailed essay about computers.`,
-            AGG_TOKENS, { apiKey, modelId, timeoutMs: aggBudget })),
+        prompts.map(async (prompt, i) => {
+          if (i && AGG_WORKLOAD.staggerMs) await Bun.sleep(i * AGG_WORKLOAD.staggerMs);
+          arrivalMs[i] = performance.now() - t0;
+          return timedRequest(base, prompt, AGG_TOKENS, { apiKey, modelId, timeoutMs: aggBudget });
+        }),
       );
       const wallS = (performance.now() - t0) / 1000;
       return {
         tps: rs.reduce((a, r) => a + r.genTokens, 0) / wallS,
         perStream: rs.reduce((a, r) => a + r.decodeTps, 0) / rs.length,
+        wallMs: wallS * 1000, arrivalMs, ttftMs: rs.map(r => r.ttftMs),
+        promptTokens: rs.map(r => r.promptTokens), cachedTokens: rs.map(r => r.cachedTokens),
       };
     });
     markLeg("agg");
@@ -1009,13 +1082,15 @@ function machineHeader(): string {
   return `${chip} · ${mem.toFixed(0)} GB · loadavg ${load} · ${new Date().toISOString()}`;
 }
 
-const median = (xs: number[]): number => {
+export const median = (xs: number[]): number => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? (s.length % 2 ? s[s.length >> 1]! : (s[(s.length >> 1) - 1]! + s[s.length >> 1]!) / 2) : 0;
 };
 
 async function main(): Promise<void> {
-  serialBenchmarkArgs(argv); // fail before preflight or any server process
+  engineBenchmarkArgs(argv); // fail before preflight or any server process
+  const captureSettings = benchmarkLogprobsArgs(argv);
+  referenceServerCommand("", false, REFERENCE_PREFILL); // validate without resolving Python
   if (argv[0] !== "all" && !DIAGNOSTIC && !flag("dry-run"))
     throw new Error("use all for the quiet benchmark, or --diagnostic for an explicitly non-quotable run");
   if (![DECODE_TOKENS, CTX_TOKENS].every((n) => Number.isSafeInteger(n) && n > 0))
@@ -1056,6 +1131,10 @@ async function main(): Promise<void> {
       const reason = unsupportedBenchmarkArm(MODELS[model]!, arm);
       if (reason && (armsRaw || reason.startsWith("unknown arm")))
         throw new Error(`${model}/${arm}: ${reason}`);
+      if (!reason && (arm === "mlx-lm" || arm === "optiq-mixed") && !VENV) {
+        VENV = `${(await import("../tests/support/paths")).ORACLE_VENV}/bin`;
+        PY = `${VENV}/python`;
+      }
       if (armsRaw && !cmdlineFor({ model, arm }, 8971))
         throw new Error(`${model}/${arm}: required KV config or oracle executable missing`);
     }
@@ -1064,7 +1143,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({
       measurement: false, diagnostic: DIAGNOSTIC,
       runtimeEnvironment: benchmarkRuntimeEnvironment(),
-      workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, enableThinking: true },
+      workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, aggregate: AGG_WORKLOAD, captureSettings, enableThinking: true, referencePrefill: REFERENCE_PREFILL, ...(ALLOWED_CPU_PROCESS ? { allowedCpuProcess: ALLOWED_CPU_PROCESS } : {}) },
       models: models.map((id) => ({ id, ...MODELS[id]! })),
       cells: models.flatMap((model) => arms.map((arm) => ({
         model, arm, command: cmdlineFor({ model, arm }, 8971, "<temporary-ssd-cache>"),
@@ -1075,9 +1154,10 @@ async function main(): Promise<void> {
     return;
   }
   // Validate and allow CPU-only inspection before the quotable-run preflight.
-  const machineBefore = checkMachine();
+  const machineBefore = checkMachine(PREFLIGHT_LIMITS);
   if (!DIAGNOSTIC) {
-    const pre = Bun.spawnSync([process.execPath, new URL("./bench-h2h.ts", import.meta.url).pathname, "preflight"], { stdio: ["inherit", "inherit", "inherit"] });
+    const pre = Bun.spawnSync([process.execPath, new URL("./bench-h2h.ts", import.meta.url).pathname, "preflight",
+      ...(ALLOWED_CPU_PROCESS ? ["--allow-cpu-process", ALLOWED_CPU_PROCESS] : [])], { stdio: ["inherit", "inherit", "inherit"] });
     if (pre.exitCode !== 0) process.exit(pre.exitCode ?? 1);
     Bun.spawn(["caffeinate", "-dimsu", "-w", String(process.pid)], { stdio: ["ignore", "ignore", "ignore"] }).unref();
   }
@@ -1100,12 +1180,13 @@ async function main(): Promise<void> {
   const saveRaw = () => Bun.write(rawPath, JSON.stringify({
     schemaVersion: 4, measurement: true, diagnostic: DIAGNOSTIC, canonical: false,
     runtimeEnvironment: benchmarkRuntimeEnvironment(),
-    qualification: DIAGNOSTIC ? "diagnostic; not eligible for canonical results" : "quiet preflight passed; paired stability and correctness review still required",
-    machine, machineBefore, machineAtSave: checkMachine(), commit, bun: Bun.version,
+    qualification: DIAGNOSTIC ? "diagnostic; not eligible for canonical results" :
+      `preflight passed${ALLOWED_CPU_PROCESS ? ` with CPU allowance for ${ALLOWED_CPU_PROCESS}` : " (quiet)"}; paired stability and correctness review still required`,
+    machine, host: hostname(), os: release(), machineBefore, machineAtSave: checkMachine(PREFLIGHT_LIMITS), commit, bun: Bun.version,
     sourceDiffStart, sourceDiffAtSave: sourceDiff(),
     sourceSnapshotStart, sourceSnapshotAtSaveSha256: benchmarkSourceSnapshot().sha256,
     identityNote: "Snapshot hashes tracked and untracked, non-ignored src/native/scripts plus package.json and bun.lock. External native binaries, oracle packages and weight content hashes belong in the campaign manifest.",
-    workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, enableThinking: true },
+    workload: { seed: WORKLOAD_SEED, decodeTokens: DECODE_TOKENS, contextTarget: CTX_TOKENS, withContext, decodeRuns: DECODE_RUNS, aggregate: AGG_WORKLOAD, captureSettings, enableThinking: true, referencePrefill: REFERENCE_PREFILL, ...(ALLOWED_CPU_PROCESS ? { allowedCpuProcess: ALLOWED_CPU_PROCESS } : {}) },
     models: models.map((id) => ({ id, ...MODELS[id]! })),
     commands: models.flatMap((model) => arms.map((arm) => ({ model, arm, command: cmdlineFor({ model, arm }, 8971, "<temporary-ssd-cache>") }))),
     results, failures, requests,
@@ -1153,7 +1234,7 @@ async function main(): Promise<void> {
           machineState: machine,
           notes: `serve-h2h diagnostic=${DIAGNOSTIC} arm=${arm} seed=${WORKLOAD_SEED} raw=${rawPath} decode_metric=SSE-window output_count=median_actual requested=${DECODE_TOKENS} ` +
             (res.ttft ? `ttft_cold=${median(res.ttft.coldMs).toFixed(0)} ttft_warm=${res.ttft.warmMs.toFixed(0)} warm_cached=${res.ttft.warmCachedTokens} ` : "") +
-            (res.agg ? `agg${AGG_STREAMS}=${res.agg.tps.toFixed(1)} agg_per=${res.agg.perStream.toFixed(1)} ` : "") +
+            (res.agg ? `agg${AGG_STREAMS}=${res.agg.tps.toFixed(1)} agg_per=${res.agg.perStream.toFixed(1)} agg_context_target=${AGG_WORKLOAD.contextTarget} agg_stagger_ms=${AGG_WORKLOAD.staggerMs} ` : "") +
             (res.ctx ? `ctx=${res.ctx.promptTokens} ctx_ttft=${res.ctx.ttftMs.toFixed(0)} ctx_decode=${median(res.ctx.decodeTps).toFixed(1)} ctx_rep_ttft=${res.ctx.cachedRepeatTtftMs.toFixed(0)} ` : "") +
             `ready_ms=${res.readyMs.toFixed(0)} ` +
             (res.coldStartMs != null ? `cold_start_ms=${res.coldStartMs.toFixed(0)} ` : "") +
@@ -1183,10 +1264,13 @@ async function main(): Promise<void> {
   if (DIAGNOSTIC) lines.push("", "Diagnostic run. These results are not eligible for canonical performance claims.");
   lines.push(``, `machine: ${machine}`, `commit: ${commit}`, `toolchain: Bun ${Bun.version}`, ``);
   lines.push(`raw requests, counts, finish reasons, timings and retries: ${rawPath}`);
-  const serverArgs = serialBenchmarkArgs(argv);
-  if (serverArgs.length) lines.push(`Configured serial experiment: ${JSON.stringify(serverArgs)}. Compare separately recorded controls with matching policy.`);
+  const serverArgs = engineBenchmarkArgs(argv);
+  if (serverArgs.length) lines.push(`Configured engine comparison: ${JSON.stringify(serverArgs)} applies to every selected engine arm.`);
   lines.push(`Runtime overrides: ${JSON.stringify(benchmarkRuntimeEnvironment())}`);
   lines.push(`workload seed: ${WORKLOAD_SEED}; five fixed decode samples, all retained.`);
+  lines.push(`Aggregate workload: ${AGG_STREAMS} streams, context target ${AGG_WORKLOAD.contextTarget || "short prompt"}, arrival spacing ${AGG_WORKLOAD.staggerMs} ms. Actual prompt counts and submission offsets are retained in JSON.`);
+  lines.push(`mlx-lm reference prefill: ${REFERENCE_PREFILL}${REFERENCE_PREFILL === "unsplit" ? " (explicit policy control; not stock server segmentation)" : " (stock server segmentation)"}.`);
+  if (ALLOWED_CPU_PROCESS) lines.push(`Permitted CPU background command: ${ALLOWED_CPU_PROCESS}. Memory/thermal/load checks remain enforced; paired stability review is required.`);
   lines.push(`All numbers over HTTP against REAL servers (mlx-bun = the actual CLI).`);
   lines.push(`Requests pin enable_thinking=true on every arm. ttft cold = nonce-busted ~1k prompt;`);
   lines.push(`warm = exact repeat (each stack's own prompt cache). ctx figures from`);
@@ -1274,15 +1358,8 @@ async function main(): Promise<void> {
     // template-free (tokenizer comparison); the chat probe pins
     // enable_thinking on every arm so all stacks render the SAME prompt.
     const arm = (a: Arm) => rows.find((r) => r.cell.arm === a);
-    const pairs: Array<[Arm, Arm, string]> = [
-      ["mlx-bun", "mlx-lm", "bf16 drop-in (vs mlx-lm)"],
-      ["mlx-bun-serial", "mlx-lm", "serial control (vs mlx-lm)"],
-      ["mlx-bun", "mlx-bun-serial", "unified engine vs --batch 1 pin"],
-      ["mlx-bun", "mlx-bun-isolated", "direct vs isolated host"],
-      ["mlx-bun-mixed", "optiq-mixed", "mixed-KV (vs optiq)"],
-    ];
     const verdicts: string[] = [];
-    for (const [a, b, label] of pairs) {
+    for (const [a, b, label] of PARITY_PAIRS) {
       const ra = arm(a), rb = arm(b);
       if (!ra || !rb) continue;
       verdicts.push(probeVerdict("completion", label, ra.parity?.completion, rb.parity?.completion));

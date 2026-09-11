@@ -118,3 +118,78 @@ describe("forwardInfer host-sync tightening (bit-identity vs pre-tightening refe
     hCtx.dispose(); d.dispose(); disposeStub();
   });
 });
+
+
+test("confidence truncates rows independently without consuming another row's sampling stream", () => {
+  const { stub, dispose: disposeStub } = makeSmokeStub();
+  try {
+    for (const seqHead of ["markov", "rnn"] as const) {
+      const drafter = DflashDrafter.initFromDims(dims, { ...cfg, seqHead }, "confidence-rows");
+      using context = MlxArray.fromFloat32(Float32Array.from({ length: 4 * 7 * m * H },
+        (_, i) => Math.sin(i * 0.17)), [4, 7, m * H]);
+      using confidence = MlxArray.fromFloat32(Float32Array.from({ length: dDraft + cfg.markovRank },
+        (_, i) => Math.sin(i * 0.3) * 0.1), [dDraft + cfg.markovRank, 1]);
+      const params = drafter.flatParams().map((p, i) => drafter.names[i] === "conf.w" ? confidence : p);
+      try {
+        drafter.useParams(params, () => {
+          const anchors = [3, 9, 17, 21], sample = { temperature: 0.8, seed: 123 };
+          const full = drafter.forwardRows(stub, context, anchors, G, { sample, collectLogits: false });
+          const values = full.conf.map(row => row[1]!);
+          expect(Math.max(...values)).toBeGreaterThan(Math.min(...values));
+          const threshold = (Math.min(...values) + Math.max(...values)) / 2;
+          const pruned = drafter.forwardRows(stub, context, anchors, G, {
+            sample, collectLogits: false, thresholds: [0, threshold, 0, 0, 0],
+          });
+          expect(new Set(pruned.tokens.map(row => row.length)).size).toBe(2);
+          for (let row = 0; row < anchors.length; row++) {
+            expect(pruned.tokens[row]).toEqual(full.tokens[row]!.slice(0, pruned.tokens[row]!.length));
+            expect(pruned.conf[row]).toEqual(full.conf[row]!.slice(0, pruned.conf[row]!.length));
+          }
+        });
+      } finally { drafter.dispose(); }
+    }
+  } finally { disposeStub(); }
+});
+
+test("DSpark row providers share projected context, retirement and immutable checkpoints", async () => {
+  const { DflashProvider } = await import("../../src/spec/dflash-source");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { disposeAttachments } = await import("../../src/backends/mlx/checkpoint-state");
+  for (const seqHead of ["markov", "rnn"] as const) {
+    const { stub, dispose: disposeStub } = makeSmokeStub();
+    const drafter = DflashDrafter.initFromDims(dims, { ...cfg, seqHead }, "smoke");
+    const dir = mkdtempSync(join(tmpdir(), "dspark-rows-"));
+    let provider: Awaited<ReturnType<typeof DflashProvider.load>> | undefined;
+    const checkpoints: import("../../src/spec/source").DraftRowCheckpoint[] = [];
+    try {
+      drafter.save(dir); provider = await DflashProvider.load(dir);
+      const target = { identity: {}, gemmaTaps: { layerCount: 4, projection: stub } };
+      const raw = (B: number, N: number, seed: number) => MlxArray.fromFloat32(Float32Array.from({ length: B * N * m * H }, (_, i) => ((i + seed) % 97 - 48) / 64), [B, N, m * H]);
+      using hidden = raw(1, 7, 11);
+      const reference = drafter.forwardInfer(stub, hidden, 3, G, { collectLogits: false });
+      const prefill = provider.grouped.openPrefill({ target, checkpoints: [null] });
+      const sampling = { sample() { throw new Error("DSpark proposal is greedy"); } };
+      let active: ReturnType<typeof provider.grouped.open> | undefined;
+      try {
+        using ids = ops.fromInt32([1, 2, 3, 4, 5, 6, 7], [1, 7]);
+        await prefill.prefill(ids, hidden); checkpoints.push(prefill.capture(0));
+        active = provider.grouped.open({ target, checkpoints: [checkpoints[0]!], sampling });
+        expect((await active.draft([3], G, [0]))[0]).toEqual(reference.tokens);
+        active.append([checkpoints[0]!]); expect(active.rowCount).toBe(2);
+        const first = await active.draft([3, 9], G, [0, 0]);
+        expect(first.map(row => row.length)).toEqual([G, G]);
+        expect(await active.draft([3, 9], G, [0, 0])).toEqual(first);
+        using verified = raw(2, G + 1, 29); await active.commit([1, 3], verified);
+        const saved = [active.capture(0), active.capture(1)]; checkpoints.push(...saved);
+        expect(saved.map(checkpoint => checkpoint.processedTokens)).toEqual([9, 11]);
+        active.filterRows([1]);
+        const restored = provider.grouped.open({ target, checkpoints: [saved[1]!], sampling });
+        try { expect(await active.draft([13], G, [4])).toEqual(await restored.draft([13], G, [4])); }
+        finally { restored.dispose(); }
+        active.filterRows([]); expect(active.rowCount).toBe(0);
+      } finally { active?.dispose(); prefill.dispose(); }
+    } finally { disposeAttachments(checkpoints.map(checkpoint => checkpoint.attachment)); provider?.dispose(); drafter.dispose(); disposeStub(); rmSync(dir, { recursive: true, force: true }); }
+  }
+});

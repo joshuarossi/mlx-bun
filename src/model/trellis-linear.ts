@@ -403,7 +403,7 @@ function lutFor(L: number): MlxArray {
   return a;
 }
 
-/** Decode variant (see HEADER). Default is the fastest measured on M1 Max;
+/** Decode variant (see HEADER). Default passed the M4 Pro closeout matrix;
  *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */
 let variantOverride: number | null = null;
 /** Explicit override (benches); otherwise the runtime flag — read per call so
@@ -411,7 +411,7 @@ let variantOverride: number | null = null;
  *  can A/B two decodes on one loaded model. */
 export function setTrellisVariant(v: number | null): void { variantOverride = v; }
 function variant(): number {
-  return variantOverride ?? runtimeNumber("MLX_BUN_TRELLIS_VARIANT", 6);
+  return variantOverride ?? runtimeNumber("MLX_BUN_TRELLIS_VARIANT", 13);
 }
 // Variants 7..13 change work assignment/scheduling, not decoded weight values.
 function decoderVariant(selected = variant()): number { return selected >= 7 && selected <= 13 ? 6 : selected; }

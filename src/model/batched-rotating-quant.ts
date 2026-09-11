@@ -20,7 +20,8 @@
 // untouched. PERSISTENT (like BatchedRotatingCache, unlike the ephemeral
 // per-step BatchedQuantDecodeMaskCache): the scheduler passes it through
 // every step; it self-tracks per-row offset/leftPad and the scalar ring
-// state. N=1 decode updates only (rows solo-prefill serially, then merge).
+// state. Multi-token blocks use the same chronological storage operation as
+// the bf16 layout; one-token updates keep the existing in-place ring kernel.
 //
 // Gates: tests/unit/batched-rotating-quant.test.ts (model-free byte-identity vs
 // the serial oracle per row, through ring wrap, B=1 and B=2) + the gemma
@@ -29,11 +30,13 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { Dtype } from "../mlx/ffi";
-import { RotatingQuantizedKVCache, type Mask } from "./gemma4-base";
+import { RotatingQuantizedKVCache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "./gemma4-base";
 import { buildBatchedRotatingMask } from "./batched-rotating";
 import type { QuantRow } from "./batched-quant";
-import { BatchedRotatingState } from "./batched-rotating-state";
+import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
 import {
+  appendRotatingStorage,
+  rowRollIndices,
   mergeStorageRows,
   quantizedRowStorage,
   temporalStorageView,
@@ -54,7 +57,7 @@ const mapTriple = (
  *  mechanics (see batched-rotating.ts) with RotatingQuantizedKVCache
  *  storage. Scalar ring state (`ringIdx`/`offset` reuse the base fields);
  *  per-row `offsetArr` (absolute positions → RoPE) and `leftPad`. */
-export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
+export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implements PaddedPrefillCache {
   readonly #rows: BatchedRotatingState;
   /** Per-row RoPE positions. STABLE ACROSS A STEP — refreshed only at
    *  releaseRopeArr() (the scheduler's post-dispatch hook), never inside
@@ -72,7 +75,34 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
   ) {
     super(maxSize, groupSize, bits);
     this.#rows = new BatchedRotatingState(maxSize, leftPad, offsets);
-    this.ropeOffsetArr = MlxArray.fromInt32(Int32Array.from(offsets), [offsets.length]);
+    this.ropeOffsetArr = offsets.length ? MlxArray.fromInt32(Int32Array.from(offsets), [offsets.length]) : ops.zeros([0], Dtype.int32);
+  }
+
+  static empty(maxSize: number, groupSize: number, bits: number, leftPad: readonly number[]): BatchedRotatingQuantCache {
+    return new BatchedRotatingQuantCache(maxSize, groupSize, bits, [...leftPad], leftPad.map(pad => -pad));
+  }
+
+  get positionSnapshot(): RotatingPositionSnapshot { return this.#rows.snapshot(); }
+  validOffset(row: number): number { return this.#rows.validOffset(row); }
+  preparePrefill(padding: PrefillPadding, rightPaddedBatch?: boolean): void { this.#rows.preparePrefill(padding, rightPaddedBatch); this.releaseRopeArr(); }
+  finalizePrefill(): void {
+    const shifts = this.#rows.prefillRoll();
+    if (shifts?.some(shift => shift !== 0) && this.keys && this.values) {
+      using indices = rowRollIndices(this.keys.packed.shape[2]!, shifts);
+      const keys = quantizedRowStorage.rollRows(this.keys, indices);
+      let values: ops.QuantizedTensor;
+      try { values = quantizedRowStorage.rollRows(this.values, indices); }
+      catch (error) { disposeTriple(keys); throw error; }
+      disposeTriple(this.keys); disposeTriple(this.values); this.keys = keys; this.values = values;
+    }
+    this.#rows.finalizePrefill(); this.releaseRopeArr();
+  }
+  /** Adopt owned tensors without changing their physical ring columns. */
+  static adoptPhysical(keys: ops.QuantizedTensor | null, values: ops.QuantizedTensor | null, groupSize: number, bits: number, position: RotatingPositionSnapshot): BatchedRotatingQuantCache {
+    const cache = new BatchedRotatingQuantCache(position.maxSize, groupSize, bits, [...position.leftPad], [...position.offsets]);
+    cache.#rows.restore(position); cache.keys = keys; cache.values = values;
+    cache.offset = position.totalOffset; cache.ringIdx = position.ringIndex;
+    return cache;
   }
 
   get offsetArr(): number[] { return this.#rows.offsets; }
@@ -93,7 +123,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
    *  old handle after this). */
   releaseRopeArr(): void {
     this.ropeOffsetArr.dispose();
-    this.ropeOffsetArr = MlxArray.fromInt32(Int32Array.from(this.offsetArr), [this.#B]);
+    this.ropeOffsetArr = this.#B ? MlxArray.fromInt32(Int32Array.from(this.offsetArr), [this.#B]) : ops.zeros([0], Dtype.int32);
   }
 
   #allocTriple(B: number, H: number, T: number, dim: number, dtype: Dtype): ops.QuantizedTensor {
@@ -111,7 +141,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
       mode: "array",
       arr: buildBatchedRotatingMask(
         this.#B, N, this.leftPad, this.maxSize, window,
-        this.#rows.ringIndex, this.#rows.totalOffset, this.#rows.rotated,
+        this.#rows.ringIndex, this.#rows.totalOffset, this.#rows.rotated, N > 1 || this.#rows.hasPendingPadding,
       ),
     };
   }
@@ -122,8 +152,7 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
   override updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
     const [B, H, S, D] = k.shape as [number, number, number, number];
     const vD = v.shape[3]!;
-    if (S !== 1)
-      throw new Error("BatchedRotatingQuantCache supports N=1 decode updates only (solo-prefill then merge)");
+    if (S !== 1 || this.#rows.hasPendingPadding) return this.#updateConcat(k, v);
     const prev = this.#rows.totalOffset;
 
     // Grow the buffer (in STEP chunks) until it reaches maxSize.
@@ -202,6 +231,29 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
     return [cut(this.keys!), cut(this.values!)];
   }
 
+  #updateConcat(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor] {
+    const kq = ops.quantize(k, this.groupSize, this.bits);
+    const vq = ops.quantize(v, this.groupSize, this.bits);
+    let keys: ops.QuantizedTensor | undefined;
+    let values: ops.QuantizedTensor;
+    try {
+      keys = appendRotatingStorage(quantizedRowStorage, this.keys, kq, this.#rows);
+      values = appendRotatingStorage(quantizedRowStorage, this.values, vq, this.#rows);
+    } catch (error) { if (keys) disposeTriple(keys); throw error; }
+    finally { disposeTriple(kq); disposeTriple(vq); }
+    const history = this.keys ? this.#rows.activeLength : 0;
+    if (this.keys) disposeTriple(this.keys);
+    if (this.values) disposeTriple(this.values);
+    this.keys = keys; this.values = values;
+    this.#rows.commitConcat(k.shape[2]!, history);
+    this.offset = this.#rows.totalOffset;
+    this.ringIdx = this.#rows.ringIndex;
+    return [
+      quantizedRowStorage.slice(keys, 0, this.#B, 0, this.ringIdx),
+      quantizedRowStorage.slice(values, 0, this.#B, 0, this.ringIdx),
+    ];
+  }
+
   #assign2(dst: MlxArray, src: MlxArray, S: number): MlxArray {
     const [B, H, , D] = dst.shape as [number, number, number, number];
     const out = ops.sliceUpdate(dst, src, [0, 0, this.ringIdx, 0], [B, H, this.ringIdx + S, D]);
@@ -214,8 +266,12 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
   override temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     return [
-      temporalStorageView(quantizedRowStorage, this.keys, this.#rows),
-      temporalStorageView(quantizedRowStorage, this.values, this.#rows),
+      temporalStorageView(quantizedRowStorage, this.keys, this.#rows, {
+        from: Math.max(0, this.#rows.activeLength - this.maxSize), to: this.#rows.activeLength,
+      }),
+      temporalStorageView(quantizedRowStorage, this.values, this.#rows, {
+        from: Math.max(0, this.#rows.activeLength - this.maxSize), to: this.#rows.activeLength,
+      }),
     ];
   }
 
@@ -228,15 +284,15 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
    *  is byte-safe (packing along HEAD_DIM — file header); per-row byte
    *  identity vs the serial oracle is the class invariant
    *  (tests/batched-rotating-quant), extraction is a pure slice+copy. */
-  extractRow(i: number): RotatingQuantizedKVCache | null {
+  extractRow(i: number, limit = Infinity): RotatingQuantizedKVCache | null {
     if (!this.keys || !this.values) return null;
-    const pad = Math.max(0, this.leftPad[i]!);
+    const pad = Math.max(0, this.leftPad[i]!, this.#rows.activeLength - limit);
     const c = new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
     const k = temporalStorageView(quantizedRowStorage, this.keys, this.#rows, {
-      row: i, from: pad, copy: true,
+      row: i, from: pad, to: this.#rows.activeLength, copy: true,
     });
     const v = temporalStorageView(quantizedRowStorage, this.values, this.#rows, {
-      row: i, from: pad, copy: true,
+      row: i, from: pad, to: this.#rows.activeLength, copy: true,
     });
     c.restoreState(k, v, this.offsetArr[i]!, k.packed.shape[2]!);
     return c;
@@ -257,6 +313,11 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache {
   }
 
   filterRows(keep: readonly number[]): void { this.filter([...keep]); }
+
+  override trim(count: number): void {
+    this.#rows.trim(count); this.offset = this.#rows.totalOffset; this.ringIdx = this.#rows.ringIndex;
+    this.releaseRopeArr();
+  }
 
   override isTrimmable(): boolean {
     return false; // batched rows never re-enter the prompt cache directly

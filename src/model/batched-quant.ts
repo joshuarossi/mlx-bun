@@ -134,11 +134,17 @@ export function extractQuantRow(
 /** Quantized twin of filterKVRows: keep `keep` rows along the batch axis.
  *  Caller owns the result; inputs are not disposed. */
 export function filterQuantRows(
-  keys: ops.QuantizedTensor, values: ops.QuantizedTensor, keep: number[],
+  keys: ops.QuantizedTensor, values: ops.QuantizedTensor, keep: number[], trimLeft = 0,
 ): { keys: ops.QuantizedTensor; values: ops.QuantizedTensor } {
   const idx = MlxArray.fromInt32(Int32Array.from(keep), [keep.length]);
   const take = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
-    tripleMap(t, (a) => ops.takeAxis(a, idx, 0));
+    tripleMap(t, (a) => {
+      const rows = ops.takeAxis(a, idx, 0);
+      if (trimLeft === 0) return rows;
+      const trimmed = rows.slice([0, 0, trimLeft, 0], rows.shape);
+      rows.dispose();
+      return trimmed;
+    });
   const k = take(keys);
   const v = take(values);
   idx.dispose();

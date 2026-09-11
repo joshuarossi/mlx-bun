@@ -192,7 +192,8 @@ function listFiles(): string[] {
   return execSync(cmd, { cwd: ROOT, encoding: "utf8" })
     .split("\n")
     .map((s) => s.trim())
-    .filter(Boolean);
+    // git ls-files includes tracked files deleted from the working tree.
+    .filter((path) => path.length > 0 && existsSync(`${ROOT}/${path}`));
 }
 
 function fileBytes(path: string): number {
@@ -512,7 +513,12 @@ const LAB_IMPORT_ALLOWLIST = new Set([
   "src/server.ts -> lab/curve/curve-sampler",        // --curve-* flags + /curves route
   "src/web-assets.ts -> lab/curve/curve-designer.html",  // designer page inlined into the binary
   "src/serve/static-routes.ts -> lab/curve/curve-designer.html",
-  "src/generate.ts -> lab/paged-kv/paged-kv",        // --paged-kv (serial-only option)
+  "src/generate.ts -> lab/paged-kv/paged-kv",        // --paged-kv compatibility entry point
+  // --paged-kv option seam: request policy constructs storage; row layout
+  // binds it to shared execution. Scheduling does not own page allocation.
+  "src/backends/mlx/request-state-policy.ts -> lab/paged-kv/paged-kv",
+  "src/backends/mlx/cache-layout.ts -> lab/paged-kv/paged-kv",
+  "src/backends/mlx/cache-layout.ts -> lab/paged-kv/paged-kv-rows",
   "src/model/gemma4.ts -> lab/expert-trace/expert-trace", // MLX_BUN_EXPERT_TRACE hook
 ]);
 

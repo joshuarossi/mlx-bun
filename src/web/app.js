@@ -994,14 +994,14 @@ function highlightIn(container) {
     return;
   const blocks = container.querySelectorAll("pre code");
   for (const block of blocks) {
-    const el2 = block;
-    if (el2.dataset.highlighted)
+    const el = block;
+    if (el.dataset.highlighted)
       continue;
-    const hasLang = /\blanguage-/.test(el2.className);
-    if (!hasLang && (el2.textContent || "").length > 20000)
+    const hasLang = /\blanguage-/.test(el.className);
+    if (!hasLang && (el.textContent || "").length > 20000)
       continue;
     try {
-      hljs.highlightElement(el2);
+      hljs.highlightElement(el);
     } catch {}
   }
 }
@@ -2611,12 +2611,12 @@ async function renderListBody() {
 async function renderArticleLists(query) {
   const listEl = $("mem-list");
   if (!query) {
-    const d2 = await getJson("/api/memory/list").catch(() => ({ ok: false }));
-    if (!d2.ok) {
+    const d = await getJson("/api/memory/list").catch(() => ({ ok: false }));
+    if (!d.ok) {
       listEl.innerHTML = `<div class="mem-list-empty">Couldn't load the vault contents.</div>`;
       return;
     }
-    const articles = d2.articles || [], reference = d2.reference || [];
+    const articles = d.articles || [], reference = d.reference || [];
     listEl.innerHTML = '<div class="mem-sec"><div class="mem-sec-title">Articles</div>' + (articles.length ? articles.map((a) => articleRowHtml(a)).join("") : '<div class="mem-list-empty">No articles yet — nightly synthesis writes here after a few conversations.</div>') + "</div>" + (reference.length ? '<div class="mem-sec"><div class="mem-sec-title">Reference</div>' + reference.map((r) => articleRowHtml(r, undefined, "\uD83D\uDCD8")).join("") + "</div>" : "");
     wireArticleRows(listEl);
     return;
@@ -2953,11 +2953,11 @@ var INTERACTIVE_SELECTOR = [
   "[data-spotlight]"
 ].join(", ");
 var MAX_ELEMENTS = 120;
-function isAgentChrome(el2) {
-  return !!el2.closest("[data-ui-chrome]") || !!el2.closest("#toasts");
+function isAgentChrome(el) {
+  return !!el.closest("[data-ui-chrome]") || !!el.closest("#toasts");
 }
-function isHiddenSelf(el2) {
-  const html = el2;
+function isHiddenSelf(el) {
+  const html = el;
   if (html.hidden)
     return true;
   const inline = html.style?.display;
@@ -2968,21 +2968,21 @@ function isHiddenSelf(el2) {
     return true;
   return false;
 }
-function isVisible(el2) {
-  const html = el2;
+function isVisible(el) {
+  const html = el;
   if (html.offsetParent === null) {
     const style = globalThis.getComputedStyle?.(html);
     if (style && style.position === "fixed")
       return true;
   }
-  for (let node = el2;node; node = node.parentElement) {
+  for (let node = el;node; node = node.parentElement) {
     if (isHiddenSelf(node))
       return false;
   }
   return true;
 }
-function elementLabel(el2) {
-  const html = el2;
+function elementLabel(el) {
+  const html = el;
   const uiLabel = html.getAttribute("data-ui-label")?.trim();
   if (uiLabel)
     return uiLabel;
@@ -3017,13 +3017,13 @@ function captureUiSnapshot(route) {
   const elements = [];
   const seenRefs = new Set;
   let index = 0;
-  for (const el2 of nodes) {
-    if (isAgentChrome(el2) || !isVisible(el2))
+  for (const el of nodes) {
+    if (isAgentChrome(el) || !isVisible(el))
       continue;
-    const label = elementLabel(el2);
+    const label = elementLabel(el);
     if (!label)
       continue;
-    const html = el2;
+    const html = el;
     const spotlightId = html.getAttribute("data-spotlight")?.trim() || undefined;
     const existingRef = html.getAttribute("data-ui-ref");
     const ref = existingRef ?? `ui-${route.replace(/[^a-zA-Z0-9]/g, "_") || "root"}-${index}`;
@@ -3067,12 +3067,12 @@ function findByLabel(snapshot, label) {
     return;
   let best;
   let bestScore = 0;
-  for (const el2 of snapshot.elements) {
-    const hay = [el2.label, el2.spotlightId].filter(Boolean).join(" ");
+  for (const el of snapshot.elements) {
+    const hay = [el.label, el.spotlightId].filter(Boolean).join(" ");
     const score = matchScore(hay, label);
     if (score > bestScore) {
       bestScore = score;
-      best = el2;
+      best = el;
     }
   }
   return bestScore >= 50 ? best : undefined;
@@ -3089,9 +3089,9 @@ function safeQuery(selector) {
 }
 function resolveSpotlightTarget(request, snapshot) {
   if (request.ref) {
-    const el2 = snapshot?.elements.find((e) => e.ref === request.ref);
-    if (el2)
-      return { selector: el2.selector, title: el2.label, message: request.message };
+    const el = snapshot?.elements.find((e) => e.ref === request.ref);
+    if (el)
+      return { selector: el.selector, title: el.label, message: request.message };
     const selector = `[data-ui-ref="${attrEscape(request.ref)}"]`;
     if (safeQuery(selector)) {
       return { selector, title: request.label ?? request.ref, message: request.message };
@@ -3101,9 +3101,9 @@ function resolveSpotlightTarget(request, snapshot) {
     return { selector: request.selector, title: request.label ?? "Here", message: request.message };
   }
   if (request.label) {
-    const el2 = findByLabel(snapshot, request.label);
-    if (el2)
-      return { selector: el2.selector, title: el2.label, message: request.message };
+    const el = findByLabel(snapshot, request.label);
+    if (el)
+      return { selector: el.selector, title: el.label, message: request.message };
     let bestEl = null;
     let bestScore = 0;
     for (const node of document.querySelectorAll("[data-ui-label]")) {
@@ -3144,15 +3144,15 @@ var AUTO_DISMISS_MS = 3000;
 var dismissTimer = null;
 var dismissListeners = null;
 function ensureOverlayEl() {
-  let el2 = document.getElementById("assistant-spotlight");
-  if (!el2) {
-    el2 = document.createElement("div");
-    el2.id = "assistant-spotlight";
-    el2.setAttribute("data-ui-chrome", "assistant");
-    el2.innerHTML = '<div class="asr-ring"></div><div class="asr-pop"><div class="asr-pop-text"></div></div>';
-    document.body.appendChild(el2);
+  let el = document.getElementById("assistant-spotlight");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "assistant-spotlight";
+    el.setAttribute("data-ui-chrome", "assistant");
+    el.innerHTML = '<div class="asr-ring"></div><div class="asr-pop"><div class="asr-pop-text"></div></div>';
+    document.body.appendChild(el);
   }
-  return el2;
+  return el;
 }
 function dismissSpotlight() {
   if (dismissTimer) {
@@ -3163,9 +3163,9 @@ function dismissSpotlight() {
     dismissListeners();
     dismissListeners = null;
   }
-  const el2 = document.getElementById("assistant-spotlight");
-  if (el2)
-    el2.classList.remove("show");
+  const el = document.getElementById("assistant-spotlight");
+  if (el)
+    el.classList.remove("show");
 }
 function showSpotlight(resolved) {
   const target = safeQuery(resolved.selector);
@@ -3332,7 +3332,7 @@ function createChatController() {
     }
     return false;
   }
-  function currentView2() {
+  function currentView() {
     if ($("mem-overlay")?.classList.contains("open"))
       return "memory-panel";
     if ($("hub-overlay")?.classList.contains("open"))
@@ -3345,16 +3345,16 @@ function createChatController() {
     const route = currentRoute();
     if (!isRouteId(route))
       return;
-    const ctx = buildAppContext(route, currentView2());
+    const ctx = buildAppContext(route, currentView());
     lastSnapshot = ctx.snapshot;
     send({ type: "context", context: ctx });
   }
   function watchWizardSteps() {
     const mo = new MutationObserver(() => pushAppContext());
     for (const id of ["q-steps", "f-steps", "d-steps"]) {
-      const el2 = $(id);
-      if (el2)
-        mo.observe(el2, { childList: true, subtree: true });
+      const el = $(id);
+      if (el)
+        mo.observe(el, { childList: true, subtree: true });
     }
   }
   function setChatStatus(s) {
@@ -3548,8 +3548,8 @@ function createChatController() {
     if (t)
       return t;
     if (isMemoryToolName(tool || "")) {
-      const handle2 = memoryToolChip(a.bubble, tool, args);
-      t = { kind: "memchip", wrap: handle2.wrap, handle: handle2, chunks: "" };
+      const handle = memoryToolChip(a.bubble, tool, args);
+      t = { kind: "memchip", wrap: handle.wrap, handle, chunks: "" };
       a.tools.set(callId, t);
       stick();
       return t;
@@ -3763,9 +3763,9 @@ function createChatController() {
     }
     for (const t of item.tools || []) {
       if (isMemoryToolName(t.name || "")) {
-        const handle2 = memoryToolChip(bubble, t.name, t.args);
+        const handle = memoryToolChip(bubble, t.name, t.args);
         if (t.result)
-          handle2.setResult(t.result);
+          handle.setResult(t.result);
         continue;
       }
       const wrap = el("div", "tool ok", bubble);
@@ -4081,9 +4081,9 @@ function createChatController() {
       watchWizardSteps();
       const overlayMo = new MutationObserver(() => pushAppContext());
       for (const id of ["mem-overlay", "hub-overlay", "adapters-overlay"]) {
-        const el2 = $(id);
-        if (el2)
-          overlayMo.observe(el2, { attributes: true, attributeFilter: ["class"] });
+        const el = $(id);
+        if (el)
+          overlayMo.observe(el, { attributes: true, attributeFilter: ["class"] });
       }
     },
     enter() {
@@ -4893,7 +4893,7 @@ function createStatusController() {
   async function loadFit() {
     let f;
     try {
-      f = await fetch("/fit").then((r2) => r2.json());
+      f = await fetch("/fit").then((r) => r.json());
     } catch {
       return;
     }
@@ -5319,9 +5319,9 @@ async function openHubPanel() {
   if (inFlightDownloads.size)
     ensureDownloadPolling();
   setTimeout(() => {
-    const el22 = $("hub-search-input");
-    if (el22)
-      el22.focus();
+    const el2 = $("hub-search-input");
+    if (el2)
+      el2.focus();
   }, 30);
 }
 function setOfflineFooter(offline) {

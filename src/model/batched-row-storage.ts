@@ -1,6 +1,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { BatchedRotatingState } from "./batched-rotating-state";
+import { Dtype } from "../mlx/ffi";
 
 export interface RowStorage<T> {
   shape(value: T): readonly [number, number, number, number];
@@ -10,6 +11,7 @@ export interface RowStorage<T> {
   padLeft(value: T, tokens: number): T;
   takeRows(value: T, keep: readonly number[]): T;
   copy(value: T): T;
+  rollRows(value: T, indices: MlxArray): T;
   dispose(value: T): void;
 }
 
@@ -36,6 +38,7 @@ export const plainRowStorage: RowStorage<MlxArray> = {
     return out;
   },
   copy: (value) => ops.copyOf(value),
+  rollRows: (value, indices) => ops.takeAlongAxis(value, indices, 2),
   dispose: (value) => value.dispose(),
 };
 
@@ -77,12 +80,33 @@ export const quantizedRowStorage: RowStorage<ops.QuantizedTensor> = {
       biases: ops.copyOf(value.biases),
     };
   },
+  rollRows(value, indices) {
+    const packed = ops.takeAlongAxis(value.packed, indices, 2);
+    let scales: MlxArray | undefined;
+    try {
+      scales = ops.takeAlongAxis(value.scales, indices, 2);
+      return { packed, scales, biases: ops.takeAlongAxis(value.biases, indices, 2) };
+    } catch (error) { packed.dispose(); scales?.dispose(); throw error; }
+  },
   dispose(value) {
     value.packed.dispose();
     value.scales.dispose();
     value.biases.dispose();
   },
 };
+
+/** Per-row cyclic shift, shared by plain and encoded storage planes.
+ * This is mlx-lm's dynamic_roll indexing; only positions cross the FFI. */
+export function rowRollIndices(length: number, shifts: readonly number[]): MlxArray {
+  using columns = ops.arange(0, length, 1, Dtype.int32);
+  using positions = ops.reshape(columns, [1, 1, length, 1]);
+  using starts = ops.fromInt32(shifts.map(shift => ((-shift % length) + length) % length), [shifts.length, 1, 1, 1]);
+  using raw = ops.add(positions, starts);
+  using width = ops.fromInt32([length], []);
+  using wrapped = ops.sub(raw, width);
+  using over = ops.greaterEqual(raw, width);
+  return ops.where(over, wrapped, raw);
+}
 
 export function mergeStorageRows<T>(
   storage: RowStorage<T>,
@@ -124,4 +148,32 @@ export function temporalStorageView<T>(
   const owned = storage.copy(cut);
   storage.dispose(cut);
   return owned;
+}
+
+/** Borrow storage, return an owned chronological block without decoding the
+ * representation. Port of mlx-lm's BatchRotatingKVCache._update_concat
+ * (MIT): discard spare capacity, retain the full window for the first query. */
+export function appendRotatingStorage<T>(
+  storage: RowStorage<T>, previous: T | null, incoming: T, state: BatchedRotatingState,
+): T {
+  if (previous === null) return storage.slice(incoming, 0, storage.shape(incoming)[0], 0, storage.shape(incoming)[2]);
+  const active = state.activeLength;
+  const shifts = state.prefillRoll();
+  if (shifts?.some(shift => shift !== 0)) {
+    const chronological = temporalStorageView(storage, previous, state, { to: active });
+    let rolled: T | undefined, history: T | undefined;
+    try {
+      using indices = rowRollIndices(active, shifts);
+      rolled = storage.rollRows(chronological, indices);
+      history = storage.slice(rolled, 0, state.batchSize, Math.max(0, active - state.maxSize + 1), active);
+      return storage.concatTokens([history, incoming]);
+    } finally {
+      storage.dispose(chronological); if (rolled) storage.dispose(rolled); if (history) storage.dispose(history);
+    }
+  }
+  const history = temporalStorageView(storage, previous, state, {
+    from: Math.max(0, active - state.maxSize + 1), to: active,
+  });
+  try { return storage.concatTokens([history, incoming]); }
+  finally { storage.dispose(history); }
 }

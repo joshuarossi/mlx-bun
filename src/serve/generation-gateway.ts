@@ -29,7 +29,7 @@ import { cleanupFailure, disposeResources } from "../engine/resources";
 // server.py's all-caches-have-merge check). GLM's capability owns compressed
 // MLA/DSA merge/extract/filter and byte projection; Qwen3.5's SSM cache owns
 // its row state. The remaining request-shape exclusions include vision, LoRA,
-// serial-only KV modes, and user-fixed seed
+// serial-only KV modes
 // (reproducibility ⇒ solo, matching mlx-lm's _is_batchable). Temperature /
 // top-p / top-k DO batch (each row samples with its own seed). Full-attention
 // AND sliding-window (Gemma) models both batch — the scheduler assembles each
@@ -42,9 +42,9 @@ import { MlxArray } from "../mlx/array";
 import type { RuntimeModel } from "../model/factory";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "../generate";
 import type { KvScheme } from "../kv-scheme";
+import { createRowSampling } from "../backends/mlx/row-sampling";
 import { makeStepSampler } from "../sampler";
 import type { RowPromptCache } from "../backends/mlx/batch-group";
-import type { MlxMemoryBudget } from "../backends/mlx/memory-guard";
 import { bindMlxGateway, type MlxGatewayBinding, type MlxBatchGroup } from "../backends/mlx/gateway-binding";
 import type { RuntimeConfig } from "../runtime-config";
 import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
@@ -114,7 +114,7 @@ export type Vision = {
 };
 
 /** Per-token sink: returning `false` halts this generation (stop sequence).
- *  `logprobs` is only populated on the serial lane when the request asked for
+ *  `logprobs` is populated on either lane when the request asked for
  *  logprobs capture (GenerateOptions.logprobs / topLogprobs). */
 export type OnToken = (
   token: number,
@@ -172,7 +172,6 @@ export class GenerationGateway {
     private readonly serialRun: SerialRun,
     private readonly opts: {
       kvBudgetBytes?: number;
-      memoryBudget?: MlxMemoryBudget;
       checkpoints?: boolean;
       stateCodecs?: import("../kv-store").CacheCodecProvider;
       /** The server-wide KV scheme (server.ts kvScheme) — threaded to the
@@ -185,9 +184,7 @@ export class GenerationGateway {
        *  back on finish. Safe to share with the serial lane — both use it
        *  only inside this gateway's mutual-exclusion domain. */
       promptCache?: RowPromptCache;
-      /** Finish cache writes before taking the generation lock. Writers
-       * need that same lock, so this hook must never run inside it. */
-      beforeSerial?: () => Promise<void>;
+      adapterNamespace?: (adapters: string[]) => string;
     } = {},
   ) {
     this.#binding = "createBatchGroup" in model ? model : bindMlxGateway(model);
@@ -235,14 +232,18 @@ export class GenerationGateway {
     await this.onIdle();
   }
 
-  /** Resolves once the engine is idle (poll-based, ~`pollMs` granularity —
-   *  cheap vs the multi-hundred-ms flushes it paces; resolves without a
-   *  timer when already idle). The SSD write-behind gates each per-tensor
-   *  flush step on this so durability work never steals blocking
-   *  GPU-sync + writeSync slices from an active decode (the 2026-07-07
-   *  decode@ctx contamination — see server.ts's write-behind block). */
+  /** Observe idleness. Call runWhenIdle for background work that must also
+   * acquire ownership atomically with the idle check. */
   async onIdle(pollMs = 20): Promise<void> {
     while (this.busy) await new Promise<void>((r) => setTimeout(r, pollMs));
+  }
+
+  /** Background work waits without requesting a batch drain. The final busy
+   * check and mutex acquisition have no await between them, so a foreground
+   * request cannot enter between the check and ownership registration. */
+  async runWhenIdle<T>(fn: () => Promise<T>, pollMs = 20): Promise<T> {
+    while (this.busy) await new Promise<void>(resolve => setTimeout(resolve, pollMs));
+    return this.runExclusive(fn);
   }
 
   /** Cumulative rows routed to the batch lane since server start. The serial
@@ -272,7 +273,7 @@ export class GenerationGateway {
     const frozenShape = Object.freeze(shape);
     const execution = this.#binding.plan(frozenShape, options, {
       continuous: this.batchingEnabled,
-      quantizedBatch: shape.kvQuant && this.#kvBatchable(),
+      quantizedBatch: (shape.kvQuant || shape.turboQuant) && this.#kvBatchable(),
       checkpoints: this.opts.checkpoints === true,
     });
     return Object.freeze({ shape: frozenShape, mechanism: execution.mechanism, execution });
@@ -390,7 +391,7 @@ export class GenerationGateway {
         });
       };
       let started = false;
-      return Promise.resolve().then(() => this.opts.beforeSerial?.()).then(() => this.runExclusive(async () => {
+      return this.runExclusive(async () => {
         signal?.throwIfAborted();
         started = true;
         const stats = await this.serialRun(
@@ -398,7 +399,7 @@ export class GenerationGateway {
         );
         signal?.throwIfAborted();
         return stats;
-      }, trace, signal))
+      }, trace, signal)
         // Covers a serial waiter aborted before serialRun takes ownership.
         // generate() also disposes defensively; the operation is idempotent.
         .finally(() => {
@@ -407,16 +408,23 @@ export class GenerationGateway {
         });
     }
 
+    const adapters = options.adapters?.length ? [...options.adapters] : undefined;
+    const adapterKey = adapters ? JSON.stringify(adapters) : "";
+    const cacheNamespace = adapters
+      ? () => this.opts.adapterNamespace?.(adapters) ?? adapterKey : "";
+    const context = adapters
+      ? this.#binding.bindAdapterContext?.(adapters, `adapters:${adapterKey}`) : undefined;
+
     // The scheduler owns grammar ready/accept sequencing. StepSampler owns the
     // shared processors -> mask -> logprobs -> sample -> history contract.
-    const stepSampler = makeStepSampler(options, {
-      tokenRepresentation: "device",
-      grammarWait: "external",
-      historyUpdate: "after-sample",
-      initialHistory: promptIds,
-    });
-    const sample = (logits1V: MlxArray, step: number): MlxArray =>
-      stepSampler.sample(logits1V, step).token;
+    const method = this.#binding.methodRequest?.(placement.execution, options);
+    const continuation = method ? undefined : this.#binding.continuationRequest?.(placement.execution, options, promptIds, onToken);
+    const sampling = method ? undefined : continuation ?? createRowSampling(makeStepSampler(options, {
+      tokenRepresentation: "device", grammarWait: "external",
+      historyUpdate: "after-sample", initialHistory: promptIds,
+      captureSelectedLogprob: options.logprobs === true,
+      captureTopLogprobs: options.topLogprobs,
+    }), onToken);
 
     let st;
     this.#rowsSubmitted++;
@@ -425,13 +433,14 @@ export class GenerationGateway {
     });
     try {
       st = await this.#ensureScheduler().submit({
-        promptIds,
+        promptIds, context, cacheNamespace, prefillChunkSize: options.prefillChunkSize,
+        continuation: continuation?.continuation,
+        statePolicy: this.#binding.statePolicy?.(placement.execution, options, promptIds.length + (options.maxTokens ?? 512)),
         compiledDecode: placement.execution?.compiledDecode,
         maxTokens: options.maxTokens ?? 512,
         eosTokenIds: options.eosTokenIds ?? this.#binding.config.eosTokenIds,
-        sample,
-        plainGreedy: stepSampler.isPlainGreedy,
-        onToken,
+        ...(method ? { method, onToken } : { sample: sampling!.sample,
+          plainGreedy: sampling!.plainGreedy, onToken: sampling!.onToken }),
         onAdmitted: closeAdmission,
         trace,
         ...(signal ? { signal } : {}),
@@ -445,7 +454,7 @@ export class GenerationGateway {
       });
     } finally {
       closeAdmission?.();
-      stepSampler.dispose();
+      sampling?.dispose();
       // The scheduler never owns per-row grammar state.
       options.grammar?.dispose();
     }
@@ -460,6 +469,7 @@ export class GenerationGateway {
       prefillTps: st.prefillMs > 0 ? ((st.promptTokens - st.cachedTokens) / st.prefillMs) * 1000 : 0,
       decodeTps: st.decodeMs > 0 && st.generatedTokens > 1 ? ((st.generatedTokens - 1) / st.decodeMs) * 1000 : 0,
       cacheTokens: [],
+      ...(st.spec ? { spec: st.spec } : {}),
     };
   }
 
@@ -470,7 +480,6 @@ export class GenerationGateway {
         maxBatch: this.#batch,
         stateCodecs: this.opts.stateCodecs,
         kvBudgetBytes: this.opts.kvBudgetBytes,
-        memoryBudget: this.opts.memoryBudget,
         // Phase 3.1: the batchable kvConfig composition is applied by the
         // scheduler (solo rows convert at serial chunk boundaries, then
         // merge as quantized triples). Only threaded when the scheme

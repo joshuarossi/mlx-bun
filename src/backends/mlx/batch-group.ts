@@ -1,11 +1,11 @@
+import type { OrdinaryContinuation } from "./continuation";
+import type { MlxRequestStatePolicy } from "./request-state-policy";
 import { AdmissionRejected } from "../../engine/admission";
-import type { ExecutionGroup } from "../../contracts/scheduling";
+import type { ExecutionContext, ExecutionGroup } from "../../contracts/scheduling";
 import { driveExecutionGroup } from "../../engine/scheduler";
-import { disposeResources } from "../../engine/resources";
+import { disposeResources, withResource } from "../../engine/resources";
 import type { DisposableResource } from "../../contracts/resources";
-import { nextPrefillStep } from "../../inference/prefill";
-import { executeMlxPrefillStep } from "./prefill";
-import { enterMlxMemoryGuard, type MlxMemoryBudget } from "./memory-guard";
+import { MlxPrefillCohort, type PrefillState } from "./prefill-cohort";
 // Continuous-batching scheduler for `--batch N` serving (phase S2, the engine
 // loop). Owns ONE running batch and drives it forward one decode step at a
 // time, admitting waiting requests and evicting finished ones between steps —
@@ -87,14 +87,15 @@ import {
   type QuantRow,
 } from "../../model/batched-quant";
 import { BatchedRotatingQuantCache } from "../../model/batched-rotating-quant";
-import type { KvQuantSpec } from "../../config";
+import { cloneSingleRowState, leaseCacheStates } from "./state-views";
+import { ownedCacheLayout } from "./cache-layout";
+import { createKvMaintenance, type KvMaintenance } from "./kv-maintenance";
 import type { KvScheme } from "../../kv-scheme";
 import { BatchedRotatingCache } from "../../model/batched-rotating";
-import { cloneKvCaches } from "../../kv-store";
 import { SSMCache } from "../../model/qwen3-delta";
 import type { RuntimeModel } from "../../model/factory";
 import type { GrammarController } from "../../grammar";
-import { toLogprobs } from "../../sampler";
+import { independentGreedySampling } from "../../sampler";
 import { acquireModelWiredLimit } from "../../generate";
 import { batchRowKvBytes } from "../../serve/kv-budget";
 import type { PromptResponseTrace } from "../../serve/prompt-response-trace";
@@ -132,19 +133,64 @@ export function stepTraceReport(): string {
  *  step 0..maxTokens-1 for this row (never beyond maxTokens). */
 export type RowSampler = (logits1V: MlxArray, step: number) => MlxArray;
 
-export interface BatchRequest {
+/** A method prepares and advances rows; the shared executor owns queueing. */
+export interface MlxGroupPreparation {
+  readonly rows: readonly Row[];
+  readonly tokenWeight?: number;
+  readonly canAdmit?: boolean;
+  admit?(row: Row): void;
+  advance(): Promise<boolean>;
+  dispose(): void;
+}
+export interface MlxGroupMethodHost {
+  readonly rows: readonly Row[];
+  readonly runtime: RuntimeConfig;
+  readonly prefillChunkSize: number;
+  readonly promptCache: RowPromptCache | undefined;
+  join(row: Row): void;
+  filterRows(keep: number[]): void;
+  publish(row: Row, token: number, logprobs?: import("../../generate").TokenLogprobs): Promise<void | boolean>;
+  finish(row: Row, reason: "stop" | "length"): void;
+}
+export interface MlxGroupedMethod {
+  prepare(row: Row): MlxGroupPreparation;
+  advance(): Promise<void>;
+  filterRows(keep: readonly number[], discard: boolean): void;
+  dispose(): void;
+}
+export interface MlxGroupMethodRequest {
+  /** Equal keys declare compatible method state, independent of queue size. */
+  readonly key: string;
+  readonly data: unknown;
+  open(host: MlxGroupMethodHost): MlxGroupedMethod;
+}
+
+export type BatchRequest = BatchRequestFields & (
+  | { method: MlxGroupMethodRequest; sample?: RowSampler }
+  | { method?: undefined; sample: RowSampler }
+);
+
+interface BatchRequestFields {
+  /** Optional ordinary continuation policy; owns persistence and sampler recovery. */
+  continuation?: OrdinaryContinuation;
+  statePolicy?: MlxRequestStatePolicy;
+  context?: ExecutionContext;
+  /** Resolve loaded-state identity under the execution lease, after any
+   * queued adapter replacement has finished. */
+  cacheNamespace?: string | (() => string);
   /** Resolved replay permission; standalone group callers retain auto mode. */
   compiledDecode?: boolean;
   promptIds: number[];
+  /** Request policy overrides the execution group's captured prefill default. */
+  prefillChunkSize?: number;
   maxTokens: number;
   eosTokenIds: number[];
-  sample: RowSampler;
   /** Called per emitted (non-EOS) token, in order. Returning `false` halts this
    *  row (a decoded-text stop sequence fired) — matches generate()'s onToken
    *  contract. EOS terminates the row WITHOUT an onToken call. Throwing evicts
    *  THIS row only (its submit promise rejects; siblings continue). May be
    *  async; keep it cheap — it runs inline in the step loop. */
-  onToken: (token: number) => void | boolean | Promise<void | boolean>;
+  onToken: (token: number, logprobs?: import("../../generate").TokenLogprobs) => void | boolean | Promise<void | boolean>;
   /** Diagnostic-only request-local trace. */
   trace?: PromptResponseTrace;
   /** Closes the gateway's queue/admission span when this row leaves pending. */
@@ -178,6 +224,7 @@ export interface BatchRequest {
 }
 
 export interface BatchStats {
+  spec?: import("../../generate").GenerateStats["spec"];
   promptTokens: number;
   generatedTokens: number;
   /** Prompt tokens served from the prompt cache (Phase 3.2): a joiner's solo
@@ -200,14 +247,10 @@ export interface BatchStats {
  *  finish INSIDE a multi-row batch get their KV EXTRACTED per row into
  *  fresh serial caches first (mlx-lm server.py:872 extract_cache — the
  *  cross-request reuse concurrent agents live on). */
-export interface RowPromptCache {
-  take(prompt: number[], ns?: string): {
-    tokens: number[]; caches: Cache[]; retain?: () => void;
-  } | null;
-  put(tokens: number[], caches: Cache[], ns?: string, retain?: () => void): void;
-}
+export type RowPromptCache = import("./checkpoint-state").MlxPrefixCache;
 
-interface Row {
+export interface Row {
+  spec?: import("../../generate").GenerateStats["spec"];
   req: BatchRequest;
   resolve: (s: BatchStats) => void;
   reject: (e: unknown) => void;
@@ -220,6 +263,8 @@ interface Row {
   /** performance.now() marks for BatchStats timing (0 = not reached). */
   admittedAt: number;
   firstTokenAt: number;
+  closeTokenZero?: () => void;
+  cacheNamespace?: string;
   /** Generated tokens whose KV actually entered the cache (fed as a step
    *  input) — serial generate()'s `forwarded` list. promptIds+fed is the
    *  exact token coverage of the row's caches, the put() entry key.
@@ -242,30 +287,14 @@ interface Row {
   merged: boolean;
 }
 
-/** A joiner mid-prefill: `pos` prompt tokens are already in `solo`. Advanced
- *  one chunk per loop iteration, interleaved with batch decode steps. */
-interface PrefillState {
-  row: Row;
-  solo: Cache[];
-  pos: number;
-  /** Release hook carried by an SSD-restored prompt-cache entry (must run
-   *  only after `solo`/the adopted caches are disposed — see PromptCacheEntry). */
-  retain?: () => void;
-  /** Pending boundary-snapshot position: #prefillChunk splits its chunking
-   *  exactly here, clones + put()s the trim-free prefix entry, then nulls
-   *  it. null = no snapshot for this row (short prompt / cached past it). */
-  snapAt: number | null;
-  closePrefill?: () => void;
-}
-
 /** Held while the batch is active; the serial fallback acquires the same lock. */
 export interface ExclusiveLock {
   acquire(): Promise<() => void>;
 }
 
 export interface MlxBatchExecutionGroupOptions {
-  /** Shared with serial execution; checked under the GPU lease after cache take. */
-  memoryBudget?: MlxMemoryBudget;
+  /** Scheduling work budget for extending an existing preparation cohort. */
+  prefillBatchTokenLimit?: number;
   runtime?: RuntimeConfig;
   maxQueued?: number;
   stateCodecs?: import("../../kv-store").CacheCodecProvider;
@@ -290,6 +319,8 @@ export interface MlxBatchExecutionGroupOptions {
    * the same chunk boundaries as the serial path, so a row's quantized bytes
    * preserve the L2 composition. Unsupported schemes fail at construction. */
   kvScheme?: KvScheme;
+  /** Model binding owns support for precision transitions. */
+  kvBatchCapabilities?: { delayedAffine?: boolean };
   /** Prompt-cache hook (Phase 3.2): admission take()s the longest usable
    *  prefix into the joiner's solo caches (suffix-only prefill — the
    *  multi-turn chat TTFT path); rows that finish never-merged put() their
@@ -320,7 +351,8 @@ export class MlxBatchExecutionGroup {
   #inners: LayerInner[] | null = null; // per-layer batched KV; null when empty
   #fullLeftPad: number[] = []; // per-row padding for FULL layers (rot self-tracks)
   #pending: Row[] = [];
-  #prefill: PrefillState | null = null; // the (single) joiner mid-prefill
+  #prefill: MlxGroupPreparation | null = null; // the (single) joiner mid-prefill
+  #preparationPublishedOutput = false;
   /** Sampled-but-unread token array [B], aligned with #running — the decode
    *  pipeline register. Filtered/disposed alongside the batched KV. */
   #pendingToks: MlxArray | null = null;
@@ -329,6 +361,8 @@ export class MlxBatchExecutionGroup {
    *  accounting must skip it — see Row.fed/fedTainted). Filtered/cleared in
    *  lockstep with the register. */
   #pendingReal: boolean[] | null = null;
+  #method: MlxGroupedMethod | undefined;
+  #methodKey: string | undefined;
   #steps = 0; // decode-step counter (clearCache cadence)
   #looping = false;
   #closed = false;
@@ -338,24 +372,29 @@ export class MlxBatchExecutionGroup {
   readonly #lock: ExclusiveLock | undefined;
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
+  readonly #prefillBatchTokenLimit: number;
   readonly #prefillTailSplit: boolean;
   readonly #kvBudgetBytes: number | undefined;
-  readonly #memoryBudget: MlxMemoryBudget | undefined;
-  readonly #promptCache: RowPromptCache | undefined;
+  readonly #defaultPromptCache: RowPromptCache | undefined;
+  #statePolicy?: MlxRequestStatePolicy;
+  get #promptCache(): RowPromptCache | undefined {
+    return this.#statePolicy ? this.#statePolicy.promptCache : this.#defaultPromptCache;
+  }
   /** Retain hook of the currently-ADOPTED row's cache entry (at most one:
    *  only a lone adopted row holds un-copied entry caches). Runs after the
    *  adopted caches are disposed, or transfers back on put(). */
   #adoptedRetain: (() => void) | null = null;
+  #contextKey: string | undefined;
+  #releaseContext: (() => void) | undefined;
   readonly #kinds: ("full" | "rot" | "ssm" | "owned-batch")[];
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
   readonly #compressedProjectors: Array<(tokens: number) => number> | null;
   readonly #batchCacheMaxTokens: number | null;
   readonly #kvScheme: KvScheme | undefined;
-  /** layerIdx → mixed-precision spec (Phase 3.1); null = bf16 batch (v1). */
-  readonly #kvByLayer: Map<number, KvQuantSpec> | null;
+  readonly #maintainKv: KvMaintenance | null;
   /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
    *  same eligibility gate as generate.ts (gemma dense, kill switch
-   *  MLX_BUN_COMPILED_DECODE); adapters never reach the batch lane. Set
+   *  MLX_BUN_COMPILED_DECODE); adapter requests disable replay in their plan. Set
    *  to null permanently on a failed step (serial disables per
    *  generation; the scheduler is one long-lived "generation"). */
   #compiled: CompiledDecode | null;
@@ -370,17 +409,19 @@ export class MlxBatchExecutionGroup {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
-    this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ?? 2048));
+    this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ??
+      this.#runtime.number("MLX_BUN_RD_PREFILL_CHUNK", 2048)));
+    this.#prefillBatchTokenLimit = opts.prefillBatchTokenLimit ?? 2048;
     this.#prefillTailSplit = this.#runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     this.#kvBudgetBytes = opts.kvBudgetBytes;
-    this.#memoryBudget = opts.memoryBudget;
-    this.#promptCache = opts.promptCache;
+    this.#defaultPromptCache = opts.promptCache;
     this.#kvScheme = opts.kvScheme;
     const proto = withRuntimeConfig(this.#runtime, () => model.makeCache()); // fresh caches hold no buffers
     if (this.#kvScheme && !this.#kvScheme.batchable(
       model.config,
       (layerIdx) =>
         isPlainKvCache(proto[layerIdx]) || isRotatingPlainCache(proto[layerIdx]),
+      proto.length, opts.kvBatchCapabilities,
     )) {
       for (const cache of proto) cache.dispose();
       throw new Error(`unsupported KV scheme for batch scheduler: ${this.#kvScheme.kind}`);
@@ -398,11 +439,10 @@ export class MlxBatchExecutionGroup {
       ? proto.map((cache) => (tokens: number) => cache.projectedBytes(tokens))
       : null;
     this.#batchCacheMaxTokens = proto.every(isBatchableCache)
-      ? Math.min(...proto.map((cache) => cache.maxTokens ?? Number.MAX_SAFE_INTEGER))
+      ? Math.min(...proto.map((cache) => cache.maxTokens ?? Infinity))
       : null;
-    const kvConfig = this.#kvScheme?.options.kvConfig;
-    this.#kvByLayer = kvConfig?.length
-      ? new Map(kvConfig.map((entry) => [entry.layerIdx, entry]))
+    this.#maintainKv = this.#kvScheme?.quantized
+      ? createKvMaintenance(this.#kvScheme.options)
       : null;
     this.#rotMaxSize = proto.map((c) => (isRotatingPlainCache(c) ? c.maxSize : 0));
     for (const c of proto) c.dispose();
@@ -418,7 +458,7 @@ export class MlxBatchExecutionGroup {
   }
 
   get pendingRows(): number {
-    return this.#pending.length + (this.#prefill ? 1 : 0);
+    return this.#pending.length + (this.#prefill?.rows.length ?? 0);
   }
 
   /** Projected KV bytes of one row at its worst case (full prompt + full
@@ -437,14 +477,6 @@ export class MlxBatchExecutionGroup {
         );
   }
 
-  async #withMemoryGuard<T>(promptTokens: number, run: () => Promise<T>): Promise<T> {
-    if (!this.#memoryBudget) return run();
-    const guard = enterMlxMemoryGuard(this.model, this.#memoryBudget,
-      promptTokens, this.#prefillChunkSize);
-    try { guard.check(); return await run(); }
-    finally { guard.close(); }
-  }
-
   async #forwardHidden(ids: MlxArray, cache: Cache[]): Promise<MlxArray> {
     const asyncModel = this.model as RuntimeModel & {
       forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
@@ -457,7 +489,7 @@ export class MlxBatchExecutionGroup {
   /** Projected aggregate KV of everything admitted (running + mid-prefill). */
   get projectedKvBytes(): number {
     let total = this.#running.reduce((a, r) => a + this.#rowKvBytes(r), 0);
-    if (this.#prefill) total += this.#rowKvBytes(this.#prefill.row);
+    if (this.#prefill) for (const row of this.#prefill.rows) total += this.#rowKvBytes(row);
     return total;
   }
 
@@ -551,6 +583,14 @@ export class MlxBatchExecutionGroup {
       get active() { return scheduler.#running.length; },
       get queued() { return scheduler.#pending.length; },
       get preparing() { return scheduler.#prefill !== null; },
+      get preparingRows() { return scheduler.#prefill?.rows.length ?? 0; },
+      get canPrepareMore() { return scheduler.#prefill?.canAdmit === true; },
+      get preparingTokens() { return scheduler.#prefill?.tokenWeight ?? 0; },
+      // Cache restoration belongs to preparation. A queued request's prompt
+      // length is an upper bound until its cache owner resolves the prefix.
+      get nextPreparationTokens() { return scheduler.#pending[0]?.promptTokens ?? 0; },
+      get maxPreparationTokens() { return scheduler.#prefillBatchTokenLimit; },
+      get preparationPublishedOutput() { return scheduler.#preparationPublishedOutput; },
       get maxActive() { return scheduler.#maxBatch; },
       get admissionHeld() { return scheduler.#admissionHeld?.() === true; },
       get closed() { return scheduler.#closed; },
@@ -563,18 +603,22 @@ export class MlxBatchExecutionGroup {
         }
       },
       admitNext: () => this.#admitNext(),
-      canBurst: () => this.#kvBudgetBytes === undefined ||
-        this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes,
+      canBurst: () => this.#contextCompatible(this.#pending[0]!) &&
+        (this.#kvBudgetBytes === undefined ||
+          this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes),
       advancePreparation: () => this.#advancePreparation(),
-      advance: () => this.#withMemoryGuard(
-        Math.max(0, ...this.#running.map((row) => row.promptTokens + row.sampled)),
-        () => this.#step()),
+      advance: () => this.#method ? this.#method.advance() : this.#step(),
       failActive: (error) => {
         for (const row of this.#running) row.reject(error);
         this.#applyFilter([], true); // failed state never enters the prefix store
       },
       failAll: (error) => this.#failAll(error),
-      reserveResidency: () => acquireModelWiredLimit(this.model),
+      reserveResidency: () => {
+        const release = acquireModelWiredLimit(this.model);
+        return () => disposeResources([
+          { dispose: () => this.#leaveContext() }, { dispose: release },
+        ]);
+      },
       ...(this.#lock ? { acquireExecution: () => this.#lock!.acquire() } : {}),
       waitForWork: async () => {
         await new Promise<void>((resolve) => { this.#wake = resolve; });
@@ -589,66 +633,106 @@ export class MlxBatchExecutionGroup {
     } finally { this.#looping = false; }
   }
 
+  #contextCompatible(row: Row): boolean {
+    return (!this.#running.length && !this.#prefill) || ((row.req.context?.key ?? "") === this.#contextKey && row.req.method?.key === this.#methodKey && row.req.statePolicy?.key === this.#statePolicy?.key);
+  }
+
+  #leaveContext(): void {
+    const release = this.#releaseContext;
+    this.#releaseContext = undefined;
+    this.#contextKey = undefined;
+    release?.();
+  }
+
   #admitNext(): boolean {
-    if (!this.#kvAdmits(this.#pending[0]!)) return false;
+    if (!this.#contextCompatible(this.#pending[0]!) || !this.#kvAdmits(this.#pending[0]!)) return false;
     const row = this.#pending.shift()!;
-    let owned: { caches: Cache[]; retain?: () => void } | undefined;
-    let closePrefill: (() => void) | undefined;
     try {
+      this.#statePolicy = row.req.statePolicy;
+      row.cacheNamespace = typeof row.req.cacheNamespace === "function"
+        ? row.req.cacheNamespace() : row.req.cacheNamespace;
+      const key = row.req.context?.key ?? "";
+      if (key !== this.#contextKey) {
+        this.#leaveContext();
+        this.#releaseContext = row.req.context?.enter();
+        this.#contextKey = key;
+      }
       row.req.onAdmitted?.();
       row.admittedAt = performance.now();
-      const closeCache = row.req.trace?.begin("cache.lookup_restore", { mechanism: "continuous" });
-      const hit = this.#promptCache?.take(row.req.promptIds) ?? null;
-      if (hit) owned = hit;
-      closeCache?.();
-      if (hit) row.cachedTokens = hit.tokens.length;
-      const len = row.req.promptIds.length;
-      const boundary = Math.min(row.req.snapshotAt ?? len, len - 1);
-      const snapAt = this.#promptCache && boundary >= 256 && boundary > (hit?.tokens.length ?? 0)
-        ? boundary : null;
-      closePrefill = row.req.trace?.begin("prefill.total", {
-        mechanism: "continuous", promptTokens: row.promptTokens, cachedTokens: row.cachedTokens,
-      });
-      const closeBatchSetup = row.req.trace?.begin("prefill.batch_setup", { mechanism: "continuous" });
-      owned ??= { caches: this.model.makeCache() };
-      closeBatchSetup?.();
-      this.#prefill = { row, solo: owned.caches, pos: hit?.tokens.length ?? 0,
-        retain: owned.retain, snapAt, closePrefill };
-      owned = undefined; // transfer to the preparation owner
-    } catch (error) {
-      let failure = error;
-      try { disposeResources([...(owned?.caches ?? []), { dispose: () => owned?.retain?.() },
-        { dispose: () => closePrefill?.() }]); }
-      catch (cleanupError) { failure = new AggregateError([error, cleanupError], "batch admission and cleanup failed"); }
-      row.reject(failure);
-    }
+      if (row.req.method?.key !== this.#methodKey) {
+        this.#method?.dispose(); this.#method = undefined; this.#methodKey = undefined;
+        if (row.req.method) {
+          const executor = this;
+          this.#method = row.req.method.open({
+            get rows() { return executor.#running; }, runtime: this.#runtime,
+            prefillChunkSize: this.#prefillChunkSize, promptCache: this.#promptCache,
+            join: row => { this.#running.push(row); },
+            filterRows: keep => this.#applyFilter(keep),
+            publish: async (row, token, logprobs) => {
+              row.req.signal?.throwIfAborted();
+              this.#firstOutput(row);
+              return row.req.onToken(token, logprobs);
+            },
+            finish: (row, reason) => this.#finish(row, reason),
+          });
+          this.#methodKey = row.req.method.key;
+        }
+      }
+      if (this.#prefill) {
+        this.#prefill.admit!(row);
+      } else if (this.#method) {
+        this.#prefill = this.#method.prepare(row);
+      } else {
+        const preparation = new MlxPrefillCohort({
+          model: this.model, chunkSize: this.#prefillChunkSize, tailSplit: this.#prefillTailSplit,
+          promptCache: this.#promptCache, stateCodecs: this.#stateCodecs, maintain: this.#maintainKv ?? undefined,
+          forward: (ids, caches) => this.#forwardHidden(ids, caches),
+          project: (hidden, caches, completed) => this.#projectPrefill(hidden, caches, completed),
+          complete: (state, logits) => this.#completePrefill(state, logits),
+          resume: state => this.#completePrefill(state, null),
+          reject: (failed, error) => this.#rejectPreparingRows([failed], error),
+        });
+        preparation.admit(row); this.#prefill = preparation;
+      }
+    } catch (error) { row.reject(error); }
     return true;
   }
 
+  #rejectPreparingRows(rows: readonly Row[], error: unknown): void {
+    const retiring = new Set(rows);
+    const keep = this.#running.flatMap((row, index) => retiring.has(row) ? [] : [index]);
+    if (keep.length !== this.#running.length) this.#applyFilter(keep, true);
+    for (const row of rows) row.reject(error);
+  }
+
   async #advancePreparation(): Promise<void> {
-    const p = this.#prefill!;
+    const p = this.#prefill!, rows = p.rows;
+    this.#preparationPublishedOutput = false;
     try {
-      if (await this.#withMemoryGuard(p.row.promptTokens, () => this.#prefillChunk(p))) {
-        p.closePrefill?.();
-        this.#prefill = null;
-      }
+      if (await p.advance()) this.#prefill = null;
     } catch (error) {
       this.#prefill = null;
       let failure = error;
-      try { disposeResources([...p.solo, { dispose: () => p.retain?.() }, { dispose: () => p.closePrefill?.() }]); }
+      try { p.dispose(); }
       catch (cleanupError) { failure = new AggregateError([error, cleanupError], "batch prefill and cleanup failed"); }
-      p.row.reject(failure);
+      try { this.#rejectPreparingRows(rows, failure); }
+      catch (cleanupError) {
+        failure = new AggregateError([failure, cleanupError], "batch admission retirement failed");
+        for (const row of rows) row.reject(failure);
+        this.#failAll(failure);
+      }
     }
   }
 
   #failAll(error: unknown): void {
     const p = this.#prefill;
-    const rows = new Set([...this.#running, ...this.#pending, ...(p ? [p.row] : [])]);
+    const rows = new Set([...this.#running, ...this.#pending, ...(p?.rows ?? [])]);
     const retain = this.#adoptedRetain;
-    const resources = [...(p?.solo ?? []), ...(this.#inners ?? []), this.#pendingToks,
-      { dispose: () => p?.retain?.() }, { dispose: () => p?.closePrefill?.() }, { dispose: () => retain?.() }]
+    const resources = [p, this.#method, ...(this.#inners ?? []), this.#pendingToks,
+      { dispose: () => retain?.() }]
       .filter((resource): resource is DisposableResource => resource != null);
     this.#pending = []; this.#running = []; this.#prefill = null;
+    this.#method = undefined; this.#methodKey = undefined;
     this.#inners = null; this.#pendingToks = null; this.#pendingReal = null;
     this.#fullLeftPad = []; this.#adoptedRetain = null;
     for (const row of rows) row.reject(error);
@@ -665,110 +749,105 @@ export class MlxBatchExecutionGroup {
    *  bytes bit-exact vs serial `--kv-quant config`. Gateway placement and the
    *  constructor both guarantee every named cache can convert. */
   #quantizeSolo(solo: Cache[], trace?: PromptResponseTrace): void {
-    if (!this.#kvByLayer) return;
+    if (!this.#maintainKv) return;
     const close = trace?.begin("prefill.kv_maintenance", {
       mechanism: "continuous",
     });
     try {
-      for (let i = 0; i < solo.length; i++) {
-        const e = this.#kvByLayer.get(i);
-        const c = solo[i]!;
-        if (!e || c.offset === 0) continue;
-        // Milestone 2: rotating layers convert too — RotatingKVCache.
-        // toQuantized → RotatingQuantizedKVCache, exactly maybeQuantizeKv's
-        // dispatch (generate.ts). Converted caches don't match either class
-        // (the four cache classes are siblings), so re-conversion never fires.
-        if (!(isPlainKvCache(c) || isRotatingPlainCache(c))) continue;
-        const q = c.toQuantized(e.groupSize, e.bits);
-        solo[i] = q;
-        ops.evalAll(q.state());
-        clearCache();
-      }
+      this.#maintainKv(solo);
     } finally {
       close?.();
     }
   }
 
-  /** Advance a joiner's solo prefill by one chunk. Non-final chunks forward +
-   *  eval the cache and return false (the caller interleaves a decode step).
-   *  The final chunk samples token 0, emits it, and — if the row survives —
-   *  merges it into the running batch; returns true (admission complete). */
-  async #prefillChunk(p: PrefillState): Promise<boolean> {
-    p.row.req.signal?.throwIfAborted();
-    const prompt = p.row.req.promptIds;
-    const chunkStart = p.pos;
-    const closeChunk = p.row.req.trace?.begin("prefill.chunk", {
-      mechanism: "continuous",
-      startToken: chunkStart,
-    });
+  /** The target owns projection geometry; samplers receive individual rows. */
+  #projectPrefill(hidden: MlxArray, caches: Cache[], completed: readonly PrefillState[]): MlxArray {
+    for (const p of completed) {
+      p.closePrefill?.(); p.closePrefill = undefined;
+      p.row.closeTokenZero = p.row.req.trace?.begin("token_zero.total", { mechanism: "continuous" });
+    }
+    const attributed = this.#runtime.value("MLX_BUN_P2R_SYNC") === "1"
+      ? completed.flatMap(p => p.row.req.trace ? [p.row.req.trace] : []) : [];
+    const begin = (phase: "token_zero.forward" | "token_zero.head") => attributed.map(trace => trace.begin(phase, {
+      mechanism: "continuous", activeBytes: activeMemory(), cacheBytes: cacheMemory(), peakBytes: peakMemory(),
+    }));
+    if (attributed.length) {
+      const closes = begin("token_zero.forward");
+      try { withResource(leaseCacheStates(caches), state => ops.evalAll([hidden, ...state])); }
+      finally { for (const close of closes) close(); }
+    }
+    // Project before selecting rows: M4 quantized projection can use different
+    // arithmetic at M=1. Tail-split preparation reaches this with N=1.
+    const logits = this.model.logitsFromHidden(hidden);
     try {
-    let h: MlxArray;
-    while (true) {
-      p.row.req.signal?.throwIfAborted();
-      const step = nextPrefillStep({ length: prompt.length, position: p.pos,
-        chunkSize: this.#prefillChunkSize, tailSplit: this.#prefillTailSplit, snapshotAt: p.snapAt });
-      const hidden = await executeMlxPrefillStep(
-        (ids, caches) => this.#forwardHidden(ids, caches), p.solo, prompt, step,
-        () => this.#quantizeSolo(p.solo, p.row.req.trace),
-      );
-      p.pos = step.end;
-      if (hidden) { h = hidden; break; }
-      if (step.snapshot) {
-        try { this.#promptCache!.put(prompt.slice(0, step.end), cloneKvCaches(p.solo, this.#stateCodecs)); }
-        catch (error) { console.warn(`batch-lane boundary snapshot skipped: ${(error as Error).message}`); }
-        p.snapAt = null;
+      if (attributed.length) {
+        const closes = begin("token_zero.head");
+        try { ops.evalAll([logits]); } finally { for (const close of closes) close(); }
       }
-      if (step.batchYield) return false;
+      return logits;
+    } catch (error) { logits.dispose(); throw error; }
+  }
+
+  /** Sample borrowed logits from the shared target projection. */
+  async #completePrefill(p: PrefillState, logits: MlxArray | null): Promise<void> {
+    if (p.continuation) {
+      const saved = p.continuation, row = p.row;
+      row.req.continuation!.resumeSampling(saved);
+      const interval = row.req.continuation!.interval;
+      this.#checkpointAt.set(row, (Math.floor(saved.generatedTokens / interval) + 1) * interval);
+      row.firstTokenAt = performance.now();
+      row.closeTokenZero?.(); row.closeTokenZero = undefined;
+      this.#preparationPublishedOutput = true;
+      for (const token of saved.cacheTokens.slice(row.req.promptIds.length)) {
+        row.req.signal?.throwIfAborted();
+        if (await row.req.onToken(token) === false)
+          throw new Error("saved generation prefix triggered a terminal stop while replaying");
+      }
+      row.fed = saved.cacheTokens.slice(row.req.promptIds.length);
+      row.generated = saved.generatedTokens + 1;
+      row.sampled = saved.generatedTokens + 1;
+      row.cachedTokens = Math.min(saved.cacheTokens.length, row.promptTokens);
+      const stop = await this.#emit(row, saved.pendingToken);
+      if (stop !== "continue") {
+        this.#putOrDispose(p.solo, saved.cacheTokens, p.retain, row.cacheNamespace);
+        p.solo = [];
+        this.#finish(row, stop);
+        return;
+      }
+      await this.#mergeJoiner(p);
+      return;
     }
-    closeChunk?.();
-    p.closePrefill?.();
-    p.closePrefill = undefined;
-    const closeTokenZero = p.row.req.trace?.begin("token_zero.total", {
-      mechanism: "continuous",
-    });
-    // MLX is lazy: synchronize(stream) only waits for already-submitted work;
-    // it does not submit `h`'s graph. Attribution mode must evaluate the final
-    // L=1 forward explicitly or its work is silently charged to the head/read.
-    const forceAttribution = !!p.row.req.trace &&
-      this.#runtime.value("MLX_BUN_P2R_SYNC") === "1";
-    if (forceAttribution) {
-      const closeForward = p.row.req.trace!.begin("token_zero.forward", {
-        mechanism: "continuous",
-        activeBytes: activeMemory(),
-        cacheBytes: cacheMemory(),
-        peakBytes: peakMemory(),
-      });
-      ops.evalAll([h, ...p.solo.flatMap((c) => c.state())]);
-      closeForward();
-    }
-    const [, Lc, H] = h.shape as [number, number, number];
-    const hLast = h.slice([0, Lc - 1, 0], [1, Lc, H]);
-    h.dispose();
-    const lg = this.model.logitsFromHidden(hLast); // [1,1,V]
-    hLast.dispose();
-    if (forceAttribution) {
-      const closeHead = p.row.req.trace!.begin("token_zero.head", {
-        mechanism: "continuous",
-        activeBytes: activeMemory(),
-        cacheBytes: cacheMemory(),
-        peakBytes: peakMemory(),
-      });
-      ops.evalAll([lg]);
-      closeHead();
-    }
-    const V = lg.shape[2]!;
-    const last2 = ops.reshape(lg, [1, V]);
-    lg.dispose();
+    if (!logits) throw new Error("ordinary prefill completed without logits");
+    const forceAttribution = !!p.row.req.trace && this.#runtime.value("MLX_BUN_P2R_SYNC") === "1";
+    const V = logits.shape[2]!;
+    const last2 = ops.reshape(logits, [1, V]);
     const closeSample = forceAttribution
       ? p.row.req.trace!.begin("token_zero.sample", { mechanism: "continuous" })
       : undefined;
-    const tok = this.#readToken(p.row.req.sample(last2, 0));
+    let sampled: MlxArray;
+    try { sampled = p.row.req.sample!(last2, 0); } finally { last2.dispose(); }
+    // The first admission can seed the existing device-token register. Its
+    // first decode forward then overlaps token-zero readback, just like every
+    // later pipeline step. Grammar and explicit eager-output modes retain
+    // their read-before-advance order.
+    if (!this.#inners && !p.row.req.grammar && !this.#noPipeline &&
+        this.#runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") !== "1" && !forceAttribution) {
+      let owned: MlxArray | null = sampled;
+      try {
+        ops.asyncEvalAll([sampled]);
+        p.row.sampled = 1;
+        this.#quantizeSolo(p.solo, p.row.req.trace);
+        await this.#mergeJoiner(p);
+        this.#pendingToks = sampled;
+        this.#pendingReal = [true];
+        owned = null;
+        return;
+      } finally { owned?.dispose(); }
+    }
+    const tok = this.#readToken(sampled);
     closeSample?.();
-    closeTokenZero?.();
-    last2.dispose();
     p.row.sampled = 1;
     p.row.generated = 1;
-    clearCache(); // drop the prefill transients (serial's token-0 clear)
 
     // Grammar (B1): the mask0 was applied inside the sample closure (the
     // controller is primed at compile). After reading token 0, advance the
@@ -782,17 +861,17 @@ export class MlxBatchExecutionGroup {
         const stop = await this.#emit(p.row, tok);
         // Token 0 was sampled but never fed — the caches cover exactly the
         // prompt, a clean prompt-only entry (put-or-dispose).
-        this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain);
+        this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain, p.row.cacheNamespace);
         this.#finish(p.row, stop === "continue" ? "stop" : stop);
-        return true;
+        return;
       }
     }
 
     const stop = await this.#emit(p.row, tok);
     if (stop !== "continue") {
-      this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain);
+      this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain, p.row.cacheNamespace);
       this.#finish(p.row, stop);
-      return true;
+      return;
     }
     // Default tail-split path: the caches were already converted at the head
     // boundary above (oracle composition: prefill ids[:-1] → convert → L=1
@@ -803,10 +882,7 @@ export class MlxBatchExecutionGroup {
     // (before decode step 1 == before the merge).
     this.#quantizeSolo(p.solo, p.row.req.trace);
     await this.#mergeJoiner(p);
-    return true;
-    } finally {
-      closeChunk?.();
-    }
+    return;
   }
 
   /** Merge a fully-prefilled joiner with the running batch, layer by layer
@@ -814,6 +890,7 @@ export class MlxBatchExecutionGroup {
    *  first so the row set is settled and the next step starts cold. */
   async #mergeJoiner(p: PrefillState): Promise<void> {
     await this.#flushPipeline();
+    this.#maintainKv?.prepareBatch?.(p.solo);
 
     // ADOPT, don't copy (unified-engine plan Phase 3.2): a row joining an
     // EMPTY batch keeps its solo caches as the batch inners — a pointer
@@ -826,9 +903,9 @@ export class MlxBatchExecutionGroup {
     // take/put become possible for it. The rot branch below knows how to
     // treat an adopted RotatingKVCache as the merge's first row.
     if (!this.#inners) {
-      this.#inners = p.solo as LayerInner[];
+      this.#inners = p.solo as LayerInner[]; p.solo = [];
       this.#fullLeftPad = [0];
-      this.#adoptedRetain = p.retain ?? null;
+      this.#adoptedRetain = p.retain ?? null; p.retain = undefined;
       this.#running.push(p.row);
       return;
     }
@@ -839,17 +916,17 @@ export class MlxBatchExecutionGroup {
     const newInners: LayerInner[] = [];
     let newFullPad = this.#fullLeftPad;
     for (let layer = 0; layer < this.#kinds.length; layer++) {
-      if (this.#kinds[layer] === "owned-batch") {
-        const solo = p.solo[layer]!;
-        if (!isBatchableCache(solo))
-          throw new Error(`batch-capable layer ${layer} lost its cache capability`);
-        const merged = solo.makeEmptyBatch();
+      const solo = p.solo[layer]!;
+      const merged = ownedCacheLayout(solo);
+      if (merged) {
         const previous = prev?.[layer];
         merged.mergeRows(previous ? [previous, solo] : [solo]);
         newFullPad = [...merged.leftPad];
         newInners.push(merged);
         continue;
       }
+      if (this.#kinds[layer] === "owned-batch")
+        throw new Error(`batch-capable layer ${layer} lost its cache capability`);
       if (this.#kinds[layer] === "ssm") {
         // No temporal axis, no left-pad: B-axis concat of the state slots.
         // mergeRows steals the solo arrays when the batch starts cold, so the
@@ -1049,8 +1126,9 @@ export class MlxBatchExecutionGroup {
     // run its retain now. The joiner's likewise after its solo dispose.
     this.#adoptedRetain?.();
     this.#adoptedRetain = null;
-    for (const c of p.solo) c.dispose();
-    p.retain?.();
+    const completed = p.solo; p.solo = [];
+    const release = p.retain; p.retain = undefined;
+    disposeResources([...completed, { dispose: () => release?.() }]);
     // Every row in a REAL merge has its KV interleaved in batched buffers —
     // no longer prompt-cache put() candidates.
     for (const r of this.#running) r.merged = true;
@@ -1197,10 +1275,8 @@ export class MlxBatchExecutionGroup {
         if (vecOk) {
           const flat = ops.reshape(lg, [B, V]);
           lg.dispose();
-          const lp = toLogprobs(flat);
-          flat.dispose();
-          nextToks = ops.argmaxAxis(lp, -1); // [B]
-          lp.dispose();
+          try { nextToks = independentGreedySampling.sample(flat); }
+          finally { flat.dispose(); }
           for (const row of rows) if (row.sampled < row.req.maxTokens) row.sampled++;
         } else {
           const sampled: MlxArray[] = [];
@@ -1215,7 +1291,7 @@ export class MlxBatchExecutionGroup {
             const rl = lg.slice([b, 0, 0], [b + 1, 1, V]);
             const rl2 = ops.reshape(rl, [1, V]);
             rl.dispose();
-            sampled.push(row.req.sample(rl2, row.sampled));
+            sampled.push(row.req.sample!(rl2, row.sampled));
             row.sampled++;
             rl2.dispose();
           }
@@ -1246,6 +1322,7 @@ export class MlxBatchExecutionGroup {
     // set from process start `prev` is always null, so the flush below IS the
     // whole phase 2. Same math either way (pipelining is scheduling).
     if (this.#noPipeline) {
+      if (this.#running.some(row => row.req.continuation)) this.#captureContinuations();
       await this.#flushPipeline();
       return;
     }
@@ -1266,7 +1343,35 @@ export class MlxBatchExecutionGroup {
       await this.#emitRows(toks); // also filters #pendingToks on eviction
       if (this.#stepTrace) { STEP_T.emit += performance.now() - tEmit; STEP_T.n++; }
     }
+    if (this.#running.some(row => row.req.continuation)) this.#captureContinuations();
     if (this.#stepTrace) STEP_T.lastEnd = performance.now();
+  }
+
+  readonly #checkpointAt = new WeakMap<Row, number>();
+  /** Cache extraction belongs to this existing ordinary numerical driver;
+   * the optional request port owns checkpoint eligibility and persistence. */
+  #captureContinuations(): void {
+    if (!this.#pendingToks || !this.#running.some(row => row.req.continuation)) return;
+    let pending: number[] | undefined;
+    const failed = new Set<number>();
+    for (let index = 0; index < this.#running.length; index++) {
+      const row = this.#running[index]!, policy = row.req.continuation;
+      if (!policy || row.fedTainted || row.fed.length !== row.generated ||
+          row.generated < (this.#checkpointAt.get(row) ?? policy.interval) ||
+          this.#pendingReal?.[index] === false) continue;
+      pending ??= this.#pendingToks.toIntTokens();
+      const tokens = [...row.req.promptIds, ...row.fed];
+      const caches = this.#running.length === 1 && !row.merged
+        ? cloneSingleRowState(this.#inners! as Cache[], this.#stateCodecs)
+        : this.#extractRowCaches(index, tokens.length);
+      if (!caches) continue;
+      try {
+        policy.captureOwned({ caches, cacheTokens: tokens, generatedTokens: row.generated,
+          pendingToken: pending[index]! });
+        this.#checkpointAt.set(row, (Math.floor(row.generated / policy.interval) + 1) * policy.interval);
+      } catch (error) { row.reject(error); failed.add(index); }
+    }
+    if (failed.size) this.#applyFilter(this.#running.flatMap((_, index) => failed.has(index) ? [] : [index]), true);
   }
 
   /** Read out the pipeline register (if any): emit its tokens and evict
@@ -1382,7 +1487,7 @@ export class MlxBatchExecutionGroup {
           const rl = lg.slice([b, 0, 0], [b + 1, 1, V]);
           const rl2 = ops.reshape(rl, [1, V]);
           rl.dispose();
-          sampled.push(row.req.sample(rl2, row.sampled));
+          sampled.push(row.req.sample!(rl2, row.sampled));
           row.sampled++;
           rl2.dispose();
         }
@@ -1408,6 +1513,7 @@ export class MlxBatchExecutionGroup {
     //     rows finish("stop") via #emit's isTerminated check; the filter evicts.
     //     Cold start: prevVals empty (prefill emitted tok0) → nothing to emit.
     if (prevVals.length) await this.#emitRows(prevVals);
+    if (this.#running.some(row => row.req.continuation)) this.#captureContinuations();
   }
 
   /** Emit one read-back token per running row; evict finished rows. A row's
@@ -1420,7 +1526,6 @@ export class MlxBatchExecutionGroup {
     for (let b = 0; b < B; b++) {
       const row = rows[b]!;
       row.generated++;
-      if (row.generated === 1) row.firstTokenAt = performance.now();
       let disp: "continue" | "stop" | "length";
       try {
         disp = await this.#emit(row, toks[b]!);
@@ -1452,10 +1557,12 @@ export class MlxBatchExecutionGroup {
   /** Account one sampled token for a row. Mirrors generate(): EOS terminates
    *  WITHOUT an onToken call; otherwise onToken(token) runs and `false` halts;
    *  reaching maxTokens ends with "length". Advances row.current on continue. */
-  async #emit(row: Row, token: number): Promise<"continue" | "stop" | "length"> {
+  async #emit(row: Row, token: number, logprobs?: import("../../generate").TokenLogprobs): Promise<"continue" | "stop" | "length"> {
     row.req.signal?.throwIfAborted();
+    this.#firstOutput(row);
+    if (row.generated === 1) clearCache();
     if (row.req.eosTokenIds.includes(token)) return "stop";
-    const cont = await row.req.onToken(token);
+    const cont = await row.req.onToken(token, logprobs);
     if (cont === false) return "stop";
     // Grammar termination: the matcher is satisfied (e.g. closing `}` accepted).
     // The final token has been delivered via onToken above; halt with "stop" so
@@ -1466,10 +1573,21 @@ export class MlxBatchExecutionGroup {
     return "continue";
   }
 
+  #firstOutput(row: Row): void {
+    if (row.generated === 1) {
+      if (this.#prefill?.rows.includes(row)) this.#preparationPublishedOutput = true;
+      row.firstTokenAt = performance.now();
+      row.closeTokenZero?.();
+      row.closeTokenZero = undefined;
+    }
+  }
+
   #finish(row: Row, reason: "stop" | "length"): void {
+    row.req.continuation?.complete();
     const now = performance.now();
     const first = row.firstTokenAt || now;
     row.resolve({
+      ...(row.spec ? { spec: row.spec } : {}),
       promptTokens: row.promptTokens,
       generatedTokens: row.generated,
       cachedTokens: row.cachedTokens,
@@ -1484,13 +1602,28 @@ export class MlxBatchExecutionGroup {
    *  offset lines up (defensive — a mismatch means the accounting is wrong
    *  and the entry would corrupt future hits), else dispose. `retain` rides
    *  along per the PromptCacheEntry contract (runs after dispose). */
-  #putOrDispose(caches: Cache[], tokens: number[], retain?: () => void): void {
+  #putOrDispose(caches: Cache[], tokens: number[], retain?: () => void, namespace = ""): void {
     if (this.#promptCache) {
+      // A never-merged row can still own a row layout. Persistence receives
+      // its existing serial representation, just like merged-row retirement.
+      const extracted: Cache[] = [], replaced: Cache[] = [];
+      let persistent: Cache[];
+      try {
+        persistent = caches.map(cache => {
+          if (!isBatchableCache(cache) || cache.batchSize !== 1) return cache;
+          const row = cache.extractRow(0);
+          extracted.push(row); replaced.push(cache);
+          return row;
+        });
+      } catch (error) { disposeResources(extracted); throw error; }
+      try { disposeResources(replaced); }
+      catch (error) { disposeResources(extracted); throw error; }
+      caches = persistent;
       const withOff = caches.find(
         (c) => typeof (c as { offset?: unknown }).offset === "number",
       ) as { offset: number } | undefined;
       if (withOff && withOff.offset === tokens.length) {
-        this.#promptCache.put(tokens, caches, "", retain);
+        this.#promptCache.put(tokens, caches, namespace, retain);
         return;
       }
     }
@@ -1515,8 +1648,8 @@ export class MlxBatchExecutionGroup {
     // slices depend on this step's KV writes): async — the batched source
     // buffers free once the copies land, instead of being pinned by a lazy
     // graph inside an idle cache entry.
-    ops.asyncEvalAll(caches.flatMap((c) => c.state()));
-    this.#putOrDispose(caches, tokens);
+    withResource(leaseCacheStates(caches), state => ops.asyncEvalAll([...state]));
+    this.#putOrDispose(caches, tokens, undefined, row.cacheNamespace);
   }
 
   /** Row `b` of every layer as OWNED serial-class caches, or null when a
@@ -1562,6 +1695,11 @@ export class MlxBatchExecutionGroup {
   /** Evict rows not in `keep` (sorted ascending) from the batched KV and the
    *  pipeline register. */
   #applyFilter(keep: number[], dropOnly = false): void {
+    if (this.#method) {
+      this.#method.filterRows(keep, dropOnly);
+      this.#running = keep.map(row => this.#running[row]!);
+      return;
+    }
     const inners = this.#inners!;
     if (keep.length === 0) {
       // Prompt-cache put (Phase 3.2): a lone NEVER-MERGED row's inners are
@@ -1579,6 +1717,7 @@ export class MlxBatchExecutionGroup {
           inners as Cache[],
           [...solo.req.promptIds, ...solo.fed],
           this.#adoptedRetain ?? undefined,
+          solo.cacheNamespace,
         );
       } else {
         for (const c of inners) c.dispose();
@@ -1593,6 +1732,11 @@ export class MlxBatchExecutionGroup {
       this.#pendingReal = null;
       return;
     }
+    const keptFullPad = keep.map((i) => this.#fullLeftPad[i]!);
+    // mlx-lm BatchKVCache.filter removes padding shared by all survivors.
+    // Full-attention width and padding move together; each row's absolute
+    // RoPE position stays unchanged. Rotating caches keep their own layout.
+    const trimFull = this.#kinds.includes("full") ? Math.min(...keptFullPad) : 0;
     const out: LayerInner[] = [];
     for (const inner of inners) {
       if (isBatchableCache(inner)) {
@@ -1607,18 +1751,18 @@ export class MlxBatchExecutionGroup {
         throw new Error("applyFilter: adopted serial rotating cache cannot be row-filtered");
       } else if (isQuantizedKvCache(inner)) {
         const [k0, v0] = inner.temporalView();
-        const f = filterQuantRows(k0, v0, keep);
+        const f = filterQuantRows(k0, v0, keep, trimFull);
         for (const t of [k0, v0]) { t.packed.dispose(); t.scales.dispose(); t.biases.dispose(); }
         const c = new QuantizedKVCache(inner.groupSize, inner.bits);
-        c.restoreState(f.keys, f.values, inner.offset);
+        c.restoreState(f.keys, f.values, inner.offset - trimFull);
         out.push(c);
         inner.dispose();
       } else if (isPlainKvCache(inner)) {
         const [k0, v0] = inner.temporalView();
-        const f = filterKVRows(k0, v0, keep);
+        const f = filterKVRows(k0, v0, keep, trimFull);
         k0.dispose(); v0.dispose();
         const c = new KVCache();
-        c.restoreState(f.keys, f.values, inner.offset);
+        c.restoreState(f.keys, f.values, inner.offset - trimFull);
         out.push(c);
         inner.dispose();
       } else {
@@ -1626,7 +1770,7 @@ export class MlxBatchExecutionGroup {
       }
     }
     this.#inners = out;
-    this.#fullLeftPad = keep.map((i) => this.#fullLeftPad[i]!);
+    this.#fullLeftPad = keptFullPad.map((padding) => padding - trimFull);
     this.#running = keep.map((i) => this.#running[i]!);
     if (this.#pendingToks) {
       const idx = ops.fromInt32(keep, [keep.length]);

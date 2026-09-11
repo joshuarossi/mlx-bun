@@ -8,7 +8,7 @@
 // teacher-forced). This gates the WIRING: that --batch 2 actually engages on a
 // full-attention model, concurrent requests fan out to their own SSE streams
 // and all complete, and the serial/batched lanes are mutually exclusive (a
-// non-batchable request — user-fixed seed — drains and runs alongside batched
+// user-fixed seed runs alongside unseeded batched
 // ones without deadlock). Uses CPM (full-attention; the default Gemma SNAPSHOT
 // is sliding-window → serial fallback, which wouldn't exercise the batch path).
 
@@ -99,10 +99,10 @@ describe.skipIf(!optIn || !haveCpm)("--batch N serving (CPM, full-attention)", a
     expect(text).toMatch(/"content":"[^"]/);
   }, 120_000);
 
-  test("batched + serial (user-seed) lanes coexist without deadlock", async () => {
+  test("seeded and unseeded requests coexist without deadlock", async () => {
     const batched = chat(req("Say hello:"));
-    const serial = chat(req("Say goodbye:", { seed: 123 })); // user seed → serial lane
-    const [rb, rs] = await Promise.all([batched, serial]);
+    const seeded = chat(req("Say goodbye:", { seed: 123 }));
+    const [rb, rs] = await Promise.all([batched, seeded]);
     expect(rb.status).toBe(200);
     expect(rs.status).toBe(200);
     const [bb, bs] = (await Promise.all([rb.json(), rs.json()])) as any[];

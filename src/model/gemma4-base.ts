@@ -7,6 +7,7 @@
 // DecoderLayer, Gemma4Model) stays in gemma4.ts and becomes the
 // per-model generated code in Phase C.
 
+import { decodedKvDonorAttention } from "./decoded-kv-donor";
 import type { ModelConfig } from "../config";
 import { quantFor } from "../config";
 import type { Weights } from "../weights";
@@ -16,6 +17,9 @@ import * as ops from "../mlx/ops";
 import { quantizedMatmulRows } from "../mlx/quantized-rows";
 import { expertOffloadArray } from "../expert-offload";
 import * as tq from "../mlx/turboquant-ops";
+import type { KvCodec } from "../backends/mlx/kv-codec";
+import { TurboQuantCodec, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
+export { disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 import { runtimeValue } from "../runtime-config";
 
 export type MaskMode = "" | "causal";
@@ -249,9 +253,9 @@ export class QuantizedEmbedding {
 
 /** Fetched KV handed from a donor layer to its sharers (and to the
  *  speculative drafter). Owned by forwardLayers for the pass.
- *  `offsetArr` is set only under compiled decode (trace adapters): the
- *  RoPE offset as an array VALUE so the compiled graph replays at any
- *  position (see src/model/compiled-decode.ts). */
+ *  `offsetArr` is an owned pre-write position snapshot. Donor and sharing
+ *  attention layers keep it until the fetched KV is released, even if the
+ *  cache advances or replaces its borrowed row-position array. */
 export type SharedKv =
   | { kind: "plain"; keys: MlxArray; values: MlxArray; offset: number;
       offsetArr?: MlxArray;
@@ -260,11 +264,87 @@ export type SharedKv =
        *  (tq.unrotateValues) after sdpa. Attention is linear in V, so the
        *  result is the same decode, just transformed once per query row
        *  instead of once per cached token. */
-      vRotated?: boolean }
+      vRotated?: boolean;
+      restoreValues?: (output: MlxArray) => MlxArray }
   | { kind: "quant"; keys: ops.QuantizedTensor; values: ops.QuantizedTensor;
-      offset: number; groupSize: number; bits: number; offsetArr?: MlxArray };
+      offset: number; groupSize: number; bits: number; offsetArr?: MlxArray }
+  | { kind: "view"; attention: KvAttentionView; offset: number; offsetArr?: MlxArray };
+
+/** Retain an independent array handle for positions used across cache writes.
+ * The contiguous view preserves the integer values and shares their storage;
+ * callers release it with the fetched attention state. */
+export function captureRopeOffsets(cache: Pick<Cache, "ropeOffsetArr">): MlxArray | undefined {
+  const offsets = cache.ropeOffsetArr;
+  return offsets ? ops.contiguous(offsets) : undefined;
+}
+
+/** Quantized attention consumes a numerical storage port, independent of the
+ * concrete layout used for row positions, retention and persistence. */
+export interface QuantizedAttentionState {
+  readonly groupSize: number;
+  readonly bits: number;
+  updateAndFetchQuantized(k: MlxArray, v: MlxArray): [ops.QuantizedTensor, ops.QuantizedTensor];
+}
+
+/** Values may stay in the codec's rotated domain until after attention. */
+export interface RotatedValueAttentionState {
+  /** Capture a fetched value domain independently of later row changes. */
+  captureValueTransform?(): (output: MlxArray) => MlxArray;
+  updateAndFetchDeferredV(k: MlxArray, v: MlxArray): [MlxArray, MlxArray];
+}
+
+/** A captured numerical view supports multiple queries without appending KV
+ * again. It owns its tensor handles independently of later cache membership or
+ * precision changes. Query/mask inputs are borrowed; outputs are owned. */
+export interface KvAttentionView {
+  attend(q: MlxArray, scale: number, mask: Mask): MlxArray;
+  dispose(): void;
+}
+
+/** Storage appends once and hands every attention consumer the same view. */
+export interface KvAttentionState {
+  appendAndFetch(k: MlxArray, v: MlxArray): KvAttentionView;
+}
+
+/** Owned read-only planes with validity separate from physical padding. */
+export interface KvDonorRows {
+  readonly keys: MlxArray;
+  readonly values: MlxArray;
+  readonly offsets: readonly number[];
+  readonly starts: readonly number[];
+  readonly ends: readonly number[];
+}
+
+/** Captured Q-only attention hides plain or encoded donor storage. */
+export interface KvDonorAttention extends KvAttentionView {
+  readonly width: number;
+  readonly dtype: Dtype;
+  readonly offsets: readonly number[];
+  readonly starts: readonly number[];
+  readonly ends: readonly number[];
+}
 
 export interface Cache {
+  captureDonorRows?(): KvDonorRows;
+  captureDonorAttention?(): KvDonorAttention;
+  /** A preparation method commits each request's own precision boundary.
+   * Splitting a forward for a sibling must not move that boundary. */
+  readonly prefillMaintenance?: {
+    beginPrefill(): void;
+    commitPrefill(rows: readonly number[]): void;
+    endPrefill(): void;
+  };
+  /** Optional representation-owned affine conversion. Logical position can
+   * differ from the physical write head in a padded rotating layout. */
+  readonly affineConversion?: { readonly offset: number; toQuantized(groupSize: number, bits: number): Cache };
+  readonly turboConversion?: { readonly offset: number; toTurboQuantized(kBits: number, vBits: number): Cache };
+  readonly attentionState?: KvAttentionState;
+  /** Earliest prefix whose retained representation can resume generation.
+   * Irreversible transitions may preserve bytes while invalidating older
+   * precision boundaries. Reuse policy must not trim below this offset. */
+  minimumReusableOffset?: number;
+  readonly rotatedValueAttention?: RotatedValueAttentionState;
+  readonly quantizedAttention?: QuantizedAttentionState;
   offset: number;
   /** Stable storage identity for compatibility guards and persistence.
    *  REQUIRED: every capability predicate (isPlainKvCache, isRotating*,
@@ -362,6 +442,19 @@ export interface BatchableCache extends Cache {
   extractRow(row: number): Cache;
   filterRows(keep: readonly number[]): void;
   projectedBytes(tokens: number): number;
+}
+
+/** Padding is interpreted by cache geometry, independently of scheduling.
+ * Left padding initializes an empty group; lengths count input columns before
+ * trailing padding. Finalize before ordinary decode or publishing checkpoints. */
+export interface PrefillPadding {
+  readonly leftPadding?: readonly number[];
+  readonly lengths: readonly number[];
+  readonly rightPadding?: readonly number[];
+}
+export interface PaddedPrefillCache extends Cache {
+  preparePrefill(padding: PrefillPadding): void;
+  finalizePrefill(): void;
 }
 
 export function isBatchableCache(cache: Cache): cache is BatchableCache {
@@ -487,6 +580,13 @@ export class KVCache implements Cache {
   }
 
   /** Chronological (K, V) view sliced to offset (drafter donor read). */
+  captureDonorRows(): KvDonorRows {
+    const [keys, values] = this.temporalView();
+    const B = keys.shape[0]!, width = keys.shape[2]!;
+    return { keys, values, offsets: Array(B).fill(this.offset),
+      starts: Array(B).fill(0), ends: Array(B).fill(width) };
+  }
+
   temporalView(): [MlxArray, MlxArray] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     const [B, H, , D] = this.keys.shape as [number, number, number, number];
@@ -578,6 +678,7 @@ export class KVCache implements Cache {
  *  quantization is NYI upstream; sliding layers are window-capped
  *  anyway). Attention dispatches to quantizedSdpa for these. */
 export class QuantizedKVCache implements Cache {
+  minimumReusableOffset?: number;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
   readonly ropeOffsetArr?: MlxArray;
@@ -586,6 +687,8 @@ export class QuantizedKVCache implements Cache {
   offset = 0;
 
   constructor(readonly groupSize: number, readonly bits: number) {}
+
+  get quantizedAttention(): QuantizedAttentionState { return this; }
 
   signature(): string { return `kv:quant:${this.bits}:${this.groupSize}`; }
 
@@ -774,6 +877,16 @@ export class QuantizedKVCache implements Cache {
   /** Chronological (K, V) triples sliced to offset — the quantized twin of
    *  KVCache.temporalView (batched merge/extend/filter reads). Caller owns
    *  the returned views. */
+  captureDonorAttention(): KvDonorAttention {
+    const [keys, values] = this.temporalView();
+    const B = keys.packed.shape[0]!, width = keys.packed.shape[2]!;
+    return { width, dtype: keys.scales.dtype, offsets: Array(B).fill(this.offset),
+      starts: Array(B).fill(0), ends: Array(B).fill(width),
+      attend: (q, scale, mask) => quantizedSdpa(q, keys, values, scale, mask, this.groupSize, this.bits),
+      dispose() { disposeTriple(keys); disposeTriple(values); },
+    };
+  }
+
   temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     const cut = (t: ops.QuantizedTensor): ops.QuantizedTensor => {
@@ -798,6 +911,7 @@ export class QuantizedKVCache implements Cache {
  *  entries, so decode attends over at most the window. RoPE offsets use
  *  the true position; masks use the buffer-clamped offset. */
 export class RotatingKVCache implements Cache {
+  declare minimumReusableOffset?: number;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
   readonly ropeOffsetArr?: MlxArray;
@@ -1065,6 +1179,13 @@ export class RotatingKVCache implements Cache {
 
   /** Chronological (K, V) view, valid length min(offset, maxSize)
    *  (port of optiq kv_view._read_cache_temporal). */
+  captureDonorRows(): KvDonorRows {
+    const [keys, values] = this.temporalView();
+    const B = keys.shape[0]!, width = keys.shape[2]!;
+    return { keys, values, offsets: Array(B).fill(this.offset),
+      starts: Array(B).fill(0), ends: Array(B).fill(width) };
+  }
+
   temporalView(): [MlxArray, MlxArray] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     const tk = this.#temporalOrder(this.keys);
@@ -1133,6 +1254,8 @@ export const disposeTriple = (t: ops.QuantizedTensor): void => {
  *  + SDPA patches are unnecessary here: our SharedKv carries
  *  groupSize/bits through the donor→sharer plumbing explicitly. */
 export class RotatingQuantizedKVCache implements Cache {
+  get quantizedAttention(): QuantizedAttentionState { return this; }
+  declare minimumReusableOffset?: number;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
   readonly ropeOffsetArr?: MlxArray;
@@ -1390,6 +1513,16 @@ export class RotatingQuantizedKVCache implements Cache {
   /** Chronological (K, V) triples cut to the valid window — the quantized
    *  twin of RotatingKVCache.temporalView (batched merge reads, Phase 3
    *  milestone 2). Caller owns the returned views. */
+  captureDonorAttention(): KvDonorAttention {
+    const [keys, values] = this.temporalView();
+    const B = keys.packed.shape[0]!, width = keys.packed.shape[2]!;
+    return { width, dtype: keys.scales.dtype, offsets: Array(B).fill(this.offset),
+      starts: Array(B).fill(0), ends: Array(B).fill(width),
+      attend: (q, scale, mask) => quantizedSdpa(q, keys, values, scale, mask, this.groupSize, this.bits),
+      dispose() { disposeTriple(keys); disposeTriple(values); },
+    };
+  }
+
   temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     const valid = Math.min(this.offset, this.maxSize);
@@ -1504,28 +1637,6 @@ export class RotatingQuantizedKVCache implements Cache {
   }
 }
 
-/** One TurboQuant-encoded (K, V) storage tuple — the 5 arrays kv-store.ts
- *  and toQuantized/fromKVCache pass around. Not `ops.QuantizedTensor`
- *  (mlx's affine int4/int8 scheme): this is the rotation + Lloyd-Max
- *  layout (docs/design/turboquant.md), asymmetric-affine for keys,
- *  FWHT+Lloyd-Max for values. Field order is the kv-store.ts tensor-slot
- *  contract — do not reorder without updating snapshotCache/loadKvCache. */
-export interface TurboQuantTensor {
-  kIdx: MlxArray;
-  kScales: MlxArray;
-  kZeros: MlxArray;
-  vPacked: MlxArray;
-  vScales: MlxArray;
-}
-
-export const disposeTurboQuant = (t: TurboQuantTensor): void => {
-  t.kIdx.dispose();
-  t.kScales.dispose();
-  t.kZeros.dispose();
-  t.vPacked.dispose();
-  t.vScales.dispose();
-};
-
 /** TurboQuant KV cache — v1 (docs/design/turboquant.md): dequantize-
  *  on-fetch. Deliberately does NOT subclass KVCache/RotatingKVCache (or
  *  QuantizedKVCache) — a novel class fails every generated-file
@@ -1545,6 +1656,7 @@ export const disposeTurboQuant = (t: TurboQuantTensor): void => {
  *  a full-window dequant every step; the deferred-InvFWHT trick is a
  *  documented non-goal until the quality gate passes. */
 export class TurboQuantKVCache implements Cache {
+  minimumReusableOffset = 0;
   readonly stateNeedsDispose = true;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache) — TurboQuant
@@ -1557,10 +1669,22 @@ export class TurboQuantKVCache implements Cache {
   /** Validated lazily on first update, once head_dim is known. */
   #headDim: number | null = null;
   /** Experimental operation selection, captured once for this cache. */
-  readonly #fusedDecode = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1";
+  readonly #codec: KvCodec<TurboQuantTensor>;
 
-  constructor(readonly kBits: number, readonly vBits: number) {}
+  constructor(readonly kBits: number, readonly vBits: number) {
+    this.#codec = new TurboQuantCodec(kBits, vBits, process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1");
+  }
 
+  captureDonorRows(): KvDonorRows {
+    if (!this.#kv || this.#headDim === null) throw new Error("cache is empty");
+    const [keys, values] = this.#decode(this.#kv, this.offset, this.#headDim, false);
+    const B = keys.shape[0]!;
+    return { keys, values, offsets: Array(B).fill(this.offset),
+      starts: Array(B).fill(0), ends: Array(B).fill(this.offset) };
+  }
+  captureDonorAttention(): KvDonorAttention { return decodedKvDonorAttention(this.captureDonorRows()); }
+
+  get rotatedValueAttention(): RotatedValueAttentionState { return this; }
   signature(): string { return `kv:turboquant:${this.kBits}:${this.vBits}`; }
 
   bytesPerToken(): number {
@@ -1612,55 +1736,9 @@ export class TurboQuantKVCache implements Cache {
     return this.#kv ? this.#kv.kIdx.shape[2]! : 0;
   }
 
-  /** Encode k/v [B,H,L,D] into a fresh TurboQuantTensor (packed at rest). */
-  #encode(k: MlxArray, v: MlxArray): TurboQuantTensor {
-    const signed = this.kBits === 8;
-    const kEnc = tq.encodeKeys(k, this.kBits, signed);
-    const kIdxPacked = this.kBits < 8 ? tq.packBits(kEnc.indices, this.kBits) : kEnc.indices;
-    if (kIdxPacked !== kEnc.indices) kEnc.indices.dispose();
-    const vEnc = tq.encodeValues(v, this.vBits);
-    const vIdxPacked = this.vBits < 8 ? tq.packBits(vEnc.indices, this.vBits) : vEnc.indices;
-    if (vIdxPacked !== vEnc.indices) vEnc.indices.dispose();
-    return {
-      kIdx: kIdxPacked, kScales: kEnc.scales, kZeros: kEnc.zeros,
-      vPacked: vIdxPacked, vScales: vEnc.scales,
-    };
-  }
-
-  /** Decode a TurboQuantTensor's active [B,H,upTo,*] window back to
-   *  bf16 [B,H,upTo,headDim] (k, v). Caller owns the returned arrays.
-   *  deferV leaves V in the rotated domain (decodeValuesRotated) — the
-   *  caller un-rotates its attention output instead (tq.unrotateValues). */
+  #encode(k: MlxArray, v: MlxArray): TurboQuantTensor { return this.#codec.encode(k, v); }
   #decode(t: TurboQuantTensor, upTo: number, headDim: number, deferV = false): [MlxArray, MlxArray] {
-    const cut = (a: MlxArray): MlxArray => {
-      const [B, H, , D] = a.shape as [number, number, number, number];
-      return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
-    };
-    if (this.#fusedDecode) {
-      const inputs = [cut(t.kIdx), cut(t.kScales), cut(t.kZeros), cut(t.vPacked), cut(t.vScales)] as const;
-      try {
-        const decoded = tq.tryDecodePackedKv(inputs, this.kBits, this.vBits, headDim, deferV);
-        if (decoded) return decoded;
-      } finally { for (const input of inputs) input.dispose(); }
-    }
-    const kIdxCut = cut(t.kIdx);
-    const kIdxUnpacked = this.kBits < 8 ? tq.unpackBits(kIdxCut, this.kBits, headDim) : kIdxCut;
-    if (kIdxUnpacked !== kIdxCut) kIdxCut.dispose();
-    const kScalesCut = cut(t.kScales);
-    const kZerosCut = cut(t.kZeros);
-    const k = tq.decodeKeys(kIdxUnpacked, kScalesCut, kZerosCut);
-    for (const a of [kIdxUnpacked, kScalesCut, kZerosCut]) a.dispose();
-
-    const vPackedCut = cut(t.vPacked);
-    const vIdxUnpacked = this.vBits < 8 ? tq.unpackBits(vPackedCut, this.vBits, headDim) : vPackedCut;
-    if (vIdxUnpacked !== vPackedCut) vPackedCut.dispose();
-    const vScalesCut = cut(t.vScales);
-    const v = deferV
-      ? tq.decodeValuesRotated(vIdxUnpacked, vScalesCut, this.vBits)
-      : tq.decodeValues(vIdxUnpacked, vScalesCut, this.vBits);
-    for (const a of [vIdxUnpacked, vScalesCut]) a.dispose();
-
-    return [k, v];
+    return this.#codec.decode(t, upTo, headDim, deferV);
   }
 
   /** Quantize the newly-appended k/v, append into growable packed
@@ -1805,6 +1883,7 @@ export class TurboQuantKVCache implements Cache {
       q.#headDim = D;
     }
     q.offset = cache.offset;
+    q.minimumReusableOffset = (cache as Cache).minimumReusableOffset ?? 0;
     cache.dispose();
     return q;
   }
@@ -1813,6 +1892,7 @@ export class TurboQuantKVCache implements Cache {
     if (this.#kv) disposeTurboQuant(this.#kv);
     this.#kv = null;
     this.offset = 0;
+    this.minimumReusableOffset = 0;
   }
 }
 
@@ -1885,9 +1965,11 @@ export function quantizedSdpaUnfused(
     }
   }
   if (maskArr) {
-    const ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
-    const masked = ops.where(maskArr, scores, ninf);
-    ninf.dispose();
+    let masked: MlxArray;
+    if (maskArr.dtype === Dtype.bool) {
+      using ninf = ops.scalarLike(FINFO_MIN[scores.dtype] ?? -3.4e38, scores);
+      masked = ops.where(maskArr, scores, ninf);
+    } else masked = ops.add(scores, maskArr);
     if (ownsMask) maskArr.dispose();
     owned.push(masked);
     scores = masked;

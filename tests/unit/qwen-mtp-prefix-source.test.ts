@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import { KVCache } from "../../src/model/gemma4-base";
 import { QwenMtpSource } from "../../src/spec/qwen-mtp-source";
-import { SpeculativePrefixStore } from "../../src/spec/prefix-state";
+import { PromptCache } from "../../src/prompt-cache";
+import { cloneKvCaches } from "../../src/kv-store";
+import { disposeAttachments } from "../../src/backends/mlx/checkpoint-state";
 
 test("restored MTP joins the next token to the saved preceding hidden at the correct position", async () => {
   const calls: Array<{ offset: number; tokens: number[]; hiddens: number[] }> = [];
@@ -22,21 +24,26 @@ test("restored MTP joins the next token to the saved preceding hidden at the cor
     append(cache, tokens);
     return array(tokens);
   } } as unknown as ConstructorParameters<typeof QwenMtpSource>[1];
-  const store = new SpeculativePrefixStore<any>(), identity = {};
+  const store = new PromptCache(100000);
   const make = () => new QwenMtpSource(target, module,
-    () => MlxArray.fromInt32(new Int32Array([1]), [1]), { store, identity });
+    () => MlxArray.fromInt32(new Int32Array([1]), [1]));
   const original = make(), firstTarget = [new KVCache()], restored = make(), nextTarget = [new KVCache()];
   try {
     append(firstTarget[0]!, [1, 2, 3]);
     await original.prefill([1, 2, 3], array([10, 20, 30]));
-    original.prefix!.capture([1, 2, 3], firstTarget, "base", 100000);
+    store.put([1, 2, 3], cloneKvCaches(firstTarget), "base", undefined, [original.checkpoint.capture(3)]);
     original.dispose();
     for (const cache of firstTarget) cache.dispose();
-    expect(restored.prefix!.restore([1, 2, 3, 4, 5], nextTarget, "base", 100000)).toBe(3);
+    const hit = store.take([1, 2, 3, 4, 5], "base")!;
+    expect(hit.tokens.length).toBe(3);
+    restored.checkpoint.restore(hit.tokens.length, hit.attachments![0]!);
+    disposeAttachments(hit.attachments);
+    nextTarget[0]!.dispose();
+    nextTarget.splice(0, nextTarget.length, ...hit.caches as KVCache[]);
     expect(nextTarget[0]!.offset).toBe(3);
     append(nextTarget[0]!, [4, 5]);
     await restored.prefill([1, 2, 3, 4, 5], array([40, 50]));
-    restored.prefix!.capture([1, 2, 3, 4, 5], nextTarget, "base", 100000);
+    store.put([1, 2, 3, 4, 5], cloneKvCaches(nextTarget), "base", undefined, [restored.checkpoint.capture(5)]);
     await restored.draft([6], 1, 0);
     expect(calls).toEqual([
       { offset: 0, tokens: [2, 3], hiddens: [10, 20] },
@@ -45,7 +52,7 @@ test("restored MTP joins the next token to the saved preceding hidden at the cor
       { offset: 4, tokens: [6], hiddens: [50] },
     ]);
   } finally {
-    original.dispose(); restored.dispose(); store.dispose();
+    original.dispose(); restored.dispose(); store.clear();
     for (const cache of [...firstTarget, ...nextTarget]) cache.dispose();
   }
 });

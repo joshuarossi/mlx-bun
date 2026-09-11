@@ -20,7 +20,8 @@ const MAX_TOKENS = 100;
 const LOGIT_STEPS = 4;
 
 const py = `
-import sys, json
+import sys, json, hashlib, importlib.metadata
+from pathlib import Path
 import mlx.core as mx
 from optiq.mlx_lm_patches._register import register
 register()  # maps gemma4_unified -> mlx-lm's gemma4 classes
@@ -53,6 +54,17 @@ out = {
     "greedy_ids": greedy,
     "logit_steps": logit_steps,
     "vocab_size": int(last.shape[0]),
+    "oracle": {
+        "model": snap,
+        "mlx": mx.__version__,
+        "mlx_lm": importlib.metadata.version("mlx-lm"),
+        "optiq": importlib.metadata.version("mlx-optiq"),
+        "device": mx.device_info(),
+        "config_sha256": hashlib.sha256(Path(snap, "config.json").read_bytes()).hexdigest(),
+        "blobs": {f"logits-step{i}.bin": hashlib.sha256(
+            Path(outdir, f"logits-step{i}.bin").read_bytes()).hexdigest()
+            for i in range(logit_steps)},
+    },
 }
 print(json.dumps(out))
 `;

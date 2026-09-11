@@ -30,15 +30,20 @@ export async function driveExecutionGroup(
 
       if (!group.preparing && !held && group.queued && group.active < group.maxActive)
         group.admitNext();
+      while (group.preparing && group.canPrepareMore && !held && group.queued &&
+          group.active + (group.preparingRows ?? 1) < group.maxActive && group.canBurst() &&
+          (group.preparingTokens ?? 0) + (group.nextPreparationTokens ?? 0) <= (group.maxPreparationTokens ?? Infinity)) {
+        if (!group.admitNext()) break;
+      }
       if (group.preparing) {
         const activeBefore = group.active;
         await group.advancePreparation();
-        // A backend may emit its first output while preparing the first row.
-        // Flush a lone admission before decode; queued short admissions still
-        // group together. Re-enter policy after yielding to observe new work,
+        // A bounded preparation may publish output before its state work ends.
+        // Flush it before the next work unit; queued short admissions still
+        // form a group across yields. Re-enter policy to observe new work,
         // cancellation, admission holds and shutdown.
-        if (yieldAfterPreparation && !activeBefore && !group.preparing &&
-            group.active === 1 && !group.queued) {
+        if (group.preparationPublishedOutput ||
+            (yieldAfterPreparation && !activeBefore && !group.preparing && group.active === 1 && !group.queued)) {
           lastYield = clock.now();
           await clock.yield();
           continue;

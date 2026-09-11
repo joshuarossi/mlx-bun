@@ -55,10 +55,10 @@
   236770,
   236770,
   236770,
+  236770,
   236761,
   236761,
-  236761,
-  236761,
+  236770,
   236770,
   236770,
   236770,
@@ -110,5 +110,26 @@
   236770
  ],
  "logit_steps": 4,
- "vocab_size": 262144
+ "vocab_size": 262144,
+ "oracle": {
+  "model": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-OptiQ-4bit/snapshots/5b1101065d2094c8f12aa87fee80e0afa5b292b7",
+  "mlx": "0.32.2",
+  "mlx_lm": "0.31.3",
+  "optiq": "0.2.7",
+  "device": {
+   "device_name": "Apple M1 Max",
+   "max_recommended_working_set_size": 26800603136,
+   "memory_size": 34359738368,
+   "architecture": "applegpu_g13s",
+   "max_buffer_length": 20100448256,
+   "resource_limit": 499000
+  },
+  "config_sha256": "a9eb82640fbc1f4c1bcc57d6d657f1f192b00f7187b1fdd8657a3e1568d703a0",
+  "blobs": {
+   "logits-step0.bin": "8640d167468795002920c49313ff40be940b84244825a4c45e9eab1d182888a9",
+   "logits-step1.bin": "499659d6af064629dbe563cd012140bc3537815e6e6e458aaac7c18e6e8d9164",
+   "logits-step2.bin": "fca049833d78088a4b901948c728e440764196cc4f90af05d04b9f1094c9f0c1",
+   "logits-step3.bin": "11badc86e16445d43ed2269c1edaeddba99cc6a6fea9e3cb02d51cb10e983f01"
+  }
+ }
 }

@@ -7,9 +7,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { SNAPSHOT_QWEN3_EMBED, snapshotQwen3EmbedAvailable } from "../support/paths";
+import { goldenPath } from "../support/goldens";
 
-const GOLD_DIR = "goldens/qwen3-embed";
-const have = (await snapshotQwen3EmbedAvailable()) && existsSync(`${GOLD_DIR}/meta.json`);
+const GOLD_DIR = goldenPath("qwen3-embed");
+const have = (await snapshotQwen3EmbedAvailable()) &&
+  ["meta.json", "pooled.bin"].every(name => existsSync(`${GOLD_DIR}/${name}`));
 
 describe.skipIf(!have)("/v1/embeddings", async () => {
   if (!have) return;

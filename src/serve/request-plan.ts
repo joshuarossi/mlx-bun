@@ -33,7 +33,7 @@ export interface RequestPlanInput {
   promptIds: number[];
   options: GenerateOptions & { stopSequences: string[] };
   requestedMaxTokens: number;
-  maxSafeContext: number;
+  contextLimit: number | null;
   stream: boolean;
   wantLogprobs: boolean;
   topLogprobs: number;
@@ -114,11 +114,12 @@ export type PlanRequestResult = RequestPlan | RequestRejection;
  * options, adapter selection, and lane shape are derived here once for chat
  * and raw completions. */
 export function planRequest(input: RequestPlanInput): PlanRequestResult {
-  const available = input.maxSafeContext - input.promptIds.length;
+  const available = input.contextLimit === null ? Infinity
+    : input.contextLimit - input.promptIds.length;
   if (available < 1) {
     return new RequestRejection(
       `prompt is ${input.promptIds.length} tokens but the memory budget caps ` +
-        `safe context at ${input.maxSafeContext} — no room to generate; ` +
+        `safe context at ${input.contextLimit} — no room to generate; ` +
         "shorten the prompt or raise --memory-budget",
       input.ownership,
     );

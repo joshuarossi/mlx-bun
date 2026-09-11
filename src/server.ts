@@ -1,3 +1,4 @@
+import { ContinuationPersistence } from "./backends/mlx/continuation-persistence";
 import { modelServingBinding } from "./backends/mlx/model-serving";
 import type { ServingContext } from "./serve/model-host";
 export { generationCheckpointKey } from "./serve/checkpoint-identity";
@@ -109,13 +110,15 @@ export interface ServerOptions {
    *  (`--kv-budget`, batching-perf-path P3). Joiners whose projected KV
    *  (prompt + max_tokens, window-capped) would exceed it QUEUE until rows
    *  evict; a request over the budget alone is rejected. Unset = no
-   *  aggregate cap (per-request admission via memoryBudget still applies). */
+   *  aggregate cap (an explicit memoryBudget also limits each request). */
   kvBudgetBytes?: number;
   /** KV quantization override. Unset/"off" is bf16. "config" applies the
    *  model's declared mixed-precision kv_config; supported per-layer schemes
    *  compose with continuous scheduling. A number forces uniform bits
    *  (group size 64, start 0) and uses the preserved serial executor. */
   kvQuant?: "off" | "config" | number;
+  /** Optional absolute row offset for KV conversion; omitted preserves start-zero server policy. */
+  quantizedKvStart?: number;
   /** TurboQuant scheme (docs/design/turboquant.md): a separate axis from
    *  kvQuant above, mutually exclusive with it (`--kv-quant turbo[:k<bits>v
    *  <bits>]` sets this instead of kvQuant). Solo-only in v1 — see
@@ -124,19 +127,13 @@ export interface ServerOptions {
   /** OPTIONAL paged KV cache (`--paged-kv`, docs/design/kv-cache.md):
    *  vLLM-style block-pool storage for full-attention layers,
    *  gather-to-contiguous before the stock SDPA. Default off (unset = the
-   *  plain KVCache path, byte-identical). v1 scope: serial batch=1,
-   *  Gemma4-family, bf16 — startup refuses `--batch N>1`, `--kv-quant`,
+   *  plain KVCache path, byte-identical). Gemma4-family, bf16, B1/B>1;
+   *  startup refuses `--kv-quant`,
    *  turbo, and `--draft-model` combinations; paged requests bypass the
    *  prompt cache and run uncompiled. Gated bit-exact vs the plain path. */
   pagedKv?: { blockSize?: number };
-  /** Memory budget for the serving process (admission control — Phase 5).
-   *  Requests whose prompt + max_tokens exceed the budget's max safe
-   *  context are rejected with 400 instead of crashing the GPU: the OOM
-   *  crash class is UNCATCHABLE (Phase 6 — mlx throws from a Metal
-   *  completion handler ⇒ std::terminate; optiq serve died exactly this
-   *  way loading the 26B). Also caps the mlx allocator
-   *  (mlx_set_memory_limit) as defense in depth. Default: machine RAM ×
-   *  WIRED_FRACTION, admission check only, allocator untouched. */
+  /** Explicit opt-in process budget. Enforces the fit estimate's context
+   *  limit and sets the MLX allocator limit. Unset keeps estimates advisory. */
   memoryBudgetBytes?: number;
   /** Who owns this server's lifetime: "serve" (persistent, mlx-bun
    *  serve) or "pi-session" (dies with the pi session that started
@@ -287,16 +284,8 @@ export interface ContextAdmissionDecision {
   clamped: boolean;
 }
 
-/** Resolve a request's completion upper bound against the admitted context.
- *
- * `max_tokens` is a ceiling, not a promise that every token will be emitted:
- * when a prompt fits but a broad client-wide `max_tokens` would push the
- * reservation past the safe context, the bound is CLAMPED to the remaining
- * room instead of rejecting an otherwise valid request (the pre-v0.0.13
- * behavior 400'd a prompt with thousands of tokens of generation room over a
- * 17-token overshoot). This never weakens the OOM guard — generation stops at
- * the clamped ceiling, inside the admitted context. Only a prompt that leaves
- * no generation slot at all is rejected. */
+/** Resolve a completion cap against an explicitly enforced context limit.
+ * Serving keeps fit estimates advisory unless the operator chooses a budget. */
 export function admitRequestContext(
   promptTokens: number,
   requestedMaxTokens: number,
@@ -334,7 +323,7 @@ export function createServer(
   // Both full-attention (CPM) and
   // sliding-window (Gemma) models batch — the scheduler assembles each layer's
   // cache by attention type. Non-batchable requests (vision / adapters /
-  // user seed / unsupported explicit kv-quant) drain to the serial executor
+  // unsupported explicit kv-quant) drain to the serial executor
   // (see GenerationGateway.place). No inference setting is rewritten.
   // DEFAULT 8 (flipped 2026-07-05, Josh's call, after GATE-B1-SPEED): a
   // lone request through the batch lane IS the serial engine (adopted
@@ -352,8 +341,7 @@ export function createServer(
       throw new Error("--generation-checkpoint expects a positive integer token interval");
     if (!serverOptions.ssdCacheDir)
       throw new Error("--generation-checkpoint requires --ssd-cache <dir>");
-    if (batch !== 1)
-      throw new Error("--generation-checkpoint requires --batch 1 (in-flight resume is serial-only)");
+
   }
   const defaultGeneratedTokens =
     serverOptions.defaultMaxTokens ?? ctx.glmMemoryPlan?.maxGenerationTokens;
@@ -376,32 +364,11 @@ export function createServer(
   const resolvedKvScheme = resolveKvScheme({
     override: serverOptions.kvQuant,
     turboQuant: serverOptions.turboQuant,
+    quantizedKvStart: serverOptions.quantizedKvStart,
     config: ctx.kvConfig,
   });
   const kvScheme = resolvedKvScheme.generationOptions;
-  // Phase 3.1: kvConfig whose layers are all full-attention BATCHES (the
-  // scheduler applies the mixed scheme per row); uniform kvBits and configs
-  // touching rotating layers still route those requests serial. The warning
-  // only fires for the still-serial compositions.
-  if (batch > 1 && kvScheme.kvBits)
-    console.warn(
-      `[batch] --batch ${batch} with uniform --kv-quant ${kvScheme.kvBits}: uniform ` +
-        `quantized KV is serial-only (it touches rotating layers) — those requests ` +
-        `won't batch. Use --kv-quant config for batched mixed-precision KV, or omit ` +
-        `--kv-quant to batch in bf16. (docs/design/unified-engine-frontier-plan.md)`,
-    );
-  // TurboQuant is solo-only in v1 (novel cache class, not batchable by
-  // construction — see GenerationGateway placement's cache-capability gate).
-  if (batch > 1 && kvScheme.turboQuant)
-    console.warn(
-      `[batch] --batch ${batch} with --kv-quant turbo: TurboQuant is serial-only in v1 ` +
-        `— those requests won't batch. Omit --kv-quant to batch in bf16. ` +
-        `(docs/design/turboquant.md)`,
-    );
-  // Quantized KV (any axis) excludes the spec lane: drafted requests fall to
-  // the normal serial path WITH the KV scheme applied rather than losing it
-  // silently (mirrors the affine kvBits/kvConfig exclusion; the spec loop is
-  // bf16-KV-only in v1).
+  // The model execution plan qualifies the method while retaining KV policy.
   if (ctx.draft && (kvScheme.turboQuant || kvScheme.kvBits || kvScheme.kvConfig?.length))
     console.warn(
       `[spec] --draft-model with quantized KV (--kv-quant ${serverOptions.turboQuant ? "turbo" : String(serverOptions.kvQuant)}): ` +
@@ -427,15 +394,9 @@ export function createServer(
   }
   // Paged KV v1 (docs/design/kv-cache.md): explicit refusals, not
   // silent downgrades — the incompatible combos would otherwise degrade
-  // quietly (batch: paged caches can't merge; kv-quant: the swap would
-  // drop the scheme, the exact composition bug the kvQuant gate above
-  // exists to prevent; draft: the spec lane assumes serial-class caches).
+  // quietly (kv-quant: the swap would drop the scheme; speculative
+  // provider composition with paged storage is not implemented).
   if (serverOptions.pagedKv) {
-    if (batch > 1)
-      throw new Error(
-        `--paged-kv is serial-only in v1 — add --batch 1 (got --batch ${batch}). ` +
-          `Batched paging is the follow-up PR (docs/design/kv-cache.md).`,
-      );
     if (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant)
       throw new Error(
         `--paged-kv is bf16-only in v1 — omit --kv-quant (quantized paged ` +
@@ -521,11 +482,12 @@ export function createServer(
           // own their bytes and no mapping outlives loadKvCache — nothing
           // to pin, nothing to unmap. retain stays in the entry contract
           // as a no-op so callers' dispose ordering is unchanged.
-          return { tokens: loaded.tokens, caches: loaded.caches, retain: () => {} };
+          return { tokens: loaded.tokens, caches: loaded.caches, attachments: loaded.attachments, retain: () => {} };
         },
-        store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string) => {
+        store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string,
+          attachments?: import("./backends/mlx/checkpoint-state").CheckpointAttachment[]) => {
           if (ssdStore!.hasDurablePrefix(tokens, ns)) return true;
-          return ssdStore!.store(tokens, caches, ns);
+          return ssdStore!.store(tokens, caches, ns, attachments);
         },
       }
     : null;
@@ -546,7 +508,7 @@ export function createServer(
     ssdStore
       ? {
           spillOwned: (entry) =>
-            spillQueue!.enqueue({ tokens: entry.tokens, caches: entry.caches, ns: entry.ns }),
+            spillQueue!.enqueue({ tokens: entry.tokens, caches: entry.caches, ns: entry.ns, attachments: entry.attachments }),
         }
       : null,
     coldTier,
@@ -558,56 +520,38 @@ export function createServer(
   // so its KV prefill is already cached.
   const responseStore = new ResponseStore();
 
-  // Admission ceiling, resolved once (Phase 5 memoryBudget enforcement).
-  // fit() solves max safe context from weights + KV growth + prefill
-  // transient. The active kv-quant scheme (uniform kvBits / per-layer
-  // kvConfig) is billed at its true bytes/element so a quantized cache
-  // advertises and admits the larger window it actually enables; only
-  // TurboQuant still bills bf16 (conservative — no projector for its
-  // layout yet, and it is solo-only in v1).
+  // Memory estimates remain available in diagnostics. Only an explicit
+  // operator budget or context cap constrains request planning.
   const memoryAdmission = ctx.glmMemoryPlan ?? fit(
     ctx.model.config, ctx.model.weightsBytes, 1,
     undefined, undefined, 0, serverOptions.memoryBudgetBytes,
     resolvedKvScheme.fitOptions,
   );
-  // Isolated benchmark profile cap. It may narrow physical admission, never
-  // enlarge it. The normal request planner still clamps prompt + output.
   const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
-  const contextLimit = profileContext === undefined ? null : Number(profileContext);
-  if (contextLimit !== null && (!Number.isSafeInteger(contextLimit) || contextLimit < 1))
+  const profileLimit = profileContext === undefined ? null : Number(profileContext);
+  if (profileLimit !== null && (!Number.isSafeInteger(profileLimit) || profileLimit < 1))
     throw new Error("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer");
-  const admission = contextLimit === null ? memoryAdmission : {
-    ...memoryAdmission, maxSafeContext: Math.min(contextLimit, memoryAdmission.maxSafeContext),
-  };
-  // A zero ceiling is a warning, never a startup refusal: killing the
-  // server here can only parrot the per-request admission message (which
-  // still fires, with this same ceiling) or be a false positive from the
-  // fit model itself — it can never save anything the request gate
-  // doesn't. Serve until physically incapable.
-  if (admission.maxSafeContext < 1)
-    console.warn(
-      `[admission] memory budget ${(admission.usableBytes / 1e9).toFixed(2)} GB leaves no ` +
-      `safe context for ${ctx.modelId} (weights ${(ctx.model.weightsBytes / 1e9).toFixed(2)} GB) ` +
-      `— serving anyway; generation requests will be refused until the budget is raised`,
-    );
+  const budgetLimit = serverOptions.memoryBudgetBytes !== undefined
+    ? memoryAdmission.maxSafeContext : ctx.glmMemoryPlan?.contextTokens ?? null;
+  const contextLimit = profileLimit === null ? budgetLimit
+    : Math.min(profileLimit, budgetLimit ?? Infinity);
+  const admission = memoryAdmission;
   const allocatorLimit =
     admission.allocatorLimitBytes ?? serverOptions.memoryBudgetBytes;
   if (allocatorLimit) setMemoryLimit(allocatorLimit);
 
-  const memoryBudget = {
-    usableBytes: admission.usableBytes,
-    kvOptions: resolvedKvScheme.fitOptions,
-    promptCache,
-  };
-  const runGeneration = serving.createSerial({
+  let checkpointPersistence: ContinuationPersistence | undefined;
+  const executionServices: import("./backends/mlx/serial-executor").MlxSerialServices = {
+    get checkpointPersistence() { return checkpointPersistence; },
     promptCache, checkpoints: ssdStore,
-    memoryBudget,
     checkpointEveryTokens: serverOptions.generationCheckpointTokens,
     identity: { artifact: ctx.profile.artifact, implementation: ctx.profile.profile.execution,
       stateAbi: "legacy-cache-array-v1", codecs: stateCodecs.id },
     adapterNamespace: (adapters) => ctx.adapters.cacheNamespace(adapters),
     cloneState,
-  });
+  };
+  serving.gateway.configureContinuation?.(executionServices);
+  const runGeneration = serving.createSerial(executionServices);
 
   // Write-behind persistence (restart survival — the oMLX boundary-snapshot
   // idea at whole-entry granularity, spill-on-evict alone can't survive a
@@ -637,7 +581,7 @@ export function createServer(
   // pacing interleaved those slices exactly between decode tokens. A ~16k
   // entry's flush overlapping the bench's ctx repeats depressed decode@ctx
   // ~9% on e4b (mlx-lm runs no equivalent background work). Now every step
-  // — including the first — runs through gateway.runExclusive(), so the
+  // — including the first — runs through gateway.runWhenIdle(), so the
   // flush only progresses while NOTHING is generating and pauses when a
   // request arrives mid-flush. Tradeoffs, accepted: durability waits for a
   // quiet moment (single-user serving quiesces constantly; sustained
@@ -647,7 +591,7 @@ export function createServer(
   // switch (restart survival then degrades to spill-on-evict only).
   const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
   const ssdFlushStep = <T>(step: () => T): Promise<T> =>
-    gateway.runExclusive(async () => step());
+    gateway.runWhenIdle(async () => step());
   // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
   // kv-store.ts): pending clones pin their entries' GPU buffers while the
   // idle gate starves under sustained traffic, so QUEUED bytes are capped —
@@ -664,21 +608,26 @@ export function createServer(
   // its idle boundary to avoid competing with generation.
   const gateway = new GenerationGateway(serving.gateway, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
-    memoryBudget,
     checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
     stateCodecs,
     kvScheme: resolvedKvScheme,
     promptCache,
-    beforeSerial: async () => { await flushDurability(); },
+    adapterNamespace: (adapters) => ctx.adapters.cacheNamespace(adapters),
   });
   const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
     (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
+  // Both queues share the configured total: reserve half for checkpoints
+  // only when that service exists. Each retains the existing soft-cap rule.
+  const checkpointQueueBytes = ssdStore && serverOptions.generationCheckpointTokens
+    ? Math.floor(spillQueueCapBytes / 2) : 0;
+  if (ssdStore && serverOptions.generationCheckpointTokens)
+    checkpointPersistence = new ContinuationPersistence(ssdStore, { maxBytes: checkpointQueueBytes, runStep: ssdFlushStep });
   const spillQueue = ssdStore
     ? new SpillQueue(
-        spillQueueCapBytes,
+        spillQueueCapBytes - checkpointQueueBytes,
         cacheBytes,
-        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushStep),
+        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushStep, item.attachments),
         (caches) => { for (const c of caches) c.dispose(); },
       )
     : null;
@@ -691,24 +640,31 @@ export function createServer(
         (tokens, ns) => ssdStore.hasDurablePrefix(tokens, ns),
       )
     : null;
-  const durabilityStats = (): DurabilitySnapshotStats =>
-    durability?.stats ?? {
+  const durabilityStats = (): DurabilitySnapshotStats => {
+    const stats = durability?.stats ?? {
       pendingSnapshots: 0,
       pendingSpills: spillQueue?.pendingCount ?? 0,
       pendingSpillBytes: spillQueue?.pendingBytes ?? 0,
       droppedSpills: spillQueue?.droppedCount ?? 0,
       failedSpills: spillQueue?.failedCount ?? 0,
     };
+    const checkpoints = checkpointPersistence?.stats;
+    return { ...stats, pendingSpills: stats.pendingSpills + (checkpoints?.pendingCount ?? 0),
+      pendingSpillBytes: stats.pendingSpillBytes + (checkpoints?.pendingBytes ?? 0),
+      droppedSpills: stats.droppedSpills + (checkpoints?.dropped ?? 0),
+      failedSpills: stats.failedSpills + (checkpoints?.failed ?? 0) };
+  };
   const flushDurability = async (): Promise<DurabilityFlushResult> => {
-    if (durability) return durability.flush();
     const started = performance.now();
-    await spillQueue?.drain();
+    const checkpoints = await checkpointPersistence?.flush();
+    const result = durability ? await durability.flush() : null;
+    if (!result) await spillQueue?.drain();
     const stats = durabilityStats();
     return {
       ...stats,
-      durable: stats.pendingSpills === 0,
-      flushedSnapshots: 0,
-      missingSnapshots: 0,
+      durable: (result?.durable ?? stats.pendingSpills === 0) && (checkpoints?.durable ?? true) && stats.pendingSpills === 0,
+      flushedSnapshots: result?.flushedSnapshots ?? 0,
+      missingSnapshots: result?.missingSnapshots ?? 0,
       elapsedMs: performance.now() - started,
     };
   };
@@ -777,10 +733,10 @@ export function createServer(
   const { templateOptionsFor } = prep;
   const preparation = createPreparationExecutor((work, signal) => gateway.runExclusive(work, undefined, signal), batch);
   const chatStage = new ChatStage(
-    ctx, prep, promptCache, admission.maxSafeContext, serverOptions.defaultAdapter,
+    ctx, prep, promptCache, contextLimit, serverOptions.defaultAdapter,
     preparation, serving.buildPrompt);
   const textStage = new TextCompletionStage(
-    ctx, prep, admission.maxSafeContext, defaultGeneratedTokens, serverOptions.defaultAdapter);
+    ctx, prep, contextLimit, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
   const openAiMeta = (id: string) => ({ id, created: Math.floor(Date.now() / 1000), model: ctx.modelId });
   /** Parse the JSON body under the request's trace; a bad body is a 400. */
@@ -1049,6 +1005,7 @@ export function createServer(
           },
           admission: {
             max_safe_context: admission.maxSafeContext,
+            enforced_context_tokens: contextLimit,
             memory_budget_bytes:
               ctx.glmMemoryPlan?.processLimitBytes ??
               serverOptions.memoryBudgetBytes ?? null,
@@ -1074,7 +1031,6 @@ export function createServer(
       // A parent-managed GPU job holds this response open. The connection owns
       // the native lease, so parent death cannot strand the worker lock.
       if (serverOptions.unixSocket && url.pathname === "/admin/lease" && request.method === "POST") {
-        await flushDurability();
         const lease = await gateway.acquireExecutionLease(request.signal);
         let released = false;
         const release = () => {

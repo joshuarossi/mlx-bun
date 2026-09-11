@@ -46,8 +46,10 @@ function expectRowIdentical(
     const whole = batched[part];
     const dLast = whole.shape[3]!;
     const cut = whole.slice([b, 0, pad, 0], [b + 1, H, pad + L, dLast]);
-    const got = cut.toFloat32();
-    const want = solo[part].toFloat32();
+    const contiguous = ops.contiguous(cut);
+    const got = contiguous.rawBytes();
+    const want = solo[part].rawBytes();
+    contiguous.dispose();
     cut.dispose();
     expect(got.length).toBe(want.length);
     let same = true;
@@ -86,6 +88,22 @@ describe("batched quantized KV mechanics (model-free)", () => {
     disposeRow(a); disposeRow(b);
     disposeTriple(m0.keys); disposeTriple(m0.values);
     disposeTriple(ext.keys); disposeTriple(ext.values);
+  });
+
+  test("filter removes shared token padding without changing quantized rows", () => {
+    const rows = [quantRow(12, 9), quantRow(8, 10), quantRow(10, 11)];
+    const merged = mergeQuantRows(rows);
+    const filtered = filterQuantRows(merged.keys, merged.values, [1, 2], 2);
+    try {
+      expect(filtered.keys.packed.shape).toEqual([2, H, 10, D / (32 / BITS)]);
+      for (const part of ["keys", "values"] as const) {
+        expectRowIdentical(filtered[part], 0, 2, rows[1]![part]);
+        expectRowIdentical(filtered[part], 1, 0, rows[2]![part]);
+      }
+    } finally {
+      rows.forEach(disposeRow);
+      disposeRow(merged); disposeRow(filtered);
+    }
   });
 
   test("filterQuantRows: eviction keeps surviving rows byte-identical", () => {

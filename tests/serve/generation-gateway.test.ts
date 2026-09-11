@@ -9,7 +9,7 @@ import { GenerationGateway, type RequestShape } from "../../src/serve/generation
 import { KVCache, RotatingKVCache } from "../../src/model/gemma4-base";
 import { SSMCache } from "../../src/model/qwen3-delta";
 import type { RuntimeModel } from "../../src/model/factory";
-import { resolveKvScheme } from "../../src/kv-scheme";
+import { KvScheme, resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
 import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 import { bindMlxGateway, type MlxBatchGroup } from "../../src/backends/mlx/gateway-binding";
@@ -50,20 +50,6 @@ for (const reason of ["stop", "length"] as const) {
   });
 }
 
-test("serial cache preparation can acquire the engine lock before generation", async () => {
-  const events: string[] = [];
-  const g = new GenerationGateway(stubModel, 1, async () => {
-    events.push("generate");
-    return {} as never;
-  }, {
-    beforeSerial: async () => {
-      await g.runExclusive(async () => { events.push("flush"); });
-    },
-  });
-  const shape = { ...batchable };
-  await g.run([1], {}, () => {}, undefined, shape, g.place(shape));
-  expect(events).toEqual(["flush", "generate"]);
-});
 const usesContinuous = (g: GenerationGateway, shape: RequestShape): boolean =>
   g.place(shape).mechanism === "continuous";
 /** N-layer all-full-attention stub (Phase 3.1 kv-batchability probes). */
@@ -181,8 +167,6 @@ describe("GenerationGateway.place", () => {
   const disqualifiers: Array<[keyof RequestShape, string]> = [
     ["hasVision", "vision (offset-0 single-seq prefill + image mask)"],
     ["hasAdapters", "LoRA adapter (single per-generation loraState)"],
-    ["wantsLogprobs", "logprobs/top_logprobs capture (serial-only, batch-lane deferred)"],
-    ["userSeed", "explicit seed (reproducibility ⇒ solo)"],
     ["kvQuant", "kv-quant with NO scheme threaded (would silently drop the quantization)"],
     ["turboQuant", "TurboQuant is solo-only in v1, unconditionally (docs/design/turboquant.md)"],
   ];
@@ -206,11 +190,16 @@ describe("GenerationGateway.place", () => {
     });
     expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(true);
   });
-  test("kvQuant stays serial for uniform kvBits", () => {
-    const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: resolveKvScheme({ override: 8 }),
-    });
-    expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(false);
+  test("uniform KV batches on full, rotating and shared-donor cache layouts", () => {
+    const sharedDonor = { ...mixedModel(), config: {
+      text: { numHiddenLayers: 6, layerTypes: Array(6).fill("sliding_attention") },
+    } } as unknown as RuntimeModel;
+    for (const model of [fullModel(4), mixedModel(), sharedDonor]) {
+      const g = new GenerationGateway(model, 2, serialRunStub, {
+        kvScheme: resolveKvScheme({ override: 8 }),
+      });
+      expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(true);
+    }
   });
   test("kvQuant BATCHES when the config names a rotating layer (milestone 2)", () => {
     const g = new GenerationGateway(mixedModel(), 2, serialRunStub, {
@@ -240,18 +229,17 @@ describe("GenerationGateway.place", () => {
     expect(usesContinuous(g, { ...batchable, kvQuant: true })).toBe(false);
   });
 
-  // Unlike kvQuant (which can be partially batchable via a full-attention-only
-  // kvConfig), turboQuant is UNCONDITIONALLY solo-only in v1 — no kvScheme
-  // makes it batchable (TurboQuantKVCache is a novel Cache, never merge/
-  // filter/temporalView-capable).
-  test("turboQuant stays serial regardless of the gateway's kvScheme", () => {
-    const g = new GenerationGateway(fullModel(4), 2, serialRunStub, {
-      kvScheme: resolveKvScheme({
-        override: "config",
-        config: [0, 1, 2, 3].map((layerIdx) => ({ layerIdx, bits: 4, groupSize: 64 })),
-      }),
+  test("TurboQuant batches with start-zero and row-local delayed conversion", () => {
+    const scheme = resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } });
+    for (const model of [fullModel(4), mixedModel()]) {
+      const g = new GenerationGateway(model, 2, serialRunStub, { kvScheme: scheme });
+      expect(usesContinuous(g, { ...batchable, turboQuant: true })).toBe(true);
+    }
+    const delayed = new GenerationGateway(fullModel(4), 2, serialRunStub, {
+      kvScheme: new KvScheme("turbo", { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 }),
     });
-    expect(usesContinuous(g, { ...batchable, turboQuant: true })).toBe(false);
+    expect(usesContinuous(delayed, { ...batchable, turboQuant: true })).toBe(true);
+    expect(usesContinuous(gateway(2), { ...batchable, turboQuant: true })).toBe(false);
   });
 
   // Logits processors BATCH: the per-row sampler folds makeLogitsProcessors
@@ -278,12 +266,13 @@ describe("GenerationGateway.place", () => {
       restore();
     }
   });
-  // serve --draft-model: a mounted draft routes EVERY request serial —
-  // upstream parity (mlx_lm.server: is_batchable = draft is None). Spec is a
-  // B=1 latency mode; batching is a throughput mode (integration plan).
-  test("hasDraft routes serial (spec is serial-lane-only)", () => {
-    expect(usesContinuous(gateway(2), { ...batchable, hasDraft: true })).toBe(false);
-    expect(usesContinuous(gateway(2), { ...batchable, hasDraft: false })).toBe(true);
+  test("placement follows the selected method when a draft is configured", () => {
+    const g = gateway(2);
+    expect(g.place({ ...batchable, hasDraft: true }).execution)
+      .toMatchObject({ method: "speculative", mechanism: "serial" });
+    const ordinary = g.place({ ...batchable, hasDraft: true, wantsLogprobs: true });
+    expect(ordinary.execution).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+    expect(ordinary.execution!.reasons).toContain("draft-incompatible-with-request");
   });
   test("MLX_BUN_GRAMMAR_BATCH=0 forces grammar to serial (B0 fallback)", () => {
     const restore = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "0" });
@@ -354,7 +343,7 @@ describe("GenerationGateway.place", () => {
 });
 
 // The engine-busy signal (2026-07-07 decode@ctx fix): the SSD write-behind
-// gates every per-tensor flush step on onIdle(), so `busy` must cover the
+// gates every per-tensor flush step on runWhenIdle(), so `busy` must cover the
 // SERIAL lane too — activeRows/pendingRows read 0 while a serial generation
 // holds the mutex, which is exactly when the old flush stole decode slices.
 describe("GenerationGateway.busy / onIdle", () => {
@@ -375,6 +364,38 @@ describe("GenerationGateway.busy / onIdle", () => {
     expect(order).toEqual(["job", "inference"]);
     await g.close();
     expect(g.busy).toBe(false);
+  });
+
+  test("background work yields to foreground arrivals without requesting a batch drain", async () => {
+    const held = Promise.withResolvers<void>();
+    const events: string[] = [];
+    let admissionHeld: (() => boolean) | undefined;
+    let activeRows = 1;
+    const group: MlxBatchGroup = {
+      get activeRows() { return activeRows; }, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: 1024,
+      kick() {}, async close() {},
+      async submit() { await held.promise; return {} as never; },
+    };
+    const binding = { ...bindMlxGateway(stubModel), createBatchGroup(options: Parameters<ReturnType<typeof bindMlxGateway>["createBatchGroup"]>[0]) {
+      admissionHeld = options.admissionHeld;
+      return group;
+    } };
+    const g = new GenerationGateway(binding, 4, stubSerial);
+    const shape = { ...batchable };
+    const request = g.run([1], { temperature: 0 }, () => {}, undefined, shape, g.place(shape));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const background = g.runWhenIdle(async () => { events.push("background"); }, 1);
+    expect(admissionHeld?.()).toBe(false);
+    const foreground = g.runExclusive(async () => { events.push("foreground"); });
+    await foreground;
+    expect(events).toEqual(["foreground"]);
+    expect(admissionHeld?.()).toBe(false);
+    activeRows = 0;
+    held.resolve();
+    await request;
+    await background;
+    expect(events).toEqual(["foreground", "background"]);
+    await g.close();
   });
 
   test("idle gateway: busy=false, onIdle resolves immediately", async () => {

@@ -11,18 +11,16 @@
 // asserts the `usage.speculation` telemetry populates (drafts proposed, a
 // sane accept count). In-process only — no server is started.
 
-import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { hfSnapshot } from "../support/paths";
 
-const E4B_BASE = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-OptiQ-4bit/snapshots`;
-const DR_BASE = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-e4b-it-assistant-bf16/snapshots`;
-const have = existsSync(E4B_BASE) && existsSync(DR_BASE);
+const E4B = Bun.env.MLX_BUN_TEST_ASSISTANT_TARGET ?? hfSnapshot("models--mlx-community--gemma-4-e4b-it-OptiQ-4bit");
+const DR = Bun.env.MLX_BUN_TEST_ASSISTANT_DRAFT ?? hfSnapshot("models--mlx-community--gemma-4-e4b-it-assistant-bf16");
+const have = existsSync(`${E4B}/config.json`) && existsSync(`${DR}/config.json`);
 
-describe.skipIf(!have)("serve-loop AssistantSource (e4b + assistant drafter)", async () => {
+describe.skipIf(!have)("serve-loop AssistantSource (Gemma + assistant drafter)", async () => {
   if (!have) return;
-  const E4B = `${E4B_BASE}/${readdirSync(E4B_BASE)[0]}`;
-  const DR = `${DR_BASE}/${readdirSync(DR_BASE)[0]}`;
-
   const { loadModelConfig } = await import("../../src/config");
   const { Weights } = await import("../../src/weights");
   const { Gemma4Model } = await import("../../src/model/gemma4");
@@ -33,8 +31,10 @@ describe.skipIf(!have)("serve-loop AssistantSource (e4b + assistant drafter)", a
   const { ChatTemplate } = await import("../../src/chat-template");
 
   const config = await loadModelConfig(E4B);
-  const model = new Gemma4Model(await Weights.open(E4B), config);
+  const weights = await Weights.open(E4B);
+  const model = new Gemma4Model(weights, config);
   const provider = await AssistantProvider.load(DR);
+  afterAll(() => { provider.dispose(); weights.dispose(); });
   const tok = await loadTokenizer(E4B);
   const template = await ChatTemplate.load(E4B);
 

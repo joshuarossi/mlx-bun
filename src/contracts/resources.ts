@@ -16,3 +16,10 @@ export interface StateView<T> {
 export interface DisposableResource {
   dispose(): void;
 }
+
+/** A prepared replacement for live state. Commit once between method rounds;
+ * it publishes already-built state without graph work or validation. Dispose
+ * releases the unpublished replacement, or the superseded state after commit. */
+export interface PreparedStateChange extends DisposableResource {
+  commit(): void;
+}

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { BatchedRotatingState } from "../../src/model/batched-rotating-state";
 import {
+  appendRotatingStorage,
   temporalStorageView,
   type RowStorage,
 } from "../../src/model/batched-row-storage";
@@ -17,6 +18,10 @@ const fakeStorage: RowStorage<FakeRows> = {
   padLeft: (value, tokens) => value.map((row) => [...new Array(tokens).fill(0), ...row]),
   takeRows: (value, keep) => keep.map((row) => [...value[row]!]),
   copy: (value) => value.map((row) => [...row]),
+  rollRows: (value, indices) => {
+    const positions = indices.toIntTokens(), width = indices.shape[2]!;
+    return value.map((row, r) => Array.from({ length: width }, (_, i) => row[positions[r * width + i]!]!));
+  },
   dispose: () => {},
 };
 
@@ -61,4 +66,40 @@ describe("BatchedRotatingState", () => {
       copy: true,
     })).toEqual([[12, 13, 14, 15]]);
   });
+});
+
+test("block writes retain every query's window and hand back to ring writes", () => {
+  const state = new BatchedRotatingState(4, [0, 2]);
+  state.restoreMerged(4, [4, 2]);
+  state.beginWrite(1); state.commitWrite(1);
+  const previous = [[5, 2, 3, 4], [15, 0, 13, 14]];
+  const incoming = [[6, 7, 8], [16, 17, 18]];
+  const block = appendRotatingStorage(fakeStorage, previous, incoming, state);
+  expect(block).toEqual([[3, 4, 5, 6, 7, 8], [13, 14, 15, 16, 17, 18]]);
+  expect(previous).toEqual([[5, 2, 3, 4], [15, 0, 13, 14]]);
+  state.commitConcat(3, state.activeLength);
+  expect(state.offsets).toEqual([8, 6]);
+  expect(state.leftPad).toEqual([-2, 0]);
+  expect(state.activeLength).toBe(6);
+  expect(state.rotated).toBe(false);
+  expect(temporalStorageView(fakeStorage, block, state, { row: 1, to: state.activeLength }))
+    .toEqual([[13, 14, 15, 16, 17, 18]]);
+  // Before the next one-token write, remove the block's temporary overshoot.
+  state.trimOvershoot(2);
+  expect(state.beginWrite(1)).toBe(0);
+  state.commitWrite(1);
+  expect(state.offsets).toEqual([9, 7]);
+  expect(state.leftPad).toEqual([-5, -3]);
+  expect(state.activeLength).toBe(4);
+});
+
+test("block append ignores spare allocation and supports an empty padded batch", () => {
+  const state = new BatchedRotatingState(8, [0, 2]);
+  const incoming = [[1, 2, 3], [0, 0, 13]];
+  expect(appendRotatingStorage(fakeStorage, null, incoming, state)).toEqual(incoming);
+  state.commitConcat(3, 0);
+  expect(state.offsets).toEqual([3, 1]);
+  const allocated = [[1, 2, 3, 99, 99], [0, 0, 13, 99, 99]];
+  expect(appendRotatingStorage(fakeStorage, allocated, [[4, 5], [14, 15]], state))
+    .toEqual([[1, 2, 3, 4, 5], [0, 0, 13, 14, 15]]);
 });

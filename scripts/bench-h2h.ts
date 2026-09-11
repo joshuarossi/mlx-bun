@@ -127,7 +127,10 @@ function failureLine(msg: string): string {
 // --- preflight ------------------------------------------------------------
 
 function preflight(hard: boolean): string {
-  const state = checkMachine();
+  const cpuCommand = opt("allow-cpu-process", "");
+  const state = checkMachine({ allowCpuProcesses: cpuCommand ? [cpuCommand] : [] });
+  for (const p of state.backgroundCpuProcesses ?? [])
+    console.log(`preflight: permitted CPU background activity: ${p.command}`);
   for (const p of state.problems) console.error(`preflight: ${p}`);
   console.log(
     `machine: swap ${state.swapUsedMB.toFixed(0)} MB, free ${state.freePercent}%, ` +
@@ -867,8 +870,7 @@ function renderTable(sinceTs: number): string {
 // --- commands --------------------------------------------------------------
 
 if (cmd === "preflight") {
-  preflight(false);
-  process.exit(checkMachine().ok ? 0 : 1);
+  process.exit(JSON.parse(preflight(false)).ok ? 0 : 1);
 }
 
 const reg = new Registry();

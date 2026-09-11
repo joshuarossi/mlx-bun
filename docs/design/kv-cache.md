@@ -3,7 +3,7 @@ status: landed
 axis: ON
 canonical-for: kv-cache
 plan-anchor: "Phase 18 — Concurrent / batched serving (slots) + parallel load benchmark `[~]` (2026-06-13)"
-last-verified: 2026-08-23
+last-verified: 2026-09-09
 ---
 
 # KV cache — residency and layout
@@ -42,11 +42,10 @@ its KV encodes:
 The prompt cache tiers over the SSD store *inside* `take()` (structural
 `ColdTier` interface), so every consumer (serial lane, batch scheduler
 joiners, `/admin/drain`) gets both tiers through the same `take()`/`put()`
-calls. The default path does no persistence work on the token loop:
-spill/persist happen at request boundaries, evictions, idle sweeps, and
-explicit flushes. The opt-in `--generation-checkpoint N` path deliberately
-pauses at coarse, safe decode boundaries to atomically persist an in-flight
-generation (section 5.7). Paged KV
+calls. Requests and evictions enqueue persistence work. The writer performs
+it when the engine is idle; RAM reuse does not enqueue an extra write or wait
+for the queue. Explicit flushes await the queued work. The opt-in `--generation-checkpoint N` path transfers owned snapshots at coarse decode boundaries and queues atomic
+persistence without awaiting disk in decode (section 5.7). Paged KV
 (section 6) is a *layout* choice for the live tier and, in v1, bypasses the
 other two.
 
@@ -114,10 +113,10 @@ Two independent checks decide whether a model/scheme can batch
   `KVCache`, `RotatingKVCache`, `BatchableCache`, or (unless
   `MLX_BUN_BATCH_SSM=0`) `SSMCache`. Novel classes (TurboQuant, paged) fail
   this by construction.
-- `#kvBatchable()` — `KvScheme.batchable(config, canConvert)`: only the
-  per-layer `affine-config` scheme batches, and only when every configured
-  layer is a plain or rotating cache that can convert. Uniform `kvBits`
-  and TurboQuant stay serial; a scheme-less gateway must never silently
+- `#kvBatchable()` — `KvScheme.batchable(config, canConvert)`: per-layer
+  `affine-config` and uniform affine KV4/KV8 batch when their cache-owning
+  layers can convert. TurboQuant still requires merged-row layout support;
+  a scheme-less gateway must never silently
   drop quantization (`kv-scheme.ts` makes the capability probe mandatory
   for quantized schemes).
 
@@ -210,16 +209,23 @@ upstream is byte-capped now.
 **`take(prompt, ns)` — prefix sharing.** Finds the entry with the longest
 usable common prefix (usable = common prefix capped at `prompt.length - 1`,
 so at least one token is forwarded; an entry longer than the match must be
-trimmable). Trimmable entries are cloned zero-copy (`cloneKvCaches`: slice
-views of live arrays), trimmed, and returned with a ref-counted `retain`
-share; the donor stays in place, so N agents can share one prefill. An exact
-hit on a Qwen hybrid entry containing recurrent SSM state transfers the donor
-itself to bound resident snapshots; the request puts its extended state back
-on completion. With an SSD tier, `take` persists that exact boundary before
-transferring ownership. An already-durable prefix needs only an index check.
-The extended recurrent state cannot trim back to the consumed boundary, so
-keeping its SSD copy preserves later exact prompt repeats. A failed required
-store leaves the donor and backing owned by the cache and refuses the transfer.
+trimmable). Every RAM hit lends zero-copy views (`cloneKvCaches` and
+`cloneAttachments`) with a ref-counted backing share; the donor remains in
+place. This includes exact-boundary recurrent and method state. Only
+trimmable state may be shortened. Decode extends its own views without
+changing the retained checkpoint.
+
+SSD is an eventually consistent persistence layer. RAM reuse never writes
+to SSD or waits for durability. Background writes retain immutable snapshot
+views and yield between tensor writes; explicit flush and graceful shutdown
+wait for persistence. A pending or failed write does not prevent RAM reuse.
+The existing byte cap controls retained donors and LRU eviction.
+
+The native sharing gate checks logical checkpoint bytes after repeated decode
+and after SSD restore. It passes on both development Macs; the M1 long-prefix
+case also preserves three independent 512-token continuations. The queued
+writer test retains snapshot state after both donor and borrower disposal,
+and explicit flush remains pending until the write completes.
 
 **Tier order inside `take()`.** The cold tier is consulted with
 `find(prompt, ns)` (index-only, no I/O) and wins only with a *strictly*
@@ -293,8 +299,9 @@ full prefill (GEMV-vs-GEMM reduction order). Both tiers share it.
   `PromptCache` (section 4); restart persistence comes from a debounced
   write-behind snapshot after each put, not only from spill-on-evict.
 - **D3 — Own page-aligned format, not safetensors.** `src/kv-store.ts`
-  writes `MLXBUNKV2\n`-magic files whose current layout is the **v3
-  streaming writer**: header sized up front with fixed-width tensor
+  writes `MLXBUNKV2\n`-magic files with a streaming writer: ordinary KV
+  retains format v3; checkpoints with method companion state use v4.
+  The header is sized up front with fixed-width tensor
   hashes, tensors materialized/hashed/written one at a time at 16 KiB
   aligned offsets, header patched last (peak host transient = one
   tensor). Header carries `formatVersion`, `modelId`,
@@ -344,10 +351,13 @@ full prefill (GEMV-vs-GEMM reduction order). Both tiers share it.
   `--memory-budget` is unchanged (admission already assumes worst-case
   bf16). `--paged-kv` warns that the tier sees nothing (section 6).
 - **D6 — In-flight resume is explicit.** `--generation-checkpoint <tokens>`
-  requires `--ssd-cache` and `--batch 1`. It is off by default because each
-  checkpoint synchronizes and writes the live KV, trading decode speed and
-  SSD writes for bounded lost work. An identical request resumes; a changed
-  prompt or sampling policy starts normally.
+  requires `--ssd-cache` and supports eligible shared ordinary execution. It
+  is off by default. Captured states queue for SSD persistence; an explicit
+  flush establishes durability of queued work (section 5.7). An identical request resumes; a changed
+  prompt or sampling policy starts normally. Ordinary adapter requests use the
+  same continuation hooks under their existing execution context. The checkpoint
+  identity includes the ordered adapter IDs and content-revision namespace; a
+  base-model request or replacement adapter cannot restore that checkpoint.
 
 ### 5.2 Restore is a streamed copy (supersedes the original zero-copy plan)
 
@@ -392,22 +402,21 @@ Every per-tensor flush step is real GPU-stream and JS-thread work
 between decode tokens taxed decode at long context, so:
 
 - `saveKvCacheAsync` / `SsdCacheStore.storeAsync` accept a per-step runner.
-  The server passes `gateway.runExclusive`, so the idle decision and the
-  blocking MLX readback are one atomic engine turn. The earlier
+  The server passes `gateway.runWhenIdle`, so the idle decision and the
+  blocking MLX readback are one atomic engine turn. Background work waits
+  without registering a serial waiter or draining active batches. The earlier
   `gateway.onIdle()` check had a check/use race: a request could begin after
   the check and overlap the next tensor sync. A request arriving mid-flush
-  previously could run between tensor writes. Serial generation now first
-  drains the durability coordinator outside the engine lock, so pending
-  snapshot clones release their buffers before the next prefill.
+  can run between tensor writes. Neither execution lane drains pending
+  durability work before generation.
 - `GenerationGateway.busy` covers both lanes (serial mutex held/awaited or
   batch rows active/pending).
 - `MLX_BUN_SSD_WRITEBEHIND=0` disables write-behind snapshots entirely
   (kill switch + paired-A/B lever; restart survival then degrades to
   spill-on-evict).
 
-Serial requests may wait for outstanding snapshots to finish. The drain
-runs before acquiring the generation lock because the writer needs that
-same lock. Continuous batching retains per-tensor scheduling.
+Explicit flush and shutdown drain outstanding writes outside the generation
+lock because the writer needs that same lock. Ordinary requests do not.
 
 The RAM cache's configured byte cap is only an upper bound. Serial serving
 checks MLX's live allocation count against the smaller of admission's usable
@@ -446,7 +455,7 @@ the write — the server implied durability it did not have.
 - `schedule(tokens, ns)` records a *dirty* key that includes the exact
   token sequence (two same-ns, same-length conversations cannot cancel
   each other) and arms the debounce.
-- An attempt checks SSD coverage under `gateway.runExclusive` before cloning.
+- An attempt checks SSD coverage under `gateway.runWhenIdle` before cloning.
   Otherwise it snapshots the RAM entry (`findExact` + `cloneKvCaches`) and
   enqueues it; a busy gateway re-arms;
   a dropped or failed store leaves the key dirty so it is retryable.
@@ -495,12 +504,127 @@ IDs and every sampling/KV policy field. Grammar, token-fill, media, paged KV,
 and logprob requests are not checkpointed in v1 because they carry additional
 state or response data that cannot yet be reconstructed by token replay.
 
+Ordinary continuation adds an optional request port to
+that same ordinary driver. Checkpoint lookup, keys and persistence are shared
+with the compatibility executor; the numerical driver supplies owned row
+snapshots at an emitted-prefix/pending-token boundary. Restored rows complete
+preparation without a target forward, before merging cold prefill rows, and
+recover sampler seed, history and sample index. The server binding qualifies
+ordinary requests through supported row-cache layouts, including recurrent Qwen
+and full-attention Llama/MiniCPM as well as Gemma4. It transfers owned row
+snapshots to a bounded persistence coordinator without awaiting disk in decode.
+Tensor serialization and file maintenance use the existing idle gate. Completion
+invalidates reuse immediately and queues cleanup after any in-flight write;
+new attempts cannot be erased by older cleanup. Cancellation retains eventual
+persistence, and explicit flush reports failed or pending durability. A hard
+process exit may lose queued intervals. Plain greedy retains the ordinary
+vectorized sampler when no history-dependent processors are active. Supported KV layouts retain their existing affine, per-layer and full-attention
+TurboQuant conversion policy. Requests remain without
+media, grammar, fill, paging, logprobs or speculative methods. Native tests
+compare interrupted/restored runs at the same batch geometry; arbitrary
+cohort changes are not an exact numerical identity guarantee. The HTTP fixture
+checks serial B1, shared B1 and shared B4 with identical seeded requests and
+held arrivals, and inspects the generated checkpoint before restart.
+When checkpointing is enabled, the existing total spill queue budget is split
+between prompt spills and continuation snapshots. Flush duration and pending/failed
+statistics cover both queues.
+
 Only the newest successful checkpoint for a request is retained. The old file
-remains valid until the new file's fsync+rename completes; a crash mid-write
-therefore loses at most one interval. Normal completion removes the checkpoint.
+remains valid until the new file's fsync+rename completes. Queue backpressure
+can leave more than one interval undurable; a crash loses work since the latest
+successful write. Normal completion immediately invalidates the checkpoint and
+queues its disk removal.
 Client cancellation throws through the serial token callback and preserves the
 last checkpoint, so terminating a long-lived client does not erase its restart
 point.
+
+Fresh-model compiled continuation preserves the device sampler's uint32 pending
+register. The Gemma model materializes its computed FP32 RoPE frequencies once
+before compiled graph capture: a restored request may skip the prefill that
+normally evaluates those constants. Capturing their unevaluated construction
+graph can change arithmetic on M1. The forced-token continuation regression
+compares a warmed model and a fresh model with cloned state, including every
+active cache byte and full logits across delayed KV conversion. Live delayed
+row layouts publish compact state through their extraction interface before
+persistence; they do not need storage codecs for the live wrapper itself.
+
+### Method companion state
+
+`PrefixCache<State, Attachment>` is the shared consumer contract for ordinary
+and batched execution. It has no scheduling or storage-tier operations. The
+MLX binding supplies target cache layers plus optional `CheckpointAttachment`
+records containing a method schema, scalar metadata and tensor snapshots.
+The method owns their meaning and alignment; the shared cache owns retention.
+Method and drafter compatibility must be part of the namespace before a
+producer publishes these records. Storage does not interpret draft state as
+extra target-model layers.
+
+RAM accounting, eviction, idle demotion and the bounded SSD spill queue include
+companion tensors. Checkpoints containing them require an exact prefix
+boundary and preserve shorter fallback entries. Write-behind captures companion
+views together with target-cache views under the existing exclusive boundary.
+The writer persists them in the same atomic file and the same per-tensor write
+loop. Restore copies and verifies them through the existing tensor reader.
+Ordinary files retain v3 compatibility; older readers reject v4 files rather
+than restore an incomplete checkpoint.
+
+The storage implementation is in the working tree. Synthetic gates cover RAM
+ownership, divergent-prefix fallback, SSD eviction, fresh-process restore,
+corruption, queue drops/failures and durability on both development Macs.
+Qwen MTP now uses this interface for prefill snapshots; its private store and
+separate budget option are removed. `DraftSource.checkpoint` supplies the draft
+KV and pending true hidden row. The namespace includes a SHA-256 of draft
+configuration and shard bytes, resolved at provider load, plus the mounted
+adapter revision and KV policy. Model loading resolves that digest through
+`artifactIdentity`, independently of inference and scheduling. A memo key includes
+the configuration seed, sorted shard names, resolved paths, device/inode, size,
+and nanosecond modification/change times. Unchanged revisions reuse the exact
+existing SHA-256; a miss reads every shard byte. Same-size writes with restored
+mtime and changed symlink targets invalidate the memo. Rechecking revisions after
+hashing prevents persisting a digest under a revision that changed during reading.
+
+`ArtifactIdentityStore` owns memo retention and persistence. Its file adapter uses
+`~/.cache/mlx-bun/artifact-identities/`, keeps RAM hits and queues atomic file writes
+without awaiting them in model loading. Missing, malformed or unwritable memo
+storage does not prevent computing the identity. It stores only digests, not
+weights, prompts or KV. Qwen MTP, standalone, assistant, DeepSpec and DSpark use
+the same identity service; existing namespaces and SSD entries remain compatible.
+Tests cover byte identity, no weight reads after a fresh-store memo hit, file
+mutation, configuration changes, symlink replacement and write failure.
+
+Native bf16/KV4 gates on M1 Max and M4 Pro
+preserve live target/companion state hashes, emitted IDs and acceptance decisions
+through repeated RAM reuse and SSD cache/provider restart. SSD allocation
+padding is excluded from the live-state comparison. Generated-output acceptance
+is described below; long-conversation timing remains R17 work.
+
+The unreleased shared method now publishes completed row state before
+retirement through the same `PrefixCache.put` port. It records only inputs
+retained by committed target/draft rounds; an unprocessed correction or bonus
+token is absent from the key. The target row layout and draft provider supply
+their snapshots independently. Failed and cancelled consumers publish no
+generated checkpoint. Persistence continues through the existing queue.
+
+M1 and M4 native bf16, affine KV4 and fused TurboQuant K8/V3 tests cover four active
+rows, early retirement, exact sampled-ID coverage, unchanged retained bytes
+after sibling and follow-up work, shorter-prefix selection after an edit, and
+matching RAM/SSD continuation and acceptance. Existing paired-prefill tests
+also pass. A second native gate records actual sampled IDs for an echo tool
+turn with thinking off/on, passes them through the production output parsers,
+and renders the subsequent tool-result request with the same chat template.
+Both published checkpoints are exact token prefixes of that next request.
+A production HTTP gate now passes on both Macs for bf16, KV4 and fused K8/V3, with
+thinking off/on. The next tool-result request reuses generated content in RAM.
+After a durable flush, a separate server process restores the first turn's
+SSD state and reproduces the same response, logprobs and acceptance. The test
+copies only the first turn's flushed files before running the RAM continuation,
+so no later prefill checkpoint can explain the restart hit. All six cases
+pass, including the actual wire `reasoning` alias and template options.
+The five-file change is adopted alongside the captured prefill-policy fix.
+Native acceptance of that final composition, long saved Kanban replay,
+pressure and complete next-turn timing remain open.
+It does not resolve the older serial prototype's bf16 comparison with fresh
+full prefill, whose operation shapes differ from a generated history.
 
 ### 5.8 Invalidation
 
@@ -555,10 +679,10 @@ already shipped, so what transfers is: (a) padded-batch waste removal —
 today's batched buffer width tracks the longest live row
 (`mergeKVRows`/`extendKVRows`), so a short row cohabiting with a long one
 pays the long one's KV; and (b) block-level copy-on-write prefix sharing.
-Neither is in v1. **At batch=1 paging buys nothing** — gather-before-attend
-is bandwidth tax on a bandwidth-bound decode. v1 ships the
-correctness-proven block-manager abstraction at serial scope as
-scaffolding for the follow-ups, not as a speed win.
+Persistent pools now stay separate per request under the shared executor.
+Attention still gathers and pads a temporary batch tensor; block-level prefix
+sharing and direct paged attention remain open. At batch one, the gather adds
+a copy. Paging remains optional and does not imply a speed improvement.
 
 This is neither of the two paging rejections already on record:
 paged KV as a *prompt-cache substitute* (rejected 2026-07-07 — `take()`'s
@@ -584,8 +708,8 @@ greedy trajectory paged-on vs paged-off).
   `[block, 0, within, 0]` — the incoming `[1,H,l,D]` piece matches the
   destination slice directly.
 - **`PagedKVCache implements Cache`** — standalone (not a `KVCache`
-  subclass, the TurboQuant reasoning: every `instanceof` gate excludes it
-  and routes to the monolith forward). `updateAndFetch` splits the
+  subclass). The cache-layout binding supplies `PagedKvRows` for dynamic
+  membership, masks and per-row positions. `updateAndFetch` splits the
   incoming `L` along block boundaries, allocates tail blocks as reached,
   then gathers occupied blocks with `ops.takeAxis(pool, blockTable, 0)` →
   transpose `[1,0,2,3]` → reshape `[1,H,nb·bs,D]` → slice to `offset`. Only
@@ -599,7 +723,8 @@ greedy trajectory paged-on vs paged-off).
   prompt + `max_tokens`, so exhaustion is unreachable absent an
   accounting bug — it exists as a tripwire, never silent truncation.
 - **Wiring** — `maybePageKv(cache, options, capacityTokens)`
-  (`generate.ts`) mirrors `maybeQuantizeKv`'s post-construction in-place
+  (`backends/mlx/request-state-policy.ts`, re-exported by `generate.ts`)
+  mirrors `maybeQuantizeKv`'s post-construction in-place
   swap but runs *once before prefill*: paging changes layout, not
   arithmetic, so there is no "convert when populated" trigger. Only fresh
   (`offset === 0`) plain `KVCache` entries are replaced; rotating layers
@@ -610,32 +735,34 @@ greedy trajectory paged-on vs paged-off).
 
 ### 6.3 Gates (explicit refusals, never silent downgrades)
 
-- Startup (`server.ts`): `--paged-kv` with `--batch N>1`, any `--kv-quant`
+- Startup (`server.ts`): `--paged-kv` with any `--kv-quant`
   (affine or TurboQuant), `--draft-model`, or a non-`gemma4*` model exits
   with a clear message; `--paged-kv-block-size` must be a positive
   integer; `--ssd-cache` alongside it warns that the tier sees nothing.
-  With no explicit `--batch`, the CLI pins `--batch 1` (default is 8) and
-  says so. Env `MLX_BUN_PAGED_KV=1` is equivalent to the flag.
+  Paging preserves the selected batch size. Env `MLX_BUN_PAGED_KV=1`
+  is equivalent to the flag.
 - Request scope: media (vision/audio) and LoRA-adapter requests strip the
   flag and run the plain cache path (v1 non-goal cells, never a 400). One
   effective `pagedKv` value per request keeps the strip and the
   prompt-cache bypass coherent.
-- Serial lane: paged requests skip `take`/`put` and the boundary
+- Both execution modes: paged requests skip `take`/`put` and the boundary
   snapshot; caches are disposed on completion. Spec eligibility also
   excludes `options.pagedKv` (belt on top of the startup refusal).
 - Compiled decode: `CompiledDecode.supports()` excludes `PagedKVCache`
   automatically (not one of the four supported classes) — a
   data-dependent block-list length is the shape shapeless replay already
   broke on.
-- Batch lane: unreachable by construction (startup pins serial); the
-  `RequestShape` gate to add when batched paging lands is noted here.
+- Shared execution: `PagedKvRows` owns independent block pools and immutable
+  row snapshots. A request-state policy creates the storage and supplies no
+  reusable-prefix store. Its opaque compatibility key keeps incompatible
+  layouts in separate cohorts without making scheduling inspect paging flags.
 
 ### 6.4 Follow-ups (dependency order) and open items
 
-1. Batched integration — `PagedKVCache` into the scheduler's inner union;
-   block-count admission replacing byte projection; join/filter/extract
-   allocating and freeing blocks instead of pad+concat. This is where the
-   padded-batch-waste win lives. Tracked under the plan anchor (Phase 18
+1. Direct paged attention and block sharing — row integration now uses the
+   shared layout interface with independent per-request pools. Attention still
+   gathers padded contiguous inputs. Measure block-level shared arenas and
+   direct reads before replacing this compatibility implementation. Tracked under the plan anchor (Phase 18
    S3+).
 2. Block-level CoW prefix sharing — refcounted block table, fork on
    divergent write; extends `PromptCache`'s entry-level ref-counting down
@@ -678,3 +805,20 @@ greedy trajectory paged-on vs paged-off).
 - Paged KV v1 (serial, Gemma4, bf16, gather-then-SDPA) landed with
   bit-exact gates; flag rows in cli.md / server-config.md (landing date
   not recorded in the source doc, which still reads "in progress").
+
+## Minimum reusable offsets
+
+Physical trimmability does not prove that an older prefix has a valid
+numerical representation. Caches may expose `minimumReusableOffset` after
+an irreversible transition, such as delayed TurboQuant conversion. Prefix
+selection requires the matched offset to meet every layer's bound. A
+trimmable descendant supersedes an ancestor only when it can serve that
+ancestor's offset; otherwise the earlier donor remains.
+
+Cloning and per-row extraction preserve this state metadata. New SSD
+headers record it, and indexing, durable-prefix checks and restore use the
+same rule as RAM. Legacy TurboQuant headers without a recorded boundary
+are conservatively reusable from their full stored offset only. Other
+legacy cache kinds retain their existing interpretation. This changes
+reuse eligibility, not scheduling, quantization arithmetic or memory
+admission policy.

@@ -1,4 +1,4 @@
-import type { DisposableResource, ResourceOwner } from "../contracts/resources";
+import type { DisposableResource, PreparedStateChange, ResourceOwner } from "../contracts/resources";
 
 export function ownResource<T>(value: T, release: (value: T) => void): ResourceOwner<T> {
   let held: { value: T } | undefined = { value };
@@ -33,6 +33,17 @@ export function cleanupFailure(error: unknown, cleanup: () => void): never {
   try { cleanup(); }
   catch (cleanupError) { throw new AggregateError([error, cleanupError], "execution and cleanup failed"); }
   throw error;
+}
+
+/** Complete every preparation before publishing any owner's replacement.
+ * Old state is released only after all owners have committed. */
+export function applyStateChanges(prepare: readonly (() => PreparedStateChange)[]): void {
+  const changes: PreparedStateChange[] = [];
+  try {
+    for (const build of prepare) changes.push(build());
+    for (const change of changes) change.commit();
+  } catch (error) { return cleanupFailure(error, () => disposeResources(changes.splice(0))); }
+  disposeResources(changes);
 }
 
 export function withResource<T, R>(owner: Pick<ResourceOwner<T>, "borrow" | "close">, use: (value: T) => R): R {

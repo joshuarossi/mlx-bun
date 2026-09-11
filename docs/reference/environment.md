@@ -179,6 +179,40 @@ against an M4 Pro output fixture. The test still requires exact output and
 state hashes; Python runs only the external reference. Trellis variant
 matrix tests allow 30 seconds for first-use kernel compilation on CI.
 
+The M1 Max override was replayed on 2026-09-08 with the same inputs using
+`/Users/joshrossi/Code/mlx-lm/.venv-mlx-0.32.2-macos14` (MLX/MLX-Metal
+0.32.2, MLX-LM 0.31.3). Bun matches its outputs and recurrent-state hashes
+exactly. The review file is
+`reports/qwen38-closeout/qwen-delta-m1-review.json`.
+
+Qwen3-Embedding tests also resolve `goldenPath("qwen3-embed")`, including
+machine overrides, and skip when their required binary blobs are absent.
+Regenerate with the matching Python and
+`scripts/oracle/gen-qwen3-embed-golden.py <artifact> --replay goldens/qwen3-embed/meta.json`;
+`--output-dir` selects a review directory. Replay preserves the text and token
+IDs and checks the tokenizer against them. Metadata records the device,
+runtime, artifact config, original metadata and output hashes. The M1 Max
+replay matches hidden states and pooled embeddings exactly. Cosine uses both
+vector norms: bf16 normalization does not guarantee a unit norm when the
+result is subsequently read as float32.
+
+The same M1 validation found June MiniCPM logit blobs without runtime
+provenance. Explicit `bun scripts/regen.ts minicpm5` with the matching venv
+preserves the artifact, prompt IDs and greedy trajectory; the regenerated
+logits match Bun exactly. The generator now records runtime/device/config
+provenance and all blob hashes. The old files and reviewed differences remain
+under `reports/qwen38-closeout/minicpm5-golden-before/` and
+`minicpm5-golden-review.json`.
+
+The Gemma bf16 and mixed-KV M1 replays also pass with unchanged prompt IDs
+on MLX 0.32.2. This current M1 venv contains **mlx-optiq 0.2.7** by installed
+distribution metadata, matching the documented M4 installation; it is not
+the historical 0.2.15 environment. OptiQ's module `__version__` incorrectly
+reports 0.2.5 there, so regeneration records distribution metadata. Old
+fixtures remain under `reports/qwen38-closeout/{parity,mixed-kv}-golden-before/`.
+These are current-stack parity checks, not a runtime-only A/B against the
+older mixed-KV fixture's 0.31.2/0.2.15 combination.
+
 Readable oracle source, in that `site-packages/`: `mlx_lm/models/gemma3.py`
 and `mlx_lm/server.py` for the port targets; `mlx_lm/models/cache.py` for the
 cache classes; `mlx_lm/tokenizer_utils.py` for prompt rendering;
@@ -250,7 +284,19 @@ servers DO validate: the Bearer token must start with `sk-optiq-`
 
 ## Bun and FFI facts
 
-**Bun ≥ 1.4.0.** `package.json` `engines.bun` is `>=1.4.0`. `Bun.Image`
+**Development and CI: Bun 1.4.2.** Build the committed frontend bundle with
+that version so its byte-for-byte freshness check uses the same compiler.
+Performance comparisons record the runtime and use the same version in both
+arms; historical results retain their original version.
+
+Non-login SSH on the M4 Pro can omit `/Users/joshrossi/.bun/bin` from `PATH`.
+Put that directory on the remote command's PATH when running the test suite:
+launching the parent Bun by absolute path alone does not let subprocess tests
+find `bun`. The quantized-row validation's initial seven command-entry/job
+failures disappear with that invocation corrected; no product code change was
+needed for those failures.
+
+**Runtime minimum: Bun ≥ 1.4.0.** `package.json` `engines.bun` is `>=1.4.0`. `Bun.Image`
 (native OS codecs via ImageIO, EXIF auto-orient, off-thread) is the vision
 decode path (`src/vision/preprocess.ts`); `Bun.Image.resize` is deliberately
 not used. The FFI ABI fix below is the other reason for the pin.
@@ -346,3 +392,7 @@ holds self-contained reproductions for upstream bug reports (the two Bun
 issues above, plus `optiq-mixed-kv-inert` and `vllm-metal-turboquant`); they
 are not part of the build. Committed absolute paths (the venv, the weights
 snapshot, `serve.sh`) are machine-specific on purpose — do not "correct" them.
+
+The quantized-KV golden producer (`bun scripts/regen.ts kvq`) passes an absolute output directory to Python, since the child runs from `scripts/`. This preserves the selected machine directory and existing prompt IDs. Missing M4 blobs were regenerated from the pinned oracle into the isolated `delayed-affine-m4-oracle` override; numerical expectations were not produced by the inference implementation. Evidence: `reports/qwen38-closeout/composition-baseline/oracle-generator-path/`.
+
+The M1 rotating-KV reference still identified MLX 0.31.2 and disagreed with both unchanged control and candidate on the KV8 greedy prefix. Regeneration with pinned MLX 0.32.2 retains the prompt IDs and passes exact logits plus both continuation checks. The matching M1 override and M4 reference caches are refreshed; previous manifests/blobs and provenance are retained with the generator-path evidence.

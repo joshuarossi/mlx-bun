@@ -29,6 +29,7 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 - [investigations/pareto-specialized-runtime-findings.md](../docs/archive/investigations/pareto-specialized-runtime-findings.md) — Pareto-specialized runtime findings
 - [investigations/pi-builtin-investigation.md](../docs/archive/investigations/pi-builtin-investigation.md) — Investigation: pi as a "built-in" terminal for mlx-bun
 - [investigations/pre-colibri-stabilization.md](../docs/archive/investigations/pre-colibri-stabilization.md) — Pre-Colibri stabilization program
+- [investigations/qwen38-27b-campaign-log.md](../docs/archive/investigations/qwen38-27b-campaign-log.md) — Qwen3.8-27B optimization campaign — execution log (2026-09-04 → 2026-09-08)
 - [investigations/segmented-backward-handoff.md](../docs/archive/investigations/segmented-backward-handoff.md) — Handoff — segmented backward training (2026-06-16)
 - [investigations/starter-model-port-handoff.md](../docs/archive/investigations/starter-model-port-handoff.md) — Handoff: the sub-GB starter model port (publishing gate 1)
 - [investigations/steel-flash-cce-handoff.md](../docs/archive/investigations/steel-flash-cce-handoff.md) — Steel flash-CCE — handoff
