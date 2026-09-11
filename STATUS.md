@@ -37,6 +37,10 @@ complete. Both quantized packed-model profiles pass context and SSD restart;
 the older registry Qwen retains its capacity failures. Explicit serial TQ
 runs ordinary decode despite requested MTP; shared TQ uses MTP. Configuration,
 response comparisons and timings are recorded in benchmarks.md.
+The subsequent h2h omits forced serial entirely for the three stock-reference
+models. Request telemetry confirms default batched execution, including lone
+requests. The packed Qwen measurements remain separate because stock reference
+servers cannot load that artifact.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

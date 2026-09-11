@@ -1330,6 +1330,49 @@ delta is the first "our-vs-our" axis. Lab experiment rows (no external
 oracle; KL/eval-gated) land here once one beats the L1 baseline in a
 paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
 
+### Default batched h2h without serial controls — M4 Pro (2026-09-11)
+
+Josh requested the standard h2h with no forced-serial arm. The command is
+`bun scripts/bench-serve.ts all --models cpm5,e4b,12B --no-serial`, with the
+previously authorized diagnostic/CPU allowance and a distinct output path.
+Machine: `Joshs-MBP-2025.local`, M4 Pro 24 GB, source `47620a5`, Bun 1.4.2,
+MLX 0.32.2 and pinned mlx-lm 0.31.3. The 12B reference uses OptiQ registration
+for its artifact before mlx-lm serving. The command manifest contains no
+`--batch` override, and **all 57 requests to the default Bun arm report
+`lane=batched`**, including lone requests. Five short-decode samples per model
+each generate 192 tokens; the aggregate leg submits four concurrent requests.
+
+| Model | Default / reference short decode tok/s | Default lead | Default / reference aggregate tok/s | Default lead | Default / reference median request ms |
+|---|---:|---:|---:|---:|---:|
+| MiniCPM5-1B | 281.08 / 237.28 | +18.5% | 699.58 / 420.52 | +66.4% | 706.67 / 880.25 |
+| Gemma4-e4b | 59.37 / 55.89 | +6.2% | 165.95 / 134.58 | +23.3% | 3310.74 / 3659.64 |
+| Gemma4-12B | 26.65 / 25.94 | +2.8% | 68.63 / 66.22 | +3.6% | 7428.84 / 7812.49 |
+
+Default serving wins short decode, total short-request latency and aggregate
+throughput for these three models. It does not win every context metric:
+e4b context decode is 51.59 versus 52.23 tok/s, and its cold context first
+output is 7,880 versus 7,839 ms. MiniCPM context decode is 176.56 versus
+153.33 tok/s; 12B is 25.76 versus 24.93 tok/s. Actual context lengths are
+9,062 MiniCPM tokens and 9,589 Gemma tokens. After restarting, default Bun
+restores 9,061/9,588/9,588 tokens from SSD, with first output in approximately
+95/390/1,659 ms; the reference re-prefills with zero restored tokens.
+
+All nine cells complete without phase failures; the six Bun default/mixed
+cells all flush durably and restore their SSD prefixes successfully.
+All fifteen short-decode request hashes, token counts and finish statuses
+match across stacks. Both Gemmas match all five timed response texts;
+MiniCPM retains the separately investigated stock-reference thinking-boundary
+output difference. Source hashes stay fixed. This is a single ordered
+diagnostic suite: initial free memory is 91%, retained swap 1,916 MB and
+`appstoreagent` occupies approximately one CPU core. The mixed-KV arms remain
+in the standard suite; they are not the default rows above.
+
+The 12.14 GiB packed Qwen artifact has no stock-reference loader, so it is
+excluded from this same-artifact h2h. Its completed default-batched KV4/TQ
+measurements follow below; the larger registry Qwen is not substituted.
+Raw command manifest, report and comparison live in
+`reports/release-v0.4.0-standard/default-batched-h2h-{manifest.json,m4.md.json,review.json}`.
+
 ### Released v0.4.0 packed Qwen with KV4/TQ and MTP2 — M4 Pro (2026-09-11)
 
 The follow-up uses the intended 12.14 GiB packed Trellis Qwen artifact and
