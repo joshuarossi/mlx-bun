@@ -1834,8 +1834,8 @@ experiment records; copying them over the selected implementation would undo
 later work. The singleton `copyOf` to `contiguous` candidate remains unpromoted
 because its attribution and startup result are unresolved.
 
-Before removing these checkouts, their complete source files and reports are
-preserved in a content-addressed local archive under
+The 80 secondary Git worktrees and 99 campaign source copies were removed
+after their source files and reports were verified in a content-addressed local archive under
 `reports/pr-closeout/checkout-archive/`, with per-checkout manifests, SHA-256
 objects and the recorded base commit. The PR retains the implementation and
 findings; bulky raw experiment data stays local under the repository policy.
