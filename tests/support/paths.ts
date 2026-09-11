@@ -60,7 +60,7 @@ export const SNAPSHOT = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-
 
 export const SNAPSHOT_26B = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--gemma-4-26B-A4B-it-OptiQ-4bit/snapshots/dbfd2a779b038b267bb20ff95dad717f42e4de16`;
 
-export const SNAPSHOT_MINICPM5 = `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78`;
+export const SNAPSHOT_MINICPM5 = process.env.MLX_BUN_TEST_MINICPM5 || `${process.env.HOME}/.cache/huggingface/hub/models--mlx-community--MiniCPM5-1B-OptiQ-4bit/snapshots/664aabaed233c653f82716d8dc822234d0091f78`;
 
 // Gemma-4 e4b: the SigLIP-vision target (full vision encoder in its
 // optiq_vision.safetensors sidecar, per-layer-input text). Resolved

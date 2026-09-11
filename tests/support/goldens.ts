@@ -13,6 +13,7 @@
 // shape manifests) live only in the flat set and resolve there by fallback.
 // Reads go through goldenAt()/goldenPath(); regen scripts write to
 // goldenOutDir(). Override the auto-detected key with MLX_BUN_GOLDEN_MACHINE.
+// MLX_BUN_GOLDEN_DIR isolates both reads and writes with no reference fallback.
 
 import { existsSync } from "node:fs";
 import { cpus } from "node:os";
@@ -38,6 +39,7 @@ export const REFERENCE_MACHINE =
 /** Resolve a golden file name to its path: the current machine's override if
  *  one exists, else the flat reference set. */
 export function goldenPath(name: string): string {
+  if (process.env.MLX_BUN_GOLDEN_DIR) return `${process.env.MLX_BUN_GOLDEN_DIR}/${name}`;
   const override = `goldens/${goldenMachine()}/${name}`;
   return existsSync(override) ? override : `goldens/${name}`;
 }
@@ -52,5 +54,6 @@ export function goldenAt(name: string) {
 /** Directory regen scripts should write to for THIS machine: the flat set on
  *  the reference box, an override dir everywhere else. */
 export function goldenOutDir(): string {
+  if (process.env.MLX_BUN_GOLDEN_DIR) return process.env.MLX_BUN_GOLDEN_DIR;
   return goldenMachine() === REFERENCE_MACHINE ? "goldens" : `goldens/${goldenMachine()}`;
 }

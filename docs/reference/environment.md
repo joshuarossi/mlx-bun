@@ -65,6 +65,65 @@ deferred under the active-storage policy above. Evidence under `reports/qwen38-r
 `fill-append-http-final-partial-review.json`, `rtn4-storage-control-manifest.json`,
 `fill-append-storage-control-review.json` and `weights-loading-http.json`.
 
+## Reproduce the MiniCPM5 logit comparison
+
+From an Apple Silicon Mac running macOS 14 or later, install Bun 1.4.2 or
+newer and [uv](https://docs.astral.sh/uv/getting-started/installation/), then
+run these commands from a checkout of this repository:
+
+```sh
+bun install --frozen-lockfile && \
+  oracle_env="$(bash scripts/oracle/setup.sh)" && \
+  eval "$oracle_env" && \
+  bash scripts/oracle/compare-minicpm5.sh --download
+```
+
+The setup script creates an external Python 3.13.5 environment, installs the
+complete [reference lock](../../scripts/oracle/requirements.lock), checks its
+dependencies, and prints the `MLX_BUN_ORACLE_VENV` export. Its default location
+is `~/.cache/mlx-bun/oracle-mlx-0.32.2-py3.13.5`. Pass a directory to `setup.sh`
+to choose another location. Re-running it synchronizes that environment to
+the lock, removing packages outside the pinned set. It does not install model
+weights or run inference.
+
+The lock pins MLX 0.32.2, mlx-lm 0.31.3, mlx-optiq 0.2.7 and their installed
+dependencies. MLX-Metal uses the explicit macOS 14 wheel and SHA-256 from
+[the upstream release](https://pypi.org/project/mlx-metal/0.32.2/#files),
+matching native pack 0.4.0. Selecting only a package version could install a
+different Metal build on newer macOS releases.
+
+The comparison script downloads `mlx-community/MiniCPM5-1B-OptiQ-4bit` at
+revision `664aabaed233c653f82716d8dc822234d0091f78` when `--download` is supplied.
+Omit the flag to require a cached snapshot. Hugging Face cache environment
+settings are respected. Set `MLX_BUN_TEST_MINICPM5` to use an existing model
+directory instead; its config and weight hashes are recorded in the output.
+
+Each run creates a fresh fixture directory under
+`~/.cache/mlx-bun/comparisons/`, invokes the Python oracle through
+`scripts/regen/minicpm5.ts`, then runs
+`bun test tests/parity/minicpm5-parity.test.ts`. `MLX_BUN_GOLDEN_DIR` selects
+that directory for both generation and comparison, with no fallback to older
+fixtures. The manifest records the prompt, token IDs, Python/MLX/Metal/mlx-lm
+versions, device, model hashes, lock hash and per-vector hashes. The command
+prints the output directory and elapsed comparison time. Missing inputs,
+failed generation or mismatched logits produce a nonzero exit; skipped tests
+are not the acceptance result.
+
+This test compares the complete vocabulary logit vector before sampling at
+100 steps, plus all 100 greedy token IDs. It uses bf16 KV, one short prompt
+and single-row model forwards. It does not establish sampling-policy parity,
+batched scheduling correctness, mixed-KV parity or server performance. The
+[benchmark reference](benchmarks.md) links the separate
+coverage for those configurations.
+
+Fixtures must be generated on the comparison machine. The usual golden
+resolver selects `goldens/<machine-key>/` overrides; the reference machine
+uses the root `goldens/` directory. Metal kernels can differ across GPU
+families and runtime builds. In particular, the fast-SDPA dispatch boundary
+at sequence length L ≥ 16 can change floating-point operation order. This
+short-prompt recipe does not test that prefill boundary. Longer-prefill and
+batched comparisons need their corresponding same-machine oracle cases.
+
 ## The Python oracle
 
 Logit parity with mlx-lm is the correctness oracle; mixed-precision KV and the

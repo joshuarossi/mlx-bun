@@ -18,7 +18,7 @@ Goal: first-visit clarity and reproducible correctness; upstream contribution, D
 
 - [~] P0: Both GPTQ defects reproduced and reported with a proposed patch in [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1878); independent-reference regression test and follow-up remain.
 - [~] P1: Remove internal voice, restructure benchmarks and reconcile roster evidence; verify public presentation.
-- [ ] P2: Publish pinned oracle setup and same-machine fixture recipe; verify a clean-checkout small-model parity run.
+- [~] P2: Pinned oracle setup and MiniCPM clean-start comparison pass (100 exact vectors/tokens); finish per-roster artifact/run provenance.
 - [~] P3: Settle package/API ownership from dependency and asset evidence; preserve published imports.
 - [ ] P4: Verify candidate packaging, first-run/library demo and repository metadata; reuse matching evidence.
 - [ ] P5: Review and post Discord intro, incorporate feedback in Show and tell, then submit the listing comment.

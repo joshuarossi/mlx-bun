@@ -30,6 +30,10 @@ explains ownership and interfaces. [PLAN.md](PLAN.md) tracks open work;
 [STATUS.md](STATUS.md) identifies the active work. Public imports and their
 compatibility contract live in the [library API](docs/reference/library-api.md).
 
+For a reproducible small-model correctness check, follow the
+[MiniCPM5 oracle setup and comparison](docs/reference/environment.md#reproduce-the-minicpm5-logit-comparison).
+It installs the pinned reference and generates fresh local fixtures.
+
 ## Repository scope
 
 mlx-bun is a **software project** — a tool. The repository holds the tool:

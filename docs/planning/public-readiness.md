@@ -58,6 +58,11 @@ The claims about numerical agreement remain bounded by recorded evidence.
 
 ## P2. Make correctness independently reproducible
 
+Implemented: [pinned setup and MiniCPM comparison](../reference/environment.md#reproduce-the-minicpm5-logit-comparison).
+A clean source export, new oracle environment and empty model cache pass on
+M1 Max with 100 exact vectors and tokens. Missing inputs fail explicitly.
+Complete per-roster artifact/run provenance remains open.
+
 Provide `setup.sh` under `scripts/oracle/` and a committed dependency lock for the
 reference environment. Select it through `MLX_BUN_ORACLE_VENV`; no contributor
 should need the maintainer's directory layout. Pin the native MLX/Metal build,
