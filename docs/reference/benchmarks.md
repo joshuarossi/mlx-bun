@@ -1330,6 +1330,91 @@ delta is the first "our-vs-our" axis. Lab experiment rows (no external
 oracle; KL/eval-gated) land here once one beats the L1 baseline in a
 paired A/B — none recorded yet (the 2026-07-05 candidates were deleted).
 
+### Released v0.4.0 packed Qwen with KV4/TQ and MTP2 — M4 Pro (2026-09-11)
+
+The follow-up uses the intended 12.14 GiB packed Trellis Qwen artifact and
+folded RTN4 MTP companion on M4 Pro 24 GB, source `47620a5`, Bun 1.4.2 and
+MLX 0.32.2. `bench-serve.ts all` runs default batching then explicit serial
+for affine KV4, followed by the same order for TQ K8V3. Both use draft depth
+two, RAM cache capacity four, temporary SSD storage, `mtp-serving-block-1`,
+five 192-token decode samples and the 16,384-token context target. Actual
+context is 10,398 tokens. Async Trellis expansion is off and fused TQ decode
+is enabled. Diagnostic mode retains the authorized background CPU/swap
+conditions; this is one ordered settings comparison, not a balanced repeat.
+
+| Cache / actual execution | Short decode tok/s | Five requests, total ms | Context decode tok/s | Cached TTFT ms | SSD restart TTFT ms | Aggregate ×4 tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| KV4 / shared MTP2 | 20.247 | 53,399.63 | 22.233 | 96.71 | 1,916.79 | 17.520 |
+| KV4 / serial MTP2 | 19.973 | 54,124.69 | 22.225 | 93.28 | 1,913.19 | 16.133 |
+| TQ K8V3 / shared MTP2 | 18.368 | 58,053.53 | 19.285 | 100.36 | 1,967.83 | 16.881 |
+| TQ K8V3 / serial ordinary | 11.486 | 89,526.15 | 9.532 | 172.42 | 2,008.05 | 10.418 |
+
+All four cells finish without phase failures. Every SSD restart restores
+10,397 tokens; each flush is durable with zero pending, dropped or failed
+spills. Within each cell, all three context responses match. Source hashes
+remain fixed. Shared KV4's peak RSS is 13,570 MiB versus TQ's 13,727 MiB;
+these are whole-process measurements, not isolated KV storage sizes.
+
+TQ's explicit serial command requests MTP2 but executes ordinary decoding:
+all five responses report `lane=serial` and no speculation telemetry. Shared
+TQ reports `lane=batched` with actual drafted/accepted tokens. The binding
+enables `speculativeTurboQuant` only with continuous scheduling. Therefore
+the serial TQ row is not a same-method MTP performance control. Both KV4
+lanes actually use MTP. This confirms TQ/MTP composition in the shared path;
+it does not establish that composition in the retained serial path.
+
+Against the saved September 9 KV4/MTP2 context profile, shared short decode
+changes from 20.133 to 20.247 tok/s, and five complete requests from
+53,548.41 to 53,399.63 ms. All fifteen individually issued requests match in
+request hash, text, token counts and finish status; two of four concurrent
+texts differ. The current KV4 and TQ shared profiles match all nineteen
+request hashes and token/finish counts, but thirteen response texts differ,
+including all five short-decode responses. KV4 is faster on this workload;
+the difference does not isolate cache-kernel cost from changed continuations
+and draft acceptance, and it is not a quality comparison.
+
+Raw evidence in `reports/release-v0.4.0-standard/`:
+`packed-kv4-mtp2-m4.md.json`, `packed-tq-mtp2-m4.md.json` and
+`packed-comparison.json`. The historical reference is
+`reports/qwen38-closeout/composition-baseline/decode-default-kv4-mtp2-context-1.md.json`.
+
+### Released v0.4.0 standard registry comparison — M4 Pro 24 GB (2026-09-11)
+
+`bun scripts/bench-serve.ts all` completed on `Joshs-MBP-2025.local`,
+M4 Pro 24 GB, source `47620a5`, Bun 1.4.2 and MLX 0.32.2. It used the
+September 8 registry artifacts and `bench-serve-v2` requests, including five
+192-token decode samples, the 16,384-token context target and four concurrent
+requests. Source hashes stayed fixed. Josh authorized diagnostic execution:
+initial free memory was 90%, retained swap 1,341 MB, and `appstoreagent` used
+approximately one CPU core. These are recorded observations, not a quiet
+paired timing acceptance; the previous run used Bun 1.4.0.
+
+| Model | Previous / v0.4.0 default decode tok/s | Change | Previous / v0.4.0 median request ms | v0.4.0 default / serial aggregate tok/s |
+|---|---:|---:|---:|---:|
+| MiniCPM5-1B | 278.65 / 280.82 | +0.8% | 709.57 / 705.91 | 702.44 / 244.86 |
+| Gemma4-e4b | 57.86 / 59.32 | +2.5% | 3401.92 / 3314.44 | 165.99 / 56.95 |
+| Gemma4-12B | 26.14 / 26.63 | +1.9% | 7576.35 / 7436.02 | 68.58 / 25.74 |
+| Qwen3.8-27B 4/8-bit | 14.75 / 14.89 | +0.9% | 13813.51 / 13717.30 | 33.74 / 13.64 |
+
+All twenty default short-decode responses match the previous run in request
+hash, text, prompt/generated/cached counts, finish reason and DONE status.
+All twenty also match the current serial control. Concurrent responses are
+not all identical across runs; aggregate rates are workload observations.
+The twelve MiniCPM/Gemma cells complete without phase failures, and every
+Bun cache flush/restart succeeds. The seven recorded phase failures belong
+to Qwen: both Bun paths recover a 1K-prefill Metal OOM, then fail context;
+Python recovers a 1K timeout, fails context and skips concurrency because its
+server is dead. Qwen mixed KV is skipped because its registry artifact has no
+KV configuration. Existing stock-Python thinking-boundary output differences
+remain documented in the September 8 investigation below.
+
+This registry Qwen contains **15.85 GiB of safetensors**, uses bf16 KV and
+has no MTP companion configured. It is not the campaign's **12.14 GiB packed
+Trellis** artifact with quantized KV and MTP. Its capacity failures must not
+be attributed to that optimized configuration. Raw report and comparison:
+`reports/release-v0.4.0-standard/standard-m4.md.json` and
+`reports/release-v0.4.0-standard/historical-comparison.json`.
+
 ### Standard serve matrix — M4 Pro 24 GB (2026-09-08, incomplete acceptance)
 
 Josh ran `bun scripts/bench-serve.ts all` at clean commit `86738ac` on

@@ -32,6 +32,12 @@ npm reports 0.4.0. Notes: [release-notes-v0.4.0.md](docs/archive/planning/releas
 Measured results and limits: [benchmarks.md](docs/reference/benchmarks.md).
 There is no matched successful original/final Kanban task-time comparison.
 
+The post-release M4 standard matrix and packed-Qwen KV4/TQ follow-up are
+complete. Both quantized packed-model profiles pass context and SSD restart;
+the older registry Qwen retains its capacity failures. Explicit serial TQ
+runs ordinary decode despite requested MTP; shared TQ uses MTP. Configuration,
+response comparisons and timings are recorded in benchmarks.md.
+
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
 | thread | state | next action | branch |
