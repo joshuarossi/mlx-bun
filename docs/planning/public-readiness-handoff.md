@@ -98,26 +98,22 @@ Filed 2026-09-11 as [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1
 `e5962529`, proposed two-line patch). Recorded in
 [turboquant.md](../design/turboquant.md) and `scripts/turboquant/tq-gptq.py`.
 
-Remaining:
+Fix open as [mlx-lm PR #1880](https://github.com/ml-explore/mlx-lm/pull/1880)
+from `joshuarossi/mlx-lm:fix-gptq-block-indexing` (`d4d38d9`): the two-line
+change in `mlx_lm/quant/gptq.py` plus `tests/test_gptq.py`, which compares
+`gptq_quantize` against a column-by-column reference (paper form, no lazy
+block update) over four groups, with a single-group control. On upstream
+`e596252` the multi-group test fails (max abs dequantized diff 0.38) and the
+control passes; on the branch both pass. black 25.1.0 / isort 6.0.0 / ruff
+0.16.6 clean. The issue body was rewritten in Josh's words and the PR
+description discloses AI-drafted code, per mlx-lm's CONTRIBUTING.md.
 
-1. **Open the PR.** The branch is pushed:
-   [joshuarossi/mlx-lm:fix-gptq-block-indexing](https://github.com/joshuarossi/mlx-lm/tree/fix-gptq-block-indexing)
-   (`d4d38d9`): the two-line change in `mlx_lm/quant/gptq.py` plus
-   `tests/test_gptq.py`, which compares `gptq_quantize` against a
-   column-by-column reference (paper form, no lazy block update) over four
-   groups, with a single-group control. On upstream `e596252` the
-   multi-group test fails (max abs dequantized diff 0.38) and the control
-   passes; on the branch both pass. black 25.1.0 / isort 6.0.0 / ruff
-   0.16.6 are clean. **Josh writes the PR description himself**: mlx-lm's
-   CONTRIBUTING.md forbids AI-written PR text and requires disclosing how
-   AI was used in the code. Same policy applies retroactively to the
-   wording of #1878.
-2. **Follow up.** Check the issue/PR for maintainer questions every few
-   days; answer with the fixture output, not prose. Record the PR URL next
-   to the issue link in turboquant.md when opened.
+Remaining: **follow up.** Check the PR for maintainer questions every few
+days; answer with test output, not prose (Josh writes the replies; the
+policy covers comments too). Record the outcome (merged, changed,
+declined) in turboquant.md.
 
-Acceptance: PR opened and linked from the issue; any maintainer question
-answered; outcome (merged, changed, declined) recorded in turboquant.md.
+Acceptance: any maintainer question answered; outcome recorded.
 
 ### T2 — Finish the internal-voice scrub (P1) — agent
 

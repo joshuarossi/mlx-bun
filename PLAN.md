@@ -16,7 +16,7 @@ Markers: `[ ]` todo, `[~]` in progress. Hard cap 800 lines, gate-enforced by
 
 Goal: first-visit clarity and reproducible correctness; upstream contribution, Discord, Show and tell, then listing. [Acceptance](docs/planning/public-readiness.md).
 
-- [~] P0: Both GPTQ defects reproduced and reported with a proposed patch in [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1878); independent-reference regression test and follow-up remain.
+- [~] P0: Both GPTQ defects reported in [mlx-lm #1878](https://github.com/ml-explore/mlx-lm/issues/1878); fix and regression test open as [mlx-lm PR #1880](https://github.com/ml-explore/mlx-lm/pull/1880). Review follow-up remains.
 - [~] P1: Remove internal voice, restructure benchmarks and reconcile roster evidence; verify public presentation.
 - [~] P2: Pinned oracle setup and MiniCPM clean-start comparison pass (100 exact vectors/tokens); finish per-roster artifact/run provenance.
 - [~] P3: Settle package/API ownership from dependency and asset evidence; preserve published imports.
