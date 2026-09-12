@@ -314,6 +314,19 @@ export class GrammarController {
     return this.terminated;
   }
 
+  /** Propose the forced string without advancing the matcher. Tokenization
+   * can differ at its first boundary; verification and the normal grammar
+   * sampler accept or reject the candidates before anything is committed. */
+  async proposeTokens(maxTokens: number): Promise<number[]> {
+    await this.ready();
+    if (this.terminated || !this.encodeRaw) return [];
+    return wasmQueue(async () => {
+      if (this.disposed) return [];
+      const text = this.matcher.findJumpForwardString();
+      return text ? this.encodeRaw!(text).slice(0, maxTokens) : [];
+    });
+  }
+
   /** Jump-forward decoding (SGLang's technique via xgrammar's
    *  findJumpForwardString; opt-in — MLX_BUN_GRAMMAR_JUMP=1): when the grammar
    *  admits exactly one continuation string (JSON keys/punctuation, enum

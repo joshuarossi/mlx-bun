@@ -114,7 +114,8 @@ describe("GenerationGateway.place", () => {
   test("compiled and grammar policy use the host snapshot across later configuration changes", () => {
     const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_GRAMMAR_JUMP: "1" });
     try {
-      const model = { ...stubModel, config: { ...stubModel.config, modelType: "gemma4" } } as RuntimeModel;
+      const model = { ...stubModel, config: { ...stubModel.config, modelType: "gemma4" },
+        logitsFromHidden() { throw new Error("placement does not execute logits"); } } as unknown as RuntimeModel;
       const first = new GenerationGateway(model, 1, stubSerial);
       const changed = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0", MLX_BUN_GRAMMAR_JUMP: "0" });
       try {

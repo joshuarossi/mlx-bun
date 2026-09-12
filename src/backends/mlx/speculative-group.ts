@@ -11,7 +11,7 @@ import { cloneKvCaches } from "../../kv-store";
 import type { Cache } from "../../model/gemma4-base";
 import { targetCacheLayout } from "./cache-layout";
 import { MlxStateRows } from "./state-rows";
-import { bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "./speculative";
+import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "./speculative";
 import { bindLegacyDraftTarget } from "./draft-target";
 import { bindRowCacheRollback } from "./rollback";
 import { createKvMaintenance } from "./kv-maintenance";
@@ -34,8 +34,8 @@ interface RequestState {
 
 /** Binding owns graph/layout selection. The executor receives only the method
  * key and lifecycle; sampling, checkpoints and numerical state remain ports. */
-export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: DraftProvider, depth: number) {
-  const binding = bindLegacySpeculativeModel(model, provider);
+export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
+  const binding = bindSpeculativeTargetModel(model);
   return (input: GenerateOptions): MlxGroupMethodRequest => {
     const options = captureSpeculativeOptions(input);
     return {
@@ -55,7 +55,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
   #steps = 0;
 
   constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel,
-    readonly provider: DraftProvider, readonly binding: MlxSpeculativeBinding, readonly depth: number) {}
+    readonly provider: Pick<DraftProvider, "id" | "grouped">, readonly binding: MlxSpeculativeTargetBinding, readonly depth: number) {}
 
   get runningTokens(): number {
     const rows = this.host.rows;
@@ -233,7 +233,8 @@ class SpeculativeGroup implements MlxGroupedMethod {
               maintain.prepareBatch?.(state.caches);
               this.#target ??= new MlxStateRows(state.caches.map(targetCacheLayout));
               this.#draft ??= this.provider.grouped!.open({ target: bindLegacyDraftTarget(this.model, this.#target.caches),
-                checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps) } });
+                checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps) },
+                constraints: { propose: async (row, maxTokens) => this.host.rows[row]!.req.grammar?.proposeTokens(maxTokens) ?? [] } });
               applyStateChanges([() => this.#target!.prepareAppend(state.caches),
                 () => this.#draft!.prepareAppend([state.draft]), () => ({ commit: () => {
                   state.request.retain = state.retain; state.retain = undefined;

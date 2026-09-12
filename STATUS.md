@@ -103,6 +103,13 @@ on the already-finished Kanban retention/durability run. Remaining Phase 6/18
 work is the specific feature/configuration and performance work listed in PLAN.
 
 
+Shared grammar proposals are implemented and measured. The request's grammar supplies
+candidates to the existing verifier; sampling, cache state and scheduling retain
+their interfaces. MiniCPM and packed-Qwen/TurboQuant native checks pass, including
+independent cancellation and logprobs. HTTP results are mixed across machines/models;
+the option remains off by default. Next: remove avoidable transaction work on
+verification steps with no candidates, then measure the effect.
+
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
 | thread | state | next action | branch |

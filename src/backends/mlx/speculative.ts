@@ -31,8 +31,10 @@ export interface MlxSpeculativeBinding {
   pinVerify?(): { close(): void };
 }
 
+export type MlxSpeculativeTargetBinding = Omit<MlxSpeculativeBinding, "openDraft">;
+
 /** Legacy mutable tap/kernel fields require the gateway's exclusive lease. */
-export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftProvider): MlxSpeculativeBinding {
+export function bindSpeculativeTargetModel(model: RuntimeModel): MlxSpeculativeTargetBinding {
   const runtime = runtimeConfig();
   return {
     runtime,
@@ -42,7 +44,6 @@ export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftP
     eosTokenIds: model.config.eosTokenIds,
     prefillTailSplit: runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true),
     makeCache: model.makeCache.bind(model),
-    openDraft: (sampler, caches) => provider.open({ sampler, target: bindLegacyDraftTarget(model, caches) }),
     bindRollback: bindCacheRollback,
     forward: (ids, caches, tapLayers, work) => legacyForwardWithTaps(model, ids, caches, tapLayers, work),
     projectLogits: model.logitsFromHidden.bind(model),
@@ -53,6 +54,12 @@ export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftP
       },
     } : {}),
   };
+}
+
+/** Serial compatibility binds draft construction separately from target work. */
+export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftProvider): MlxSpeculativeBinding {
+  return { ...bindSpeculativeTargetModel(model),
+    openDraft: (sampler, caches) => provider.open({ sampler, target: bindLegacyDraftTarget(model, caches) }) };
 }
 
 export function assertMlxSpeculativeBinding(binding: MlxSpeculativeBinding): void {

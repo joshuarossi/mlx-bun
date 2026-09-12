@@ -919,6 +919,66 @@ and `mixed-*-kv4.log`/`mixed-*-tq.log`; `mixed-method-comparison.json` contains 
 combined metrics. No application default is promoted by these results.
 
 
+### Shared grammar proposal screen
+
+2026-09-12, Bun 1.4.2, MLX 0.32.2, native v0.4.0; source based on
+`5400554`, source-tree digest
+`4b802e730ba7c0a1e96d86993f86aaf25ef5032690ca042c2b02bfe8da7fdd54`.
+These are diagnostic composition measurements from `bench-matrix features`,
+not the standard h2h. Grammar jump remains **off by default**.
+
+Four concurrent compact product-schema requests use shared cap eight,
+temperature zero and grammar candidate depth three. MiniCPM5-1B OptiQ uses
+bf16 KV; packed Qwen3.8-27B uses TurboQuant K8/V3 without a learned drafter,
+with trellis async expansion off and fused TQ decode on. Qwen explicitly
+uses answer mode. Each arm has a fresh process; all rounds, including the
+first, are retained. M1 has two rounds, M4 three. Aggregate throughput below
+is total completion tokens divided by total round wall time, not best-of.
+
+| Machine / model | Ordinary aggregate tok/s | Grammar proposals tok/s | Change | TTFT p50 ordinary → proposals | TTFT p95 ordinary → proposals | Exact response text |
+|---|---:|---:|---:|---:|---:|---:|
+| M1 Max 32 GB / MiniCPM5-1B | 205.35 | 184.45 | −10.18% | 310 → 362 ms | 339 → 476 ms | 7/8 |
+| M4 Pro 24 GB / MiniCPM5-1B | 285.64 | 312.87 | +9.53% | 181 → 198 ms | 330 → 284 ms | 9/12 |
+| M4 Pro 24 GB / packed Qwen3.8-27B | 15.19 | 13.27 | −12.65% | 4720 → 4107 ms | 5603 → 8585 ms | 8/12 |
+
+Every response conforms to the schema. Accepted proposals are 100% in these
+cells; acceptance alone does not establish a speedup. MiniCPM completion
+counts differ by one token per arm; Qwen retains all 408 completion tokens.
+Qwen's best round rises from 15.67 to 15.87 tok/s, while total elapsed time
+increases from 26.87 to 30.76 seconds. That is a throughput loss for the full
+measurement. The mixed results do not support a default change.
+
+An additional M4 MiniCPM direct serial-jump control reaches 403.75 tok/s in
+its best round; shared verified proposals in the same process reach 356.70.
+That control has different algorithm and warmup ordering, so it does not
+establish shared dominance over direct jump. The fresh-process shared-only
+arm above is the ordinary/proposal comparison. An initial Qwen run without
+explicit answer mode fails the answer-content JSON check; it is retained
+as a benchmark-configuration failure and excluded from timing comparisons.
+
+Native checks pass on M1 MiniCPM bf16/affine4 and M4 packed-Qwen/TurboQuant:
+nonmutating proposals, concurrent schemas, B1, early stop, cancellation and
+logprob delivery. Fixed bf16 MiniCPM outputs match ordinary decoding; affine
+KV can change valid tokenization across verification widths. Repeated fixed
+quantized configurations match. Existing same-geometry verifier/KV oracles
+remain the numerical contract. The model-free suite passes 2,286 tests with
+14 fixture skips; all three TypeScript projects pass.
+
+Reproduce an arm with `MLX_BUN_GRAMMAR_JUMP=0` or `1` and:
+
+```sh
+bun scripts/bench-matrix.ts features --model "$MODEL" --batch 8 \
+  --concurrency 4 --maxtok 192 --repeats 3 --cells batch+grammar \
+  --compact-grammar true --kv-quant turbo --out reports/grammar.md
+```
+
+Omit `--kv-quant turbo` and use `--maxtok 160` for the MiniCPM cells. The
+script pins answer mode, writes all response texts/usage/timings to JSON,
+and saves each completed round before schema validation. Its named serial
+controls now explicitly request cap one, keeping their labels accurate after
+the default changed. Raw evidence and summary:
+`reports/prefill-observation/grammar-*`, including `grammar-comparison.json`.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

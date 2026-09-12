@@ -31,6 +31,8 @@ export interface ExecutionCapabilities {
   readonly sharedSpeculativeAdapters?: boolean;
   /** Methods supplied by the model's shared execution binding. */
   readonly groupedMethods?: readonly string[];
+  /** A shared method accepts request-owned grammar continuation proposals. */
+  readonly sharedGrammarProposals?: boolean;
   /** A graph-owned compiled step exists; cache geometry can still decline it. */
   readonly compiledDecode?: boolean;
 }

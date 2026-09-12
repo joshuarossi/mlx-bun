@@ -1946,3 +1946,34 @@ counts; GPU waits remain at the existing evaluation/readback boundaries. The
 [measured comparison](../reference/benchmarks.md#mixed-prefill-and-decode-token-work)
 records latency, throughput, streaming gaps and the unpacked control. Runtime
 settings live in [server-config](../reference/server-config.md).
+
+
+### Grammar candidates through the shared verifier
+
+`GrammarController.proposeTokens` reads xgrammar's forced continuation without
+advancing the matcher. It joins the existing WASM queue so concurrent requests
+cannot overlap calls into the single WASM instance. A request-owned constraint
+port supplies candidates to the same grouped verifier used by learned drafts
+and prompt lookup. The sampler applies each request's mask and commits its
+accepted tokens; scheduling only sees method work. Target graph binding no
+longer requires a serial draft constructor.
+
+The constraint provider reuses prompt lookup's committed-history ownership and
+checkpoint format. It never searches history and has no serial draft method.
+Empty candidate lists use the verifier's existing one-token step. Candidate
+rejection and row retirement keep target and companion state aligned through
+the existing transaction and output interfaces.
+
+`MLX_BUN_GRAMMAR_JUMP=1` selects this method for eligible shared structured-output
+requests without a configured drafter; `MLX_BUN_GRAMMAR_DRAFT_TOKENS` controls
+depth separately from batching. Shared logprobs remain available because every
+output is sampled. Explicit serial retains direct retokenized jump-forward.
+That algorithm skips target sampling for forced spans; the shared proposal
+algorithm verifies them. Both remain opt-in and must be compared separately.
+
+The focused MiniCPM and packed-Qwen checks cover nonmutating proposals, B1 and
+concurrent requests, independent stopping/cancellation, affine/TurboQuant and
+logprob delivery. Fixed bf16 MiniCPM outputs match ordinary decoding. Affine
+MiniCPM can choose different valid tokenizations across verification widths;
+repeated fixed-configuration outputs match. Same-geometry verifier/KV oracles
+remain the numerical contract. Performance is recorded in benchmarks.md.
