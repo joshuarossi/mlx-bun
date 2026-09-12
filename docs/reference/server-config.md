@@ -239,6 +239,13 @@ profile or sampling policy.
 | `--hlg-toe` | nats ∈ [0, 100] | `6` | serial | HLG shadow rolloff scale. Only with `--hlg-sampling on`. |
 | `--hlg-pivot-offset` | nats ∈ [0, 100] | `6` | serial | HLG pivot: nats below the top token. Only with `--hlg-sampling on`. |
 
+Greedy sampling without requested logprobs uses a shared normalized-selection
+kernel after applying penalties and grammar masks. It preserves dtype-rounded
+scores and lowest-ID ties while avoiding a full normalized vocabulary output.
+Independent speculative verification uses the same operation. Requests needing
+logprobs, stochastic sampling or a custom sampler keep their existing operations;
+no new flag is required. Measurements are in [benchmarks](benchmarks.md#fused-normalized-greedy-selection).
+
 ### Media and UX
 
 | Flag | Arg | Default | Lane/tier | What it does |

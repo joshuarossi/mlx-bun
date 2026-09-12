@@ -1050,6 +1050,80 @@ are `reports/prefill-observation/zero-snapshot-lookup-after.md.json` and
 the local model-free suite has 2,289 passes and 14 fixture skips. All three
 TypeScript projects and documentation gates pass.
 
+### Fused normalized greedy selection
+
+September 12, 2026. The sampler retains native logsumexp, then selects the
+lowest token ID with the largest dtype-rounded normalized score in two tiled
+Metal reductions. It avoids writing the full normalized vocabulary array.
+Fixed-shape compilation caches the operation by input geometry. The same
+operation serves independent verification and ordinary greedy sampling after
+penalties and grammar masks. Metadata, stochastic and custom samplers keep
+their existing operations.
+
+At B16/V262144, the avoided normalized output is 8 MiB in bf16 or 16 MiB in
+f32; partial score/index storage is 32 KiB. These are operation buffer sizes,
+not a claim about total process memory. Native logsumexp still owns its work.
+
+The operation screen evaluates completed GPU work, with five warmups and 100
+calls per arm in each of four alternating blocks. Median per-call times:
+
+| Machine / dtype | Rows | Native composition | Fused selection |
+|---|---:|---:|---:|
+| M1 Max 32 GB / bf16 | 1 | 528.3 µs | 369.7 µs |
+| M1 Max 32 GB / bf16 | 4 | 578.5 µs | 410.4 µs |
+| M1 Max 32 GB / bf16 | 16 | 621.8 µs | 469.4 µs |
+| M4 Pro 24 GB / bf16 | 1 | 180.9 µs | 144.8 µs |
+| M4 Pro 24 GB / bf16 | 4 | 199.3 µs | 134.0 µs |
+| M4 Pro 24 GB / bf16 | 16 | 217.5 µs | 180.1 µs |
+
+F32 cells also improve, but the first M4 cell drifts across blocks and is not
+used for a headline gain. Compiling the original composition alone is flat on
+the M1 screen and is not adopted. A post-integration M4 probe accidentally
+compared the fused sampler to itself; `sampler-kernel-compiled-m4.json` is
+excluded. The corrected final probes explicitly construct the native reference.
+
+The standard HTTP script runs two pairs in A/B then B/A order. Both retain
+default batch capacity eight, the same `prefill-long-0` requests, 192-token
+single-request samples and four aggregate requests staggered 25 ms apart at
+requested context 2048; the separate context sweep is skipped. All reports
+use diagnostic mode, Bun 1.4.2 and MLX 0.32.2/native pack 0.4.0.
+M1 uses MiniCPM5-1B OptiQ with bf16 KV. M4 uses packed Qwen3.8-27B interleave2,
+folded RTN4 MTP depth three, TurboQuant K8/V3 with fused decoding enabled,
+a 4 GiB RAM cache and temporary SSD storage.
+
+| Machine / model / pair | B1 decode before → after | Aggregate before → after | Exact responses |
+|---|---:|---:|---:|
+| M1 / MiniCPM / A-B | 266.400 → 268.575 tok/s | 185.728 → 191.851 tok/s | 13/15 |
+| M1 / MiniCPM / B-A | 266.238 → 270.443 tok/s | 183.612 → 189.496 tok/s | 15/15 |
+| M4 / Qwen MTP3 / A-B | 18.715 → 18.682 tok/s | 7.688 → 7.601 tok/s | 15/15 |
+| M4 / Qwen MTP3 / B-A | 18.734 → 18.727 tok/s | 7.550 → 7.574 tok/s | 15/15 |
+
+MiniCPM improves about 1.2% in B1 decode and 3.3% in aggregate across the two
+pairs. Two concurrent responses change in its first pair; all single-request
+responses, every request hash and all prompt/generated/cached counts match.
+The reverse pair is exact. Same-input native MiniCPM and packed-Qwen tests
+compare the new and old selection on actual model logits at B1/B4 and match
+every token. Changed concurrent text is not treated as a same-output speed claim.
+Qwen is effectively flat, about −0.1% B1 and −0.4% aggregate across pairs,
+with every response and token count exact. No Qwen serving speedup or process
+memory saving is claimed. This retains a measured sampler improvement and a
+smaller-model serving gain; it changes no sampling distribution or user setting.
+
+Both-machine tests cover fp16/bf16/f32, nonfinite rows, rounding-created ties,
+partial tiles, noncontiguous vocabulary axes, changing row shapes and shapeless
+enclosing graphs. Actual-model selection and grammar/cancellation/logprob checks
+pass on both machines. The full local model-free suite has 2,294 passes and
+14 fixture skips; all three typechecks pass.
+
+Source is `059de1c` plus the sampler changes. Baseline snapshots include an
+unreferenced prototype module; their active sampler is unchanged. Each report's
+source snapshot is stable during measurement. Raw evidence lives under
+`reports/prefill-observation/`: `sampler-kernel-final-{m1,m4}.json`,
+`sampler-minicpm-before{,-repeat}.md.json`, `sampler-minicpm-after-v2.md.json`,
+`sampler-minicpm-after-repeat.md.json`, and `sampler-mtp-{before,after}{,-repeat}.md.json`.
+The earlier independent-only MiniCPM screen preserves every response but shows
+no aggregate gain; ordinary greedy integration is included in the final pairs.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

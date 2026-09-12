@@ -215,6 +215,17 @@ fusedSdpaRuntimeOk(q, mask)` in `src/model/generated/gemma4-*.ts`) that are
 per-generation-decidable and should be hoisted out of the token path; compiled
 decode already achieves the debranched line dynamically (trace once, replay).
 
+The shared greedy operation uses native logsumexp followed by tiled normalized
+score/index reductions in `src/mlx/normalized-argmax.ts`. It preserves rounding
+and lowest-ID ties without materializing the normalized vocabulary array.
+The step sampler applies processors and grammar first, and selects this operation
+only for built-in greedy requests that do not require metadata. Independent
+verification calls the same operation. Fixed-shape compilation caches each
+geometry; enclosing shapeless graphs retain native operations. No scheduler,
+model-family branch or separate sampling setting selects this optimization.
+Actual-model and operation comparisons, plus both-machine serving measurements,
+are recorded in benchmarks.md under fused normalized greedy selection.
+
 ### Layer 0 — the SSD spill substrate
 
 It is almost always faster to cache to SSD and mmap it back than to
