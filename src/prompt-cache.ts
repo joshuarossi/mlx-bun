@@ -17,13 +17,12 @@ import { withResource, cleanupFailure, disposeResources, ownResource } from "./e
 //
 // TIERING (Layer 0, unified-engine plan): when a ColdTier is attached,
 // take() itself runs the two-tier dance — RAM peek vs cold find, restore
-// (zero-copy mmap) + trim when the cold tier holds a strictly longer
+// (streamed copy) + trim when the cold tier holds a strictly longer
 // prefix — so EVERY consumer (the serial lane, the batch scheduler, future
 // prefix sharing) gets SSD restores through the same take()/put() it
 // already calls. Eviction spills to the tier (the #spill hook); idle
-// entries DEMOTE to it (demoteIdle — free the GPU memory, keep the prefix
-// reachable); onPut lets the server schedule its debounced write-behind
-// snapshot for both lanes.
+// entries demote to it when policy permits. TieredPromptCache owns queued
+// persistence and promotes restored prefixes into RAM.
 
 import type { Cache } from "./model/gemma4";
 import type { PrefixCache, PrefixCacheHit } from "./contracts/prefix-cache";
@@ -64,9 +63,9 @@ export interface ColdTier {
   /** Longest stored usable prefix for prompt/ns — index-only, no I/O.
    *  `handle` is the tier's opaque entry token, passed back to restore. */
   find(prompt: number[], ns: string): { prefixLen: number; handle: unknown } | null;
-  /** Materialize a found entry as GPU-visible caches (zero-copy COW mmap;
-   *  pages fault in lazily). `retain` must run after the caches are
-   *  disposed (it unmaps the backing file). Null on any failure. */
+  /** Restore GPU-visible state. The default SSD backend copies into owned
+   *  arrays. An optional backing release runs after consumers dispose their
+   *  arrays. Null on any failure. */
   restore(handle: unknown): { tokens: number[]; caches: Cache[]; attachments?: CheckpointAttachment[]; retain: () => void } | null;
   /** Borrow live caches and finish persistence before returning. A false
    *  result prevents a required demotion. */
@@ -145,25 +144,36 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   readonly #spillSync: ((entry: PromptCacheEntry) => void) | null;
   /** Optional cold tier: take() tiers over it, demoteIdle() spills into it. */
   readonly #cold: ColdTier | null;
-  /** Fired after every successful put() — the server hangs its debounced
-   *  write-behind SSD snapshot here so BOTH lanes' entries persist. */
+  /** Observer after publication, independent of persistence policy. */
   onPut: ((tokens: number[], ns: string) => void) | null = null;
   /** The backend measures pressure; this store chooses which optional
    * snapshots to release. No storage I/O runs at a reclaim boundary. */
-  pressure: { overBudget(): boolean; releasePending(): void } | null = null;
+  pressure: { overBudget(): boolean; releasePending?(): void } | null = null;
+  /** Tier policy: a pending write is not a lower-tier copy. This controls
+   * eviction only; persistence completion does not itself remove an entry. */
+  canEvict: ((entry: PromptCacheEntry) => boolean) | null = null;
+  protected promoteRestores = false;
+
+  evictToBudget(): void {
+    while (this.totalBytes > this.maxBytes) {
+      if (!this.#entries.length) break;
+      const oldest = this.#entries.reduce((a, b) => a.lastUsed < b.lastUsed ? a : b);
+      if (this.canEvict && !this.canEvict(oldest.entry)) break;
+      this.#entries = this.#entries.filter(r => r !== oldest);
+      try { this.#disposeEntry(oldest.entry, !this.canEvict); }
+      catch (error) { console.warn(`[prompt-cache] entry cleanup failed: ${error}`); }
+    }
+  }
 
   reclaim(): void {
     const pressure = this.pressure;
     if (!pressure?.overBudget()) return;
-    pressure.releasePending();
+    pressure.releasePending?.();
     while (this.#entries.length && pressure.overBudget()) {
-      let oldest = 0;
-      for (let i = 1; i < this.#entries.length; i++)
-        if (this.#entries[i]!.lastUsed < this.#entries[oldest]!.lastUsed) oldest = i;
-      const [evicted] = this.#entries.splice(oldest, 1);
-      // A queued spill would keep these same buffers pinned. Durable SSD
-      // copies remain indexed; an unwritten eviction is a future miss.
-      this.#disposeEntry(evicted!.entry, false);
+      const oldest = this.#entries.reduce((a, b) => a.lastUsed < b.lastUsed ? a : b);
+      if (this.canEvict && !this.canEvict(oldest.entry)) break;
+      this.#entries = this.#entries.filter(r => r !== oldest);
+      this.#disposeEntry(oldest.entry, false);
       this.demotions++;
     }
   }
@@ -270,7 +280,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
    *  wrapped — those entries only match in full.
    *
    *  Tier order: the cold tier wins only with a STRICTLY longer usable
-   *  prefix (its restore costs a mmap + lazy fault-in; RAM is free). A
+   *  prefix (restore reads storage and materializes native arrays). A
    *  cold entry with an untrimmable divergent tail (ring post-wrap, SSM)
    *  is dropped and the RAM candidate (or a fresh prefill) serves.
    *  hits/misses count RAM candidacy only (cold restores are counted by
@@ -326,7 +336,27 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
             const tokens = entry.tokens.slice(0, hit.prefixLen);
             return { ...owner.transfer(), tokens, ns };
           });
-          if (result) return result;
+          if (result) {
+            if (this.promoteRestores) {
+              // Cache the restored prefix immediately. A second request can
+              // reuse RAM even before this borrower finishes its generation.
+              const share = makeSharedRetain(result.retain);
+              result.retain = share.acquire();
+              const retained = share.acquire();
+              let clones: Cache[] = [];
+              let attachments: CheckpointAttachment[] | undefined;
+              try {
+                clones = this.#clone(result.caches);
+                attachments = cloneAttachments(result.attachments);
+                this.put([...result.tokens], clones, ns, retained, attachments);
+              } catch (error) {
+                cleanupFailure(error, () => disposeResources([...clones,
+                  { dispose: () => disposeAttachments(attachments) },
+                  { dispose: retained }, { dispose: () => this.#disposeEntry(result, false) }]));
+              }
+            }
+            return result;
+          }
         }
       }
     }
@@ -380,9 +410,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     return best;
   }
 
-  /** Read-only exact-token lookup (the write-behind snapshot path: the
-   *  entry stays owned by the cache; the caller only reads array state,
-   *  under the gateway lock so no generation is mutating it). */
+  /** Read-only lookup of an immutable, cache-owned checkpoint. */
   findExact(tokens: number[], ns = ""): PromptCacheEntry | null {
     for (const { entry: e } of this.#entries) {
       if (e.ns !== ns || e.tokens.length !== tokens.length) continue;
@@ -409,7 +437,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
       }
     };
     const entry: PromptCacheEntry = { tokens, caches, ns, retain, attachments };
-    if (bytes > this.maxBytes) {
+    if (bytes > this.maxBytes && !this.canEvict) {
       discard(entry, true);
       return;
     }
@@ -449,33 +477,20 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
         discard(old.entry, false);
       }
     }
-    while (this.totalBytes > this.maxBytes && this.#entries.length > 1) {
-      let lruIdx = 0;
-      for (let i = 1; i < this.#entries.length; i++)
-        if (this.#entries[i]!.lastUsed < this.#entries[lruIdx]!.lastUsed) lruIdx = i;
-      const [evicted] = this.#entries.splice(lruIdx, 1);
-      discard(evicted!.entry, true);
-    }
+    this.evictToBudget();
     try { this.onPut?.(tokens, ns); } catch {}
   }
 
-  /** Layer-0 idle demotion: spill every entry unused for `idleMs` to the
-   *  cold tier and FREE its GPU memory. The prefix stays reachable — the
-   *  next take() restores it via zero-copy mmap (~0.25 s for a 13.7k-token
-   *  entry, vs a 12 s re-prefill) — but between bursts the RAM tier drains
-   *  toward empty, returning unified memory to the system. Caller must
-   *  hold the generation lock (entries' arrays are disposed here) — with
-   *  a spillOwned sink the lock covers only the zero-copy clone; the
-   *  write runs off-lock and the buffers free when it settles. No-op
-   *  without a cold tier — demotion without a place to demote TO would
-   *  just be data loss. Returns entries demoted. */
+  /** Evict entries older than idleMs. Tiered residency policy first ensures
+   * SSD coverage. No-op without a cold tier. Returns entries removed from RAM. */
   demoteIdle(idleMs: number, now = Date.now()): number {
     if (!this.#cold) return 0;
     let n = 0;
     for (const rec of [...this.#entries]) {
       if (now - rec.lastUsedMs < idleMs) continue;
+      if (this.canEvict && !this.canEvict(rec.entry)) continue;
       this.#entries = this.#entries.filter((r) => r !== rec);
-      this.#disposeEntry(rec.entry, true); // spill-first, then dispose
+      this.#disposeEntry(rec.entry, !this.canEvict); // persisted entries need no duplicate write
       this.demotions++;
       n++;
     }

@@ -237,6 +237,30 @@ export class MlxArray {
     return this.rawBytesView().slice();
   }
 
+  /** Publish an evaluated immutable buffer to a CPU reader. Strides are in
+   * elements, so padding, transposes and slices need no GPU packing copy.
+   * The caller retains this array until the reader reports completion. */
+  storageView(): import("../storage/kv-writer").StoredTensorView {
+    this.eval();
+    const shape = this.shape;
+    const stridePtr = C.mlx_array_strides(this.handle);
+    const strides = shape.length
+      ? [...new BigInt64Array(toArrayBuffer(stridePtr!, 0, shape.length * 8))].map(Number)
+      : [];
+    const dt = this.dtype;
+    const pointer =
+      dt === Dtype.float32 ? C.mlx_array_data_float32(this.handle)
+      : dt === Dtype.float16 ? C.mlx_array_data_float16(this.handle)
+      : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
+      : dt === Dtype.uint32 ? C.mlx_array_data_uint32(this.handle)
+      : dt === Dtype.int32 ? C.mlx_array_data_int32(this.handle)
+      : dt === Dtype.uint8 ? C.mlx_array_data_uint8(this.handle)
+      : dt === Dtype.int8 ? C.mlx_array_data_int8(this.handle)
+      : null;
+    if (pointer === null && this.size) throw new Error(`storageView: unsupported or unavailable ${this.dtypeName}`);
+    return { pointer: Number(pointer), shape, strides, itemSize: Number(C.mlx_array_itemsize(this.handle)) };
+  }
+
   /** ZERO-COPY view of the evaluated array's bytes — aliases the mlx
    *  buffer directly, no JS-heap copy. Valid only while THIS array is
    *  alive and unmutated: do not retain past dispose(). Built for

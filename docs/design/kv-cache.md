@@ -3,7 +3,7 @@ status: landed
 axis: ON
 canonical-for: kv-cache
 plan-anchor: "Phase 18 — Concurrent / batched serving (slots) + parallel load benchmark `[~]` (2026-06-13)"
-last-verified: 2026-09-09
+last-verified: 2026-09-12
 ---
 
 # KV cache — residency and layout
@@ -24,27 +24,31 @@ and open items.
 Code: `src/model/gemma4-base.ts` (Cache interface + the K/V cache family),
 `src/model/batched-*.ts`, `src/lab/paged-kv/paged-kv.ts`, `src/prompt-cache.ts`,
 `src/kv-store.ts`, `src/ssd-cache.ts`, `src/ssd-durability.ts`,
+`src/tiered-prompt-cache.ts`, `src/storage/kv-writer.ts`,
 `src/kv-scheme.ts`, `src/generate.ts` (`maybeQuantizeKv` / `maybePageKv`),
 `src/server.ts` (wiring, `/stats`, `POST /admin/cache/flush`),
 `src/serve/generation-gateway.ts`, `src/serve/batch-scheduler.ts`.
 
 ## 1. Layering
 
-Residency is a three-tier stack, each tier keyed by the exact token prefix
-its KV encodes:
+Active generation owns mutable cache containers. Published checkpoints belong
+to one logical cache, with RAM and SSD storage. On Apple Silicon the GPU and
+CPU access unified memory; publication does not require a GPU-to-CPU copy.
+Each checkpoint is keyed by the exact token prefix its state encodes:
 
 | tier | owner | unit | key |
 |---|---|---|---|
 | live caches | one generation (serial lane or a batch row) | `Cache[]`, one per layer | — |
-| RAM prompt cache | `PromptCache` (`src/prompt-cache.ts`) | whole prefix entry (tokens + `Cache[]`) | tokens + adapter ns |
+| RAM prompt cache | `TieredPromptCache` over `PromptCache` | whole prefix entry (tokens + `Cache[]`) | tokens + adapter ns |
 | SSD cold tier | `SsdCacheStore` (`src/ssd-cache.ts`) over `src/kv-store.ts` files | one `.mlxkv` file per entry | tokens + ns + model/scheme/tokenizer fingerprint |
 
 The prompt cache tiers over the SSD store *inside* `take()` (structural
 `ColdTier` interface), so every consumer (serial lane, batch scheduler
 joiners, `/admin/drain`) gets both tiers through the same `take()`/`put()`
-calls. Requests and evictions enqueue persistence work. The writer performs
-it when the engine is idle; RAM reuse does not enqueue an extra write or wait
-for the queue. Explicit flushes await the queued work. The opt-in `--generation-checkpoint N` path transfers owned snapshots at coarse decode boundaries and queues atomic
+calls. The cache queues persistence on publication or eviction. A dedicated
+CPU worker writes evaluated immutable buffers while inference continues.
+Persistence does not evict RAM; only cache residency policy does. RAM reuse
+does not enqueue an extra write or wait for the queue. Explicit flushes await the queued work. The opt-in `--generation-checkpoint N` path transfers owned snapshots at coarse decode boundaries and queues atomic
 persistence without awaiting disk in decode (section 5.7). Paged KV
 (section 6) is a *layout* choice for the live tier and, in v1, bypasses the
 other two.
@@ -217,9 +221,11 @@ changing the retained checkpoint.
 
 SSD is an eventually consistent persistence layer. RAM reuse never writes
 to SSD or waits for durability. Background writes retain immutable snapshot
-views and yield between tensor writes; explicit flush and graceful shutdown
-wait for persistence. A pending or failed write does not prevent RAM reuse.
-The existing byte cap controls retained donors and LRU eviction.
+views while a CPU worker packs, hashes and writes them; explicit flush and
+graceful shutdown wait for persistence. A pending or failed write does not prevent RAM reuse.
+The byte target controls LRU eviction. With SSD enabled, an unwritten victim
+stays resident until storage commits; the target is soft while writes are
+pending or failing.
 
 The native sharing gate checks logical checkpoint bytes after repeated decode
 and after SSD restore. It passes on both development Macs; the M1 long-prefix
@@ -232,18 +238,23 @@ and explicit flush remains pending until the write completes.
 longer usable prefix; then `restore(handle)` materializes it and the
 divergent tail is trimmed. A cold entry that would need a trim but is
 untrimmable (wrapped ring, SSM) is disposed loudly and the RAM candidate
-(or a fresh prefill) serves. `hits`/`misses` count RAM candidacy only.
+(or a fresh prefill) serves. Tiered restore immediately publishes shared views
+in RAM so another request can reuse them before the borrower finishes.
+`hits`/`misses` count RAM candidacy only.
 
 **`put(tokens, caches, ns, retain)` — supersession + eviction.** Exact
 duplicates (same tokens) are replaced regardless of trimmability. Strict
 prefix-ancestors in the same ns are superseded without spill — but only
 when the *new* entry is fully trimmable; an untrimmable new entry (wrapped
 ring) can only serve exact-length matches, so shorter ancestors (the
-prompt-boundary snapshot) must survive. Then LRU-evict until under cap,
-spilling each evictee to the cold tier first. An entry larger than the cap
-is spilled and disposed, never stored. `onPut` fires after every
-successful put — the server hangs the write-behind scheduler there so both
-lanes' entries persist.
+prompt-boundary snapshot) must survive. `TieredPromptCache` selects the
+least recently used RAM entry when over budget. If it lacks durable SSD
+coverage, the cache queues a write and retains it until that write succeeds.
+It does not evict a hotter entry merely because that entry is already on SSD.
+An oversized checkpoint follows the same persist-before-demotion rule.
+Without SSD, the RAM-only cache discards evicted or oversized entries.
+`TieredPromptCache.put` also owns proactive persistence; `onPut` remains an
+independent observer for generated-token history.
 
 **Prompt-boundary snapshot.** Serial lane (`server.ts`) and batch
 scheduler (`snapshotAt`) both clone-and-put a trim-free *prompt-only*
@@ -257,12 +268,11 @@ always an exact prefix of the next rendering.
 **Namespaces.** `ns` = the adapter spec (`adapters.join("+")`, `""` = base).
 KV computed under one adapter never seeds another's prefill.
 
-**Bypasses.** Media (vision/audio) requests skip the cache (soft tokens are
-identical placeholder ids → false hits), as do paged-KV requests (v1) and
-the speculative lane (v1). Merged batch rows are not re-put on finish;
-never-merged lone rows put their adopted caches back zero-copy, and
-merged rows are extracted per row (`#extractAndPut`) before `filter()`
-mutates the batched inners.
+**Bypasses.** Media and optional paged-KV requests retain their documented
+cache qualification rules. Shared speculative execution publishes target and
+method state together where supported; method attachments preserve the exact
+boundary needed for reuse. Merged batch rows are extracted before retirement
+changes the batched state. The cache owns the extracted checkpoint.
 
 **Idle demotion (`demoteIdle`).** Entries unused past a threshold spill to
 the cold tier and free their GPU arrays; the prefix stays reachable via
@@ -287,17 +297,14 @@ full prefill (GEMV-vs-GEMM reduction order). Both tiers share it.
 
 ### 5.1 Decisions
 
-- **D1 — Whole-prefix-entry spill, not paged blocks.** Single-user serving
-  with a prefix-entry cache that grows per conversation. Per-block hashing
-  and save-queue bookkeeping during decode is where oMLX's measured ~20%
-  steady-state tax came from; ours does zero work on the token loop
-  (prefix tokens are the key). Partial-prefix reuse works without paging:
-  restore + `trim()`. The economics that justify the tier are
-  SSD-vs-recompute, not SSD-vs-RAM: at 12B prefill rates a 30k agent
-  context is minutes of GPU compute against a ~1 s NVMe restore.
-- **D2 — One store, two tiers.** The cold tier is bound *into*
-  `PromptCache` (section 4); restart persistence comes from a debounced
-  write-behind snapshot after each put, not only from spill-on-evict.
+- **D1 — Whole-prefix-entry storage.** A checkpoint stores a complete
+  conversation boundary. This reuses the existing cache codecs and avoids
+  per-token storage bookkeeping, but duplicates shared attention history
+  between files. Block deduplication is a separate layout optimization to
+  measure against this baseline; recurrent state still needs exact boundaries.
+- **D2 — One store, two tiers.** `TieredPromptCache` owns RAM residency and
+  the SSD backend. Proactive persistence after publication provides restart
+  survival without waiting for an eviction.
 - **D3 — Own page-aligned format, not safetensors.** `src/kv-store.ts`
   writes `MLXBUNKV2\n`-magic files with a streaming writer: ordinary KV
   retains format v3; checkpoints with method companion state use v4.
@@ -377,9 +384,9 @@ ordering is unchanged (the server's `coldTier.restore` returns
 `() => {}`). Comments in `prompt-cache.ts` that still say "zero-copy
 mmap" describe the superseded mechanism.
 
-The write side is the mirror: hashing and writing from a zero-copy view
-of the contiguous mlx buffer (`rawBytesView`), no JS-heap copy at any
-point.
+The asynchronous writer reads evaluated native storage directly. Contiguous
+tensors need no packing copy. Strided tensors are packed on the CPU, one
+tensor at a time, to omit capacity padding without a GPU `contiguous` call.
 
 ### 5.3 `find()` returns partial matches, gated on trimmability
 
@@ -394,56 +401,52 @@ Store-side supersession mirrors `PromptCache.put`: exact duplicates
 replaced; prefix-ancestors superseded only when the new entry is
 trimmable.
 
-### 5.4 Write-behind scheduling contract: own each tensor step
+### 5.4 Background persistence and RAM residency
 
-Every per-tensor flush step is real GPU-stream and JS-thread work
-(`ops.contiguous` on the decode stream, a synchronous eval for
-`rawBytesView`, a synchronous multi-MB `writeSync`). Interleaving those
-between decode tokens taxed decode at long context, so:
+`TieredPromptCache` owns RAM residency, SSD writes and durable-coverage checks.
+`put` materializes the checkpoint before publication. `saveKvCacheAsync`
+uses the existing codecs to describe the file and obtains host-visible native
+pointers, shapes and strides on the MLX owner thread. Its optional preparation
+runner does not cover disk I/O. No MLX handles cross into the writer.
 
-- `saveKvCacheAsync` / `SsdCacheStore.storeAsync` accept a per-step runner.
-  The server passes `gateway.runWhenIdle`, so the idle decision and the
-  blocking MLX readback are one atomic engine turn. Background work waits
-  without registering a serial waiter or draining active batches. The earlier
-  `gateway.onIdle()` check had a check/use race: a request could begin after
-  the check and overlap the next tensor sync. A request arriving mid-flush
-  can run between tensor writes. Neither execution lane drains pending
-  durability work before generation.
-- `GenerationGateway.busy` covers both lanes (serial mutex held/awaited or
-  batch rows active/pending).
-- `MLX_BUN_SSD_WRITEBEHIND=0` disables write-behind snapshots entirely
-  (kill switch + paired-A/B lever; restart survival then degrades to
-  spill-on-evict).
+`KvWriter` embeds a dedicated Bun CPU worker in source and compiled builds.
+The worker packs strided layouts, hashes tensor bytes, writes a temporary file,
+fsyncs it and renames it atomically. It imports no MLX or scheduler code and
+needs no generation lock. Contiguous tensors use direct buffer views; packing
+scratch is reused across strided tensors. The cache owns the retained state,
+and the queued write holds shared views through its completion. Those views
+share immutable storage rather than copying the entire checkpoint.
 
-Explicit flush and shutdown drain outstanding writes outside the generation
-lock because the writer needs that same lock. Ordinary requests do not.
+The owner thread still prepares native views and updates the SSD metadata
+index after completion. A background worker removes blocking payload I/O from
+that thread; it does not make shared memory bandwidth or snapshot preparation
+free. Measure those costs with concurrent decode before claiming a speedup.
 
-The RAM cache's configured byte cap is only an upper bound. Serial serving
-checks MLX's live allocation count against the smaller of admission's usable
-memory and Metal's recommended working set, reserving prefill workspace and
-the prompt's KV footprint for growth/copy-on-write overlap. Pressure relief
-persists LRU entries synchronously before disposing them, avoiding deferred
-spill clones that would keep the memory resident. The selected request cache
-remains owned by the request; older entries remain reusable from SSD. Qwen
-checks between prefill layers, and serial decode checks every 256 tokens.
-If no reclaimable entries remain, the guard raises a request error instead
-of intentionally proceeding over that budget. In-flight checkpoints survive.
+Writing a copy does not remove RAM residency. Byte pressure chooses the actual
+LRU entry. If its SSD copy is missing, it queues persistence and waits for the
+completion callback to retry eviction. Failed writes leave the RAM entry
+usable and dirty. Age-based eviction follows the same rule and runs without
+acquiring the scheduler's generation lock. Neither policy refuses requests or
+changes context, batch size or sampling settings.
 
-### 5.5 Bounded retention: `SpillQueue` (`kv-store.ts`)
+`MLX_BUN_SSD_WRITEBEHIND=0` disables proactive persistence after publication;
+eviction still queues persistence before removing RAM. Explicit flush and
+shutdown await outstanding writes. A hard exit can lose uncommitted writes.
 
-All three producers — eviction spills, idle demotions, write-behind
-snapshots — go through one serial, byte-capped queue. Pending clones pin
-their entries' GPU buffers until the generation-locked flush gets a turn; without
-a cap, sustained traffic (gate starved, evictions ongoing) made resident
-memory = prompt-cache cap + every queued clone. Policy: cap default 2 GiB
-(`MLX_BUN_SSD_SPILL_QUEUE_GB`; `0` keeps only the newest + in-flight
-clone); over cap the *oldest* not-in-flight item drops and its clones are
-disposed immediately; the item just enqueued is never its own victim
-(soft cap). A dropped spill is a future cache miss, never a wrong result.
-Clones are disposed on every settle path (fulfil, reject, drop). The
-snapshot timer never holds batch admission: while rows are active it
-re-arms instead of grabbing the exclusive (entries are immutable; a late
-snapshot is equally valid).
+### 5.5 Persistence queue and capacity
+
+Normal prefix persistence uses one serial `SpillQueue` with no independent
+byte-drop policy. RAM ownership and pending write views share the checkpoint;
+queue completion releases only the writer's reference. RAM cache capacity
+and age policy decide demotion. They do not cancel an unwritten snapshot to
+reduce the queue's accounting. While the oldest victim is writing, RAM can
+exceed its target. A storage failure keeps that victim resident and retryable.
+
+The optional interrupted-generation coordinator still uses the generic
+bounded queue for supersedable intervals. `MLX_BUN_SSD_SPILL_QUEUE_GB`
+(default 2 GiB) now controls that queue only. It does not limit retained prompt
+history. SSD capacity is independent: no capacity eviction without an explicit
+positive `--ssd-cache-max`.
 
 ### 5.6 Durability boundary (`src/ssd-durability.ts`)
 
@@ -454,17 +457,16 @@ the write — the server implied durability it did not have.
 
 - `schedule(tokens, ns)` records a *dirty* key that includes the exact
   token sequence (two same-ns, same-length conversations cannot cancel
-  each other) and arms the debounce.
-- An attempt checks SSD coverage under `gateway.runWhenIdle` before cloning.
+  each other) and arms a next-tick attempt.
+- An attempt checks committed SSD coverage before cloning.
   Otherwise it snapshots the RAM entry (`findExact` + `cloneKvCaches`) and
-  enqueues it; a busy gateway re-arms;
-  a dropped or failed store leaves the key dirty so it is retryable.
+  enqueues it without consulting scheduler activity. A failed store leaves
+  the key dirty so it is retryable.
   A snapshot that vanished from RAM is "stored" only if the SSD index
   already covers the prefix (`hasDurablePrefix`), else "missing" and still
   dirty. A second flush cannot clear that failure without durable coverage.
 - `flush()` cancels timers, awaits in-flight attempts and `drain()`, then
-  forces each dirty record version once, one at a time (so the queue cap
-  cannot drop a boundary snapshot while a large final snapshot is in flight).
+  forces each dirty record version once, one at a time.
   A replacement scheduled during a write receives its own attempt. After
   all writes settle, the coordinator checks missing ancestors against the
   committed SSD index again: a later trimmable descendant may now cover a
@@ -513,7 +515,8 @@ recover sampler seed, history and sample index. The server binding qualifies
 ordinary requests through supported row-cache layouts, including recurrent Qwen
 and full-attention Llama/MiniCPM as well as Gemma4. It transfers owned row
 snapshots to a bounded persistence coordinator without awaiting disk in decode.
-Tensor serialization and file maintenance use the existing idle gate. Completion
+Snapshot preparation runs on the owner thread; payload serialization and
+writes use the CPU worker. Completion
 invalidates reuse immediately and queues cleanup after any in-flight write;
 new attempts cannot be erased by older cleanup. Cancellation retains eventual
 persistence, and explicit flush reports failed or pending durability. A hard
@@ -525,8 +528,8 @@ compare interrupted/restored runs at the same batch geometry; arbitrary
 cohort changes are not an exact numerical identity guarantee. The HTTP fixture
 checks serial B1, shared B1 and shared B4 with identical seeded requests and
 held arrivals, and inspects the generated checkpoint before restart.
-When checkpointing is enabled, the existing total spill queue budget is split
-between prompt spills and continuation snapshots. Flush duration and pending/failed
+The configured spill queue budget applies to continuation snapshots; normal
+prefix persistence follows the RAM cache residency policy. Flush duration and pending/failed
 statistics cover both queues.
 
 Only the newest successful checkpoint for a request is retained. The old file
@@ -559,7 +562,7 @@ Method and drafter compatibility must be part of the namespace before a
 producer publishes these records. Storage does not interpret draft state as
 extra target-model layers.
 
-RAM accounting, eviction, idle demotion and the bounded SSD spill queue include
+RAM accounting, eviction, idle demotion and SSD persistence include
 companion tensors. Checkpoints containing them require an exact prefix
 boundary and preserve shorter fallback entries. Write-behind captures companion
 views together with target-cache views under the existing exclusive boundary.
@@ -618,17 +621,15 @@ history-preserving token sequence. This can change input token counts, and
 therefore continuation logits, relative to re-encoding all generated text.
 Logit parity remains a contract for the same input IDs and execution shape.
 
-Optional cache residency yields to active inference. The MLX serving composition
-reserves allocator headroom at 85% of the smaller of the recommended device
-working set and an explicit allocator limit. Its pressure check includes known
-weight bytes when file-backed weights have not yet appeared in active native
-allocation. `PrefixCache.reclaim` releases queued spill ownership and LRU RAM
-donors without awaiting storage; a selected hit already owns its views and
-backing lease. Lookup, shared prefill boundaries and periodic decode maintenance
-call that interface. The check runs every 256 decode steps, not every token.
-It never changes request admission, context, sampling or batch size. Existing
-SSD copies remain usable. An unwritten evicted snapshot can become a cache miss;
-dirty/missing and dropped-spill counters continue to report incomplete durability.
+Cache pressure maintenance uses 85% of the smaller of the recommended device
+working set and an explicit allocator limit as a residency target. It includes
+known weight bytes when file-backed weights have not appeared in MLX active
+allocation. `PrefixCache.reclaim` asks the cache to demote LRU donors. With SSD,
+only durable donors can leave RAM; pending writes remain queued. A selected
+request retains its own views. Shared buffer ownership is not counted twice as
+RAM plus queued data. Lookup, prefill boundaries and periodic decode maintenance
+call this interface; decode checks every 256 steps. It does not constrain
+request admission, context, sampling or batch size.
 
 M1 and M4 native bf16, affine KV4 and fused TurboQuant K8/V3 tests cover four active
 rows, early retirement, exact sampled-ID coverage, unchanged retained bytes
@@ -687,8 +688,26 @@ the model's prototype cache before opening the tensor mmap.
   ever lands.
 - Block-granular dedup for multi-user shared prefixes stays out of scope
   (D1); revisit only with the paged follow-ups in 6.4.
-- Stale comments: `prompt-cache.ts` still describes restore as zero-copy
-  mmap (5.2).
+
+### 5.10 Comparison with other serving caches
+
+Reviewed 2026-09-12 against published designs, not private provider internals.
+
+| System | Algorithm and ownership | Application here |
+| --- | --- | --- |
+| [Mooncake / Kimi](https://github.com/kvcache-ai/Mooncake), [SSD offload](https://kvcache-ai.github.io/Mooncake/design/store/ssd-offload.html) | A cache service owns RAM/SSD placement. Background offload records a disk replica on successful write; the same lookup can restore from SSD. | One cache API with independent storage work. No application-managed demotion. |
+| [SGLang HiCache](https://docs.sglang.io/docs/advanced_features/hicache_design) | A radix tree shares token spans and tracks memory placement. Supports proactive, selective and eviction-triggered writes, plus storage prefetch. Decode output can populate storage. | Keep output-produced checkpoints. Evaluate block sharing and prefetch after the persistence correction. |
+| [LMCache MP](https://docs.lmcache.ai/mp/) | Independent store, eviction and prefetch controllers. Watermark-triggered RAM eviction uses LRU; asynchronous storage adapters handle lower tiers. | Separate write completion from residency policy. Keep the storage interface independent of inference. |
+| [vLLM prefix caching](https://docs.vllm.ai/en/latest/design/prefix_caching/) | Token blocks use hashes including their preceding prefix. Unused blocks are evicted by recency. | Shared prefix blocks could reduce whole-entry duplication. |
+| [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) | Public API documents exact-prefix reuse and expiration. | The same avoided-prefill benefit; this documentation does not establish its internal storage policy. |
+
+Our current storage unit is a complete checkpoint. Repeated conversation
+snapshots therefore duplicate attention history on SSD. Block deduplication
+must preserve the existing state-kind contract: Qwen recurrent state and method
+attachments cannot be trimmed to arbitrary earlier tokens. They need valid
+checkpoint boundaries alongside any shared attention blocks. RAM LRU is the
+initial policy; frequency weighting, prefetch and block layout changes need
+measured reuse/latency evidence before replacing it.
 
 ## 6. Optional paged KV (`src/lab/paged-kv/paged-kv.ts`, `--paged-kv`)
 

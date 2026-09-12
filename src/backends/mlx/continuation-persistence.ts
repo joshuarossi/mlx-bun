@@ -19,13 +19,14 @@ export class ContinuationPersistence {
   #nextBarrier = 0;
   constructor(readonly store: ContinuationStore, options: {
     maxBytes: number;
-    /** All blocking tensor serialization runs through the owner's idle gate. */
-    runStep: <T>(step: () => T) => Promise<T>;
+    /** Optional owner-thread preparation hook; disk writes use the CPU worker. */
+    runStep?: <T>(step: () => T) => Promise<T>;
   }) {
+    const runStep = options.runStep ?? (async <T>(step: () => T): Promise<T> => step());
     this.#queue = new SpillQueue(options.maxBytes, cacheBytes, async item => {
       const job = this.#jobs.get(item.caches)!;
       if (job.cleanup) {
-        await options.runStep(() => store.removeGenerationCheckpoints(job.attempt.key));
+        await runStep(() => store.removeGenerationCheckpoints(job.attempt.key));
         return true;
       }
       const current = () => this.#attempts.get(job.attempt.key) === job.attempt && !job.attempt.completed;
@@ -33,7 +34,7 @@ export class ContinuationPersistence {
       const stored = await store.storeGenerationCheckpoint(item.tokens, item.caches, job.metadata!, options.runStep);
       // No newer queued write can run until this callback returns. An old
       // in-flight rename can therefore be removed without deleting new work.
-      if (!current()) await options.runStep(() => store.removeGenerationCheckpoints(job.attempt.key));
+      if (!current()) await runStep(() => store.removeGenerationCheckpoints(job.attempt.key));
       return stored;
     }, disposeResources, item => !this.#jobs.get(item.caches)?.cleanup);
   }

@@ -53,6 +53,8 @@ export const C = dlopen(LIBMLXC_PATH, {
   // array metadata
   mlx_array_ndim: { args: [u64], returns: u64 },
   mlx_array_shape: { args: [u64], returns: P },
+  mlx_array_strides: { args: [u64], returns: P },
+  mlx_array_itemsize: { args: [u64], returns: u64 },
   mlx_array_dim: { args: [u64, i32], returns: i32 },
   mlx_array_dtype: { args: [u64], returns: i32 },
   mlx_array_size: { args: [u64], returns: u64 },

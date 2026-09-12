@@ -227,9 +227,8 @@ export class SsdCacheStore {
    *  yields the event loop between tensors so serving interleaves.
    *  Caller passes zero-copy CLONES it owns (a consistent snapshot no
    *  matter what the live entry does meanwhile) and disposes them after.
-   *  `runStep` owns every per-tensor step (see saveKvCacheAsync) — the
-   *  server passes the gateway's exclusive runner so a request cannot start
-   *  between an idle check and the blocking MLX readback. */
+   *  `runStep` optionally wraps owner-thread snapshot preparation. Hashing,
+   *  packing and disk writes execute on the CPU worker. */
   async storeAsync(
     tokens: number[], caches: Cache[], ns = "",
     runStep?: <T>(step: () => T) => Promise<T>,
@@ -238,7 +237,6 @@ export class SsdCacheStore {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
-      mkdirSync(dir, { recursive: true });
       await saveKvCacheAsync(path, tokens, caches, { ...this.#meta(ns), attachments }, runStep, this.#codecs);
       return this.#indexStored(path, tokens, caches, ns, undefined, attachments);
     } catch (err) {

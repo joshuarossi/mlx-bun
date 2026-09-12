@@ -128,8 +128,7 @@ test("write-behind captures companion state under the existing durability lifecy
   const store = new SsdCacheStore(options(dir));
   const queue = new SpillQueue(1024, cacheBytes,
     (item) => store.storeAsync(item.tokens, item.caches, item.ns, undefined, item.attachments), disposeResources);
-  const gateway = { busy: false, async runWhenIdle<T>(fn: () => Promise<T>) { return fn(); } };
-  const durability = new SsdDurabilityCoordinator(gateway, cache, queue, cloneKvCaches);
+  const durability = new SsdDurabilityCoordinator(cache, queue, cloneKvCaches);
   try {
     cache.put([1, 2, 3], [targetCache()], "method", undefined, source);
     durability.schedule([1, 2, 3], "method");
@@ -183,8 +182,7 @@ test("pending persistence leaves RAM reuse available and explicit flush waits fo
     persisted = true;
     return true;
   }, disposeResources);
-  const gateway = { busy: false, async runWhenIdle<T>(fn: () => Promise<T>) { return fn(); } };
-  const durability = new SsdDurabilityCoordinator(gateway, cache, queue, cloneKvCaches,
+  const durability = new SsdDurabilityCoordinator(cache, queue, cloneKvCaches,
     () => persisted, 0);
   let flushed = false;
   try {

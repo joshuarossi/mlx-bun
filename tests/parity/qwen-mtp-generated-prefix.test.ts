@@ -25,10 +25,10 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
   const loadProvider = (path: string) => ngram ? new NgramProvider() : dflash ? DflashProvider.load(path) : deepspec ? DeepspecProvider.load(path) : assistant ? AssistantProvider.load(path) : twoModel ? TwoModelProvider.load(path) : QwenMtpProvider.load(path);
   const { MlxBatchExecutionGroup } = await import("../../src/backends/mlx/batch-group");
   const { bindSpeculativeGroupRequests } = await import("../../src/backends/mlx/speculative-group");
-  const { PromptCache, cacheBytes } = await import("../../src/prompt-cache");
+  const { PromptCache } = await import("../../src/prompt-cache");
   const { SsdCacheStore } = await import("../../src/ssd-cache");
-  const { SsdDurabilityCoordinator } = await import("../../src/ssd-durability");
-  const { SpillQueue, cloneKvCaches } = await import("../../src/kv-store");
+  const { TieredPromptCache } = await import("../../src/tiered-prompt-cache");
+  const { cloneKvCaches } = await import("../../src/kv-store");
   const { disposeResources, withResource } = await import("../../src/engine/resources");
   const { disposeAttachments } = await import("../../src/backends/mlx/checkpoint-state");
   const { leaseCacheStates } = await import("../../src/backends/mlx/state-views");
@@ -67,12 +67,16 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
       ...(turboQuant ? { turboQuant, quantizedKvStart } : kvConfig?.length ? { kvConfig, quantizedKvStart } : bits ? { kvBits: bits, kvGroupSize: 64, quantizedKvStart } : {}) };
     const storeOptions = { dir: directory, maxBytes: 4 * 1024 ** 3, modelId: target,
       configFingerprint: "generated-mtp", tokenizerHash: "generated-mtp", verify: true };
-    const ssd = new SsdCacheStore(storeOptions), cache = new PromptCache(4 * 1024 ** 3);
-    const queue = new SpillQueue(4 * 1024 ** 3, cacheBytes,
-      item => ssd.storeAsync(item.tokens, item.caches, item.ns, undefined, item.attachments), disposeResources);
-    const durability = new SsdDurabilityCoordinator({ busy: false, async runWhenIdle<T>(f: () => Promise<T>) { return f(); } },
-      cache, queue, cloneKvCaches);
-    cache.onPut = (tokens, ns) => durability.schedule(tokens, ns);
+    const ssd = new SsdCacheStore(storeOptions);
+    const cache = new TieredPromptCache(4 * 1024 ** 3, ssd, {
+      find(tokens, ns) { const hit = ssd.find(tokens, ns); return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null; },
+      restore(handle) {
+        const hit = ssd.restore(handle as Parameters<typeof ssd.restore>[0], model);
+        return hit ? { ...hit, retain() {} } : null;
+      },
+      store: (tokens, caches, ns, attachments) => ssd.store(tokens, caches, ns, attachments),
+    });
+    const { durability, spillQueue: queue } = cache;
     const prompts = Array.from({ length: 4 }, (_, row) => [1, 2, 3, 4, 5, 6, 7 + row]);
     const outputs: number[][] = [[], [], [], []];
     let maxPrefillRows = 0;

@@ -45,6 +45,7 @@ import { cleanupFailure, disposeResources } from "./engine/resources";
 import { openSync, writeSync, readSync, closeSync, fsyncSync, renameSync, rmSync } from "node:fs";
 import { MmapFile, MADV_DONTNEED } from "./mmap";
 import { MlxArray } from "./mlx/array";
+import { kvWriter } from "./storage/kv-writer";
 import type { Dtype } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import {
@@ -615,12 +616,8 @@ export function cloneKvCaches(caches: Cache[], codecs: CacheCodecProvider = lega
   return out;
 }
 
-/** Shared v3 writer core, one `yield` after each tensor write. The sync
- *  wrapper drains it in a tight loop; the async wrapper awaits a macrotask
- *  between yields so the EVENT LOOP KEEPS SERVING while a multi-hundred-MB
- *  entry flushes (the write-behind persistence contract: durability never
- *  blocks a request). try/finally still runs on early generator close. */
-function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta, codecs: CacheCodecProvider): Generator<void, void, void> {
+/** Shared file layout and codec planning for synchronous and worker writes. */
+function planKvCache(tokens: number[], caches: Cache[], meta: KvSaveMeta, codecs: CacheCodecProvider): { header: KvFileHeader; sources: TensorSource[] } {
   // Plan pass: header entries + lazy tensor sources, NO bytes materialized.
   const entries: CacheHeaderEntry[] = [];
   const sources: TensorSource[] = [];
@@ -652,6 +649,17 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
       formatVersion: attachments?.length ? 4 : 3, createdAt: Date.now(), ...identity,
       ...(attachments?.length ? { attachments } : {}), codecProvider: codecs.id, tokens, caches: entries,
     };
+    return { header, sources };
+  } catch (error) {
+    for (const source of sources) if (source.disposeAfter) source.arr.dispose();
+    throw error;
+  }
+}
+
+function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta, codecs: CacheCodecProvider): Generator<void, void, void> {
+  const { header, sources } = planKvCache(tokens, caches, meta, codecs);
+  const entries = header.caches, attachments = header.attachments;
+  try {
     const headerLen = new TextEncoder().encode(JSON.stringify(header)).length;
     const dataStart = alignUp(PREFIX_LEN + headerLen);
 
@@ -719,35 +727,26 @@ export function saveKvCache(path: string, tokens: number[], caches: Cache[], met
   for (const _ of saveKvCacheSteps(path, tokens, caches, meta, codecs)) { /* drain */ }
 }
 
-/** Non-blocking variant: yields the event loop after every tensor write so
- *  serving interleaves with the flush. Caller owns `caches` lifetime for
- *  the duration (pass zero-copy clones, dispose after).
- *
- *  `runStep` (optional) runs each blocking tensor step inside the caller's
- *  exclusion domain. Waiting for an idle observation is not sufficient: a
- *  request can acquire the engine between that check and `steps.next()`,
- *  putting rawBytesView's GPU sync on the decode stream during prefill. */
+/** Prepare immutable native storage on the owner thread, then pack, hash and
+ * write it on the CPU worker. The optional runner covers preparation only.
+ * Callers retain cache and attachment ownership until this promise settles. */
 export async function saveKvCacheAsync(
   path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
   runStep?: <T>(step: () => T) => Promise<T>, codecs: CacheCodecProvider = legacyCacheCodecs,
 ): Promise<void> {
-  const steps = saveKvCacheSteps(path, tokens, caches, meta, codecs);
+  const { header, sources } = planKvCache(tokens, caches, meta, codecs);
   try {
-    while (true) {
-      const next = runStep ? await runStep(() => steps.next()) : steps.next();
-      if (next.done) break;
-      await new Promise<void>((r) => setImmediate(r));
-    }
-  } catch (error) {
-    // A rejected execution lease can leave the writer suspended with an
-    // open fd. Throw through it so its existing failure cleanup runs.
-    steps.throw(error);
-    throw error;
+    // Snapshot preparation belongs to the MLX owner. After publication the
+    // worker sees only immutable bytes and never evaluates or calls MLX.
+    const prepare = () => sources.map(source => source.arr.storageView());
+    const tensors = runStep ? await runStep(prepare) : prepare();
+    await kvWriter.write({ path, header, tensors });
+  } finally {
+    for (const source of sources) if (source.disposeAfter) source.arr.dispose();
   }
 }
 
-/** One pending write-behind item: an entry's copied tokens + OWNED
- *  zero-copy cache clones (the queue disposes them on every exit path). */
+/** Queued immutable snapshot; the queue releases its shared views on settle. */
 export interface SpillItem {
   attachments?: CheckpointAttachment[];
   tokens: number[];
@@ -755,23 +754,10 @@ export interface SpillItem {
   ns: string;
 }
 
-/** Bounded write-behind queue (2026-07-07 post-merge review fix).
- *
- *  Pending spill/snapshot clones pin their entries' GPU buffers until the
- *  generation-locked flush gets a turn; the old bare promise chain queued them
- *  WITHOUT BOUND, so under sustained traffic (gate starved, evictions
- *  ongoing) resident memory = prompt-cache cap + every queued clone —
- *  allocator pressure exactly under the load that caused the evictions.
- *
- *  Policy: queued bytes are capped. Over cap, the OLDEST not-in-flight
- *  item is dropped and its clones disposed immediately — cache semantics
- *  (a dropped spill is a future cache miss, never a wrong result; the
- *  contention-free alternative to letting the flush cut into decode).
- *  The item being enqueued is never its own victim (soft cap: one
- *  oversized entry may exceed the cap alone rather than never spilling).
- *  Items run strictly serially in enqueue order via an internal chain;
- *  store failures are swallowed (cold tier is best-effort) but clones
- *  are disposed on every settle path. */
+/** Serial snapshot queue with optional capacity shedding. TieredPromptCache
+ * disables shedding and owns residency itself. Interrupted-generation
+ * persistence uses the cap for supersedable intervals. Queue ownership ends
+ * after each write settles; the cache can retain independent shared views. */
 type SpillRec = SpillItem & {
   bytes: number;
   dropped: boolean;
@@ -790,7 +776,7 @@ export class SpillQueue {
     readonly capBytes: number,
     /** Byte size of a clone set (prompt-cache's cacheBytes). */
     readonly bytesOf: (caches: Cache[]) => number,
-    /** The actual write (server passes storeAsync + the idle gate). */
+    /** The asynchronous storage operation. */
     readonly store: (item: SpillItem) => Promise<unknown>,
     /** Clone disposal — frees the pinned GPU memory. */
     readonly disposeClones: (caches: Cache[]) => void,

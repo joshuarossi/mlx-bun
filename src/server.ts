@@ -26,7 +26,7 @@ import {
   type GenerateOptions,
 } from "./generate";
 import { createPreparationExecutor } from "./serve/preparation";
-import { cloneKvCaches, legacyCacheCodecs, SpillQueue } from "./kv-store";
+import { cloneKvCaches, legacyCacheCodecs } from "./kv-store";
 import type { Cache } from "./model/gemma4";
 import { resolveKvScheme } from "./kv-scheme";
 import { runtimeValue } from "./runtime-config";
@@ -49,10 +49,10 @@ import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 
-import { PromptCache, cacheBytes } from "./prompt-cache";
+import { PromptCache } from "./prompt-cache";
+import { TieredPromptCache } from "./tiered-prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import {
-  SsdDurabilityCoordinator,
   type DurabilityFlushResult,
   type DurabilitySnapshotStats,
 } from "./ssd-durability";
@@ -492,29 +492,12 @@ export function createServer(
         },
       }
     : null;
-  const promptCache = new PromptCache(
-    promptCacheCap,
-    // RAM eviction AND idle demotion spill to the cold tier NON-BLOCKING
-    // (2026-07-06, same contract as the write-behind snapshot below): the
-    // cache hands us OWNED zero-copy clones + copied tokens (made under
-    // the generation lock — microseconds; entries are immutable so the
-    // clones stay consistent), and the flush goes through the BOUNDED
-    // SpillQueue -> storeAsync (generation-locked per tensor, see below) ->
-    // clone disposal on every settle/drop path (that dispose is what
-    // actually frees the demoted GPU memory; the queue's byte cap keeps
-    // starved-gate retention bounded — 2026-07-07 review fix). spillQueue
-    // is declared with the snapshot scheduler below; safe to close over
-    // here because spills only fire at put()/demoteIdle time, long after
-    // init.
-    ssdStore
-      ? {
-          spillOwned: (entry) =>
-            spillQueue!.enqueue({ tokens: entry.tokens, caches: entry.caches, ns: entry.ns, attachments: entry.attachments }),
-        }
-      : null,
-    coldTier,
-    cloneState,
-  );
+  const promptCache = ssdStore && coldTier
+    ? new TieredPromptCache(promptCacheCap, ssdStore, coldTier, cloneState,
+        runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0")
+    : new PromptCache(promptCacheCap, null, null, cloneState);
+  const spillQueue = promptCache instanceof TieredPromptCache ? promptCache.spillQueue : null;
+  const durability = promptCache instanceof TieredPromptCache ? promptCache.durability : null;
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
   // the prompt cache: a resumed conversation re-renders the same prefix,
@@ -554,59 +537,8 @@ export function createServer(
   serving.gateway.configureContinuation?.(executionServices);
   const runGeneration = serving.createSerial(executionServices);
 
-  // Write-behind persistence (restart survival — the oMLX boundary-snapshot
-  // idea at whole-entry granularity, spill-on-evict alone can't survive a
-  // clean exit): after a request completes, snapshot its still-RAM-resident
-  // entry to SSD off the request path. Debounced + coalesced per namespace —
-  // an agent hammering one conversation persists the settled state once
-  // things go quiet, not every turn. Runs under the gateway lock (byte
-  // extraction must not race a generation mutating the entry); if the entry
-  // was evicted (already spilled) or extended (a newer schedule pending)
-  // meanwhile, findExact misses and nothing is written.
-  // Keyed by namespace and exact tokens: a sub-second final [prompt+gen] put
-  // must not cancel the pending boundary snapshot, and unrelated prompts of
-  // equal length must not cancel each other. Exact reschedules still
-  // coalesce; stale keys self-clean when findExact misses.
-  //
-  // NON-BLOCKING (2026-07-06, the write-behind persistence contract): the
-  // gateway lock is held only for a zero-copy SNAPSHOT (findExact +
-  // cloneKvCaches — microseconds; entries are immutable so the clones are
-  // consistent forever). The flush itself runs OFF the lock via
-  // storeAsync, and writes chain serially so two multi-hundred-MB flushes
-  // never overlap.
-  //
-  // IDLE-GATED (2026-07-07, the decode@ctx fix): "off the lock" was not
-  // enough — every per-tensor flush step is a blocking GPU sync on the
-  // SAME stream decode uses (ops.contiguous enqueues a kernel, rawBytesView
-  // evals) plus a synchronous multi-MB writeSync, and the setImmediate
-  // pacing interleaved those slices exactly between decode tokens. A ~16k
-  // entry's flush overlapping the bench's ctx repeats depressed decode@ctx
-  // ~9% on e4b (mlx-lm runs no equivalent background work). Now every step
-  // — including the first — runs through gateway.runWhenIdle(), so the
-  // flush only progresses while NOTHING is generating and pauses when a
-  // request arrives mid-flush. Tradeoffs, accepted: durability waits for a
-  // quiet moment (single-user serving quiesces constantly; sustained
-  // hammering defers the flush AND the spill clones' GPU-memory release —
-  // bounded by the chain). MLX_BUN_SSD_WRITEBEHIND=0
-  // disables write-behind snapshots entirely — the paired-A/B lever + kill
-  // switch (restart survival then degrades to spill-on-evict only).
-  const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
-  const ssdFlushStep = <T>(step: () => T): Promise<T> =>
-    gateway.runWhenIdle(async () => step());
-  // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
-  // kv-store.ts): pending clones pin their entries' GPU buffers while the
-  // idle gate starves under sustained traffic, so QUEUED bytes are capped —
-  // over cap the oldest queued spill drops (clone disposed immediately, a
-  // future cache miss, never a wrong result) instead of accumulating past
-  // the prompt-cache cap. Default 2 GB (a quarter of the 8 GB RAM-cache
-  // default); MLX_BUN_SSD_SPILL_QUEUE_GB overrides. The durability
-  // coordinator retains a dirty record until the queue confirms the atomic
-  // store. Explicit flush and graceful shutdown can therefore retry a drop.
-  // `|| 2` would coerce an explicit "0" back to 2 GB — parse so 0 works
-  // (cap 0 = keep only the newest + in-flight clone pinned; the soft cap
-  // never drops the item just enqueued).
-  // The gateway exists before the spill queue because the SSD writer uses
-  // its idle boundary to avoid competing with generation.
+  // Cache policy owns RAM residency and SSD persistence independently of
+  // request scheduling. Published state is immutable.
   const gateway = new GenerationGateway(serving.gateway, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
     checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
@@ -618,41 +550,21 @@ export function createServer(
   const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
     (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
-  // Both queues share the configured total: reserve half for checkpoints
-  // only when that service exists. Each retains the existing soft-cap rule.
-  const checkpointQueueBytes = ssdStore && serverOptions.generationCheckpointTokens
-    ? Math.floor(spillQueueCapBytes / 2) : 0;
   if (ssdStore && serverOptions.generationCheckpointTokens)
-    checkpointPersistence = new ContinuationPersistence(ssdStore, { maxBytes: checkpointQueueBytes, runStep: ssdFlushStep });
-  const spillQueue = ssdStore
-    ? new SpillQueue(
-        spillQueueCapBytes - checkpointQueueBytes,
-        cacheBytes,
-        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushStep, item.attachments),
-        (caches) => { for (const c of caches) c.dispose(); },
-      )
-    : null;
+    checkpointPersistence = new ContinuationPersistence(ssdStore, {
+      maxBytes: spillQueueCapBytes,
+    });
   // Keep allocator headroom for the next forward. Only optional cache
   // snapshots are reclaimed; context, batch size and sampling stay intact.
   // Do not count MLX's reusable pool as live state or await an SSD write.
   const cacheWorkingSet = Math.min(maxRecommendedWorkingSetSize(), allocatorLimit ?? Infinity);
   const cacheOverBudget = () => Math.max(activeMemory(),
-    ctx.model.weightsBytes + promptCache.totalBytes + (spillQueue?.pendingBytes ?? 0)) > cacheWorkingSet * 0.85;
+    ctx.model.weightsBytes + Math.max(promptCache.totalBytes, spillQueue?.pendingBytes ?? 0)) > cacheWorkingSet * 0.85;
   promptCache.pressure = {
     // File-backed weights may not yet appear in MLX's active allocations
     // before the first forward. Account for their known footprint as well.
     overBudget: cacheOverBudget,
-    releasePending: () => spillQueue?.cancelWhere(cacheOverBudget),
   };
-  const durability = ssdStore && spillQueue && writeBehindOn
-    ? new SsdDurabilityCoordinator(
-        gateway,
-        promptCache,
-        spillQueue,
-        cloneState,
-        (tokens, ns) => ssdStore.hasDurablePrefix(tokens, ns),
-      )
-    : null;
   const durabilityStats = (): DurabilitySnapshotStats => {
     const stats = durability?.stats ?? {
       pendingSnapshots: 0,
@@ -681,33 +593,21 @@ export function createServer(
       elapsedMs: performance.now() - started,
     };
   };
-  // Every put() — serial lane AND batch scheduler — schedules the snapshot
-  // (Layer 0: batch-lane entries survive restarts too, not just evictions).
+  // Remember exact generated IDs independently of cache persistence.
   const tokenHistory = new GeneratedTokenHistory(ctx.tokenizer);
   if (ssdStore) for (const tokens of ssdStore.tokenPrefixes()) tokenHistory.remember(tokens);
-  promptCache.onPut = (tokens, ns) => {
+  promptCache.onPut = (tokens) => {
     tokenHistory.remember(tokens);
-    durability?.schedule(tokens, ns);
   };
 
-  // Idle demotion (Layer 0): entries unused for --ssd-demote-idle seconds
-  // spill to SSD and free their GPU memory — the RAM tier drains between
-  // bursts while every prefix stays reachable (take() restores via
-  // zero-copy mmap). The exclusive section below covers only the sweep's
-  // zero-copy clone + dispose (spillOwned above); the SSD write itself
-  // runs off-lock on ssdWriteChain. Swept only when the engine is TRULY idle: the
-  // runExclusive below registers as a serial waiter, which would DRAIN a
-  // running batch, so the activity check guards it (a momentary exclusive
-  // grab of an idle engine is free). 0 disables.
+  // Cache age, not scheduler activity, decides idle demotion. The cache
+  // queues any missing SSD copy and retains RAM until that copy commits.
   const demoteIdleMs = (serverOptions.ssdDemoteIdleSec ?? (ssdStore ? 300 : 0)) * 1000;
   let demoteTimer: ReturnType<typeof setInterval> | null = null;
   if (ssdStore && demoteIdleMs > 0) {
     demoteTimer = setInterval(() => {
-      if (gateway.busy) return;
-      void gateway.runExclusive(async () => {
-        const n = promptCache.demoteIdle(demoteIdleMs);
-        if (n > 0) console.log(`[ssd-cache] demoted ${n} idle entr${n === 1 ? "y" : "ies"} to disk`);
-      }).catch(() => {});
+      const n = promptCache.demoteIdle(demoteIdleMs);
+      if (n > 0) console.log(`[ssd-cache] demoted ${n} idle entr${n === 1 ? "y" : "ies"} to disk`);
     }, Math.max(30_000, demoteIdleMs / 4));
     demoteTimer.unref?.();
   }

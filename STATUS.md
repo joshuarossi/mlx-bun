@@ -46,13 +46,26 @@ The saved failure sequence is reproduced on main and passes with the fix,
 including identical CSS output and usage. M1 native RAM/SSD HTTP checks,
 the complete local suite, typechecks and docs checks pass. The first tool turn
 now reuses its generated history. [PR #50](https://github.com/joshuarossi/mlx-bun/pull/50)
-contains the fix. The fresh M4 task on `a40588e` completes with an identical
+merged as `8c5ddbc` on September 12 UTC. The fresh M4 task on `a40588e` has an identical
 initial request and no inference failures; every follow-up hits the cache.
 Its untouched app fails two browser acceptance categories, and pressure
 evicts older unwritten snapshots despite successful latest-state persistence.
 App quality and older-history retention remain open. Reports and app:
 `reports/kanban-cache-fixed-fresh/`; the failed run and snapshots are preserved.
 Evidence and measured limits: [benchmarks.md](docs/reference/benchmarks.md#saved-kanban-cache-failure-replay--m4-pro-24-gb-2026-09-12-utc).
+The seeded M4 repeat completes in 78m31s with 72,289 tokens and 26/26 follow-up
+cache hits. Its first response matches exactly; directory timestamps change
+the next input. Browser acceptance remains 16/18 with the same two defects.
+Evidence: `reports/kanban-cache-fixed-repeat-r1/`; previous runs are preserved.
+
+Cache persistence correction is implemented on `fix/ssd-background-persistence`.
+One cache owns RAM residency and SSD persistence. A CPU worker writes immutable
+state without the generation lock; eviction retains unwritten victims until
+SSD completion. All 2,249 model-free tests pass, with 14 fixture skips; focused tests pass
+after the final residency callback change. Native codec bytes match the existing
+writer; compiled-worker and M4 shared-MTP RAM/SSD checks pass. A paired M4
+storage diagnostic keeps decode effectively unchanged while persisting during
+generation. Full Kanban retention acceptance has not been repeated. [Design and serving-cache comparison](docs/design/kv-cache.md#54-background-persistence-and-ram-residency).
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

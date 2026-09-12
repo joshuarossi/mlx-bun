@@ -272,6 +272,7 @@ and reaches output in 1.73 s. The fourth request completes normally.
 | First preserved run, September 8 | 3h 33m 07.685s | 130,494 | 62 | 56m 39.895s | Pass; 15 recorded checks |
 | Previous successful run, September 9 | 1h 24m 45.387s | 68,958 | 15 | 13m 34.988s | 18/18 |
 | Fresh cache fix, September 12 UTC | 1h 30m 02.183s | 79,523 | 30 | 3m 18.143s | 16/18; fails quality acceptance |
+| Seeded cache-fix repeat, September 12 UTC | 1h 18m 31.250s | 72,289 | 27 | 2m 07.925s | 16/18; same two defects |
 
 The fresh task takes 6.2% longer than the previous success and generates
 15.3% more output. Its summed TTFT is 75.7% lower. Later responses, tool calls
@@ -296,6 +297,52 @@ and full app quality acceptance remain open. Results, unchanged app, request
 streams, `quality.json`, browser evidence and `comparison.json` are preserved
 under `reports/kanban-cache-fixed-fresh/` on both machines; the SSD files remain
 on the M4. Earlier runs and their snapshots are preserved.
+
+The seeded repeat on `0d20953` uses identical engine hashes and settings,
+a fresh empty output directory and fresh RAM/SSD caches. The sent initial
+request, first 35,002-token response and its full usage record match the prior
+fresh run. The first model-visible difference is the live `ls -la` result:
+both `.` and `..` timestamps change from `18:55` to `21:08`. The next rendered
+input and subsequent output differ. This is not an identical-input replay.
+
+The repeat takes 12.8% less time and generates 9.1% fewer tokens than the
+prior fresh task; engine sources did not change. All 26 follow-ups hit the
+cache. Pi records seven tool errors during app checks, no inference failures,
+no retries and no compactions. Independent browser checks on the untouched
+14-file app again pass 16/18 categories, with filter reset and keyboard edit
+still failing. Three SSD snapshots persist through 81,076 tokens, totaling
+5.33 GB; flush reports 51 missing older snapshots and `durable: false`.
+Reports and app: `reports/kanban-cache-fixed-repeat-r1/`; browser acceptance
+is in `quality.json`, and input/output comparisons are in
+`repeat-comparison.json` and `jsonl-comparison.json`. SSD files remain on M4.
+
+### Background SSD persistence diagnostic, M4 Pro
+
+September 12, 2026; M4 Pro 24 GB, Bun 1.4.2, native pack 0.4.0 / MLX
+0.32.2. Packed Qwen3.8-27B interleave2 with RTN4 MTP, depth 2, affine KV4,
+shared batch cap 8 with one actual row, greedy sampling and seed 42. This
+isolates storage overlap on the candidate engine; it is not the standard
+HTTP benchmark or a fresh Kanban comparison.
+
+Four AB/BA runs each generate 128 tokens from the same 271-token cached
+prefix. A synthetic strided KV payload produces a 536,879,104-byte file.
+The deferred arm writes after inference. The background arm queues the same
+write after output token 16. Both use the new CPU writer and fsync+rename.
+
+| Measurement, mean of two runs | Deferred until inference finishes | Background during decode |
+| --- | ---: | ---: |
+| Post-first-token decode | 25.75 tok/s | 25.74 tok/s |
+| Inference plus completed persistence | 5.200 s | 5.128 s |
+| Time spent writing | 73.2 ms | 119.6 ms |
+| Output tokens emitted when write completes | 128 | 19 |
+
+All four responses and MTP acceptance sequences are identical. Background
+persistence takes longer while competing for memory bandwidth, but completes
+while decode advances from token 16 to 19; measured decode throughput is
+within 0.04%. This supports overlapping this payload without a meaningful
+decode penalty. It does not establish long-context, sustained-write or
+end-to-end Kanban gains. Raw results and source hashes:
+`reports/ssd-background-persistence/m4-overlap.json`.
 
 ## Historical results and section links
 
