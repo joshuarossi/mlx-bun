@@ -91,7 +91,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
       try {
         caches = snapshot(); attachments.push(prefix!.capture(index).attachment);
         method.host.promptCache!.put(state.row.req.promptIds.slice(0, state.pos), caches,
-          state.request.namespace, undefined, attachments);
+          state.request.namespace, undefined, attachments, state.row.req.cacheSessionId);
         caches = []; attachments = [];
       } finally { disposeResources([...caches, { dispose: () => disposeAttachments(attachments) }]); }
     };
@@ -118,7 +118,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
           const pendingPrompt = prefix.prefillMode !== "full" && method.binding.prefillTailSplit && prompt.length > 1;
           request.prefixLength = prompt.length - Number(pendingPrompt);
           request.namespace = speculativePrefixNamespace(prefix.namespace, row.cacheNamespace ?? "", options);
-          const hit = method.host.promptCache?.take(prompt, request.namespace);
+          const hit = method.host.promptCache?.take(prompt, request.namespace, row.req.cacheSessionId);
           if (hit) {
             try {
               disposeResources(caches); caches = hit.caches.splice(0);
@@ -334,7 +334,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
       target = this.#target!.extractRow(index);
       attachments.push(this.#draft!.capture(index).attachment);
       this.host.promptCache.put([...row.req.promptIds.slice(0, request.prefixLength), ...request.processed], target,
-        request.namespace, undefined, attachments);
+        request.namespace, undefined, attachments, row.req.cacheSessionId);
       target = []; attachments = [];
     } finally { disposeResources([...target, { dispose: () => disposeAttachments(attachments) }]); }
   }

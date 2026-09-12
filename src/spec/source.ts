@@ -187,6 +187,8 @@ export interface DraftPrefillGroup {
 }
 
 export interface GroupedDraftProvider {
+  /** Resolve persistence identity without allocating a draft row. */
+  checkpointNamespace?(): string;
   /** Draft state remains valid when target forwards run under a mounted
    * adapter context. Unqualified learned draft graphs leave this absent. */
   readonly supportsTargetAdapters?: boolean;

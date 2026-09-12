@@ -171,6 +171,7 @@ export type BatchRequest = BatchRequestFields & (
 );
 
 interface BatchRequestFields {
+  cacheSessionId?: string;
   /** Optional ordinary continuation policy; owns persistence and sampler recovery. */
   continuation?: OrdinaryContinuation;
   statePolicy?: MlxRequestStatePolicy;
@@ -816,7 +817,7 @@ export class MlxBatchExecutionGroup {
       row.cachedTokens = Math.min(saved.cacheTokens.length, row.promptTokens);
       const stop = await this.#emit(row, saved.pendingToken);
       if (stop !== "continue") {
-        this.#putOrDispose(p.solo, saved.cacheTokens, p.retain, row.cacheNamespace);
+        this.#putOrDispose(p.solo, saved.cacheTokens, p.retain, row.cacheNamespace, row.req.cacheSessionId);
         p.solo = [];
         this.#finish(row, stop);
         return;
@@ -868,7 +869,7 @@ export class MlxBatchExecutionGroup {
         const stop = await this.#emit(p.row, tok);
         // Token 0 was sampled but never fed — the caches cover exactly the
         // prompt, a clean prompt-only entry (put-or-dispose).
-        this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain, p.row.cacheNamespace);
+        this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain, p.row.cacheNamespace, p.row.req.cacheSessionId);
         this.#finish(p.row, stop === "continue" ? "stop" : stop);
         return;
       }
@@ -876,7 +877,7 @@ export class MlxBatchExecutionGroup {
 
     const stop = await this.#emit(p.row, tok);
     if (stop !== "continue") {
-      this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain, p.row.cacheNamespace);
+      this.#putOrDispose(p.solo, p.row.req.promptIds, p.retain, p.row.cacheNamespace, p.row.req.cacheSessionId);
       this.#finish(p.row, stop);
       return;
     }
@@ -1609,7 +1610,7 @@ export class MlxBatchExecutionGroup {
    *  offset lines up (defensive — a mismatch means the accounting is wrong
    *  and the entry would corrupt future hits), else dispose. `retain` rides
    *  along per the PromptCacheEntry contract (runs after dispose). */
-  #putOrDispose(caches: Cache[], tokens: number[], retain?: () => void, namespace = ""): void {
+  #putOrDispose(caches: Cache[], tokens: number[], retain?: () => void, namespace = "", sessionId?: string): void {
     if (this.#promptCache) {
       // A never-merged row can still own a row layout. Persistence receives
       // its existing serial representation, just like merged-row retirement.
@@ -1630,7 +1631,7 @@ export class MlxBatchExecutionGroup {
         (c) => typeof (c as { offset?: unknown }).offset === "number",
       ) as { offset: number } | undefined;
       if (withOff && withOff.offset === tokens.length) {
-        this.#promptCache.put(tokens, caches, namespace, retain);
+        this.#promptCache.put(tokens, caches, namespace, retain, undefined, sessionId);
         return;
       }
     }
@@ -1641,13 +1642,13 @@ export class MlxBatchExecutionGroup {
   /** Extract a finishing MERGED row's KV into fresh serial caches and put()
    *  them keyed by [promptIds + fed] — the batch-lane mirror of mlx-lm
    *  server.py:872 (extract_cache → prompt_cache.insert_cache). Gates:
-   *  promptTokens >= 256 (the boundary-snapshot substantiality gate,
-   *  server.ts) and an exact coverage key (!fedTainted). Refusal
+   *  promptTokens >= 256 or an explicit cache session, plus an exact
+   *  coverage key (!fedTainted). Refusal
    *  (#extractRowCaches null) just disposes-by-omission — the row's KV dies
    *  with the filter, exactly the pre-extraction behavior. */
   #extractAndPut(b: number, row: Row): void {
     if (!this.#promptCache || !row.merged || row.fedTainted) return;
-    if (row.promptTokens < 256) return;
+    if (row.promptTokens < 256 && !row.req.cacheSessionId) return;
     const tokens = [...row.req.promptIds, ...row.fed];
     const caches = this.#extractRowCaches(b, tokens.length);
     if (!caches) return;
@@ -1656,7 +1657,7 @@ export class MlxBatchExecutionGroup {
     // buffers free once the copies land, instead of being pinned by a lazy
     // graph inside an idle cache entry.
     withResource(leaseCacheStates(caches), state => ops.asyncEvalAll([...state]));
-    this.#putOrDispose(caches, tokens, undefined, row.cacheNamespace);
+    this.#putOrDispose(caches, tokens, undefined, row.cacheNamespace, row.req.cacheSessionId);
   }
 
   /** Row `b` of every layer as OWNED serial-class caches, or null when a
@@ -1724,7 +1725,7 @@ export class MlxBatchExecutionGroup {
           inners as Cache[],
           [...solo.req.promptIds, ...solo.fed],
           this.#adoptedRetain ?? undefined,
-          solo.cacheNamespace,
+          solo.cacheNamespace, solo.req.cacheSessionId,
         );
       } else {
         for (const c of inners) c.dispose();

@@ -528,6 +528,8 @@ const LAB_IMPORT_ALLOWLIST = new Set([
   // binds it to shared execution. Scheduling does not own page allocation.
   "src/backends/mlx/request-state-policy.ts -> lab/paged-kv/paged-kv",
   "src/backends/mlx/cache-layout.ts -> lab/paged-kv/paged-kv",
+  // Optional page state uses its own codec; keep storage independent of row execution.
+  "src/backends/mlx/paged-cache-codec.ts -> lab/paged-kv/paged-kv",
   "src/backends/mlx/cache-layout.ts -> lab/paged-kv/paged-kv-rows",
   "src/model/gemma4.ts -> lab/expert-trace/expert-trace", // MLX_BUN_EXPERT_TRACE hook
 ]);

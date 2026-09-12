@@ -94,6 +94,8 @@ export function createRequestPrep(input: {
       ? Math.min(genTemp, NO_THINK_TEMPERATURE)
       : genTemp;
     return {
+      cacheSessionId: typeof req.session_id === "string" ? req.session_id :
+        typeof req.prompt_cache_key === "string" ? req.prompt_cache_key : undefined,
       // Unset means generate until EOS/stop. Only a client cap or an explicit
       // operator limit constrains completion length; fit estimates do not.
       maxTokens: req.max_completion_tokens ?? req.max_tokens ??

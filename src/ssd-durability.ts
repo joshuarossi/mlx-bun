@@ -4,11 +4,6 @@ import type { Cache } from "./model/gemma4";
 import type { PromptCacheEntry } from "./prompt-cache";
 import type { SpillItem, SpillQueue } from "./kv-store";
 
-export interface DurabilityGateway {
-  readonly busy: boolean;
-  runWhenIdle<T>(fn: () => Promise<T>): Promise<T>;
-}
-
 export interface DurabilityPromptCache {
   findExact(tokens: number[], ns?: string): PromptCacheEntry | null;
 }
@@ -50,21 +45,22 @@ export class SsdDurabilityCoordinator {
   #flush: Promise<DurabilityFlushResult> | null = null;
 
   constructor(
-    readonly gateway: DurabilityGateway,
     readonly promptCache: DurabilityPromptCache,
     readonly spillQueue: SpillQueue,
     readonly cloneCaches: (caches: Cache[]) => Cache[],
     readonly isAlreadyDurable: (tokens: number[], ns: string) => boolean = () => false,
-    readonly debounceMs = 1_000,
-    readonly busyRetryMs = 5_000,
+    readonly debounceMs = 0,
+    readonly retryMs = 5_000,
+    readonly onStored: () => void = () => {},
   ) {}
 
-  schedule(tokens: number[], ns = ""): void {
+  schedule(tokens: number[], ns = "", replace = true): void {
     if (tokens.length === 0) return;
     // PromptCache can hold unrelated entries with the same namespace and
     // length. Include the tokens so one conversation cannot cancel another
     // conversation's pending durability record.
     const key = `${ns.length}:${ns}:${tokens.join(",")}`;
+    if (!replace && this.#dirty.has(key)) return;
     const rec: DirtySnapshot = { key, tokens: [...tokens], ns };
     this.#dirty.set(key, rec);
     this.#arm(key, this.debounceMs);
@@ -108,10 +104,6 @@ export class SsdDurabilityCoordinator {
 
     const rec = this.#dirty.get(key);
     if (!rec) return "stored";
-    if (!force && this.gateway.busy) {
-      this.#arm(key, this.busyRetryMs);
-      return "failed";
-    }
 
     const task = this.#store(rec);
     this.#attempts.set(key, task);
@@ -120,7 +112,7 @@ export class SsdDurabilityCoordinator {
       if (outcome === "stored" && this.#dirty.get(key) === rec)
         this.#dirty.delete(key);
       if (outcome !== "stored" && !force && this.#dirty.get(key) === rec)
-        this.#arm(key, this.busyRetryMs);
+        this.#arm(key, this.retryMs);
       return outcome;
     } finally {
       if (this.#attempts.get(key) === task) this.#attempts.delete(key);
@@ -130,7 +122,7 @@ export class SsdDurabilityCoordinator {
   async #store(rec: DirtySnapshot): Promise<StoreOutcome> {
     let snap: SpillItem | null = null;
     try {
-      snap = await this.gateway.runWhenIdle(async () => {
+      snap = (() => {
         if (this.isAlreadyDurable(rec.tokens, rec.ns)) return null;
         const entry = this.promptCache.findExact(rec.tokens, rec.ns);
         if (!entry) return null;
@@ -141,13 +133,17 @@ export class SsdDurabilityCoordinator {
         } catch (error) {
           return cleanupFailure(error, () => disposeResources(caches));
         }
-      });
+      })();
     } catch {
       return "failed";
     }
     if (!snap)
       return this.isAlreadyDurable(rec.tokens, rec.ns) ? "stored" : "missing";
-    return await this.spillQueue.enqueue(snap) ? "stored" : "failed";
+    const stored = await this.spillQueue.enqueue(snap);
+    // The queue releases its views before this continuation runs. Residency
+    // policy now sees memory without the completed writer's ownership.
+    if (stored) this.onStored();
+    return stored ? "stored" : "failed";
   }
 
   async #flushInner(started: number): Promise<DurabilityFlushResult> {
@@ -159,12 +155,13 @@ export class SsdDurabilityCoordinator {
     const droppedBefore = this.spillQueue.droppedCount;
     const failedBefore = this.spillQueue.failedCount;
 
-    if (this.#attempts.size > 0)
-      await Promise.allSettled([...this.#attempts.values()]);
+    if (this.#attempts.size > 0) {
+      const results = await Promise.allSettled([...this.#attempts.values()]);
+      flushedSnapshots += results.filter(result => result.status === "fulfilled" && result.value === "stored").length;
+    }
     await this.spillQueue.drain();
 
-    // Flush one entry at a time. This prevents the queue cap from dropping a
-    // boundary snapshot while a large final snapshot is already in flight.
+    // Flush dirty entries serially without a second queue of snapshots.
     // Attempt each record version once. Missing state stays dirty, so a
     // second flush cannot report success without a real durable snapshot.
     const attempted = new Set<DirtySnapshot>();

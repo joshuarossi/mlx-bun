@@ -55,9 +55,9 @@ test("supported affine KV batches; unavailable layouts and TurboQuant remain ser
   expect(resolveExecution({ ...request, turboQuant: true }, capabilities).mechanism).toBe("serial");
 });
 
-test("paged fallback, prompt-cache bypass, and checkpoints use one decision", () => {
+test("paged placement keeps prefix reuse separate from interruption checkpoints", () => {
   const features = { pagedKv: true, fill: false };
-  expect(resolveExecution(request, capabilities, features)).toMatchObject({ pagedKv: true, promptCache: false, checkpoint: false });
+  expect(resolveExecution(request, capabilities, features)).toMatchObject({ pagedKv: true, promptCache: true, checkpoint: false });
   expect(resolveExecution({ ...request, hasAdapters: true }, capabilities, features))
     .toMatchObject({ pagedKv: false, promptCache: true, checkpoint: true });
   expect(resolveExecution({ ...request, hasVision: true }, capabilities, features))

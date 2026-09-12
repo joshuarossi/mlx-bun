@@ -55,6 +55,7 @@ export function openStandaloneDraftRows(binding: MlxAutoregressiveBinding, names
 
 export function standaloneDraftGroups(binding: MlxAutoregressiveBinding, namespace: string): GroupedDraftProvider {
   return {
+    checkpointNamespace: () => namespace,
     open: options => openStandaloneDraftRows(binding, namespace, options.sampling, options.checkpoints),
     openPrefill: options => openStandaloneDraftRows(binding, namespace, null, options.checkpoints),
   };

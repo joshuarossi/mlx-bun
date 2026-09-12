@@ -26,7 +26,7 @@ import {
   type GenerateOptions,
 } from "./generate";
 import { createPreparationExecutor } from "./serve/preparation";
-import { cloneKvCaches, legacyCacheCodecs, SpillQueue } from "./kv-store";
+import { cloneKvCaches, legacyCacheCodecs } from "./kv-store";
 import type { Cache } from "./model/gemma4";
 import { resolveKvScheme } from "./kv-scheme";
 import { runtimeValue } from "./runtime-config";
@@ -49,10 +49,11 @@ import { handleLabRoute } from "./serve/lab-routes";
 import { handleModelAdminRoute } from "./serve/model-admin-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 
-import { PromptCache, cacheBytes } from "./prompt-cache";
+import { PromptCache } from "./prompt-cache";
+import { CostSizeRetention } from "./storage/retention-policy";
+import { TieredPromptCache } from "./tiered-prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import {
-  SsdDurabilityCoordinator,
   type DurabilityFlushResult,
   type DurabilitySnapshotStats,
 } from "./ssd-durability";
@@ -398,10 +399,9 @@ export function createServer(
   // quietly (kv-quant: the swap would drop the scheme; speculative
   // provider composition with paged storage is not implemented).
   if (serverOptions.pagedKv) {
-    if (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant)
+    if (kvScheme.kvConfig?.length || kvScheme.turboQuant)
       throw new Error(
-        `--paged-kv is bf16-only in v1 — omit --kv-quant (quantized paged ` +
-          `blocks are a documented follow-up, docs/design/kv-cache.md).`,
+        `--paged-kv supports bf16 and uniform affine KV4/KV8; per-layer and TurboQuant pages are not implemented.`,
       );
     if (ctx.draft)
       throw new Error(
@@ -416,11 +416,7 @@ export function createServer(
     const bs = serverOptions.pagedKv.blockSize;
     if (bs !== undefined && (!Number.isInteger(bs) || bs <= 0))
       throw new Error(`--paged-kv-block-size must be a positive integer (got ${bs})`);
-    if (serverOptions.ssdCacheDir)
-      console.warn(
-        "[paged-kv] --ssd-cache has no effect: paged requests bypass the prompt " +
-          "cache (v1 non-goal), so nothing reaches the SSD tier.",
-      );
+
   }
 
   // SSD cold tier (docs/design/kv-cache.md): prefix KV survives RAM
@@ -455,6 +451,8 @@ export function createServer(
       tokenizerHash: Bun.hash(tokJson).toString(16),
       modelId: ctx.modelId,
       verify: serverOptions.ssdCacheVerify,
+      storage: { layout: runtimeValue("MLX_BUN_SSD_LAYOUT") === "blocks" ? "blocks" : "whole",
+        segmented: runtimeValue("MLX_BUN_SSD_SEGMENTED") !== "0" },
     });
     const recovered = ssdStore.scan();
     const capacity = Number.isFinite(ssdStore.maxBytes)
@@ -476,6 +474,10 @@ export function createServer(
           const h = ssdStore!.find(prompt, ns);
           return h ? { prefixLen: h.prefixLen, handle: h.entry } : null;
         },
+        findExact: (tokens: number[], ns: string) => {
+          const hit = ssdStore!.findExact(tokens, ns);
+          return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null;
+        },
         restore: (handle: unknown) => {
           const loaded = serving.restore(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
           if (!loaded) return null;
@@ -485,6 +487,12 @@ export function createServer(
           // as a no-op so callers' dispose ordering is unchanged.
           return { tokens: loaded.tokens, caches: loaded.caches, attachments: loaded.attachments, retain: () => {} };
         },
+        ...(serving.restoreAsync && runtimeValue("MLX_BUN_SSD_PREFETCH") !== "0" ? {
+          restoreAsync: async (handle: unknown) => {
+            const loaded = await serving.restoreAsync!(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
+            return loaded ? { ...loaded, retain: () => {} } : null;
+          },
+        } : {}),
         store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string,
           attachments?: import("./backends/mlx/checkpoint-state").CheckpointAttachment[]) => {
           if (ssdStore!.hasDurablePrefix(tokens, ns)) return true;
@@ -492,29 +500,13 @@ export function createServer(
         },
       }
     : null;
-  const promptCache = new PromptCache(
-    promptCacheCap,
-    // RAM eviction AND idle demotion spill to the cold tier NON-BLOCKING
-    // (2026-07-06, same contract as the write-behind snapshot below): the
-    // cache hands us OWNED zero-copy clones + copied tokens (made under
-    // the generation lock — microseconds; entries are immutable so the
-    // clones stay consistent), and the flush goes through the BOUNDED
-    // SpillQueue -> storeAsync (generation-locked per tensor, see below) ->
-    // clone disposal on every settle/drop path (that dispose is what
-    // actually frees the demoted GPU memory; the queue's byte cap keeps
-    // starved-gate retention bounded — 2026-07-07 review fix). spillQueue
-    // is declared with the snapshot scheduler below; safe to close over
-    // here because spills only fire at put()/demoteIdle time, long after
-    // init.
-    ssdStore
-      ? {
-          spillOwned: (entry) =>
-            spillQueue!.enqueue({ tokens: entry.tokens, caches: entry.caches, ns: entry.ns, attachments: entry.attachments }),
-        }
-      : null,
-    coldTier,
-    cloneState,
-  );
+  const promptCache = ssdStore && coldTier
+    ? new TieredPromptCache(promptCacheCap, ssdStore, coldTier, cloneState,
+        runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0")
+    : new PromptCache(promptCacheCap, null, null, cloneState);
+  if (runtimeValue("MLX_BUN_CACHE_RETENTION") === "cost-size") promptCache.retention = new CostSizeRetention();
+  const spillQueue = promptCache instanceof TieredPromptCache ? promptCache.spillQueue : null;
+  const durability = promptCache instanceof TieredPromptCache ? promptCache.durability : null;
   // Responses-API store for previous_response_id resumption (Phase 11):
   // TTL + byte-capped LRU, port of optiq/response_store.py. Pairs with
   // the prompt cache: a resumed conversation re-renders the same prefix,
@@ -554,59 +546,8 @@ export function createServer(
   serving.gateway.configureContinuation?.(executionServices);
   const runGeneration = serving.createSerial(executionServices);
 
-  // Write-behind persistence (restart survival — the oMLX boundary-snapshot
-  // idea at whole-entry granularity, spill-on-evict alone can't survive a
-  // clean exit): after a request completes, snapshot its still-RAM-resident
-  // entry to SSD off the request path. Debounced + coalesced per namespace —
-  // an agent hammering one conversation persists the settled state once
-  // things go quiet, not every turn. Runs under the gateway lock (byte
-  // extraction must not race a generation mutating the entry); if the entry
-  // was evicted (already spilled) or extended (a newer schedule pending)
-  // meanwhile, findExact misses and nothing is written.
-  // Keyed by namespace and exact tokens: a sub-second final [prompt+gen] put
-  // must not cancel the pending boundary snapshot, and unrelated prompts of
-  // equal length must not cancel each other. Exact reschedules still
-  // coalesce; stale keys self-clean when findExact misses.
-  //
-  // NON-BLOCKING (2026-07-06, the write-behind persistence contract): the
-  // gateway lock is held only for a zero-copy SNAPSHOT (findExact +
-  // cloneKvCaches — microseconds; entries are immutable so the clones are
-  // consistent forever). The flush itself runs OFF the lock via
-  // storeAsync, and writes chain serially so two multi-hundred-MB flushes
-  // never overlap.
-  //
-  // IDLE-GATED (2026-07-07, the decode@ctx fix): "off the lock" was not
-  // enough — every per-tensor flush step is a blocking GPU sync on the
-  // SAME stream decode uses (ops.contiguous enqueues a kernel, rawBytesView
-  // evals) plus a synchronous multi-MB writeSync, and the setImmediate
-  // pacing interleaved those slices exactly between decode tokens. A ~16k
-  // entry's flush overlapping the bench's ctx repeats depressed decode@ctx
-  // ~9% on e4b (mlx-lm runs no equivalent background work). Now every step
-  // — including the first — runs through gateway.runWhenIdle(), so the
-  // flush only progresses while NOTHING is generating and pauses when a
-  // request arrives mid-flush. Tradeoffs, accepted: durability waits for a
-  // quiet moment (single-user serving quiesces constantly; sustained
-  // hammering defers the flush AND the spill clones' GPU-memory release —
-  // bounded by the chain). MLX_BUN_SSD_WRITEBEHIND=0
-  // disables write-behind snapshots entirely — the paired-A/B lever + kill
-  // switch (restart survival then degrades to spill-on-evict only).
-  const writeBehindOn = runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0";
-  const ssdFlushStep = <T>(step: () => T): Promise<T> =>
-    gateway.runWhenIdle(async () => step());
-  // Bounded write-behind queue (2026-07-07 review fix — see SpillQueue in
-  // kv-store.ts): pending clones pin their entries' GPU buffers while the
-  // idle gate starves under sustained traffic, so QUEUED bytes are capped —
-  // over cap the oldest queued spill drops (clone disposed immediately, a
-  // future cache miss, never a wrong result) instead of accumulating past
-  // the prompt-cache cap. Default 2 GB (a quarter of the 8 GB RAM-cache
-  // default); MLX_BUN_SSD_SPILL_QUEUE_GB overrides. The durability
-  // coordinator retains a dirty record until the queue confirms the atomic
-  // store. Explicit flush and graceful shutdown can therefore retry a drop.
-  // `|| 2` would coerce an explicit "0" back to 2 GB — parse so 0 works
-  // (cap 0 = keep only the newest + in-flight clone pinned; the soft cap
-  // never drops the item just enqueued).
-  // The gateway exists before the spill queue because the SSD writer uses
-  // its idle boundary to avoid competing with generation.
+  // Cache policy owns RAM residency and SSD persistence independently of
+  // request scheduling. Published state is immutable.
   const gateway = new GenerationGateway(serving.gateway, batch, runGeneration, {
     kvBudgetBytes: serverOptions.kvBudgetBytes,
     checkpoints: !!(serverOptions.generationCheckpointTokens && ssdStore),
@@ -618,41 +559,21 @@ export function createServer(
   const spillQueueGbRaw = Number(runtimeValue("MLX_BUN_SSD_SPILL_QUEUE_GB"));
   const spillQueueCapBytes =
     (Number.isFinite(spillQueueGbRaw) && spillQueueGbRaw >= 0 ? spillQueueGbRaw : 2) * 1024 ** 3;
-  // Both queues share the configured total: reserve half for checkpoints
-  // only when that service exists. Each retains the existing soft-cap rule.
-  const checkpointQueueBytes = ssdStore && serverOptions.generationCheckpointTokens
-    ? Math.floor(spillQueueCapBytes / 2) : 0;
   if (ssdStore && serverOptions.generationCheckpointTokens)
-    checkpointPersistence = new ContinuationPersistence(ssdStore, { maxBytes: checkpointQueueBytes, runStep: ssdFlushStep });
-  const spillQueue = ssdStore
-    ? new SpillQueue(
-        spillQueueCapBytes - checkpointQueueBytes,
-        cacheBytes,
-        (item) => ssdStore!.storeAsync(item.tokens, item.caches, item.ns, ssdFlushStep, item.attachments),
-        (caches) => { for (const c of caches) c.dispose(); },
-      )
-    : null;
+    checkpointPersistence = new ContinuationPersistence(ssdStore, {
+      maxBytes: spillQueueCapBytes,
+    });
   // Keep allocator headroom for the next forward. Only optional cache
   // snapshots are reclaimed; context, batch size and sampling stay intact.
   // Do not count MLX's reusable pool as live state or await an SSD write.
   const cacheWorkingSet = Math.min(maxRecommendedWorkingSetSize(), allocatorLimit ?? Infinity);
   const cacheOverBudget = () => Math.max(activeMemory(),
-    ctx.model.weightsBytes + promptCache.totalBytes + (spillQueue?.pendingBytes ?? 0)) > cacheWorkingSet * 0.85;
+    ctx.model.weightsBytes + Math.max(promptCache.totalBytes, spillQueue?.pendingBytes ?? 0)) > cacheWorkingSet * 0.85;
   promptCache.pressure = {
     // File-backed weights may not yet appear in MLX's active allocations
     // before the first forward. Account for their known footprint as well.
     overBudget: cacheOverBudget,
-    releasePending: () => spillQueue?.cancelWhere(cacheOverBudget),
   };
-  const durability = ssdStore && spillQueue && writeBehindOn
-    ? new SsdDurabilityCoordinator(
-        gateway,
-        promptCache,
-        spillQueue,
-        cloneState,
-        (tokens, ns) => ssdStore.hasDurablePrefix(tokens, ns),
-      )
-    : null;
   const durabilityStats = (): DurabilitySnapshotStats => {
     const stats = durability?.stats ?? {
       pendingSnapshots: 0,
@@ -681,33 +602,21 @@ export function createServer(
       elapsedMs: performance.now() - started,
     };
   };
-  // Every put() — serial lane AND batch scheduler — schedules the snapshot
-  // (Layer 0: batch-lane entries survive restarts too, not just evictions).
+  // Remember exact generated IDs independently of cache persistence.
   const tokenHistory = new GeneratedTokenHistory(ctx.tokenizer);
   if (ssdStore) for (const tokens of ssdStore.tokenPrefixes()) tokenHistory.remember(tokens);
-  promptCache.onPut = (tokens, ns) => {
+  promptCache.onPut = (tokens) => {
     tokenHistory.remember(tokens);
-    durability?.schedule(tokens, ns);
   };
 
-  // Idle demotion (Layer 0): entries unused for --ssd-demote-idle seconds
-  // spill to SSD and free their GPU memory — the RAM tier drains between
-  // bursts while every prefix stays reachable (take() restores via
-  // zero-copy mmap). The exclusive section below covers only the sweep's
-  // zero-copy clone + dispose (spillOwned above); the SSD write itself
-  // runs off-lock on ssdWriteChain. Swept only when the engine is TRULY idle: the
-  // runExclusive below registers as a serial waiter, which would DRAIN a
-  // running batch, so the activity check guards it (a momentary exclusive
-  // grab of an idle engine is free). 0 disables.
+  // Cache age, not scheduler activity, decides idle demotion. The cache
+  // queues any missing SSD copy and retains RAM until that copy commits.
   const demoteIdleMs = (serverOptions.ssdDemoteIdleSec ?? (ssdStore ? 300 : 0)) * 1000;
   let demoteTimer: ReturnType<typeof setInterval> | null = null;
   if (ssdStore && demoteIdleMs > 0) {
     demoteTimer = setInterval(() => {
-      if (gateway.busy) return;
-      void gateway.runExclusive(async () => {
-        const n = promptCache.demoteIdle(demoteIdleMs);
-        if (n > 0) console.log(`[ssd-cache] demoted ${n} idle entr${n === 1 ? "y" : "ies"} to disk`);
-      }).catch(() => {});
+      const n = promptCache.demoteIdle(demoteIdleMs);
+      if (n > 0) console.log(`[ssd-cache] demoted ${n} idle entr${n === 1 ? "y" : "ies"} to disk`);
     }, Math.max(30_000, demoteIdleMs / 4));
     demoteTimer.unref?.();
   }
@@ -757,6 +666,15 @@ export function createServer(
     ctx, prep, contextLimit, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
   const openAiMeta = (id: string) => ({ id, created: Math.floor(Date.now() / 1000), model: ctx.modelId });
+  /** Carry application session affinity into the shared cache request fields. */
+  const applyCacheSession = (body: ChatRequestParams, request: Request, original: unknown = body) => {
+    const fields = original as { session_id?: unknown; prompt_cache_key?: unknown };
+    const session = typeof fields.session_id === "string" ? fields.session_id :
+      typeof fields.prompt_cache_key === "string" ? fields.prompt_cache_key :
+      request.headers.get("x-session-affinity") ?? request.headers.get("session_id") ?? undefined;
+    if (runtimeValue("MLX_BUN_SESSION_CACHE") !== "0") body.session_id = session;
+    else { delete body.session_id; delete body.prompt_cache_key; }
+  };
   /** Parse the JSON body under the request's trace; a bad body is a 400. */
   const parseBody = async <T,>(request: Request, trace: PromptResponseTrace | undefined): Promise<T | Response> => {
     const closeBodyParse = trace?.begin("request.body_parse");
@@ -811,6 +729,12 @@ export function createServer(
     async fetch(request, server) {
       const url = new URL(request.url);
 
+      if (url.pathname === "/admin/cache/session/close" && request.method === "POST") {
+        const body = await parseBody<{ session_id?: string }>(request, undefined);
+        if (body instanceof Response) return body;
+        if (typeof body.session_id === "string") promptCache.closeSession(body.session_id);
+        return Response.json({ closed: typeof body.session_id === "string" });
+      }
       if (url.pathname === "/admin/cache/flush" && request.method === "POST") {
         const result = await flushDurability();
         return Response.json(
@@ -988,6 +912,9 @@ export function createServer(
             max_bytes: promptCache.maxBytes,
             hits: promptCache.hits,
             misses: promptCache.misses,
+            session_hits: promptCache.sessionHits,
+            session_misses: promptCache.sessionMisses,
+            prefix_scans: promptCache.prefixScans,
           },
           ...(ssdStore ? {
             ssd_cache: {
@@ -1164,6 +1091,7 @@ export function createServer(
         });
         const body = await parseBody<ChatRequestParams>(request, trace);
         if (body instanceof Response) return body;
+        applyCacheSession(body as ChatRequestParams, request);
         const meta = openAiMeta(id);
         const a = await admit(
           inferenceStage, () => chatStage.run(new ChatRequest(body), id, request.signal), trace, "chat request");
@@ -1184,6 +1112,7 @@ export function createServer(
         });
         const body = await parseBody<TextCompletionParams>(request, trace);
         if (body instanceof Response) return body;
+        applyCacheSession(body as ChatRequestParams, request);
         const meta = openAiMeta(id);
         const a = await admit(
           inferenceStage, () => textStage.run(new TextCompletionRequest(body), id), trace, "text completion");
@@ -1213,6 +1142,7 @@ export function createServer(
         let chatBody: ChatRequestParams;
         try {
           chatBody = anthropicToChatBody(anthropicBody) as unknown as ChatRequestParams;
+          applyCacheSession(chatBody, request, anthropicBody);
         } catch (e) {
           return anthropicError(400, (e as Error).message, {});
         }
@@ -1268,6 +1198,7 @@ export function createServer(
         let chatBody: ChatRequestParams;
         try {
           chatBody = responsesToChatBody(responsesBody) as unknown as ChatRequestParams;
+          applyCacheSession(chatBody, request, responsesBody);
         } catch (e) {
           return responsesError(400, (e as Error).message, {});
         }

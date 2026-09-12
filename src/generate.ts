@@ -61,6 +61,8 @@ import {
 } from "./fill/fill-session";
 
 export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions {
+  /** Application session affinity; independent of numerical cache identity. */
+  cacheSessionId?: string;
   /** Resolved host policy. Direct compatibility calls resolve from their
    * captured binding when this is absent. */
   decodePolicy?: Readonly<Pick<import("./contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;

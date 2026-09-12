@@ -19,10 +19,13 @@ function trackPools() {
   const disposals = spyOn(BlockPool.prototype, "dispose").mockImplementation(function(this: BlockPool) {
     disposed.add(this); return dispose.call(this);
   });
-  return { written, disposed, restore() { writes.mockRestore(); disposals.mockRestore(); } };
+  const growth = spyOn(BlockPool.prototype, "grow").mockImplementation(function(this: BlockPool) {
+    throw new PagedPoolExhausted(this.numBlocks);
+  });
+  return { written, disposed, restore() { writes.mockRestore(); disposals.mockRestore(); growth.mockRestore(); } };
 }
 
-test("later paged row exhaustion leaves earlier advancement for owner cleanup", () => {
+test("later paged row growth failure leaves earlier advancement for owner cleanup", () => {
   const tracking = trackPools();
   const sources = [new PagedKVCache(8, 1), new PagedKVCache(1, 1)];
   const rows = new PagedKvRows(8, 1);
@@ -31,7 +34,7 @@ test("later paged row exhaustion leaves earlier advancement for owner cleanup", 
     using data = block(2, 2);
     expect(() => rows.updateAndFetch(data, data)).toThrow(PagedPoolExhausted);
     // Row0 finished its append. Row1 wrote one block, then exhausted its
-    // real free list before publishing an offset. No rollback is promised.
+    // free list and failed to grow before publishing an offset. No rollback is promised.
     expect(rows.rowOffsets).toEqual([2, 0]);
     expect(tracking.written.size).toBe(2);
     rows.dispose();
@@ -40,7 +43,7 @@ test("later paged row exhaustion leaves earlier advancement for owner cleanup", 
   } finally { rows.dispose(); for (const source of sources) source.dispose(); tracking.restore(); }
 });
 
-test("paged prefill exhaustion releases cohort pools and closing settles the pending request", async () => {
+test("paged prefill growth failure releases cohort pools and closing settles the pending request", async () => {
   const tracking = trackPools();
   let held = true, calls = 0, created = 0;
   let partialOffsets: number[] = [];

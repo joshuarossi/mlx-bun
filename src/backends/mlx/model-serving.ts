@@ -29,6 +29,7 @@ export function modelServingBinding(context: ServingContext): ModelServingBindin
     createSerial: (services) => createMlxSerialExecutor(serial, services),
     buildPrompt: (body, tools, ownership, prep) => buildModelPrompt(ctx, prep, body, tools, ownership),
     restore: (store, entry) => store.restore(entry, model),
+    restoreAsync: (store, entry) => store.restoreAsync(entry, model),
     async signal(ids, count, minimum) {
       const caches = model.makeCache();
       try {

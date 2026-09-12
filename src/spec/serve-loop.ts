@@ -216,7 +216,7 @@ async function specRunInner(
       kvGroupSize: options.kvGroupSize ?? 64, quantizedKvStart: options.quantizedKvStart ?? null,
       turboQuant: options.turboQuant ?? null });
     let cached = 0;
-    const hit = prefixCache?.take(promptIds, prefixNamespace);
+    const hit = prefixCache?.take(promptIds, prefixNamespace, options.cacheSessionId);
     if (hit) {
       try {
         disposeResources(caches);
@@ -237,7 +237,7 @@ async function specRunInner(
       try {
         state = (services.cloneState ?? cloneKvCaches)(caches);
         attachments.push(checkpoint!.capture(tokens.length));
-        prefixCache!.put(tokens, state, prefixNamespace, undefined, attachments);
+        prefixCache!.put(tokens, state, prefixNamespace, undefined, attachments, options.cacheSessionId);
         state = []; attachments = [];
       } finally {
         disposeResources([...state, { dispose: () => disposeAttachments(attachments) }]);

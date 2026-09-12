@@ -65,9 +65,9 @@ class ProjectedDraftRows implements DraftPrefillGroup, DraftRowGroup {
   dispose(): void { this.context.dispose(); }
 }
 
-export function projectedDraftGroups(bind: (target: TargetView) => ProjectedDraftMethod): GroupedDraftProvider {
+export function projectedDraftGroups(namespace: string, bind: (target: TargetView) => ProjectedDraftMethod): GroupedDraftProvider {
   const open = ({ target, checkpoints }: {
     target: TargetView; checkpoints: readonly (DraftRowCheckpoint | null)[];
   }) => new ProjectedDraftRows(bind(target), checkpoints);
-  return { open, openPrefill: open };
+  return { checkpointNamespace: () => namespace, open, openPrefill: open };
 }

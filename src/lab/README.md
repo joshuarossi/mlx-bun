@@ -14,5 +14,9 @@ fate (PLAN.md "Maintainability program", D6 darlings). Rules, gate-enforced by
 | module | flag / entry | oracle |
 |---|---|---|
 | `curve/` (curve sampler + designer page) | `--curve-*`, `/curves` | none (Lab) |
-| `paged-kv/` | `--paged-kv` (serial-only) | parity vs plain KVCache (bit-exact), no measured win |
+| `paged-kv/` | `--paged-kv`; direct read via `MLX_BUN_PAGED_ATTN` | gathered storage is bit-exact; direct Metal is tolerance-tested, with paired M1/M4 measurements in benchmarks.md |
 | `expert-trace/` | `MLX_BUN_EXPERT_TRACE` hook in gemma4 | closed study (expert-offload) |
+
+The optional paged layout has a separate backend persistence codec. Its
+allowlisted import keeps `kv-store` independent of row-execution modules and
+preserves RAM/SSD reuse without promoting direct-attention numerics to L1.

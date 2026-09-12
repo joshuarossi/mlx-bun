@@ -7,6 +7,8 @@ import type { HlgConfig } from "../sampler";
 import { RequestError } from "./pipeline";
 
 export interface ChatRequestParams {
+  session_id?: string;
+  prompt_cache_key?: string;
   messages: ChatMessage[];
   stream?: boolean;
   max_tokens?: number;

@@ -2,6 +2,7 @@
 // Explicit .dispose() is the contract; a FinalizationRegistry backstop
 // frees leaked handles on GC (verified in lab/spikes/phase0-memory.ts).
 
+import { hostBufferDestructor, type HostBuffer } from "../storage/host-buffer";
 import { dlopen, ptr, toArrayBuffer } from "bun:ffi";
 import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray, takeMlxError } from "./ffi";
 import type { SafetensorsDtype } from "../safetensors";
@@ -130,6 +131,18 @@ export class MlxArray {
     return new MlxArray(handle);
   }
 
+  /** Adopt a page-aligned CPU restore allocation without a host copy.
+   * The native destructor owns it after this call, including GPU references. */
+  static adoptHostBuffer(buffer: HostBuffer, shape: number[], dtype: Dtype): MlxArray {
+    const sb = shapeBuf(shape);
+    const handle = C.mlx_array_new_data_managed_payload(
+      buffer.pointer, ptr(sb), shape.length, dtype, buffer.pointer, hostBufferDestructor,
+    );
+    const array = new MlxArray(handle);
+    buffer.transfer();
+    return array;
+  }
+
   /** Copying constructor for small host data. */
   static fromFloat32(data: Float32Array, shape: number[]): MlxArray {
     const sb = shapeBuf(shape);
@@ -235,6 +248,30 @@ export class MlxArray {
   /** Raw bytes of a supported floating-point or integer array (copy). */
   rawBytes(): Uint8Array {
     return this.rawBytesView().slice();
+  }
+
+  /** Publish an evaluated immutable buffer to a CPU reader. Strides are in
+   * elements, so padding, transposes and slices need no GPU packing copy.
+   * The caller retains this array until the reader reports completion. */
+  storageView(): import("../storage/kv-writer").StoredTensorView {
+    this.eval();
+    const shape = this.shape;
+    const stridePtr = C.mlx_array_strides(this.handle);
+    const strides = shape.length
+      ? [...new BigInt64Array(toArrayBuffer(stridePtr!, 0, shape.length * 8))].map(Number)
+      : [];
+    const dt = this.dtype;
+    const pointer =
+      dt === Dtype.float32 ? C.mlx_array_data_float32(this.handle)
+      : dt === Dtype.float16 ? C.mlx_array_data_float16(this.handle)
+      : dt === Dtype.bfloat16 ? C.mlx_array_data_bfloat16(this.handle)
+      : dt === Dtype.uint32 ? C.mlx_array_data_uint32(this.handle)
+      : dt === Dtype.int32 ? C.mlx_array_data_int32(this.handle)
+      : dt === Dtype.uint8 ? C.mlx_array_data_uint8(this.handle)
+      : dt === Dtype.int8 ? C.mlx_array_data_int8(this.handle)
+      : null;
+    if (pointer === null && this.size) throw new Error(`storageView: unsupported or unavailable ${this.dtypeName}`);
+    return { pointer: Number(pointer), shape, strides, itemSize: Number(C.mlx_array_itemsize(this.handle)) };
   }
 
   /** ZERO-COPY view of the evaluated array's bytes — aliases the mlx

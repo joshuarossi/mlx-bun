@@ -30,6 +30,7 @@ function lastToken(feed: readonly number[]): number {
 
 export class Glm52NativeMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
+    checkpointNamespace: () => "glm52-native-mtp-v1",
     open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
     openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
   };

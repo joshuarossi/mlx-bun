@@ -333,20 +333,19 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  // The SSD flush must own EVERY per-tensor step (including the first). An
-  // idle check followed by an unguarded next() has a check/use race with a
-  // newly admitted request because next() performs the blocking MLX sync.
-  test("storeAsync runs every tensor step inside the caller's exclusive runner", async () => {
+  // Optional execution ownership applies to snapshot preparation only.
+  // Once published, immutable bytes are written without an engine lease.
+  test("storeAsync prepares once; the CPU writer needs no per-tensor execution lease", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ssd-"));
     const s = new SsdCacheStore(OPTS(dir));
-    const caches = mkCaches(); // 2 caches × [k, v] = 4 tensor steps
+    const caches = mkCaches(); // 2 caches × [k, v] = 4 tensors
     let gateCalls = 0;
     let gateOpen = false;
     const runStep = async <T>(step: () => T): Promise<T> => {
       gateCalls++;
-      // The first runner call happens before the generator opens its .tmp.
+      // Preparation performs no filesystem work, including directory creation.
       if (gateCalls === 1) {
-        expect(readdirSync(join(dir, "fp-test", "base")).length).toBe(0);
+        expect(existsSync(join(dir, "fp-test", "base"))).toBe(false);
         await new Promise<void>((r) => setTimeout(r, 5));
         gateOpen = true;
       }
@@ -354,8 +353,8 @@ describe("SsdCacheStore", () => {
       return step();
     };
     expect(await s.storeAsync([1, 2, 3, 4], caches, "", runStep)).toBe(true);
-    // 4 yields -> 5 next() calls, each owned by the runner.
-    expect(gateCalls).toBe(5);
+    // One preparation, no disk I/O under the runner.
+    expect(gateCalls).toBe(1);
     for (const c of caches) c.dispose();
     expect(s.entries).toBe(1);
     rmSync(dir, { recursive: true, force: true });
@@ -372,7 +371,7 @@ describe("SsdCacheStore", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("a lease rejected between tensors unwinds the suspended writer", async () => {
+  test("rejected snapshot preparation leaves input state reusable and creates no partial file", async () => {
     const { saveKvCacheAsync } = await import("../../src/kv-store");
     const dir = mkdtempSync(join(tmpdir(), "ssd-lease-"));
     const path = join(dir, "partial.mlxkv");
@@ -380,13 +379,11 @@ describe("SsdCacheStore", () => {
     let steps = 0;
     try {
       await expect(saveKvCacheAsync(path, [1, 2, 3, 4], caches, {}, async (step) => {
-        if (++steps === 2) {
-          expect(existsSync(`${path}.tmp`)).toBe(true);
-          throw new Error("lease closed");
-        }
-        return step();
+        steps++;
+        expect(existsSync(`${path}.tmp`)).toBe(false);
+        throw new Error("lease closed");
       })).rejects.toThrow("lease closed");
-      expect(steps).toBe(2);
+      expect(steps).toBe(1);
       expect(readdirSync(dir)).toEqual([]);
       // The caller still owns the input state and can retry it.
       await saveKvCacheAsync(path, [1, 2, 3, 4], caches);
@@ -541,7 +538,6 @@ function durabilityFixture(
     return storeImpl?.(item as unknown as { tokens: number[]; ns: string });
   });
   const coordinator = new SsdDurabilityCoordinator(
-    gateway,
     promptCache as never,
     queue,
     (() => { calls.clone++; return fakeCaches(10) as never; }) as never,
@@ -553,7 +549,7 @@ function durabilityFixture(
 }
 
 describe("SsdDurabilityCoordinator", () => {
-  test("flush overrides a busy retry and waits for the atomic store", async () => {
+  test("persistence progresses while inference is busy; flush waits for the atomic store", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const f = durabilityFixture(undefined, async () => { await gate; return true; });
@@ -561,7 +557,7 @@ describe("SsdDurabilityCoordinator", () => {
     f.coordinator.schedule([1, 2, 3]);
     await Bun.sleep(5);
     expect(f.coordinator.stats.pendingSnapshots).toBe(1);
-    expect(f.stored).toEqual([]);
+    expect(f.stored).toEqual([":1,2,3"]);
 
     f.gateway.busy = false;
     const flush = f.coordinator.flush();

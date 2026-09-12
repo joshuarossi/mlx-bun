@@ -8,7 +8,7 @@ import { PagedKvRows } from "../../lab/paged-kv/paged-kv-rows";
 
 /** Bind encoded state to its row layout. Execution owners only move rows. */
 export function ownedCacheLayout(cache: Cache): BatchableCache | undefined {
-  if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize);
+  if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return cache.makeEmptyBatch();
   if (cache instanceof TurboQuantKVCache) return new BatchedTurboQuantKVCache(cache.kBits, cache.vBits);
   return undefined;
@@ -16,7 +16,7 @@ export function ownedCacheLayout(cache: Cache): BatchableCache | undefined {
 
 /** Prefill reuses decode's layouts; shape selection belongs to storage. */
 export function prefillCacheLayout(cache: Cache): BatchableCache {
-  if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize);
+  if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return cache.makeEmptyBatch();
   if (cache instanceof RotatingKVCache) return new DelayedRotatingQuantizedKVCache(cache.maxSize, 64, 4, Infinity, () => {});
   if (cache instanceof RotatingQuantizedKVCache) return new RotatingAffineLayout(cache.maxSize, cache.groupSize, cache.bits);

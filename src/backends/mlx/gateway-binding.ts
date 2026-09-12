@@ -1,6 +1,7 @@
+import { speculativePrefixNamespace, captureSpeculativeOptions } from "../../spec/cache-identity";
 import { createOrdinaryContinuationRequest } from "./continuation-request";
 import type { MlxSerialServices } from "./serial-executor";
-import { bindPagedRequestState, type MlxRequestStatePolicy } from "./request-state-policy";
+import { bindPagedRequestState, pagedPrefixNamespace, type MlxRequestStatePolicy } from "./request-state-policy";
 import type { ExecutionContext } from "../../contracts/scheduling";
 import type { ModelConfig } from "../../config";
 import type { KvScheme } from "../../kv-scheme";
@@ -39,6 +40,7 @@ export interface MlxGatewayBinding {
   cachesBatchable(): boolean;
   kvBatchable(scheme: KvScheme): boolean;
   statePolicy?(execution: ResolvedExecution | undefined, options: GenerateOptions, capacityTokens: number): MlxRequestStatePolicy | undefined;
+  prefixNamespace?(execution: ResolvedExecution | undefined, options: GenerateOptions, adapters: string): string | null;
   methodRequest?(execution: ResolvedExecution | undefined, options: GenerateOptions): MlxGroupMethodRequest | undefined;
   createBatchGroup(options: MlxBatchExecutionGroupOptions): MlxBatchGroup;
 }
@@ -78,7 +80,13 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         restore: entry => services.checkpoints!.restore(entry, model),
         interval: services.checkpointEveryTokens!, identity: services.identity });
     },
-    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity) : undefined,
+    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache) : undefined,
+    prefixNamespace: (execution, options, adapters) => {
+      if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters);
+      if (execution?.method !== "speculative") return adapters;
+      const namespace = draft?.provider.grouped?.checkpointNamespace?.();
+      return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));
+    },
     methodRequest: (execution, options) => execution?.method === "speculative" ? speculative?.(options) : undefined,
     ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
       const selected = [...adapters];

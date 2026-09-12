@@ -6,6 +6,11 @@ declare module "*.md" {
   export default content;
 }
 
+declare module "*.worker.js" {
+  const content: string;
+  export default content;
+}
+
 // Same deal for vendored text-imported assets under src/web/vendor/ (see
 // that dir's README) — served as raw strings via `with { type: "text" }`,
 // but bun-types has no ambient declaration for .js/.css read as text.

@@ -114,8 +114,7 @@ describe.skipIf(!enabled)("paired Qwen MTP prefill cache", async () => {
     const cache = new PromptCache(4 * 1024 ** 3);
     const queue = new SpillQueue(4 * 1024 ** 3, cacheBytes,
       item => ssd.storeAsync(item.tokens, item.caches, item.ns, undefined, item.attachments), disposeResources);
-    const idle = { busy: false, async runWhenIdle<T>(fn: () => Promise<T>) { return fn(); } };
-    const durability = new SsdDurabilityCoordinator(idle, cache, queue, cloneKvCaches);
+    const durability = new SsdDurabilityCoordinator(cache, queue, cloneKvCaches);
     cache.onPut = (tokens, ns) => durability.schedule(tokens, ns);
     let namespace = "", captured = "", convertedPublications = 0;
     const put = cache.put;

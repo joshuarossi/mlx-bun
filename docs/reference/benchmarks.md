@@ -272,6 +272,7 @@ and reaches output in 1.73 s. The fourth request completes normally.
 | First preserved run, September 8 | 3h 33m 07.685s | 130,494 | 62 | 56m 39.895s | Pass; 15 recorded checks |
 | Previous successful run, September 9 | 1h 24m 45.387s | 68,958 | 15 | 13m 34.988s | 18/18 |
 | Fresh cache fix, September 12 UTC | 1h 30m 02.183s | 79,523 | 30 | 3m 18.143s | 16/18; fails quality acceptance |
+| Seeded cache-fix repeat, September 12 UTC | 1h 18m 31.250s | 72,289 | 27 | 2m 07.925s | 16/18; same two defects |
 
 The fresh task takes 6.2% longer than the previous success and generates
 15.3% more output. Its summed TTFT is 75.7% lower. Later responses, tool calls
@@ -296,6 +297,379 @@ and full app quality acceptance remain open. Results, unchanged app, request
 streams, `quality.json`, browser evidence and `comparison.json` are preserved
 under `reports/kanban-cache-fixed-fresh/` on both machines; the SSD files remain
 on the M4. Earlier runs and their snapshots are preserved.
+
+The seeded repeat on `0d20953` uses identical engine hashes and settings,
+a fresh empty output directory and fresh RAM/SSD caches. The sent initial
+request, first 35,002-token response and its full usage record match the prior
+fresh run. The first model-visible difference is the live `ls -la` result:
+both `.` and `..` timestamps change from `18:55` to `21:08`. The next rendered
+input and subsequent output differ. This is not an identical-input replay.
+
+The repeat takes 12.8% less time and generates 9.1% fewer tokens than the
+prior fresh task; engine sources did not change. All 26 follow-ups hit the
+cache. Pi records seven tool errors during app checks, no inference failures,
+no retries and no compactions. Independent browser checks on the untouched
+14-file app again pass 16/18 categories, with filter reset and keyboard edit
+still failing. Three SSD snapshots persist through 81,076 tokens, totaling
+5.33 GB; flush reports 51 missing older snapshots and `durable: false`.
+Reports and app: `reports/kanban-cache-fixed-repeat-r1/`; browser acceptance
+is in `quality.json`, and input/output comparisons are in
+`repeat-comparison.json` and `jsonl-comparison.json`. SSD files remain on M4.
+
+### Background SSD persistence diagnostic, M4 Pro
+
+September 12, 2026; M4 Pro 24 GB, Bun 1.4.2, native pack 0.4.0 / MLX
+0.32.2. Packed Qwen3.8-27B interleave2 with RTN4 MTP, depth 2, affine KV4,
+shared batch cap 8 with one actual row, greedy sampling and seed 42. This
+isolates storage overlap on the candidate engine; it is not the standard
+HTTP benchmark or a fresh Kanban comparison.
+
+Four AB/BA runs each generate 128 tokens from the same 271-token cached
+prefix. A synthetic strided KV payload produces a 536,879,104-byte file.
+The deferred arm writes after inference. The background arm queues the same
+write after output token 16. Both use the new CPU writer and fsync+rename.
+
+| Measurement, mean of two runs | Deferred until inference finishes | Background during decode |
+| --- | ---: | ---: |
+| Post-first-token decode | 25.75 tok/s | 25.74 tok/s |
+| Inference plus completed persistence | 5.200 s | 5.128 s |
+| Time spent writing | 73.2 ms | 119.6 ms |
+| Output tokens emitted when write completes | 128 | 19 |
+
+All four responses and MTP acceptance sequences are identical. Background
+persistence takes longer while competing for memory bandwidth, but completes
+while decode advances from token 16 to 19; measured decode throughput is
+within 0.04%. This supports overlapping this payload without a meaningful
+decode penalty. It does not establish long-context, sustained-write or
+end-to-end Kanban gains. Raw results and source hashes:
+`reports/ssd-background-persistence/m4-overlap.json`.
+
+### Cache expansion C1–C5: storage, restore, retention and paged attention
+
+September 12, 2026. Baseline `c953f2f` plus the cache expansion on
+`fix/ssd-background-persistence`; Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2.
+M4 Pro 24 GB is the serving comparison host; M1 Max 32 GB supplies a second
+component comparison. These are diagnostic measurements, not a new h2h against
+mlx-lm or a new complete Kanban task. Raw reports are in
+`reports/cache-expansion/`; `source-manifest.json` identifies the final source.
+
+**Result:** block sharing saves disk space, segmented packing removes copies,
+and asynchronous restore keeps the event loop available. Neither block storage
+nor the alternative RAM policy earns default promotion. Direct paged attention
+has shape-dependent wins and regressions and remains an optional Lab kernel.
+The configuration reference owns the selectable settings and defaults.
+
+#### Same-request M4 serving comparison
+
+Packed Qwen3.8-27B interleave2, RTN4 MTP depth 2, affine KV4, seed
+`cache-expansion-42`, shared batch cap eight. The standard script runs five
+short-decode samples, context, SSD restart and four concurrent requests.
+The requested 4,096-token context renders to 2,677 actual tokens; restart
+reuses 2,676. No arm forces serial execution.
+
+| Arm | Median short decode, tok/s | Decode at context, tok/s | SSD restart TTFT, ms | Four-request aggregate, tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| Whole files, synchronous restore, LRU | 19.58 | 24.07 | 1,893 | 17.05 |
+| Shared blocks, async restore, cost-size retention | 19.21 | 23.95 | 2,133 | 17.01 |
+| Whole files, async restore, LRU | 19.67 | 24.12 | 2,076 | 17.10 |
+
+All 19 corresponding requests preserve input hashes, response text hashes,
+prompt/output counts and finish reasons. Every phase completes; final flushes
+are durable with no pending, dropped or failed snapshots. Decode is essentially
+unchanged with async restore alone. The combined candidate is slightly slower;
+both async arms have worse single-request restart TTFT. These sequential
+matrices establish no broad throughput gain. Reports:
+`m4-serving-baseline.json`, `m4-serving-candidate.json`, `m4-serving-async.json`.
+
+#### C1 and C4: shared blocks and packing
+
+Four immutable checkpoints grow through one quarter, one half, three quarters
+and all of the same eight-head tensor. Fixed bytes/seed; the block boundary
+resets per head. The M4 payload ends at 256 MiB; medians of five paired samples
+include all four writes. Reads verify the final state with warm filesystem
+pages. File sizes count unique committed bytes, not APFS allocated extents.
+
+| M4 storage arm | Total write, ms | Final verified read, ms | Files retained, MiB | Bytes copied for packing, MiB | Peak packing scratch, MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Whole files | 100.60 | 21.26 | 641.91 | 384 | 192 |
+| Blocks, whole-tensor packing | 282.08 | 97.47 | 257.92 | 384 | 192 |
+| Blocks, segmented packing | 276.33 | 97.66 | 257.92 | 0 | 0 |
+
+Sharing reduces bytes written and retained by **59.8%**, but segmented block
+writes take **2.75×** as long as whole files. SHA-256 content hashing and many
+small durable writes cost more than whole-file transport. Against the same
+block format, segmentation removes 384 MiB of copying and 192 MiB of scratch;
+write time improves about 2%. Zero scratch here applies to contiguous spans
+within each head; arbitrary strides use bounded packing, not zero copying.
+These are allocation counters, not process RSS measurements.
+
+On M1, a smaller 64 MiB final tensor gives whole/packed-block/segmented-block
+write medians of 66.82/128.86/114.23 ms and verified reads of
+13.85/39.82/39.77 ms. Shared files retain 64.44 MiB versus 160.47 MiB;
+segmentation removes 96 MiB of packing copies and 48 MiB of peak scratch.
+Do not compare these host timings as identical workloads. Reports:
+`m4-components-final.json`, `m1-components-final.json`.
+
+#### C2: restore while decode continues
+
+A separate ABBA probe restores an unrelated 512 MiB recurrent checkpoint at
+Qwen output token 16. Each arm warms the model, file pages and synchronous
+allocator; all arms emit the same 128 greedy token IDs. MTP depth 2, KV4,
+seed 42, shared cap eight with one active request.
+
+| Mean of two arms | Synchronous read | Async read |
+| --- | ---: | ---: |
+| Pause inside the token callback | 53.15 ms | 0.20 ms |
+| Read completion time | 53.13 ms | 126.13 ms |
+| Output token when read completes | 16 | 19 |
+| Post-first-token decode | 18.69 tok/s | 18.84 tok/s |
+| Request plus completed read | 7.203 s | 7.141 s |
+
+The read itself takes longer while sharing memory bandwidth, but the owner
+thread returns immediately and generation advances. The small throughput
+difference is not a general speed claim. This measures byte transport overlap,
+not all model-layout reconstruction work; plain KV capacity growth still uses
+its existing MLX operations after transport. Report:
+`m4-restore-overlap-warm.json`. Earlier unwarmed probes are retained as diagnostics
+and excluded from this comparison.
+
+#### C3: retention policy replay
+
+The policy port compares LRU with GreedyDual-style cost/size/frequency ranking.
+SSD is durable in both arms: RAM misses cause restores, not lost prefill.
+In a synthetic hot-prefix trace interleaved with one-shot histories, cost-size
+eliminates 796 restores incurred by LRU. In sequential bursts it introduces
+300 restores where LRU needs none.
+
+The saved Kanban repeat contributes its observed next-turn cached-prefix
+boundaries. This is metadata replay, not a token-level or physical-memory
+simulation: each entry costs prefix length plus 16,384 fixed recurrent-state
+units. At a 160,000-unit RAM budget, LRU has 26 hits and zero restores;
+cost-size has 15 hits and 11 restores. At 80,000 and 320,000 units, cost-size
+also causes more restores. Cold-prefill work is unchanged. LRU remains the
+selection for this workload; cost-size is useful for the measured pollution
+trace, not a universal improvement. Report: `retention.json`.
+
+#### C5: direct paged attention
+
+The kernel compares gathered pages plus stock SDPA with direct block-table
+reads. At 16,384 cached tokens, bf16 queries, 16 query heads, four KV heads,
+head dimension 128, five paired samples of ten evaluated steps:
+
+| Stored KV | M4 B1 speed ratio | M4 B4 speed ratio | M1 B1 speed ratio | M1 B4 speed ratio |
+| --- | ---: | ---: | ---: | ---: |
+| bf16 | 1.10× | 1.76× | 1.15× | 1.67× |
+| affine 4-bit | 1.00× | 1.27× | 0.92× | 1.02× |
+| affine 8-bit | 1.19× | 1.65× | 1.08× | 1.27× |
+
+Ratios are gathered time / direct time; below one is a regression. B4 here
+means four independent row views, not one fused four-row dispatch. The direct
+arm eliminates full gathered K/V tensors and row padding; its partial softmax
+buffers still allocate memory. Short shapes can lose badly: M4 bf16 B1 at
+256 cached tokens takes about 0.21 ms gathered versus 0.59 ms direct.
+Reports: `m4-paged-final.json`, `m1-paged-final.json`.
+
+A complete-request M4 Gemma4 e4b comparison uses 4,096 + 17×row prompt tokens,
+64 output tokens per row, greedy sampling, no prefix cache, shared cap eight
+and uncompiled decode. ABBA, two samples per arm:
+
+| KV / active requests | Gathered per-row decode, tok/s | Direct per-row decode, tok/s |
+| --- | ---: | ---: |
+| bf16 / one | 50.94 | 45.82 |
+| bf16 / four | 13.73 | 12.58 |
+| affine 4-bit / one | 49.55 | 50.31 |
+| affine 4-bit / four | 14.14 | 14.70 |
+
+Every corresponding generated token agrees. The affine arm gains about 1.5%
+and 4.0% decode throughput; bf16 regresses about 10% and 8%. The first gathered
+prefill can include cold setup, so small wall-time differences in these raw
+reports do not establish end-to-end gains. Reports:
+`m4-paged-model-bf16.json`, `m4-paged-model-kv4.json`.
+
+Storage round trips are byte-exact, including paged affine planes and
+MTP/TurboQuant attachments. The direct reduction is **Lab numerical behavior**,
+tolerance-tested against the same stored values; matching these greedy outputs
+is not proof of L1 logit parity. Native tests cover partial blocks, unequal K/V
+dimensions, row retirement and restart. The HTTP cache check preserves responses
+through RAM and asynchronous SSD reuse for gathered/direct bf16 and KV4.
+
+#### Reproduction
+
+Set `TARGET` to the packed Qwen artifact, `DRAFT` to its RTN4 MTP artifact,
+and `GEMMA` to the Gemma4 e4b OptiQ snapshot. Native tests require the matching
+native pack and artifacts described in environment.md.
+
+```sh
+# Repeat with SSD_PREFETCH=1; for the combined arm also select blocks/cost-size.
+MLX_BUN_SSD_LAYOUT=whole MLX_BUN_SSD_PREFETCH=0 MLX_BUN_CACHE_RETENTION=lru \
+  bun scripts/bench-serve.ts all --diagnostic --no-serial --arms mlx-bun \
+  --model-path "$TARGET" --label Qwen3.8-27B-packed12GB --draft-model "$DRAFT" \
+  --draft-kind mtp --num-draft-tokens 2 --kv-quant 4 --context 4096 \
+  --workload-seed cache-expansion-42
+bun scripts/bench/cache-tiers.ts --mib 256 --samples 5 --output reports/cache-tiers.json
+bun scripts/bench/cache-restore-overlap.ts --model "$TARGET" --draft "$DRAFT" \
+  --mib 512 --output reports/cache-restore.json
+bun scripts/bench/cache-retention.ts \
+  --kanban reports/kanban-cache-fixed-repeat-r1/result.json --output reports/cache-retention.json
+bun scripts/bench/paged-attention.ts --output reports/paged-attention.json
+bun scripts/bench/paged-model.ts --model "$GEMMA" --bits 4 --output reports/paged-model.json
+MLX_BUN_TEST_PAGED_CACHE=1 bun test tests/parity/paged-cache-http.test.ts
+```
+
+### Session checkpoint index C6
+
+September 12, 2026, on top of cache expansion `7692d5b`; Bun 1.4.2,
+MLX 0.32.2 / native pack 0.4.0. M4 Pro 24 GB supplies native storage and
+HTTP measurements; M1 Max 32 GB supplies the second CPU index comparison.
+Reports and the final accepted source manifest are under `reports/session-cache/`.
+
+The session ID selects the latest compatible immutable checkpoint through a
+second index, with ordinary prefix lookup for missing or edited histories.
+RAM retention prefers session-referenced entries over unrelated entries while
+honoring the same budget. Session metadata does not partition content storage.
+
+| CPU index workload, median of eight paired samples | Prefix scan | Session index |
+| --- | ---: | ---: |
+| M4, all 27 saved Kanban request renderings | 13.04 ms total | 1.57 ms total |
+| M1, 64 nested checkpoints ending at 50,000 tokens | 42.16 ms total | 2.77 ms total |
+
+Each checkpoint is published before its lookup; timings average 20 repeated
+lookups per checkpoint after a warm call. Saved Kanban inputs render to
+2,554–79,417 tokens. These are real token strings with stub KV state and a
+checkpoint at each rendered prompt minus one token, not a replay of the
+original generated KV or the original task. The index removes candidate
+search, while still comparing the known prefix against the intended input.
+The M4 lookup reduction is 8.3×, but only **11.47 ms across the entire sequence**.
+Files: `m4-kanban-index.json`, `m1-index.json`.
+
+A native storage comparison uses eight agent continuations, a three-checkpoint
+RAM accounting budget and four unrelated durable publications between turns.
+Each checkpoint carries 64 MiB of SSM tensor data plus one scalar. Both arms
+use identical immutable bytes, whole-file SSD transport and warm filesystem
+pages; the cache independently owns publication, eviction and restoration.
+Two samples per arm in ABBA order:
+
+| Native M4 retrieval measurement | Anonymous prefix lookup | Session affinity |
+| --- | ---: | ---: |
+| SSD restores over eight continuations | 8 | 0 |
+| Reload traffic | 512 MiB | 0 |
+| Total retrieval time, mean | 33.57 ms | 0.25 ms |
+| Final accounted RAM residency | 192 MiB | 192 MiB |
+
+The budget counts checkpoint state sizes; immutable source buffers can share
+physical storage, so this is not a process-RSS comparison. Retrieval timing
+includes preparation and cache lookup; writes and byte-identity checks are
+outside that interval. Total publication/workload time varies between arms,
+and this probe establishes avoided restores rather than a decode speedup.
+File: `m4-residency.json`. A separate equal-size metadata pollution trace also
+preserves all 26 agent hits with affinity, versus zero without it.
+
+The M4 HTTP comparison uses packed Qwen3.8-27B interleave2, RTN4 MTP depth 2,
+affine KV4, shared batch cap eight with one request at a time, greedy sampling,
+seed 42 and a 4 GiB RAM cache. The saved Kanban opening request starts a
+**bounded six-turn conversation**, with 64 output tokens per turn. The first
+arm records its subsequent histories; every later arm sends those exact
+inputs. This is not a fresh complete Kanban app task.
+
+| HTTP arm, in execution order | Mean follow-up TTFT, ms | Mean follow-up decode, tok/s | All six requests, s | Prefix searches / session hits |
+| --- | ---: | ---: | ---: | ---: |
+| Session disabled, first control | 738.14 | 22.94 | 41.111 | 6 / 0 |
+| Session enabled | 668.64 | 22.89 | 39.265 | 1 / 5 |
+| Session enabled | 661.61 | 22.89 | 39.238 | 1 / 5 |
+| Session disabled, warm control | 661.48 | 22.90 | 39.243 | 6 / 0 |
+
+All corresponding inputs, output text/reasoning hashes, finish reasons and
+output counts match. Cached-prefix counts match at every turn; all four
+flushes are durable. The first control includes more cold setup. Against the
+warm control, **model throughput and request time are effectively unchanged**.
+The five known continuations do bypass prefix search. Do not attribute the
+first-control timing difference to session affinity or infer a full Kanban
+time reduction. File: `m4-serving.json`.
+
+Native M4 MTP with TurboQuant K8/V3, shared row retirement and RAM/SSD
+continuation pass with session IDs. Paged bf16/KV4 HTTP restart, exact SSD
+index removal, shared-session replacement, edited-history fallback and session
+closure also pass their applicable tests. Equivalent-checkpoint session
+reference replacement and publication for short ordinary session requests were
+corrected after measurement, with a regression test and a native short-session
+HTTP check. The timed workloads use unique prefixes longer than the old
+publication threshold, so those corrections leave their paths unchanged.
+Configuration and API lifecycle are in server-config.md and server-api.md.
+
+```sh
+bun scripts/bench/session-cache.ts --tokens 50000 --checkpoints 64 --output reports/session-index.json
+bun scripts/bench/session-cache.ts --model "$TARGET" \
+  --requests reports/kanban-cache-fixed-repeat-r1 --output reports/kanban-session-index.json
+bun scripts/bench/session-residency.ts --mib 64 --turns 8 --output reports/session-residency.json
+bun scripts/bench/session-serving.ts --model "$TARGET" --draft "$DRAFT" \
+  --request reports/kanban-cache-fixed-repeat-r1/request-0.json --output reports/session-serving.json
+```
+
+### Full Kanban with session cache and queued persistence
+
+September 12, 2026, M4 Pro 24 GB. Current engine `3ea8079` versus the saved
+`kanban-cache-fixed-repeat-r1` run on `0d20953`. Both use Bun 1.4.2, Pi 0.85.1,
+MLX 0.32.2 / native pack 0.4.0, packed Qwen3.8-27B interleave2, RTN4 MTP depth
+two, affine KV4, default shared batch cap eight, a 4 GiB RAM cache and a
+64 GiB SSD cache. The original Luke prompt, seed 42, temperature 0.6, xhigh
+thinking, 131072-token context and compaction settings are unchanged.
+
+The current run starts Pi in an empty directory at the path named in the
+pinned system prompt, with fresh application cache, Pi configuration and
+session. Pi's session headers reach the shared cache interface. Source hashes
+remain unchanged throughout. The M4 starts with 87% free memory and 1.31 GiB
+retained swap; this is a recorded machine-state diagnostic, not a quiet h2h.
+
+| Full task measurement | Previous run | Current cache run |
+| --- | ---: | ---: |
+| Pi task wall time | 78m31.250s | 83m57.098s |
+| Generated tokens | 72,289 | 76,031 |
+| Requests | 27 | 25 |
+| Weighted post-first-output throughput | 15.777 tok/s | 15.542 tok/s |
+| Sum of pre-first-output intervals | 127.925 s | 143.024 s |
+| Follow-ups with cached input | 26/26 | 24/24 |
+| Direct session hits / ordinary prefix scans | Not available | 24 / 1 |
+| SSD restores | 0 | 0 |
+| Final flush | HTTP 503, not durable | HTTP 200, durable |
+| Missing snapshots at final flush | 51 | 0 |
+| SSD entries after final flush | 3 | 38 |
+| Peak combined server/Pi RSS | 12.233 GiB | 15.453 GiB |
+| Untouched-app browser acceptance | 16/18 | 16/18 |
+| Pi tool errors / inference failures | 7 / 0 | 2 / 0 |
+
+The current task is 6.9% longer with 5.2% more generated tokens. Weighted
+throughput is 1.5% lower, but subsequent inputs and context lengths differ,
+so this is not an engine-only regression measurement. The initial rendered
+request and complete first response match exactly, including tool arguments
+and all 35,002 output tokens. That response takes 2000.478 s versus 1997.378 s,
+a 0.16% difference. The first changed input includes the new directory's
+actual timestamps; later generated histories diverge. No complete-task speedup
+is established by this comparison.
+
+The durability improvement is observable throughout the task. All 24
+follow-ups select their session checkpoint, 50 successful SSD writes are
+recorded, and final flush has zero pending, dropped, failed or missing
+snapshots. The existing 64 GiB SSD limit evicts older persisted entries,
+leaving 38 entries / 63.133 GiB and a longest durable prefix of 85,699 tokens.
+This establishes persistence within the configured capacity, not unlimited
+retention of every historical checkpoint. No SSD restores were required.
+Combined RSS is higher; it does not measure native peak allocation separately.
+
+Independent browser testing of the untouched app passes the same 16 of 18
+categories. Resetting label/assignee filters hides cards, and Enter/Space does
+not open a focused card for editing. Keyboard creation, mouse editing,
+column operations, card/column drag-and-drop, archive/restore, search,
+localStorage persistence and light/dark persistence pass. The new app is not
+byte-identical to the old one. No repairs or extra prompts were supplied.
+
+Reports, full requests/responses, Pi JSONL, source hashes, comparison and
+browser evidence: `reports/kanban-session-cache-r2/`. The preserved runner
+reproduces the task from the pinned local profile and artifacts; it requires
+a fresh report directory and empty task directory. An earlier attempt at
+`reports/kanban-session-cache-r1/` was stopped because its tool cwd differed
+from the pinned system prompt. Its first tool call targeted a nonexistent
+path. That runner error is preserved and excluded from the task comparison;
+it was not an engine failure.
 
 ## Historical results and section links
 

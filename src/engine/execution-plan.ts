@@ -32,13 +32,13 @@ export function resolveExecution(
   if (request.hasDraft && !speculative) reasons.push("draft-incompatible-with-request");
   const pagedKv = features.pagedKv && !request.hasVision && !request.hasAdapters;
   if (features.pagedKv && !pagedKv) reasons.push("paged-kv-bypassed-for-media-or-adapters");
-  const promptCache = method !== "speculative" && !request.hasVision && !pagedKv;
+  const promptCache = method !== "speculative" && !request.hasVision;
   const fill = features.fill && method === "autoregressive" && mechanism === "serial" &&
     !request.hasDraft && !request.hasVision && !request.userSeed && !request.hasGrammar &&
     !request.wantsLogprobs && !request.kvQuant && !request.turboQuant;
   if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
   const checkpoint = capabilities.checkpoints && method === "autoregressive" &&
-    (mechanism === "serial" || capabilities.sharedCheckpoints === true) && promptCache && !request.hasGrammar &&
+    (mechanism === "serial" || capabilities.sharedCheckpoints === true) && promptCache && !pagedKv && !request.hasGrammar &&
     !features.fill && !request.wantsLogprobs;
   const compiledDecode = features.compiledDecode === true && capabilities.compiledDecode === true &&
     method === "autoregressive" && !request.hasAdapters && !pagedKv;

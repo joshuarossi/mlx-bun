@@ -86,6 +86,7 @@ class AssistantRows implements DraftPrefillGroup, DraftRowGroup {
 
 export function assistantGroups(drafter: GemmaAssistantDrafter, namespace: string): GroupedDraftProvider {
   return {
+    checkpointNamespace: () => namespace,
     openPrefill: ({target,checkpoints}) => new AssistantRows(target.assistantRows!,drafter,namespace,checkpoints),
     open: ({target,checkpoints}) => new AssistantRows(target.assistantRows!,drafter,namespace,checkpoints),
   };
