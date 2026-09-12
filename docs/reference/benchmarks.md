@@ -605,6 +605,72 @@ bun scripts/bench/session-serving.ts --model "$TARGET" --draft "$DRAFT" \
   --request reports/kanban-cache-fixed-repeat-r1/request-0.json --output reports/session-serving.json
 ```
 
+### Full Kanban with session cache and queued persistence
+
+September 12, 2026, M4 Pro 24 GB. Current engine `3ea8079` versus the saved
+`kanban-cache-fixed-repeat-r1` run on `0d20953`. Both use Bun 1.4.2, Pi 0.85.1,
+MLX 0.32.2 / native pack 0.4.0, packed Qwen3.8-27B interleave2, RTN4 MTP depth
+two, affine KV4, default shared batch cap eight, a 4 GiB RAM cache and a
+64 GiB SSD cache. The original Luke prompt, seed 42, temperature 0.6, xhigh
+thinking, 131072-token context and compaction settings are unchanged.
+
+The current run starts Pi in an empty directory at the path named in the
+pinned system prompt, with fresh application cache, Pi configuration and
+session. Pi's session headers reach the shared cache interface. Source hashes
+remain unchanged throughout. The M4 starts with 87% free memory and 1.31 GiB
+retained swap; this is a recorded machine-state diagnostic, not a quiet h2h.
+
+| Full task measurement | Previous run | Current cache run |
+| --- | ---: | ---: |
+| Pi task wall time | 78m31.250s | 83m57.098s |
+| Generated tokens | 72,289 | 76,031 |
+| Requests | 27 | 25 |
+| Weighted post-first-output throughput | 15.777 tok/s | 15.542 tok/s |
+| Sum of pre-first-output intervals | 127.925 s | 143.024 s |
+| Follow-ups with cached input | 26/26 | 24/24 |
+| Direct session hits / ordinary prefix scans | Not available | 24 / 1 |
+| SSD restores | 0 | 0 |
+| Final flush | HTTP 503, not durable | HTTP 200, durable |
+| Missing snapshots at final flush | 51 | 0 |
+| SSD entries after final flush | 3 | 38 |
+| Peak combined server/Pi RSS | 12.233 GiB | 15.453 GiB |
+| Untouched-app browser acceptance | 16/18 | 16/18 |
+| Pi tool errors / inference failures | 7 / 0 | 2 / 0 |
+
+The current task is 6.9% longer with 5.2% more generated tokens. Weighted
+throughput is 1.5% lower, but subsequent inputs and context lengths differ,
+so this is not an engine-only regression measurement. The initial rendered
+request and complete first response match exactly, including tool arguments
+and all 35,002 output tokens. That response takes 2000.478 s versus 1997.378 s,
+a 0.16% difference. The first changed input includes the new directory's
+actual timestamps; later generated histories diverge. No complete-task speedup
+is established by this comparison.
+
+The durability improvement is observable throughout the task. All 24
+follow-ups select their session checkpoint, 50 successful SSD writes are
+recorded, and final flush has zero pending, dropped, failed or missing
+snapshots. The existing 64 GiB SSD limit evicts older persisted entries,
+leaving 38 entries / 63.133 GiB and a longest durable prefix of 85,699 tokens.
+This establishes persistence within the configured capacity, not unlimited
+retention of every historical checkpoint. No SSD restores were required.
+Combined RSS is higher; it does not measure native peak allocation separately.
+
+Independent browser testing of the untouched app passes the same 16 of 18
+categories. Resetting label/assignee filters hides cards, and Enter/Space does
+not open a focused card for editing. Keyboard creation, mouse editing,
+column operations, card/column drag-and-drop, archive/restore, search,
+localStorage persistence and light/dark persistence pass. The new app is not
+byte-identical to the old one. No repairs or extra prompts were supplied.
+
+Reports, full requests/responses, Pi JSONL, source hashes, comparison and
+browser evidence: `reports/kanban-session-cache-r2/`. The preserved runner
+reproduces the task from the pinned local profile and artifacts; it requires
+a fresh report directory and empty task directory. An earlier attempt at
+`reports/kanban-session-cache-r1/` was stopped because its tool cwd differed
+from the pinned system prompt. Its first tool call targeted a nonexistent
+path. That runner error is preserved and excluded from the task comparison;
+it was not an engine failure.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

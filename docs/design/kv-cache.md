@@ -792,7 +792,8 @@ zero tokenization, or automatic reconstruction from a session label. The Pi
 provider passes the session identity its application already owns.
 The index, native retention and fixed-input M4 HTTP comparisons are complete.
 Lookup and reload work decrease; warmed model throughput is effectively
-unchanged. A fresh complete Kanban task has not been repeated for C6.
+unchanged. The full Kanban task now completes with all follow-up session hits
+and a durable final flush; independent app acceptance retains two defects.
 [Measurements](../reference/benchmarks.md#session-checkpoint-index-c6) preserve
 both the benefits and the limits. Existing idle-demotion settings remain in
 effect; session preference changes budget/pressure victim selection.

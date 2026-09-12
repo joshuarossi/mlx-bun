@@ -65,7 +65,7 @@ SSD completion. All 2,249 model-free tests pass, with 14 fixture skips; focused 
 after the final residency callback change. Native codec bytes match the existing
 writer; compiled-worker and M4 shared-MTP RAM/SSD checks pass. A paired M4
 storage diagnostic keeps decode effectively unchanged while persisting during
-generation. Full Kanban retention acceptance has not been repeated. [Design and serving-cache comparison](docs/design/kv-cache.md#54-background-persistence-and-ram-residency).
+generation. The subsequent full Kanban retention comparison is complete; see the session-cache result below. [Design and serving-cache comparison](docs/design/kv-cache.md#54-background-persistence-and-ram-residency).
 
 Cache expansion C1–C5 is implemented and measured: shared SSD blocks,
 asynchronous restore, interchangeable RAM retention and bounded packing,
@@ -76,14 +76,20 @@ optional arms are not promoted by those results. Whole-file storage and LRU
 remain selected; async restore moves reads off the owner thread. The complete
 model-free suite, typechecks and native RAM/SSD, MTP/TurboQuant and paged HTTP
 checks pass. This closes the bounded cache expansion, not the remaining
-Phase 6/18 work or full Kanban retention acceptance. [Measurements](docs/reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention).
+Phase 6/18 work. Full Kanban retention results follow below. [Measurements](docs/reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention).
 
 Session-aware cache selection (C6) is implemented and measured. Pi/HTTP session
 metadata selects an immutable checkpoint through the cache's own index and
 supplies soft RAM affinity. Native tests cover ordinary, MTP/TurboQuant and
 paged RAM/SSD reuse. Fixed-input M4 serving preserves outputs and is effectively
 flat; lookup work and restores decrease in their targeted comparisons.
-This is not a new complete Kanban task. [Results](docs/reference/benchmarks.md#session-checkpoint-index-c6).
+The full M4 Kanban run on `3ea8079` is complete with unchanged source and
+inference settings. All follow-ups use the session cache, and final SSD flush
+is durable with no missing snapshots. The untouched app has the same two
+browser defects as before; task time and output length increase. Reports:
+`reports/kanban-session-cache-r2/`; r1 preserves a runner directory mismatch.
+[Full comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
+
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

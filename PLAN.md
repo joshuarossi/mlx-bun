@@ -340,7 +340,7 @@ keeps storage, policy and attention kernels behind separate interfaces.
 - [x] **C4 — Storage copies:** segmented packing and owned-buffer restore; copied bytes, scratch, I/O and decode overlap measured on fixed payloads.
 - [x] **C5 — Direct paged attention:** shared bf16/affine row views, Metal block reads and RAM/SSD codecs; B1/B4 and native HTTP checks pass. Kernel/model wins and regressions recorded; remains Lab/optional. [Evidence](docs/reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention).
 - [~] **S3+ remainder:** existing LoRA-group native/oracle evidence remains accepted; performance acceptance stays open. TQ pages, paged speculation and shared physical arenas remain extensions.
-- [x] **C6 — Session checkpoint index:** shared session/content indexes, soft RAM affinity and Pi/HTTP metadata compose ordinary/MTP/paged RAM/SSD reuse. M1/M4 lookup, native retention and fixed-input M4 serving measured; throughput stays flat while searches/restores fall. Full Kanban task remains separate. See kv-cache §5.12 and benchmarks.md.
+- [x] **C6 — Session checkpoint index:** shared session/content indexes, soft RAM affinity and Pi/HTTP metadata compose ordinary/MTP/paged RAM/SSD reuse. M1/M4 lookup, native retention and fixed-input M4 serving measured; throughput stays flat while searches/restores fall. Full Kanban completes with all follow-up session hits and durable final flush; app acceptance retains two defects. See kv-cache §5.12 and benchmarks.md.
 - **Exit**: throughput scales with concurrency to the slot count then queues;
   per-row output matches the same-B oracle at every tier.
 
