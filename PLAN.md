@@ -142,7 +142,7 @@ evidence; rerun only for a named change, missing case or reproduced failure.
   batching is the serving default and R17 output persistence is complete.
   Remaining setting selection uses the recorded comparison of MTP
   depths 1/2/3/4 and ordinary decode: the short screen and four context repeats
-  are complete. Late-context 2048-token prefill failed; 256-token chunks complete at 78,678 prompt tokens with MTP1/2/3; the ordinary cached repeat OOMed and recovered only on a changed retry request; allocation investigation and balanced repeats remain before choosing a common-use default. Defaults: server-config.md; evidence: benchmarks.md.
+  are complete. Late-context 2048-token prefill failed; 256-token chunks complete at 78,678 prompt tokens with MTP1/2/3; the original ordinary cached-repeat workload now passes on current cache code, with the exact first-attempt request and response, two successful repeats and durable SSD restart. The original failure and changed retry remain recorded. Long-context TurboQuant/MTP3 pressure acceptance is running. Balanced setting comparisons remain before choosing a common-use default. Defaults: server-config.md; evidence: benchmarks.md.
 
 - [~] **Completed default-suite follow-up:** MiniCPM/Qwen timed-output divergence is traced to the reference server's thinking-segment prefill boundaries. The explicit unsplit reference control reproduces all ten saved Bun decode responses and usage; both first-request native traces match 192 complete logit vectors. These are correctness diagnostics, with one differing cache-reuse count. Qwen layer evaluation and full-batch reservation pass 38 retained-history/context/restart requests and twelve exact native oracle cases. Josh rejects predictive default refusals: keep estimates advisory, remove reservation hooks, and validate full requested work before repeating affected cells on M4 Pro. SSD flush acceptance and the separate packed Trellis/KV4/MTP result are recorded in benchmarks.md.
 
@@ -322,13 +322,17 @@ keeps storage, policy and attention kernels behind separate interfaces.
       checks unequal offsets, wrap during decode, retirement and a late join
       already beyond the window. Gemma 12B and e4b pass full-vector equality
       against the pinned same-B oracle on both M1 Max and M4 Pro.
-- [ ] **L2 parity layer** — quantized KV under batch, bit-exact vs optiq per
-      row (composition inherits the scheme's oracle; never invent a KL gate for
-      an oracle-backed scheme). Note the perf debt: the `[B,1,N,S]` array mask
-      bypasses the fused decode kernel, so quant batched falls to
-      `quantizedSdpaUnfused` — correct, slower.
-- [ ] **L3 (Lab) layer** — our perf paths under batch, KL + quality gated, must
-      degrade gracefully L3→L2→L1.
+- [~] **L2 same-B oracle remainder:** existing mixed-KV B1 logits match the
+      optiq golden; storage surgery, delayed/per-layer transitions and native
+      provider/serving compositions are accepted. The older B2 join compares
+      against solo geometry with a KL envelope; it does not establish the
+      same-B external oracle. Extend the reference at matched multi-row shapes
+      for the remaining cells. Do not rerun B1/storage gates to close this gap.
+- [~] **L3 (Lab) composition:** TQ layouts, donors, generated RAM/SSD reuse,
+      grammar proposals and mixed iteration work are implemented and measured.
+      Their individual numerical contracts and opt-in decisions remain valid.
+      Finish context/default and held-out quality cells; unsupported combinations
+      remain explicit. This row is not evidence for removing the serial control.
 - [x] **C1 — Shared SSD blocks:** immutable content-addressed manifests, exact recurrent/method state, shared lifetime and byte accounting; paired storage and M4 multi-request measurements recorded.
 - [x] **C2 — Async restore/prefetch:** cache-owned read queue and prepared RAM donors; native continuation, HTTP restart and concurrent-decode measurements recorded, including cold-TTFT regression.
 - [x] **C3 — RAM policy:** interchangeable LRU/cost-size ranking; synthetic and saved Kanban boundary replays measured. LRU retained after workload losses; SSD misses remain restores, not lost prefill.

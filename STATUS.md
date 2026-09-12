@@ -109,7 +109,9 @@ conversion, paged identity/construction and the flag-owner map. All checks pass.
 The shared normalized greedy kernel passes both-machine operation and actual-model
 checks. Standard AB/BA pairs improve MiniCPM throughput while Qwen MTP3/TQ stays
 effectively flat; no Qwen speedup is claimed. Full suites/types pass. Measurements
-and the remaining Phase 6/18 work are recorded in benchmarks.md and PLAN.md.
+and remaining work are recorded in benchmarks.md and PLAN.md. [Draft PR #52](https://github.com/joshuarossi/mlx-bun/pull/52)
+contains this branch. Ordinary KV4 now passes the original 78k cached-repeat
+failure and SSD restart. The M4 is testing the same context with TQ/MTP3.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

@@ -546,13 +546,13 @@ They do not require repeating completed checks or withholding the current defaul
 | Scheduling and ordinary decode | Default cap eight uses shared execution at B1/B>1; explicit `--batch 1` retains serial | Keep the batched default using existing measurements; address specific regressions separately. Serial removal is deferred |
 | Speculative decode | Qwen MTP, prompt lookup, standalone, assistant, DeepSpec and seeded DSpark/DFlash providers are integrated through shared B1/B>1 interfaces, with the native/HTTP/cache checks recorded below | Finish specific unsupported combinations and measured regressions; GLM artifact testing is deferred and no trained DSpark/DFlash checkpoint exists |
 | Sampling and logprobs | Shared sampler contract; ordinary groups capture logprobs and accept explicit seeds | Extend same-B oracle/feature compositions and matched performance; preserve per-request RNG/history |
-| Grammar and fill | Grammar batches where enabled; grammar jump and fill remain serial-only | Shared constraint/proposal contracts and qualified batch compositions |
+| Grammar and fill | Shared grammar proposals use grouped verification; explicit serial direct jumps remain a separate algorithm. Fill remains serial-only | Fill through shared committed-token append; keep grammar proposals opt-in after mixed timing results |
 | Adapters and media | Compatible adapter groups use shared execution; media remains serial | Adapter performance and broader compositions; media preparation and compatible state through shared execution |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | Direct paged-attention kernel, block sharing and quantized/speculative paging remain separate extensions; do not repeat the completed row-layout gates |
 | Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
 | Usage and cleanup | The gateway forwards timing/rates; the missing first-token timestamp in ordinary batch admission is now fixed | Consistent events/accounting, row cancellation, failure cleanup and persistence on shutdown |
-| Configuration | Placement still chooses path-specific implementations | One resolved configuration per concern; no setting silently disappears when B changes |
+| Configuration | Bound configuration reaches each owner, including delayed KV conversion, copied codecs and paged cache identity; the flag-owner inventory is complete | Preserve the contract when adding settings; completed policy tests and fixed-settings performance remain accepted |
 
 Tests must exercise actual B>1 work, not requests routed back to serial.
 Completed checks remain evidence for their recorded source and settings. A new
@@ -1887,6 +1887,18 @@ command live in [server-config](../reference/server-config.md); measured results
 live in [benchmarks](../reference/benchmarks.md#prefill-observation-and-scheduling-screen).
 The simple active-before-prefill experiment remains an unadopted patch in the
 local report directory; it is not the mixed execution design above.
+
+A second bounded screen submits shared prefill evaluation asynchronously and
+polls MLX completion while allowing Bun to service I/O. MLX's
+[`array::is_available`](https://github.com/ml-explore/mlx/blob/main/mlx/array.cpp)
+checks the completion event, not merely graph submission; the pinned native
+pack exports mlx-c's `_mlx_array_is_available`. This avoids holding the host
+thread during the GPU wait, but changes when requests become visible to the
+existing scheduler. Both M1 MiniCPM arm orders delay the first staggered
+request substantially; aggregate results are inconsistent. The candidate is
+removed. [Measurements](../reference/benchmarks.md#nonblocking-prefill-completion-screen)
+retain the excluded patch. Host responsiveness and request scheduling must be
+measured together before retaining a different completion boundary.
 
 
 #### Mixed token execution

@@ -671,6 +671,74 @@ from the pinned system prompt. Its first tool call targeted a nonexistent
 path. That runner error is preserved and excluded from the task comparison;
 it was not an engine failure.
 
+### Ordinary KV4 long-context cached repeat on current code
+
+M4 Pro 24 GB, 2026-09-12 UTC, source `38f6af4`, Bun 1.4.2, MLX 0.32.2.
+The standard benchmark repeats the previously failing ordinary packed-Qwen
+workload: the 12.14 GiB interleaved Trellis artifact, affine KV4, no drafter,
+default batch capacity eight, 4 GiB RAM cache, temporary SSD, 256-token prefill
+chunks and seed `mtp-late-context-block-0`. Context target 125,000 produces
+78,678 actual prompt tokens. Async Trellis expansion is off. This diagnostic
+run starts with 1,603 MiB retained swap and 91% free memory, without GPU competition.
+
+| Measurement | Current result |
+|---|---:|
+| Cold context first output | 881,534.26 ms |
+| Context prefill | 89.251 tok/s |
+| Context decode, median of three | 7.289 tok/s |
+| Cached repeat first output, two repeats | 313.71 / 313.40 ms |
+| SSD restart first output | 2,444.30 ms |
+| Reused tokens, cached repeat and restart | 78,677 |
+| Peak sampled RSS | 14,937 MiB |
+| Failed requests / retries | 0 / 0 |
+
+All three context requests retain the original first-attempt SHA-256
+`53c5eaa0296a1831e871bf2b519215ee830bfa2e27d0af0d96a58b8e1d1d824f`.
+Each generates 64 tokens; all three responses are identical, including the
+cold response from the old successful first attempt. The old second request
+failed with Metal OOM; its subsequent retry changed the prompt hash and token
+count. That retry is not a matched performance control. Current cold prefill
+is effectively unchanged from the original 881,941.45 ms. This closes the
+recorded ordinary cached-repeat failure on current source; it does not claim
+a decode speedup or validate the old 2,048-token chunk at this context.
+
+The final flush is durable: 16 entries, longest durable prefix 78,741 tokens,
+zero pending snapshots/spills and zero dropped/failed spills. The source hash
+`7c469ff1dbe847ca99342ae0d0c70b728ab39e297626a4d3be194cafc3e0bc1f`
+remains unchanged. Raw report: `reports/prefill-observation/late-context-ordinary.md.json`;
+original failure: `reports/qwen38-closeout/composition-baseline/decode-prefill-policy-kv4-plain-late-context-chunk256-0.md.json`.
+
+### Nonblocking prefill completion screen
+
+M1 Max 32 GB, 2026-09-12 UTC, MiniCPM5-1B OptiQ snapshot
+`664aabaed233c653f82716d8dc822234d0091f78`, bf16 KV, Bun 1.4.2 and native pack
+0.4.0. A temporary candidate replaces synchronous cache evaluation at shared
+prefill maintenance boundaries with `mlx_async_eval`, checking each output's
+native completion event once per millisecond. It retains state views until
+completion and changes neither GPU operations nor the scheduler. The standard
+benchmark uses default batch capacity eight, 192-token decode samples, four
+aggregate requests staggered by 25 ms with context target 2,048, and workload
+`prefill-long-0`. These diagnostic AB/BA pairs record roughly 4 GiB retained
+swap and background host activity; they do not qualify an engine speed claim.
+
+| Pair | B1 decode, control → candidate tok/s | Aggregate, control → candidate tok/s | First aggregate request TTFT, control → candidate ms |
+|---|---:|---:|---:|
+| A/B | 272.154 → 282.112 | 191.540 → 180.567 | 381.49 → 739.48 |
+| B/A | 269.658 → 280.016 | 192.581 → 194.464 | 366.92 → 711.87 |
+
+Every arm completes, keeps a fixed source hash and preserves all 15 request
+hashes and prompt/generated/cached token counts. Each pair preserves 12 of 15
+response texts; three concurrent trajectories change. Single-request outputs
+remain exact. Aggregate throughput is inconsistent, and first-request latency
+nearly doubles in both orders. Earlier host admission changes subsequent
+batch scheduling. The candidate is **not adopted**; the original synchronous
+prefill boundary remains. A local eight-matmul probe confirms that completion
+polling frees the event loop and adds up to about one millisecond to the wait,
+but that mechanism alone does not establish a serving benefit.
+
+Raw reports and the excluded patch: `reports/prefill-observation/async-prefill-{before,after}{,-repeat}.md.json`,
+`async-prefill-candidate.patch`, and `async-eval-probe-m1.json` in that directory.
+
 ### Prefill observation and scheduling screen
 
 M4 Pro 24 GB, 2026-09-12 UTC, Bun 1.4.2, MLX 0.32.2/native pack 0.4.0.
