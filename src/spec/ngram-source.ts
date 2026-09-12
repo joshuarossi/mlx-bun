@@ -38,7 +38,7 @@
 // speculation is structurally never worse than plain decode by more than the
 // JS scan (~µs against 30k-token histories).
 
-import { flagOn } from "../runtime-config";
+import { runtimeFlag } from "../runtime-config";
 import type { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import type { CheckpointAttachment } from "../backends/mlx/checkpoint-state";
@@ -157,7 +157,7 @@ class NgramSource implements DraftSource {
   readonly weightsBytes = 0;
   #hist: number[] = [];
   #lastDrafts: number[] = [];
-  readonly #tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+  readonly #tailSplit = runtimeFlag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
   readonly checkpoint: NonNullable<DraftSource["checkpoint"]>;
 
   constructor(

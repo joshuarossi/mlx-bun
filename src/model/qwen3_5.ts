@@ -12,7 +12,7 @@
 import type { ModelConfig } from "../config";
 import { gatedDeltaState } from "./qwen3-delta-state";
 import type { Weights } from "../weights";
-import { flagOn } from "../runtime-config";
+import { runtimeFlag } from "../runtime-config";
 import { mapTokenGroups, type TokenGroup } from "./token-groups";
 import { MlxArray } from "../mlx/array";
 import { Dtype, deviceArchitecture } from "../mlx/ffi";
@@ -694,7 +694,7 @@ export class Qwen35Model {
     if (work.length === 1 && !work[0]!.captureLayer) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
     const groups: Array<{ h: MlxArray; mask?: Mask; ssmMask?: MlxArray | null }> = [];
     const results: MlxArray[] = [];
-    const pack = flagOn("MLX_BUN_MIXED_PACKED_MLP", true);
+    const pack = runtimeFlag("MLX_BUN_MIXED_PACKED_MLP", true);
     const bounded = work.some(group => group.ids.shape[1]! > TRELLIS_MATVEC_MAX_M);
     try {
       for (const { ids, cache } of work) {

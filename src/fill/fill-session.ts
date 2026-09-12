@@ -20,7 +20,7 @@
 // sources in priority order, clamps what they return, and counts. It never
 // touches MLX, the tokenizer, or the template. Row COMPILATION is
 // ./schema-rows.ts.
-import { flagOn, runtimeNumber, runtimeValue } from "../runtime-config";
+import { runtimeFlag, runtimeNumber, runtimeValue } from "../runtime-config";
 import { EchoSource, type EchoConfig } from "./echo-index";
 import type {
   Proposal, ProposalOrigin, ProposalPolicy, ProposalSource, TokenView,
@@ -153,7 +153,7 @@ export function fillEchoConfig(): FillEchoConfig {
  *  the engine's fill path. Off by default (the invariant it checks is the
  *  easiest bug in the feature, and the check costs a JS compare). */
 export function fillTraceEnabled(): boolean {
-  return flagOn("MLX_BUN_FILL_TRACE", false) || fillTracePath() !== null;
+  return runtimeFlag("MLX_BUN_FILL_TRACE", false) || fillTracePath() !== null;
 }
 
 /** MLX_BUN_FILL_TRACE=<file.jsonl> — additionally append one record per

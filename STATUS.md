@@ -90,7 +90,6 @@ browser defects as before; task time and output length increase. Reports:
 `reports/kanban-session-cache-r2/`; r1 preserves a runner directory mismatch.
 [Full comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
 
-
 Prefill observation and mixed token work are complete on
 `perf/prefill-observation` for Gemma/Qwen and grouped speculative methods.
 The scheduler owns token budgets; methods own candidate demand and hidden taps;
@@ -110,7 +109,9 @@ the option remains off by default. Empty-candidate rollback snapshots are now
 removed with exact native state and unchanged standard-benchmark responses;
 throughput is effectively flat. Configuration ownership cleanup passes focused
 checks on both Macs and the full local suite; its M4 comparison preserves all
-responses and token counts with effectively unchanged throughput.
+responses and token counts with effectively unchanged throughput. The flag-owner
+inventory and paged deferred policy are complete; both-machine checks, all
+typechecks and the full local suite pass.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

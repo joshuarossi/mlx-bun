@@ -131,12 +131,12 @@ evidence; rerun only for a named change, missing case or reproduced failure.
   as the control; compare identical artifacts, kernels, method/sampling settings,
   inputs and initial cache state. A throughput gain cannot hide a B=1 latency
   loss or a missing feature. Resolve each recorded regression separately; serial deletion is deferred and does not block the existing batching default.
-- [~] **Configuration consolidation:** inventory each flag's owner and effective
+- [x] **Configuration consolidation:** inventory each flag's owner and effective
   value, bind one configuration per concern, and remove duplicate path-specific
   controls after their callers migrate. Keep existing CLI compatibility during
   migration. Exit: every served setting reaches its owning interface, no decode
   loop rereads mutable configuration, and docs describe actual supported
-  combinations. The shared prefill-default/request-override fix is adopted and measured. The current ownership audit removes direct process-environment reads from numerical/model/method code, preserves TurboQuant codec policy through copies and delayed conversion, and reconciles the serving compatibility matrix with accepted implementations. Both-machine policy/codec tests, the model-free suite and typechecks pass; the fixed-settings M4 comparison preserves all 15 responses and token counts with effectively unchanged throughput. Remaining work is the broader flag-owner inventory and removal of superseded controls, not this completed codec correction. Architecture §12.5–12.7 and §12.14 own the interface contract.
+  combinations. The shared prefill-default/request-override fix is adopted and measured. The current ownership audit removes direct process-environment reads from numerical/model/method code, preserves TurboQuant codec policy through copies and delayed conversion, and reconciles the serving compatibility matrix with accepted implementations. Both-machine policy/codec tests, the model-free suite and typechecks pass; the fixed-settings M4 comparison preserves all 15 responses and token counts with effectively unchanged throughput. The serving flag-owner inventory is complete; the duplicate internal boolean resolver is removed. Paged namespaces and deferred construction now retain the bound policy. Existing CLI/A/B controls remain compatible while their supported control paths remain. Architecture §12.5–12.7 and §12.14 own the interface contract.
 - [~] **Measured defaults:** v0.4.0 selects Trellis v13, eligible
   Qwen KV4 speculation and paired MTP prefill reuse without opt-in flags. Shared
   batching is the serving default and R17 output persistence is complete.

@@ -1824,7 +1824,7 @@ flowchart TB
     output -->|response events| server
     method <-->|borrow, update, snapshot, rollback| state
     session <-->|restore / publish prefill checkpoint| cache
-    method -.->|publish generated checkpoint: still open| cache
+    method -->|publish generated checkpoint| cache
     cache <-->|fast reuse| ram
     ram <-->|spill and restore when needed| persistence
 ```
@@ -1894,8 +1894,14 @@ receiving cache factory selects the destination binding's policy.
 The configuration tests change host settings around scoped construction,
 copy/extraction and delayed conversion. Existing codec/donor tests now select
 both fused settings through `configureRuntime`, so they exercise the same
-configuration contract as serving. The compatibility matrix in server-config.md
-records which methods/layouts implement each served feature.
+configuration contract as serving. Paged request policies also bind the numerical
+namespace and construction policy before deferred lookup or allocation, including
+when a gateway outlives later host configuration changes. The serving reference
+maps flags to their owning interfaces and records supported combinations. The
+legacy internal `flagOn` wrapper is removed; CLI controls remain compatible.
+The new paged-policy tests first reproduce both deferred-setting failures, then
+pass with the captured policy. Paged operation/layout checks pass on both Macs;
+the full local model-free suite and all typechecks pass.
 
 ### 12.15 Package boundaries before community outreach
 

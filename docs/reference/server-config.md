@@ -23,6 +23,39 @@ Sections: [Start flags](#start-flags) · [`--isolate` semantics](#--isolate-sema
 · [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2) · [Feature matrix](#feature-matrix)
 · [Performance & recipes](#performance-characteristics--recipes) · [`GET /stats`](#observability--get-stats).
 
+## Configuration ownership
+
+CLI presets and explicit flags resolve before model loading. Request preparation
+combines server defaults with request overrides once; explicit request values
+win. A bound execution keeps its immutable runtime snapshot across awaits.
+The tables below own the individual defaults and effective-value rules; this
+map identifies who consumes them.
+
+| Settings | Owning interface / implementation | Binding and use |
+|---|---|---|
+| Model selection, host/port, isolation, native paths, shutdown | CLI and server host | Startup and process lifecycle; no model-forward policy |
+| Batch capacity, queue/KV budget, prefill cohort budget, `MIXED_PREFILL`, `MIXED_TOKEN_BUDGET` | Scheduling policy and execution group | Choose admission and work size; never choose a codec or sample |
+| Draft kind/model/depth, `DSPARK_MINCONF`, `GRAMMAR_DRAFT_TOKENS` | Draft provider and inference method | Bind provider policy; propose tokens through the shared verifier |
+| `GRAMMAR_BATCH`, `BATCH_SSM`, `QWEN_SPEC_KV4`, compiled/grammar/fill eligibility | Model gateway and execution planner | Resolve supported composition before placement |
+| Temperature, seed, penalties, probability filters, logprobs, `BATCH_VEC_SAMPLE` | Sampling session | Request-owned policy and RNG; selected-token output remains device-backed where supported |
+| Thinking/template defaults, grammar schema, `GRAMMAR`, `TOKEN_MASK` | Chat renderer and grammar controller | Render and compile per request; no scheduling decisions |
+| KV scheme/start/group size, `PAGED_KV`, `PAGED_ATTN`, `TURBOQUANT_FUSED_DECODE` | KV scheme, request-state policy and codec | Capture layout/kernel choice; preserve it through deferred construction and RAM copies |
+| Prompt/SSD budgets, demotion, `SSD_*`, `CACHE_RETENTION`, `SESSION_CACHE`, `MTP_PROMPT_CACHE` | Prefix cache and persistence service | Cache owns residency and session lookup; persistence owns queued storage work |
+| `COMPILED_DECODE`, `COMPILED_GEGLU`, `COMPILED_SWIGLU`, `NO_FUSED_SDPA`, `TRELLIS*`, `MIXED_PACKED_MLP` | Model backend and numerical kernels | Read bound execution policy; select implementations by supported tensor geometry |
+| `RD_PREFILL_CHUNK`, `PREFILL_TAIL_SPLIT`, `EARLY_FIRST_TOKEN`, `BATCH_NO_PIPELINE`, `BATCH_EXTEND` | Prefill/step execution and row state | Preserve method boundaries, output ordering and state ownership; the batch-prefixed names remain compatibility controls |
+| `FILL*`, `GRAMMAR_JUMP` | Fill session or grammar proposal provider | Capture request policy; supported methods consume proposals/appends independently of scheduling |
+| Context limits, checkpoints, media access, trace/debug settings | Request preparation, checkpoint service, media adapter and diagnostics | Each service applies its own options; evaluation-only settings stay in the evaluation adapter |
+
+Environment names in this map omit the `MLX_BUN_` prefix. Historical A/B switches
+remain available while their control paths are supported. They are not alternate
+configuration systems. Internal boolean reads use the same `runtimeFlag` port;
+the old `flagOn` wrapper has been removed. CLI aliases remain compatible.
+
+Paged request state captures both its cache namespace and its direct-attention
+choice. Changing host settings after binding cannot change later prefetch, lookup,
+publication or cache construction for that request. The same rule applies to
+TurboQuant's fused codec across copies and delayed precision conversion.
+
 ## Start flags
 
 How flags are parsed (`src/cli.ts` `opt`/`flag`/`positional`):
@@ -369,7 +402,7 @@ chat stage (`src/serve/chat-stage.ts`). Full field list: [server-api.md](./serve
 All `MLX_BUN_*` variables are captured once at process start into an
 immutable snapshot (`src/runtime-config.ts`); CLI flags install overrides
 into the same snapshot before the model loads. Boolean levers read the
-literal strings `"1"`/`"0"` — `flagOn` treats any other value as unset.
+literal strings `"1"`/`"0"` — `runtimeFlag` treats any other value as unset.
 Under `--isolate` the whole environment is inherited by the engine child.
 
 ### Serving levers (flag-backed and lane kill switches)
@@ -389,7 +422,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_TRELLIS` | — | `kernel` (`=expand`) | Packed trellis-coded weights (`mode: "trellis"` modules, Q2b — design: `docs/design/turboquant.md`). `kernel` serves them through the Metal decode kernels (M≤4 matvec; larger M expands one tensor to bf16 and runs a stock matmul). `=expand` decodes every trellis tensor at LOAD into 8-bit g64 affine (+~4 GiB at 27B, the eval-carrier numerics) and serves it through the stock quantized path — the fallback for a machine where the kernels lose. |
 | `MLX_BUN_TRELLIS_VARIANT` | — | `13` | Trellis kernel variant (see [Q2b experiments](../design/turboquant.md)): `6` = code computed inline × reciprocal, weight served as f32 code×scale; `1` adds a residual step and bf16 rounding to reproduce the fake-quant artifact's weights. `0`/`2`/`3`/`4`/`5` are bench-only decoder variants. Variants `7`–`13` retain variant-6 decode values; `13` is the measured default. These variants tune work assignment; `11` tiles eligible short axis-1 prefills, `12` adds split-K axis-0 prefill at M=5..8, and `13` also vectorizes remaining bf16 expansion for k2/k3/k4, T=256, L=12. On MLX 0.32.2/M3+ the axis-1 M5..15 path instead uses direct packed decoding with native wide-matvec arithmetic when Qwen's RMSNorm establishes aligned row-contiguous inputs; callers without that layout proof use native expansion/matmul. Qwen27B additionally selects an integer codebook for its interleaved k3 down projection at M=3/4 with bf16 activations; other calls retain the computed decoder. Prefill rounds weights to the activation dtype. |
 | `MLX_BUN_TRELLIS_ASYNC_EXPAND` | — | off (`=1`) | Experimental variant-13 expansion scheduling. Submit an expanded projection asynchronously while MLX active allocation is below 75% of the device's recommended working set; retain blocking evaluation above it. Other variants are unchanged. Uses the execution's runtime-policy snapshot and preserves the caller's layer barriers. The threshold is not a total-memory cap. Qwen27B integrated native, repeated serial/continuous HTTP and both saved-agent pressure gates pass on M4 Pro 24 GB. Broader-model, combined-optimization and quiet M4 Pro acceptance remain. |
-| `MLX_BUN_PAGED_KV` | `--paged-kv` | off (`=1`) | Paged KV cache; the same refusals and prompt-cache bypass as the flag. |
+| `MLX_BUN_PAGED_KV` | `--paged-kv` | off (`=1`) | Paged KV cache; the same eligibility and separate RAM/SSD namespace as the flag. |
 | `MLX_BUN_ALLOW_PRIVATE_MEDIA` | `--allow-private-media` | off (`=1`) | Permit media fetches to private/loopback/link-local hosts (timeout + size cap still apply). |
 | `MLX_BUN_EXPERT_OFFLOAD` | `--expert-offload` | off | `=<dir>` — the path of a built expert-offload file, activated at module load (`src/expert-offload.ts`) for scripts and library runs that never parse serve flags. The CLI flag builds the file and activates it itself. |
 | `MLX_BUN_PREFILL_TAIL_SPLIT` | — | on (`"0"` disables) | Oracle prefill convention: drain the prompt to len−1, then compute step-0 logits from a separate L=1 forward of the last prompt token (mlx-lm `generate_step` and its batched engine). Both lanes. The spec lane follows its own oracle's shape under the same flag (mlx-lm `speculative_generate_step`: target and draft drain to len−1, no separate step 0). `=0` restores the full-final-chunk convention everywhere — ulp-different at step 0, flips near-tie greedy streams vs mlx-lm. |
@@ -408,7 +441,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_BATCH_SSM` | — | on (`"0"` forces serial) | `=0` excludes SSMCache (Qwen3.5 gated-DeltaNet hybrids) from the batch capability gate → those models route serial. |
 | `MLX_BUN_BATCH_EXTEND` | — | on (`"0"` reverts) | Joining rows append to the running batch's KV in one pad+concat (mlx-lm `BatchKVCache.extend`). `=0` reverts to whole-batch re-merge (numerically equivalent, O(B·S)). |
 | `MLX_BUN_BATCH_VEC_SAMPLE` | — | on (`"0"` reverts) | Vectorized greedy batch sampling; `=0` falls back to per-row sampling (bit-equal A/B). |
-| `MLX_BUN_BATCH_NO_PIPELINE` | — | off (`=1`) | Read each batch step's tokens synchronously instead of pipelined (A/B lever; numerically equivalent, slower). Read once at module load. |
+| `MLX_BUN_BATCH_NO_PIPELINE` | — | off (`=1`) | Read each batch step's tokens synchronously instead of pipelined (A/B lever; numerically equivalent, slower). Captured when the execution group is constructed. |
 | `MLX_BUN_SSD_WRITEBEHIND` | — | on (`"0"` disables) | Proactive persistence after cache publication. A CPU worker packs, hashes and writes immutable state without a generation lock. Writing does not evict RAM. `=0` keeps eviction-triggered persistence; RAM victims remain resident until their SSD copy commits. |
 | `MLX_BUN_SSD_LAYOUT` | — | `whole` | `blocks` writes immutable content-addressed blocks with atomic checkpoint manifests (format 5). Existing whole files remain readable. Shared blocks count once toward an explicit SSD cap and survive deletion of other referencing checkpoints. Experimental space/time tradeoff; see benchmarks. |
 | `MLX_BUN_SSD_SEGMENTED` | — | on (`"0"` disables) | With block storage, read contiguous spans directly and pack arbitrary strides in at most 1 MiB scratch. `=0` retains whole-tensor CPU packing for paired measurements. |
@@ -441,8 +474,9 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | --- | --- | --- |
 | `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (admission wait, prefill forward/evaluation/maintenance/checkpoints, mixed-forward token counts, token-zero, bounded initial token routing, response writes) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
 | `MLX_BUN_P2R_SYNC` | `=1` (with `MLX_BUN_P2R_TRACE`) | Token-zero attribution mode: synchronizes hidden/cache state, projection and sampling at the instrumented boundaries. This changes overlap and slows the traced request. Ordinary prefill traces add no synchronization: forward includes any backend evaluation, while evaluate measures the remaining state wait. |
+| `MLX_BUN_SPEC_TRACE` | `=1` | Explicit serial speculative-loop round diagnostics, captured once at run setup. |
 | `MLX_BUN_LANE_DEBUG` | `=1` | Logs each request's scheduling placement (`mechanism` + shape) to stderr. |
-| `MLX_BUN_BATCH_STEP_TRACE` | `=1` | Per-step phase timing in the batch scheduler (build / read / emit / gap), read once at module load; summarized by `stepTraceReport()`. |
+| `MLX_BUN_BATCH_STEP_TRACE` | `=1` | Per-step phase timing in the batch scheduler (build / read / emit / gap), captured when the execution group is constructed; summarized by `stepTraceReport()`. |
 | `MLX_BUN_GRAMMAR_DEBUG` | `=1` | Logs per-step grammar row state in the batch scheduler. |
 | `MLX_BUN_PREFILL_MEM_LOG` | `=1` | Logs active/peak memory after each serial prefill chunk. |
 | `MLX_BUN_EXPERT_TRACE` | `=<path>` | Records every MoE router decision as JSONL to that path (adds a per-call GPU→host sync — a measurement tool, not a serving path). |

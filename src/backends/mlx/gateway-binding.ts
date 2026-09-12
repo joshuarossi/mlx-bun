@@ -85,9 +85,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         restore: entry => services.checkpoints!.restore(entry, model),
         interval: services.checkpointEveryTokens!, identity: services.identity });
     },
-    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache) : undefined,
+    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache, runtime) : undefined,
     prefixNamespace: (execution, options, adapters) => {
-      if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters);
+      if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters, runtime.flag("MLX_BUN_PAGED_ATTN", false));
       if (execution?.method !== "speculative") return adapters;
       const namespace = (execution.grammarJump ? grammarProvider : draft?.provider)?.grouped?.checkpointNamespace?.();
       return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));

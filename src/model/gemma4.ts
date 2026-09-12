@@ -57,7 +57,7 @@ import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 import { unrotateValues as tqUnrotateValues } from "../mlx/turboquant-ops";
 import { CompiledFunction } from "../mlx/compile";
-import { flagOn } from "../runtime-config";
+import { runtimeFlag } from "../runtime-config";
 
 /** Verbatim port of mlx_lm/models/gemma4_text.py:
  *    `@partial(mx.compile, shapeless=True) def geglu(gate, x): return nn.gelu_approx(gate) * x`
@@ -78,7 +78,7 @@ import { flagOn } from "../runtime-config";
  *  ~9-op path. `MLX_BUN_COMPILED_GEGLU=0` (--compiled-activations off) selects the
  *  uncompiled composition — same L1 parity, slower (the A/B opt-out). */
 export function compiledGegluActive(): boolean {
-  return flagOn("MLX_BUN_COMPILED_GEGLU", true);
+  return runtimeFlag("MLX_BUN_COMPILED_GEGLU", true);
 }
 
 let _gegluClosure: CompiledFunction | null = null;
@@ -1030,7 +1030,7 @@ export class Gemma4Model {
     const groups: Array<{ ids: MlxArray; cache: Cache[]; h: MlxArray;
       masks: Map<string, Mask>; perLayer: MlxArray | null; intermediates: (SharedKv | null)[] }> = [];
     const results: MlxArray[] = [];
-    const packedMlp = flagOn("MLX_BUN_MIXED_PACKED_MLP", true) && !work.some(group => group.preserveTokenGeometry);
+    const packedMlp = runtimeFlag("MLX_BUN_MIXED_PACKED_MLP", true) && !work.some(group => group.preserveTokenGeometry);
     try {
       for (const { ids, cache } of work) {
         const group = { ids, cache, h: this.embed.encode(ids), masks: new Map<string, Mask>(),
