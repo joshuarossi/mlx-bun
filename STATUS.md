@@ -91,11 +91,13 @@ browser defects as before; task time and output length increase. Reports:
 [Full comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
 
 
-Prefill observation is implemented on `perf/prefill-observation`. M4 traces
-separate execution from cache work and hidden-token routing. The scheduling-only
-experiment improves first output but loses aggregate throughput and is not
-adopted. Phase 18 S1b now tracks the upstream token-budget/mixed-execution
-baseline, with implementation ownership and acceptance in batching.md.
+Prefill observation and opt-in Gemma mixed token work are implemented on
+`perf/prefill-observation`. Scheduling assigns a shared token budget; the model
+packs feed-forward work and retains independent attention/KV state. Matching
+bf16/KV4 oracle checks and M4 budget/packing comparisons are recorded in
+benchmarks.md. Lower first-output latency costs aggregate throughput; packing
+has no repeatable serving win. Defaults remain unchanged. Phase 18 S1b still
+requires Qwen/speculative work, broader composition and a measured default decision.
 
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)

@@ -10,6 +10,7 @@ import { evalCacheState } from "./prefill";
 import { prefillCacheLayout } from "./cache-layout";
 import { MlxStateRows } from "./state-rows";
 import type { P2RTracePhase, P2RTraceAttributes } from "../../serve/prompt-response-trace";
+import type { MlxPreparationWork } from "./mixed-iteration";
 import type { KvMaintenance } from "./kv-maintenance";
 
 // Shared work is recorded on every participating request. workId identifies
@@ -115,7 +116,8 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     for (const cache of this.#stateRows.caches) cache.prefillMaintenance?.beginPrefill();
   }
 
-  async advance(): Promise<boolean> {
+  async advance(workLimit?: MlxPreparationWork): Promise<boolean> {
+    let remaining = workLimit?.maxTokens ?? Infinity;
     // Complete restored inputs before merging: their cache coverage must not
     // introduce padding or a zero-width forward into unrelated cold rows.
     if (this.operations.ready && this.#states.some(state => this.operations.ready!(state))) {
@@ -145,7 +147,8 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     if (!this.#states.length) { this.dispose(); return true; }
     while (this.#states.length) {
       for (const state of this.#states) state.planned ??= this.operations.plan(state);
-      const count = Math.min(...this.#states.map(state => state.planned!.end - state.pos));
+      const count = Math.min(Math.max(1, Math.floor(remaining / this.#states.length)),
+        ...this.#states.map(state => state.planned!.end - state.pos));
       const work = { workId: ++nextWorkId, batchSize: this.#states.length, tokensPerRow: count };
       const closes = this.#states.map(state => state.row.req.trace?.begin("prefill.chunk", {
         mechanism: "continuous", startToken: state.pos, ...work,
@@ -157,7 +160,9 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
         let forwarded: MlxArray | null;
         {
           using span = traceRows(this.#states, "prefill.forward", work);
-          forwarded = ids ? await this.operations.forward(ids, caches, this.#states) : null;
+          forwarded = ids ? await (workLimit?.forward
+            ? workLimit.forward(ids, caches)
+            : this.operations.forward(ids, caches, this.#states)) : null;
         }
         using hidden = forwarded;
         const drains: number[] = [], finals: number[] = [];
@@ -218,7 +223,8 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
         for (const cache of caches) (cache as { releaseRopeArr?: () => void }).releaseRopeArr?.();
         if (finals.length) this.#filter(this.#states.flatMap((_, row) => finals.includes(row) ? [] : [row]));
         if (!this.#states.length) { this.dispose(); return true; }
-        if (batchYield || finals.length) return false;
+        remaining -= count * work.batchSize;
+        if (batchYield || finals.length || remaining < this.#states.length) return false;
       } finally { for (const close of closes) close?.(); }
     }
     return true;

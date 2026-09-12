@@ -1862,15 +1862,15 @@ algorithm, measure the same submitted work on M4, and retain deviations only
 with recorded benefits and costs. No framework guarantees one universally best
 chunk size or latency policy.
 
-The current backend exposes separate `advance()` and `advancePreparation()`
+The established backend exposes `advance()` and `advancePreparation()`
 operations. `MlxPrefillRows` groups prompt rows, while ordinary and speculative
 methods advance decoding rows separately. The existing preparation budget limits
 cohort admission; it is not vLLM's combined per-iteration token budget. True mixed
 execution therefore needs backend work as well as scheduling policy. Padding a
 single decode token to a long prompt's width would defeat the intended saving.
 
-Phase 18 S1b will establish one work description containing request identity,
-computed/required positions and method-owned candidate work. Scheduling allocates
+Phase 18 S1b adds bounded mixed work. The method retains request identity,
+computed/required positions and candidate state. Scheduling allocates
 bounded work to active requests and then queued requests; the backend executes
 compatible selections. Sampling and cache ownership remain unchanged. Acceptance
 covers lone requests, arrivals during prefill and decode, unequal lengths,
@@ -1887,3 +1887,51 @@ command live in [server-config](../reference/server-config.md); measured results
 live in [benchmarks](../reference/benchmarks.md#prefill-observation-and-scheduling-screen).
 The simple active-before-prefill experiment remains an unadopted patch in the
 local report directory; it is not the mixed execution design above.
+
+
+#### Mixed token execution
+
+The Lab Gemma path now executes running decode and queued prompt work together.
+`ExecutionGroup.mixedPreparation` reports running-token demand and the minimum
+prompt work needed for progress. The scheduler reserves that demand and assigns
+the remaining iteration budget to preparation. Existing cohort admission still
+accounts for total prompt work. Removing that limit was measured and rejected:
+on this M4 workload, larger cohorts lost throughput and delayed later first
+outputs. Both variants execute the same bounded mixed-token model port.
+
+`MlxPreparationWork` carries a token allowance and forward operation into the
+shared preparation driver. It limits actual tokens across rows while preserving
+planned precision conversions and checkpoint endpoints. `runMixedTokenIteration`
+collects the preparation and decode forward inputs. The model's `MixedTokenModel`
+port receives independent `TokenGroup` inputs with their existing row geometry
+and caches. Decode finishes sampling, publication and retirement before a
+completed preparation can join the active rows. A restored or cancelled
+preparation can finish without producing model work; an exhausted decode can
+publish its pending token without another forward.
+
+Gemma reuses its existing attention and feed-forward layer interfaces. Attention
+retains each group's RoPE positions, masks, SDPA shape and cache operations.
+`mapPackedTokens` concatenates only real tokens for the feed-forward block and
+restores each group's output shape afterwards. It adds no padding or host
+readback. This is shared feed-forward execution, not a fully packed attention
+kernel. The unpacked control keeps the same scheduler budget to isolate the
+packing benefit. The original single-group model call remains unchanged.
+
+Packing can change GEMV/GEMM dispatch relative to solo generation. The numerical
+contract therefore uses the pinned oracle with the same packed feed-forward
+geometry and independent attention shapes. The real-model test passes on M4 for
+Gemma e4b, 12B and 26B with bf16 and uniform affine KV4, continuation, and unequal
+decode/prefill row counts. The
+uniform-KV oracle explicitly uses stock quantized SDPA on both sides. Native
+state tests also cover bounded preparation with immediate and delayed affine
+and TurboQuant conversion. Failure, cancellation and retirement tests exercise
+the shared execution group and the work coordinator.
+
+This remains opt-in. Qwen/recurrent mixed model work, speculative provider
+candidate/tap work, broader model and cache composition, and default selection
+remain open under S1b. Existing speculative execution is unchanged. Trace phase
+`engine.mixed_forward` records the model-call construction span and real token
+counts; GPU waits remain at the existing evaluation/readback boundaries. The
+[measured comparison](../reference/benchmarks.md#mixed-prefill-and-decode-token-work)
+records latency, throughput, streaming gaps and the unpacked control. Runtime
+settings live in [server-config](../reference/server-config.md).

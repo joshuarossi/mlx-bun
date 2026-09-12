@@ -752,6 +752,92 @@ Per-arm source hashes, exact payloads, output hashes, timings and machine state
 are retained in the JSON reports. Tracing is off by default and traced benchmark
 runs are classified diagnostic automatically.
 
+### Mixed prefill and decode token work
+
+M4 Pro 24 GB, 2026-09-12 UTC. Same Gemma 4 12B artifact, Bun/native versions,
+KV4, RAM/SSD cache, default batch capacity eight, prompt counts, output budgets
+and `prefill-long-0` requests as the preceding observation screen. New code is
+based on `71f3463`; raw reports record the exact worktree source hashes. These
+are diagnostic HTTP runs. Retained swap remains recorded in each report rather
+than preventing the comparison.
+
+The scheduler reserves running decode tokens before assigning a bounded prompt
+chunk. Gemma packs feed-forward work across those real tokens; attention retains
+each group's original geometry and KV ownership. The unpacked arm keeps the same
+scheduler budget and disables only feed-forward packing. The larger-cohort
+experiment removes the old total-prompt admission limit while retaining the
+iteration token limit. It was reverted after the comparisons below.
+
+| Arm | B1 decode tok/s | Aggregate tok/s | Workload wall ms | First request TTFT ms | Mean TTFT ms | Largest output gap ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Previous observer-off control | 26.044 | 20.171 | 25,383.24 | 9,022.22 | 15,944.64 | 4,598.66 |
+| Packed, 256-token budget, traced | 26.132 | 20.015 | 25,580.35 | 5,465.48 | 13,155.55 | 1,802.16 |
+| Packed, 512-token budget, traced | 26.052 | 20.014 | 25,582.60 | 6,361.77 | 14,252.33 | 3,642.18 |
+| Unpacked, 256-token budget, traced | 26.340 | 19.471 | 26,295.51 | 5,496.34 | 13,517.57 | 1,889.96 |
+| Larger cohort, 256-token budget, traced, reverted | 26.331 | 19.746 | 25,929.76 | 5,487.48 | 15,499.28 | 955.07 |
+| Larger cohort, 1,024-token budget, traced, reverted | 26.050 | 19.851 | 25,792.54 | 8,094.81 | 15,961.84 | 3,718.52 |
+| Final default control, tracing off | 26.023 | 20.045 | 25,542.09 | 9,030.63 | 16,071.34 | 4,668.02 |
+| Final packed 256-token path, tracing off | 26.047 | 19.378 | 26,421.19 | 5,611.73 | 13,621.31 | 1,882.32 |
+| Final unpacked 256-token control, tracing off | 26.070 | 19.566 | 26,168.35 | 5,461.18 | 13,416.80 | 1,884.87 |
+
+The first packed 256-token screen reduces first-request TTFT by 39.42% and
+mean TTFT by 17.49% relative to the previous observer-off control. Aggregate
+throughput is 0.77% lower. Against the same-budget unpacked control, packing
+improves aggregate throughput by 2.80%. These ordered single samples establish
+a latency/throughput tradeoff, not a universal throughput gain. Enlarging the
+cohort reduces the worst streaming gap at budget 256, but delays later first
+outputs and loses aggregate throughput. The retained Lab path uses the existing
+cohort admission policy.
+
+The final tracing-off pair confirms lower latency with a throughput cost:
+first-request TTFT improves 37.86%, mean TTFT improves 15.24%, and the largest
+output gap falls from 4,668 to 1,882 ms. Aggregate throughput falls 3.33%; workload
+wall time grows 879 ms. B1 decode changes +0.095%. Output-gap p95 rises from
+56.67 to 111.68 ms because more visible output now interleaves with preparation.
+Peak RSS is 9,868.5 versus 10,009.3 MB. This is not a default promotion.
+
+The final same-source unpacked control reaches 19.566 tok/s, ahead of packed
+execution's 19.378 tok/s by 0.97%. This reverses the earlier traced packing
+screen. Packing has no repeatable throughput win in these HTTP measurements;
+the latency improvement is attributable to the mixed iteration scheduling.
+The interface and packed model implementation remain available for further
+kernel work, with the entire mixed path off by default.
+
+All measured request bodies and prompt/cache/output counts match the control;
+no server request fails. The eleven non-aggregate response texts remain exact.
+All four concurrent response texts change. The new packed matmul and scheduling
+geometries do not promise identical sampled output to the old geometry, even
+with a fixed seed. Streaming gaps above are intervals between semantic SSE
+output events, not GPU token timings.
+
+The packed native oracle passes on M4 for Gemma e4b, 12B and 26B, each with
+bf16 and uniform KV4, B1/B2 work, unequal decode/prefill row counts and subsequent
+cache continuation. It compares full hidden arrays against the pinned Python
+operators with matching packed feed-forward geometry. The uniform-KV comparison
+explicitly pins stock quantized SDPA on both sides. Unit tests cover packing,
+work budgets, cancellation, consumer failure, row retirement, grammar readiness,
+and preparation with immediate/delayed affine and TurboQuant state.
+
+Reproduce the native comparison:
+
+```sh
+MLX_BUN_TEST_MIXED_MODEL=/path/to/gemma-model \
+  bun test tests/parity/mixed-token-model.test.ts
+```
+
+Reproduce the HTTP screen with the command in the preceding section plus `MLX_BUN_MIXED_PREFILL=1` and
+`MLX_BUN_MIXED_TOKEN_BUDGET=256`; `MLX_BUN_MIXED_PACKED_MLP=0` selects the
+unpacked control. Runtime settings and their scope are documented in
+[server-config](server-config.md). Mixed execution remains off by default.
+Qwen/recurrent work and speculative provider work remain separate open tasks.
+
+Raw reports are `reports/prefill-observation/mixed-*.md.json`; the comparison is
+`mixed-comparison.json` and the reverted admission experiment is
+`mixed-cohort.patch`. Per-arm `*-source.patch` files reproduce every changed
+early source file, verified against its recorded SHA-256. All three final arms
+match the retained source snapshot exactly. The standard benchmark retains
+payloads, usage, output, SSE event times, source hashes and machine state.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

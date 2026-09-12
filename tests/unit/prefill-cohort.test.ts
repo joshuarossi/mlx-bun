@@ -196,3 +196,19 @@ test("prefill traces preserve shared work identity and do not change row state",
     }
   } finally { f.cohort.dispose(); }
 });
+
+test.each(schemes)("iteration token budgets preserve prompt coverage and precision transitions: %s", async (_name, scheme) => {
+  const budgeted = fixture(scheme), reference = fixture(scheme);
+  try {
+    for (const f of [budgeted, reference]) {
+      f.cohort.admit(row(1, 18, 5));
+      f.cohort.admit(row(2, 13, 3));
+    }
+    for (let step = 0; step < 40; step++) if (await budgeted.cohort.advance({ maxTokens: 4 })) break;
+    await drain(reference.cohort);
+    expect(budgeted.cohort.rows).toHaveLength(0);
+    expect(budgeted.shapes.every(([batch, count]) => batch! * count! <= 4)).toBe(true);
+    expect(budgeted.completed).toEqual(reference.completed);
+    expect(budgeted.rejected).toEqual([]);
+  } finally { budgeted.cohort.dispose(); reference.cohort.dispose(); }
+});

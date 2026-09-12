@@ -52,6 +52,7 @@ import {
   captureRopeOffsets,
   type LoraWeights,
 } from "./gemma4-base";
+import { mapPackedTokens, type TokenGroup } from "./token-groups";
 import { Checkpoint } from "../mlx/checkpoint";
 import { flashAttention, getTrainingAttn, flashSupported } from "./flash-attention";
 import { unrotateValues as tqUnrotateValues } from "../mlx/turboquant-ops";
@@ -1019,6 +1020,79 @@ export class Gemma4Model {
     this.captureLayer(this.layers.length, h); // post-finalNorm sentinel (index = nLayers)
     return h;
   }
+
+  /** Mixed token execution: attention retains each group's cache, positions and
+   * SDPA shape; feed-forward work packs only real tokens. Kernel selection for
+   * packed matmuls can differ from a solo GEMV, so this is an explicit Lab port
+   * until its matching packed oracle and serving comparison are accepted. */
+  forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
+    if (work.length === 1) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
+    const groups: Array<{ ids: MlxArray; cache: Cache[]; h: MlxArray;
+      masks: Map<string, Mask>; perLayer: MlxArray | null; intermediates: (SharedKv | null)[] }> = [];
+    const results: MlxArray[] = [];
+    const packedMlp = flagOn("MLX_BUN_MIXED_PACKED_MLP", true);
+    try {
+      for (const { ids, cache } of work) {
+        const group = { ids, cache, h: this.embed.encode(ids), masks: new Map<string, Mask>(),
+          perLayer: null as MlxArray | null, intermediates: Array<SharedKv | null>(this.layers.length).fill(null) };
+        groups.push(group);
+        group.h = disposing(group.h, ops.mulScalar(group.h, this.embedScale));
+        for (let i = 0; i < this.numDonors; i++) {
+          const type = this.layers[i]!.layerType;
+          if (!group.masks.has(type)) group.masks.set(type,
+            cache[i]!.makeMask(ids.shape[1]!, type === "sliding_attention" ? this.windowSize : null));
+        }
+        if (this.perLayerWidth > 0) group.perLayer = this.computePerLayerInputs(ids, group.h);
+      }
+      for (let i = 0; i < this.layers.length; i++) {
+        const layer = this.layers[i]!, ci = this.cacheIndex[i]!;
+        const mids: MlxArray[] = [], inputs: MlxArray[] = [];
+        try {
+          for (const group of groups) {
+            const sharedIn = ci === -1 ? group.intermediates[this.previousKvs[i]!]! : null;
+            const { h, shared } = layer.forwardAttn(group.h, group.masks.get(layer.layerType)!,
+              ci === -1 ? null : group.cache[ci]!, sharedIn);
+            mids.push(h); group.intermediates[i] = shared;
+            if (group.perLayer) {
+              const [B, L] = group.ids.shape;
+              using part = group.perLayer.slice([0, 0, i, 0], [B!, L!, i + 1, this.perLayerWidth]);
+              inputs.push(ops.reshape(part, [B!, L!, this.perLayerWidth]));
+            }
+          }
+          // Per-layer inputs use the same token order as the hidden states.
+          let packedInput: MlxArray | null = null;
+          if (inputs.length) {
+            const flat = inputs.map(input => ops.reshape(input, [1, -1, this.perLayerWidth]));
+            try { packedInput = ops.concatAxis(flat, 1); }
+            finally { for (const input of flat) input.dispose(); }
+          }
+          using pli = packedInput;
+          const outputs = packedMlp
+            ? mapPackedTokens(mids, packed => layer.forwardMlp(packed, pli))
+            : mids.map((mid, row) => layer.forwardMlp(mid, inputs[row] ?? null));
+          for (const [index, group] of groups.entries()) {
+            group.h.dispose(); group.h = outputs[index]!;
+          }
+        } finally {
+          for (const mid of mids) mid.dispose();
+          for (const input of inputs) input.dispose();
+        }
+      }
+      for (const group of groups) results.push(this.finalNorm.forward(group.h));
+      return results;
+    } catch (error) { for (const result of results) result.dispose(); throw error; }
+    finally {
+      for (const group of groups) {
+        group.h.dispose(); group.perLayer?.dispose();
+        for (let i = 0; i < this.numDonors; i++) {
+          const shared = group.intermediates[i];
+          if (shared) Gemma4Model.disposeSharedKv(shared);
+        }
+        for (const mask of group.masks.values()) mask.arr?.dispose();
+      }
+    }
+  }
+
 
   // --- Segmented-backward support (docs/design/orpo-training.md
   // §4 Phase B). These are ADDITIVE — forwardLayers is untouched. The segmented

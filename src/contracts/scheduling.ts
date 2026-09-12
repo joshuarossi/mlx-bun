@@ -30,6 +30,11 @@ export interface ExecutionGroup {
   admitNext(): boolean;
   /** Read-only budget check used to preserve admission before decode. */
   canBurst(): boolean;
+  /** Method-owned token demand for a compatible mixed iteration. Absent when
+   * the backend has no packed implementation for the current work. */
+  readonly mixedPreparation?: { readonly runningTokens: number; readonly minimumPreparationTokens: number };
+  readonly maxIterationTokens?: number;
+  advanceMixed?(tokenBudget: number): Promise<void>;
   advancePreparation(): Promise<void>;
   advance(): Promise<void>;
   failActive(error: unknown): void;

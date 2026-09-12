@@ -11,6 +11,7 @@ export type P2RTracePhase =
   | "completion.total"
   | "completion.placement"
   | "engine.admission_wait"
+  | "engine.mixed_forward"
   | "cache.lookup_restore"
   | "prefill.total"
   | "prefill.batch_setup"
