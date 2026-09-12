@@ -258,7 +258,44 @@ and speculation with thinking off/on. The local suite passes 2,240 tests,
 with 14 existing skips. Typechecks and documentation surface checks pass.
 Evidence: `reports/kanban-cache-fix/{warm-reconstruct-main,warm-reconstruct-fixed,history-final}/`
 and `comparison.json` on the M4; summarized copies and local checks are in
-`reports/kanban-cache-fix/` on the M1. The fresh full task remains separate.
+`reports/kanban-cache-fix/` on the M1.
+
+The subsequent fresh task on `a40588e` completes with unchanged sources,
+fresh RAM/SSD/workspace, the settings above and an identical initial request
+to the failed run. Its first 35,002-token response and complete usage record
+also match. All 30 requests use shared batching with MTP active; all 29
+follow-up requests hit the cache. The first tool turn reuses 37,556 tokens
+and reaches output in 1.73 s. The fourth request completes normally.
+
+| Full Kanban task, M4 Pro 24 GB | Wall time | Output tokens | Requests | Sum of request TTFT | App acceptance |
+|---|---:|---:|---:|---:|---|
+| First preserved run, September 8 | 3h 33m 07.685s | 130,494 | 62 | 56m 39.895s | Pass; 15 recorded checks |
+| Previous successful run, September 9 | 1h 24m 45.387s | 68,958 | 15 | 13m 34.988s | 18/18 |
+| Fresh cache fix, September 12 UTC | 1h 30m 02.183s | 79,523 | 30 | 3m 18.143s | 16/18; fails quality acceptance |
+
+The fresh task takes 6.2% longer than the previous success and generates
+15.3% more output. Its summed TTFT is 75.7% lower. Later responses, tool calls
+and app behavior differ, so these are workload observations, not a controlled
+engine-only speed ratio. Pi finishes without retries or compaction; it records
+two tool errors during its own app checks and no inference failures. Combined
+server/Pi peak RSS is 13.09 GB; this is not peak native Metal allocation.
+
+Independent browser checks preserve all 14 generated files unchanged. Card
+and column editing, native drag/reorder, archive/restore, search, selected
+AND filters, reload persistence and both themes work. Two defects fail the
+same acceptance categories used previously: choosing `All labels` or
+`All assignees` produces a nonempty filter value and hides every card;
+focused cards cannot open for editing with Enter or Space. No repair prompt
+or manual app edit is applied.
+
+The latest two SSD snapshots persist, through 92,665 tokens, totaling
+3.66 GB. Pressure has evicted 58 older unwritten snapshots; explicit flush
+returns 503 with `durable: false` and `missingSnapshots: 58`. Thus generation
+and latest-state persistence succeed; older-history retention under pressure
+and full app quality acceptance remain open. Results, unchanged app, request
+streams, `quality.json`, browser evidence and `comparison.json` are preserved
+under `reports/kanban-cache-fixed-fresh/` on both machines; the SSD files remain
+on the M4. Earlier runs and their snapshots are preserved.
 
 ## Historical results and section links
 
