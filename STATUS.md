@@ -39,6 +39,21 @@ models. Request telemetry confirms default batched execution, including lone
 requests. The packed Qwen measurements remain separate because stock reference
 servers cannot load that artifact.
 
+The failed `6e918e2` Kanban task exposed BPE resegmentation of generated text
+and RAM snapshot pressure. The follow-up preserves original generated IDs
+through RAM/SSD history and reclaims optional snapshots through the cache port.
+The saved failure sequence is reproduced on main and passes with the fix,
+including identical CSS output and usage. M1 native RAM/SSD HTTP checks,
+the complete local suite, typechecks and docs checks pass. The first tool turn
+now reuses its generated history. [PR #50](https://github.com/joshuarossi/mlx-bun/pull/50)
+contains the fix. The fresh M4 task on `a40588e` completes with an identical
+initial request and no inference failures; every follow-up hits the cache.
+Its untouched app fails two browser acceptance categories, and pressure
+evicts older unwritten snapshots despite successful latest-state persistence.
+App quality and older-history retention remain open. Reports and app:
+`reports/kanban-cache-fixed-fresh/`; the failed run and snapshots are preserved.
+Evidence and measured limits: [benchmarks.md](docs/reference/benchmarks.md#saved-kanban-cache-failure-replay--m4-pro-24-gb-2026-09-12-utc).
+
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
 | thread | state | next action | branch |

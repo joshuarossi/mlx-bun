@@ -66,6 +66,14 @@ export interface MlxSerialServices {
 export function createMlxSerialExecutor(binding: MlxSerialBinding, services: MlxSerialServices): SerialRun {
   const { promptCache, checkpoints: ssdStore } = services;
   return (promptIds, options, onToken, vision, trace, execution) => withRuntimeConfig(binding.runtime, async () => {
+    if (promptCache.reclaim) {
+      const publish = onToken;
+      let steps = 0;
+      onToken = (token, logprobs) => {
+        if (steps++ % 256 === 0) promptCache.reclaim!();
+        return publish(token, logprobs);
+      };
+    }
     let releaseContinuation: (() => void) | undefined;
     let caches: Cache[] = [];
     let retain: (() => void) | undefined;

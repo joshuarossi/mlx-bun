@@ -598,12 +598,37 @@ through repeated RAM reuse and SSD cache/provider restart. SSD allocation
 padding is excluded from the live-state comparison. Generated-output acceptance
 is described below; long-conversation timing remains R17 work.
 
-The unreleased shared method now publishes completed row state before
+The shared method publishes completed row state before
 retirement through the same `PrefixCache.put` port. It records only inputs
 retained by committed target/draft rounds; an unprocessed correction or bonus
 token is absent from the key. The target row layout and draft provider supply
 their snapshots independently. Failed and cancelled consumers publish no
 generated checkpoint. Persistence continues through the existing queue.
+
+Generated BPE IDs are not necessarily the canonical encoding of their decoded
+text. `GeneratedTokenHistory` retains bounded text/ID provenance from published
+prefixes and recovered SSD headers. Request preparation uses the original IDs
+when the rendered conversation contains that exact text prefix, encodes only
+the remaining suffix without another BOS, and checks that the combined IDs
+decode to the complete rendered request. Edited history or an unsafe decoder
+boundary keeps canonical tokenization. KV lookup still requires exact IDs and
+the existing execution namespace; no state is relabeled under different IDs.
+The template's primer length is measured canonically and applied to the actual
+history-preserving token sequence. This can change input token counts, and
+therefore continuation logits, relative to re-encoding all generated text.
+Logit parity remains a contract for the same input IDs and execution shape.
+
+Optional cache residency yields to active inference. The MLX serving composition
+reserves allocator headroom at 85% of the smaller of the recommended device
+working set and an explicit allocator limit. Its pressure check includes known
+weight bytes when file-backed weights have not yet appeared in active native
+allocation. `PrefixCache.reclaim` releases queued spill ownership and LRU RAM
+donors without awaiting storage; a selected hit already owns its views and
+backing lease. Lookup, shared prefill boundaries and periodic decode maintenance
+call that interface. The check runs every 256 decode steps, not every token.
+It never changes request admission, context, sampling or batch size. Existing
+SSD copies remain usable. An unwritten evicted snapshot can become a cache miss;
+dirty/missing and dropped-spill counters continue to report incomplete durability.
 
 M1 and M4 native bf16, affine KV4 and fused TurboQuant K8/V3 tests cover four active
 rows, early retirement, exact sampled-ID coverage, unchanged retained bytes

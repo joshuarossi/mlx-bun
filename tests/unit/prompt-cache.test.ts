@@ -117,6 +117,58 @@ describe("PromptCache", () => {
     expect(() => pc.clear()).not.toThrow();
   });
 
+  test("live pressure drops optional LRU snapshots without queuing pinned copies or blocking on storage", () => {
+    const disposed = { count: 0 };
+    let writes = 0, pending = 100;
+    const pc = new PromptCache(1000, { spillOwned() { writes++; } }, {
+      find: () => null, restore: () => null, store() { writes++; },
+    });
+    for (let i = 1; i <= 3; i++) pc.put([i], [stubCache(100, disposed, false)]);
+    pc.pressure = {
+      overBudget: () => pc.totalBytes + pending > 100,
+      releasePending: () => { pending = 0; },
+    };
+    pc.reclaim();
+    expect(pc.size).toBe(1);
+    expect(pc.findExact([3])).not.toBeNull();
+    expect(disposed.count).toBe(2);
+    expect(pending).toBe(0);
+    expect(writes).toBe(0);
+    expect(pc.maxBytes).toBe(1000);
+    pc.reclaim();
+    expect(disposed.count).toBe(2);
+    pc.clear();
+  });
+
+  test("pressure can exhaust the optional cache without refusing active work", () => {
+    const disposed = { count: 0 };
+    const pc = new PromptCache(1000);
+    pc.put([1], [stubCache(100, disposed, false)]);
+    pc.pressure = { overBudget: () => true, releasePending() {} };
+    expect(() => pc.reclaim()).not.toThrow();
+    expect(pc.size).toBe(0);
+    expect(disposed.count).toBe(1);
+    pc.reclaim();
+  });
+
+  test("pressure releases a donor only after take owns independent views and a backing lease", () => {
+    const { pc, cloneDisposed } = mk();
+    const disposed = { count: 0 };
+    let released = 0;
+    pc.put([1, 2], [stubCache(100, disposed, false)], "", () => { released++; });
+    pc.pressure = { overBudget: () => true, releasePending() {} };
+    const hit = pc.take([1, 2, 3])!;
+    expect(hit.tokens).toEqual([1, 2]);
+    expect(pc.size).toBe(0);
+    expect(disposed.count).toBe(1);
+    expect(cloneDisposed.count).toBe(0);
+    expect(released).toBe(0);
+    for (const cache of hit.caches) cache.dispose();
+    hit.retain?.();
+    expect(cloneDisposed.count).toBe(1);
+    expect(released).toBe(1);
+  });
+
   test("memory pressure synchronously persists and releases LRU entries without spill clones", () => {
     const disposed = { count: 0 };
     const stored: number[][] = [];

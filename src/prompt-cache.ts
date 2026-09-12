@@ -148,6 +148,25 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   /** Fired after every successful put() — the server hangs its debounced
    *  write-behind SSD snapshot here so BOTH lanes' entries persist. */
   onPut: ((tokens: number[], ns: string) => void) | null = null;
+  /** The backend measures pressure; this store chooses which optional
+   * snapshots to release. No storage I/O runs at a reclaim boundary. */
+  pressure: { overBudget(): boolean; releasePending(): void } | null = null;
+
+  reclaim(): void {
+    const pressure = this.pressure;
+    if (!pressure?.overBudget()) return;
+    pressure.releasePending();
+    while (this.#entries.length && pressure.overBudget()) {
+      let oldest = 0;
+      for (let i = 1; i < this.#entries.length; i++)
+        if (this.#entries[i]!.lastUsed < this.#entries[oldest]!.lastUsed) oldest = i;
+      const [evicted] = this.#entries.splice(oldest, 1);
+      // A queued spill would keep these same buffers pinned. Durable SSD
+      // copies remain indexed; an unwritten eviction is a future miss.
+      this.#disposeEntry(evicted!.entry, false);
+      this.demotions++;
+    }
+  }
 
   /** Zero-copy view cloner — injectable so model-free tests can stub it. */
   readonly #clone: (caches: Cache[]) => Cache[];
@@ -257,6 +276,17 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
    *  hits/misses count RAM candidacy only (cold restores are counted by
    *  the tier itself), preserving the /stats meaning. */
   take(prompt: number[], ns = ""): PromptCacheEntry | null {
+    const hit = this.#take(prompt, ns);
+    // Keep the chosen state's owned views before releasing optional donors.
+    // This also covers a cold restore materializing its bytes at admission.
+    try { this.reclaim(); return hit; }
+    catch (error) {
+      if (hit) this.#disposeEntry(hit, false);
+      throw error;
+    }
+  }
+
+  #take(prompt: number[], ns: string): PromptCacheEntry | null {
     let bestIdx = -1;
     let bestLen = 0;
     for (let i = 0; i < this.#entries.length; i++) {

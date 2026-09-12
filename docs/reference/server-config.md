@@ -76,22 +76,21 @@ When batch rows finish, full-attention caches drop padding shared by every
 surviving row, matching MLX-LM while preserving each row's absolute position.
 
 Qwen prefills longer than four tokens materialize each layer and its cache
-state before continuing, bounding deferred buffer lifetimes. Execution has
-no reservation checks between layers or during decode. Serial requests
-finish outstanding SSD snapshots before generation. The RAM prefix-cache
-cap controls retained entries; it does not promise that every workload fits.
+state before continuing, bounding deferred buffer lifetimes. Cache maintenance
+releases optional snapshots under allocator pressure without refusing the
+request or waiting for SSD writes. The RAM prefix-cache cap is an upper bound;
+it does not promise that every workload fits.
 Actual allocation failures use the ordinary error path when recoverable;
 a native Metal allocation failure can terminate the process.
-With `--ssd-cache`, an exact recurrent-cache hit persists its boundary before
-transferring the live state to the request. This keeps that boundary reusable
-after the recurrent state advances. Already-durable boundaries need no write;
-a failed required store retains the cache entry and refuses the transfer.
+Recurrent-cache hits lend independently owned views before any donor is
+reclaimed. The request can advance those views while the original boundary
+remains in RAM or in a completed SSD snapshot. Persistence stays asynchronous.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
 | `--memory-budget` | GB (decimal, ×10⁹) | unset; memory estimates are advisory | both (per request) | Explicit opt-in budget. Sets the allocator limit and enforces the fit estimate: a prompt leaving no generation slot gets **400** (`type: memory_admission`); a broader completion cap is reduced to the remaining context. Estimates account for active KV quantization and prefill temporaries. Not an aggregate batch cap — see `--kv-budget`. GLM-5.2 also uses this value in its resource plan before loading. |
 | `--kv-budget` | GB (decimal) | off | batch | Aggregate KV budget across concurrently admitted batch rows: a joiner whose projected KV (prompt + `max_tokens`, window-capped) would exceed it **queues** until rows finish; a request over the budget alone is rejected. Without it, N large-context rows can collectively exceed memory. Reported in `/stats.batch.kv_budget_bytes`. |
-| `--prompt-cache` | GB (binary GiB) | `8` | both | RAM prefix-KV cache (byte-capped LRU). `--prompt-cache 0` disables it. RAM hits lend zero-copy views and leave the donor intact, including recurrent Qwen and method state. SSD persistence runs in the background; RAM reuse never waits for a write. Explicit cache flush and graceful shutdown wait for durability. Batch-lane joiners `take()` the longest usable prefix at admission; a row that finishes without ever merging `put()`s its caches back (merged rows' entries age out). |
+| `--prompt-cache` | GB (binary GiB) | `8` | both | Upper bound for the RAM prefix-KV cache (byte-capped LRU). `--prompt-cache 0` disables it. RAM hits lend zero-copy views, including recurrent Qwen and method state. Under allocator pressure, older donors and queued spill copies can be released so active inference can continue; the configured cap does not reserve that much RAM. SSD persistence runs in the background; RAM reuse never waits for a write. Explicit cache flush and graceful shutdown report durability, including snapshots lost before persistence. Batch-lane joiners `take()` the longest usable prefix at admission; completed decode publishes reusable processed-token state through the same interface. |
 | `--ssd-cache` | dir | off | both | SSD cold tier under the prompt cache ([docs/design/kv-cache.md](../design/kv-cache.md)): prefix KV spills to disk on RAM eviction and idle demotion, is snapshotted after requests settle (debounced, each tensor step owns the generation lock so it cannot overlap inference; `MLX_BUN_SSD_WRITEBEHIND=0` disables), and **survives restarts**. Entries are keyed by model fingerprint + effective KV scheme + backend numerical identity + tokenizer hash + adapter namespace. MLX includes its runtime version and GPU architecture; older numerical identities use separate directories. `SIGINT`/`SIGTERM` drains active requests and flushes dirty snapshots before exit (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`); `POST /admin/cache/flush` is the explicit boundary. Requires the RAM cache. |
 | `--ssd-cache-max` | GB (binary GiB; `0` = unlimited) | unlimited | both | Optional SSD tier byte cap; oldest-mtime entries are evicted only when a positive cap is configured. Warns and is ignored without `--ssd-cache`. |
 | `--ssd-cache-verify` | (bool) | off | both | Verify every tensor hash on restore (reads all bytes eagerly, defeating lazy fault-in) — integrity paranoia only; the header hash is always verified. Warns and is ignored without `--ssd-cache`. |
@@ -772,7 +771,13 @@ thresholds, including sliding-window layers. Other-model delayed affine remains
 open. Qwen MTP
 prefill and completed decode state use the common RAM/SSD cache. Generated
 checkpoints contain only processed tokens; persistence uses the existing
-queue. Strict serial deletion and complete feature parity
+queue. Chat preparation preserves generated token IDs when their decoded text
+exactly prefixes the next rendered request, including provenance recovered from
+SSD headers. This avoids a full prefill when re-encoding identical generated
+text would choose a different BPE segmentation. Edited text retains ordinary
+tokenization. Input token counts can differ from encoding the full prompt again;
+cache state is always matched by exact IDs and execution namespace.
+Strict serial deletion and complete feature parity
 remain acceptance work in Phase 6/18.
 
 ## Observability — `GET /stats`

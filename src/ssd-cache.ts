@@ -78,6 +78,11 @@ export class SsdCacheStore {
     return this.#index.length;
   }
 
+  /** Header-only provenance for the serving tokenizer; no tensor restore. */
+  *tokenPrefixes(): Iterable<readonly number[]> {
+    for (const entry of this.#index) yield entry.tokens;
+  }
+
   get totalBytes(): number {
     return this.#index.reduce((a, e) => a + e.bytes, 0);
   }
