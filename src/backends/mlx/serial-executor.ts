@@ -133,7 +133,7 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       const generationPromptIds = checkpoint?.cacheTokens ?? promptIds;
       const entry = skipPromptCache || resuming
         ? null
-        : promptCache.take(promptIds, cacheNs);
+        : promptCache.take(promptIds, cacheNs, options.cacheSessionId);
       if (entry) { caches = entry.caches; retain = entry.retain; }
       if (!checkpoint && !entry) caches = binding.makeCache();
       closeCacheLookup?.();
@@ -213,7 +213,7 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
                 try {
                   const snapshot = ownResource(services.cloneState(caches), disposeResources);
                   try {
-                    promptCache.put(promptIds.slice(0, boundary), snapshot.borrow(), cacheNs);
+                    promptCache.put(promptIds.slice(0, boundary), snapshot.borrow(), cacheNs, undefined, undefined, options.cacheSessionId);
                     snapshot.transfer();
                   } finally { snapshot.close(); }
                 } catch (e) {
@@ -238,7 +238,7 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       if (!skipPromptCache) {
         // put() fires onPut → the debounced write-behind SSD snapshot
         // (wired below), covering the batch lane's puts too.
-        promptCache.put(s.cacheTokens, caches, cacheNs, retain);
+        promptCache.put(s.cacheTokens, caches, cacheNs, retain, undefined, options.cacheSessionId);
         caches = []; retain = undefined; // ownership returned to the prefix store
       }
       return s;

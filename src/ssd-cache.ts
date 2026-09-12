@@ -68,6 +68,27 @@ export class SsdCacheStore {
   readonly #codecs: CacheCodecProvider;
   readonly #root: string; // <dir>/<configFingerprint>
   #index: SsdIndexEntry[] = [];
+  #exact = new Map<string, SsdIndexEntry>();
+  #tokenKeys = new WeakMap<number[], string>();
+  #key(tokens: number[], ns: string): string {
+    let hash = this.#tokenKeys.get(tokens);
+    if (!hash) {
+      hash = Bun.hash(new Uint32Array(tokens)).toString(16);
+      this.#tokenKeys.set(tokens, hash);
+    }
+    return JSON.stringify([ns, tokens.length, hash]);
+  }
+  #addIndex(entry: SsdIndexEntry): void {
+    this.#index.push(entry);
+    this.#exact.set(this.#key(entry.tokens, entry.ns), entry);
+  }
+  /** Exact checkpoint selection for a known session, independent of residency. */
+  findExact(tokens: number[], ns = ""): { entry: SsdIndexEntry; prefixLen: number } | null {
+    const entry = this.#exact.get(this.#key(tokens, ns));
+    return entry && commonPrefixLength(entry.tokens, tokens) === tokens.length
+      ? { entry, prefixLen: tokens.length } : null;
+  }
+
   #warnedWriteFailure = false;
   stats = { restores: 0, spills: 0, restoreMsLast: 0 };
 
@@ -116,7 +137,7 @@ export class SsdCacheStore {
    *  headers and metadata mismatches are unlinked; `.tmp` orphans reaped.
    *  Only OUR fingerprint dir is touched. Returns entries indexed. */
   scan(): number {
-    this.#index = [];
+    this.#index = []; this.#exact.clear();
     if (!existsSync(this.#root)) return 0;
     for (const nsDir of readdirSync(this.#root)) {
       const nsPath = join(this.#root, nsDir);
@@ -141,7 +162,7 @@ export class SsdCacheStore {
             throw new Error("metadata mismatch");
           if ((h.codecProvider ?? legacyCacheCodecs.id) !== this.#codecs.id) continue;
           const st = statSync(path);
-          this.#index.push({
+          this.#addIndex({
             blocks: [...h.caches, ...(h.attachments ?? [])].flatMap(e => e.tensors.flatMap(t => t.blocks ?? [])),
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
             trimmable: !h.attachments?.length && cacheHeadersTrimmable(h.caches, this.#codecs),
@@ -368,7 +389,7 @@ export class SsdCacheStore {
         if (commonPrefixLength(e.tokens, tokens) === e.tokens.length) this.remove(e.path);
       }
     }
-    this.#index.push({
+    this.#addIndex({
       blocks, path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable,
       minimumReusableOffset: minimumReusableOffset(caches),
       ...(generationCheckpoint ? { generationCheckpoint } : {}),
@@ -400,6 +421,10 @@ export class SsdCacheStore {
 
   remove(path: string): void {
     try { rmSync(path, { force: true }); } catch {}
+    for (const entry of this.#index) if (entry.path === path) {
+      const key = this.#key(entry.tokens, entry.ns);
+      if (this.#exact.get(key) === entry) this.#exact.delete(key);
+    }
     this.#index = this.#index.filter((e) => e.path !== path);
     void kvWriter.collect(this.#root).catch(() => {});
   }

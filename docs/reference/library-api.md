@@ -675,3 +675,14 @@ When embedding the high-level library in your own compiled application, pass
 `command: ["/path/to/mlx-bun"]` to `openIsolatedHost`. Source/package consumers
 use the installed CLI source automatically; compiled callers supply the worker
 executable explicitly because their own executable is not the mlx-bun CLI.
+
+### Cache session affinity
+
+`GenerateOptions.cacheSessionId` carries application cache affinity through
+serving execution. The `PrefixCache` contract accepts the optional session ID
+on `take`, `prefetch` and `put`, and exposes optional `closeSession(id)`. The
+cache owns the association and both storage tiers; the ID does not change the
+numerical namespace or replace the request's full token history. Standalone
+`generate()` calls that supply their own cache retain caller-owned state; an
+ID alone does not create a process-wide cache. HTTP fields and lifecycle are
+documented in [server-api.md](server-api.md#cache-session-affinity).

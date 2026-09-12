@@ -47,7 +47,7 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
             return { row, solo: continuation.caches, pos: row.req.promptIds.length,
               snapAt: null, continuation };
           }
-          const hit = host.promptCache?.take(row.req.promptIds, row.cacheNamespace) ?? null;
+          const hit = host.promptCache?.take(row.req.promptIds, row.cacheNamespace, row.req.cacheSessionId) ?? null;
           if (hit) owned = hit;
           closeCache?.(); closeCache = undefined;
           if (hit) row.cachedTokens = hit.tokens.length;
@@ -75,7 +75,7 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
         let snapshot: Cache[] | undefined;
         try {
           snapshot = capture();
-          host.promptCache!.put(state.row.req.promptIds.slice(0, state.pos), snapshot, state.row.cacheNamespace);
+          host.promptCache!.put(state.row.req.promptIds.slice(0, state.pos), snapshot, state.row.cacheNamespace, undefined, undefined, state.row.req.cacheSessionId);
           snapshot = undefined;
         } catch (error) {
           if (snapshot) disposeResources(snapshot);

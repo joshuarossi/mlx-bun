@@ -37,8 +37,8 @@ describe.skipIf(!enabled)("paged cache through HTTP request preparation", async 
           ssdCacheDir: join(directory, `${direct}-${bits}`), ssdCacheVerify: true };
         const request = async (server: ReturnType<typeof createServer>) => {
           const response = await fetch(`http://127.0.0.1:${server.port}/v1/completions`, {
-            method: "POST", headers: { "content-type": "application/json" },
-            body: JSON.stringify({ prompt: "Explain immutable caches and memory ownership. ".repeat(24),
+            method: "POST", headers: { "content-type": "application/json", "x-session-affinity": "paged-agent" },
+            body: JSON.stringify({ prompt: "Explain immutable caches and memory ownership. ".repeat(Bun.env.MLX_BUN_TEST_SHORT_SESSION === "1" ? 2 : 24),
               temperature: 0, seed: 42, max_tokens: 16 }) });
           const body = await response.json() as any;
           expect(response.status, JSON.stringify(body)).toBe(200);

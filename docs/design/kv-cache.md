@@ -760,6 +760,43 @@ asynchronous preparation, and leaves direct attention and block storage explicit
 include the negative results and limits. Full long-task retention acceptance
 and the paging extensions below remain separate work.
 
+### 5.12 Session checkpoint index
+
+The cache owns a second index: application session ID plus numerical namespace
+maps to its latest immutable checkpoint. Numerical/content identity remains
+independent, so session and anonymous requests can share the same state.
+The request carries a session hint through the existing cache port's lookup,
+preparation and publication calls. Ordinary, speculative and paged methods
+forward the hint; scheduling does not own the index or residency decisions.
+
+A matching resident checkpoint bypasses candidate scans. For an evicted known
+checkpoint, the SSD exact index selects its manifest before asynchronous
+preparation adopts state through the existing codecs. Hashes accelerate SSD
+selection; the selected token sequence still establishes identity. A missing
+or incompatible session checkpoint uses ordinary prefix matching, allowing
+history edits, branches and retries without rejecting the request.
+
+New publications advance the session's reference. Explicit sessions also retain
+ordinary generated checkpoints below the anonymous publication threshold.
+RAM eviction first considers
+entries with no session references, then applies the configured policy to
+referenced entries when needed. This is a preference, not an unlimited memory
+pin. Request-scoped preparation interests retain their existing short-lived
+ownership. Closing a session removes its references without deleting cached
+state; clearing the cache removes the session index. Session metadata is
+process-local, and restart rebuilds associations through ordinary SSD hits.
+
+The current API still accepts full histories. This change removes candidate
+search and supplies retention information; it does not claim delta-only input,
+zero tokenization, or automatic reconstruction from a session label. The Pi
+provider passes the session identity its application already owns.
+The index, native retention and fixed-input M4 HTTP comparisons are complete.
+Lookup and reload work decrease; warmed model throughput is effectively
+unchanged. A fresh complete Kanban task has not been repeated for C6.
+[Measurements](../reference/benchmarks.md#session-checkpoint-index-c6) preserve
+both the benefits and the limits. Existing idle-demotion settings remain in
+effect; session preference changes budget/pressure victim selection.
+
 ## 6. Optional paged KV
 
 `PagedKVCache` stores full-attention planes in per-request block pools.

@@ -516,6 +516,95 @@ bun scripts/bench/paged-model.ts --model "$GEMMA" --bits 4 --output reports/page
 MLX_BUN_TEST_PAGED_CACHE=1 bun test tests/parity/paged-cache-http.test.ts
 ```
 
+### Session checkpoint index C6
+
+September 12, 2026, on top of cache expansion `7692d5b`; Bun 1.4.2,
+MLX 0.32.2 / native pack 0.4.0. M4 Pro 24 GB supplies native storage and
+HTTP measurements; M1 Max 32 GB supplies the second CPU index comparison.
+Reports and the final accepted source manifest are under `reports/session-cache/`.
+
+The session ID selects the latest compatible immutable checkpoint through a
+second index, with ordinary prefix lookup for missing or edited histories.
+RAM retention prefers session-referenced entries over unrelated entries while
+honoring the same budget. Session metadata does not partition content storage.
+
+| CPU index workload, median of eight paired samples | Prefix scan | Session index |
+| --- | ---: | ---: |
+| M4, all 27 saved Kanban request renderings | 13.04 ms total | 1.57 ms total |
+| M1, 64 nested checkpoints ending at 50,000 tokens | 42.16 ms total | 2.77 ms total |
+
+Each checkpoint is published before its lookup; timings average 20 repeated
+lookups per checkpoint after a warm call. Saved Kanban inputs render to
+2,554–79,417 tokens. These are real token strings with stub KV state and a
+checkpoint at each rendered prompt minus one token, not a replay of the
+original generated KV or the original task. The index removes candidate
+search, while still comparing the known prefix against the intended input.
+The M4 lookup reduction is 8.3×, but only **11.47 ms across the entire sequence**.
+Files: `m4-kanban-index.json`, `m1-index.json`.
+
+A native storage comparison uses eight agent continuations, a three-checkpoint
+RAM accounting budget and four unrelated durable publications between turns.
+Each checkpoint carries 64 MiB of SSM tensor data plus one scalar. Both arms
+use identical immutable bytes, whole-file SSD transport and warm filesystem
+pages; the cache independently owns publication, eviction and restoration.
+Two samples per arm in ABBA order:
+
+| Native M4 retrieval measurement | Anonymous prefix lookup | Session affinity |
+| --- | ---: | ---: |
+| SSD restores over eight continuations | 8 | 0 |
+| Reload traffic | 512 MiB | 0 |
+| Total retrieval time, mean | 33.57 ms | 0.25 ms |
+| Final accounted RAM residency | 192 MiB | 192 MiB |
+
+The budget counts checkpoint state sizes; immutable source buffers can share
+physical storage, so this is not a process-RSS comparison. Retrieval timing
+includes preparation and cache lookup; writes and byte-identity checks are
+outside that interval. Total publication/workload time varies between arms,
+and this probe establishes avoided restores rather than a decode speedup.
+File: `m4-residency.json`. A separate equal-size metadata pollution trace also
+preserves all 26 agent hits with affinity, versus zero without it.
+
+The M4 HTTP comparison uses packed Qwen3.8-27B interleave2, RTN4 MTP depth 2,
+affine KV4, shared batch cap eight with one request at a time, greedy sampling,
+seed 42 and a 4 GiB RAM cache. The saved Kanban opening request starts a
+**bounded six-turn conversation**, with 64 output tokens per turn. The first
+arm records its subsequent histories; every later arm sends those exact
+inputs. This is not a fresh complete Kanban app task.
+
+| HTTP arm, in execution order | Mean follow-up TTFT, ms | Mean follow-up decode, tok/s | All six requests, s | Prefix searches / session hits |
+| --- | ---: | ---: | ---: | ---: |
+| Session disabled, first control | 738.14 | 22.94 | 41.111 | 6 / 0 |
+| Session enabled | 668.64 | 22.89 | 39.265 | 1 / 5 |
+| Session enabled | 661.61 | 22.89 | 39.238 | 1 / 5 |
+| Session disabled, warm control | 661.48 | 22.90 | 39.243 | 6 / 0 |
+
+All corresponding inputs, output text/reasoning hashes, finish reasons and
+output counts match. Cached-prefix counts match at every turn; all four
+flushes are durable. The first control includes more cold setup. Against the
+warm control, **model throughput and request time are effectively unchanged**.
+The five known continuations do bypass prefix search. Do not attribute the
+first-control timing difference to session affinity or infer a full Kanban
+time reduction. File: `m4-serving.json`.
+
+Native M4 MTP with TurboQuant K8/V3, shared row retirement and RAM/SSD
+continuation pass with session IDs. Paged bf16/KV4 HTTP restart, exact SSD
+index removal, shared-session replacement, edited-history fallback and session
+closure also pass their applicable tests. Equivalent-checkpoint session
+reference replacement and publication for short ordinary session requests were
+corrected after measurement, with a regression test and a native short-session
+HTTP check. The timed workloads use unique prefixes longer than the old
+publication threshold, so those corrections leave their paths unchanged.
+Configuration and API lifecycle are in server-config.md and server-api.md.
+
+```sh
+bun scripts/bench/session-cache.ts --tokens 50000 --checkpoints 64 --output reports/session-index.json
+bun scripts/bench/session-cache.ts --model "$TARGET" \
+  --requests reports/kanban-cache-fixed-repeat-r1 --output reports/kanban-session-index.json
+bun scripts/bench/session-residency.ts --mib 64 --turns 8 --output reports/session-residency.json
+bun scripts/bench/session-serving.ts --model "$TARGET" --draft "$DRAFT" \
+  --request reports/kanban-cache-fixed-repeat-r1/request-0.json --output reports/session-serving.json
+```
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

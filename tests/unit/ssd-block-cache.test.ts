@@ -28,7 +28,9 @@ test("SSD shared blocks survive restart and ancestor removal with exact recurren
   const restart=new SsdCacheStore(opts);expect(restart.scan()).toBe(2);expect(restart.totalBytes).toBe(store.totalBytes);
   const first=restart.find([1,2,3,4,9])!,second=restart.find([1,2,3,4,5,6,9])!;
   expect(first.prefixLen).toBe(4);expect(second.prefixLen).toBe(6);
-  restart.remove(first.entry.path);await kvWriter.collect(join(dir,"model"));
+  expect(restart.findExact([1,2,3,4,5,6])?.entry.path).toBe(second.entry.path);
+  expect(restart.findExact([1,2,3,4,5,6], "other")).toBeNull();
+  restart.remove(first.entry.path);expect(restart.findExact([1,2,3,4])).toBeNull();await kvWriter.collect(join(dir,"model"));
   const loaded=await restart.restoreAsync(second.entry,{makeCache:()=>[new KVCache(),new SSMCache()]});
   expect(loaded?.tokens).toEqual([1,2,3,4,5,6]);
   expect((loaded!.caches[1] as SSMCache).conv!.toFloat32()).toEqual(new Float32Array([6,2]));

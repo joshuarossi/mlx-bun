@@ -474,6 +474,10 @@ export function createServer(
           const h = ssdStore!.find(prompt, ns);
           return h ? { prefixLen: h.prefixLen, handle: h.entry } : null;
         },
+        findExact: (tokens: number[], ns: string) => {
+          const hit = ssdStore!.findExact(tokens, ns);
+          return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null;
+        },
         restore: (handle: unknown) => {
           const loaded = serving.restore(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
           if (!loaded) return null;
@@ -662,6 +666,15 @@ export function createServer(
     ctx, prep, contextLimit, defaultGeneratedTokens, serverOptions.defaultAdapter);
   const inferenceStage = new InferenceStage(completionExecutor);
   const openAiMeta = (id: string) => ({ id, created: Math.floor(Date.now() / 1000), model: ctx.modelId });
+  /** Carry application session affinity into the shared cache request fields. */
+  const applyCacheSession = (body: ChatRequestParams, request: Request, original: unknown = body) => {
+    const fields = original as { session_id?: unknown; prompt_cache_key?: unknown };
+    const session = typeof fields.session_id === "string" ? fields.session_id :
+      typeof fields.prompt_cache_key === "string" ? fields.prompt_cache_key :
+      request.headers.get("x-session-affinity") ?? request.headers.get("session_id") ?? undefined;
+    if (runtimeValue("MLX_BUN_SESSION_CACHE") !== "0") body.session_id = session;
+    else { delete body.session_id; delete body.prompt_cache_key; }
+  };
   /** Parse the JSON body under the request's trace; a bad body is a 400. */
   const parseBody = async <T,>(request: Request, trace: PromptResponseTrace | undefined): Promise<T | Response> => {
     const closeBodyParse = trace?.begin("request.body_parse");
@@ -716,6 +729,12 @@ export function createServer(
     async fetch(request, server) {
       const url = new URL(request.url);
 
+      if (url.pathname === "/admin/cache/session/close" && request.method === "POST") {
+        const body = await parseBody<{ session_id?: string }>(request, undefined);
+        if (body instanceof Response) return body;
+        if (typeof body.session_id === "string") promptCache.closeSession(body.session_id);
+        return Response.json({ closed: typeof body.session_id === "string" });
+      }
       if (url.pathname === "/admin/cache/flush" && request.method === "POST") {
         const result = await flushDurability();
         return Response.json(
@@ -893,6 +912,9 @@ export function createServer(
             max_bytes: promptCache.maxBytes,
             hits: promptCache.hits,
             misses: promptCache.misses,
+            session_hits: promptCache.sessionHits,
+            session_misses: promptCache.sessionMisses,
+            prefix_scans: promptCache.prefixScans,
           },
           ...(ssdStore ? {
             ssd_cache: {
@@ -1069,6 +1091,7 @@ export function createServer(
         });
         const body = await parseBody<ChatRequestParams>(request, trace);
         if (body instanceof Response) return body;
+        applyCacheSession(body as ChatRequestParams, request);
         const meta = openAiMeta(id);
         const a = await admit(
           inferenceStage, () => chatStage.run(new ChatRequest(body), id, request.signal), trace, "chat request");
@@ -1089,6 +1112,7 @@ export function createServer(
         });
         const body = await parseBody<TextCompletionParams>(request, trace);
         if (body instanceof Response) return body;
+        applyCacheSession(body as ChatRequestParams, request);
         const meta = openAiMeta(id);
         const a = await admit(
           inferenceStage, () => textStage.run(new TextCompletionRequest(body), id), trace, "text completion");
@@ -1118,6 +1142,7 @@ export function createServer(
         let chatBody: ChatRequestParams;
         try {
           chatBody = anthropicToChatBody(anthropicBody) as unknown as ChatRequestParams;
+          applyCacheSession(chatBody, request, anthropicBody);
         } catch (e) {
           return anthropicError(400, (e as Error).message, {});
         }
@@ -1173,6 +1198,7 @@ export function createServer(
         let chatBody: ChatRequestParams;
         try {
           chatBody = responsesToChatBody(responsesBody) as unknown as ChatRequestParams;
+          applyCacheSession(chatBody, request, responsesBody);
         } catch (e) {
           return responsesError(400, (e as Error).message, {});
         }

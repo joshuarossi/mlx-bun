@@ -13,7 +13,7 @@ export function piModelDefinition(options: PiModelOptions = {}) {
     name: options.name ?? "mlx-bun (local)",
     api: "openai-completions" as const,
     reasoning: options.reasoning ?? false,
-    compat: { supportsDeveloperRole: false,
+    compat: { supportsDeveloperRole: false, sendSessionAffinityHeaders: true,
       ...(options.reasoning ? { thinkingFormat: "qwen-chat-template" as const } : {}) },
     input: (options.vision ? ["text", "image"] : ["text"]) as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

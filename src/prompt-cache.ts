@@ -68,6 +68,7 @@ export interface ColdTier {
    *  arrays. An optional backing release runs after consumers dispose their
    *  arrays. Null on any failure. */
   restore(handle: unknown): { tokens: number[]; caches: Cache[]; attachments?: CheckpointAttachment[]; retain: () => void } | null;
+  findExact?(tokens: number[], ns: string): { prefixLen: number; handle: unknown } | null;
   restoreAsync?(handle: unknown): Promise<ReturnType<ColdTier["restore"]>>;
   /** Borrow live caches and finish persistence before returning. A false
    *  result prevents a required demotion. */
@@ -130,12 +131,48 @@ interface EntryRecord extends RetentionCandidate {
   /** Ref-counted retain: the donor holds one share (entry.retain); every
    *  clone handed out by take() holds another. */
   share: { acquire(): () => void };
+  resident: boolean;
+  sessions: number;
 }
 
 export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]> {
   readonly maxBytes: number;
   #entries: EntryRecord[] = [];
   #clock = 0;
+  #sessions = new Map<string, Map<string, EntryRecord>>();
+  #records = new WeakMap<PromptCacheEntry, EntryRecord>();
+  sessionHits = 0;
+  sessionMisses = 0;
+  prefixScans = 0;
+
+  closeSession(sessionId: string): void {
+    for (const record of this.#sessions.get(sessionId)?.values() ?? []) record.sessions--;
+    this.#sessions.delete(sessionId);
+  }
+
+  #associate(sessionId: string | undefined, ns: string, record: EntryRecord): void {
+    if (!sessionId) return;
+    let entries = this.#sessions.get(sessionId);
+    if (!entries) this.#sessions.set(sessionId, entries = new Map());
+    const old = entries.get(ns);
+    if (old === record) return;
+    if (old) old.sessions--;
+    entries.set(ns, record); record.sessions++;
+  }
+
+  #sessionRecord(prompt: number[], ns: string, sessionId?: string): EntryRecord | undefined {
+    const record = sessionId ? this.#sessions.get(sessionId)?.get(ns) : undefined;
+    // A session labels affinity. Full-history callers may edit or branch;
+    // incompatible history uses ordinary lookup, never a request refusal.
+    return record && record.entry.tokens.length < prompt.length &&
+      commonPrefixLength(record.entry.tokens, prompt) === record.entry.tokens.length ? record : undefined;
+  }
+
+  #coldHit(prompt: number[], ns: string, sessionId?: string) {
+    const known = this.#sessionRecord(prompt, ns, sessionId);
+    return (known && this.#cold?.findExact?.(known.entry.tokens, ns)) || this.#cold?.find(prompt, ns) || null;
+  }
+
   hits = 0;
   misses = 0;
   demotions = 0;
@@ -164,10 +201,12 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   /** Start cold reads during request preparation, coalescing identical IO.
    * Active request interest keeps a just-restored donor resident until the
    * caller has consumed it. Cancellation releases interest through the lease. */
-  async prefetch(prompt: number[], ns = ""): Promise<() => void> {
+  async prefetch(prompt: number[], ns = "", sessionId?: string): Promise<() => void> {
+    const known = this.#sessionRecord(prompt, ns, sessionId);
+    if (known?.resident) return this.#pin(known.entry);
     const cold = this.#cold;
-    const hit = cold?.restoreAsync ? cold.find(prompt, ns) : null;
-    if (!cold?.restoreAsync || !hit || hit.prefixLen <= this.peekPrefixLen(prompt, ns)) return () => {};
+    const hit = cold?.restoreAsync ? this.#coldHit(prompt, ns, sessionId) : null;
+    if (!cold?.restoreAsync || !hit || (!known && hit.prefixLen <= this.peekPrefixLen(prompt, ns))) return () => {};
     let pending = this.#prefetches.get(hit.handle);
     if (!pending) {
       const epoch = this.#epoch;
@@ -187,6 +226,11 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     try { entry = await pending; }
     finally { if (this.#prefetches.get(hit.handle) === pending) this.#prefetches.delete(hit.handle); }
     if (!entry) return () => {};
+    this.#associate(sessionId, ns, this.#records.get(entry)!);
+    return this.#pin(entry);
+  }
+
+  #pin(entry: PromptCacheEntry): () => void {
     this.#pins.set(entry, (this.#pins.get(entry) ?? 0) + 1);
     let released = false;
     return () => {
@@ -199,7 +243,8 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
 
   #victim(): EntryRecord | undefined {
     const candidates = this.#entries.filter(record => !this.#pins.has(record.entry));
-    return candidates.length ? this.retention.victim(candidates) : undefined;
+    const unrelated = candidates.filter(record => record.sessions === 0);
+    return candidates.length ? this.retention.victim(unrelated.length ? unrelated : candidates) : undefined;
   }
 
   evictToBudget(): void {
@@ -250,6 +295,8 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   }
 
   #disposeEntry(entry: PromptCacheEntry, spillFirst: boolean): void {
+    const record = this.#records.get(entry);
+    if (record) record.resident = false;
     if (spillFirst) {
       if (this.#spillOwned) {
         // NON-BLOCKING spill: clone BEFORE disposing (clones are zero-copy
@@ -339,8 +386,8 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
    *  is dropped and the RAM candidate (or a fresh prefill) serves.
    *  hits/misses count RAM candidacy only (cold restores are counted by
    *  the tier itself), preserving the /stats meaning. */
-  take(prompt: number[], ns = ""): PromptCacheEntry | null {
-    const hit = this.#take(prompt, ns);
+  take(prompt: number[], ns = "", sessionId?: string): PromptCacheEntry | null {
+    const hit = this.#take(prompt, ns, sessionId);
     // Keep the chosen state's owned views before releasing optional donors.
     // This also covers a cold restore materializing its bytes at admission.
     try { this.reclaim(); return hit; }
@@ -350,7 +397,14 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     }
   }
 
-  #take(prompt: number[], ns: string): PromptCacheEntry | null {
+  #take(prompt: number[], ns: string, sessionId?: string): PromptCacheEntry | null {
+    const known = this.#sessionRecord(prompt, ns, sessionId);
+    if (known?.resident) {
+      this.sessionHits++; this.hits++;
+      return this.#borrow(known, known.entry.tokens.length, ns);
+    }
+    if (sessionId) this.sessionMisses++;
+    this.prefixScans++;
     let bestIdx = -1;
     let bestLen = 0;
     for (let i = 0; i < this.#entries.length; i++) {
@@ -370,7 +424,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     // candidate stays put UNTOUCHED (the old serial-lane flow trimmed it
     // before comparing — a needless entry degradation, gone now).
     if (this.#cold) {
-      const hit = this.#cold.find(prompt, ns);
+      const hit = this.#coldHit(prompt, ns, sessionId);
       if (hit && hit.prefixLen > bestLen) {
         const loaded = this.#cold.restore(hit.handle);
         if (loaded) {
@@ -402,7 +456,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
               try {
                 clones = this.#clone(result.caches);
                 attachments = cloneAttachments(result.attachments);
-                this.put([...result.tokens], clones, ns, retained, attachments);
+                this.put([...result.tokens], clones, ns, retained, attachments, sessionId);
               } catch (error) {
                 cleanupFailure(error, () => disposeResources([...clones,
                   { dispose: () => disposeAttachments(attachments) },
@@ -426,6 +480,11 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     // consume-and-trim semantics CANNIBALIZED donors: agent B borrowing
     // agent A's 2k system prompt destroyed A's 10k entry to do it.
     const rec = this.#entries[bestIdx]!;
+    this.#associate(sessionId, ns, rec);
+    return this.#borrow(rec, bestLen, ns);
+  }
+
+  #borrow(rec: EntryRecord, bestLen: number, ns: string): PromptCacheEntry {
     rec.lastUsed = ++this.#clock;
     rec.lastUsedMs = Date.now();
     rec.uses++; rec.cost = bestLen; this.retention.accessed(rec);
@@ -477,7 +536,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   /** Insert (or reinsert) an entry; evicts LRU entries over the byte cap
    *  (spilling each to the cold tier first, when one is attached). If the
    *  entry itself exceeds the cap it is spilled + disposed, not stored. */
-  put(tokens: number[], caches: Cache[], ns = "", retain?: () => void, attachments?: CheckpointAttachment[]): void {
+  put(tokens: number[], caches: Cache[], ns = "", retain?: () => void, attachments?: CheckpointAttachment[], sessionId?: string): void {
     // All cache-provided validation runs before ownership is adopted.
     const bytes = cacheBytes(caches) + attachmentBytes(attachments);
     const trimmable = !attachments?.length && caches.every((cache) => cache.isTrimmable());
@@ -500,9 +559,11 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     // shares; the entry's own retain is the donor's share.
     const share = makeSharedRetain(retain);
     entry.retain = share.acquire();
-    const rec: EntryRecord = { entry, bytes, cost: tokens.length, uses: 1, priority: 0, lastUsed: ++this.#clock, lastUsedMs: Date.now(), share };
+    const rec: EntryRecord = { entry, bytes, cost: tokens.length, uses: 1, priority: 0, lastUsed: ++this.#clock, lastUsedMs: Date.now(), share, resident: true, sessions: 0 };
     this.retention.accessed(rec);
     this.#entries.push(rec);
+    this.#records.set(entry, rec);
+    this.#associate(sessionId, ns, rec);
     // Exact duplicates (equal tokens) are redundant REGARDLESS of
     // trimmability — the new entry serves exactly the matches the old one
     // did (mlx-lm's trie replaces in place). Without this, every gemma ctx
@@ -512,6 +573,12 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
       if (old === rec || old.entry.ns !== ns) continue;
       if (old.entry.tokens.length !== tokens.length) continue;
       if (commonPrefixLength(old.entry.tokens, tokens) !== tokens.length) continue;
+      // Equivalent publication replaces the cache object, not the checkpoint
+      // identity. Every session sharing it follows the replacement.
+      if (old.sessions) for (const sessions of this.#sessions.values()) {
+        if (sessions.get(ns) !== old) continue;
+        sessions.set(ns, rec); old.sessions--; rec.sessions++;
+      }
       this.#entries = this.#entries.filter((r) => r !== old);
       discard(old.entry, false);
     }
@@ -554,6 +621,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   }
 
   clear(): void {
+    this.#sessions.clear();
     this.#epoch++;
     const entries = this.#entries;
     this.#entries = [];

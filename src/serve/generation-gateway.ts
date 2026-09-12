@@ -341,7 +341,7 @@ export class GenerationGateway {
         const namespace = this.#binding.prefixNamespace?.(placement.execution, options, adapters) ??
           (placement.execution?.method === "speculative" ? null : adapters);
         if (!vision && namespace !== null)
-          releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace);
+          releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId);
       } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options, vision)); }
       return await this.#run(promptIds, options, onToken, vision, shape, placement, signal, trace);
     } finally { try { releasePrefix?.(); } finally { reservation.dispose(); } }
@@ -443,7 +443,7 @@ export class GenerationGateway {
     });
     try {
       st = await this.#ensureScheduler().submit({
-        promptIds, context, cacheNamespace, prefillChunkSize: options.prefillChunkSize,
+        promptIds, context, cacheNamespace, cacheSessionId: options.cacheSessionId, prefillChunkSize: options.prefillChunkSize,
         continuation: continuation?.continuation,
         statePolicy: this.#binding.statePolicy?.(placement.execution, options, promptIds.length + (options.maxTokens ?? 512)),
         compiledDecode: placement.execution?.compiledDecode,

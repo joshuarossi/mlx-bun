@@ -758,3 +758,76 @@ describe("PromptCache — non-blocking spill (spillOwned)", () => {
     expect(d1.count).toBe(1); // disposed AFTER the sync spill returned
   });
 });
+
+describe("session checkpoint index", () => {
+  const dispose = (hit: PromptCacheEntry | null) => {
+    for (const state of hit?.caches ?? []) state.dispose(); hit?.retain?.();
+  };
+  const make = (budget = 1000) => new PromptCache(budget, null, null, stubClone([], { count: 0 }));
+  const publish = (cache: PromptCache, tokens: number[], session?: string, ns = "") =>
+    cache.put(tokens, [stubCache(100, { count: 0 }, false)], ns, undefined, undefined, session);
+
+  test("the latest continuation bypasses prefix scans; edits and namespaces still resolve correctly", () => {
+    const cache = make();
+    try {
+      publish(cache, [1, 2], "a"); publish(cache, [1, 2, 3], "a");
+      publish(cache, [4, 5], "b"); publish(cache, [1, 9], "a", "adapter");
+      const scans = cache.prefixScans;
+      const a = cache.take([1, 2, 3, 7], "", "a"); expect(a?.tokens).toEqual([1, 2, 3]); dispose(a);
+      const b = cache.take([4, 5, 7], "", "b"); expect(b?.tokens).toEqual([4, 5]); dispose(b);
+      const adapter = cache.take([1, 9, 8], "adapter", "a"); expect(adapter?.tokens).toEqual([1, 9]); dispose(adapter);
+      expect(cache.prefixScans).toBe(scans); expect(cache.sessionHits).toBe(3);
+      const branch = cache.take([1, 2, 8], "", "a"); expect(branch?.tokens).toEqual([1, 2]); dispose(branch);
+      expect(cache.prefixScans).toBe(scans + 1);
+      const anonymous = cache.take([4, 5, 8]); expect(anonymous?.tokens).toEqual([4, 5]); dispose(anonymous);
+      expect(cache.prefixScans).toBe(scans + 2);
+    } finally { cache.clear(); }
+  });
+
+  test("sessions share an equivalent replacement and close independently", () => {
+    const cache = make(200);
+    try {
+      publish(cache, [1, 2], "a"); publish(cache, [1, 2], "b");
+      expect(cache.size).toBe(1);
+      cache.closeSession("b");
+      for (let i = 10; i < 15; i++) publish(cache, [i, 0]);
+      const scans = cache.prefixScans, hit = cache.take([1, 2, 3], "", "a");
+      expect(hit?.tokens).toEqual([1, 2]); expect(cache.prefixScans).toBe(scans); dispose(hit);
+    } finally { cache.clear(); }
+  });
+
+  test("session affinity prefers the current checkpoint without pinning it beyond the RAM budget", () => {
+    const cache = make(200);
+    try {
+      publish(cache, [1, 2], "active");
+      for (let i = 10; i < 30; i++) publish(cache, [i, 0]);
+      expect(cache.totalBytes).toBe(200);
+      const hit = cache.take([1, 2, 3], "", "active"); expect(hit?.tokens).toEqual([1, 2]); dispose(hit);
+      cache.closeSession("active");
+      publish(cache, [30, 0]); publish(cache, [31, 0]);
+      expect(cache.take([1, 2, 3], "", "active")).toBeNull();
+      publish(cache, [40, 0], "x"); publish(cache, [41, 0], "y"); publish(cache, [42, 0], "z");
+      expect(cache.totalBytes).toBe(200);
+    } finally { cache.clear(); }
+  });
+
+  test("an evicted session follows its exact SSD checkpoint and coalesces with ordinary cache ownership", async () => {
+    let scans = 0, exact = 0, restores = 0;
+    const tokens = [1, 2, 3], handle = {};
+    const cache = new PromptCache(100, null, {
+      find() { scans++; return null; },
+      findExact(ids, ns) { exact++; expect(ids).toEqual(tokens); expect(ns).toBe("mtp"); return { prefixLen: 3, handle }; },
+      restore() { throw new Error("sync transport was not expected"); },
+      async restoreAsync(value) { expect(value).toBe(handle); restores++; return { tokens,
+        caches: [stubCache(100, { count: 0 }, false)], retain() {} }; },
+      store() { return true; },
+    }, stubClone([], { count: 0 }));
+    try {
+      publish(cache, tokens, "x", "mtp"); publish(cache, [4, 5], "y", "mtp");
+      const release = await cache.prefetch([1, 2, 3, 9], "mtp", "x");
+      const hit = cache.take([1, 2, 3, 9], "mtp", "x");
+      expect(hit?.tokens).toEqual(tokens); expect(scans).toBe(0); expect(exact).toBe(1); expect(restores).toBe(1);
+      dispose(hit); release();
+    } finally { cache.clear(); }
+  });
+});

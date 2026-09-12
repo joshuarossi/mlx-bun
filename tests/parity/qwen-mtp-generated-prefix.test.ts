@@ -104,7 +104,7 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
       try {
         const outcomes = await Promise.allSettled(prompts.map((promptIds, row) => group.submit({
           method: bindSpeculativeGroupRequests(model, provider, depth)(options), promptIds,
-          cacheNamespace: `generated-${row}`, maxTokens: 20, eosTokenIds: [],
+          cacheNamespace: `generated-${row}`, cacheSessionId: `agent-${row}`, maxTokens: 20, eosTokenIds: [],
           ...(row === 3 ? { signal: aborted.signal } : {}),
           onToken(token) {
             outputs[row]!.push(token); maxRows = Math.max(maxRows, group.activeRows);
@@ -132,7 +132,7 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
         const group = new MlxBatchExecutionGroup(model, { maxBatch: 4, promptCache: storage });
         try {
           const result = await group.submit({ method: bindSpeculativeGroupRequests(model, provider, depth)(options),
-            promptIds: next, snapshotAt: 1, cacheNamespace: `generated-${row}`, maxTokens: 12, eosTokenIds: [],
+            promptIds: next, snapshotAt: 1, cacheNamespace: `generated-${row}`, cacheSessionId: `agent-${row}`, maxTokens: 12, eosTokenIds: [],
             onToken(token) { tokens.push(token); } });
           expect(result.cachedTokens).toBe(snapshots.get(row)!.ids.length);
           return { tokens, acceptance: result.spec?.acceptanceLengths };
@@ -148,6 +148,7 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
         const fallback = cache.take([...edited, 34], snapshot.namespace)!;
         try { expect(fallback.tokens).toEqual(prompts[row]!.slice(0, -1)); } finally { release(fallback); }
       }
+      expect(cache.sessionHits).toBeGreaterThan(0);
       expect((await durability.flush()).durable).toBe(true);
       expect(queue.pendingBytes).toBe(0);
       cache.clear(); provider.dispose(); provider = await loadProvider(draft);

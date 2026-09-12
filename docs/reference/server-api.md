@@ -40,6 +40,7 @@ every other path is unique. Unmatched paths return
 | GET | `/fit` | [Fit](#get-fit) |
 | GET | `/library` | [Library](#get-library) |
 | GET | `/downloads` | [Downloads](#get-downloads) |
+| POST | `/admin/cache/session/close` | [Close cache session](#post-admincachesessionclose) |
 | POST | `/admin/cache/flush` | [SSD cache flush](#post-admincacheflush) |
 | GET | `/api/jobs`, `/api/jobs/<id>`, `/api/jobs/<id>/stream` | [Jobs](#jobs-apijobs) |
 | POST | `/api/finetune/submit`, `/inspect-dataset`, `/merge`, `/export` | [Fine-tune](#fine-tune-apifinetune) |
@@ -1029,6 +1030,41 @@ spelling) mounts an adapter at startup through this same machinery and
 makes it the default for requests that send no `adapter` field; an
 explicit `adapter` (including `"none"`) always wins, and hot-swap via
 these endpoints is unchanged.
+
+## Cache session affinity
+
+Completion requests may supply `session_id` or `prompt_cache_key` in the JSON
+body, or `x-session-affinity` / `session_id` in a header. Precedence is body
+`session_id`, body `prompt_cache_key`, `x-session-affinity`, then `session_id`.
+This applies to chat completions, text completions, Responses and Messages.
+The shared mlx-bun Pi provider sends session-affinity headers automatically.
+
+A session indexes its latest published checkpoint within each numerical cache
+namespace. Compatible continuations use that checkpoint directly; edited,
+branched or missing histories use ordinary prefix matching. The full intended
+input is still required: a session label does not append omitted messages,
+isolate access, change model settings or bypass token compatibility.
+
+The cache prefers session-referenced checkpoints when choosing RAM residents,
+but can evict them when required. SSD persistence remains independent. Session
+indexes are process-local; after restart, the first request uses ordinary SSD
+lookup and re-establishes the association. Entries remain shareable across
+sessions and requests without session metadata. `MLX_BUN_SESSION_CACHE` provides
+the A/B control described in server-config.md.
+
+`GET /stats` adds `prompt_cache.session_hits`, `session_misses` and
+`prefix_scans`. A session hit counts direct RAM checkpoint selection, including
+state prepared from SSD before execution. A session miss counts execution
+lookups with session metadata that need ordinary candidate search. Prefix scans
+count ordinary execution searches, not tokenization or preparation probes.
+
+## POST /admin/cache/session/close
+
+Send `{ "session_id": "agent-42" }` to remove that session's cache association
+and retention preference. Returns `{ "closed": true }` when an ID is supplied,
+or `{ "closed": false }` otherwise. Closing does not delete checkpoints from
+RAM or SSD. Applications can close idle or completed sessions; a later request
+with the same ID establishes a new association.
 
 ## POST /admin/cache/flush
 

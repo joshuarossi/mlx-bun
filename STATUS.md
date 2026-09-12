@@ -78,6 +78,13 @@ model-free suite, typechecks and native RAM/SSD, MTP/TurboQuant and paged HTTP
 checks pass. This closes the bounded cache expansion, not the remaining
 Phase 6/18 work or full Kanban retention acceptance. [Measurements](docs/reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention).
 
+Session-aware cache selection (C6) is implemented and measured. Pi/HTTP session
+metadata selects an immutable checkpoint through the cache's own index and
+supplies soft RAM affinity. Native tests cover ordinary, MTP/TurboQuant and
+paged RAM/SSD reuse. Fixed-input M4 serving preserves outputs and is effectively
+flat; lookup work and restores decrease in their targeted comparisons.
+This is not a new complete Kanban task. [Results](docs/reference/benchmarks.md#session-checkpoint-index-c6).
+
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
 | thread | state | next action | branch |
