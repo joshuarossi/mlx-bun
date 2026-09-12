@@ -435,8 +435,8 @@ Under `--isolate` the whole environment is inherited by the engine child.
 
 | Env var | Value | Effect |
 | --- | --- | --- |
-| `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (admission wait, prefill, token-zero, …) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
-| `MLX_BUN_P2R_SYNC` | `=1` (with `MLX_BUN_P2R_TRACE`) | Attribution mode: synchronizes the GPU at phase boundaries so each phase is charged its own work (MLX is lazy — without it, unsubmitted work lands in the next phase). Slows the traced request. |
+| `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (admission wait, prefill forward/evaluation/maintenance/checkpoints, token-zero, bounded initial token routing, response writes) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
+| `MLX_BUN_P2R_SYNC` | `=1` (with `MLX_BUN_P2R_TRACE`) | Token-zero attribution mode: synchronizes hidden/cache state, projection and sampling at the instrumented boundaries. This changes overlap and slows the traced request. Ordinary prefill traces add no synchronization: forward includes any backend evaluation, while evaluate measures the remaining state wait. |
 | `MLX_BUN_LANE_DEBUG` | `=1` | Logs each request's scheduling placement (`mechanism` + shape) to stderr. |
 | `MLX_BUN_BATCH_STEP_TRACE` | `=1` | Per-step phase timing in the batch scheduler (build / read / emit / gap), read once at module load; summarized by `stepTraceReport()`. |
 | `MLX_BUN_GRAMMAR_DEBUG` | `=1` | Logs per-step grammar row state in the batch scheduler. |
@@ -444,6 +444,16 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_EXPERT_TRACE` | `=<path>` | Records every MoE router decision as JSONL to that path (adds a per-call GPU→host sync — a measurement tool, not a serving path). |
 | `MLX_BUN_PI_DEBUG` | any non-empty | Extra `[pi-web]` logging (prompt fingerprint, tool/memory surface) for the web-chat pi session. |
 | `MLX_BUN_EVAL_DEBUG` | `=1` | HumanEval: pipe the sandbox's stderr and print failures. |
+
+P2R records include a process-local `startedAtMs` origin to align concurrent
+requests. Prefill `workId` attributes identify shared spans recorded on several
+rows; these spans and their nested children must not be summed as separate
+GPU work. The first eight token-routing spans stop at the first semantic event
+and distinguish hidden channel markers from visible output. With tracing
+enabled, `bench-serve.ts all` retains complete records by child PID in
+`promptResponseTraces`, including records emitted during shutdown. Summarize a
+saved report with `bun scripts/bench/prefill-trace.ts report.md.json --out
+breakdown.json`. Clocks from different server processes are independent.
 
 ### Eval and training
 

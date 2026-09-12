@@ -671,6 +671,87 @@ from the pinned system prompt. Its first tool call targeted a nonexistent
 path. That runner error is preserved and excluded from the task comparison;
 it was not an engine failure.
 
+### Prefill observation and scheduling screen
+
+M4 Pro 24 GB, 2026-09-12 UTC, Bun 1.4.2, MLX 0.32.2/native pack 0.4.0.
+Merged base `debee3e`; Gemma 4 12B OptiQ snapshot
+`5b1101065d2094c8f12aa87fee80e0afa5b292b7`, ordinary affine KV4, 4 GiB RAM
+cache and fresh temporary SSD. The standard server benchmark uses the default
+batch capacity eight, with no `--batch 1`. Same `prefill-long-0` workload as the
+[previous comparison](#current-serial-versus-shared-execution-staggered-gemma-requests):
+192-token single-request decode samples, skipped context sweep, four aggregate
+requests staggered by 25 ms, target context 2,048. Actual aggregate prompt/cache
+counts remain 1,289/13, 1,281/12, 1,287/14 and 1,287/12; each emits 128 tokens.
+The prefill chunk size remains 2,048. Retained swap is 1,335.56 MiB and free memory
+89% before each arm. These are diagnostic runs with an exclusively allocated
+GPU, not quiet performance claims. No server requests fail.
+
+| Arm in run order | B1 decode tok/s | Cached TTFT ms | Aggregate tok/s | Aggregate wall ms | First request TTFT ms | Mean TTFT ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Merged baseline, tracing off | 26.108 | 175.589 | 20.250 | 25,284.02 | 9,010.70 | 15,869.64 |
+| Component tracing | 26.060 | 159.833 | 19.976 | 25,630.88 | 9,076.31 | 16,140.91 |
+| Component plus initial routing trace | 26.042 | 162.788 | 20.186 | 25,364.47 | 9,012.04 | 15,930.04 |
+| Active-before-preparation experiment, traced | 26.376 | 160.632 | 19.620 | 26,096.38 | 4,689.58 | 14,162.81 |
+| Final observer code, tracing off, original scheduler | 26.044 | 160.348 | 20.171 | 25,383.24 | 9,022.22 | 15,944.64 |
+
+All source hashes remain unchanged during each arm. The four observer/control
+arms retain all 15 request bodies, responses and usage records exactly. The
+final tracing-off comparison is −0.245% B1 decode and −0.391% aggregate
+throughput versus the baseline, with +0.128% first-request TTFT. This bounded
+screen finds no large observer-off cost; it is not a statistical proof of zero
+overhead. The initial cached-latency sample is higher than the subsequent arms;
+no cache speedup is attributed to instrumentation.
+
+The component trace identifies the first request's prefill cost: 5.16 ms of
+forward construction/dispatch, 4,386.72 ms waiting for cache evaluation,
+2.84 ms KV maintenance, 0.85 ms checkpoint capture, and 0.38 ms lookup/restore.
+Forward may include backend evaluation; these labels do not claim kernel-only
+GPU timestamps. The first generated token is available at 4,512.23 ms, but the
+first semantic write is at 9,075.96 ms. Another request's prefill evaluation
+occupies 4,428.30 ms of that gap. Request processing for the later clients also
+starts late because the owner thread is blocked; client submission times and
+server trace origins are both retained.
+
+The routing trace resolves the first-token ambiguity: Gemma emits token 100
+(`<|channel>`) at 4,507.24 ms, token 45,518 (`thought`) at 4,548.56 ms, then token
+107 (newline) at 9,011.62 ms. The first two are channel metadata; the newline is
+the first reasoning event. The stream parser spends less than 0.05 ms per
+observed initial token. It is not holding already-visible prose for seconds.
+
+The experimental scheduler advances active rows and yields before another
+preparation unit. Against the routing-traced control it reduces first-request
+TTFT by 47.96% and mean TTFT by 11.09%, but loses 2.805% aggregate throughput
+and increases aggregate time 2.886%. All four concurrent texts change as batch
+membership/positions change; single-request texts and request/usage counts
+remain unchanged. One pair does not establish a stable throughput effect or
+same-output quality equivalence. The experiment is **not adopted**. Its patch
+is preserved; final source retains the original scheduler.
+
+The retained change is observability: process-aligned spans, shared-work IDs,
+initial token routing, complete trace retention in standard benchmark reports,
+and the offline `scripts/bench/prefill-trace.ts` summary. M1 Max checks pass:
+2,262 model-free tests, 14 fixture skips, no failures; all three typechecks pass.
+Upstream algorithm comparison and the next mixed-iteration work are in
+[batching design](../design/batching.md#scheduling-reference-algorithms-and-request-observations).
+This screen does not close long-prefill dominance or mixed execution acceptance.
+
+Reproduce the measurement with the model artifact above:
+
+```sh
+MLX_BUN_P2R_TRACE=1 bun scripts/bench-serve.ts all \
+  --model-path /path/to/gemma-4-12B-it-OptiQ-4bit --arms mlx-bun \
+  --kv-quant 4 --prompt-cache 4 --tokens 192 --skip-context \
+  --aggregate-context 2048 --aggregate-stagger-ms 25 \
+  --workload-seed prefill-long-0 --diagnostic --out reports/prefill.md
+bun scripts/bench/prefill-trace.ts reports/prefill.md.json --out reports/prefill-breakdown.json
+```
+
+Raw evidence on both Macs: `reports/prefill-observation/`, including the five
+reports, `comparison.json`, component breakdown and `active-first.patch`.
+Per-arm source hashes, exact payloads, output hashes, timings and machine state
+are retained in the JSON reports. Tracing is off by default and traced benchmark
+runs are classified diagnostic automatically.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

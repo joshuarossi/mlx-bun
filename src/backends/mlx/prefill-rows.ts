@@ -9,7 +9,17 @@ import type { MlxGroupPreparation, Row } from "./batch-group";
 import { evalCacheState } from "./prefill";
 import { prefillCacheLayout } from "./cache-layout";
 import { MlxStateRows } from "./state-rows";
+import type { P2RTracePhase, P2RTraceAttributes } from "../../serve/prompt-response-trace";
 import type { KvMaintenance } from "./kv-maintenance";
+
+// Shared work is recorded on every participating request. workId identifies
+// duplicates when constructing a process timeline; row spans are not additive.
+let nextWorkId = 0;
+function traceRows(states: readonly MlxPrefillState[], phase: P2RTracePhase, attributes: P2RTraceAttributes) {
+  if (!states.some(state => state.row.req.trace)) return null;
+  const closes = states.map(state => state.row.req.trace?.begin(phase, attributes));
+  return { [Symbol.dispose]() { for (const close of closes) close?.(); } };
+}
 
 export interface MlxPrefillStep extends PrefillStep {
   /** Some methods maintain their final target chunk before sampling. */
@@ -122,7 +132,10 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
       this.#states = remaining; this.#rows = remaining.map(state => state.row);
       if (!remaining.length) { this.dispose(); return true; }
     }
-    this.#synchronizeRows();
+    {
+      using span = traceRows(this.#states, "prefill.row_sync", { workId: ++nextWorkId, batchSize: this.#states.length });
+      this.#synchronizeRows();
+    }
     const keep: number[] = [];
     for (const [index, state] of this.#states.entries()) {
       if (!state.row.req.signal?.aborted) { keep.push(index); continue; }
@@ -133,14 +146,20 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     while (this.#states.length) {
       for (const state of this.#states) state.planned ??= this.operations.plan(state);
       const count = Math.min(...this.#states.map(state => state.planned!.end - state.pos));
+      const work = { workId: ++nextWorkId, batchSize: this.#states.length, tokensPerRow: count };
       const closes = this.#states.map(state => state.row.req.trace?.begin("prefill.chunk", {
-        mechanism: "continuous", startToken: state.pos, batchSize: this.#states.length,
+        mechanism: "continuous", startToken: state.pos, ...work,
       }));
       const caches = this.#stateRows?.caches ?? this.#states[0]!.solo;
       try {
         using ids = count ? ops.fromInt32(this.#states.flatMap(state => state.row.req.promptIds.slice(state.pos, state.pos + count)),
           [this.#states.length, count]) : null;
-        using hidden = ids ? await this.operations.forward(ids, caches, this.#states) : null;
+        let forwarded: MlxArray | null;
+        {
+          using span = traceRows(this.#states, "prefill.forward", work);
+          forwarded = ids ? await this.operations.forward(ids, caches, this.#states) : null;
+        }
+        using hidden = forwarded;
         const drains: number[] = [], finals: number[] = [];
         let batchYield = false;
         for (const [row, state] of this.#states.entries()) {
@@ -152,25 +171,39 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
         }
         const maintained = [...drains, ...finals.filter(row => this.#states[row]!.planned!.maintain)];
         if (count && (maintained.length || !finals.length)) {
-          evalCacheState(caches);
+          {
+            using span = traceRows(this.#states, "prefill.evaluate", work);
+            evalCacheState(caches);
+          }
+          using span = traceRows(this.#states, "prefill.kv_maintenance", work);
           if (this.#stateRows) {
             for (const cache of caches) cache.prefillMaintenance?.commitPrefill(maintained);
           } else if (maintained.length) this.operations.maintain?.(this.#states[0]!.solo);
           clearCache();
         }
-        if (ids) {
+        if (ids && this.operations.afterForward) {
+          using span = traceRows(this.#states, "prefill.companion", work);
           const companion = this.operations.afterForward?.(ids, caches, this.#states, hidden!);
           if (companion) await companion;
         }
         for (const row of [...drains, ...finals]) {
           const state = this.#states[row]!;
-          if (state.planned!.snapshot) this.operations.checkpoint(state, () =>
-            this.#stateRows ? this.#stateRows.extractRow(row) : cloneKvCaches(state.solo, this.operations.stateCodecs), row);
+          if (state.planned!.snapshot) {
+            using span = traceRows([state], "prefill.checkpoint", { ...work, row });
+            this.operations.checkpoint(state, () =>
+              this.#stateRows ? this.#stateRows.extractRow(row) : cloneKvCaches(state.solo, this.operations.stateCodecs), row);
+          }
           if (!finals.includes(row)) state.planned = undefined;
         }
-        using logits = hidden && finals.length ? this.operations.project(hidden, caches, finals.map(row => this.#states[row]!)) : null;
+        let projected: MlxArray | null = null;
+        if (hidden && finals.length) {
+          using span = traceRows(this.#states, "prefill.project", work);
+          projected = this.operations.project(hidden, caches, finals.map(row => this.#states[row]!));
+        }
+        using logits = projected;
         for (const row of finals) {
           const state = this.#states[row]!;
+          using span = traceRows([state], "prefill.complete", { ...work, row });
           if (this.#stateRows) state.solo = this.#stateRows.extractRow(row);
           using part = logits ? logits.slice([row, logits.shape[1]! - 1, 0], [row + 1, logits.shape[1]!, logits.shape[2]!]) : null;
           try {

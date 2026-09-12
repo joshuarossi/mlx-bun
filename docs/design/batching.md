@@ -1839,3 +1839,51 @@ after their source files and reports were verified in a content-addressed local 
 `reports/pr-closeout/checkout-archive/`, with per-checkout manifests, SHA-256
 objects and the recorded base commit. The PR retains the implementation and
 findings; bulky raw experiment data stays local under the repository policy.
+
+
+### Scheduling reference algorithms and request observations
+
+The next scheduling baseline is an iteration token budget, following the
+upstream implementations below. Review date: 2026-09-12. Read implementation
+order as well as configuration docs; scheduling first does not necessarily
+mean delivering output before the iteration's other GPU work finishes.
+
+| Reference | Algorithm and ownership | Application here |
+|---|---|---|
+| [vLLM V1 scheduler, `dff76bc`](https://github.com/vllm-project/vllm/blob/dff76bc3e8d702901e6dda5971f9506a6c1bc00f/vllm/v1/core/sched/scheduler.py#L562) | Tracks computed tokens against required tokens, including speculative positions. Allocates the iteration budget to running requests before waiting requests. Prefill chunks and decode tokens can enter the same execution batch. | Represent remaining work through the scheduling interface; methods supply valid token work and the backend owns batch packing and kernels. |
+| [llama.cpp server, `3057bb6`](https://github.com/ggml-org/llama.cpp/blob/3057bb66c86c46d5781e50e85462a760ba7d1feb/tools/server/server-context.cpp#L2974) | Adds generating/drafting slots before filling the remaining batch capacity with compatible prompt tokens. Logical batch and physical microbatch capacities are distinct. HTTP workers own parsing, templates and streaming; one inference thread owns slots. | Preserve execution ownership while allowing request preparation and response transport to progress independently. A shared request count is insufficient; account for token work too. |
+| [mlx-lm generator, `dcbcf78`](https://github.com/ml-explore/mlx-lm/blob/dcbcf786c0cf56f9a12fabe9468c887781431ae2/mlx_lm/generate.py#L1783) | Advances generation first, admits/splits prompt rows, then processes bounded prompt chunks. Prompt and generation batches remain separate. Responses return after prompt processing, whose cache evaluation synchronizes. The pinned oracle has the same order. | This is the closest numerical/backend reference, but its response timing is not evidence that output is immediately flushed. Compare its actual request timeline. |
+| [LangChain streaming](https://docs.langchain.com/oss/python/langchain/streaming) | Routes model-provided text, reasoning and tool-call chunks through the agent application. | Reference for stream semantics; this layer does not select GPU prefill/decode work. |
+
+[vLLM's tuning guidance](https://docs.vllm.ai/en/latest/configuration/optimization/#chunked-prefill)
+explicitly treats token budget as a latency/throughput tradeoff. Its GPU-specific
+budget recommendations are not Apple Silicon defaults. Start with the established
+algorithm, measure the same submitted work on M4, and retain deviations only
+with recorded benefits and costs. No framework guarantees one universally best
+chunk size or latency policy.
+
+The current backend exposes separate `advance()` and `advancePreparation()`
+operations. `MlxPrefillRows` groups prompt rows, while ordinary and speculative
+methods advance decoding rows separately. The existing preparation budget limits
+cohort admission; it is not vLLM's combined per-iteration token budget. True mixed
+execution therefore needs backend work as well as scheduling policy. Padding a
+single decode token to a long prompt's width would defeat the intended saving.
+
+Phase 18 S1b will establish one work description containing request identity,
+computed/required positions and method-owned candidate work. Scheduling allocates
+bounded work to active requests and then queued requests; the backend executes
+compatible selections. Sampling and cache ownership remain unchanged. Acceptance
+covers lone requests, arrivals during prefill and decode, unequal lengths,
+cancellation/retirement, speculative work and quantized state. Compare first
+semantic output, inter-output gaps, total workload time, occupancy, padding and
+memory alongside aggregate throughput. Same-B numerical contracts remain binding.
+
+The P2R observer now separates row preparation, forward, remaining cache
+execution, maintenance, checkpoint capture, projection, completion and companion
+work. Shared work IDs and process-local time origins allow cross-request
+attribution without counting shared GPU work several times. Bounded initial
+routing spans expose hidden control tokens. Measurement semantics and the report
+command live in [server-config](../reference/server-config.md); measured results
+live in [benchmarks](../reference/benchmarks.md#prefill-observation-and-scheduling-screen).
+The simple active-before-prefill experiment remains an unadopted patch in the
+local report directory; it is not the mixed execution design above.

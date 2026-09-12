@@ -10,6 +10,7 @@ import { captureKvAttention } from "../../src/model/kv-attention-view";
 import { createKvMaintenance } from "../../src/backends/mlx/kv-maintenance";
 import type { KvSchemeOptions } from "../../src/kv-scheme";
 import { leaseCacheStates } from "../../src/backends/mlx/state-views";
+import { PromptResponseTrace, type P2RTraceRecord } from "../../src/serve/prompt-response-trace";
 import { withResource } from "../../src/engine/resources";
 
 const dispose = (cache: Cache[]) => { for (const layer of cache) layer.dispose(); };
@@ -162,5 +163,36 @@ test("a restored late arrival releases its backing lease after admission and pre
       expect(f.completed.get(2000)).toEqual(control.completed.get(2000));
     } finally { control.cohort.dispose(); }
     expect(releases).toBe(1);
+  } finally { f.cohort.dispose(); }
+});
+
+
+test("prefill traces preserve shared work identity and do not change row state", async () => {
+  const f = fixture(), requests = [row(1, 270, 64), row(2, 267, 37)];
+  const records: P2RTraceRecord[] = [];
+  for (const [index, request] of requests.entries()) request.req.trace = new PromptResponseTrace({
+    traceId: `row-${index}`, requestId: `row-${index}`, route: "test", emit: record => records.push(record),
+  });
+  try {
+    f.cohort.admit(requests[0]!); await f.cohort.advance();
+    f.cohort.admit(requests[1]!); await drain(f.cohort);
+    for (const request of requests) request.req.trace!.finish("success");
+    expect(f.rejected).toEqual([]);
+    for (const record of records) {
+      for (const phase of ["prefill.row_sync", "prefill.forward", "prefill.evaluate",
+        "prefill.kv_maintenance", "prefill.checkpoint", "prefill.project", "prefill.complete"])
+        expect(record.events.some(event => event.phase === phase)).toBe(true);
+      expect(record.events.every(event => event.durationMs >= 0)).toBe(true);
+    }
+    const shared = records[0]!.events.find(event => event.phase === "prefill.forward" && event.attributes?.batchSize === 2)!;
+    expect(records[1]!.events.some(event => event.phase === shared.phase && event.attributes?.workId === shared.attributes?.workId)).toBe(true);
+    for (const request of requests) {
+      const control = fixture();
+      try {
+        control.cohort.admit(row(Math.floor(request.req.promptIds[0]! / 1000), request.promptTokens, request.req.prefillChunkSize!));
+        await drain(control.cohort);
+        expect(f.completed.get(request.req.promptIds[0]!)).toEqual(control.completed.get(request.req.promptIds[0]!));
+      } finally { control.cohort.dispose(); }
+    }
   } finally { f.cohort.dispose(); }
 });

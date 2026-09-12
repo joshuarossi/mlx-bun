@@ -58,7 +58,7 @@ cache hits. Its first response matches exactly; directory timestamps change
 the next input. Browser acceptance remains 16/18 with the same two defects.
 Evidence: `reports/kanban-cache-fixed-repeat-r1/`; previous runs are preserved.
 
-Cache persistence correction is implemented on `fix/ssd-background-persistence`.
+Cache persistence correction is merged through PR #51.
 One cache owns RAM residency and SSD persistence. A CPU worker writes immutable
 state without the generation lock; eviction retains unwritten victims until
 SSD completion. All 2,249 model-free tests pass, with 14 fixture skips; focused tests pass
@@ -89,6 +89,13 @@ is durable with no missing snapshots. The untouched app has the same two
 browser defects as before; task time and output length increase. Reports:
 `reports/kanban-session-cache-r2/`; r1 preserves a runner directory mismatch.
 [Full comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
+
+
+Prefill observation is implemented on `perf/prefill-observation`. M4 traces
+separate execution from cache work and hidden-token routing. The scheduling-only
+experiment improves first output but loses aggregate throughput and is not
+adopted. Phase 18 S1b now tracks the upstream token-budget/mixed-execution
+baseline, with implementation ownership and acceptance in batching.md.
 
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
