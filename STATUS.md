@@ -45,7 +45,9 @@ through RAM/SSD history and reclaims optional snapshots through the cache port.
 The saved failure sequence is reproduced on main and passes with the fix,
 including identical CSS output and usage. M1 native RAM/SSD HTTP checks,
 the complete local suite, typechecks and docs checks pass. The first tool turn
-now reuses its generated history. A fresh full task is the next acceptance run;
+now reuses its generated history. [PR #50](https://github.com/joshuarossi/mlx-bun/pull/50)
+contains the fix. A fresh full task on `a40588e` is running on the M4 with an
+identical initial request: `reports/kanban-cache-fixed-fresh/result.json`;
 the old partial app and its original SSD snapshots are preserved.
 Evidence and measured limits: [benchmarks.md](docs/reference/benchmarks.md#saved-kanban-cache-failure-replay--m4-pro-24-gb-2026-09-12-utc).
 

@@ -125,11 +125,10 @@ evidence; rerun only for a named change, missing case or reproduced failure.
   focused checks on M1 Max and M4 Pro. Qwen prefill capture/restore now uses
   that interface; bf16/KV4 RAM reuse and SSD restart continuations pass on both.
   Shared generated-row publication is adopted; M1/M4 bf16/KV4/TQ tests retain
-  actual processed IDs and exact immutable RAM/SSD continuations at B4; HTTP tool turns pass RAM and fresh-process SSD reuse with thinking off/on. Final composition with the prefill-policy fix passes M4 native/HTTP, full-suite and matched short checks; long Kanban and pressure remain.
+  actual processed IDs and exact immutable RAM/SSD continuations at B4; HTTP tool turns pass RAM and fresh-process SSD reuse with thinking off/on. Final composition with the prefill-policy fix passes M4 native/HTTP, full-suite and matched short checks. Token provenance and optional-snapshot reclamation pass the reproduced Kanban BPE miss/Metal OOM with identical CSS output/usage; native RAM/SSD and full-suite checks pass. Fresh full-task acceptance remains.
   Exit: actual generated-ID alignment, immutable snapshots after continued
   decode, RAM reuse, SSD eviction/restart restore, earlier-boundary fallback,
   complete byte accounting and saved Kanban next-turn timing. Details: §7 R17.
-  Follow-up: generated-token provenance and optional-snapshot reclamation pass the reproduced Kanban BPE miss/Metal OOM, with identical CSS output/usage; native RAM/SSD and full-suite checks pass. Fresh full-task acceptance remains.
 - [~] **Scheduling and method separation:** consolidate single-request execution
   as B=1 through the same method/session contracts used at larger B. Keep batch
   membership out of decode and cache placement out of scheduling. Method
