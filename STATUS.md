@@ -107,8 +107,9 @@ Shared grammar proposals are implemented and measured. The request's grammar sup
 candidates to the existing verifier; sampling, cache state and scheduling retain
 their interfaces. MiniCPM and packed-Qwen/TurboQuant native checks pass, including
 independent cancellation and logprobs. HTTP results are mixed across machines/models;
-the option remains off by default. Next: remove avoidable transaction work on
-verification steps with no candidates, then measure the effect.
+the option remains off by default. Empty-candidate rollback snapshots are now
+removed with exact native state and unchanged standard-benchmark responses;
+throughput is effectively flat. Configuration ownership cleanup is next.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

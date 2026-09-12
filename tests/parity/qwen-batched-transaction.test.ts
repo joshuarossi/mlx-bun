@@ -69,6 +69,26 @@ describe.skipIf(!enabled)("Batched target transaction", async () => {
       };
       using window = ops.fromInt32([31, 32, 33, 34, 41, 42, 43, 44], [2, 4]);
       using tail = ops.fromInt32([51, 61], [2, 1]);
+      // Zero candidates cannot require rollback. Compare the optimized row
+      // binding with the previous explicit snapshot/commit at identical B/S,
+      // then advance both again to catch retained-state differences.
+      {
+        const actual = clone(), reference = clone();
+        try {
+          const tx = bindRowCacheRollback(actual, 2); tx.begin(0);
+          for (const cache of reference) cache.specRoundBegin();
+          using output = model.forwardHidden(tail, actual);
+          using expected = model.forwardHidden(tail, reference);
+          expect(digest(output)).toBe(digest(expected));
+          tx.resolve([0, 0]);
+          for (const cache of reference) cache.specRoundCommit();
+          for (let row = 0; row < 2; row++) compareRow(actual, reference, row);
+          using continued = model.forwardHidden(tail, actual);
+          using continuedReference = model.forwardHidden(tail, reference);
+          expect(digest(continued)).toBe(digest(continuedReference));
+          for (let row = 0; row < 2; row++) compareRow(actual, reference, row);
+        } finally { dispose(actual); dispose(reference); }
+      }
       for (const accepted of [[0, 3], [3, 0], [1, 2], [3, 3]]) {
         const actual = clone(), references: State[][] = [];
         try {

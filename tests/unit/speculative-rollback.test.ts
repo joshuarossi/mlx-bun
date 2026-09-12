@@ -82,3 +82,20 @@ test("a failed row rollback invalidates all participating layers", () => {
   expect(() => transaction.resolve([0, 2])).toThrow("replay failed");
   expect(() => transaction.canBegin(2)).toThrow("must be discarded");
 });
+
+test("zero-candidate row rounds keep transaction ordering without retaining rollback buffers", () => {
+  const events: string[] = [];
+  const transaction = bindRowCacheRollback([{
+    specRoundBegin() { events.push("begin"); },
+    specRoundCommit() { events.push("commit"); },
+    specRoundRollback() { events.push("rollback"); },
+  }], 2);
+  transaction.begin(0);
+  expect(transaction.canBegin(0)).toBe(false);
+  expect(() => transaction.resolve([0, 1])).toThrow("invalid speculative acceptance count");
+  transaction.resolve([0, 0]);
+  expect(events).toEqual([]);
+  expect(transaction.canBegin(2)).toBe(true);
+  transaction.begin(2); transaction.resolve([1, 0]);
+  expect(events).toEqual(["begin", "rollback"]);
+});

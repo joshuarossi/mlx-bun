@@ -979,6 +979,50 @@ controls now explicitly request cap one, keeping their labels accurate after
 the default changed. Raw evidence and summary:
 `reports/prefill-observation/grammar-*`, including `grammar-comparison.json`.
 
+#### Zero-candidate rollback snapshots
+
+A shared verification step with no proposed tokens consumes only its pending
+input. It now keeps transaction ordering without retaining rollback snapshots.
+No proposed suffix exists to reject. Nonzero rounds and the explicit serial
+transaction retain their existing behavior.
+
+M1 Gemma12 affine4 across the real sliding window and M4 packed-Qwen/TurboQuant
+compare the previous explicit snapshot/commit against the new operation at
+identical B/S. Hidden values, every layer's state and the next continuation
+match exactly. The checks have 7,690 and 6,090 assertions respectively.
+MiniCPM grammar retirement/logprob checks and the model-free suite pass
+(2,287 tests, 14 skips), along with all three typechecks.
+
+M4 grammar throughput initially rises from 13.27 to 14.62 tok/s over all
+three rounds. Repeating the previous snapshot behavior yields 14.39 tok/s,
+with all 12 responses matching the candidate. The last two rounds are only
+0.14% apart; most of the apparent initial gain is first-round variation.
+No substantial speedup is claimed.
+
+The standard script then compares source-only changes with packed Qwen,
+TurboQuant K8/V3, prompt lookup depth three, a 4 GiB RAM cache plus SSD,
+192-token decode and staggered long-input concurrency four. Both arms retain
+default capacity eight, use diagnostic mode and skip the separate context sweep.
+Both source snapshots remain unchanged during measurement; the sole numerical
+source change is `src/backends/mlx/rollback.ts` relative to `ae04888`.
+
+| M4 Pro 24 GB metric | Previous snapshots | Zero-candidate snapshots removed |
+|---|---:|---:|
+| Median single-request decode | 11.523 tok/s | 11.484 tok/s |
+| Aggregate throughput | 6.149 tok/s | 6.134 tok/s |
+| Median cold TTFT | 5860 ms | 5934 ms |
+| Warm TTFT / cached tokens | 125.86 ms / 758 | 126.13 ms / 758 |
+| Peak RSS | 15060.5 MB | 15111.5 MB |
+
+All 15 requests, response texts and prompt/generated/cached token counts match;
+there are no failed phases. Throughput is effectively flat (−0.33% decode,
+−0.25% aggregate). This removes unnecessary snapshot work without establishing
+a serving speed or memory reduction. Source snapshots are
+`a2ef51986ac3646ed7d7c2d646960bd93f7bbb2b769b7d41e27f877c152590b1` and
+`70507562e4e043f8e03f83c2d2e0ce3b3021c8a356dd9023f1d8cca50a468af7`.
+Raw reports: `reports/prefill-observation/zero-snapshot-*` and
+`grammar-qwen-snapshot-control.md.json`.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

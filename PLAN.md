@@ -305,6 +305,8 @@ keeps storage, policy and attention kernels behind separate interfaces.
 
 - [x] **Shared grammar continuations:** request-owned forced-string proposals now reuse the grouped target verifier, sampler, row state and history lifecycle. MiniCPM and packed-Qwen native checks cover affine/TQ, stopping/cancellation and logprobs. Both-machine HTTP comparisons preserve schema conformance but have mixed performance, so the option remains off by default. Evidence: benchmarks.md shared grammar proposal screen. Explicit serial direct-jump remains a distinct algorithm for comparison.
 
+- [x] **Zero-candidate state work:** shared verification avoids rollback snapshots when there is no proposed suffix. Same-geometry Gemma affine/Qwen TQ state and continuation checks pass. M4 grammar controls and standard prompt-lookup A/B preserve output; serving throughput is effectively flat. No speedup/default claim.
+
 - [~] **S1a — true B-wide batched prefill.** Ordinary cohorts are adopted. Compatible late arrivals join between chunks, preserving each request's
       maintenance/checkpoint/tail boundaries through the shared cache ports.
       Same-B Qwen 27B/Gemma 12B full/sampler logits and cache checks pass on
