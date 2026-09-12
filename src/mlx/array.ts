@@ -2,6 +2,7 @@
 // Explicit .dispose() is the contract; a FinalizationRegistry backstop
 // frees leaked handles on GC (verified in lab/spikes/phase0-memory.ts).
 
+import { hostBufferDestructor, type HostBuffer } from "../storage/host-buffer";
 import { dlopen, ptr, toArrayBuffer } from "bun:ffi";
 import { C, Dtype, DTYPE_NAMES, type MlxHandle, optInt, outArray, takeMlxError } from "./ffi";
 import type { SafetensorsDtype } from "../safetensors";
@@ -128,6 +129,18 @@ export class MlxArray {
       dataPtr, ptr(sb), shape.length, dtype, 0, freeFnAddr,
     );
     return new MlxArray(handle);
+  }
+
+  /** Adopt a page-aligned CPU restore allocation without a host copy.
+   * The native destructor owns it after this call, including GPU references. */
+  static adoptHostBuffer(buffer: HostBuffer, shape: number[], dtype: Dtype): MlxArray {
+    const sb = shapeBuf(shape);
+    const handle = C.mlx_array_new_data_managed_payload(
+      buffer.pointer, ptr(sb), shape.length, dtype, buffer.pointer, hostBufferDestructor,
+    );
+    const array = new MlxArray(handle);
+    buffer.transfer();
+    return array;
   }
 
   /** Copying constructor for small host data. */

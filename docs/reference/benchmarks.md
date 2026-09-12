@@ -344,6 +344,178 @@ decode penalty. It does not establish long-context, sustained-write or
 end-to-end Kanban gains. Raw results and source hashes:
 `reports/ssd-background-persistence/m4-overlap.json`.
 
+### Cache expansion C1–C5: storage, restore, retention and paged attention
+
+September 12, 2026. Baseline `c953f2f` plus the cache expansion on
+`fix/ssd-background-persistence`; Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2.
+M4 Pro 24 GB is the serving comparison host; M1 Max 32 GB supplies a second
+component comparison. These are diagnostic measurements, not a new h2h against
+mlx-lm or a new complete Kanban task. Raw reports are in
+`reports/cache-expansion/`; `source-manifest.json` identifies the final source.
+
+**Result:** block sharing saves disk space, segmented packing removes copies,
+and asynchronous restore keeps the event loop available. Neither block storage
+nor the alternative RAM policy earns default promotion. Direct paged attention
+has shape-dependent wins and regressions and remains an optional Lab kernel.
+The configuration reference owns the selectable settings and defaults.
+
+#### Same-request M4 serving comparison
+
+Packed Qwen3.8-27B interleave2, RTN4 MTP depth 2, affine KV4, seed
+`cache-expansion-42`, shared batch cap eight. The standard script runs five
+short-decode samples, context, SSD restart and four concurrent requests.
+The requested 4,096-token context renders to 2,677 actual tokens; restart
+reuses 2,676. No arm forces serial execution.
+
+| Arm | Median short decode, tok/s | Decode at context, tok/s | SSD restart TTFT, ms | Four-request aggregate, tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| Whole files, synchronous restore, LRU | 19.58 | 24.07 | 1,893 | 17.05 |
+| Shared blocks, async restore, cost-size retention | 19.21 | 23.95 | 2,133 | 17.01 |
+| Whole files, async restore, LRU | 19.67 | 24.12 | 2,076 | 17.10 |
+
+All 19 corresponding requests preserve input hashes, response text hashes,
+prompt/output counts and finish reasons. Every phase completes; final flushes
+are durable with no pending, dropped or failed snapshots. Decode is essentially
+unchanged with async restore alone. The combined candidate is slightly slower;
+both async arms have worse single-request restart TTFT. These sequential
+matrices establish no broad throughput gain. Reports:
+`m4-serving-baseline.json`, `m4-serving-candidate.json`, `m4-serving-async.json`.
+
+#### C1 and C4: shared blocks and packing
+
+Four immutable checkpoints grow through one quarter, one half, three quarters
+and all of the same eight-head tensor. Fixed bytes/seed; the block boundary
+resets per head. The M4 payload ends at 256 MiB; medians of five paired samples
+include all four writes. Reads verify the final state with warm filesystem
+pages. File sizes count unique committed bytes, not APFS allocated extents.
+
+| M4 storage arm | Total write, ms | Final verified read, ms | Files retained, MiB | Bytes copied for packing, MiB | Peak packing scratch, MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Whole files | 100.60 | 21.26 | 641.91 | 384 | 192 |
+| Blocks, whole-tensor packing | 282.08 | 97.47 | 257.92 | 384 | 192 |
+| Blocks, segmented packing | 276.33 | 97.66 | 257.92 | 0 | 0 |
+
+Sharing reduces bytes written and retained by **59.8%**, but segmented block
+writes take **2.75×** as long as whole files. SHA-256 content hashing and many
+small durable writes cost more than whole-file transport. Against the same
+block format, segmentation removes 384 MiB of copying and 192 MiB of scratch;
+write time improves about 2%. Zero scratch here applies to contiguous spans
+within each head; arbitrary strides use bounded packing, not zero copying.
+These are allocation counters, not process RSS measurements.
+
+On M1, a smaller 64 MiB final tensor gives whole/packed-block/segmented-block
+write medians of 66.82/128.86/114.23 ms and verified reads of
+13.85/39.82/39.77 ms. Shared files retain 64.44 MiB versus 160.47 MiB;
+segmentation removes 96 MiB of packing copies and 48 MiB of peak scratch.
+Do not compare these host timings as identical workloads. Reports:
+`m4-components-final.json`, `m1-components-final.json`.
+
+#### C2: restore while decode continues
+
+A separate ABBA probe restores an unrelated 512 MiB recurrent checkpoint at
+Qwen output token 16. Each arm warms the model, file pages and synchronous
+allocator; all arms emit the same 128 greedy token IDs. MTP depth 2, KV4,
+seed 42, shared cap eight with one active request.
+
+| Mean of two arms | Synchronous read | Async read |
+| --- | ---: | ---: |
+| Pause inside the token callback | 53.15 ms | 0.20 ms |
+| Read completion time | 53.13 ms | 126.13 ms |
+| Output token when read completes | 16 | 19 |
+| Post-first-token decode | 18.69 tok/s | 18.84 tok/s |
+| Request plus completed read | 7.203 s | 7.141 s |
+
+The read itself takes longer while sharing memory bandwidth, but the owner
+thread returns immediately and generation advances. The small throughput
+difference is not a general speed claim. This measures byte transport overlap,
+not all model-layout reconstruction work; plain KV capacity growth still uses
+its existing MLX operations after transport. Report:
+`m4-restore-overlap-warm.json`. Earlier unwarmed probes are retained as diagnostics
+and excluded from this comparison.
+
+#### C3: retention policy replay
+
+The policy port compares LRU with GreedyDual-style cost/size/frequency ranking.
+SSD is durable in both arms: RAM misses cause restores, not lost prefill.
+In a synthetic hot-prefix trace interleaved with one-shot histories, cost-size
+eliminates 796 restores incurred by LRU. In sequential bursts it introduces
+300 restores where LRU needs none.
+
+The saved Kanban repeat contributes its observed next-turn cached-prefix
+boundaries. This is metadata replay, not a token-level or physical-memory
+simulation: each entry costs prefix length plus 16,384 fixed recurrent-state
+units. At a 160,000-unit RAM budget, LRU has 26 hits and zero restores;
+cost-size has 15 hits and 11 restores. At 80,000 and 320,000 units, cost-size
+also causes more restores. Cold-prefill work is unchanged. LRU remains the
+selection for this workload; cost-size is useful for the measured pollution
+trace, not a universal improvement. Report: `retention.json`.
+
+#### C5: direct paged attention
+
+The kernel compares gathered pages plus stock SDPA with direct block-table
+reads. At 16,384 cached tokens, bf16 queries, 16 query heads, four KV heads,
+head dimension 128, five paired samples of ten evaluated steps:
+
+| Stored KV | M4 B1 speed ratio | M4 B4 speed ratio | M1 B1 speed ratio | M1 B4 speed ratio |
+| --- | ---: | ---: | ---: | ---: |
+| bf16 | 1.10× | 1.76× | 1.15× | 1.67× |
+| affine 4-bit | 1.00× | 1.27× | 0.92× | 1.02× |
+| affine 8-bit | 1.19× | 1.65× | 1.08× | 1.27× |
+
+Ratios are gathered time / direct time; below one is a regression. B4 here
+means four independent row views, not one fused four-row dispatch. The direct
+arm eliminates full gathered K/V tensors and row padding; its partial softmax
+buffers still allocate memory. Short shapes can lose badly: M4 bf16 B1 at
+256 cached tokens takes about 0.21 ms gathered versus 0.59 ms direct.
+Reports: `m4-paged-final.json`, `m1-paged-final.json`.
+
+A complete-request M4 Gemma4 e4b comparison uses 4,096 + 17×row prompt tokens,
+64 output tokens per row, greedy sampling, no prefix cache, shared cap eight
+and uncompiled decode. ABBA, two samples per arm:
+
+| KV / active requests | Gathered per-row decode, tok/s | Direct per-row decode, tok/s |
+| --- | ---: | ---: |
+| bf16 / one | 50.94 | 45.82 |
+| bf16 / four | 13.73 | 12.58 |
+| affine 4-bit / one | 49.55 | 50.31 |
+| affine 4-bit / four | 14.14 | 14.70 |
+
+Every corresponding generated token agrees. The affine arm gains about 1.5%
+and 4.0% decode throughput; bf16 regresses about 10% and 8%. The first gathered
+prefill can include cold setup, so small wall-time differences in these raw
+reports do not establish end-to-end gains. Reports:
+`m4-paged-model-bf16.json`, `m4-paged-model-kv4.json`.
+
+Storage round trips are byte-exact, including paged affine planes and
+MTP/TurboQuant attachments. The direct reduction is **Lab numerical behavior**,
+tolerance-tested against the same stored values; matching these greedy outputs
+is not proof of L1 logit parity. Native tests cover partial blocks, unequal K/V
+dimensions, row retirement and restart. The HTTP cache check preserves responses
+through RAM and asynchronous SSD reuse for gathered/direct bf16 and KV4.
+
+#### Reproduction
+
+Set `TARGET` to the packed Qwen artifact, `DRAFT` to its RTN4 MTP artifact,
+and `GEMMA` to the Gemma4 e4b OptiQ snapshot. Native tests require the matching
+native pack and artifacts described in environment.md.
+
+```sh
+# Repeat with SSD_PREFETCH=1; for the combined arm also select blocks/cost-size.
+MLX_BUN_SSD_LAYOUT=whole MLX_BUN_SSD_PREFETCH=0 MLX_BUN_CACHE_RETENTION=lru \
+  bun scripts/bench-serve.ts all --diagnostic --no-serial --arms mlx-bun \
+  --model-path "$TARGET" --label Qwen3.8-27B-packed12GB --draft-model "$DRAFT" \
+  --draft-kind mtp --num-draft-tokens 2 --kv-quant 4 --context 4096 \
+  --workload-seed cache-expansion-42
+bun scripts/bench/cache-tiers.ts --mib 256 --samples 5 --output reports/cache-tiers.json
+bun scripts/bench/cache-restore-overlap.ts --model "$TARGET" --draft "$DRAFT" \
+  --mib 512 --output reports/cache-restore.json
+bun scripts/bench/cache-retention.ts \
+  --kanban reports/kanban-cache-fixed-repeat-r1/result.json --output reports/cache-retention.json
+bun scripts/bench/paged-attention.ts --output reports/paged-attention.json
+bun scripts/bench/paged-model.ts --model "$GEMMA" --bits 4 --output reports/paged-model.json
+MLX_BUN_TEST_PAGED_CACHE=1 bun test tests/parity/paged-cache-http.test.ts
+```
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

@@ -701,125 +701,119 @@ Reviewed 2026-09-12 against published designs, not private provider internals.
 | [vLLM prefix caching](https://docs.vllm.ai/en/latest/design/prefix_caching/) | Token blocks use hashes including their preceding prefix. Unused blocks are evicted by recency. | Shared prefix blocks could reduce whole-entry duplication. |
 | [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) | Public API documents exact-prefix reuse and expiration. | The same avoided-prefill benefit; this documentation does not establish its internal storage policy. |
 
-Our current storage unit is a complete checkpoint. Repeated conversation
-snapshots therefore duplicate attention history on SSD. Block deduplication
-must preserve the existing state-kind contract: Qwen recurrent state and method
+The baseline storage unit is a complete checkpoint. Repeated conversation
+snapshots duplicate attention history on SSD. Block deduplication in §5.11
+preserves the existing state-kind contract: Qwen recurrent state and method
 attachments cannot be trimmed to arbitrary earlier tokens. They need valid
 checkpoint boundaries alongside any shared attention blocks. RAM LRU is the
-initial policy; frequency weighting, prefetch and block layout changes need
-measured reuse/latency evidence before replacing it.
+initial policy; §5.11 records the measured frequency-weighting, prefetch and
+block-layout alternatives.
 
-## 6. Optional paged KV (`src/lab/paged-kv/paged-kv.ts`, `--paged-kv`)
+### 5.11 Cache expansion program
 
-Default off; with the flag unset no paged code executes and the plain
-`KVCache`/`RotatingKVCache` path is byte-identical.
+Authorized scope: implement and measure all five opportunities from §5.10.
+Baseline is `c953f2f`, with an independent CPU writer and one RAM/SSD cache.
+Preserve existing cache files and explicit serial support. Storage format,
+residency policy, transfer work and attention kernels remain independently
+selectable for paired comparisons; select defaults from measured results.
 
-### 6.1 What it buys here, honestly
+| Step | Implementation | Measurement and completion |
+| --- | --- | --- |
+| C1 | Immutable content-addressed blocks shared by checkpoint manifests. Attention token spans share storage; recurrent and method state preserve exact boundaries. | Same restored bytes/continuations, atomic publication and shared-block lifetime; bytes written and retained across growing/divergent conversations. |
+| C2 | Cache-owned asynchronous reads and preparation-time prefetch with promotion into the existing RAM tier. | Same selected prefix and continuation; restore/TTFT, event-loop delay and concurrent decode against synchronous restore. |
+| C3 | Pluggable retention policy, with LRU baseline and an alternative using reuse frequency, state size and saved processing cost. | Replay identical access traces; compare misses, avoided prefill, eviction/reload traffic and peak residency. |
+| C4 | Segmented transfers and bounded packing scratch, preserving tensor layout contracts. | Copied bytes, temporary memory, write/read time and inference overlap on the same payload. |
+| C5 | Direct paged-attention Metal execution through cache/attention interfaces, including shared row layouts and quantized representations. | Same-B numerical controls, B1/B>1 prefill/decode, gather/padding allocations and complete-request timing. |
 
-vLLM's PagedAttention solves contiguous worst-case per-sequence
-reservation and allocator fragmentation for a multi-tenant server.
-mlx-bun is one process on unified memory with byte-budget admission
-already shipped, so what transfers is: (a) padded-batch waste removal —
-today's batched buffer width tracks the longest live row
-(`mergeKVRows`/`extendKVRows`), so a short row cohabiting with a long one
-pays the long one's KV; and (b) block-level copy-on-write prefix sharing.
-Persistent pools now stay separate per request under the shared executor.
-Attention still gathers and pads a temporary batch tensor; block-level prefix
-sharing and direct paged attention remain open. At batch one, the gather adds
-a copy. Paging remains optional and does not imply a speed improvement.
+Implementation is in `storage/kv-writer.worker.js` (CPU transfers), `kv-store`
+(codec reconstruction), `PromptCache.prefetch` (request preparation),
+`storage/retention-policy` (RAM choices), and the paged attention/layout modules.
+Format 5 manifests reference SHA-256 content blocks. Block boundaries reset per
+leading row so growing token axes preserve earlier head blocks. Blocks are
+committed before their manifest; garbage collection is serialized with writes
+and removes only content no remaining manifest references. Explicit SSD caps
+account unique committed blocks rather than charging every checkpoint for a
+shared copy. Existing format 3/4 files remain readable.
 
-This is neither of the two paging rejections already on record:
-paged KV as a *prompt-cache substitute* (rejected 2026-07-07 — `take()`'s
-zero-copy clones already share physically) and paged *blocks* as the SSD
-spill granularity (D1). It is the rung-3 allocation abstraction from
-docs/design/batching.md.
+Restore reads use a separate worker queue and page-aligned host allocations.
+After reads finish, the owner thread transfers allocation ownership to MLX
+through a native destructor; no JavaScript callback runs on GPU completion.
+Cache codecs are shared with synchronous restore. Plain KV still uses its
+established capacity-growth operation; the async transport does not change
+cached values or recurrent/checkpoint boundaries.
 
-No external oracle exists (mlx-lm's `cache.py` has no paged cache); the
-gate is mlx-bun's own plain `KVCache`, valid because the claim is storage
-equivalence (same bytes, different arrangement), so the bar is bit-exact
-(tol 0): `tests/paged-kv.test.ts` (model-free: block-boundary crossing,
-free-list reuse after trim, typed exhaustion, gathered fetch vs a plain
-reference, dispose) and `tests/paged-kv-parity.test.ts` (weights-gated
-greedy trajectory paged-on vs paged-off).
+Use the saved Kanban token histories and seeded synthetic branches to separate
+cache-policy effects from model-generated changes in task length. Existing
+native oracles remain authoritative. Each implementation records paired M4
+measurements and applicable M1 correctness; a slower arm stays explicit rather
+than being promoted on architectural grounds alone. Raw reports stay under
+`reports/`; published measurements belong in benchmarks.md.
 
-### 6.2 Mechanism
+The bounded C1–C5 implementation and measurements are complete. Shared blocks
+trade write/read latency for space; segmentation removes packing copies for
+contiguous spans. Asynchronous transport overlaps ongoing decode, while a lone
+restart request still pays restore completion. Cost-size retention loses on the
+saved Kanban boundary replay; direct paged attention has shape-dependent wins
+and regressions. The measured selection keeps whole files and LRU, enables
+asynchronous preparation, and leaves direct attention and block storage explicit.
+[Measurements and reproduction](../reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention)
+include the negative results and limits. Full long-task retention acceptance
+and the paging extensions below remain separate work.
 
-- **`BlockPool`** — per-layer arena: K and V pool tensors
-  `[numBlocks, H_kv, blockSize, headDim]` (V may differ in head dim),
-  `ops.zeros`-allocated so they are mlx-owned end to end (no host-pointer
-  alignment/dtor hazards). LIFO free list; `alloc()` throws the typed
-  `PagedPoolExhausted`; writes are `ops.sliceUpdate` at
-  `[block, 0, within, 0]` — the incoming `[1,H,l,D]` piece matches the
-  destination slice directly.
-- **`PagedKVCache implements Cache`** — standalone (not a `KVCache`
-  subclass). The cache-layout binding supplies `PagedKvRows` for dynamic
-  membership, masks and per-row positions. `updateAndFetch` splits the
-  incoming `L` along block boundaries, allocates tail blocks as reached,
-  then gathers occupied blocks with `ops.takeAxis(pool, blockTable, 0)` →
-  transpose `[1,0,2,3]` → reshape `[1,H,nb·bs,D]` → slice to `offset`. Only
-  existing bound ops — no `mlx_gather` FFI binding was needed. `makeMask`
-  is `KVCache.makeMask`'s logic; `trim(n)` rewinds `offset` and frees
-  now-unoccupied tail blocks (stale bytes past `offset` are never read —
-  the `KVCache` padding invariant, block-shaped). Block table is a
-  host-side `number[]`; all intermediates are bound and disposed.
-- Pool lazily allocates on the first write (head count/dims/dtype from
-  the first k/v pair) and is sized once from `capacityTokens` =
-  prompt + `max_tokens`, so exhaustion is unreachable absent an
-  accounting bug — it exists as a tripwire, never silent truncation.
-- **Wiring** — `maybePageKv(cache, options, capacityTokens)`
-  (`backends/mlx/request-state-policy.ts`, re-exported by `generate.ts`)
-  mirrors `maybeQuantizeKv`'s post-construction in-place
-  swap but runs *once before prefill*: paging changes layout, not
-  arithmetic, so there is no "convert when populated" trigger. Only fresh
-  (`offset === 0`) plain `KVCache` entries are replaced; rotating layers
-  keep their scheme — mixed paged-full + rotating-sliding is the supported
-  shape. Default block size 256 = `KVCache.STEP`, so v1's growth
-  granularity is a permutation of today's into reusable slots, not a new
-  tuning axis.
+## 6. Optional paged KV
 
-### 6.3 Gates (explicit refusals, never silent downgrades)
+`PagedKVCache` stores full-attention planes in per-request block pools.
+`PagedKvRows` composes those pools through the existing row-state interface.
+Scheduling sees request state and attention ports, not block tables or codecs.
+Flags, defaults and supported combinations are documented in
+[server-config.md](../reference/server-config.md).
 
-- Startup (`server.ts`): `--paged-kv` with any `--kv-quant`
-  (affine or TurboQuant), `--draft-model`, or a non-`gemma4*` model exits
-  with a clear message; `--paged-kv-block-size` must be a positive
-  integer; `--ssd-cache` alongside it warns that the tier sees nothing.
-  Paging preserves the selected batch size. Env `MLX_BUN_PAGED_KV=1`
-  is equivalent to the flag.
-- Request scope: media (vision/audio) and LoRA-adapter requests strip the
-  flag and run the plain cache path (v1 non-goal cells, never a 400). One
-  effective `pagedKv` value per request keeps the strip and the
-  prompt-cache bypass coherent.
-- Both execution modes: paged requests skip `take`/`put` and the boundary
-  snapshot; caches are disposed on completion. Spec eligibility also
-  excludes `options.pagedKv` (belt on top of the startup refusal).
-- Compiled decode: `CompiledDecode.supports()` excludes `PagedKVCache`
-  automatically (not one of the four supported classes) — a
-  data-dependent block-list length is the shape shapeless replay already
-  broke on.
-- Shared execution: `PagedKvRows` owns independent block pools and immutable
-  row snapshots. A request-state policy creates the storage and supplies no
-  reusable-prefix store. Its opaque compatibility key keeps incompatible
-  layouts in separate cohorts without making scheduling inspect paging flags.
+### 6.1 Storage and ownership
 
-### 6.4 Follow-ups (dependency order) and open items
+Pools hold bf16 planes or affine packed/scales/biases planes. New tokens alone
+are quantized and written into their destination blocks. Logical block tables
+map sequence positions to physical slots. Trimming returns unused tail blocks;
+restored prefixes can grow beyond their original request's capacity.
 
-1. Direct paged attention and block sharing — row integration now uses the
-   shared layout interface with independent per-request pools. Attention still
-   gathers padded contiguous inputs. Measure block-level shared arenas and
-   direct reads before replacing this compatibility implementation. Tracked under the plan anchor (Phase 18
-   S3+).
-2. Block-level CoW prefix sharing — refcounted block table, fork on
-   divergent write; extends `PromptCache`'s entry-level ref-counting down
-   to blocks.
-3. Quantized paged blocks — dtype-parametric block descriptor sharing one
-   block-index space.
-4. Fused paged-attention Metal kernel (optiq's `sdpa_2pass_paged` is the
-   port source) — kills the per-step gather copy.
-- Perf disclosure: paged-on vs paged-off decode/prefill on the quiet
-  reference machine has not been recorded in `docs/reference/benchmarks.md`
-  (expected: a small decode regression at batch=1, to be reported plainly).
-- `PagedKVCache` has no `signature()` (2.4) and no kv-store codec; both
-  are prerequisites for any prompt-cache or SSD integration.
+Published attention views, cache borrowers and persistence jobs own independent
+MLX handles. A subsequent functional append cannot overwrite their buffers.
+The backend's `paged-cache-codec` preserves block tables, encoded planes and
+layout metadata through the common RAM/SSD cache. `namespacedCache` separates
+paged numerical settings from ordinary prefixes. Neither persistence nor a
+successful write removes a RAM donor.
+
+The current pools are separate per request. Their snapshots share immutable
+MLX storage, but divergent writes can detach a whole pool. Shared physical
+arenas with per-block copy-on-write remain a further optimization.
+
+### 6.2 Attention
+
+The established attention arm gathers blocks and uses stock SDPA. Its bf16
+storage-layout contract remains bit-exact against plain KVCache.
+
+The optional direct Metal arm reads block tables for short causal queries.
+Each SIMD group processes one query/head/sequence partition, retaining a
+softmax maximum, denominator and partial value vector. A second kernel merges
+those partials. Affine variants unpack KV4/KV8 values in the read operation;
+no full-history dequantization or contiguous KV gather is materialized.
+Shared rows retain their own lengths, so direct attention does not pad KV to
+the longest row. Long prefill and explicit masks use the established SDPA
+shape dispatch through the same attention view.
+
+This changes reduction order. Direct attention is Lab, with numerical tolerance
+checks against the same encoded values; it is not a bit-exact mlx-lm claim.
+Tests cover unequal K/V dimensions, grouped heads, partial blocks, multiple
+queries, row retirement, immutable views and restored growth. Performance
+measurements retain both short-context losses and long-context wins in
+[benchmarks.md](../reference/benchmarks.md).
+
+### 6.3 Remaining extensions
+
+TurboQuant page encoding, paged speculative transactions, media/adapter paging
+and shared physical arenas are outside the implemented bf16/affine page layout.
+Existing non-paged TurboQuant and speculative RAM/SSD state remain supported
+through their own codecs and attention interfaces. Extending a page codec or
+kernel does not require a second scheduler.
 
 ## History
 

@@ -12,7 +12,7 @@ export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDra
 }
 
 export function deepspecGroups(drafter: DeepspecDrafter, namespace: string): GroupedDraftProvider {
-  return projectedDraftGroups(target => {
+  return projectedDraftGroups(namespace, target => {
     bindDeepspecTarget(target, drafter);
     return {
       namespace, schema: "deepspec-context-v1",

@@ -115,13 +115,17 @@ describe("BlockPool bookkeeping", () => {
     paged.dispose();
   });
 
-  test("pool exhaustion is the typed error, not silent corruption", () => {
+  test("a reused prefix grows beyond its original request capacity", () => {
     const paged = makePaged(4, 4); // exactly 1 block
     const [k, v] = stepKV(4, 0);
     const [a, b] = paged.updateAndFetch(k, v);
     for (const x of [k, v, a, b]) x.dispose();
     const [k2, v2] = stepKV(1, 1);
-    expect(() => paged.updateAndFetch(k2, v2)).toThrow(PagedPoolExhausted);
+    const [nextK, nextV] = paged.updateAndFetch(k2, v2);
+    expect(paged.offset).toBe(5);
+    expect(nextK.shape[2]).toBe(5);
+    expect(nextV.shape[2]).toBe(5);
+    nextK.dispose(); nextV.dispose();
     k2.dispose();
     v2.dispose();
     paged.dispose();

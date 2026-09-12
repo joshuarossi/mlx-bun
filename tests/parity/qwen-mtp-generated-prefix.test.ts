@@ -66,7 +66,7 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
     const options: GenerateOptions = { temperature: 0, seed: 42, maxTokens: 20,
       ...(turboQuant ? { turboQuant, quantizedKvStart } : kvConfig?.length ? { kvConfig, quantizedKvStart } : bits ? { kvBits: bits, kvGroupSize: 64, quantizedKvStart } : {}) };
     const storeOptions = { dir: directory, maxBytes: 4 * 1024 ** 3, modelId: target,
-      configFingerprint: "generated-mtp", tokenizerHash: "generated-mtp", verify: true };
+      configFingerprint: "generated-mtp", tokenizerHash: "generated-mtp", verify: true, storage: { layout: "blocks" as const } };
     const ssd = new SsdCacheStore(storeOptions);
     const cache = new TieredPromptCache(4 * 1024 ** 3, ssd, {
       find(tokens, ns) { const hit = ssd.find(tokens, ns); return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null; },
@@ -158,12 +158,17 @@ describe.skipIf(!enabled)(`generated prefixes from shared ${ngram ? "prompt look
           const hit = restarted.restore(handle as Parameters<typeof restarted.restore>[0], model);
           return hit ? { ...hit, retain() {} } : null;
         },
+        async restoreAsync(handle) {
+          const hit = await restarted.restoreAsync(handle as Parameters<typeof restarted.restore>[0], model);
+          return hit ? { ...hit, retain() {} } : null;
+        },
         store: (tokens, caches, ns, attachments) => restarted.store(tokens, caches, ns, attachments),
       });
       for (const row of [0, 1]) {
         const snapshot = snapshots.get(row)!;
+        const releasePrefetch = await restored.prefetch([...snapshot.ids, 31], snapshot.namespace);
         const hit = restored.take([...snapshot.ids, 31], snapshot.namespace)!;
-        try { expect(digest(hit)).toBe(snapshot.hash); } finally { release(hit); }
+        try { expect(digest(hit)).toBe(snapshot.hash); } finally { release(hit); releasePrefetch(); }
         expect(await continueRow(row, restored)).toEqual(warm[row]!);
       }
       console.error(JSON.stringify({ depth, bits, turboQuant, maxRows,

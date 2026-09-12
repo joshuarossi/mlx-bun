@@ -12,6 +12,9 @@ export interface StoredTensorView {
 }
 
 export interface KvWriteRequest {
+  layout?: "whole" | "blocks";
+  blockBytes?: number;
+  segmented?: boolean;
   path: string;
   header: KvFileHeader;
   tensors: StoredTensorView[];
@@ -25,7 +28,17 @@ export class KvWriter {
   #next = 0;
   #pending = new Map<number, { resolve(): void; reject(error: Error): void }>();
 
-  write(request: KvWriteRequest): Promise<void> {
+  lastMetrics: { elapsedMs: number; writtenBytes?: number; reusedBytes?: number; copiedBytes?: number; scratchPeak?: number } | null = null;
+
+  write(request: KvWriteRequest): Promise<void> { return this.#send(request); }
+
+  read(request: { path: string; header: KvFileHeader & { dataStart: number }; pointers: number[]; verify?: boolean }): Promise<void> {
+    return this.#send({ ...request, operation: "read" });
+  }
+
+  collect(root: string): Promise<void> { return this.#send({ root, operation: "collect" }); }
+
+  #send(request: object): Promise<void> {
     const worker = this.#worker ?? this.#start();
     worker.ref();
     const id = ++this.#next;
@@ -43,12 +56,12 @@ export class KvWriter {
   #start(): Worker {
     // Embed the worker in the single-file executable as well as source runs.
     const worker = new Worker(workerSource, { eval: true });
-    worker.on("message", (message: { id: number; error?: string }) => {
+    worker.on("message", (message: { id: number; error?: string; metrics?: KvWriter["lastMetrics"] }) => {
       const result = this.#pending.get(message.id);
       if (!result) return;
       this.#pending.delete(message.id);
       if (message.error) result.reject(new Error(message.error));
-      else result.resolve();
+      else { this.lastMetrics = message.metrics ?? null; result.resolve(); }
       if (!this.#pending.size) worker.unref();
     });
     // Job failures are acknowledged by the worker. A worker-level failure
@@ -65,3 +78,6 @@ export class KvWriter {
 }
 
 export const kvWriter = new KvWriter();
+
+/** Reads have their own queue: a restore never waits behind persistence. */
+export const kvReader = new KvWriter();

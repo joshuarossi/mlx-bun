@@ -1,3 +1,4 @@
+import { pagedPrefixNamespace } from "./request-state-policy";
 import type { SpecRunServices } from "../../spec/serve-loop";
 import { cleanupFailure, disposeResources, ownResource } from "../../engine/resources";
 import { bindGeneration } from "../../generate";
@@ -102,16 +103,16 @@ export function createMlxSerialExecutor(binding: MlxSerialBinding, services: Mlx
       }
       // Cache entries are adapter-specific: KV computed under one adapter
       // must never seed another's (or the base's) prefill.
-      const cacheNs = options.adapters?.length ? services.adapterNamespace(options.adapters) : "";
+      const baseNs = options.adapters?.length ? services.adapterNamespace(options.adapters) : "";
+      const cacheNs = execution.pagedKv ? pagedPrefixNamespace(options, baseNs) : baseNs;
       // Paged-KV request scope (docs/design/kv-cache.md): media
       // prompts (bidir overlay) and LoRA-adapter requests are v1 non-goals —
       // they run the PLAIN cache path even under --paged-kv (scope the flag
       // per request, never 400). Effective value computed ONCE so the
       // prompt-cache bypass below and the generate() options can't disagree.
       const pagedKv = execution.pagedKv ? options.pagedKv : undefined;
-      // Paged requests bypass the prompt cache entirely (v1 non-goal:
-      // PagedKVCache has no cloneKvCaches/restore path — the vision
-      // precedent). Fresh caches per request, disposed on completion.
+      // The resolved policy controls reuse; paged layouts have their own
+      // numerical namespace and use the same RAM/SSD cache interface.
       const skipPromptCache = !execution.promptCache;
       const checkpointEvery = services.checkpointEveryTokens;
       const checkpointEligible = execution.checkpoint;

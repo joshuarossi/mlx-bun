@@ -26,6 +26,7 @@ import { withResource, cleanupFailure, disposeResources, ownResource } from "./e
 
 import type { Cache } from "./model/gemma4";
 import type { PrefixCache, PrefixCacheHit } from "./contracts/prefix-cache";
+import { LruRetention, type RetentionPolicy, type RetentionCandidate } from "./storage/retention-policy";
 import { cloneKvCaches } from "./kv-store";
 
 /** Reference-counted release: wraps an entry's `retain` (e.g. an mmap
@@ -67,6 +68,7 @@ export interface ColdTier {
    *  arrays. An optional backing release runs after consumers dispose their
    *  arrays. Null on any failure. */
   restore(handle: unknown): { tokens: number[]; caches: Cache[]; attachments?: CheckpointAttachment[]; retain: () => void } | null;
+  restoreAsync?(handle: unknown): Promise<ReturnType<ColdTier["restore"]>>;
   /** Borrow live caches and finish persistence before returning. A false
    *  result prevents a required demotion. */
   store(tokens: number[], caches: Cache[], ns: string, attachments?: CheckpointAttachment[]): boolean | void;
@@ -120,7 +122,7 @@ export function commonPrefixLength(a: number[], b: number[]): number {
   return i;
 }
 
-interface EntryRecord {
+interface EntryRecord extends RetentionCandidate {
   entry: PromptCacheEntry;
   bytes: number;
   lastUsed: number;
@@ -153,12 +155,61 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
    * eviction only; persistence completion does not itself remove an entry. */
   canEvict: ((entry: PromptCacheEntry) => boolean) | null = null;
   protected promoteRestores = false;
+  retention: RetentionPolicy = new LruRetention();
+  #prefetches = new Map<unknown, Promise<PromptCacheEntry | null>>();
+  #pins = new Map<PromptCacheEntry, number>();
+  #publishingPrefetch = false;
+  #epoch = 0;
+
+  /** Start cold reads during request preparation, coalescing identical IO.
+   * Active request interest keeps a just-restored donor resident until the
+   * caller has consumed it. Cancellation releases interest through the lease. */
+  async prefetch(prompt: number[], ns = ""): Promise<() => void> {
+    const cold = this.#cold;
+    const hit = cold?.restoreAsync ? cold.find(prompt, ns) : null;
+    if (!cold?.restoreAsync || !hit || hit.prefixLen <= this.peekPrefixLen(prompt, ns)) return () => {};
+    let pending = this.#prefetches.get(hit.handle);
+    if (!pending) {
+      const epoch = this.#epoch;
+      pending = (async () => {
+        const loaded = await cold.restoreAsync!(hit.handle);
+        if (!loaded) return null;
+        if (epoch !== this.#epoch) { this.#disposeEntry({ ...loaded, ns }, false); return null; }
+        this.#publishingPrefetch = true;
+        try { this.put(loaded.tokens, loaded.caches, ns, loaded.retain, loaded.attachments); }
+        catch (error) { this.#disposeEntry({ ...loaded, ns }, false); throw error; }
+        finally { this.#publishingPrefetch = false; }
+        return this.findExact(loaded.tokens, ns);
+      })();
+      this.#prefetches.set(hit.handle, pending);
+    }
+    let entry: PromptCacheEntry | null;
+    try { entry = await pending; }
+    finally { if (this.#prefetches.get(hit.handle) === pending) this.#prefetches.delete(hit.handle); }
+    if (!entry) return () => {};
+    this.#pins.set(entry, (this.#pins.get(entry) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return; released = true;
+      const count = this.#pins.get(entry!) ?? 1;
+      if (count === 1) this.#pins.delete(entry!); else this.#pins.set(entry!, count - 1);
+      this.evictToBudget(); this.reclaim();
+    };
+  }
+
+  #victim(): EntryRecord | undefined {
+    const candidates = this.#entries.filter(record => !this.#pins.has(record.entry));
+    return candidates.length ? this.retention.victim(candidates) : undefined;
+  }
 
   evictToBudget(): void {
+    if (this.#publishingPrefetch) return;
     while (this.totalBytes > this.maxBytes) {
       if (!this.#entries.length) break;
-      const oldest = this.#entries.reduce((a, b) => a.lastUsed < b.lastUsed ? a : b);
+      const oldest = this.#victim();
+      if (!oldest) break;
       if (this.canEvict && !this.canEvict(oldest.entry)) break;
+      this.retention.evicted(oldest);
       this.#entries = this.#entries.filter(r => r !== oldest);
       try { this.#disposeEntry(oldest.entry, !this.canEvict); }
       catch (error) { console.warn(`[prompt-cache] entry cleanup failed: ${error}`); }
@@ -170,8 +221,10 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     if (!pressure?.overBudget()) return;
     pressure.releasePending?.();
     while (this.#entries.length && pressure.overBudget()) {
-      const oldest = this.#entries.reduce((a, b) => a.lastUsed < b.lastUsed ? a : b);
+      const oldest = this.#victim();
+      if (!oldest) break;
       if (this.canEvict && !this.canEvict(oldest.entry)) break;
+      this.retention.evicted(oldest);
       this.#entries = this.#entries.filter(r => r !== oldest);
       this.#disposeEntry(oldest.entry, false);
       this.demotions++;
@@ -250,16 +303,17 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   relievePressure(overBudget: () => boolean): number {
     let count = 0;
     while (this.#entries.length && overBudget()) {
-      let oldest = 0;
-      for (let i = 1; i < this.#entries.length; i++)
-        if (this.#entries[i]!.lastUsed < this.#entries[oldest]!.lastUsed) oldest = i;
-      const { entry } = this.#entries[oldest]!;
+      const victim = this.#victim();
+      if (!victim) break;
+      const oldest = this.#entries.indexOf(victim);
+      const { entry } = victim;
       // Keep the entry resident if persistence throws. A failed SSD write
       // must not be presented as a successful demotion.
       if (this.#cold) {
         if (this.#cold.store(entry.tokens, entry.caches, entry.ns, entry.attachments) === false) break;
       }
       else this.#spillSync?.(entry);
+      this.retention.evicted(victim);
       this.#entries.splice(oldest, 1);
       this.#disposeEntry(entry, false);
       this.demotions++;
@@ -374,6 +428,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     const rec = this.#entries[bestIdx]!;
     rec.lastUsed = ++this.#clock;
     rec.lastUsedMs = Date.now();
+    rec.uses++; rec.cost = bestLen; this.retention.accessed(rec);
     // Lend immutable views for every backend state. RAM retention and SSD
     // durability remain cache responsibilities while the caller extends its
     // own views. This keeps synchronous persistence out of a RAM hit.
@@ -445,7 +500,8 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     // shares; the entry's own retain is the donor's share.
     const share = makeSharedRetain(retain);
     entry.retain = share.acquire();
-    const rec: EntryRecord = { entry, bytes, lastUsed: ++this.#clock, lastUsedMs: Date.now(), share };
+    const rec: EntryRecord = { entry, bytes, cost: tokens.length, uses: 1, priority: 0, lastUsed: ++this.#clock, lastUsedMs: Date.now(), share };
+    this.retention.accessed(rec);
     this.#entries.push(rec);
     // Exact duplicates (equal tokens) are redundant REGARDLESS of
     // trimmability — the new entry serves exactly the matches the old one
@@ -487,7 +543,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
     if (!this.#cold) return 0;
     let n = 0;
     for (const rec of [...this.#entries]) {
-      if (now - rec.lastUsedMs < idleMs) continue;
+      if (now - rec.lastUsedMs < idleMs || this.#pins.has(rec.entry)) continue;
       if (this.canEvict && !this.canEvict(rec.entry)) continue;
       this.#entries = this.#entries.filter((r) => r !== rec);
       this.#disposeEntry(rec.entry, !this.canEvict); // persisted entries need no duplicate write
@@ -498,6 +554,7 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   }
 
   clear(): void {
+    this.#epoch++;
     const entries = this.#entries;
     this.#entries = [];
     disposeResources(entries.map(({ entry }) => ({ dispose: () => this.#disposeEntry(entry, false) })));

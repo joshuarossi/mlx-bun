@@ -16,6 +16,9 @@ export interface PrefixCache<State, Attachment = never> {
   /** Give optional retained state back to the allocator at an execution
    * boundary. This never rejects or changes the active request. */
   reclaim?(): void;
+  /** Prepare a reusable prefix before execution. The returned release ends
+   * request interest; cache residency and IO remain implementation-owned. */
+  prefetch?(prompt: number[], ns?: string): Promise<() => void>;
   /** Return owned state for the longest usable prefix, or null on a miss.
    * Namespace distinguishes incompatible artifacts, methods and adapters. */
   take(prompt: number[], ns?: string): PrefixCacheHit<State, Attachment> | null;

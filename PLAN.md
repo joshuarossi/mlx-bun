@@ -296,12 +296,9 @@ model errors clearly, it never silently misbehaves.
 ## Phase 18 — Concurrent / batched serving (slots) + parallel load benchmark `[~]` (2026-06-13)
 
 Canonical docs: [batching.md](docs/design/batching.md), [kv-cache.md](docs/design/kv-cache.md).
-The continuous scheduler is LIVE and default: `place()` declares serial or
-continuous, active-row count picks B=1 or B=N, and injection/eviction happen
-mid-flight. Default memory estimates are advisory; explicit user limits still
-apply. Separate serial execution and feature exclusions remain. Phase 6 keeps
-their consolidation as follow-up work after the batched-default milestone, alongside
-prefill shape, the wrap-around golden and the tiers above L1.
+Shared batching is the default. Phase 6 tracks remaining feature parity and
+prefill work. Cache expansion C1–C5 below is measured against `c953f2f`; each change
+keeps storage, policy and attention kernels behind separate interfaces.
 
 - [~] **Shared execution and feature parity:** audit and implement ordinary and
       speculative decode, sampling/seed, logprobs, grammar/fill, adapters,
@@ -337,10 +334,13 @@ prefill shape, the wrap-around golden and the tiers above L1.
       `quantizedSdpaUnfused` — correct, slower.
 - [ ] **L3 (Lab) layer** — our perf paths under batch, KL + quality gated, must
       degrade gracefully L3→L2→L1.
-- [ ] **S3+ — paged KV** (rung 3: paged-attention Metal kernel + block manager;
-      vLLM is the oracle). **LoRA-group batching** now passes native and same-B
-      oracle checks on M1/M4; performance acceptance remains. Density upgrades, not
-      correctness.
+- [x] **C1 — Shared SSD blocks:** immutable content-addressed manifests, exact recurrent/method state, shared lifetime and byte accounting; paired storage and M4 multi-request measurements recorded.
+- [x] **C2 — Async restore/prefetch:** cache-owned read queue and prepared RAM donors; native continuation, HTTP restart and concurrent-decode measurements recorded, including cold-TTFT regression.
+- [x] **C3 — RAM policy:** interchangeable LRU/cost-size ranking; synthetic and saved Kanban boundary replays measured. LRU retained after workload losses; SSD misses remain restores, not lost prefill.
+- [x] **C4 — Storage copies:** segmented packing and owned-buffer restore; copied bytes, scratch, I/O and decode overlap measured on fixed payloads.
+- [x] **C5 — Direct paged attention:** shared bf16/affine row views, Metal block reads and RAM/SSD codecs; B1/B4 and native HTTP checks pass. Kernel/model wins and regressions recorded; remains Lab/optional. [Evidence](docs/reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention).
+- [~] **S3+ remainder:** existing LoRA-group native/oracle evidence remains accepted; performance acceptance stays open. TQ pages, paged speculation and shared physical arenas remain extensions.
+- Cache expansion exit: each arm implemented and measured, compositional native/restart checks pass, and final M4 paired workload records benefits or regressions. Details: kv-cache §5.11.
 - **Exit**: throughput scales with concurrency to the slot count then queues;
   per-row output matches the same-B oracle at every tier.
 

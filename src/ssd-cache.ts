@@ -18,11 +18,12 @@ import type { CheckpointAttachment } from "./backends/mlx/checkpoint-state";
 import {
   existsSync, mkdirSync, readdirSync, rmSync, statSync, utimesSync,
 } from "node:fs";
-import { join } from "node:path";
+import { kvWriter, type KvWriteRequest } from "./storage/kv-writer";
+import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { commonPrefixLength } from "./prompt-cache";
 import {
-  saveKvCache, saveKvCacheAsync, loadKvCache, readKvHeader,
+  saveKvCache, saveKvCacheAsync, loadKvCache, loadKvCacheAsync, readKvHeader,
   cacheHeadersTrimmable, cacheHeadersMinimumReusableOffset, legacyCacheCodecs, type CacheCodecProvider,
   type KvSaveMeta, type KvLoadExpect, type LoadedKvCache,
 } from "./kv-store";
@@ -30,6 +31,7 @@ import type { Cache } from "./model/gemma4-base";
 import { minimumReusableOffset } from "./backends/mlx/state-views";
 
 export interface SsdIndexEntry {
+  blocks?: Array<{ hash: string; bytes: number }>;
   path: string;
   ns: string;
   tokens: number[];
@@ -46,6 +48,7 @@ export interface SsdIndexEntry {
 }
 
 export interface SsdStoreOptions {
+  storage?: Pick<KvWriteRequest, "layout" | "blockBytes" | "segmented">;
   codecs?: CacheCodecProvider;
   dir: string;
   maxBytes: number;
@@ -84,7 +87,10 @@ export class SsdCacheStore {
   }
 
   get totalBytes(): number {
-    return this.#index.reduce((a, e) => a + e.bytes, 0);
+    const blocks = new Map<string, number>();
+    for (const entry of this.#index) for (const block of entry.blocks ?? [])
+      blocks.set(`${dirname(entry.path)}/${block.hash}`, block.bytes);
+    return this.#index.reduce((a, e) => a + e.bytes, 0) + [...blocks.values()].reduce((a, b) => a + b, 0);
   }
 
   get maxBytes(): number {
@@ -136,6 +142,7 @@ export class SsdCacheStore {
           if ((h.codecProvider ?? legacyCacheCodecs.id) !== this.#codecs.id) continue;
           const st = statSync(path);
           this.#index.push({
+            blocks: [...h.caches, ...(h.attachments ?? [])].flatMap(e => e.tensors.flatMap(t => t.blocks ?? [])),
             path, ns: h.ns ?? "", tokens: h.tokens, bytes: st.size, mtimeMs: st.mtimeMs,
             trimmable: !h.attachments?.length && cacheHeadersTrimmable(h.caches, this.#codecs),
             minimumReusableOffset: cacheHeadersMinimumReusableOffset(h.caches),
@@ -148,6 +155,7 @@ export class SsdCacheStore {
         }
       }
     }
+    void kvWriter.collect(this.#root).catch(() => {});
     return this.#index.length;
   }
 
@@ -203,6 +211,23 @@ export class SsdCacheStore {
     }
   }
 
+  /** Read on the dedicated CPU queue, then let the model codec adopt state. */
+  async restoreAsync(entry: SsdIndexEntry, model: { makeCache(): Cache[] }): Promise<LoadedKvCache | null> {
+    const t0 = performance.now();
+    try {
+      const loaded = await loadKvCacheAsync(entry.path, model, {
+        ...this.#meta(entry.ns), verify: this.#opts.verify,
+      }, this.#codecs);
+      const now = new Date();
+      try { utimesSync(entry.path, now, now); entry.mtimeMs = now.getTime(); } catch {}
+      this.stats.restores++; this.stats.restoreMsLast = performance.now() - t0;
+      return loaded;
+    } catch (error) {
+      console.warn(`[ssd-cache] restore failed, dropping ${entry.path}: ${error}`);
+      this.remove(entry.path); return null;
+    }
+  }
+
   /** Persist an entry. Synchronous (the tier calls it on the idle serial
    *  lane between requests); atomic via kv-store's tmp+fsync+rename. An
    *  entry bigger than the cap is refused; disk/write failure is a warn-once
@@ -237,7 +262,7 @@ export class SsdCacheStore {
     const dir = join(this.#root, nsHash(ns));
     const path = join(dir, `${randomUUID()}.mlxkv`);
     try {
-      await saveKvCacheAsync(path, tokens, caches, { ...this.#meta(ns), attachments }, runStep, this.#codecs);
+      await saveKvCacheAsync(path, tokens, caches, { ...this.#meta(ns), attachments }, runStep, this.#codecs, this.#opts.storage);
       return this.#indexStored(path, tokens, caches, ns, undefined, attachments);
     } catch (err) {
       return this.#storeFailed(path, err);
@@ -278,7 +303,7 @@ export class SsdCacheStore {
       else mkdirSync(dir, { recursive: true });
       await saveKvCacheAsync(path, tokens, caches, {
         ...this.#meta(ns), generationCheckpoint: checkpoint,
-      }, runStep, this.#codecs);
+      }, runStep, this.#codecs, this.#opts.storage);
       const index = () => {
         const stored = this.#indexStored(path, tokens, caches, ns, checkpoint);
         if (stored) {
@@ -315,9 +340,13 @@ export class SsdCacheStore {
     attachments?: CheckpointAttachment[],
   ): boolean {
     const st = statSync(path);
-    if (st.size > this.#opts.maxBytes) {
-      rmSync(path, { force: true });
-      console.warn(`[ssd-cache] entry not stored: ${st.size} bytes exceeds the ${this.#opts.maxBytes}-byte cap`);
+    const header = readKvHeader(path);
+    const blocks = [...header.caches, ...(header.attachments ?? [])].flatMap(e => e.tensors.flatMap(t => t.blocks ?? []));
+    const unique = new Map(blocks.map(block => [block.hash, block.bytes]));
+    const entryBytes = st.size + [...unique.values()].reduce((a, b) => a + b, 0);
+    if (entryBytes > this.#opts.maxBytes) {
+      this.remove(path);
+      console.warn(`[ssd-cache] entry not stored: ${entryBytes} bytes exceeds the ${this.#opts.maxBytes}-byte cap`);
       return false;
     }
     const trimmable = !attachments?.length && caches.every((c) => c.isTrimmable());
@@ -340,7 +369,7 @@ export class SsdCacheStore {
       }
     }
     this.#index.push({
-      path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable,
+      blocks, path, ns, tokens, bytes: st.size, mtimeMs: Date.now(), trimmable,
       minimumReusableOffset: minimumReusableOffset(caches),
       ...(generationCheckpoint ? { generationCheckpoint } : {}),
     });
@@ -350,7 +379,8 @@ export class SsdCacheStore {
   }
 
   #storeFailed(path: string, err: unknown): boolean {
-    try { rmSync(path, { force: true }); rmSync(`${path}.tmp`, { force: true }); } catch {}
+    this.remove(path);
+    try { rmSync(`${path}.tmp`, { force: true }); } catch {}
     if (!this.#warnedWriteFailure) {
       this.#warnedWriteFailure = true;
       console.warn(`[ssd-cache] store failed (disk full or unwritable?) — cold tier disabled for this entry: ${(err as Error).message}`);
@@ -371,5 +401,6 @@ export class SsdCacheStore {
   remove(path: string): void {
     try { rmSync(path, { force: true }); } catch {}
     this.#index = this.#index.filter((e) => e.path !== path);
+    void kvWriter.collect(this.#root).catch(() => {});
   }
 }

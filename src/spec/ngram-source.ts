@@ -126,6 +126,7 @@ export class NgramProvider implements DraftProvider {
   readonly max: number;
   readonly min: number;
   readonly grouped: GroupedDraftProvider = {
+    checkpointNamespace: () => namespace(this.max, this.min),
     supportsTargetAdapters: true,
     open: options => new NgramRows(this.max, this.min, options.checkpoints),
     openPrefill: options => new NgramRows(this.max, this.min, options.checkpoints),

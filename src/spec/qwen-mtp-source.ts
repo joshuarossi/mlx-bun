@@ -47,6 +47,7 @@ const DRAFT_PREFILL_CHUNK = 2048;
 
 export class QwenMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
+    checkpointNamespace: () => this.#checkpointNamespace,
     open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
     openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
   };

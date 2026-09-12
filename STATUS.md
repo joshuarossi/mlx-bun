@@ -67,6 +67,17 @@ writer; compiled-worker and M4 shared-MTP RAM/SSD checks pass. A paired M4
 storage diagnostic keeps decode effectively unchanged while persisting during
 generation. Full Kanban retention acceptance has not been repeated. [Design and serving-cache comparison](docs/design/kv-cache.md#54-background-persistence-and-ram-residency).
 
+Cache expansion C1–C5 is implemented and measured: shared SSD blocks,
+asynchronous restore, interchangeable RAM retention and bounded packing,
+plus direct paged attention for bf16/affine shared rows. The M4 standard
+matrix preserves all responses. Space/copy and overlap benefits are recorded
+alongside slower block writes, policy losses and paged bf16 regressions;
+optional arms are not promoted by those results. Whole-file storage and LRU
+remain selected; async restore moves reads off the owner thread. The complete
+model-free suite, typechecks and native RAM/SSD, MTP/TurboQuant and paged HTTP
+checks pass. This closes the bounded cache expansion, not the remaining
+Phase 6/18 work or full Kanban retention acceptance. [Measurements](docs/reference/benchmarks.md#cache-expansion-c1c5-storage-restore-retention-and-paged-attention).
+
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
 | thread | state | next action | branch |

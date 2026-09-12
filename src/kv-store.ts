@@ -43,9 +43,14 @@ import { cleanupFailure, disposeResources } from "./engine/resources";
 // whole entry again.
 
 import { openSync, writeSync, readSync, closeSync, fsyncSync, renameSync, rmSync } from "node:fs";
+import { pagedCacheCodec } from "./backends/mlx/paged-cache-codec";
+import { HostBuffer } from "./storage/host-buffer";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
 import { MmapFile, MADV_DONTNEED } from "./mmap";
 import { MlxArray } from "./mlx/array";
-import { kvWriter } from "./storage/kv-writer";
+import { kvWriter, kvReader, type KvWriteRequest } from "./storage/kv-writer";
 import type { Dtype } from "./mlx/ffi";
 import * as ops from "./mlx/ops";
 import {
@@ -68,6 +73,7 @@ const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16).padSt
 
 export type CacheKind =
   | "kv"
+  | "paged"
   | "rotating"
   | "qkv"
   | "rotating-qkv"
@@ -77,7 +83,8 @@ export type CacheKind =
   | "mla-dsa"
   | "mtp-mla";
 
-interface TensorSlot {
+export interface TensorSlot {
+  blocks?: Array<{ hash: string; bytes: number }>;
   off: number;
   bytes: number;
   shape: number[];
@@ -86,6 +93,8 @@ interface TensorSlot {
 }
 
 export interface CacheHeaderEntry {
+  paged?: { capacityTokens: number; blockSize: number; blockTable: number[]; numBlocks: number;
+    headDim: number; vHeadDim: number; dtype: Dtype; direct: boolean };
   kind: CacheKind;
   offset: number;
   minimumReusableOffset?: number;
@@ -147,7 +156,7 @@ export interface KvFileHeader extends Omit<KvSaveMeta, "attachments"> {
   attachments?: Array<Omit<CheckpointAttachment, "tensors"> & { tensors: TensorSlot[] }>;
   /** Absent in earlier v3 files, which used mlx-cache-v3. */
   codecProvider?: string;
-  formatVersion: 3 | 4;
+  formatVersion: 3 | 4 | 5;
   createdAt: number;
   tokens: number[];
   caches: CacheHeaderEntry[];
@@ -458,6 +467,7 @@ const CACHE_CODECS = {
     },
     headerTrimmable: () => true,
   },
+  paged: pagedCacheCodec,
   mla: {
     matches: (cache) => cacheSignature(cache) === "kv:mla:target",
     snapshot: (cache, context) => snapshotMla("mla", cache, context),
@@ -733,6 +743,7 @@ export function saveKvCache(path: string, tokens: number[], caches: Cache[], met
 export async function saveKvCacheAsync(
   path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
   runStep?: <T>(step: () => T) => Promise<T>, codecs: CacheCodecProvider = legacyCacheCodecs,
+  storage: Pick<KvWriteRequest, "layout" | "blockBytes" | "segmented"> = {},
 ): Promise<void> {
   const { header, sources } = planKvCache(tokens, caches, meta, codecs);
   try {
@@ -740,7 +751,7 @@ export async function saveKvCacheAsync(
     // worker sees only immutable bytes and never evaluates or calls MLX.
     const prepare = () => sources.map(source => source.arr.storageView());
     const tensors = runStep ? await runStep(prepare) : prepare();
-    await kvWriter.write({ path, header, tensors });
+    await kvWriter.write({ path, header, tensors, ...storage });
   } finally {
     for (const source of sources) if (source.disposeAfter) source.arr.dispose();
   }
@@ -877,7 +888,7 @@ export function readKvHeader(path: string): KvFileHeader & { dataStart: number }
     if (BigInt(Bun.hash(body)) !== expectHash)
       throw new Error(`${path}: header hash mismatch (truncated or corrupt)`);
     const header = JSON.parse(new TextDecoder().decode(body)) as KvFileHeader;
-    if (header.formatVersion !== 3 && header.formatVersion !== 4)
+    if (header.formatVersion !== 3 && header.formatVersion !== 4 && header.formatVersion !== 5)
       throw new Error(`${path}: unsupported formatVersion ${header.formatVersion}`);
     return { ...header, dataStart };
   } finally {
@@ -983,19 +994,8 @@ function withStepCapacity(a: MlxArray, offset: number): MlxArray {
   }
 }
 
-/** Reload by STREAMED COPY (see the header note): every tensor is copied
- *  into an mlx-owned leaf; the mapping is read-only, its pages dropped
- *  per-tensor, and unmapped before returning — the caches own their bytes
- *  outright (no dtor contract, no pinned mapping, nothing to retain).
- *  `model` is anything with makeCache() — the entry count is validated
- *  against the DONOR cache list (model.layers.length was wrong for
- *  KV-shared models like e4b, whose makeCache() returns donors only). */
-export function loadKvCache(
-  path: string,
-  model: { makeCache(): Cache[] },
-  expect: KvLoadExpect = {}, codecs: CacheCodecProvider = legacyCacheCodecs,
-): LoadedKvCache {
-  const header = readKvHeader(path);
+function validateKvHeader(path: string, header: KvFileHeader, model: { makeCache(): Cache[] },
+  expect: KvLoadExpect, codecs: CacheCodecProvider): void {
   if ((header.codecProvider ?? legacyCacheCodecs.id) !== codecs.id)
     throw new Error(`${path}: cache codec provider mismatch`);
   for (const entry of header.caches) codecs.forHeader(entry);
@@ -1022,8 +1022,11 @@ export function loadKvCache(
     for (const c of proto) c.dispose();
   }
 
-  const mmap = MmapFile.open(path, "ro");
-  const dataStart = header.dataStart;
+}
+
+/** Decode cache layouts independently of the transport supplying arrays. */
+function restoreKvArrays(path: string, header: KvFileHeader, codecs: CacheCodecProvider,
+  readArray: (slot: TensorSlot) => MlxArray): LoadedKvCache {
   // Every tensor materialized for the CURRENT entry, drained on any throw
   // (2026-07-07 review: a hash mismatch under --ssd-cache-verify — or any
   // per-tensor failure — orphaned the entry's already-built tensors: the
@@ -1032,19 +1035,7 @@ export function loadKvCache(
   // is safe (dispose is idempotent).
   const pending: MlxArray[] = [];
   const arr = (slot: TensorSlot): MlxArray => {
-    const view = mmap.view(dataStart + slot.off, slot.bytes);
-    if (expect.verify && hash64(view) !== slot.hash)
-      throw new Error(`${path}: tensor hash mismatch at offset ${slot.off}`);
-    // mlx_array_new_data COPIES synchronously — the view only has to
-    // outlive this call, so the mapping can be advised/unmapped freely.
-    const a = MlxArray.fromBytesCopy(view, slot.shape, slot.dtype as Dtype);
-    pending.push(a);
-    // Drop the just-read clean pages so the load's transient stays at
-    // live entry + one tensor (ALIGN = 16 KiB == the arm64 page size, so
-    // every tensor offset is page-aligned by construction).
-    const len = Math.min(alignUp(slot.bytes), mmap.size - (dataStart + slot.off));
-    mmap.advise(dataStart + slot.off, len, MADV_DONTNEED);
-    return a;
+    const a = readArray(slot); pending.push(a); return a;
   };
   /** withStepCapacity whose (possibly fresh) result is pending-tracked. */
   const grownArr = (slot: TensorSlot, offset: number): MlxArray => {
@@ -1078,8 +1069,67 @@ export function loadKvCache(
     for (const a of pending) a.dispose(); // the mid-entry orphans
     for (const c of caches) c.dispose();
     throw err;
-  } finally {
-    mmap.unmap(); // every tensor was copied out — nothing aliases the file
   }
   return { tokens: header.tokens, header, caches, ...(attachments.length ? { attachments } : {}) };
+}
+
+/** CPU-only asynchronous reads into unpublished allocations; no tensor copy
+ * crosses the event loop. Native array construction uses the shared codecs. */
+export async function loadKvCacheAsync(path: string, model: { makeCache(): Cache[] },
+  expect: KvLoadExpect = {}, codecs: CacheCodecProvider = legacyCacheCodecs): Promise<LoadedKvCache> {
+  const header = readKvHeader(path);
+  validateKvHeader(path, header, model, expect, codecs);
+  const slots = [...header.caches, ...(header.attachments ?? [])].flatMap(e => e.tensors);
+  const buffers = new Map<TensorSlot, HostBuffer>();
+  try {
+    for (const slot of slots) buffers.set(slot, new HostBuffer(slot.bytes));
+    await kvReader.read({ path, header, pointers: slots.map(slot => buffers.get(slot)!.pointer), verify: expect.verify });
+    return restoreKvArrays(path, header, codecs, slot =>
+      MlxArray.adoptHostBuffer(buffers.get(slot)!, slot.shape, slot.dtype as Dtype));
+  } finally { for (const buffer of buffers.values()) buffer.dispose(); }
+}
+
+/** Reload by STREAMED COPY (see the header note): every tensor is copied
+ *  into an mlx-owned leaf; the mapping is read-only, its pages dropped
+ *  per-tensor, and unmapped before returning — the caches own their bytes
+ *  outright (no dtor contract, no pinned mapping, nothing to retain).
+ *  `model` is anything with makeCache() — the entry count is validated
+ *  against the DONOR cache list (model.layers.length was wrong for
+ *  KV-shared models like e4b, whose makeCache() returns donors only). */
+export function loadKvCache(
+  path: string,
+  model: { makeCache(): Cache[] },
+  expect: KvLoadExpect = {}, codecs: CacheCodecProvider = legacyCacheCodecs,
+): LoadedKvCache {
+  const header = readKvHeader(path);
+  validateKvHeader(path, header, model, expect, codecs);
+  if (header.formatVersion === 5) {
+    return restoreKvArrays(path, header, codecs, slot => {
+      const bytes = new Uint8Array(slot.bytes);
+      let offset = 0;
+      for (const block of slot.blocks ?? []) {
+        if (!/^[a-f0-9]{64}$/.test(block.hash) || block.bytes <= 0 || offset + block.bytes > bytes.length)
+          throw new Error(`${path}: invalid KV block reference`);
+        const part = readFileSync(join(dirname(path), "blocks", block.hash));
+        if (part.length !== block.bytes || (expect.verify && createHash("sha256").update(part).digest("hex") !== block.hash))
+          throw new Error(`${path}: KV block mismatch`);
+        bytes.set(part, offset); offset += part.length;
+      }
+      if (offset !== bytes.length)
+        throw new Error(`${path}: KV tensor mismatch`);
+      return MlxArray.fromBytesCopy(bytes, slot.shape, slot.dtype as Dtype);
+    });
+  }
+  const mmap = MmapFile.open(path, "ro"), dataStart = header.dataStart;
+  try {
+    return restoreKvArrays(path, header, codecs, slot => {
+      const view = mmap.view(dataStart + slot.off, slot.bytes);
+      if (expect.verify && hash64(view) !== slot.hash)
+        throw new Error(`${path}: tensor hash mismatch at offset ${slot.off}`);
+      const array = MlxArray.fromBytesCopy(view, slot.shape, slot.dtype as Dtype);
+      const len = Math.min(alignUp(slot.bytes), mmap.size - (dataStart + slot.off));
+      mmap.advise(dataStart + slot.off, len, MADV_DONTNEED);
+      return array;
+    });
+  } finally { mmap.unmap(); }
 }

@@ -9,7 +9,7 @@ import { KVCache, RotatingKVCache, RotatingQuantizedKVCache,
   TurboQuantKVCache, type Cache } from "../../src/model/gemma4-base";
 import { SSMCache } from "../../src/model/qwen3-delta";
 import { MLACache } from "../../src/model/glm52-cache";
-import { cloneKvCaches, loadKvCache, readKvHeader, saveKvCache, saveKvCacheAsync } from "../../src/kv-store";
+import { cloneKvCaches, loadKvCache, loadKvCacheAsync, readKvHeader, saveKvCache, saveKvCacheAsync } from "../../src/kv-store";
 import { disposeResources } from "../../src/engine/resources";
 
 function values(shape: number[], dtype = Dtype.float32): MlxArray {
@@ -80,10 +80,15 @@ test("CPU persistence matches native contiguous serialization for every cache co
     expect(readFileSync(candidate).subarray(actual.dataStart))
       .toEqual(readFileSync(reference).subarray(expected.dataStart));
     expect(new Set(actual.caches.map(entry => entry.kind)).size).toBe(9);
-    const restored = loadKvCache(candidate, { makeCache: () => caches.map(cache =>
+    const model = { makeCache: () => caches.map(cache =>
       cache instanceof MLACache ? new MLACache({ kvLoraRank: cache.kvLoraRank,
         ropeHeadDim: cache.ropeHeadDim, ...(cache.dsa ? { dsa: { headDim: cache.dsa.headDim } } : {}),
-        role: cache.role }) : new KVCache()) }, { verify: true });
+        role: cache.role }) : new KVCache()) };
+    for (const layout of ["whole", "blocks"] as const) for (const transport of ["sync", "async"] as const) {
+      const path = join(dir, `${layout}.mlxkv`);
+      await saveKvCacheAsync(path, [1, 2, 3], caches, { attachments }, undefined, undefined, { layout });
+      const restored = transport === "sync" ? loadKvCache(path, model, { verify: true })
+        : await loadKvCacheAsync(path, model, { verify: true });
     try {
       const resaved = join(dir, "restored.mlxkv");
       await saveKvCacheAsync(resaved, [1, 2, 3], restored.caches, { attachments: restored.attachments });
@@ -92,6 +97,7 @@ test("CPU persistence matches native contiguous serialization for every cache co
     } finally {
       disposeResources(restored.caches);
       disposeResources(restored.attachments?.flatMap(attachment => attachment.tensors) ?? []);
+    }
     }
   } finally {
     disposeResources(caches); disposeResources(tensors);

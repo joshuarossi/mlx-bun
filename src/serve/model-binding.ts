@@ -35,6 +35,7 @@ export interface ModelServingBinding {
   createSerial(services: MlxSerialServices): SerialRun;
   readonly buildPrompt: ModelPromptBuilder;
   restore(store: SsdCacheStore, entry: SsdIndexEntry): ReturnType<SsdCacheStore["restore"]>;
+  restoreAsync?(store: SsdCacheStore, entry: SsdIndexEntry): ReturnType<SsdCacheStore["restoreAsync"]>;
   signal(promptIds: number[], bins: number, minimum: number): Promise<{ bins: number[]; vocab: number }>;
   diagnostics(): Record<string, unknown>;
   readonly discovery: { readonly adapters: boolean; readonly training: boolean;

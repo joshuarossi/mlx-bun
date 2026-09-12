@@ -1,29 +1,16 @@
-// Paged KV cache — vLLM-style block-pool storage behind the standard Cache
-// interface (docs/design/kv-cache.md). OPTIONAL and default-off
-// (`--paged-kv` / GenerateOptions.pagedKv); Gemma4-family plain full-attention
-// layers, bf16 only. PagedKvRows composes independent pools at B1/B>1.
-//
-// Storage: K/V live in fixed-size per-layer pool tensors
-// [numBlocks, H_kv, blockSize, headDim]; a host-side block table maps the
-// sequence's logical block order to physical pool slots. Writes go through
-// ops.sliceUpdate into the tail block; reads gather the occupied blocks
-// back into ONE contiguous [1, H, S, D] pair (ops.takeAxis over the pool's
-// block axis + transpose + reshape) and hand that to the unchanged
-// ops.sdpa call site — identical bytes to what a plain KVCache would have
-// fetched, so the paged path is gated bit-exact, not KL-tolerated
-// (tests/parity/paged-kv-parity.test.ts). The gather IS the cost: a full K/V copy
-// per step, pure bandwidth tax at batch=1 — v1 ships the abstraction for
-// the batched/CoW follow-ups, not a speed win (see the design doc's
-// Motivation, which says this honestly).
-//
-// Deliberately NOT a KVCache subclass (the TurboQuantKVCache reasoning):
-// compiled graph adapters exclude the changing block-list geometry. The
-// cache-layout binding supplies dynamic rows independently of scheduling.
+// Paged KV storage behind the common cache and attention interfaces.
+// Full-attention pools support bf16 and affine KV4/KV8. The established
+// gather + SDPA arm is the numerical control; direct Metal reads are Lab.
+// Published views and SSD snapshots own immutable buffers independently of
+// appends, row membership and RAM eviction.
 
+import { disposeResources } from "../../engine/resources";
+import { pagedAttentionView } from "./paged-attention";
+import { runtimeFlag } from "../../runtime-config";
 import { MlxArray } from "../../mlx/array";
 import { Dtype } from "../../mlx/ffi";
 import * as ops from "../../mlx/ops";
-import { createCausalMask, type Cache, type Mask } from "../../model/gemma4-base";
+import { createCausalMask, type Cache, type Mask, type KvAttentionView } from "../../model/gemma4-base";
 
 /** Typed pool-exhaustion error: a generation outgrew its pool. Sizing from
  *  prompt+maxTokens at construction makes this unreachable in practice;
@@ -41,10 +28,18 @@ export class PagedPoolExhausted extends Error {
  *  (ops.zeros — no host-pointer alignment/dtor hazards), shaped
  *  [numBlocks, H, blockSize, D]. alloc()/free() manage physical slot
  *  indices; the owning PagedKVCache writes/gathers through the pool. */
+export interface PagedQuantization { bits: 4 | 8; groupSize: number }
+
 export class BlockPool {
+  keyScales?: MlxArray; keyBiases?: MlxArray;
+  valueScales?: MlxArray; valueBiases?: MlxArray;
+  readonly headDim: number;
+  readonly vHeadDim: number;
+  readonly dtype: Dtype;
+  readonly quantization?: PagedQuantization;
   keys: MlxArray;
   values: MlxArray;
-  readonly numBlocks: number;
+  numBlocks: number;
   readonly blockSize: number;
   #free: number[];
 
@@ -57,7 +52,10 @@ export class BlockPool {
      *  reach v1's gemma4 scope, but the pool stays shape-honest). */
     vHeadDim?: number;
     dtype: Dtype;
+    quantization?: PagedQuantization;
   }, source?: BlockPool) {
+    this.headDim = opts.headDim; this.vHeadDim = opts.vHeadDim ?? opts.headDim;
+    this.dtype = opts.dtype; this.quantization = opts.quantization;
     this.numBlocks = opts.numBlocks;
     this.blockSize = opts.blockSize;
     this.keys = source ? ops.contiguous(source.keys) : ops.zeros(
@@ -65,6 +63,16 @@ export class BlockPool {
     this.values = source ? ops.contiguous(source.values) : ops.zeros(
       [opts.numBlocks, opts.numKvHeads, opts.blockSize, opts.vHeadDim ?? opts.headDim],
       opts.dtype);
+    if (source?.quantization) {
+      this.keyScales = ops.contiguous(source.keyScales!); this.keyBiases = ops.contiguous(source.keyBiases!);
+      this.valueScales = ops.contiguous(source.valueScales!); this.valueBiases = ops.contiguous(source.valueBiases!);
+    } else if (this.quantization) {
+      const { bits, groupSize } = this.quantization;
+      const k = ops.quantize(this.keys, groupSize, bits), v = ops.quantize(this.values, groupSize, bits);
+      this.keys.dispose(); this.values.dispose();
+      this.keys = k.packed; this.keyScales = k.scales; this.keyBiases = k.biases;
+      this.values = v.packed; this.valueScales = v.scales; this.valueBiases = v.biases;
+    }
     // LIFO free list, low indices first — deterministic layout for tests.
     this.#free = source ? [...source.#free] : Array.from({ length: opts.numBlocks }, (_, i) => opts.numBlocks - 1 - i);
   }
@@ -73,8 +81,31 @@ export class BlockPool {
    * Functional writes detach storage while another snapshot retains it. */
   clone(): BlockPool {
     return new BlockPool({ numBlocks: this.numBlocks, blockSize: this.blockSize,
-      numKvHeads: this.keys.shape[1]!, headDim: this.keys.shape[3]!,
-      vHeadDim: this.values.shape[3]!, dtype: this.keys.dtype }, this);
+      numKvHeads: this.keys.shape[1]!, headDim: this.headDim,
+      vHeadDim: this.vHeadDim, dtype: this.dtype, quantization: this.quantization }, this);
+  }
+
+  restoreArrays(arrays: MlxArray[], occupied: readonly number[]): void {
+    disposeResources(this.arrays());
+    [this.keys, this.values] = [arrays[0]!, arrays[1]!];
+    [this.keyScales, this.keyBiases, this.valueScales, this.valueBiases] = arrays.slice(2);
+    const used = new Set(occupied);
+    this.#free = Array.from({ length: this.numBlocks }, (_, i) => this.numBlocks - 1 - i).filter(i => !used.has(i));
+  }
+
+  grow(blocks: number): void {
+    if (blocks <= this.numBlocks) return;
+    const grow = (array: MlxArray) => {
+      using zeros = ops.zeros([blocks - this.numBlocks, ...array.shape.slice(1)], array.dtype);
+      const next = ops.concatAxis([array, zeros], 0); array.dispose(); return next;
+    };
+    this.keys = grow(this.keys); this.values = grow(this.values);
+    if (this.quantization) {
+      this.keyScales = grow(this.keyScales!); this.keyBiases = grow(this.keyBiases!);
+      this.valueScales = grow(this.valueScales!); this.valueBiases = grow(this.valueBiases!);
+    }
+    for (let i = blocks - 1; i >= this.numBlocks; i--) this.#free.push(i);
+    this.numBlocks = blocks;
   }
 
   get freeBlocks(): number {
@@ -96,6 +127,20 @@ export class BlockPool {
    *  the pool tensors are single-referenced here, so mlx donates the
    *  buffer and the write is in-place in the steady state. */
   writeBlock(physIdx: number, k: MlxArray, v: MlxArray, within: number): void {
+    if (this.quantization) {
+      const { bits, groupSize } = this.quantization;
+      const kq = ops.quantize(k, groupSize, bits), vq = ops.quantize(v, groupSize, bits);
+      const replace = (target: MlxArray, input: MlxArray): MlxArray => {
+        const result = ops.sliceUpdate(target, input, [physIdx, 0, within, 0],
+          [physIdx + 1, input.shape[1]!, within + input.shape[2]!, input.shape[3]!]);
+        target.dispose(); return result;
+      };
+      try {
+        this.keys = replace(this.keys, kq.packed); this.keyScales = replace(this.keyScales!, kq.scales); this.keyBiases = replace(this.keyBiases!, kq.biases);
+        this.values = replace(this.values, vq.packed); this.valueScales = replace(this.valueScales!, vq.scales); this.valueBiases = replace(this.valueBiases!, vq.biases);
+      } finally { disposeResources([kq.packed, kq.scales, kq.biases, vq.packed, vq.scales, vq.biases]); }
+      return;
+    }
     const l = k.shape[2]!;
     const [, H, , kD] = this.keys.shape as [number, number, number, number];
     const vD = this.values.shape[3]!;
@@ -122,13 +167,23 @@ export class BlockPool {
       t.dispose();
       return out;
     };
-    const k = pick(this.keys);
-    const v = pick(this.values);
+    const read = (data: MlxArray, scales?: MlxArray, biases?: MlxArray) => {
+      const packed = pick(data);
+      if (!this.quantization) return packed;
+      using owned = packed; using s = pick(scales!), b = pick(biases!);
+      return ops.dequantize(owned, s, b, { ...this.quantization, mode: "affine" });
+    };
+    const k = read(this.keys, this.keyScales, this.keyBiases);
+    const v = read(this.values, this.valueScales, this.valueBiases);
     idx.dispose();
     return [k, v];
   }
 
+  arrays(): MlxArray[] {
+    return [this.keys, this.values, this.keyScales, this.keyBiases, this.valueScales, this.valueBiases].filter((a): a is MlxArray => !!a);
+  }
   dispose(): void {
+    disposeResources([this.keyScales, this.keyBiases, this.valueScales, this.valueBiases].filter((a): a is MlxArray => !!a));
     this.keys.dispose();
     this.values.dispose();
     this.#free = [];
@@ -159,10 +214,12 @@ export class PagedKVCache implements Cache {
     /** Tokens this cache must be able to hold (prompt + maxTokens). */
     readonly capacityTokens: number,
     readonly blockSize: number,
+    readonly direct = runtimeFlag("MLX_BUN_PAGED_ATTN", false),
+    readonly quantization?: PagedQuantization,
   ) {}
 
   clone(): PagedKVCache {
-    const copy = new PagedKVCache(this.capacityTokens, this.blockSize);
+    const copy = new PagedKVCache(this.capacityTokens, this.blockSize, this.direct, this.quantization);
     copy.offset = this.offset;
     copy.blockTable = [...this.blockTable];
     copy.pool = this.pool?.clone() ?? null;
@@ -178,7 +235,23 @@ export class PagedKVCache implements Cache {
     return Math.ceil(n / this.#blockSize);
   }
 
+  get attentionState(): this | undefined { return this.direct || this.quantization ? this : undefined; }
+  appendAndFetch(k: MlxArray, v: MlxArray): KvAttentionView {
+    this.append(k, v);
+    return pagedAttentionView(this.pool!, [...this.blockTable], this.offset, this.direct);
+  }
+
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    this.append(k, v);
+    const H = this.pool!.keys.shape[1]!, kD = this.pool!.headDim, vD = this.pool!.vHeadDim;
+    const [gk, gv] = this.pool!.gather(this.blockTable);
+    const keys = gk.slice([0, 0, 0, 0], [1, H, this.offset, kD]);
+    const values = gv.slice([0, 0, 0, 0], [1, H, this.offset, vD]);
+    gk.dispose(); gv.dispose();
+    return [keys, values];
+  }
+
+  append(k: MlxArray, v: MlxArray): void {
     const L = k.shape[2]!;
     const [, H, , kD] = k.shape as [number, number, number, number];
     const vD = v.shape[3]!;
@@ -189,7 +262,7 @@ export class PagedKVCache implements Cache {
         numKvHeads: H,
         headDim: kD,
         vHeadDim: vD,
-        dtype: k.dtype,
+        dtype: k.dtype, quantization: this.quantization,
       });
     // Write, splitting the incoming L along block boundaries. Blocks past
     // the current tail allocate from the free list as they're reached.
@@ -198,7 +271,10 @@ export class PagedKVCache implements Cache {
       const pos = this.offset + written;
       const bi = Math.floor(pos / this.#blockSize);
       const within = pos % this.#blockSize;
-      while (this.blockTable.length <= bi) this.blockTable.push(this.pool.alloc());
+      while (this.blockTable.length <= bi) {
+        if (!this.pool.freeBlocks) this.pool.grow(Math.max(this.pool.numBlocks + 1, Math.ceil(this.pool.numBlocks * 1.5)));
+        this.blockTable.push(this.pool.alloc());
+      }
       const l = Math.min(this.#blockSize - within, L - written);
       // Full-range pieces skip the slice (fresh-view slice would be a
       // gratuitous op); partial pieces slice the [written, written+l) rows.
@@ -215,14 +291,6 @@ export class PagedKVCache implements Cache {
     }
     this.offset += L;
 
-    // Fetch: gather occupied blocks contiguous, slice to the live prefix.
-    const nb = this.#blocksFor(this.offset);
-    const [gk, gv] = this.pool.gather(this.blockTable.slice(0, nb));
-    const keys = gk.slice([0, 0, 0, 0], [1, H, this.offset, kD]);
-    const values = gv.slice([0, 0, 0, 0], [1, H, this.offset, vD]);
-    gk.dispose();
-    gv.dispose();
-    return [keys, values];
   }
 
   /** Same mask policy as KVCache.makeMask (it reads only offset). */
@@ -233,11 +301,9 @@ export class PagedKVCache implements Cache {
     return { mode: "array", arr: createCausalMask(N, this.offset, windowSize) };
   }
 
-  /** Pool tensors — what a prefill-chunk boundary must materialize.
-   *  NOT prompt-cache-compatible in v1 (cloneKvCaches never sees paged
-   *  caches; the serve lane bypasses take/put for paged requests). */
+  /** Owned planes materialized at prefill and immutable publication boundaries. */
   state(): MlxArray[] {
-    return this.pool ? [this.pool.keys, this.pool.values] : [];
+    return this.pool ? this.pool.arrays() : [];
   }
 
   isTrimmable(): boolean {

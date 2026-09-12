@@ -50,6 +50,7 @@ import { handleModelAdminRoute } from "./serve/model-admin-routes";
 import { handleStaticRoute } from "./serve/static-routes";
 
 import { PromptCache } from "./prompt-cache";
+import { CostSizeRetention } from "./storage/retention-policy";
 import { TieredPromptCache } from "./tiered-prompt-cache";
 import { SsdCacheStore } from "./ssd-cache";
 import {
@@ -398,10 +399,9 @@ export function createServer(
   // quietly (kv-quant: the swap would drop the scheme; speculative
   // provider composition with paged storage is not implemented).
   if (serverOptions.pagedKv) {
-    if (kvScheme.kvBits || kvScheme.kvConfig?.length || kvScheme.turboQuant)
+    if (kvScheme.kvConfig?.length || kvScheme.turboQuant)
       throw new Error(
-        `--paged-kv is bf16-only in v1 — omit --kv-quant (quantized paged ` +
-          `blocks are a documented follow-up, docs/design/kv-cache.md).`,
+        `--paged-kv supports bf16 and uniform affine KV4/KV8; per-layer and TurboQuant pages are not implemented.`,
       );
     if (ctx.draft)
       throw new Error(
@@ -416,11 +416,7 @@ export function createServer(
     const bs = serverOptions.pagedKv.blockSize;
     if (bs !== undefined && (!Number.isInteger(bs) || bs <= 0))
       throw new Error(`--paged-kv-block-size must be a positive integer (got ${bs})`);
-    if (serverOptions.ssdCacheDir)
-      console.warn(
-        "[paged-kv] --ssd-cache has no effect: paged requests bypass the prompt " +
-          "cache (v1 non-goal), so nothing reaches the SSD tier.",
-      );
+
   }
 
   // SSD cold tier (docs/design/kv-cache.md): prefix KV survives RAM
@@ -455,6 +451,8 @@ export function createServer(
       tokenizerHash: Bun.hash(tokJson).toString(16),
       modelId: ctx.modelId,
       verify: serverOptions.ssdCacheVerify,
+      storage: { layout: runtimeValue("MLX_BUN_SSD_LAYOUT") === "blocks" ? "blocks" : "whole",
+        segmented: runtimeValue("MLX_BUN_SSD_SEGMENTED") !== "0" },
     });
     const recovered = ssdStore.scan();
     const capacity = Number.isFinite(ssdStore.maxBytes)
@@ -485,6 +483,12 @@ export function createServer(
           // as a no-op so callers' dispose ordering is unchanged.
           return { tokens: loaded.tokens, caches: loaded.caches, attachments: loaded.attachments, retain: () => {} };
         },
+        ...(serving.restoreAsync && runtimeValue("MLX_BUN_SSD_PREFETCH") !== "0" ? {
+          restoreAsync: async (handle: unknown) => {
+            const loaded = await serving.restoreAsync!(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
+            return loaded ? { ...loaded, retain: () => {} } : null;
+          },
+        } : {}),
         store: (tokens: number[], caches: import("./model/gemma4").Cache[], ns: string,
           attachments?: import("./backends/mlx/checkpoint-state").CheckpointAttachment[]) => {
           if (ssdStore!.hasDurablePrefix(tokens, ns)) return true;
@@ -496,6 +500,7 @@ export function createServer(
     ? new TieredPromptCache(promptCacheCap, ssdStore, coldTier, cloneState,
         runtimeValue("MLX_BUN_SSD_WRITEBEHIND") !== "0")
     : new PromptCache(promptCacheCap, null, null, cloneState);
+  if (runtimeValue("MLX_BUN_CACHE_RETENTION") === "cost-size") promptCache.retention = new CostSizeRetention();
   const spillQueue = promptCache instanceof TieredPromptCache ? promptCache.spillQueue : null;
   const durability = promptCache instanceof TieredPromptCache ? promptCache.durability : null;
   // Responses-API store for previous_response_id resumption (Phase 11):
