@@ -222,6 +222,44 @@ be attributed to that optimized configuration. Raw report and comparison:
 `reports/release-v0.4.0-standard/standard-m4.md.json` and
 `reports/release-v0.4.0-standard/historical-comparison.json`.
 
+### Saved Kanban cache-failure replay — M4 Pro 24 GB (2026-09-12 UTC)
+
+The fresh `6e918e2` task stopped at its fourth request after 46m 13s and
+42,979 output tokens. Its first tool turn reused only 2,554 tokens and waited
+340.24 s for first output. Generated text and the next rendered prompt matched,
+but BPE re-encoding changed token IDs starting at position 16,534. The terminal
+37,556-token recurrent checkpoint consequently failed exact-prefix lookup.
+
+The follow-up preserves generated token provenance and reclaims optional RAM
+snapshots under allocator pressure. Conditions: the same packed 12.14 GiB Qwen
+artifact, affine KV4, MTP2, default batch cap eight, 256-token prefill chunks,
+4 GiB RAM-cache cap and SSD persistence, Bun 1.4.2 / MLX 0.32.2. These are
+diagnostic saved-request checks, not fresh full-task speed measurements.
+
+| Check | Merged `6e918e2` | Follow-up |
+|---|---|---|
+| Reconstruct the 6,215-token CSS response from the saved preceding state | 361.18 s; completes | 364.23 s; identical response and complete usage/speculation record |
+| Immediately submit the original fourth request | Metal OOM after 1.31 s | 45,646 tokens reused; first output 1.24 s; 32-token check completes in 3.35 s |
+| First tool turn, with only the first response's SSD snapshots available | Original task reused 2,554 tokens, first output 340.24 s | 37,556 tokens reused; first output 4.57 s from a fresh server; 32-token check completes in 6.77 s |
+
+The reconstructed failure reaches 18.96 GB peak native allocation; the fixed
+run's recorded peak before the fourth request is 16.74 GB. A fresh process
+restoring only the fourth-request snapshot also succeeds on unchanged main:
+the failure depends on retained conversation state, not that prompt alone.
+The first-turn fix preserves 14 more input IDs than canonical re-encoding
+(37,639 versus 37,625); decoded request text is unchanged. It therefore does
+not claim identical continuation logits to the older re-tokenized history.
+
+The fixed replay persists the latest state but drops one unwritten older
+boundary under pressure; shutdown correctly reports incomplete durability for
+that boundary. This is best-effort cache eviction, not a request refusal.
+M1 Max native HTTP checks retain matching RAM/SSD-restart responses, logprobs
+and speculation with thinking off/on. The local suite passes 2,240 tests,
+with 14 existing skips. Typechecks and documentation surface checks pass.
+Evidence: `reports/kanban-cache-fix/{warm-reconstruct-main,warm-reconstruct-fixed,history-final}/`
+and `comparison.json` on the M4; summarized copies and local checks are in
+`reports/kanban-cache-fix/` on the M1. The fresh full task remains separate.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

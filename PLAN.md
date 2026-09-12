@@ -129,6 +129,7 @@ evidence; rerun only for a named change, missing case or reproduced failure.
   Exit: actual generated-ID alignment, immutable snapshots after continued
   decode, RAM reuse, SSD eviction/restart restore, earlier-boundary fallback,
   complete byte accounting and saved Kanban next-turn timing. Details: §7 R17.
+  Follow-up: generated-token provenance and optional-snapshot reclamation pass the reproduced Kanban BPE miss/Metal OOM, with identical CSS output/usage; native RAM/SSD and full-suite checks pass. Fresh full-task acceptance remains.
 - [~] **Scheduling and method separation:** consolidate single-request execution
   as B=1 through the same method/session contracts used at larger B. Keep batch
   membership out of decode and cache placement out of scheduling. Method

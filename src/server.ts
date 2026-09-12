@@ -67,7 +67,7 @@ import {
   type ResponsesRequest,
 } from "./responses";
 import { fit } from "./fit";
-import { setMemoryLimit } from "./mlx/ffi";
+import { activeMemory, maxRecommendedWorkingSetSize, setMemoryLimit } from "./mlx/ffi";
 import { makePiWsHandler, type PiWsData } from "./pi-web";
 import { ChatStage } from "./serve/chat-stage";
 import { TextCompletionStage } from "./serve/text-completion-stage";
@@ -77,6 +77,7 @@ import {
   chatCompletionJson, chatCompletionStream, textCompletionJson, textCompletionStream,
 } from "./serve/openai-wire";
 import { createRequestPrep } from "./serve/request-prep";
+import { GeneratedTokenHistory } from "./serve/generated-token-history";
 import {
   detectDraftKind,
   loadContext,
@@ -631,6 +632,18 @@ export function createServer(
         (caches) => { for (const c of caches) c.dispose(); },
       )
     : null;
+  // Keep allocator headroom for the next forward. Only optional cache
+  // snapshots are reclaimed; context, batch size and sampling stay intact.
+  // Do not count MLX's reusable pool as live state or await an SSD write.
+  const cacheWorkingSet = Math.min(maxRecommendedWorkingSetSize(), allocatorLimit ?? Infinity);
+  const cacheOverBudget = () => Math.max(activeMemory(),
+    ctx.model.weightsBytes + promptCache.totalBytes + (spillQueue?.pendingBytes ?? 0)) > cacheWorkingSet * 0.85;
+  promptCache.pressure = {
+    // File-backed weights may not yet appear in MLX's active allocations
+    // before the first forward. Account for their known footprint as well.
+    overBudget: cacheOverBudget,
+    releasePending: () => spillQueue?.cancelWhere(cacheOverBudget),
+  };
   const durability = ssdStore && spillQueue && writeBehindOn
     ? new SsdDurabilityCoordinator(
         gateway,
@@ -670,7 +683,12 @@ export function createServer(
   };
   // Every put() — serial lane AND batch scheduler — schedules the snapshot
   // (Layer 0: batch-lane entries survive restarts too, not just evictions).
-  promptCache.onPut = durability ? (tokens, ns) => durability.schedule(tokens, ns) : null;
+  const tokenHistory = new GeneratedTokenHistory(ctx.tokenizer);
+  if (ssdStore) for (const tokens of ssdStore.tokenPrefixes()) tokenHistory.remember(tokens);
+  promptCache.onPut = (tokens, ns) => {
+    tokenHistory.remember(tokens);
+    durability?.schedule(tokens, ns);
+  };
 
   // Idle demotion (Layer 0): entries unused for --ssd-demote-idle seconds
   // spill to SSD and free their GPU memory — the RAM tier drains between
@@ -729,7 +747,7 @@ export function createServer(
   //   → inferenceStage.admit → inferenceStage.run → InferenceResult → wire
   // (/v1/completions substitutes textStage; Anthropic and Responses reuse
   // chatStage with their own wire formats.)
-  const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens });
+  const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens, tokenHistory });
   const { templateOptionsFor } = prep;
   const preparation = createPreparationExecutor((work, signal) => gateway.runExclusive(work, undefined, signal), batch);
   const chatStage = new ChatStage(

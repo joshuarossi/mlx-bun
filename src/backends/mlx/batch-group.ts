@@ -364,6 +364,7 @@ export class MlxBatchExecutionGroup {
   #method: MlxGroupedMethod | undefined;
   #methodKey: string | undefined;
   #steps = 0; // decode-step counter (clearCache cadence)
+  #cacheMaintenanceSteps = 0;
   #looping = false;
   #closed = false;
   #driver: Promise<void> | null = null;
@@ -606,8 +607,14 @@ export class MlxBatchExecutionGroup {
       canBurst: () => this.#contextCompatible(this.#pending[0]!) &&
         (this.#kvBudgetBytes === undefined ||
           this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes),
-      advancePreparation: () => this.#advancePreparation(),
-      advance: () => this.#method ? this.#method.advance() : this.#step(),
+      advancePreparation: () => {
+        this.#promptCache?.reclaim?.();
+        return this.#advancePreparation();
+      },
+      advance: () => {
+        if (this.#cacheMaintenanceSteps++ % 256 === 0) this.#promptCache?.reclaim?.();
+        return this.#method ? this.#method.advance() : this.#step();
+      },
       failActive: (error) => {
         for (const row of this.#running) row.reject(error);
         this.#applyFilter([], true); // failed state never enters the prefix store

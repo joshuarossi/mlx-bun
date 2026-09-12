@@ -27,6 +27,7 @@ import {
   type ChatRequestParams,
 } from "./chat-request";
 import type { ServingContext } from "./model-host";
+import type { PromptTokenHistory } from "./generated-token-history";
 import { selectToolStreamMode, ToolAwareStream, type ToolStreamMode } from "./token-streams";
 
 /** The ServerOptions fields request preparation reads (server-wide
@@ -49,6 +50,7 @@ export function createRequestPrep(input: {
   /** `--max-tokens` / the GLM memory plan's generation cap; undefined = the
    *  surface's own default (chat 65 536, raw completion 512). */
   defaultGeneratedTokens: number | undefined;
+  tokenHistory?: PromptTokenHistory;
 }) {
   const { ctx, serverOptions, kvScheme, defaultGeneratedTokens } = input;
 
@@ -191,7 +193,8 @@ export function createRequestPrep(input: {
     const ids = ctx.tokenizer.encode(rendered);
     // template includes <bos>; tokenizer post-processor also prepends one
     const trimmed = ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
-    return { ids: trimmed, startInThinking: promptEndsInOpenThink(rendered) };
+    return { ids: input.tokenHistory?.resolve(rendered, trimmed) ?? trimmed,
+      startInThinking: promptEndsInOpenThink(rendered) };
   };
 
   /** STABLE cache boundary: the prompt's tail is a generation primer (e.g.
@@ -219,6 +222,9 @@ export function createRequestPrep(input: {
     if (primer !== undefined) return Math.max(0, trimmed.length - primer);
     let stableLen = trimmed.length;
     try {
+      const canonical = ctx.tokenizer.encode(ctx.template.render(normalizeMessages(req.messages), opts));
+      const current = canonical[0] === canonical[1] && canonical[0] === ctx.tokenizer.bosTokenId
+        ? canonical.slice(1) : canonical;
       const probe = ctx.tokenizer.encode(
         ctx.template.render(
           [...normalizeMessages(req.messages), { role: "assistant", content: "x" }],
@@ -228,9 +234,12 @@ export function createRequestPrep(input: {
       const probeTrimmed =
         probe[0] === probe[1] && probe[0] === ctx.tokenizer.bosTokenId ? probe.slice(1) : probe;
       let i = 0;
-      const n = Math.min(trimmed.length, probeTrimmed.length);
-      while (i < n && trimmed[i] === probeTrimmed[i]) i++;
-      stableLen = i;
+      const n = Math.min(current.length, probeTrimmed.length);
+      while (i < n && current[i] === probeTrimmed[i]) i++;
+      // Generated-history provenance may use a different BPE segmentation
+      // inside old turns. Measure the primer canonically, then subtract it
+      // from the actual request IDs that inference will receive.
+      stableLen = Math.max(0, trimmed.length - (current.length - i));
       // Memoize the mode's primer length (sanity-capped: a "primer" longer
       // than 64 tokens means the probe diverged for content reasons —
       // don't generalize that).
