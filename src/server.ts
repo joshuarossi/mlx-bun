@@ -876,30 +876,6 @@ export function createServer(
       }
 
       if (url.pathname === "/stats" && request.method === "GET") {
-        // Active KV scheme across ALL layers. Since Phase 9 rotating
-        // (sliding-window) caches quantize too, so every layer the
-        // scheme names counts — the old display filtered to
-        // full_attention and silently undercounted (e.g. 26B showed
-        // 5/30 quantized when its kv_config.json covers all 30).
-        const layerTypes = ctx.model.config.text.layerTypes;
-        const kvLayers: Record<string, number> = {};
-        let kvMode = "bf16";
-        if (kvScheme.turboQuant) {
-          // v1: full-attention layers only (sliding-window stays bf16 —
-          // docs/design/turboquant.md non-goal).
-          const fullAttn = layerTypes.filter((l) => l !== "sliding_attention").length;
-          kvMode = `turbo k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`;
-          kvLayers[`turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`] = fullAttn;
-        } else if (kvScheme.kvBits) {
-          kvMode = `uniform-kv${kvScheme.kvBits}`;
-          kvLayers[`kv${kvScheme.kvBits}`] = layerTypes.length;
-        } else if (kvScheme.kvConfig) {
-          kvMode = "mixed (kv_config.json)";
-          for (const e of kvScheme.kvConfig)
-            kvLayers[`kv${e.bits}`] = (kvLayers[`kv${e.bits}`] ?? 0) + 1;
-        }
-        const bf16Layers = layerTypes.length - Object.values(kvLayers).reduce((a, b) => a + b, 0);
-        const slidingLayers = layerTypes.filter((l) => l === "sliding_attention").length;
         return Response.json({
           server: {
             owner: serverOptions.owner ?? "embedded",
@@ -940,14 +916,7 @@ export function createServer(
             max_bytes: responseStore.maxBytes,
             ttl_ms: responseStore.ttlMs,
           },
-          kv_quant: {
-            mode: kvMode,
-            layers: { ...kvLayers, ...(bf16Layers > 0 ? { bf16: bf16Layers } : {}) },
-            attention: {
-              global: layerTypes.length - slidingLayers,
-              sliding_window: slidingLayers,
-            },
-          },
+          kv_quant: resolvedKvScheme.describe(ctx.model.config),
           admission: {
             max_safe_context: admission.maxSafeContext,
             enforced_context_tokens: contextLimit,

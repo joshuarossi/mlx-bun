@@ -868,7 +868,7 @@ vision/audio, adapters, and training are not emulated by the serving port.
   "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
   "kv_quant": { "mode": "bf16" | "uniform-kv8" | "turbo k8v3" | "mixed (kv_config.json)",
                  "layers": { "kv4": 8, "bf16": 40 },     // turbo: { "turbo-k8v3": 8, "bf16": 40 }
-                 "attention": { "global": 10, "sliding_window": 38 } },
+                 "attention": { "global": 10, "sliding_window": 38 }, "recurrent_layers": 0 },
   // present only when --ssd-cache is on:
   "ssd_cache": { "dir": "...", "entries": 0, "bytes": 0, "max_bytes": 0,
                  "restores": 0, "spills": 0, "restore_ms_last": 0, "demotions": 0,
@@ -926,6 +926,12 @@ with; the default is `bf16` (no KV quantization). `mixed (kv_config.json)`
 appears only when `--kv-quant config` was passed explicitly and the
 checkpoint ships a per-layer `kv_config.json` — per-layer KV quantization
 is never selected automatically.
+
+`kv_quant.layers` counts configured attention KV codecs; `attention` separates
+full and sliding attention. `recurrent_layers` counts linear/recurrent layers
+whose convolution and recurrent state retain their own precision. They do not
+count as bf16 or quantized attention KV. These are model/policy counts, not
+live allocation measurements or a per-request conversion-progress report.
 
 `pending_snapshots` counts prompt-cache entries scheduled for persistence but
 not yet confirmed by the atomic SSD store. `longest_durable_prefix_tokens` is

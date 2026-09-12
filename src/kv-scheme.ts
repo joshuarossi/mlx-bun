@@ -172,6 +172,28 @@ export class KvScheme {
     return "bf16";
   }
 
+  /** Configured attention storage, not live allocator occupancy. Recurrent
+   * layers retain their own state and never acquire an attention KV codec. */
+  describe(config: ModelConfig) {
+    const layers: Record<string, number> = {};
+    const attention = { global: 0, sliding_window: 0 };
+    let recurrent_layers = 0;
+    const perLayer = new Map(this.options.kvConfig?.map(entry => [entry.layerIdx, entry.bits]));
+    for (let layer = 0; layer < config.text.numHiddenLayers; layer++) {
+      const type = config.text.layerTypes[layer] ?? "full_attention";
+      if (type === "linear_attention") { recurrent_layers++; continue; }
+      const sliding = type === "sliding_attention";
+      attention[sliding ? "sliding_window" : "global"]++;
+      const bits = this.kind === "affine-config" ? perLayer.get(layer)
+        : this.kind === "affine-uniform" ? this.options.kvBits : undefined;
+      const codec = this.kind === "turbo" && !sliding
+        ? `turbo-k${this.options.turboQuant!.kBits}v${this.options.turboQuant!.vBits}`
+        : bits ? `kv${bits}` : "bf16";
+      layers[codec] = (layers[codec] ?? 0) + 1;
+    }
+    return { mode: this.label, layers, attention, recurrent_layers };
+  }
+
   bytesAt(config: ModelConfig, tokens: number): number {
     // TurboQuant stays conservatively billed as bf16 until its packed layout
     // exposes a stable projector.
