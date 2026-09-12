@@ -1958,3 +1958,15 @@ package includes the whole `docs/` tree, including archived investigations
 and active plans. Review that allowlist during packaging work; these are not
 runtime dependencies. This dry run inventories the candidate but does not
 replace installation and asset checks against an actual tarball.
+
+
+### 12.15 Prefill workspace policy
+
+`PrefillPolicy` selects a request's chunk size independently of scheduling,
+cache placement and sampling. The MLX backend captures model geometry and
+explicit configuration when it binds the policy. Ordinary generation,
+shared rows and speculative preparation consume the selected size through
+their existing prefill interfaces. A caller's explicit request value wins.
+The automatic recurrent-attention policy bounds the temporary materialized
+SDPA score workspace; it does not inspect live free memory or refuse work.
+Default values and precedence live in [server configuration](../reference/server-config.md).

@@ -205,14 +205,21 @@ KV remains incompatible. Strict legacy serial speculation retains bf16/KV4.
 The KV4 control does not disable bf16, KV8 or TQ shared speculation. Six paired M4 Pro combined suites and two completed Kanban tasks support
 this default. Configuring a drafter and selecting KV4 remain explicit choices.
 
-For controlled experiments, `MLX_BUN_RD_PREFILL_CHUNK` sets the prefill chunk,
-default 2048. Shared ordinary and speculative methods use the group's captured
-default; an explicit group option overrides the environment and a library
-request's `prefillChunkSize` overrides that default for its request.
+The shared prefill policy selects a chunk once per request. The usual size is
+2,048 tokens. For recurrent-attention models with materialized SDPA scores,
+it halves that size until the estimated per-layer score workspace is at most
+1 GiB (minimum eight queries, where native fused decode attention applies).
+Qwen3.8-27B therefore uses 2,048 at 10,398 prompt tokens and 256 at 78,678.
+This changes the work size; it does not reject or shorten the request.
+Ordinary and speculative execution consume the same bound policy.
+
+`MLX_BUN_RD_PREFILL_CHUNK` selects an explicit fixed chunk. A group option
+supersedes the environment, and a library request's `prefillChunkSize`
+supersedes either. Explicit values bypass the automatic choice.
 `MLX_BUN_RD_CONTEXT_LIMIT` sets an explicit request context cap
-without enlarging it. Both require positive integers; the context cap is unset
-by default. These are benchmark controls, not changes to the published model
-profile or sampling policy.
+without enlarging it. Both controls require positive integers; the context
+cap is unset by default. Sampling and the published model context remain
+independent of prefill chunk selection.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |

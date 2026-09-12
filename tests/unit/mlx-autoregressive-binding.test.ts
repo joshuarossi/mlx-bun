@@ -57,6 +57,22 @@ test("an independent binding runs without a RuntimeModel or class-based dispatch
   expect(seen).toEqual({ forwards: 4, steps: 0, allocations: 1, disposals: 1 });
 });
 
+test("prefill policy supplies the request default while explicit sizes take precedence", async () => {
+  const captured: number[] = [];
+  const policy = { chunkSize(length: number) { captured.push(length); return 2; } };
+  const automatic = fixture(), explicit = fixture();
+  for (const [source, override] of [[automatic, undefined], [explicit, 2]] as const) {
+    const generation = generateAutoregressive({ ...source.binding, prefillPolicy: policy }, [0, 1, 2, 3], {
+      temperature: 0, maxTokens: 2, prefillChunkSize: override,
+    });
+    const tokens = [];
+    for await (const token of generation) tokens.push(token.token);
+    expect(tokens).toEqual([4, 5]);
+  }
+  expect(captured).toEqual([4]);
+  expect(automatic.seen).toEqual(explicit.seen);
+});
+
 for (const early of [false, true]) {
   test(`first-token scheduling uses the captured binding policy: early=${early}`, async () => {
     const { binding, seen } = fixture();

@@ -184,6 +184,32 @@ test.each([undefined, 7])("ordinary prefill and method hosts share a captured ch
   } finally { await ordinary.close(); await method.close(); restore(); }
 });
 
+test("automatic request chunks reach ordinary and grouped preparation without rewriting caller settings", async () => {
+  const f = fixture(), chunks: number[] = [], methodChunks: (number | undefined)[] = [];
+  Object.assign(f.model.config.text, { numHiddenLayers: 2, numAttentionHeads: 24,
+    globalHeadDim: 256, headDim: 256, layerTypes: ["linear_attention", "full_attention"] });
+  f.model.forwardHidden = ids => { chunks.push(ids.shape[1]!); throw new Error("observed chunk"); };
+  const runtime = createRuntimeConfig({});
+  const ordinary = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, runtime });
+  const method = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, runtime });
+  const request = { ...f.request, promptIds: Array.from({ length: 78_678 }, () => 0) };
+  const bound = methodFixture(f, "auto-prefill", []);
+  try {
+    for (const override of [undefined, 512]) {
+      await expect(ordinary.submit({ ...request, prefillChunkSize: override })).rejects.toThrow("observed chunk");
+      await method.submit({ ...request, prefillChunkSize: override, maxTokens: 1, onToken() {}, method: {
+        ...bound, open(host) {
+          const active = bound.open(host);
+          return { ...active, prepare(row) { methodChunks.push(row.req.prefillChunkSize); return active.prepare(row); } };
+        },
+      } });
+    }
+    expect(chunks).toEqual([256, 512]);
+    expect(methodChunks).toEqual(chunks);
+    expect(request.prefillChunkSize).toBeUndefined();
+  } finally { await ordinary.close(); await method.close(); }
+});
+
 test("one executor batches compatible methods and drains before changing method", async () => {
   const f = fixture(), events: string[] = [];
   const first = methodFixture(f, "first", events), second = methodFixture(f, "second", events);

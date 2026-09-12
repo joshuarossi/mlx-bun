@@ -708,6 +708,114 @@ zero pending snapshots/spills and zero dropped/failed spills. The source hash
 remains unchanged. Raw report: `reports/prefill-observation/late-context-ordinary.md.json`;
 original failure: `reports/qwen38-closeout/composition-baseline/decode-prefill-policy-kv4-plain-late-context-chunk256-0.md.json`.
 
+### Long-context KV4/MTP2 and TurboQuant/MTP3
+
+M4 Pro 24 GB, 2026-09-12 UTC, fixed source `38f6af4`, same artifact,
+workload and 256-token chunks as the ordinary long-context control above.
+Both speculative arms use the folded RTN4 companion, default batch capacity
+eight, 4 GiB RAM plus temporary SSD, and fused TQ decoding where applicable.
+These are ordered diagnostic settings screens, with 1,603 MiB retained swap;
+they are not balanced source-only speed comparisons.
+
+| Setting | Short decode median tok/s | Decode at 78,678 tok/s | Cold context TTFT ms | Cached repeat TTFT ms | SSD restart TTFT ms | Aggregate ×4 tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| Ordinary KV4 | 11.536 | 7.289 | 881,534 | 313.40 | 2,444.30 | 27.146 |
+| TQ K8V3 / MTP3 | 18.032 | 10.181 | 884,991 | 513.57 | 2,842.60 | 17.424 |
+| KV4 / MTP2 | 19.559 | 12.756 | 882,927 | 207.76 | 2,538.03 | 16.708 |
+
+All arms complete without failures or retries, and every source hash stays
+fixed during its run. All three context requests in each arm have the exact
+original request hash, produce 64 tokens and retain identical response text
+within that arm. Each speculative restart reuses 78,677 tokens. Its final
+SSD flush has 24 durable entries and zero pending, dropped or failed spills.
+TQ's longest durable prefix is 78,742 and KV4's is 78,741 tokens. Peak sampled
+RSS is 15,125 MiB with TQ and 15,317 MiB with KV4; this is process RSS, not
+isolated codec storage.
+
+Current KV4/MTP2 matches all 19 request hashes and all 15 individually issued
+responses from the previous prefill-policy control, including the long-context
+output. Four concurrent responses change. The current short KV4 samples have
+a 1.16 max/min spread; no precise short-decode speedup follows from this run.
+At long context, KV4/MTP2 remains the faster measured agent configuration;
+ordinary KV4 has the highest aggregate throughput on this short concurrent
+workload. Changing KV format or draft width can change text and acceptance,
+so these rows cannot isolate kernel cost. The companion's `block_size=3`
+already selects MTP2 by default. TQ/MTP3 remains an available setting with
+successful long-context/cache acceptance, not the preferred agent preset.
+
+Raw evidence: `reports/prefill-observation/late-context-{ordinary,tq-mtp3,kv4-mtp2}.md.json`.
+
+### Automatic prefill sizing at long context
+
+M4 Pro 24 GB, same workload and settings as the KV4/MTP2 row above, on
+`5188f8a` plus the request-policy candidate. The manual
+`MLX_BUN_RD_PREFILL_CHUNK=256` override is removed. The captured backend policy
+selects 2,048 tokens for short requests and 256 at 78,678 tokens, bounding the
+estimated materialized attention workspace to 1 GiB. This changes work size,
+not admission, and explicit settings retain precedence.
+
+All 19 request hashes, response hashes, generated counts and cached counts
+match the fixed-256 control, including all four concurrent responses. There
+are no failures or retries. Long-context decode is 12.696 versus 12.756 tok/s;
+cold context TTFT is 889,846 versus 882,927 ms, cached-repeat TTFT 210.65 versus
+207.76 ms, and SSD restart 2,554.05 versus 2,538.03 ms. Short cold TTFT decreases
+from 6,470.61 to 5,916.70 ms; this single ordered comparison is an acceptance
+screen, not a balanced speed claim. Aggregate throughput is 16.640 versus
+16.708 tok/s. The automatic arm's sampled RSS peaks at 15,567 MiB.
+
+The restart reuses 78,677 tokens. Final flush records 24 durable entries,
+longest prefix 78,741, and zero pending, dropped or failed spills. Source hash
+`bee0cb78d2c21e9873145b5caa8286af79959e750b047b9260e3eb7499b7689a`
+is unchanged through the run. The policy is adopted across ordinary,
+shared and speculative request bindings; focused override/ownership checks,
+2,300 model-free tests and all three typechecks pass. Raw evidence:
+`reports/prefill-observation/late-context-auto-kv4-mtp2.md.json`.
+
+### Same-batch affine full-attention oracle
+
+`tests/parity/batched-affine-oracle.test.ts` compares MiniCPM5-1B OptiQ against
+the pinned Python oracle with the same actual tensor batch: B1 and B4, uniform
+KV4/KV8 and alternating KV4/KV8/bf16 layers. Six teacher-forced steps per case
+include B4→B2 retirement and reordering to rows `[3, 1]`. Complete float32
+logit byte hashes match at all 36 steps on both M1 Max and M4 Pro (74 assertions
+per machine). The reference receives only the fixed input plan, never native
+outputs. These equal-length rows close the full-attention unpadded cell;
+unequal padding and rotating mixed-KV remain separate numerical contracts.
+Run with `MLX_BUN_TEST_BATCH_AFFINE_ORACLE=1` and the pinned oracle environment.
+Logs: `reports/prefill-observation/batched-affine-oracle-{m1,m4}.log`.
+
+### Recurrent prefill attribution
+
+Packed interleaved Qwen3.8-27B, bf16 KV, 2,048-token chunks, Bun 1.4.2 and
+native pack 0.4.0, measured 2026-09-12 UTC. Fixed teacher-forced inputs use
+`100 + (position * 7) % 600`. A temporary observer evaluates each gated-delta
+kernel's inputs, then times kernel construction plus completed output/state
+evaluation. It separately records the producer wait and complete prefill.
+Control and attributed arms have identical complete hidden/state byte hashes
+at every length on each machine. Cross-machine hashes are not an exact oracle.
+
+| Machine | Prompt tokens | Control prefill ms | Attributed prefill ms | Gated-delta total ms | Delta calls |
+|---|---:|---:|---:|---:|---:|
+| M1 Max 32 GB | 1,024 | 7,866.36 | 7,988.69 | 265.16 | 48 |
+| M1 Max 32 GB | 4,096 | 34,738.57 | 45,542.79 | 1,391.01 | 96 |
+| M1 Max 32 GB | 8,192 | 77,849.86 | 109,295.84 | 3,475.44 | 192 |
+| M4 Pro 24 GB | 1,024 | 7,588.05 | 7,680.57 | 208.20 | 48 |
+| M4 Pro 24 GB | 4,096 | 30,385.33 | 30,477.49 | 809.46 | 96 |
+| M4 Pro 24 GB | 8,192 | 61,995.30 | 61,908.50 | 1,610.26 | 192 |
+
+On M4, measured gated-delta work is about 2.6–2.7% of complete prefill.
+That scale does not support treating sequential recurrence as the principal
+prefill bottleneck. M1 attribution perturbs the larger controls substantially;
+its stage times are diagnostic, not clean critical-path shares. Neither this
+synchronous observer nor a parallel recurrence algorithm is retained. A
+chunkwise rewrite changes floating-point ordering and needs its own state and
+quality contract; these measurements close attribution, not that numerical gate.
+Weight expansion, projections and attention remain the larger prefill targets.
+
+Raw reports: `reports/prefill-observation/gdn-prefill-attribution-{m1,m4}.json`.
+The operation probe is removed after recording these results. Existing serial
+recurrence remains the pinned-oracle implementation.
+
 ### Nonblocking prefill completion screen
 
 M1 Max 32 GB, 2026-09-12 UTC, MiniCPM5-1B OptiQ snapshot

@@ -11,12 +11,15 @@ import { bindCacheRollback } from "./rollback";
 import type { GraphDescriptor } from "../../inference/graph";
 import { bindLegacyDraftTarget } from "./draft-target";
 import type { MlxForwardWork } from "./mixed-iteration";
+import type { PrefillPolicy } from "../../inference/prefill";
+import { resolveMlxPrefillPolicy } from "./prefill-policy";
 
 /** Bound target operations and draft construction for one speculative run.
  * A replacement graph supplies this entire port, including any hidden taps.
  * The verifier never needs a RuntimeModel or an artifact-family check. */
 export interface MlxSpeculativeBinding {
   readonly runtime?: RuntimeConfig;
+  readonly prefillPolicy?: PrefillPolicy;
   readonly memory?: MlxModelMemory;
   readonly descriptor: GraphDescriptor;
   readonly eosTokenIds: readonly number[];
@@ -38,6 +41,7 @@ export function bindSpeculativeTargetModel(model: RuntimeModel): MlxSpeculativeT
   const runtime = runtimeConfig();
   return {
     runtime,
+    prefillPolicy: resolveMlxPrefillPolicy(model.config, runtime),
     memory: model,
     descriptor: Object.freeze({ id: `legacy-spec:${model.config.modelType}`, backend: "mlx",
       graphAbi: "mlx-hidden-bsh-v1", stateAbi: "legacy-cache-array-v1", artifact: "legacy-resident-model" }),

@@ -5,6 +5,8 @@ import type { RuntimeModel } from "../../model/factory";
 import { CompiledDecode } from "../../model/compiled-decode";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { bindMlxGraph } from "./graph";
+import type { PrefillPolicy } from "../../inference/prefill";
+import { resolveMlxPrefillPolicy } from "./prefill-policy";
 
 /** One declaration shared by planning and both native execution lanes. */
 export function legacyCompiledDecodeAvailable(model: RuntimeModel): boolean {
@@ -43,6 +45,7 @@ export interface MlxTokenAppend {
  * by the run. Caller-provided caches and media remain borrowed. */
 export interface MlxAutoregressiveBinding {
   readonly runtime?: RuntimeConfig;
+  readonly prefillPolicy?: PrefillPolicy;
   readonly graph: AutoregressiveGraph<MlxArray, Cache[], MlxArray>;
   readonly eosTokenIds: readonly number[];
   readonly memory: MlxModelMemory;
@@ -63,6 +66,7 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
   const runtime = runtimeConfig();
   return {
     runtime,
+    prefillPolicy: resolveMlxPrefillPolicy(model.config, runtime),
     graph: bindMlxGraph<Cache[]>(model, {
       id: `legacy:${model.config.modelType}`, artifact: "legacy-resident-model",
       stateAbi: "legacy-cache-array-v1", // not a persistence identity

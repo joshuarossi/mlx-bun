@@ -111,7 +111,7 @@ checks. Standard AB/BA pairs improve MiniCPM throughput while Qwen MTP3/TQ stays
 effectively flat; no Qwen speedup is claimed. Full suites/types pass. Measurements
 and remaining work are recorded in benchmarks.md and PLAN.md. [Draft PR #52](https://github.com/joshuarossi/mlx-bun/pull/52)
 contains this branch. Ordinary KV4 now passes the original 78k cached-repeat
-failure and SSD restart. The M4 is testing the same context with TQ/MTP3.
+failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing also passes with all 19 responses/counts unchanged.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

@@ -65,6 +65,8 @@ import { MlxPrefillCohort, type PrefillState } from "./prefill-cohort";
 // optimization is a later refinement (batching-v2-plan item a).
 
 import { MlxArray } from "../../mlx/array";
+import type { PrefillPolicy } from "../../inference/prefill";
+import { resolveMlxPrefillPolicy } from "./prefill-policy";
 import * as ops from "../../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../../mlx/ffi";
 import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../../runtime-config";
@@ -380,6 +382,7 @@ export class MlxBatchExecutionGroup {
   readonly #lock: ExclusiveLock | undefined;
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
+  readonly #prefillPolicy: PrefillPolicy;
   readonly #prefillBatchTokenLimit: number;
   readonly #prefillTailSplit: boolean;
   readonly #kvBudgetBytes: number | undefined;
@@ -417,8 +420,8 @@ export class MlxBatchExecutionGroup {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
-    this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ??
-      this.#runtime.number("MLX_BUN_RD_PREFILL_CHUNK", 2048)));
+    this.#prefillPolicy = resolveMlxPrefillPolicy(model.config, this.#runtime, opts.prefillChunkSize);
+    this.#prefillChunkSize = this.#prefillPolicy.chunkSize(0);
     this.#prefillBatchTokenLimit = opts.prefillBatchTokenLimit ?? 2048;
     this.#prefillTailSplit = this.#runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     this.#kvBudgetBytes = opts.kvBudgetBytes;
@@ -543,6 +546,7 @@ export class MlxBatchExecutionGroup {
     if (this.#closed) return Promise.reject(new Error("scheduler closed"));
     if (req.signal?.aborted) return Promise.reject(req.signal.reason);
     if (this.#pending.length >= this.#maxQueued) return Promise.reject(new AdmissionRejected());
+    req = { ...req, prefillChunkSize: req.prefillChunkSize ?? this.#prefillPolicy.chunkSize(req.promptIds.length) };
     return new Promise<BatchStats>((resolve, reject) => {
       let abortListener: (() => void) | null = null;
       const cleanup = () => {

@@ -142,7 +142,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
           } else { prefix.append([null]); appended = true; }
           return { row, request, solo: caches, retain: retained, pos: row.cachedTokens,
             end: request.prefixLength, pendingPrompt, transferred: false, closed: false,
-            chunkSize: options.prefillChunkSize ?? method.host.prefillChunkSize,
+            chunkSize: options.prefillChunkSize ?? row.req.prefillChunkSize ?? method.host.prefillChunkSize,
             boundary: method.host.promptCache ? Math.min(row.req.snapshotAt ?? prompt.length, prompt.length - 1) : -1 };
         } catch (error) {
           return cleanupFailure(error, () => disposeResources([

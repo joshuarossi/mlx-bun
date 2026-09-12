@@ -834,9 +834,6 @@ footer{margin-top:28px;color:var(--muted);font-size:11px}
 <h1>${esc(model.title)}</h1>
 <p class="legend">Generated ${esc(model.generatedAt)} by <code>scripts/bench/report.ts</code> from ${model.inputs.length} saved input(s); no model, server, GPU, Python or network was used to render. Every summary below derives from the raw JSON listed in Provenance. Saved model output is escaped text, never executed.</p>
 
-<h2>Provenance</h2>
-${model.inputs.map(provenancePanel).join("\n")}
-
 <h2>Serving matrix (bench-serve schema 4)</h2>
 ${STATUS_LEGEND}
 <div class="filters">
@@ -875,6 +872,9 @@ ${failures}
 <h2>Raw requests (paired by phase / attempt / index / request sha256)</h2>
 <p class="legend">A cold request and its warm repeat share a request hash; phase/attempt/index tell them apart. Prompt text is recorded as data only.</p>
 ${requestTables}
+
+<h2>Provenance</h2>
+${model.inputs.map(provenancePanel).join("\n")}
 
 <footer>Inputs: ${model.inputs.map((i) => `<code>${esc(basename(i.path))}</code> sha256 <code>${esc(i.sha256)}</code>`).join(" · ")}</footer>
 <script>

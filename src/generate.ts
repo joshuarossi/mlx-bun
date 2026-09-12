@@ -601,7 +601,7 @@ async function* generateInner(
   const {
     maxTokens = 512,
     eosTokenIds = binding.eosTokenIds,
-    prefillChunkSize = 2048,
+    prefillChunkSize = binding.prefillPolicy?.chunkSize(promptTokens.length) ?? 2048,
   } = options;
 
   try {

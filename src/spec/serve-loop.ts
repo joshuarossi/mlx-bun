@@ -135,6 +135,7 @@ async function specRunInner(
   const gamma = Math.max(1, numDraftTokens);
   const trace = runtimeConfig().value("MLX_BUN_SPEC_TRACE") === "1";
   const prefillChunk = options.prefillChunkSize ??
+    binding.prefillPolicy?.chunkSize(promptIds.length) ??
     runtimeConfig().number("MLX_BUN_RD_PREFILL_CHUNK", PREFILL_CHUNK);
 
   // Allocated INSIDE the try below (2026-07-07 review): provider.open()
