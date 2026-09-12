@@ -91,13 +91,16 @@ browser defects as before; task time and output length increase. Reports:
 [Full comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
 
 
-Prefill observation and opt-in Gemma mixed token work are implemented on
-`perf/prefill-observation`. Scheduling assigns a shared token budget; the model
-packs feed-forward work and retains independent attention/KV state. Matching
-bf16/KV4 oracle checks and M4 budget/packing comparisons are recorded in
-benchmarks.md. Lower first-output latency costs aggregate throughput; packing
-has no repeatable serving win. Defaults remain unchanged. Phase 18 S1b still
-requires Qwen/speculative work, broader composition and a measured default decision.
+Prefill observation and mixed token work are complete on
+`perf/prefill-observation` for Gemma/Qwen and grouped speculative methods.
+The scheduler owns token budgets; methods own candidate demand and hidden taps;
+models retain attention/recurrent state per group. Same-geometry oracles,
+affine/TQ MTP and lookup lifecycle/generated-cache checks pass. M4 comparisons
+keep mixed work off by default: Gemma buys lower first-output latency with a
+throughput cost; Qwen MTP reduces its worst pause but loses first-output latency
+and throughput. R17 generated RAM/SSD cache acceptance is also complete, based
+on the already-finished Kanban retention/durability run. Remaining Phase 6/18
+work is the specific feature/configuration and performance work listed in PLAN.
 
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)

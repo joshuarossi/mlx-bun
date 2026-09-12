@@ -549,7 +549,7 @@ They do not require repeating completed checks or withholding the current defaul
 | Grammar and fill | Grammar batches where enabled; grammar jump and fill remain serial-only | Shared constraint/proposal contracts and qualified batch compositions |
 | Adapters and media | Compatible adapter groups use shared execution; media remains serial | Adapter performance and broader compositions; media preparation and compatible state through shared execution |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | Direct paged-attention kernel, block sharing and quantized/speculative paging remain separate extensions; do not repeat the completed row-layout gates |
-| Prefix and output reuse | Ordinary execution and Qwen MTP prefill/completed decode use the shared RAM/SSD cache | Finish composed native, long Kanban and pressure/timing acceptance; identical retention semantics at B=1 and B>1 |
+| Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
 | Usage and cleanup | The gateway forwards timing/rates; the missing first-token timestamp in ordinary batch admission is now fixed | Consistent events/accounting, row cancellation, failure cleanup and persistence on shutdown |
 | Configuration | Placement still chooses path-specific implementations | One resolved configuration per concern; no setting silently disappears when B changes |
@@ -1891,7 +1891,7 @@ local report directory; it is not the mixed execution design above.
 
 #### Mixed token execution
 
-The Lab Gemma path now executes running decode and queued prompt work together.
+The Lab Gemma and Qwen3.5/3.8 paths execute running decode and queued prompt work together.
 `ExecutionGroup.mixedPreparation` reports running-token demand and the minimum
 prompt work needed for progress. The scheduler reserves that demand and assigns
 the remaining iteration budget to preparation. Existing cohort admission still
@@ -1927,9 +1927,20 @@ state tests also cover bounded preparation with immediate and delayed affine
 and TurboQuant conversion. Failure, cancellation and retirement tests exercise
 the shared execution group and the work coordinator.
 
-This remains opt-in. Qwen/recurrent mixed model work, speculative provider
-candidate/tap work, broader model and cache composition, and default selection
-remain open under S1b. Existing speculative execution is unchanged. Trace phase
+Qwen reuses its attention/DeltaNet and feed-forward blocks through the same
+model port. Masks, convolution tails and recurrent state remain per group;
+layer evaluation materializes both residual and cache outputs to bound prefill
+memory. Each `TokenGroup` can supply a borrowed layer-capture callback and
+request preservation of its matmul geometry. Speculative methods use those
+options for target verification, including pending tokens and draft candidates,
+and keep provider companion updates in their preparation/verification adapters.
+The scheduler sees the method’s target-token demand, not its draft algorithm.
+Hidden captures belong to each work item instead of a shared mutable model tap.
+
+The measured default decision is to retain mixed execution as opt-in. Gemma
+first-output latency improves with an aggregate-throughput cost; Qwen MTP has
+no first-output win and loses aggregate throughput, despite a shorter worst
+streaming pause. This closes the bounded S1b comparison. Trace phase
 `engine.mixed_forward` records the model-call construction span and real token
 counts; GPU waits remain at the existing evaluation/readback boundaries. The
 [measured comparison](../reference/benchmarks.md#mixed-prefill-and-decode-token-work)

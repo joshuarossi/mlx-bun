@@ -118,17 +118,7 @@ a prerequisite for this milestone. Serial removal is deferred. Keep specialized
 kernels and configuration/default optimization in scope. Reuse completed
 evidence; rerun only for a named change, missing case or reproduced failure.
 
-- [~] **R17 shared output cache:** replace Qwen MTP's private prefill store
-  with the existing cache interface. Decode publishes processed-token state;
-  the cache chooses retention and RAM/SSD placement from its settings. The
-  shared contract and companion-state RAM/SSD storage are implemented and pass
-  focused checks on M1 Max and M4 Pro. Qwen prefill capture/restore now uses
-  that interface; bf16/KV4 RAM reuse and SSD restart continuations pass on both.
-  Shared generated-row publication is adopted; M1/M4 bf16/KV4/TQ tests retain
-  actual processed IDs and exact immutable RAM/SSD continuations at B4; HTTP tool turns pass RAM and fresh-process SSD reuse with thinking off/on. Final composition with the prefill-policy fix passes M4 native/HTTP, full-suite and matched short checks. Token provenance and optional-snapshot reclamation pass the reproduced Kanban BPE miss/Metal OOM with identical CSS output/usage. The fresh full task completes with all follow-ups cached and no inference failure; latest SSD state persists, but older unwritten snapshots are lost and the untouched app fails filter reset/keyboard editing. CPU-worker persistence and one RAM/SSD residency owner are implemented; native codecs, LRU/failure, compiled-worker and M4 shared-MTP RAM/SSD checks pass. M4 overlap timing preserves decode throughput. Full Kanban retention and app quality remain open; numbers are in benchmarks.md.
-  Exit: actual generated-ID alignment, immutable snapshots after continued
-  decode, RAM reuse, SSD eviction/restart restore, earlier-boundary fallback,
-  complete byte accounting and saved Kanban next-turn timing. Details: §7 R17.
+- [x] **R17 shared output cache:** generated target/companion state uses one RAM/SSD cache, including original-token alignment, immutable snapshots, eviction/restart, earlier-boundary fallback and byte accounting. Both-machine native/HTTP checks and saved Kanban replay pass. The completed session-cache Kanban run has every follow-up cached and a durable final SSD flush with no missing snapshots. Its two app defects are recorded separately from inference/cache acceptance. Evidence: [kv-cache §5](docs/design/kv-cache.md#54-background-persistence-and-ram-residency), [full Kanban comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
 - [~] **Scheduling and method separation:** consolidate single-request execution
   as B=1 through the same method/session contracts used at larger B. Keep batch
   membership out of decode and cache placement out of scheduling. Method
@@ -147,10 +137,10 @@ evidence; rerun only for a named change, missing case or reproduced failure.
   migration. Exit: every served setting reaches its owning interface, no decode
   loop rereads mutable configuration, and docs describe actual supported
   combinations. The shared prefill-default/request-override fix is adopted after M1 native sampling/MTP, full model-free and typecheck gates; M4 composed prefill checks and matched short timing pass. Architecture §12.5–12.7 owns the interface contract.
-- [~] **Measured defaults:** candidate source now selects Trellis v13, eligible
-  Qwen KV4 speculation and paired MTP prefill reuse without opt-in flags. These
-  changes are unreleased and need default-selection regression checks. R17
-  output persistence and unified execution remain unfinished. Compare MTP
+- [~] **Measured defaults:** v0.4.0 selects Trellis v13, eligible
+  Qwen KV4 speculation and paired MTP prefill reuse without opt-in flags. Shared
+  batching is the serving default and R17 output persistence is complete.
+  Remaining setting selection uses the recorded comparison of MTP
   depths 1/2/3/4 and ordinary decode: the short screen and four context repeats
   are complete. Late-context 2048-token prefill failed; 256-token chunks complete at 78,678 prompt tokens with MTP1/2/3; the ordinary cached repeat OOMed and recovered only on a changed retry request; allocation investigation and balanced repeats remain before choosing a common-use default. Defaults: server-config.md; evidence: benchmarks.md.
 
@@ -322,7 +312,7 @@ keeps storage, policy and attention kernels behind separate interfaces.
       Main integration suite/typecheck pass. Strict long-prefill timing remains open;
       Admission budgeting, provider-owned MTP prefill and the common target driver for ordinary/MTP/lookup are now adopted. Both-machine suites/types and same-B target oracle pass, alongside native chunk-arrival, lifecycle, affine/TQ, lookup and generated RAM/SSD checks. Shared prefill initially retained deferred parent-batch snapshots and slowed decode; the common RAM cache now resolves target/companion snapshots at ownership transfer. Matched M4 runs recover expansion cost and improve concurrent throughput while preserving shared-preparation responses/usage. Main integration suite, typechecks and hygiene pass. Full-attention delayed affine/TQ padding is now integrated after both-machine pinned cache/model, seeded delayed-serving and generated RAM/SSD checks. Four M4 arms preserve all responses/usage, with a small measured throughput decrease recorded in benchmarks.md; strict dominance is not established. Main integration suite/typechecks pass. A fresh M4 Gemma staggered-long serial/shared comparison improves aggregate performance with effectively equal B1 decode, but first-request latency remains unresolved. Broader composed oracle coverage and strict long-prefill/B1 acceptance remain.
       Exit: same-B oracle logits, lifecycle/cache parity and matched M4 timing.
-- [ ] **S1b — mixed iteration token work:** follow the [upstream scheduling algorithms](docs/design/batching.md#scheduling-reference-algorithms-and-request-observations). Budget active work first, then bounded prefill through one backend work description; preserve method/sampler/cache ownership. P2R observation and opt-in ordinary Gemma packed feed-forward execution are implemented; matching bf16/KV4 oracle and M4 budget/packing controls are measured. Latency improves but aggregate throughput loses; no default promotion. Qwen/recurrent and speculative candidate/tap work, broader composition and default selection remain. Exit: actual mixed execution, same-B correctness and measured B1/staggered/method/KV latency-throughput tradeoffs; deviations require measured benefit.
+- [x] **S1b — mixed iteration token work:** scheduler-owned budgets compose ordinary Gemma/Qwen and grouped speculative target work through one model port; methods own candidate demand, taps, sampling and state. Same-geometry bf16/KV4 oracles and native MTP/lookup affine/TQ lifecycle, multi-row work and generated reuse pass. M4 Gemma budget/packing/allocator controls and folded-draft Qwen MTP3/TQ on/off runs establish the tradeoffs: mixed work remains off by default. Gemma first-output latency improves at an aggregate cost; Qwen's worst pause shrinks but first-output latency and throughput lose. No default speed claim. Evidence: [mixed work](docs/reference/benchmarks.md#mixed-prefill-and-decode-token-work).
 - [x] **Ring-wrap oracle (> sliding window).** The live same-B oracle now
       checks unequal offsets, wrap during decode, retirement and a late join
       already beyond the window. Gemma 12B and e4b pass full-vector equality

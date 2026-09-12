@@ -155,8 +155,10 @@ export interface MlxGroupMethodHost {
   finish(row: Row, reason: "stop" | "length"): void;
 }
 export interface MlxGroupedMethod {
+  /** Maximum target tokens in the next iteration, including candidates. */
+  readonly runningTokens?: number;
   prepare(row: Row): MlxGroupPreparation;
-  advance(): Promise<void>;
+  advance(work?: MlxForwardWork): Promise<void>;
   filterRows(keep: readonly number[], discard: boolean): void;
   dispose(): void;
 }
@@ -613,18 +615,23 @@ export class MlxBatchExecutionGroup {
         (this.#kvBudgetBytes === undefined ||
           this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes),
       get mixedPreparation() {
-        return scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) && !scheduler.#method &&
+        return scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
+          (!scheduler.#method || scheduler.#method.runningTokens !== undefined) &&
           typeof (scheduler.model as RuntimeModel & Partial<MixedTokenModel>).forwardHiddenMixed === "function"
-          ? { runningTokens: scheduler.#running.length, minimumPreparationTokens: scheduler.#prefill?.rows.length ?? 0 }
+          ? { runningTokens: scheduler.#method?.runningTokens ?? scheduler.#running.length,
+            minimumPreparationTokens: scheduler.#prefill?.rows.length ?? 0 }
           : undefined;
       },
       get maxIterationTokens() { return scheduler.#runtime.number("MLX_BUN_MIXED_TOKEN_BUDGET", 256); },
       advanceMixed: async tokenBudget => {
         this.#promptCache?.reclaim?.();
         const advanced = await runMixedTokenIteration({
-          prepare: forward => this.#advancePreparation({ forward, maxTokens: tokenBudget - this.#running.length }),
-          decode: forward => this.#step(forward),
-          forward: (ids, cache) => this.#forwardHidden(ids, cache),
+          prepare: forward => this.#advancePreparation({ forward,
+            maxTokens: tokenBudget - (this.#method?.runningTokens ?? this.#running.length) }),
+          decode: forward => this.#method ? this.#method.advance(forward) : this.#step(forward),
+          forward: async (ids, cache, options) => options?.captureLayer
+            ? (this.model as RuntimeModel & MixedTokenModel).forwardHiddenMixed([{ ids, cache, ...options }])[0]!
+            : this.#forwardHidden(ids, cache),
           mixed: groups => {
             const workId = `mixed:${++nextMixedWorkId}`;
             const tokens = groups.map(group => group.ids.shape[0]! * group.ids.shape[1]!);
@@ -635,7 +642,9 @@ export class MlxBatchExecutionGroup {
             finally { for (const close of closes) close?.(); }
           },
         });
-        if (!advanced && this.#running.length) await this.#step();
+        if (!advanced && this.#running.length) {
+          if (this.#method) await this.#method.advance(); else await this.#step();
+        }
       },
       advancePreparation: () => {
         this.#promptCache?.reclaim?.();

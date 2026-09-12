@@ -69,7 +69,8 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
       plan(state) { return nextPrefillStep({ length: state.row.promptTokens, position: state.pos,
         chunkSize: state.row.req.prefillChunkSize ?? host.chunkSize,
         tailSplit: host.tailSplit, snapshotAt: state.snapAt }); },
-      forward: host.forward.bind(host), project: host.project.bind(host),
+      forward: (ids, caches, _states, work) => work ? work(ids, caches) : host.forward(ids, caches),
+      project: host.project.bind(host),
       complete: (state, logits) => state.continuation ? host.resume!(state) : host.complete(state, logits!), reject: host.reject.bind(host),
       checkpoint(state, capture) {
         let snapshot: Cache[] | undefined;

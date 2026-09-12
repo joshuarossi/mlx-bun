@@ -10,7 +10,7 @@ import { evalCacheState } from "./prefill";
 import { prefillCacheLayout } from "./cache-layout";
 import { MlxStateRows } from "./state-rows";
 import type { P2RTracePhase, P2RTraceAttributes } from "../../serve/prompt-response-trace";
-import type { MlxPreparationWork } from "./mixed-iteration";
+import type { MlxForwardWork, MlxPreparationWork } from "./mixed-iteration";
 import type { KvMaintenance } from "./kv-maintenance";
 
 // Shared work is recorded on every participating request. workId identifies
@@ -45,7 +45,7 @@ export interface MlxPrefillRowsHost<State extends MlxPrefillState> {
   plan(state: State): MlxPrefillStep;
   /** Already prepared state can complete without any target forward. */
   ready?(state: State): boolean;
-  forward(ids: MlxArray, caches: Cache[], states: readonly State[]): Promise<MlxArray>;
+  forward(ids: MlxArray, caches: Cache[], states: readonly State[], work?: MlxForwardWork): Promise<MlxArray>;
   project(hidden: MlxArray, caches: Cache[], completed: readonly State[]): MlxArray | null;
   /** Consume method context after target maintenance, before snapshots. */
   afterForward?(ids: MlxArray, caches: Cache[], states: readonly State[], hidden: MlxArray): void | Promise<void>;
@@ -160,9 +160,7 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
         let forwarded: MlxArray | null;
         {
           using span = traceRows(this.#states, "prefill.forward", work);
-          forwarded = ids ? await (workLimit?.forward
-            ? workLimit.forward(ids, caches)
-            : this.operations.forward(ids, caches, this.#states)) : null;
+          forwarded = ids ? await this.operations.forward(ids, caches, this.#states, workLimit?.forward) : null;
         }
         using hidden = forwarded;
         const drains: number[] = [], finals: number[] = [];
@@ -184,7 +182,10 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
           if (this.#stateRows) {
             for (const cache of caches) cache.prefillMaintenance?.commitPrefill(maintained);
           } else if (maintained.length) this.operations.maintain?.(this.#states[0]!.solo);
-          clearCache();
+          // A scheduler budget can split one planned chunk into many pieces.
+          // Resolve state at each yield, but retain allocator reuse until the
+          // method's maintenance boundary instead of purging it every piece.
+          if (maintained.length) clearCache();
         }
         if (ids && this.operations.afterForward) {
           using span = traceRows(this.#states, "prefill.companion", work);

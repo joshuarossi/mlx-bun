@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mapPackedTokens } from "../../src/model/token-groups";
+import { mapPackedTokens, mapTokenGroups } from "../../src/model/token-groups";
 import * as ops from "../../src/mlx/ops";
 
 test("tokenwise packing preserves unequal lengths and B>1 without padding", () => {
@@ -26,4 +26,18 @@ test("a lone token group preserves the operation's original geometry", () => {
   });
   try { expect(output[0]!.shape).toEqual([2, 2, 1]); }
   finally { for (const array of output) array.dispose(); }
+});
+
+test("verification keeps its row geometry while other token groups share a packed operation", () => {
+  using verify = ops.fromInt32([1, 2, 3, 4], [2, 2, 1]);
+  using first = ops.fromInt32([5, 6], [1, 2, 1]);
+  using second = ops.fromInt32([7], [1, 1, 1]);
+  const shapes: number[][] = [];
+  const inputs = [verify, first, second];
+  const result = mapTokenGroups(inputs.map((ids, row) => ({ ids, cache: [], preserveTokenGeometry: row === 0 })),
+    inputs, hidden => { shapes.push([...hidden.shape]); return ops.copyOf(hidden); });
+  try {
+    expect(shapes).toEqual([[1, 3, 1], [2, 2, 1]]);
+    expect(result.map(hidden => hidden.toIntTokens())).toEqual([[1, 2, 3, 4], [5, 6], [7]]);
+  } finally { for (const hidden of result) hidden.dispose(); }
 });

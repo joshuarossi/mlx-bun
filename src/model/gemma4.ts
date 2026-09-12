@@ -1026,11 +1026,11 @@ export class Gemma4Model {
    * packed matmuls can differ from a solo GEMV, so this is an explicit Lab port
    * until its matching packed oracle and serving comparison are accepted. */
   forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
-    if (work.length === 1) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
+    if (work.length === 1 && !work[0]!.captureLayer) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
     const groups: Array<{ ids: MlxArray; cache: Cache[]; h: MlxArray;
       masks: Map<string, Mask>; perLayer: MlxArray | null; intermediates: (SharedKv | null)[] }> = [];
     const results: MlxArray[] = [];
-    const packedMlp = flagOn("MLX_BUN_MIXED_PACKED_MLP", true);
+    const packedMlp = flagOn("MLX_BUN_MIXED_PACKED_MLP", true) && !work.some(group => group.preserveTokenGeometry);
     try {
       for (const { ids, cache } of work) {
         const group = { ids, cache, h: this.embed.encode(ids), masks: new Map<string, Mask>(),
@@ -1061,24 +1061,30 @@ export class Gemma4Model {
           }
           // Per-layer inputs use the same token order as the hidden states.
           let packedInput: MlxArray | null = null;
-          if (inputs.length) {
+          if (packedMlp && inputs.length) {
             const flat = inputs.map(input => ops.reshape(input, [1, -1, this.perLayerWidth]));
             try { packedInput = ops.concatAxis(flat, 1); }
             finally { for (const input of flat) input.dispose(); }
           }
           using pli = packedInput;
-          const outputs = packedMlp
-            ? mapPackedTokens(mids, packed => layer.forwardMlp(packed, pli))
-            : mids.map((mid, row) => layer.forwardMlp(mid, inputs[row] ?? null));
+          const outputs: MlxArray[] = [];
+          try {
+            if (packedMlp) outputs.push(...mapPackedTokens(mids, packed => layer.forwardMlp(packed, pli)));
+            else for (const [row, mid] of mids.entries()) outputs.push(layer.forwardMlp(mid, inputs[row] ?? null));
+          } catch (error) { for (const output of outputs) output.dispose(); throw error; }
           for (const [index, group] of groups.entries()) {
             group.h.dispose(); group.h = outputs[index]!;
           }
+          for (const [index, group] of groups.entries()) work[index]!.captureLayer?.(i, group.h);
         } finally {
           for (const mid of mids) mid.dispose();
           for (const input of inputs) input.dispose();
         }
       }
-      for (const group of groups) results.push(this.finalNorm.forward(group.h));
+      for (const [index, group] of groups.entries()) {
+        const hidden = this.finalNorm.forward(group.h); results.push(hidden);
+        work[index]!.captureLayer?.(this.layers.length, hidden);
+      }
       return results;
     } catch (error) { for (const result of results) result.dispose(); throw error; }
     finally {

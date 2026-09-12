@@ -829,7 +829,8 @@ Reproduce the HTTP screen with the command in the preceding section plus `MLX_BU
 `MLX_BUN_MIXED_TOKEN_BUDGET=256`; `MLX_BUN_MIXED_PACKED_MLP=0` selects the
 unpacked control. Runtime settings and their scope are documented in
 [server-config](server-config.md). Mixed execution remains off by default.
-Qwen/recurrent work and speculative provider work remain separate open tasks.
+Qwen/recurrent work and speculative provider work now use the same mixed port;
+the extension and its timing decision follow below.
 
 Raw reports are `reports/prefill-observation/mixed-*.md.json`; the comparison is
 `mixed-comparison.json` and the reverted admission experiment is
@@ -837,6 +838,86 @@ Raw reports are `reports/prefill-observation/mixed-*.md.json`; the comparison is
 early source file, verified against its recorded SHA-256. All three final arms
 match the retained source snapshot exactly. The standard benchmark retains
 payloads, usage, output, SSE event times, source hashes and machine state.
+
+
+#### Qwen and speculative-method extension
+
+M4 Pro 24 GB, September 12 UTC, Bun 1.4.2, native pack 0.4.0. The source extends
+mixed execution to Qwen's recurrent graph and grouped speculative methods.
+Methods report pending-plus-candidate token demand and capture their own hidden
+layers. Verification preserves its existing matmul geometry; it does not share
+a packed feed-forward matmul with the prefill group. The ordinary Gemma packing
+control remains unchanged.
+
+The pinned mixed oracle passes all 25 hidden-vector cases on the M4 Qwen3.8-27B
+OptiQ artifact and on M1 Gemma e4b, 12B and 26B. Cases include bf16/KV4,
+unequal row counts, four-position geometry-preserving verification, and cache
+continuation. The packed Qwen model passes M4 MTP mixed-work lifecycle and
+generated-cache checks with both uniform KV4 and TurboQuant K8V3. M1 Gemma
+prompt lookup passes the corresponding lifecycle and generated-cache checks.
+The complete model-free suite passes 2,284 tests, with 14 existing fixture
+skips; focused preparation checks pass after the allocator adjustment, and all
+three TypeScript checks pass.
+
+A scheduler fragment now evaluates state at each yield but clears the allocator
+pool at the method's planned maintenance boundary. A fixed Gemma KV4 comparison
+isolates this change to `src/backends/mlx/prefill-rows.ts`; every request,
+response and usage count matches:
+
+| Allocator clearing | B1 tok/s | Aggregate tok/s | Workload wall ms | First TTFT ms | Peak RSS MB |
+|---|---:|---:|---:|---:|---:|
+| Every fragment | 26.059 | 19.317 | 26,504.68 | 5,660.55 | 10,128.8 |
+| Planned maintenance boundary | 26.268 | 19.350 | 26,459.72 | 5,664.07 | 10,015.4 |
+
+Aggregate throughput changes +0.17%, effectively flat. This does not explain or
+resolve the mixed-work throughput regression. It retains allocator reuse within
+a planned chunk without changing precision/checkpoint boundaries or default
+non-mixed chunking. These are single ordered diagnostic samples, not proof of
+a speed win.
+
+The Qwen setting comparison uses the required packed interleave2 artifact and
+the folded rtn4-g64 MTP drafter from the Kanban profile, MTP depth three,
+TurboQuant K8V3, fused KV decode, a 256-token mixed budget, 4 GiB RAM cache plus
+SSD, and the same `prefill-long-0` workload/default batch capacity as above.
+Both arms have identical source snapshot `7c608346…`, request bodies and token
+counts: aggregate prompts 1,424/1,416/1,422/1,422, no prefix hits, and outputs
+124/128/128/128. The first response reaches EOS. Twelve of fifteen response texts
+are identical; three concurrent trajectories change.
+
+| Mixed work | B1 tok/s | Aggregate tok/s | Workload wall ms | First TTFT ms | Mean TTFT ms | Largest output gap ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Off | 18.718 | 7.580 | 67,020.77 | 11,014.71 | 28,143.25 | 11,543.87 |
+| On | 18.652 | 6.689 | 75,944.04 | 11,256.18 | 33,472.05 | 2,642.70 |
+
+Aggregate throughput falls 11.75%; first and mean TTFT worsen. The largest
+streaming pause shrinks, while output-gap p95 rises from 542.55 to 2,523.69 ms.
+Peak RSS is 15,146.9/15,187.2 MB. This is a latency/throughput tradeoff with no
+basis for enabling mixed work by default. Gemma's earlier first-output gain
+does not generalize to this MTP workload. Single-stream decode remains
+approximately unchanged because a lone request has no mixed prompt work.
+
+An earlier Qwen arm used the original bf16 MTP drafter instead of the folded
+Kanban drafter: B1 7.090 tok/s, aggregate 4.624 tok/s. It is preserved as a
+separate drafter-setting diagnostic, not an on/off source comparison or a
+regression from the established packed-model profile.
+
+Reproduce the method timing with the earlier HTTP command, replacing the target
+with the packed Qwen artifact, replacing `--kv-quant 4` with `--kv-quant turbo`,
+and adding `--draft-model /path/to/folded-rtn4-mtp --draft-kind mtp
+--num-draft-tokens 3`. Toggle only `MLX_BUN_MIXED_PREFILL=0|1`. Native lifecycle:
+
+```sh
+MLX_BUN_TEST_MIXED_METHOD=1 MLX_BUN_TEST_MTP_TARGET=/path/to/target \
+  MLX_BUN_TEST_MTP_DRAFT=/path/to/mtp MLX_BUN_TEST_MTP_TURBO=1 \
+  bun test tests/parity/mixed-method.test.ts
+```
+
+Omit the drafter for prompt lookup, or omit `MLX_BUN_TEST_MTP_TURBO` for KV4.
+Raw evidence: `reports/prefill-observation/mixed-maintenance-{before,after}.*`,
+`mixed-qwen-folded-{off,on}.*`, `mixed-qwen-mtp-off.*`, native `mixed-*-oracle*.log`
+and `mixed-*-kv4.log`/`mixed-*-tq.log`; `mixed-method-comparison.json` contains the
+combined metrics. No application default is promoted by these results.
+
 
 ## Historical results and section links
 

@@ -10,6 +10,7 @@ import type { SpeculativeTransaction } from "../../inference/rollback";
 import { bindCacheRollback } from "./rollback";
 import type { GraphDescriptor } from "../../inference/graph";
 import { bindLegacyDraftTarget } from "./draft-target";
+import type { MlxForwardWork } from "./mixed-iteration";
 
 /** Bound target operations and draft construction for one speculative run.
  * A replacement graph supplies this entire port, including any hidden taps.
@@ -23,7 +24,7 @@ export interface MlxSpeculativeBinding {
   makeCache(): Cache[];
   openDraft(sampler: Sampler, caches: Cache[]): DraftSource;
   bindRollback(caches: Cache[]): SpeculativeTransaction;
-  forward(ids: MlxArray, caches: Cache[], tapLayers?: number[]):
+  forward(ids: MlxArray, caches: Cache[], tapLayers?: number[], work?: MlxForwardWork):
     Promise<{ hidden: MlxArray; ctxML: MlxArray | null }>;
   projectLogits(hidden: MlxArray): MlxArray;
   /** Establish the implementation's verify kernel context; restore on close. */
@@ -43,7 +44,7 @@ export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftP
     makeCache: model.makeCache.bind(model),
     openDraft: (sampler, caches) => provider.open({ sampler, target: bindLegacyDraftTarget(model, caches) }),
     bindRollback: bindCacheRollback,
-    forward: (ids, caches, tapLayers) => legacyForwardWithTaps(model, ids, caches, tapLayers),
+    forward: (ids, caches, tapLayers, work) => legacyForwardWithTaps(model, ids, caches, tapLayers, work),
     projectLogits: model.logitsFromHidden.bind(model),
     ...("setSpecKernelPinned" in model ? {
       pinVerify() {
@@ -71,8 +72,10 @@ async function legacyForwardWithTaps(
   ids: MlxArray,
   caches: Cache[],
   tapLayers: number[] | undefined,
+  work?: MlxForwardWork,
 ): Promise<{ hidden: MlxArray; ctxML: MlxArray | null }> {
   if (!tapLayers) {
+    if (work) return { hidden: await work(ids, caches), ctxML: null };
     const asyncModel = model as RuntimeModel & {
       forwardHiddenAsync?: (
         ids: MlxArray,
@@ -88,10 +91,13 @@ async function legacyForwardWithTaps(
   const m = model;
   const previousTap = m.hiddenTap;
   const cap = new Map<number, MlxArray>();
-  m.hiddenTap = { layers: new Set(tapLayers), captured: cap };
+  const layers = new Set(tapLayers);
+  if (!work) m.hiddenTap = { layers, captured: cap };
   let hidden: MlxArray | null = null;
   try {
-    hidden = model.forwardHidden(ids, caches);
+    hidden = work ? await work(ids, caches, { captureLayer(layer, h) {
+      if (layers.has(layer)) cap.set(layer, ops.contiguous(h));
+    } }) : model.forwardHidden(ids, caches);
     const perLayer = tapLayers.map((li) => {
       const a = cap.get(li);
       if (!a) throw new Error(`spec tap: layer ${li} not captured`);
@@ -109,6 +115,6 @@ async function legacyForwardWithTaps(
     // are already gone (cap cleared, hidden nulled).
     hidden?.dispose();
     for (const [, a] of cap) a.dispose();
-    m.hiddenTap = previousTap;
+    if (!work) m.hiddenTap = previousTap;
   }
 }

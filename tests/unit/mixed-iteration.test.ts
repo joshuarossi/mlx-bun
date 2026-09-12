@@ -50,6 +50,27 @@ test("a final pending decode token can retire while preparation still advances",
   expect(events).toEqual(["retired", "forward", "prepared"]);
 });
 
+test("mixed work retains per-method taps and verification policy on every forward", async () => {
+  using ids = ops.fromInt32([1], [1, 1]);
+  const taps = [0, 0];
+  const capture = taps.map((_, row) => () => { taps[row]!++; });
+  await runMixedTokenIteration({
+    async prepare(forward) {
+      using h = await forward(ids, [], { captureLayer: capture[1] });
+      using tail = await forward(ids, [], { captureLayer: capture[1] });
+    },
+    async decode(forward) { using h = await forward(ids, [], { captureLayer: capture[0], preserveTokenGeometry: true }); },
+    async forward(input, _cache, policy) { policy?.captureLayer?.(0, input); return ops.copyOf(input); },
+    mixed(groups) {
+      expect(groups[0]!.preserveTokenGeometry).toBe(true);
+      expect(groups[1]!.preserveTokenGeometry).toBeUndefined();
+      for (const group of groups) group.captureLayer?.(0, group.ids);
+      return groups.map(group => ops.copyOf(group.ids));
+    },
+  });
+  expect(taps).toEqual([1, 2]);
+});
+
 test.each(["prepare", "mixed", "sample"])("%s failure unwinds both work producers without a stranded promise", async phase => {
   using ids = ops.fromInt32([1], [1, 1]);
   let preparationClosed = false;
