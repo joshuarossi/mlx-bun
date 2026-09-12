@@ -102,14 +102,15 @@ and throughput. R17 generated RAM/SSD cache acceptance is also complete, based
 on the already-finished Kanban retention/durability run. Remaining Phase 6/18
 work is the specific feature/configuration and performance work listed in PLAN.
 
-
 Shared grammar proposals are implemented and measured. The request's grammar supplies
 candidates to the existing verifier; sampling, cache state and scheduling retain
 their interfaces. MiniCPM and packed-Qwen/TurboQuant native checks pass, including
 independent cancellation and logprobs. HTTP results are mixed across machines/models;
 the option remains off by default. Empty-candidate rollback snapshots are now
 removed with exact native state and unchanged standard-benchmark responses;
-throughput is effectively flat. Configuration ownership cleanup is next.
+throughput is effectively flat. Configuration ownership cleanup passes focused
+checks on both Macs and the full local suite; its M4 comparison preserves all
+responses and token counts with effectively unchanged throughput.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 

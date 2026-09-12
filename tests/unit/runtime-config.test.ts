@@ -64,3 +64,52 @@ describe("runtime config", () => {
     restoreSet();
   });
 });
+
+test("TQ storage and delayed conversion retain their bound kernel policy across host changes", async () => {
+  const { TurboQuantKVCache, KVCache } = await import("../../src/model/gemma4-base");
+  const { BatchedTurboQuantKVCache } = await import("../../src/model/batched-turboquant-kv");
+  const { DelayedTurboQuantKVCache } = await import("../../src/model/delayed-turboquant-kv");
+  const { createKvMaintenance } = await import("../../src/backends/mlx/kv-maintenance");
+  const { cloneKvCaches } = await import("../../src/kv-store");
+  const { targetCacheLayout } = await import("../../src/backends/mlx/cache-layout");
+  const { MlxArray } = await import("../../src/mlx/array");
+  const on = createRuntimeConfig({ MLX_BUN_TURBOQUANT_FUSED_DECODE: "1" });
+  const off = createRuntimeConfig({ MLX_BUN_TURBOQUANT_FUSED_DECODE: "0" });
+  const maintain = withRuntimeConfig(on, () => createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 1 }));
+  const solo = withRuntimeConfig(on, () => new TurboQuantKVCache(8, 3));
+  const delayed = withRuntimeConfig(on, () => new DelayedTurboQuantKVCache(8, 3, 1, maintain));
+  using k = MlxArray.fromFloat32(Float32Array.from({ length: 128 }, (_, i) => Math.sin(i)), [1, 1, 2, 64]);
+  using v = MlxArray.fromFloat32(Float32Array.from({ length: 128 }, (_, i) => Math.cos(i)), [1, 1, 2, 64]);
+  try {
+    solo.updateAndFetch(k, v).forEach(array => array.dispose());
+    withRuntimeConfig(off, () => {
+      const cold = new TurboQuantKVCache(8, 3);
+      const clones = cloneKvCaches([solo]);
+      const layout = targetCacheLayout(solo) as InstanceType<typeof BatchedTurboQuantKVCache>;
+      const copied = delayed.makeEmptyBatch();
+      const rows: import("../../src/model/gemma4-base").Cache[] = [new KVCache()];
+      try {
+        expect(cold.fusedDecode).toBe(false);
+        expect(solo.fusedDecode).toBe(true);
+        expect((clones[0] as InstanceType<typeof TurboQuantKVCache>).fusedDecode).toBe(true);
+        expect(layout.fusedDecode).toBe(true);
+        layout.mergeRows([solo]);
+        const extracted = layout.extractRow(0);
+        try { expect(extracted.fusedDecode).toBe(true); } finally { extracted.dispose(); }
+        expect(copied.fusedDecode).toBe(true);
+        rows[0]!.updateAndFetch!(k, v).forEach(array => array.dispose());
+        maintain(rows);
+        expect((rows[0] as InstanceType<typeof TurboQuantKVCache>).fusedDecode).toBe(true);
+        expect(runtimeConfig()).toBe(off);
+      } finally {
+        cold.dispose(); clones.forEach(cache => cache.dispose()); layout.dispose(); copied.dispose(); rows.forEach(cache => cache.dispose());
+      }
+    });
+  } finally { solo.dispose(); delayed.dispose(); }
+});
+
+test("trellis weight mode reads the scoped configuration", async () => {
+  const { trellisModeFromEnv } = await import("../../src/model/trellis-linear");
+  for (const mode of ["kernel", "expand"] as const)
+    withRuntimeConfig(createRuntimeConfig({ MLX_BUN_TRELLIS: mode }), () => expect(trellisModeFromEnv()).toBe(mode));
+});

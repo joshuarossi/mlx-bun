@@ -569,10 +569,10 @@ declared composition may still require the serial mechanism as shown above.
 | `--kv-quant 4`/`8` | ✅ applied to all requests | ✅ server start=0 converts during prefill and batches on supported cache layouts; delayed library thresholds use qualified shared affine row layouts |
 | `--kv-quant turbo[:k<bits>v<bits>]` | ✅ ordinary decode; strict serial speculation remains excluded | ✅ ordinary TQ, including delayed library conversion; supported grouped drafting also supports delayed library conversion |
 | `--kv-quant off` / unset | ✅ bf16 (the L1 default) | ✅ bf16 |
-| `--paged-kv` | ✅ | ✅ Gemma4 bf16; prompt-cache bypass |
+| `--paged-kv` | ✅ | ✅ Gemma4 bf16/affine4/8 with separate RAM/SSD namespace; experimental direct attention is opt-in |
 | `--memory-budget` | ✅ per-request admission | ✅ per-request admission — not aggregate (use `--kv-budget`) |
 | `--kv-budget` | n/a | ✅ aggregate queue/reject across rows |
-| `--prompt-cache` / `--ssd-cache` | ✅ prefix reuse + SSD restore | ✅ on both lanes: joiners `take()` at admission; never-merged rows `put()` back |
+| `--prompt-cache` / `--ssd-cache` | ✅ prefix/output reuse + SSD restore | ✅ immutable prefill/output checkpoints, session lookup and queued SSD persistence |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
 | `--thinking` | ✅ | ✅ |
 | vision / audio / video request | ✅ | ✅ via serial lane |
@@ -581,54 +581,51 @@ declared composition may still require the serial mechanism as shown above.
 | `seed` | ✅ | ✅ request-local sampling |
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
-| `--draft-model` / `--draft-kind` | ✅ eligible spec decode | ✅ qualified MTP/lookup/standalone-draft groups, including grammar/logprobs; other providers remain serial |
-| GLM `--mtp on` | ✅ native MTP spec decode | ⚠️ default-on MTP routes every request serial+spec; `--mtp off` exposes ordinary GLM batching |
+| `--draft-model` / `--draft-kind` | ✅ eligible spec decode | ✅ qualified MTP, lookup, standalone, Gemma assistant/DeepSpec/DSpark groups, including grammar/logprobs |
+| GLM `--mtp on` | ✅ native MTP spec decode | ✅ native MTP uses grouped state/verification; tiny-model and oracle tests pass, final Colibri artifact testing is deferred |
 | `--compiled-decode` | ✅ | ✅ at **B=1 only**: a lone request's adopted serial-class caches replay the same compiled step; B>1 steps run the plain graph |
-| `--fused-sdpa` / `--force-wire` | ✅ (serial decode route) | n/a — compat mode, no perf flags by design |
+| `--fused-sdpa` | ✅ eligible affine attention | ✅ kernel eligibility depends on dtype, quantization and mask geometry |
+| `--force-wire` | ✅ serial wired scope | not applied by the shared executor |
 
-### `--batch N` is compat mode — perf flags don't apply by design
+### Shared execution and kernel settings
 
-The bit-parity guarantee (mlx-lm B=N) is the *whole point* of `--batch N`,
-and it requires running the plain forward path. The scheduler
-([batch-scheduler.ts](../../src/serve/batch-scheduler.ts)) drives the
-model through `forwardHidden`/`logitsFromHidden` directly (not
-`generate()`), so:
+The scheduler selects request work. The inference method advances it through
+model-owned numerical operations. Specialized kernels and sampling policies
+remain available wherever their backend capabilities qualify; batching does
+not disable performance settings as a category.
 
-- **`--compiled-decode`** engages at **B=1 only** (adopt-don't-copy: the
-  lone request's caches stay serial-class, so the scheduler replays the
-  serial engine's compiled step — same kill switch). A second row ⇒ the
-  plain batched graph.
-- **`--fused-sdpa`** never engages in the batched lane (an L2 serial-lane
-  composition).
-- **`--force-wire`** doesn't wire (the scheduler bypasses `generate()`'s
-  wired scope).
-- **Always-on bit-exact kernels still run.** The compiled activations are
-  bit-exact with the spelled-out MLP, so they stay on in both lanes —
-  "compat mode" means *no parity-breaking optionality*, not -O0.
+- `--compiled-decode` uses the qualified compiled graph for one active,
+  unpadded request. Multi-row steps use the batched graph.
+- `--fused-sdpa` follows affine kernel eligibility. Padded/array masks can
+  require the ordinary attention operation; this is an attention decision.
+- `--force-wire` controls the explicit serial wired scope. The shared executor
+  does not enter that scope.
+- Trellis, compiled activations, affine row reuse and TurboQuant kernel choices
+  belong to the numerical backend and remain independent of admission policy.
 
-## Known limitations under `--batch N`
+Executors capture an immutable runtime configuration. Later host configuration
+changes do not change an active request's kernel choices. TurboQuant storage
+carries its decode policy through RAM copies, row extraction and delayed
+conversion; restored SSD state is opened under the receiving binding's policy.
 
-Deliberate v1 scope, not bugs:
+## Known limitations under shared execution
 
-1. **Other draft providers lack shared state.** Qwen MTP, prompt lookup and
-   standalone drafting reuse aligned prefill and completed-output state through
-   the common RAM/SSD cache. Supported full-attention targets also retain
-   lookup and standalone-draft state. Gemma assistant drafting retains its target hidden
-   and donor KV through the same cache. Other providers start fresh. Long-conversation timing and pressure
-   acceptance remain open.
-2. **Aggregate admission is opt-in** via `--kv-budget`; without it N
-   large-context rows can collectively exceed memory.
-3. **Coverage depends on composition.** Same-B Gemma oracle tests cover
-   sliding-window wrap and late joins. Broader media, resume, paged and method
-   combinations remain open in Phase 18.
-4. **bf16 by contract; mixed-KV batching beyond it.** mlx-lm's batched
-   path *is* bf16. Per-layer `config` batching is a beyond-mlx-lm
-   composition verified per row against the optiq oracle. Batched
-   uniform/TurboQuant now has shared layouts; additional same-B external
-   oracle and feature-composition checks remain.
-5. **`extend` join** appends a joining request to the running batch's
-   full-attention KV in one pad+concat (`MLX_BUN_BATCH_EXTEND=0` reverts
-   to whole-batch re-merge); sliding-window layers still re-merge on join.
+1. Media and direct tool-call fill still use the explicit serial executor.
+   Grammar has shared masking and opt-in verified proposals; direct serial
+   jump-forward is a different algorithm.
+2. Aggregate admission is opt-in through `--kv-budget`. Without it, concurrent
+   contexts can exceed available memory. Default fit estimates remain advisory.
+3. Native GLM MTP has tiny-model/same-B oracle coverage; final Colibri artifact
+   testing is deferred. DSpark/DFlash execution has fixture coverage, with no
+   trained checkpoint available for a performance claim.
+4. Paged Gemma storage supports bf16/affine4/8. TurboQuant pages, per-layer
+   paged KV and paged speculative methods remain unsupported. Qualified
+   ordinary resume and adapter resume are implemented; exact combinations are
+   tracked in [batching](../design/batching.md).
+5. Stock bf16, affine mixed-KV and TurboQuant retain separate correctness
+   contracts. A passing storage test does not qualify an untested model or
+   numerical geometry. Existing accepted matrices remain in the design and
+   benchmark references.
 
 ## Fidelity tiers and the decode route (`--l1` / `--l2`)
 
@@ -729,7 +726,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Gemma 4 (1B/e4b/12B/26B, + vision e4b/12B, + audio e4b) | ✅ L1/L2 | ✅ | sliding+full interleaved; MoE 26B |
 | Qwen3.5 (gated-DeltaNet hybrid) | ✅ L1/L2 | ✅ (SSM path) | `MLX_BUN_BATCH_SSM=0` reverts |
 | Qwen3.8-27B (same qwen3_5 graph) | ✅ L1 | ✅ (SSM path) | native MTP head via `--draft-model`/`--draft-kind mtp` (lossless-gated; slower on a quiet box — opt-in); images and video serve (mlx-vlm oracle) |
-| GLM-5.2 / Colibri | ✅ chat/text, Messages, Responses, SSE, tools, grammar, logprobs | ✅ compressed MLA/DSA scheduler | native MTP defaults to serial+spec; `--mtp off` enables batching; embeddings, vision/audio, adapters, training unsupported |
+| GLM-5.2 / Colibri | ✅ chat/text, Messages, Responses, SSE, tools, grammar, logprobs | ✅ compressed MLA/DSA scheduler | native MTP shares the executor; final Colibri artifact testing is deferred; embeddings, vision/audio, adapters, training unsupported |
 | DiffusionGemma-26B (non-autoregressive) | ✅ (own engine) | — serial always | first bit-exact non-AR port |
 | Tier-0 universal (llama/qwen2/qwen3/olmo2/…, 11 archs) | ✅ L1 | ✅ plain full-attention archs² | gemma2-family / sliding-window universal → serial |
 
@@ -775,8 +772,8 @@ composition cells in one run).
   On 12B+ add `--draft-model <small-same-tokenizer>`.
 - *Several clients at once (throughput):*
   `mlx-bun serve <model> --batch 4 --ssd-cache <dir> --kv-budget <GB>` —
-  supports qualified start-zero TurboQuant and a grouped Qwen MTP companion.
-  Other draft providers still use serial speculation.
+  supports the qualified grouped methods and cache layouts in the compatibility
+  matrix. Use the default cap eight unless a workload calls for another cap.
 - *UI must never lag / survive engine crashes:* add `--isolate`
   (`--model-pool 2` to keep two models resident).
 - *Reproducibility:* bare / `--l1` (≡ mlx-lm), `--l1 --batch 1` (strict
@@ -785,8 +782,9 @@ composition cells in one run).
   `--memory-budget <GB>` + `--ssd-cache <dir>`; MoE adds
   `--expert-offload`. Start-zero TurboQuant supports shared execution.
 
-**Remaining exclusions:** media, paged KV, generation resume, fill and draft
-providers without grouped implementations still need shared execution work.
+**Remaining exclusions:** media, direct fill, and unsupported provider/layout
+combinations. Qualified ordinary resume, paged storage and grouped draft
+providers are implemented; see the compatibility matrix above.
 Qwen ordinary, shared MTP and prompt lookup support positive library thresholds for uniform
 affine KV4/KV8 and TurboQuant. Ordinary Gemma supports positive affine KV4/KV8
 thresholds, including sliding-window layers. Other-model delayed affine remains
@@ -799,8 +797,8 @@ SSD headers. This avoids a full prefill when re-encoding identical generated
 text would choose a different BPE segmentation. Edited text retains ordinary
 tokenization. Input token counts can differ from encoding the full prompt again;
 cache state is always matched by exact IDs and execution namespace.
-Strict serial deletion and complete feature parity
-remain acceptance work in Phase 6/18.
+Strict serial deletion is deferred. Remaining feature and performance work
+is tracked in Phase 6/18.
 
 ## Observability — `GET /stats`
 

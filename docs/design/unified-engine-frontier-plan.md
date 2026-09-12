@@ -1854,12 +1854,12 @@ SSD spill; an explicit durability flush can wait for persistence.
 | Chat template | `ChatTemplate.render` | Expose the renderer as its own narrow port instead of requiring a concrete serving context. Record rendered-stable boundaries for generated checkpoint alignment. |
 | Tokenizer | `LoadedTokenizer` | Reuse the same encode/decode contract across preparation, caching and output. Keep incremental encoding inside this component. |
 | Session / scheduling | `InferenceEngine`, `GenerationSession`, `ExecutionGroup`, `SchedulingClock` | Close all feature and performance gaps before deleting the remaining serial executor. |
-| Inference method | `InferenceMethod`; shared MTP method in the isolated candidate | Complete every shared-method composition and acceptance gate. Draft depth belongs here, independently of queue policy. |
+| Inference method | `InferenceMethod`; shared ordinary and speculative methods | Complete every shared-method composition and acceptance gate. Draft depth belongs here, independently of queue policy. |
 | Numerical graph / kernels | `AutoregressiveGraph`, `GraphFactory`, backend bindings | Continue hardware-specific fusion and kernel optimization behind these contracts. |
 | Sampler | `SamplingSession` | Retain one set of sampling/history/logprob semantics for ordinary and speculative execution. |
-| Active state / codec | `Cache`, `KvAttentionState` / `KvAttentionView`, row layouts, `SpeculativeTransaction`, checkpoint attachments | Appending and attending are separate operations. One captured view can serve multiple model layers while retaining pre-write positions and tensor ownership. Delayed rotating affine and broader model/layout composition remain open. |
-| Reusable cache | `PrefixCache.take/put`, shared `PromptCache` | Generated-output checkpoints and next-request token alignment remain open. Prefill reuse is already implemented. |
-| Persistence | `ColdTier`, `SpillSink`, `SsdCacheStore`, `SsdDurabilityCoordinator` | Complete combined M4 pressure/restart acceptance. RAM and SSD remain interchangeable retention tiers behind cache operations. |
+| Active state / codec | `Cache`, `KvAttentionState` / `KvAttentionView`, row layouts, `SpeculativeTransaction`, checkpoint attachments | Appending and attending are separate operations. One captured view can serve multiple model layers while retaining pre-write positions and tensor ownership. Delayed affine/TurboQuant and rotating layouts are integrated; qualify additional model/layout combinations separately. |
+| Reusable cache | `PrefixCache.take/put`, shared `PromptCache` | Prefill and processed generated output populate the same immutable RAM/SSD cache. Session lookup and rendered-token alignment are integrated. |
+| Persistence | `ColdTier`, `SpillSink`, `SsdCacheStore`, `SsdDurabilityCoordinator` | Queued persistence, native/restart checks and full Kanban durability acceptance are complete. RAM/SSD retention remains behind cache operations. |
 
 An interface boundary does not require copying tensors, downloading logits,
 or adding an RPC or synchronization per token. Device handles can stay lazy;
@@ -1876,6 +1876,26 @@ Contract sources: [generation](../../src/contracts/generation.ts),
 [cache tiers](../../src/prompt-cache.ts).
 Performance evidence and default selection live in
 [benchmarks.md](../reference/benchmarks.md); open acceptance remains in Phase 6/18.
+
+#### Kernel configuration ownership
+
+Shared and serial bindings execute within one immutable `RuntimeConfig`.
+Numerical helpers read that scope; they do not read process environment in
+forward loops. The serial speculative trace switch is captured once per run.
+Trellis mode resolves through the same configuration port at weight creation.
+
+TurboQuant caches capture their codec's fused-decode choice at construction.
+RAM clones, full-prefill row restoration, batch layout factories, extraction
+and delayed conversion preserve that choice. KV maintenance binds its runtime
+before conversion, including conversion performed after a host setting changes.
+SSD formats contain numerical state, not a frozen process configuration; their
+receiving cache factory selects the destination binding's policy.
+
+The configuration tests change host settings around scoped construction,
+copy/extraction and delayed conversion. Existing codec/donor tests now select
+both fused settings through `configureRuntime`, so they exercise the same
+configuration contract as serving. The compatibility matrix in server-config.md
+records which methods/layouts implement each served feature.
 
 ### 12.15 Package boundaries before community outreach
 

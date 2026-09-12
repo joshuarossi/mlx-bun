@@ -133,6 +133,7 @@ async function specRunInner(
     sampler,
   });
   const gamma = Math.max(1, numDraftTokens);
+  const trace = runtimeConfig().value("MLX_BUN_SPEC_TRACE") === "1";
   const prefillChunk = options.prefillChunkSize ??
     runtimeConfig().number("MLX_BUN_RD_PREFILL_CHUNK", PREFILL_CHUNK);
 
@@ -445,7 +446,7 @@ async function specRunInner(
       );
       const d = drafts.length;
       if (d < 0 || d > n) throw new Error(`DraftSource returned ${d} drafts (contract: 0..${n})`);
-      if (Bun.env.MLX_BUN_SPEC_TRACE === "1") {
+      if (trace) {
         console.error(
           `[SPEC_TRACE] round=${extras.rounds + 1} ` +
           `feed=${feed.join(",")} drafts=${drafts.join(",")}`,

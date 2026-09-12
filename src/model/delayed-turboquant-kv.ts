@@ -1,3 +1,4 @@
+import { runtimeValue } from "../runtime-config";
 import { captureFullKvDonorRows } from "../backends/mlx/full-kv-row-donor";
 import { decodedKvDonorAttention } from "./decoded-kv-donor";
 import { appendFullKvRows } from "../backends/mlx/full-kv-row-append";
@@ -14,10 +15,11 @@ import { FullTransitioningKvRows } from "../backends/mlx/full-transitioning-kv-r
 export class DelayedTurboQuantKVCache extends FullTransitioningKvRows<BatchedTurboQuantKVCache> implements RotatedValueAttentionState {
   #rotated: boolean[] = [];
   constructor(readonly kBits: number, readonly vBits: number, readonly start: number,
-    readonly maintain: (rows: Cache[]) => void, row?: Cache) {
+    readonly maintain: (rows: Cache[]) => void, row?: Cache,
+    readonly fusedDecode = runtimeValue("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1") {
     super({ signature: `kv:delayed-turboquant:${kBits}:${vBits}:${start}`, maintain,
       converted: row => row instanceof TurboQuantKVCache,
-      makeLayout: () => new BatchedTurboQuantKVCache(kBits, vBits) }, row);
+      makeLayout: () => new BatchedTurboQuantKVCache(kBits, vBits, fusedDecode) }, row);
   }
   captureDonorRows(): import("./gemma4-base").KvDonorRows {
     return this.packed?.captureDonorRows() ?? captureFullKvDonorRows(this.rows, this.leftPad, this.offset);
@@ -51,5 +53,5 @@ export class DelayedTurboQuantKVCache extends FullTransitioningKvRows<BatchedTur
       return ops.where(mask, restored, output);
     };
   }
-  makeEmptyBatch(): DelayedTurboQuantKVCache { return new DelayedTurboQuantKVCache(this.kBits, this.vBits, this.start, this.maintain); }
+  makeEmptyBatch(): DelayedTurboQuantKVCache { return new DelayedTurboQuantKVCache(this.kBits, this.vBits, this.start, this.maintain, undefined, this.fusedDecode); }
 }

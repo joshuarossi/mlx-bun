@@ -440,7 +440,7 @@ const CACHE_CODECS = {
       if (state.length === 0) throw new Error("cannot clone an empty cache");
       try {
         const [kIdx, kScales, kZeros, vPacked, vScales] = state;
-        const clone = new TurboQuantKVCache(c.kBits, c.vBits);
+        const clone = new TurboQuantKVCache(c.kBits, c.vBits, c.fusedDecode);
         clone.restoreState({
           kIdx: context.view(kIdx!),
           kScales: context.view(kScales!),

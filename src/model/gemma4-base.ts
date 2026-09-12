@@ -1671,8 +1671,9 @@ export class TurboQuantKVCache implements Cache {
   /** Experimental operation selection, captured once for this cache. */
   readonly #codec: KvCodec<TurboQuantTensor>;
 
-  constructor(readonly kBits: number, readonly vBits: number) {
-    this.#codec = new TurboQuantCodec(kBits, vBits, process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1");
+  constructor(readonly kBits: number, readonly vBits: number,
+    readonly fusedDecode = runtimeValue("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1") {
+    this.#codec = new TurboQuantCodec(kBits, vBits, fusedDecode);
   }
 
   captureDonorRows(): KvDonorRows {

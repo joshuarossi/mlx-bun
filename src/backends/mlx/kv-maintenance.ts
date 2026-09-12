@@ -1,3 +1,4 @@
+import { runtimeConfig, withRuntimeConfig } from "../../runtime-config";
 import type { KvSchemeOptions } from "../../kv-scheme";
 import { KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache, TurboQuantKVCache, type Cache } from "../../model/gemma4-base";
 import type { KvQuantSpec, TurboQuantScheme } from "../../config";
@@ -43,12 +44,14 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
   if (turboQuant) {
     const start = options.quantizedKvStart ?? 0;
     const scheme = { ...turboQuant };
-    const maintain: KvMaintenance = (cache) => maybeTurboQuantizeKv(cache, scheme, start);
+    const runtime = runtimeConfig();
+    const fusedDecode = runtime.value("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1";
+    const maintain: KvMaintenance = (cache) => withRuntimeConfig(runtime, () => maybeTurboQuantizeKv(cache, scheme, start));
     maintain.preparePrefill = (cache) => {
       for (let layer = 0; layer < cache.length; layer++) {
         const row = cache[layer]!;
         if (row instanceof KVCache || row instanceof TurboQuantKVCache)
-          cache[layer] = new DelayedTurboQuantKVCache(scheme.kBits, scheme.vBits, start, maintain, row);
+          cache[layer] = new DelayedTurboQuantKVCache(scheme.kBits, scheme.vBits, start, maintain, row, fusedDecode);
       }
     };
     if (start > 0) maintain.prepareBatch = maintain.preparePrefill;

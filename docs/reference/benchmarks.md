@@ -1023,6 +1023,33 @@ a serving speed or memory reduction. Source snapshots are
 Raw reports: `reports/prefill-observation/zero-snapshot-*` and
 `grammar-qwen-snapshot-control.md.json`.
 
+### Bound kernel configuration
+
+The kernel-policy cleanup uses the same M4 Pro 24 GB standard-script settings
+as the preceding prompt-lookup comparison. TurboQuant caches retain their
+fused-decoder policy through RAM copies, row extraction and delayed conversion;
+model and method code use the captured runtime configuration.
+
+| Metric | Before | Bound policy |
+|---|---:|---:|
+| Median single-request decode | 11.484 tok/s | 11.509 tok/s |
+| Aggregate throughput | 6.134 tok/s | 6.131 tok/s |
+| Median cold TTFT | 5934 ms | 5921 ms |
+| Warm TTFT / cached tokens | 126.13 ms / 758 | 126.12 ms / 758 |
+| Peak RSS | 15111.5 MB | 15097.2 MB |
+
+All 15 request hashes, response texts and prompt/generated/cached token counts
+match, with no failed phases. Performance is effectively unchanged. This is
+configuration isolation with a regression comparison, not a speedup claim.
+Both source snapshots are stable throughout their runs. The baseline snapshot
+is `70507562e4e043f8e03f83c2d2e0ce3b3021c8a356dd9023f1d8cca50a468af7`;
+the candidate is `79006c024cdebb18a60ba3b22b2b96289c975dacc9f0a72b6592c9872da20bd4`
+on `ba78658` plus the configuration patch. Both use diagnostic mode. Raw reports
+are `reports/prefill-observation/zero-snapshot-lookup-after.md.json` and
+`config-policy-lookup.md.json`. Focused policy/codec checks pass on both Macs;
+the local model-free suite has 2,289 passes and 14 fixture skips. All three
+TypeScript projects and documentation gates pass.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the

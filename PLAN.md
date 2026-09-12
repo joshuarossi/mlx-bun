@@ -136,7 +136,7 @@ evidence; rerun only for a named change, missing case or reproduced failure.
   controls after their callers migrate. Keep existing CLI compatibility during
   migration. Exit: every served setting reaches its owning interface, no decode
   loop rereads mutable configuration, and docs describe actual supported
-  combinations. The shared prefill-default/request-override fix is adopted after M1 native sampling/MTP, full model-free and typecheck gates; M4 composed prefill checks and matched short timing pass. Architecture §12.5–12.7 owns the interface contract.
+  combinations. The shared prefill-default/request-override fix is adopted and measured. The current ownership audit removes direct process-environment reads from numerical/model/method code, preserves TurboQuant codec policy through copies and delayed conversion, and reconciles the serving compatibility matrix with accepted implementations. Both-machine policy/codec tests, the model-free suite and typechecks pass; the fixed-settings M4 comparison preserves all 15 responses and token counts with effectively unchanged throughput. Remaining work is the broader flag-owner inventory and removal of superseded controls, not this completed codec correction. Architecture §12.5–12.7 and §12.14 own the interface contract.
 - [~] **Measured defaults:** v0.4.0 selects Trellis v13, eligible
   Qwen KV4 speculation and paired MTP prefill reuse without opt-in flags. Shared
   batching is the serving default and R17 output persistence is complete.

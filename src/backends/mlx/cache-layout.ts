@@ -10,7 +10,7 @@ import { PagedKvRows } from "../../lab/paged-kv/paged-kv-rows";
 export function ownedCacheLayout(cache: Cache): BatchableCache | undefined {
   if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return cache.makeEmptyBatch();
-  if (cache instanceof TurboQuantKVCache) return new BatchedTurboQuantKVCache(cache.kBits, cache.vBits);
+  if (cache instanceof TurboQuantKVCache) return new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode);
   return undefined;
 }
 
