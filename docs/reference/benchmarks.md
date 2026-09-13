@@ -3415,3 +3415,46 @@ without exceeding declared scheduler work. Unit coverage also preserves newly
 discovered asserted spans. All 2,369 model-free tests pass with 14 fixture skips;
 typechecks and documentation checks pass. Reports: `shared-echo-mixed-*` and
 `shared-echo-staggered-*` under `reports/prefill-observation/`.
+
+### Qwen echo with MTP2 — M4 Pro 24 GB
+
+A same-source ABBA compares MTP2 with fill off against MTP2 plus opt-in echo.
+Both use the packed interleaved 27B artifact, folded RTN4 companion, KV4/g64,
+fixed 256-token prefill, shared cap eight, temperature zero and seed 42.
+RAM cache is 1 GiB and each arm starts with a fresh 4 GiB SSD cache. All eighty
+responses complete. The 38 measured pairs and two first-request pairs preserve
+response content and every usage field except the intended fill/speculation
+counters. All four SSD flush/restart checks complete with zero missing, pending,
+dropped or failed snapshots. Source hashes remain unchanged throughout.
+
+| Fixture | Control → echo AB, ms | Change | Control → echo BA, ms | Change |
+|---|---:|---:|---:|---:|
+| Copy sentence | 1766.58 → 1966.74 | +11.33% | 1738.50 → 1969.18 | +13.27% |
+| Copy URL | 2629.95 → 2209.76 | −15.98% | 2546.08 → 2241.72 | −11.95% |
+| First saved suite call | 1312.27 → 1299.75 | −0.95% | 1289.74 → 1321.01 | +2.42% |
+| Following saved suite call | 961.17 → 944.71 | −1.71% | 945.76 → 944.63 | −0.12% |
+
+Echo remains opt-in. A longer copied URL benefits; the short sentence loses.
+The initial implementation verified unproven 32-token proposals and paid for
+immediate rejection. That comparison is retained as a failed candidate. The
+final method first checks ordinary MTP output against the proposed prefix;
+a first-token rejection requires no extra target forward. This avoids the
+large rejected-span cost but does not make every short copy profitable.
+These are serving diagnostics with recorded background activity, not quiet
+standard-suite numbers or a full-task speed claim.
+
+Both Macs pass the companion's external-token operation against the pinned
+same-machine oracle. Shared native tests cover seeded sampling, independent
+rows, partial stops, first-token rejection, KV4/TurboQuant, delayed conversion,
+paired SSD state and subsequent logits. Final M1 KV4 B2 and M4 KV4 B2/B4 and
+TurboQuant B2 checks pass after the prefix policy change. Real HTTP checks
+cover bf16/KV4/TurboQuant and RAM/SSD, including fresh-process restoration.
+All 2,372 model-free tests pass with 14 fixture skips; typechecks and docs pass.
+Reports: `reports/prefill-observation/echo-mtp-*`. Each report captures source
+hashes over `c119661` plus the integration diff. The full Kanban comparison
+retains the prior MTP2/fixed-256 profile and adds echo.
+
+Completed benchmark SSD payloads were deleted during workspace cleanup after
+their measurements and restore checks. Cleanup manifests record each removed
+path and size; transcripts, measurements, source manifests and generated apps
+remain. Historical SSD cache directories require regeneration before reuse.

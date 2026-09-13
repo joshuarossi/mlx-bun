@@ -217,3 +217,16 @@ test("grammar proposals select the shared verifier only when its request combina
     method: "speculative", grammarJump: false,
   });
 });
+
+test("a provider consuming external tokens composes echo with shared speculation", () => {
+  const shape = { ...request, hasDraft: true, userSeed: true, kvQuant: true };
+  const supported = { ...capabilities, groupedMethods: ["autoregressive", "speculative"],
+    speculativeKvQuant: true, sharedSpeculativeEcho: true };
+  const features = { fill: true, pagedKv: false };
+  expect(resolveExecution(shape, supported, features)).toMatchObject({
+    method: "speculative", mechanism: "continuous", fill: true });
+  for (const disabled of [{ sharedSpeculativeEcho: false }, { continuous: false }])
+    expect(resolveExecution(shape, { ...supported, ...disabled }, features).fill).toBe(false);
+  for (const extra of [{ hasVision: true }, { hasGrammar: true }, { wantsLogprobs: true }])
+    expect(resolveExecution({ ...shape, ...extra }, supported, features).fill).toBe(false);
+});

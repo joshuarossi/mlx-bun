@@ -1,6 +1,7 @@
 import {captureSpeculativeOptions, speculativePrefixNamespace} from "../../spec/cache-identity";
 import type { RuntimeModel } from "../../model/factory";
 import type { GenerateOptions } from "../../generate";
+import type { FillSession, Proposal } from "../../fill/fill-session";
 import type { DraftProvider, DraftRowGroup, DraftPrefillGroup, DraftRowCheckpoint } from "../../spec/source";
 import { makeSampler, makeStepSampler, readStepExtras, type NumberStepSampler, type Sampler } from "../../sampler";
 import { MlxArray } from "../../mlx/array";
@@ -22,6 +23,8 @@ import type { MlxForwardWork } from "./mixed-iteration";
 import type { MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, MlxGroupedMethod, Row } from "./batch-group";
 
 interface RequestState {
+  fill?: FillSession;
+  proposal?: { value: Proposal; emitted: number };
   sampling: NumberStepSampler;
   draftSampling: Sampler;
   retain?: () => void;
@@ -61,7 +64,11 @@ class SpeculativeGroup implements MlxGroupedMethod {
     const rows = this.host.rows;
     if (!rows.length) return 0;
     // Target verification consumes the pending token and the draft candidates.
-    return rows.length * (1 + Math.min(this.depth, Math.max(...rows.map(row => row.req.maxTokens - row.generated))));
+    const echo = Math.max(...rows.map(row => {
+      const proposal = this.#requests.get(row)?.proposal;
+      return proposal?.emitted ? proposal.value.ids.length - proposal.emitted : 0;
+    }));
+    return rows.length * (1 + (echo || Math.min(this.depth, Math.max(...rows.map(row => row.req.maxTokens - row.generated)))));
   }
 
   prepare(first: Row): MlxGroupPreparation {
@@ -111,11 +118,13 @@ class SpeculativeGroup implements MlxGroupedMethod {
           acceptanceLengths: [], tokensPerForward: 0, forwardsSaved: 0, draftedByPos: [], acceptedByPos: [] };
         const sampler = makeSampler(options);
         const request: RequestState = { draftSampling: sampler, namespace: "", prefixLength: 0,
+          fill: method.provider.grouped?.supportsExternalTokens ? options.fill : undefined,
           processed: method.host.promptCache ? [] : undefined,
           sampling: makeStepSampler(options, { tokenRepresentation: "number", grammarWait: "before-sample",
             historyUpdate: "after-sample", initialHistory: row.req.promptIds, acceptGrammar: true,
             eosTokenIds: row.req.eosTokenIds, captureSelectedLogprob: options.logprobs === true,
             captureTopLogprobs: options.topLogprobs }) };
+        if (request.fill) row.fill = request.fill.stats;
         let caches: Cache[] = [], retained: (() => void) | undefined;
         let appended = false;
         const previous = prefix?.rowCount ?? 0;
@@ -192,12 +201,14 @@ class SpeculativeGroup implements MlxGroupedMethod {
             method.host.finish(row, "stop"); return;
           }
           const more = await method.host.publish(row, row.current, readStepExtras(sampled.extras));
+          state.request.fill?.observe(row.current);
           if (more === false || row.req.grammar?.isTerminated || row.generated >= row.req.maxTokens) {
             if (method.host.promptCache && !row.req.signal?.aborted) capture(state, () => cloneKvCaches(state.solo), index);
             disposeResources(state.solo.splice(0)); state.retain?.(); state.retain = undefined;
             method.host.finish(row, more === false || row.req.grammar?.isTerminated ? "stop" : "length"); return;
           }
         }
+        method.#proposeEcho(row, state.request);
         ready.push({ row, request: state.request, caches: state.solo, retain: state.retain,
           draft: prefix!.capture(index), transferred: false });
         state.transferred = true;
@@ -278,6 +289,19 @@ class SpeculativeGroup implements MlxGroupedMethod {
     const rows = [...this.host.rows];
     if (!rows.length) return;
     const depth = Math.min(this.depth, Math.max(...rows.map(row => row.req.maxTokens - row.generated)));
+    // The ordinary MTP round already supplies samples that can establish a
+    // copied prefix. Do not verify a wide span before any sample matches it.
+    const proposals = rows.map(row => {
+      const proposal = this.#requests.get(row)!.proposal;
+      return proposal?.emitted ? proposal.value.ids.slice(proposal.emitted) : [];
+    });
+    const echoDepth = Math.max(...proposals.map(ids => ids.length));
+    let externalTokens: MlxArray | undefined;
+    const rollback = bindRowCacheRollback(this.#target!.caches, rows.length);
+    const fills = echoDepth ? rows.flatMap((row, index) => {
+      const request = this.#requests.get(row)!;
+      return proposals[index]!.length ? [request.fill!] : [];
+    }) : [];
     const halted = new Set<Row>();
     const pin = this.binding.pinVerify?.();
     try {
@@ -289,9 +313,24 @@ class SpeculativeGroup implements MlxGroupedMethod {
           const more = await this.host.publish(row, ids[0]!, metadata?.[0]);
           if (more === false) { halted.add(row); return false; }
         } },
-      })), depth, this.#draft!, {
-        transaction: bindRowCacheRollback(this.#target!.caches, rows.length),
+      })), echoDepth || depth, echoDepth ? {
+        draft: () => proposals,
+        commit: (accepted, context) => this.#draft!.consume!(externalTokens!, context, accepted.map(n => n + 1)),
+      } : this.#draft!, {
+        transaction: !echoDepth ? rollback : { ...rollback,
+          begin(depth) {
+            const start = performance.now(); rollback.begin(depth);
+            const elapsed = performance.now() - start;
+            for (const fill of fills) fill.noteVerifyEvent(elapsed);
+          },
+          resolve(accepted) {
+            const start = performance.now(); rollback.resolve(accepted);
+            const elapsed = performance.now() - start;
+            for (const fill of fills) fill.stats.checkpointMs += elapsed;
+          },
+        },
         forward: async ids => {
+          if (echoDepth) externalTokens = ops.copyOf(ids);
           const taps = this.#draft!.tapLayers;
           const result = await this.binding.forward(ids, this.#target!.caches, taps.length ? [...taps] : undefined,
             work ? (tokens, caches, options) => work(tokens, caches, { ...options, preserveTokenGeometry: true }) : undefined);
@@ -305,23 +344,39 @@ class SpeculativeGroup implements MlxGroupedMethod {
       for (let index = 0; index < rows.length; index++) {
         const row = rows[index]!, output = completed.outputs[index]!, round = completed.rounds[index]!;
         const request = this.#requests.get(row)!;
+        if (request.fill) {
+          for (const token of round.acceptance.emitted.slice(0, output.generated)) {
+            const proposal = request.proposal;
+            if (proposal && token === proposal.value.ids[proposal.emitted]) {
+              if (++proposal.emitted === proposal.value.ids.length) this.#settleEcho(request);
+            } else {
+              this.#settleEcho(request); request.fill.observe(token);
+            }
+          }
+          if (output.kind === "continue") this.#proposeEcho(row, request);
+          else this.#settleEcho(request);
+        }
         if (output.kind !== "failed" && output.kind !== "cancelled")
           request.processed?.push(row.current, ...round.drafts.slice(0, output.accepted));
         const stats = row.spec!;
-        stats.drafted += round.drafts.length;
-        stats.accepted += round.acceptance.accepted;
+        stats.drafted += echoDepth ? 0 : round.drafts.length;
+        stats.accepted += echoDepth ? 0 : round.acceptance.accepted;
         stats.rejected = stats.drafted - stats.accepted;
-        stats.rounds!++; stats.targetCalls++;
-        stats.acceptanceLengths!.push(round.acceptance.accepted);
-        for (let p = 0; p < round.drafts.length; p++) stats.draftedByPos![p] = (stats.draftedByPos![p] ?? 0) + 1;
-        for (let p = 0; p < round.acceptance.accepted; p++) stats.acceptedByPos![p] = (stats.acceptedByPos![p] ?? 0) + 1;
+        stats.targetCalls++;
+        if (!echoDepth) {
+          stats.rounds!++;
+          stats.acceptanceLengths!.push(round.acceptance.accepted);
+          for (let p = 0; p < round.drafts.length; p++) stats.draftedByPos![p] = (stats.draftedByPos![p] ?? 0) + 1;
+          for (let p = 0; p < round.acceptance.accepted; p++) stats.acceptedByPos![p] = (stats.acceptedByPos![p] ?? 0) + 1;
+        }
         row.sampled += round.acceptance.emitted.length + Number(round.acceptance.sawEos);
         // A consumer may stop inside a verified burst before its terminal EOS.
         if (output.kind === "stop" && !halted.has(row) && round.acceptance.sawEos &&
           output.generated === round.acceptance.emitted.length && row.generated < row.req.maxTokens)
           row.generated++;
-        stats.tokensPerForward = row.generated / stats.rounds!;
-        stats.forwardsSaved = Math.max(0, row.generated - 1 - stats.rounds!);
+        const forwards = stats.targetCalls - 1;
+        stats.tokensPerForward = row.generated / forwards;
+        stats.forwardsSaved = Math.max(0, row.generated - 1 - forwards);
         if (output.kind === "continue") { row.current = output.pending; keep.push(index); }
         else if (output.kind === "failed") row.reject(output.error);
         else if (output.kind === "cancelled") row.reject(row.req.signal?.reason ?? new Error(output.reason));
@@ -332,7 +387,19 @@ class SpeculativeGroup implements MlxGroupedMethod {
       }
       if (keep.length !== rows.length) this.host.filterRows(keep);
       if (++this.#steps % 256 === 0) clearCache();
-    } finally { pin?.close(); }
+    } finally { externalTokens?.dispose(); pin?.close(); }
+  }
+
+  #proposeEcho(row: Row, request: RequestState): void {
+    if (request.proposal || !request.fill) return;
+    const value = request.fill.propose(row.req.maxTokens - row.generated, "verify");
+    if (value) request.proposal = { value, emitted: 0 };
+  }
+
+  #settleEcho(request: RequestState): void {
+    if (!request.proposal) return;
+    request.fill!.commit(request.proposal.value, request.proposal.emitted);
+    request.proposal = undefined;
   }
 
   /** The method aligns token coverage and captures its state. The cache owns
@@ -354,6 +421,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
     const retained = new Set(keep.map(index => this.host.rows[index]!));
     const releases: { dispose(): void }[] = [];
     for (const [row, request] of this.#requests) if (!retained.has(row)) {
+      this.#settleEcho(request);
       this.#requests.delete(row);
       releases.push(request.sampling, { dispose: () => request.retain?.() });
     }
@@ -361,6 +429,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
   }
 
   dispose(): void {
+    for (const request of this.#requests.values()) this.#settleEcho(request);
     const resources = [...(this.#target ? [this.#target] : []), ...(this.#draft ? [this.#draft] : []),
       ...[...this.#requests.values()].flatMap(request => [request.sampling, { dispose: () => request.retain?.() }])];
     this.#target = null; this.#draft = null; this.#requests.clear();

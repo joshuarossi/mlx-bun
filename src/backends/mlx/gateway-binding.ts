@@ -114,7 +114,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));
     },
     methodRequest: (execution, options) => execution?.method === "speculative"
-      ? (execution.grammarJump ? grammarProposals : speculative)?.(options)
+      ? (execution.grammarJump ? grammarProposals : speculative)?.(
+        options.fill && !execution.fill ? { ...options, fill: undefined } : options)
       : execution?.fill ? fillRequests?.(options) : undefined,
     ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
       const selected = [...adapters];
@@ -138,6 +139,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         sharedFill: !!fillRequests && !!options.fill,
+        sharedSpeculativeEcho: !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         speculativeLogprobs: scheduling.continuous && !!sharedMethod,
         sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,

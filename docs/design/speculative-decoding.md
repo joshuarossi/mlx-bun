@@ -1686,8 +1686,8 @@ verification kernel. Output delivery determines how much state survives a consum
 stop, then the common cache receives the corresponding tokens and row state.
 The cache retains RAM donors and owns SSD persistence. Checkpoint telemetry
 includes the shared cohort's begin and resolve time for each participating
-request. Fill remains opt-in and does not yet compose with a mounted drafter
-or shared paged execution.
+request. Fill remains opt-in. Shared paged execution is unsupported. Qwen MTP can
+consume verified echo continuations through the provider operation below.
 
 `shared-echo.test.ts` audits the real sampler against an independent sampler
 on the exact same score tensor and selected-token history, across B1/B2/B4,
@@ -1707,14 +1707,37 @@ acceptance preserves the sampler's decision for the verified logits; it does
 not promise identical text to a different forward shape. Request timing and
 paired-response results are recorded in benchmarks.md.
 
-The next composition gap is fill with a mounted drafter. The grouped draft
-interface currently commits acceptance counts against its own proposed token
-stream. An external copied or asserted continuation also needs the provider
-to consume those committed tokens and the corresponding target context before
-its next proposal. Substituting token IDs after drafting would leave draft
-state misaligned. Add that operation to the provider interface, preserve
-request-owned sampling, and publish target/draft checkpoints at the same
-consumed boundary. Scheduling and RAM/SSD placement need no fill-specific path.
+#### Echo with a mounted MTP provider
+
+`DraftRowGroup.consume` consumes externally verified target tokens and hidden
+context, retaining the specified prefix length for each row. Provider
+capabilities advertise this operation before execution. The Qwen MTP provider
+uses its existing true-hidden prefill graph and per-row rollback; it neither
+samples draft tokens nor projects its vocabulary during this operation.
+
+The speculative method first compares ordinary MTP output with a pending copy
+proposal. A first-token mismatch uses no additional target forward. Once output
+establishes a matching prefix, the method verifies the remaining copied span.
+Other rows supply empty proposals. The existing verifier and
+sampler select output, then output delivery determines how many inputs survive.
+The provider consumes that same prefix before ordinary MTP resumes. Target and
+companion state are published together through the unchanged cache interface.
+No scheduling or storage implementation selects between echo and MTP.
+
+`FillSession.observe` records sampled output independently of proposal timing.
+The method asks for verified proposals at committed output boundaries. Under
+MTP, asserted template spans remain ordinary sampled output; this combination
+adds echo without changing the strict append algorithm. Grammar, probability
+metadata, media, paging and providers without external-token consumption remain
+outside this combination's serving coverage.
+
+`usage.fill` counts verified echo proposals. Learned-provider drafted/accepted
+counts, rounds and acceptance histograms exclude echo. Target calls and tokens
+per forward cover both kinds of round. A request can legitimately use no
+learned drafts if echo supplies every continuation. Both-machine companion
+oracle checks cover external prefixes and subsequent full decoder output;
+shared tests cover sampling, mixed rows, rejection, stop and paired SSD state.
+
 
 ### 7.5 Logical jump-ahead prefill
 

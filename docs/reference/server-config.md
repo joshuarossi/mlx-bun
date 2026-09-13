@@ -692,7 +692,10 @@ It does not use compiled replay, interrupted-generation checkpoints, paging,
 probability metadata, media, grammar or a mounted draft provider.
 `MLX_BUN_FILL=echo` uses the same shared method with sampled verification and
 row-specific rollback. Ordinary rows can join with empty proposals; eligible
-plain-greedy requests reuse independent verification sampling. Fill stays off by default;
+plain-greedy requests reuse independent verification sampling. With a Qwen MTP
+companion, echo proposals use the speculative method and the provider consumes
+accepted tokens before resuming learned drafting. Asserted template spans remain
+sampled in this combination. Other draft providers are not yet qualified. Fill stays off by default;
 per-model performance acceptance remains separate from numerical replay.
 
 Executors capture an immutable runtime configuration. Later host configuration
@@ -704,8 +707,8 @@ conversion; restored SSD state is opened under the receiving binding's policy.
 
 1. Gemma4 image/audio uses shared decode after an indivisible embeddings prefill.
    Qwen image/video positions stay with each request through shared decode; diffusion retains its separate serial method. Strict tool-call fill
-   and echo verification have shared methods; fill with speculation or paging
-   remains unsupported there. Grammar has shared masking and opt-in verified
+   and echo verification have shared methods. Qwen MTP supports verified echo;
+   asserted fill with a drafter, other providers and shared paging remain unsupported. Grammar has shared masking and opt-in verified
    proposals; direct serial jump-forward is a different algorithm.
 2. Aggregate admission is opt-in through `--kv-budget`. Without it, concurrent
    contexts can exceed available memory. Default fit estimates remain advisory.

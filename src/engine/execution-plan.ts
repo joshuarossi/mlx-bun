@@ -41,9 +41,11 @@ export function resolveExecution(
   const promptCache = method !== "speculative" && (!request.hasVision ||
     (mechanism === "continuous" && request.hasPreparedPrefixIdentity === true && capabilities.mediaPrefixCache === true));
   const sharedFill = mechanism === "continuous" && capabilities.sharedFill === true && !pagedKv;
-  const fill = features.fill && method === "autoregressive" && (mechanism === "serial" || sharedFill) &&
-    !request.hasDraft && !request.hasVision && (!request.userSeed || sharedFill) && !request.hasGrammar &&
-    !request.wantsLogprobs;
+  const speculativeEcho = method === "speculative" && mechanism === "continuous" &&
+    capabilities.sharedSpeculativeEcho === true;
+  const fill = features.fill && !request.hasVision && !request.hasGrammar && !request.wantsLogprobs &&
+    (speculativeEcho || (method === "autoregressive" && (mechanism === "serial" || sharedFill) &&
+      !request.hasDraft && (!request.userSeed || sharedFill)));
   // Cache-format eligibility belongs to the method's append binding.
   if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
   const checkpoint = capabilities.checkpoints && method === "autoregressive" && !request.hasVision &&

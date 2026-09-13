@@ -266,3 +266,15 @@ describe("mismatch policy", () => {
     expect(s.stats.wastedSamples).toBe(1);
   });
 });
+
+test("output observation and verified proposal selection compose without asserted tokens", () => {
+  const session = new FillSession(plan([row([2], [8, 9])]), [1], { sources: [{
+    name: "verified", propose: () => ({ ids: [3, 4], policy: "verify", origin: "echo" }),
+  }] });
+  session.observe(2);
+  const proposal = session.propose(10, "verify")!;
+  expect(proposal.ids).toEqual([3, 4]);
+  session.commit(proposal, 2);
+  expect(session.length).toBe(4);
+  expect(session.stats).toMatchObject({ decodeSteps: 1, strict: 0, echo: 2, verifyAccepted: 2 });
+});

@@ -47,6 +47,7 @@ const DRAFT_PREFILL_CHUNK = 2048;
 
 export class QwenMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
+    supportsExternalTokens: true,
     checkpointNamespace: () => this.#checkpointNamespace,
     open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
     openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
@@ -133,6 +134,7 @@ export class QwenMtpProvider implements DraftProvider {
       append, prepareAppend, prefill: (tokens, context) => rows.prefill(tokens, context!), materialize: rows.materialize.bind(rows),
       filterRows: rows.filterRows.bind(rows),
       draft: rows.draft.bind(rows), commit: rows.commit.bind(rows),
+      consume: rows.consume.bind(rows),
       capture(row) {
         const state = rows.extractRow(row);
         try { return captureQwenMtpState(state); }

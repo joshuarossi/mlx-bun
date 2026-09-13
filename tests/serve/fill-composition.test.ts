@@ -170,9 +170,9 @@ describe("fill is refused by composition", () => {
     });
   });
 
-  test("a mounted draft model: the spec loop is a different executor", async () => {
-    await withRuntime(STRICT, () =>
-      refused("draft", body(), harness({ draft: { model: {} } })));
+  test("a mounted draft model delegates fill eligibility to the method binding", async () => {
+    await withRuntime(STRICT, async () =>
+      expect(await fillOf(harness({ draft: { model: {} } }), body())).toBeInstanceOf(FillSession));
   });
 
   test("cache formats reach the engine, which owns append eligibility", async () => {

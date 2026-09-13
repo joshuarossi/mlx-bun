@@ -137,12 +137,11 @@ export class ChatStage {
     // Token fast-forwarding (K3, MLX_BUN_FILL=strict): the determined-span
     // table for this request's tools. Refused for the shapes only this stage
     // can see — a compiled grammar (forced tokens are its job), media prompts
-    // (embeddings prefill / mRoPE), a mounted draft model (the spec loop is a
-    // different executor and never reads options.fill). Cache-format support
-    // is declared by the engine's model-owned append binding. The
+    // (embeddings prefill / mRoPE). Provider and cache-format support
+    // are declared by the engine's method binding. The
     // body-level refusals live in prep.fillPlanFor.
     let fillSession: import("../fill/fill-session").FillSession | null = null;
-    if (!grammarCtrl && !vision && !diffusionPixels && !ctx.draft) {
+    if (!grammarCtrl && !vision && !diffusionPixels) {
       fillSession = prep.fillPlanFor(body, tools, promptIds);
       if (fillSession) options.fill = fillSession;
     }

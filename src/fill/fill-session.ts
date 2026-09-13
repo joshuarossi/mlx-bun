@@ -319,12 +319,23 @@ export class FillSession {
   /** Feed one SAMPLED token, then ask the sources what follows. `budget` is
    *  the caller's remaining allowance (max_tokens − generated). */
   push(tokenId: number, budget: number = Number.POSITIVE_INFINITY): Proposal | null {
+    this.observe(tokenId);
+    return this.propose(budget);
+  }
+
+  /** Record sampled output independently of when the method requests proposals. */
+  observe(tokenId: number): void {
     this.stats.decodeSteps++;
     this.#append([tokenId]);
+  }
+
+  /** Select a continuation after a committed output boundary. Methods may
+   * request only verified proposals while retaining ordinary sampled policy. */
+  propose(budget: number = Number.POSITIVE_INFINITY, policy?: ProposalPolicy): Proposal | null {
     this.#budget = budget;
     for (const source of this.#sources) {
       const proposal = source.propose(this);
-      if (!proposal) continue;
+      if (!proposal || (policy && proposal.policy !== policy)) continue;
       if (proposal.branchStop) this.stats.branchStops++;
       const clamped = this.#clamp(proposal.ids, budget, proposal.origin === "echo");
       if (!clamped) continue;

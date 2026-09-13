@@ -407,25 +407,37 @@ using its qualified append chunk size, then resumes sampling
 (design: [speculative-decoding.md](../design/speculative-decoding.md) §"Token
 fast-forwarding"). Injected tokens are billed in `completion_tokens` like any
 other generated token; `decodeSteps` counts ordinary sampling steps, so
-`injected / (injected + decodeSteps)` is the share appended without sampling.
+`injected / (injected + decodeSteps)` is the share emitted through fill.
+Strict spans bypass sampling; echo spans still undergo sampled verification.
 Injected positions still run through the model layers. The field is absent when the feature is off or the
-request's shape excludes it, including `logprobs`, structured output, media
-or a mounted draft model. Strict shared fill supports bf16, affine KV and
+request's shape excludes it, including `logprobs`, structured output or media.
+Strict shared fill supports bf16, affine KV and
 TurboQuant layouts and retains absolute sampling positions for explicit seeds.
 Its `usage.fill` statistics use the same fields as explicit serial execution.
 Known tokens still advance model state. All-known steps skip intermediate
 vocabulary heads and use the model-qualified append geometry, including the
 specialized Qwen B1 append. Wider Qwen rows retain one-position arithmetic. Compiled
-replay, paging, interruption checkpoints and echo verification remain outside
-this shared method. Explicit serial fill still excludes user-fixed seeds.
+replay, paging and interruption checkpoints remain outside this shared method.
+Explicit serial fill still excludes user-fixed seeds.
 
 Under `MLX_BUN_FILL=echo` a second, weaker source joins: spans copied from
 earlier in the same session, carried under policy `verify`. Those ride the same
-single forward, are checked against the argmax already in its logits, and have
+single forward, are checked by the request's sampler on its logits, and have
 their rejected tail rewound — so `verifyAccepted + verifyRejected` is what the
 echo index proposed and `injected` is what survived. `wastedSamples` counts
 only ASSERT fills (a verify fill consumes the in-flight sample as its first
 position's check instead of discarding it).
+
+Qwen MTP can alternate learned draft rounds with verified echo rounds. The
+provider consumes accepted copied tokens and target context before drafting
+again. Its asserted template spans remain ordinary sampled output. Learned
+draft counts, acceptance histograms and `speculation.rounds` exclude echo;
+`targetCalls`, `tokensPerForward` and `forwardsSaved` cover both round types.
+Echo activity remains in `usage.fill`, including matching prefixes established
+by ordinary MTP samples, so it is not additive with learned-draft counts.
+A request fully served by echoes can
+have zero learned drafts. Other mounted providers do not yet support this
+combination.
 
 An explicit `seed` controls a request-local random stream and can use
 continuous execution. Repeating a request reproduces sampling at the same

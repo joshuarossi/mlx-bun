@@ -39,6 +39,8 @@ export interface ExecutionCapabilities {
   readonly sharedGrammarProposals?: boolean;
   /** A grouped method can consume this request's strict known continuations. */
   readonly sharedFill?: boolean;
+  /** A mounted provider can consume verified external continuations. */
+  readonly sharedSpeculativeEcho?: boolean;
   /** A graph-owned compiled step exists; cache geometry can still decline it. */
   readonly compiledDecode?: boolean;
 }

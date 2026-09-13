@@ -133,6 +133,17 @@ export class QwenMtpRows {
     if (state.length) ops.evalAll(state);
   }
 
+  /** Align the companion to verified external continuations through the same
+   * true-hidden prefill graph. Different rows retain different prefix lengths. */
+  consume(tokens: MlxArray, context: MlxArray, lengths: readonly number[]): void {
+    this.#cache.specRoundBegin();
+    this.prefill(tokens, context);
+    this.#cache.specRoundRollback([...lengths]);
+    using positions = ops.fromInt32(lengths.map(length => length - 1), [lengths.length, 1, 1]);
+    const hidden = ops.takeAlongAxis(context, positions, 1);
+    this.#hidden!.dispose(); this.#hidden = hidden;
+  }
+
   /** Nonnegative depth, with every request's first pending token already known.
    * Build the complete device dependency chain before reading proposal IDs. */
   draft(pending: readonly number[], depth: number, steps: readonly number[]): number[][] {
