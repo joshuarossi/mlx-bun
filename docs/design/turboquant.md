@@ -357,7 +357,7 @@ Gemma-4-e4b's D512 deferred consumer also passes: 20 forward/state cases, four
 generations and 1,220 matching cache reads, one specialization and 1,057,864
 final active bytes per arm. Evidence: tq-kv-gemma-e4b-full{,-review}.json.
 
-The joint decoder is now integrated as an experimental opt-in. The environment
+The joint decoder was initially integrated as an experimental opt-in. The environment
 setting and supported inputs are documented in server-config.md. A shared
 `src/mlx/turboquant-kv-decode.ts` owns only the packed Metal operation; the existing
 codec owns inverse rotation and the cache captures operation selection once.
@@ -517,8 +517,8 @@ longer prompt. Sampled RSS establishes no reduction. The server-exit observer
 still sees resident model arrays, so its active capacity is not a disposal-to-
 zero test. Native operation and full-model ownership gates remain separate.
 These are M4 Pro 24 GB diagnostics with k8v3, greedy seed 42 and 128 generated
-tokens. TurboQuant KV requires serial placement in the existing execution
-planner. Evidence: mlx-upgrade-0.32.2/deferred-kv-http{,-review}.json. This closes
+tokens. Those measurements used serial placement; shared integration is covered below.
+Evidence: mlx-upgrade-0.32.2/deferred-kv-http{,-review}.json. This closes
 the deferred-model serving comparison; broader pressure and quiet gates remain.
 
 Direct packed-key attention is closed as an additional speed candidate. A
@@ -612,9 +612,9 @@ snapshots with no missing, pending, dropped or failed writes. The constrained
 arms cause six eviction spills; the async observer confirms 3,264 submissions.
 These sequential shared-server pressure checks cause substantial swapping;
 B4 correctness is a separate native gate, and no speed or memory-reduction
-claim follows. M4 pressure and strict paired performance acceptance remain open.
-The shared integration is now adopted in the unreleased working tree; the
-released v0.3.0 binary retains its earlier placement limits.
+claim follows. The subsequent M4 combined pressure gate also passes with both asynchronous and blocking submissions exercised; full usage, responses and final persistence match. Current measurements and provenance live in benchmarks.md. This closes the named pressure gate; performance and default selection remain separate.
+Shared TurboQuant integration ships in v0.4.0; v0.3.0 retained the earlier
+placement limits.
 Evidence: `reports/qwen38-closeout/composition-baseline/turboquant-composition-manifest.json`.
 Integration evidence: `reports/qwen38-closeout/composition-baseline/turboquant-serving/`.
 Broader family checks pass MiniCPM seeded/logprob serving but reproduce a
@@ -625,6 +625,19 @@ complete suites on both Macs. M4 acceptance also passes fused and unfused
 Gemma seeded sampling, affine KV4 controls and Qwen MTP3 B4 serving.
 MiniCPM prefix checks allow the existing policy to supersede trimmable donors
 while proving byte identity and continuation through retirement.
+
+### Fused codec default selection
+
+The unreleased decoder selects packed K/V fusion by default when a caller
+chooses TurboQuant. `turboQuantFusedDecode` resolves the runtime policy once;
+ordinary storage, shared rows and delayed conversion capture the same value.
+Copies and restored rows retain the codec selection through their existing
+interfaces. `MLX_BUN_TURBOQUANT_FUSED_DECODE=0` selects the original operations.
+The numerical kernels and eligibility rules are unchanged from the accepted
+opt-in. TurboQuant quantization itself remains an explicit cache-format choice.
+The current shared-serving comparison and combined pressure measurements are
+recorded in benchmarks.md; the earlier six-pair timing and native/state gates
+above remain the evidence for the fused implementation.
 
 ## KV-leg limits and non-goals (recorded so they don't creep)
 

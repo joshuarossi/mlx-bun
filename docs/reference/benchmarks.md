@@ -77,6 +77,116 @@ The latest standard comparison is shown first, with machine conditions and
 losses retained. These diagnostic results are observations of this workload,
 not a universal speed ranking.
 
+### Fused TurboQuant default — shared serving (2026-09-13)
+
+The default candidate changes only packed KV decoding for requests that already
+select TurboQuant. The existing accepted kernel, codec bytes and eligibility
+rules are unchanged; `MLX_BUN_TURBOQUANT_FUSED_DECODE=0` supplies the control.
+The standard script runs off/default/default/off with default shared scheduling,
+192 short output tokens, a 16,384-token context target, four concurrent streams,
+4 GiB RAM cache and SSD restart. Each machine compares its own outputs.
+
+M1 Max 32 GB uses MiniCPM5-1B OptiQ-4bit with k8v3 and ordinary decode. The
+measured context contains 9,062 tokens. All four suites complete without errors;
+all 76 requests report the batched lane, and all four SSD flush/restart checks
+pass. Source hashes remain fixed. Each paired short/context response and full
+usage record is identical. Three of four concurrent responses differ in each
+pair while counts and finish reasons match; their throughput is an observed
+serving result, not an identical-output speed ratio.
+
+| M1 MiniCPM metric | Off → default, first pair | Off → default, reverse pair |
+|---|---:|---:|
+| Short decode (tokens/s) | 62.02 → 91.28 | 58.30 → 79.90 |
+| Short complete request (ms) | 3,126.77 → 2,160.84 | 3,327.89 → 2,433.64 |
+| Decode at context (tokens/s) | 32.61 → 67.71 | 31.84 → 67.87 |
+| Cached 64-token completion (ms) | 1,964.74 → 956.20 | 2,018.15 → 948.01 |
+| Cold context first output (ms) | 3,973.51 → 3,838.52 | 3,956.20 → 3,844.87 |
+| Four-stream aggregate (tokens/s) | 219.29 → 259.28 | 200.76 → 258.06 |
+| Peak sampled RSS (MiB) | 1,459.05 → 1,423.50 | 1,467.69 → 1,463.06 |
+
+Short complete time falls 26.9–30.9%; cached complete time falls 51.3–53.0%.
+The observer records 28 samples with no collection errors; 22 of 27 active-Bun
+samples name that process as the last GPU submitter, and five name Terminal.
+This is a diagnostic serving comparison, with two balanced pairs rather than
+a statistical significance claim. It supports the earlier repeated codec
+measurements; it does not change the default cache quantization format.
+
+Reports: `reports/prefill-observation/tq-default-minicpm-m1-{0..3}.md.json`,
+`.../tq-default-minicpm-m1-review.json` and the adjacent activity/plan files.
+M4 Pro 24 GB uses the packed interleaved Qwen3.8-27B target, its folded RTN4
+companion at MTP3, k8v3 and fixed 256-token prefill chunks. Asynchronous weight
+expansion is explicitly off in both arms. All four suites complete with 76
+batched requests, no failures, fixed source hashes and durable SSD restart.
+Every paired request, including concurrent requests, matches input, response
+text, complete usage and finish reason. The measured context has 10,399 tokens.
+
+| M4 Qwen/MTP3 metric | Off → default, first pair | Off → default, reverse pair |
+|---|---:|---:|
+| Short decode (tokens/s) | 18.56 → 18.03 | 18.18 → 18.33 |
+| Short complete request (ms) | 11,527.54 → 11,867.76 | 11,749.39 → 11,665.97 |
+| Decode at context (tokens/s) | 12.67 → 21.58 | 12.66 → 21.53 |
+| Cached 64-token completion (ms) | 5,230.11 → 3,053.58 | 5,230.00 → 3,059.66 |
+| Cold context first output (ms) | 93,008.61 → 90,598.29 | 93,032.18 → 90,656.40 |
+| Four-stream aggregate (tokens/s) | 17.14 → 17.23 | 17.13 → 17.21 |
+| Peak sampled RSS (MiB) | 15,086.63 → 15,140.56 | 15,160.28 → 15,103.94 |
+
+Cached complete time falls 41.5–41.6% and context decode improves about 70% in
+both pairs. Short complete time is mixed: +2.95% in the first pair and −0.71%
+in the reverse. No broad short-decode or memory saving is claimed. The observer
+records 188 samples without errors; 178 of 185 active-Bun samples name a test
+process as the last GPU submitter. Other samples name Codex, Terminal or
+loginwindow. Retained swap and process activity stay in the diagnostic records.
+
+These results support selecting the existing fused decoder by default for
+TurboQuant, with the short-Qwen tradeoff explicit and `=0` retained. They also
+confirm its composition with shared MTP. They do not change quantization or
+claim a new Kanban speedup: that accepted task uses affine KV4.
+Reports: `reports/prefill-observation/tq-default-shared-{0..3}.md.json`,
+`.../tq-default-shared-review.json`, the source patch and activity/plan files.
+Both-machine focused checks and existing native gates remain separate from
+this serving comparison. The default change passes 2,320 model-free tests
+with 14 fixture skips, all three typechecks and hygiene.
+
+### Combined TurboQuant/MTP expansion pressure — M4 Pro (2026-09-13)
+
+The saved seven-request agent-boundary fixture passes on M4 Pro 24 GB with
+variant 13, fused TurboQuant k8v3, the packed interleaved Qwen target and folded
+RTN4 draft at MTP depth 3. Three fresh shared servers compare synchronous
+expansion with 8 GiB and 1 GiB RAM caches, then bounded asynchronous expansion
+with a 1 GiB cache. Shared capacity is four; these requests arrive sequentially
+and use actual B=1. The separate concurrent-row gates remain the B>1 evidence.
+
+All 21 responses preserve choices and complete usage records, including draft
+acceptance. The final request has 14,467 prompt tokens, reuses 12,955 and emits
+512 tokens. Each server persists 14 SSD entries (5,373,652,992 bytes), including
+the final 14,979-token checkpoint, with zero pending, missing, dropped or failed
+writes. All servers exit successfully; source, fixture and artifact-config
+hashes remain fixed. This run tests persistence but does not trigger an SSD
+restore. Existing restart tests supply that separate evidence.
+
+| Expansion / RAM limit | Final RAM entries / bytes | Async / blocking submissions | Maximum observed active allocation |
+|---|---:|---:|---:|
+| Synchronous / 8 GiB | 6 / 2,933,437,440 | 0 / 4,224 | 15,974,600,266 B |
+| Synchronous / 1 GiB | 1 / 598,766,592 | 0 / 4,224 | 13,872,975,434 B |
+| Bounded async / 1 GiB | 1 / 598,766,592 | 4,017 / 207 | 14,736,281,254 B |
+
+The asynchronous arm exercises both sides of the existing allocation threshold.
+Its observer preserves every projection argument, including the contiguous-row
+proof used by wide prefill. Five-second process/GPU samples, RSS, vmmap and
+system memory records are retained. The last GPU submitter belongs to the test
+server in 49/50, 49/50 and 29/49 samples respectively; the remaining samples
+name Codex or Terminal. A last-submitter field does not establish sustained
+GPU ownership or utilization by that process. The machine starts with 84% free memory
+and 3,481 MB retained swap. This is a completed combined-pressure correctness
+gate; its sequential arm order does not establish a performance gain.
+The bounded expansion flag remains off by default.
+
+Raw evidence and the checked summary are
+`reports/prefill-observation/combined-tq-mtp-pressure{,-review}.json`, with
+`pressure-*.server.log`, boundary observations and the captured runner sources
+in `completed-acceptance-runner-sources.json`. The three SSD directories remain
+on M4 at the paths recorded in each row.
+
 ### Default batched h2h after token-history reuse — M4 Pro (2026-09-13)
 
 The final two standard suites use `9411c11`, Bun 1.4.2 and MLX 0.32.2 on the

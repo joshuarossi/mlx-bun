@@ -1,10 +1,9 @@
-import { runtimeValue } from "../runtime-config";
 import { decodedKvDonorAttention } from "./decoded-kv-donor";
 import type { MlxArray } from "../mlx/array";
 import { KvTensorRows, type KvTensorRowView } from "../backends/mlx/kv-tensor-rows";
 import { disposeResources } from "../engine/resources";
 import { TurboQuantKVCache, type BatchableCache, type Cache, type Mask, type RotatedValueAttentionState, type PaddedPrefillCache, type PrefillPadding } from "./gemma4-base";
-import { TurboQuantCodec, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
+import { TurboQuantCodec, turboQuantFusedDecode, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 
 const fields = ["kIdx", "kScales", "kZeros", "vPacked", "vScales"] as const;
 function encoded(planes: readonly MlxArray[]): TurboQuantTensor {
@@ -19,7 +18,7 @@ export class BatchedTurboQuantKVCache implements BatchableCache, PaddedPrefillCa
   #reuseOffsets: number[] = [];
   #headDim: number | null = null;
   constructor(readonly kBits: number, readonly vBits: number,
-    readonly fusedDecode = runtimeValue("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1") {
+    readonly fusedDecode = turboQuantFusedDecode()) {
     this.#codec = new TurboQuantCodec(kBits, vBits, fusedDecode);
   }
   restorePrefillEnds(ends: readonly number[] | undefined): void { this.#storage.restorePrefillEnds(ends); }

@@ -1,3 +1,4 @@
+import { turboQuantFusedDecode } from "../../model/turboquant-codec";
 import { runtimeConfig, withRuntimeConfig } from "../../runtime-config";
 import type { KvSchemeOptions } from "../../kv-scheme";
 import { KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache, TurboQuantKVCache, type Cache } from "../../model/gemma4-base";
@@ -47,7 +48,7 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     const start = options.quantizedKvStart ?? 0;
     const scheme = { ...turboQuant };
     const runtime = runtimeConfig();
-    const fusedDecode = runtime.value("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1";
+    const fusedDecode = turboQuantFusedDecode(runtime);
     const maintain: KvMaintenance = (cache) => withRuntimeConfig(runtime, () => maybeTurboQuantizeKv(cache, scheme, start));
     if (start > 0) maintain.maxAppendTokens = (cache) => {
       let remaining = Number.POSITIVE_INFINITY;

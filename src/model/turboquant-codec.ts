@@ -1,6 +1,12 @@
+import { runtimeConfig, type RuntimeConfig } from "../runtime-config";
 import type { MlxArray } from "../mlx/array";
 import * as tq from "../mlx/turboquant-ops";
 import type { KvCodec } from "../backends/mlx/kv-codec";
+
+/** Resolve once when a cache is created; storage copies retain this policy. */
+export function turboQuantFusedDecode(config: RuntimeConfig = runtimeConfig()): boolean {
+  return config.flag("MLX_BUN_TURBOQUANT_FUSED_DECODE", true);
+}
 
 /** One TurboQuant-encoded (K, V) storage tuple — the 5 arrays kv-store.ts
  *  and toQuantized/fromKVCache pass around. Not `ops.QuantizedTensor`

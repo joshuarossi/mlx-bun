@@ -65,7 +65,8 @@ describe("runtime config", () => {
   });
 });
 
-test("TQ storage and delayed conversion retain their bound kernel policy across host changes", async () => {
+for (const setting of [undefined, "1"] as const)
+test(`TQ storage and delayed conversion retain their ${setting ?? "default"} kernel policy across host changes`, async () => {
   const { TurboQuantKVCache, KVCache } = await import("../../src/model/gemma4-base");
   const { BatchedTurboQuantKVCache } = await import("../../src/model/batched-turboquant-kv");
   const { DelayedTurboQuantKVCache } = await import("../../src/model/delayed-turboquant-kv");
@@ -73,7 +74,7 @@ test("TQ storage and delayed conversion retain their bound kernel policy across 
   const { cloneKvCaches } = await import("../../src/kv-store");
   const { targetCacheLayout } = await import("../../src/backends/mlx/cache-layout");
   const { MlxArray } = await import("../../src/mlx/array");
-  const on = createRuntimeConfig({ MLX_BUN_TURBOQUANT_FUSED_DECODE: "1" });
+  const on = createRuntimeConfig({ MLX_BUN_TURBOQUANT_FUSED_DECODE: setting });
   const off = createRuntimeConfig({ MLX_BUN_TURBOQUANT_FUSED_DECODE: "0" });
   const maintain = withRuntimeConfig(on, () => createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 1 }));
   const solo = withRuntimeConfig(on, () => new TurboQuantKVCache(8, 3));

@@ -18,7 +18,7 @@ import { quantizedMatmulRows } from "../mlx/quantized-rows";
 import { expertOffloadArray } from "../expert-offload";
 import * as tq from "../mlx/turboquant-ops";
 import type { KvCodec } from "../backends/mlx/kv-codec";
-import { TurboQuantCodec, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
+import { TurboQuantCodec, turboQuantFusedDecode, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 export { disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 import { runtimeValue } from "../runtime-config";
 
@@ -1672,7 +1672,7 @@ export class TurboQuantKVCache implements Cache {
   readonly #codec: KvCodec<TurboQuantTensor>;
 
   constructor(readonly kBits: number, readonly vBits: number,
-    readonly fusedDecode = runtimeValue("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1") {
+    readonly fusedDecode = turboQuantFusedDecode()) {
     this.#codec = new TurboQuantCodec(kBits, vBits, fusedDecode);
   }
 
