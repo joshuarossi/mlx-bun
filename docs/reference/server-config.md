@@ -197,6 +197,13 @@ adapter-revision and KV-policy identities separate incompatible state.
 publishes checkpoints for processed tokens through the same cache.
 Long-conversation performance acceptance remains open.
 
+Uniform KV4 attention automatically groups three query heads for the key
+multiplication on M4 Pro when B≤2, L=3, GQA6/D256, N≥8192 and bf16/f32
+match the qualified shape. Masking, softmax and value multiplication retain
+their existing geometry. This internal selection needs no additional flag;
+other shapes and machines keep the existing implementation. Exactness and
+timing evidence are in [benchmarks.md](benchmarks.md#three-query-affine-attention-head-grouping).
+
 In v0.4.0, Qwen uniform affine KV4 with
 `quantizedKvStart=0` supports configured speculative execution by default.
 `MLX_BUN_QWEN_SPEC_KV4=0` restores the ordinary-decode compatibility control. Recurrent state and draft KV keep their original precision. Shared Qwen MTP

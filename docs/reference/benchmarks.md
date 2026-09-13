@@ -1043,13 +1043,61 @@ evaluation, 30 calls per arm, at the two longer contexts in bf16. On M4 Pro,
 grouping three heads reduces median paired attention time by 7.48–11.44%
 across all eight batch/context/layout cells; all six pairs improve in each
 cell. Grouping two heads is inconsistent (−2.46% to +0.62%), so the three-head
-candidate proceeds to full-model verification. Ten of eleven observer samples
+candidate proceeds to the full-model verification below. Ten of eleven observer samples
 identify the benchmark as last GPU submitter; the initial sample identifies
-mediaanalysisd. No whole-model or serving speedup is established by this screen.
+mediaanalysisd. These operation timings alone do not establish serving speed.
+
+The subsequent M4 Pro 24 GB comparison uses Bun 1.4.2, MLX 0.32.2,
+source `a740464` with only the key-head reshape changed, and the packed
+Qwen3.8-27B artifact. Six alternating baseline/candidate blocks evaluate
+three full L3 forwards and four L1 continuations per cell. Attention history
+is padded to the target length after a real four-token initialization;
+recurrent state retains that initialization. This is a synthetic state and
+timing test, not a long-prompt quality evaluation. All 72 paired measured
+forwards, 96 continuation vectors and retained states match exactly.
+
+| Batch | Attention prefix | Baseline forward ms | Grouped forward ms | Median paired change |
+|---|---:|---:|---:|---:|
+| 1 | 8,192 | 117.50 | 115.61 | −1.28% |
+| 1 | 32,768 | 143.61 | 140.27 | −2.12% |
+| 2 | 8,192 | 361.77 | 359.48 | −0.62% |
+| 2 | 32,768 | 429.62 | 423.21 | −1.67% |
+
+Every native pair improves in each cell. A separate HTTP comparison uses a
+real 9,067-token rendered prompt, KV4, MTP depth two and default batch cap
+eight. Each fresh server warms the prompt, then measures two 64-token greedy
+responses with 9,066 cached tokens. Six alternating blocks preserve all 12
+paired responses, usage records and speculation decisions. Median paired
+complete request time decreases 0.89%, with all pairs improving; median
+decode throughput is 18.11 versus 18.29 tok/s. The shared benchmark request
+measurement captures complete streams. All 83 process/GPU samples inside
+measured requests identify the server as last GPU submitter, with no observer
+errors. This sampled observation cannot exclude activity between samples.
+RAM supplies these hits; write-behind is disabled and there are no SSD restores.
+This is a targeted serving comparison, not a replacement standard h2h matrix.
+
+Three-head selection is automatic only on `applegpu_g16s` for B1/B2,
+24 query heads/four KV heads, L3/D256, KV4/group64, bf16/f32 and N≥8,192.
+An additional 32 M4 cases at N=65,536/131,072 preserve key and output bytes.
+The permanent strided-KV regression passes on both Macs. The complete local
+model-free suite passes 2,310 tests with 14 fixture skips; typechecks pass.
 
 Raw records: `reports/prefill-observation/head-pair-{m1-control,m1-key-stage,m4-key-stage}.json`,
 `head-pair-perf-m4.json`, `head-pair-perf-m4.activity.json` and
-`head-pair-perf-review.json`. The original M1 screen is also retained.
+`head-pair-perf-review.json`, `head-pair-large-m4.json`,
+`head-pair-model-review.json`, `head-pair-http-v2-review.json` and their
+per-arm JSON/activity records. The original M1 screen and the aborted HTTP
+setup with a below-threshold prompt are retained and excluded from timing.
+
+### M1 wide-prefill qualification
+
+Forcing the existing M3+ trellis wide-prefill kernel on M1 Max changes
+output bytes in 35 of 66 cases against expanded-bf16 native matmul. The
+screen covers M5–15, two/three/four-bit codes, input width 5,120 and output
+widths 128/17,408. All 33 full-width cases differ; the smaller width also
+differs at three-bit M14/M15. The current kernel is therefore not selected
+on M1. No speed claim is made for the failing candidate. Raw records:
+`reports/prefill-observation/trellis-wide-prem3-m1.json`.
 
 ### Native integer ranges and monitored model comparison
 
