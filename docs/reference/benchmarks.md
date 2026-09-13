@@ -1031,7 +1031,9 @@ packed Qwen artifact, folded RTN4 MTP depth two, affine KV4, batch cap eight,
 4 GiB RAM cache, 64 GiB SSD cache, pinned Pi/profile, seed 42 and sampling
 settings as `kanban-session-cache-r2`. Automatic prefill replaces the earlier
 explicit 256-token chunks, and early output uses its new default. The initial
-request is identical. Source remains fixed, Pi and server exit successfully,
+request is identical. The earlier engine also defaulted to 2,048-token
+chunks when no override was supplied; this comparison removed the task's
+explicit override. Source remains fixed, Pi and server exit successfully,
 and there are no inference failures or retries. Pi records one tool error.
 
 | Measurement | Previous session-cache task | Integrated task |
@@ -1071,23 +1073,59 @@ previous task's response prefix; automatic chunks reproduce the integrated
 task's prefix. Early-output on/off preserves the complete response and usage
 within each chunk setting. This isolates the initial divergence to prefill
 chunking, not to the early-output option. It does not establish a general
-quality regression from chunking. A full fixed-256 control with the integrated
-engine is running. Its complete first response reproduces all 35,002 tokens,
-128,406 reasoning characters, tool arguments and MTP counts: 27,506 drafted,
-21,249 accepted across 13,753 rounds. First-response wall time is 1,967.818 s
-versus 2,000.478 s previously. This is response identity, not a record of every
-logit vector. The next request differs only in generated tool IDs and the
-actual empty directory's listing timestamps. Full app acceptance remains
-pending; no application repair is included.
+quality regression from chunking. The full fixed-256 control on the same
+integrated source is complete. No application repair or additional prompt is
+included.
 
-Raw requests/responses, source hashes, process/GPU observations, final cache
-flush, app, screenshots and the unchanged acceptance protocol are under
-`reports/kanban-decode-integrated-r1/`. All 40 SSD snapshots are archived in
-the M1 report directory; their 67,578,265,600 bytes match the pre-transfer
-file-size manifest. The transfer completes before the control's first response
-ends. Its early overlap is recorded in process observations, so the control
-is a quality comparison rather than a quiet timing pair. It retains the same
-RAM/SSD capacities.
+| Measurement | Previous session-cache task | Integrated, fixed-256 control |
+|---|---:|---:|
+| Task wall time | 83m57.098s | 69m52.768s |
+| Generated tokens | 76,031 | 67,816 |
+| Requests | 25 | 17 |
+| Weighted post-first-output throughput | 15.542 tok/s | 16.491 tok/s |
+| Sum of pre-first-output intervals | 143.024 s | 75.877 s |
+| Follow-ups with cached input | 24/24 | 16/16 |
+| Durable final SSD flush | Yes | Yes |
+| Missing / failed snapshots at final flush | 0 / 0 | 0 / 0 |
+| Verified app acceptance categories | 16/18 | 17/18 |
+
+The control reproduces the complete initial response: 35,002 tokens,
+128,406 reasoning characters, identical tool arguments and MTP counts:
+27,506 drafted, 21,249 accepted across 13,753 rounds. First-response wall time
+is 1,967.818 s versus 2,000.478 s previously. This is response identity, not a
+record of every logit vector. The next request differs only in generated tool
+IDs and the actual empty directory's listing timestamps; later outputs diverge.
+The full task is 16.8% shorter with 10.8% fewer tokens and 6.1% higher observed
+throughput. Different subsequent work and context lengths prevent attributing
+that whole-task ratio to the engine alone.
+
+The untouched app meets the requested 16/18 target, passing 17 categories.
+Creating/editing labeled and assigned cards, column operations, native drag
+and reorder, Done indicators, archive/restore, search, persisted fields and
+order, light/dark themes and keyboard create/edit all pass. The remaining
+failure is the earlier filter-reset defect: the all-items options omit an
+empty value, so choosing them filters for their display text and hides every
+card. Reload clears the filters. Keyboard editing improves over the prior
+three 16/18 tasks. All 14 generated files retain their pre-validation hashes;
+no blocking JavaScript error occurs. This is a successful task control, not
+proof of quality consistency across prompts or seeds. Retain fixed-256 chunks
+in this task-comparison profile; this result does not justify replacing the
+general automatic policy based on one changed trajectory.
+
+Pi and server exit successfully with unchanged engine source, zero tool
+errors, retries or compactions. Final persistence retains 34 SSD entries and
+48,310,636,544 bytes, with longest durable prefix 73,035 and no pending,
+dropped, failed or missing snapshots. The five-second observer records the
+server as last GPU submitter in 823 of 834 task samples; the other samples
+identify Codex and Terminal, with no observer errors.
+
+Raw requests/responses, source hashes, activity, cache flushes, untouched apps
+and browser evidence are under `reports/kanban-decode-integrated-r1/` and
+`reports/kanban-decode-fixed-prefill-r1/`. All 40 SSD snapshots from the first
+run are archived in the M1 report directory; their 67,578,265,600 bytes match
+the pre-transfer file-size manifest. The transfer overlaps the control's
+first response and completes before it ends. This is a quality comparison,
+not a quiet timing pair; both tasks retain the same RAM/SSD capacities.
 
 A bounded passive sample during the fixed-256 first response records median
 GPU activity of 98.28% and nominal thermal status. `mactop`'s byte-bandwidth
