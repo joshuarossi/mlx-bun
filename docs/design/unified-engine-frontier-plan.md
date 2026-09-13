@@ -1970,3 +1970,17 @@ their existing prefill interfaces. A caller's explicit request value wins.
 The automatic recurrent-attention policy bounds the temporary materialized
 SDPA score workspace; it does not inspect live free memory or refuse work.
 Default values and precedence live in [server configuration](../reference/server-config.md).
+
+### 12.16 Committed append cache formats
+
+`MlxTokenAppend` declares the affine formats supported by its model graph.
+Request preparation supplies template-derived candidates; placement selects
+an eligible method without inspecting numerical cache formats. The ordinary
+method consumes the binding's declaration once and uses its committed-append
+operation. Qwen shares projection work over known tokens while retaining each
+query's one-token affine attention calculation and causal KV extent.
+`KvMaintenance.maxAppendTokens` bounds a committed chunk at a pending
+precision transition; the method runs maintenance before continuing.
+Verification remains a separate method capability: enabling committed affine
+appends does not enable affine echo verification. No default fill setting or
+shared-group support is inferred from that declaration.

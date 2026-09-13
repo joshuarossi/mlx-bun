@@ -41,7 +41,8 @@ export function resolveExecution(
   const promptCache = method !== "speculative" && !request.hasVision;
   const fill = features.fill && method === "autoregressive" && mechanism === "serial" &&
     !request.hasDraft && !request.hasVision && !request.userSeed && !request.hasGrammar &&
-    !request.wantsLogprobs && !request.kvQuant && !request.turboQuant;
+    !request.wantsLogprobs;
+  // Cache-format eligibility belongs to the method's append binding.
   if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
   const checkpoint = capabilities.checkpoints && method === "autoregressive" &&
     (mechanism === "serial" || capabilities.sharedCheckpoints === true) && promptCache && !pagedKv && !request.hasGrammar &&

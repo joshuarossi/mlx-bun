@@ -11,6 +11,8 @@ import { DelayedTurboQuantKVCache } from "../../model/delayed-turboquant-kv";
 
 export interface KvMaintenance {
   (cache: Cache[]): void;
+  /** Limit committed work at a pending precision transition. */
+  maxAppendTokens?(cache: readonly Cache[]): number;
   /** Bind state requiring row-local maintenance before shared decode. */
   prepareBatch?(cache: Cache[]): void;
   /** Bind all precision policies before a prefill cohort owns row boundaries. */
@@ -85,6 +87,17 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
       ops.evalAll(cache[i]!.state());
       clearCache();
     }
+  };
+  if (start > 0) maintain.maxAppendTokens = (cache) => {
+    let remaining = Number.POSITIVE_INFINITY;
+    for (let layer = 0; layer < cache.length; layer++) {
+      if (byLayer && !byLayer.has(layer)) continue;
+      const c = cache[layer]!;
+      const conversion = c.affineConversion ?? (c instanceof KVCache || c instanceof RotatingKVCache ? c : undefined);
+      if (conversion && conversion.offset < start)
+        remaining = Math.min(remaining, start - conversion.offset);
+    }
+    return remaining;
   };
   maintain.preparePrefill = (cache) => {
     for (let layer = 0; layer < cache.length; layer++) {

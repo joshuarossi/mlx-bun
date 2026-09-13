@@ -282,8 +282,8 @@ export function createRequestPrep(input: {
    *  when the feature is off or the request's shape refuses it.
    *
    *  Refusals owned here (body-level); the ones only ChatStage can see —
-   *  a compiled grammar, media prompts, a mounted draft model, a quantized KV
-   *  scheme — are applied there. Continuous (batch) placement needs no
+   *  a compiled grammar, media prompts and a mounted draft model — are applied
+   *  there. Cache formats belong to the append binding. Continuous placement needs no
    *  refusal: generate() is the only fill site, so a batched request simply
    *  does not fill.
    *

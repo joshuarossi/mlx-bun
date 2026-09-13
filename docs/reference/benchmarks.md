@@ -771,6 +771,54 @@ shared and speculative request bindings; focused override/ownership checks,
 2,300 model-free tests and all three typechecks pass. Raw evidence:
 `reports/prefill-observation/late-context-auto-kv4-mtp2.md.json`.
 
+### Affine KV composition for committed token appends
+
+M4 Pro 24 GB, Bun 1.4.2 / native pack 0.4.0, `d3dffa9` plus the append
+candidate, measured 2026-09-13 UTC. The old KV4 failure is an attention
+arithmetic change: appending four tokens selects a multi-query quantized
+operation rather than the one-token operation used by decode. Both tiled
+and ordinary unfused attention differ in the diagnostic. Preserving each
+query's causal prefix and one-token operation removes every difference,
+while projection work remains shared over the committed span.
+
+The operation test passes 72 combinations on both Macs: B1/B2, one/four
+positions, KV4/KV8, groups 32/64/128 and bf16/fp16/fp32 (216 assertions each).
+Packed and RTN4 Qwen27B pass complete hidden, logit and cache-byte identity
+plus four continuations at prefixes 128 and 1021 with KV4/KV8. The latter
+crosses the 1,023/1,024 attention boundary. The real packed-model KV4 generation
+loop also retains emitted IDs, final live state, subsequent logits and active
+allocation; 12 of its 26 tokens are filled with no verification. A separate
+real-generation case converts KV eight tokens after the prompt, inside the
+committed output span, and retains the same complete state/output checks.
+The cache policy supplies that boundary; the method splits and converts
+before continuing. Log: `affine-fill-delayed-native-m4.log`.
+
+Six alternating HTTP pairs use fresh servers, explicit serial execution,
+KV4, disabled prompt caching, temperature zero, thinking off and a 128-token
+budget. Each server warms the weather request before measuring weather and
+shell-tool fixtures. The packed arm preserves all 24 responses: tool names,
+arguments, text, finish reasons and prompt/completion counts. All twelve
+paired request comparisons improve. Median paired complete-time reductions
+are 16.90% for weather and 16.05% for shell-tool output; median wall times
+are 4,898.64→4,068.83 ms and 5,234.14→4,397.59 ms. Each enabled request fills
+19 tokens with zero verification. Tools are buffered until a complete call,
+so these are request-time results, not ordinary decode tok/s. The matching
+RTN4 comparison also preserves all 24 responses and improves every pair.
+Its median paired reductions are 3.13% and 2.77%, with median wall times
+4,030.36→3,901.19 ms and 4,307.17→4,159.80 ms. All enabled RTN4 requests
+also fill 19 tokens without verification. Both arms retain fixed source
+throughout their six blocks.
+
+The append binding declares supported affine formats. Preparation and
+placement pass the candidate to the method without duplicating cache-format
+checks. Fill remains opt-in and serial-only. TurboQuant, affine verification,
+shared-group fill and held-out quality are separate cells. The full local
+suite passes 2,303 tests with 14 fixture skips; typechecks and expanded
+operation/ownership checks pass. Diagnostic raw reports:
+`reports/prefill-observation/affine-append-{attention,model,model-rtn4}-m4.json`,
+`affine-fill-native-m4.log`, and `affine-fill-http{-rtn4,}-m4.json` in the same directory.
+The first native timing arms include cold work and are not speed evidence.
+
 ### Same-batch affine full-attention oracle
 
 `tests/parity/batched-affine-oracle.test.ts` compares MiniCPM5-1B OptiQ against

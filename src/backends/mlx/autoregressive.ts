@@ -35,6 +35,8 @@ export interface MlxDecodeStep {
 /** Model-owned execution for committed tokens. Recheck the chunk limit after
  * each forward: native arithmetic can change at a cache-length boundary. */
 export interface MlxTokenAppend {
+  /** Affine formats whose committed append retains one-token arithmetic. */
+  readonly affineKvBits?: readonly number[];
   maxChunkSize(state: readonly Cache[]): number;
   forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
 }

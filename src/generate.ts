@@ -212,8 +212,8 @@ export function shouldUseGrammarJump(
  *   - logprobs/top_logprobs: injected tokens are never sampled, so they have
  *     no distribution row (same rule as shouldUseGrammarJump).
  *   - promptEmbeddings: vision/audio prompts (and mRoPE) — untested shape.
- *   - kvBits/kvConfig/turboQuant: post-conversion multi-token append is
- *     L-generic but unvalidated; refuse in v1 rather than pay it silently. */
+ *   - affine KV: the model's append binding declares its supported formats.
+ *     TurboQuant and verify-policy affine appends remain separate gates. */
 export function shouldUseFill(
   options: Pick<
     GenerateOptions,
@@ -221,15 +221,18 @@ export function shouldUseFill(
     | "kvBits" | "kvConfig" | "turboQuant"
   >,
   runtime: RuntimeConfig = runtimeConfig(),
+  append?: Pick<MlxTokenAppend, "affineKvBits"> | null,
 ): boolean {
   if (!options.fill) return false;
   if (resolveFillMode(runtime.value("MLX_BUN_FILL") ?? "off") === "off") return false;
+  const affineSupported = options.kvConfig?.length
+    ? options.kvConfig.every(layer => append?.affineKvBits?.includes(layer.bits))
+    : !options.kvBits || !!append?.affineKvBits?.includes(options.kvBits);
   return options.grammar === undefined &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0) &&
     options.promptEmbeddings === undefined &&
-    !options.kvBits &&
-    !options.kvConfig?.length &&
+    affineSupported &&
     options.turboQuant === undefined;
 }
 
@@ -643,6 +646,7 @@ async function* generateInner(
   const ownsCache = !options.cache;
   const resuming = options.initialPendingToken !== undefined;
   let cache: Cache[] = options.cache ?? [];
+  let appender: MlxTokenAppend | null = null;
   try {
     if (ownsCache) cache = binding.makeCache();
     if (!cache.length) throw new Error("AR binding returned an empty cache");
@@ -657,6 +661,9 @@ async function* generateInner(
     // Replace fresh full-attention caches before any forward. The deepest
     // write is prompt + maxTokens - 1, so capacity covers every decode step.
     maybePageKv(cache, options, promptTokens.length + maxTokens);
+    appender = options.fill ? binding.createAppend?.({
+      hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
+    }) ?? null : null;
   } catch (error) {
     if (ownsCache) for (const state of cache) state.dispose();
     stepSampler.dispose();
@@ -670,7 +677,7 @@ async function* generateInner(
   // window) layers append multi-token writes through #updateConcat — O(window)
   // per append rather than the O(L) a plain ring pays — so v1 warns and skips
   // the whole feature for those models rather than paying it silently.
-  let fillOn = shouldUseFill(options, runtime);
+  let fillOn = shouldUseFill(options, runtime, appender);
   if (fillOn && cache.some((c) => c instanceof RotatingKVCache)) {
     fillOn = false;
     if (!warnedFillRotating) {
@@ -690,7 +697,7 @@ async function* generateInner(
   // restore a pre-round snapshot and bit-exactly replay the accepted prefix.
   // A model whose caches can do neither still gets assert-policy fills; verify
   // proposals are dropped and counted (stats.verifyUnsupported).
-  const verifyCapable = fillOn && cache.every(
+  const verifyCapable = fillOn && !options.kvBits && !options.kvConfig?.length && cache.every(
     (c) => c.isTrimmable() || typeof rewindable(c).specRoundRollback === "function",
   );
   closeBatchSetup?.();
@@ -722,7 +729,6 @@ async function* generateInner(
   let pendingExtras: StepExtras | null = null;
   let nextExtras: StepExtras | null = null;
   let decoder: MlxDecodeStep | null = null;
-  let appender: MlxTokenAppend | null = null;
   let finished = false;
   let threw = false;
   let executionError: unknown;
@@ -825,8 +831,7 @@ async function* generateInner(
     nextPending = null;
     disposeStepExtras(nextExtras);
     nextExtras = null;
-    // No-op under the fill exclusions (kv quant refuses fill); kept so the
-    // boundary stays correct if those exclusions ever loosen.
+    // Conversion runs at the ordinary committed-token boundary as well.
     maintainKv(cache);
 
     let checkpointMs = 0;
@@ -842,11 +847,18 @@ async function* generateInner(
     let logitsAll: MlxArray | null = null;
     try {
       const chunkSize = (state: readonly Cache[]) => {
-        const maxChunk = appender?.maxChunkSize(state) ?? 1;
+        const maxChunk = Math.min(appender?.maxChunkSize(state) ?? 1,
+          maintainKv.maxAppendTokens?.(state) ?? Number.POSITIVE_INFINITY);
         return fill.appendChunkSize > 0 ? Math.min(fill.appendChunkSize, maxChunk) : maxChunk;
       };
+      const committedGraph = appender ? appender.forwardHidden.bind(appender) : graph.forwardHidden.bind(graph);
+      const forwardCommitted = maintainKv.maxAppendTokens ? async (ids: MlxArray, state: Cache[]) => {
+        const hidden = await committedGraph(ids, state);
+        try { maintainKv(state); return hidden; }
+        catch (error) { hidden.dispose(); throw error; }
+      } : committedGraph;
       hf = await appendFillHidden(
-        !verify && appender ? appender.forwardHidden.bind(appender) : graph.forwardHidden.bind(graph),
+        verify ? graph.forwardHidden.bind(graph) : forwardCommitted,
         cache, ids, verify ? () => ids.length : chunkSize,
       );
       const [, Lf, Hf] = hf.shape as [number, number, number];
@@ -1034,9 +1046,6 @@ async function* generateInner(
     decoder = options.decodePolicy?.compiledDecode === false ? null : binding.createDecode?.({
       hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
     }) ?? null;
-    appender = fillOn ? binding.createAppend?.({
-      hasAdapters: !!options.adapters?.length, pagedKv: !!options.pagedKv,
-    }) ?? null : null;
     let stop = false;
     /** Token id read eagerly at the top of the loop for grammar (reused for
      *  the yield, avoiding a second readback). -1 when grammar is off — the

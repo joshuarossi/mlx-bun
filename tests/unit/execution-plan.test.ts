@@ -69,6 +69,9 @@ test("fill cannot run in another method, continuous group, or resumable checkpoi
   expect(resolveExecution(request, capabilities, features).fill).toBe(false);
   expect(resolveExecution(request, { ...capabilities, continuous: false }, features))
     .toMatchObject({ fill: true, checkpoint: false });
+  // The selected method's append binding decides cache-format support.
+  expect(resolveExecution({ ...request, kvQuant: true }, { ...capabilities, continuous: false }, features).fill).toBe(true);
+  expect(resolveExecution({ ...request, turboQuant: true }, { ...capabilities, continuous: false }, features).fill).toBe(true);
   expect(resolveExecution({ ...request, hasDraft: true }, capabilities, features).fill).toBe(false);
   const denoising = resolveExecution(request, { ...capabilities, method: "denoising" }, features);
   expect(denoising).toMatchObject({ method: "denoising", mechanism: "serial", fill: false, checkpoint: false });

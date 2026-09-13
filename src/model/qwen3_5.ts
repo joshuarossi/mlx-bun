@@ -10,6 +10,7 @@
 // shared maybeQuantizeKv path).
 
 import type { ModelConfig } from "../config";
+import { quantizedAppendAttention } from "./quantized-append-attention";
 import { gatedDeltaState } from "./qwen3-delta-state";
 import type { Weights } from "../weights";
 import { runtimeFlag } from "../runtime-config";
@@ -463,7 +464,9 @@ export class Qwen3Attention {
       const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
       v.dispose();
-      attn = quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
+      attn = independentRows && L > 1
+        ? quantizedAppendAttention(q, keys, values, this.scale, quantized.groupSize, quantized.bits)
+        : quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
       disposeTriple(keys);
       disposeTriple(values);
     } else {
@@ -673,6 +676,7 @@ export class Qwen35Model {
         return null;
     }
     return {
+      affineKvBits: [4, 8],
       maxChunkSize: (state: readonly Cache[]) => qwenAppendChunkSize(state[0]!.offset),
       forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
         if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)

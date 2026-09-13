@@ -79,6 +79,12 @@ const maxTokens = Number(process.env.MLX_BUN_TEST_FILL_TOKENS ?? "160");
 if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 512)
   throw new Error("MLX_BUN_TEST_FILL_TOKENS must be 1..512");
 const reportPath = process.env.MLX_BUN_TEST_FILL_REPORT;
+const kvBits = process.env.MLX_BUN_TEST_FILL_KV_BITS === undefined ? undefined
+  : Number(process.env.MLX_BUN_TEST_FILL_KV_BITS);
+const kvDelay = process.env.MLX_BUN_TEST_FILL_KV_DELAY === undefined ? undefined
+  : Number(process.env.MLX_BUN_TEST_FILL_KV_DELAY);
+if (kvBits !== undefined && kvBits !== 4 && kvBits !== 8)
+  throw new Error("MLX_BUN_TEST_FILL_KV_BITS must be 4 or 8");
 const blocks = Number(process.env.MLX_BUN_TEST_FILL_BLOCKS ?? "6");
 if (!Number.isInteger(blocks) || blocks < 1 || blocks > 12)
   throw new Error("MLX_BUN_TEST_FILL_BLOCKS must be 1..12");
@@ -204,6 +210,7 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
         : undefined;
       const gen = generate(model, promptIds, {
         temperature: 0, seed: 42, maxTokens: limit, cache,
+        kvBits, kvGroupSize: 64, quantizedKvStart: kvDelay === undefined ? 0 : promptIds.length + kvDelay,
         ...(session ? { fill: session } : {}),
       });
       const tokens: number[] = [];
@@ -276,7 +283,8 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
       const report = { kind: "native-strict-fill-diagnostic", httpMeasurement: false,
         host: hostname(), chip: command(["sysctl", "-n", "machdep.cpu.brand_string"]),
         ramBytes: Number(command(["sysctl", "-n", "hw.memsize"])),
-        artifact: resolve(modelPath), variant: process.env.MLX_BUN_TRELLIS_VARIANT ?? "6",
+        artifact: resolve(modelPath), variant: process.env.MLX_BUN_TRELLIS_VARIANT ?? "13",
+        kvBits, kvGroupSize: 64, quantizedKvStart: kvDelay === undefined ? 0 : promptIds.length + kvDelay,
         configSha256: sha(await Bun.file(`${modelPath}/config.json`).bytes()),
         sourceCommit: command(["git", "rev-parse", "HEAD"]),
         sourceDiffSha256: sha(new TextEncoder().encode(command(["git", "diff", "HEAD", "--", "src"]))),
