@@ -130,6 +130,72 @@ Raw evidence on both Macs: `reports/prefill-observation/interleave-cache-shared-
 matching text/log reports, plan, activity and review. The plan records full
 artifact paths, ordering and exact commands.
 
+### Shared strict tool continuations — M4 Pro 24 GB (2026-09-13)
+
+The shared strict-fill method reuses prefill, row state, sampling and generated
+RAM/SSD caching. Qualified Qwen B1 uses its existing multi-position append;
+wider cohorts preserve one-position arithmetic. Fill remains off by default.
+
+Six bounded HTTP arms use the interleaved Qwen3.8-27B k300 packed artifact,
+Bun 1.4.2, MLX 0.32.2, variant 13, KV4 group 64 from start zero, fixed prefill
+256, 1 GiB RAM cache and a fresh 4 GiB SSD directory per arm. No draft is loaded;
+compiled decode and async expansion are off. Shared arms omit `--batch` and
+use the default cap eight; serial controls explicitly use `--batch 1`.
+Each arm includes ten saved tool-turn fixtures, warmup, explicit seed, an
+ordinary response with tools available, four concurrent requests and an SSD
+restart. Temperature is zero; tools are recorded fixtures and are not executed.
+
+All 108 responses complete without errors. Every paired input, response text,
+tool name/arguments, finish reason, token count and cached-token count matches.
+All six SSD flushes are durable with zero missing, dropped or failed snapshots;
+each fresh process restores 284 tokens of the 285-token restart request.
+All shared responses report `lane: batched`. Shared strict arms each inject
+220 tokens across 13 requests; serial injects 201 across 12 because explicit
+serial fill excludes user-fixed seeds.
+
+| Arm, in execution order | Ten-fixture total ms | Ordinary response ms | Slowest of four concurrent requests ms |
+|---|---:|---:|---:|
+| Shared, fill off | 38,020.4 | 19,655.7 | 4,065.9 |
+| Shared, strict fill | 32,888.2 | 19,685.0 | 3,826.5 |
+| Serial, strict fill | 32,847.0 | 19,659.9 | 7,353.8 |
+| Serial, strict fill | 32,850.0 | 19,670.4 | 7,375.3 |
+| Shared, strict fill | 32,855.4 | 19,666.0 | 4,083.5 |
+| Shared, fill off | 38,013.7 | 19,671.4 | 3,986.8 |
+
+Shared strict fill reduces the sequential fixture total by **13.50% / 13.57%**
+against shared fill-off. Its total differs from serial strict fill by
+**+0.13% / +0.02%**. Ordinary response time changes +0.15% / −0.03% against
+shared fill-off. Concurrent fill-on/off timing is mixed. Shared execution
+finishes the four-request set sooner than serial, but the first submitted
+request takes 3,468 / 2,379 ms versus 1,520 / 1,522 ms under serial. These are
+request durations from concurrently issued calls, not a stationary-load
+capacity measurement. The throughput/first-request latency tradeoff remains.
+
+The run preserves 634 source/config hashes with no start/end changes and 88
+activity samples with no observer failures. It is a diagnostic measurement;
+CPU, GPU and memory activity are retained. Source is `16c2201` plus the saved
+shared-fill diff. A subsequent binding correction uses the same model-declared
+format predicate in both execution methods: KV8 retains specialized append,
+while k4v3 fills through one-position execution. Both seeded native checks pass;
+the measured KV4 selection is unchanged.
+
+The earlier HTTP attempt accidentally shared one SSD directory across arms.
+Its responses remain available, but its timing cannot isolate the fill change.
+The corrected run above uses separate directories. Native delayed-conversion
+failures also remain recorded: exposing cache-owned append boundaries and
+propagating committed attention policy fixes both. Full hidden values, live
+cache bytes and continuation logits pass on M4 across bf16/KV4/k8v3 and delayed
+formats, including B2 retirement into a specialized B1 append. Equivalent M1
+MiniCPM row-state checks pass. Seeded method replay also covers M1 Qwen0.8B and
+Gemma4-e4b. This closes the covered shared strict-fill HTTP/cache comparison;
+speculative/echo fill, media and broader held-out task combinations remain open.
+
+Raw evidence on both Macs: `reports/prefill-observation/shared-fill-http.json`,
+`shared-fill-http-review.json`, activity/server logs and the exact source bundle.
+The `shared-fill-http-initial*` files preserve the invalid-cache experiment.
+Native logs use the `shared-fill-append-*`, `shared-fill-burst-*` and
+`shared-fill-format-selection-*` prefixes.
+
 ### Fused TurboQuant default — shared serving (2026-09-13)
 
 The default candidate changes only packed KV decoding for requests that already

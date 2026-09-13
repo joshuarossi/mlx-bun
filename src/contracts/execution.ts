@@ -33,6 +33,8 @@ export interface ExecutionCapabilities {
   readonly groupedMethods?: readonly string[];
   /** A shared method accepts request-owned grammar continuation proposals. */
   readonly sharedGrammarProposals?: boolean;
+  /** A grouped method can consume this request's strict known continuations. */
+  readonly sharedFill?: boolean;
   /** A graph-owned compiled step exists; cache geometry can still decline it. */
   readonly compiledDecode?: boolean;
 }

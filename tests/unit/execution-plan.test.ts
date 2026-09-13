@@ -64,7 +64,7 @@ test("paged placement keeps prefix reuse separate from interruption checkpoints"
     .toMatchObject({ pagedKv: false, promptCache: false, checkpoint: false });
 });
 
-test("fill cannot run in another method, continuous group, or resumable checkpoint", () => {
+test("fill requires a qualified shared binding and cannot run in another method or resumable checkpoint", () => {
   const features = { pagedKv: false, fill: true };
   expect(resolveExecution(request, capabilities, features).fill).toBe(false);
   expect(resolveExecution(request, { ...capabilities, continuous: false }, features))
@@ -77,6 +77,22 @@ test("fill cannot run in another method, continuous group, or resumable checkpoi
   expect(denoising).toMatchObject({ method: "denoising", mechanism: "serial", fill: false, checkpoint: false });
   expect(Object.isFrozen(denoising)).toBe(true);
   expect(Object.isFrozen(denoising.reasons)).toBe(true);
+});
+
+test("qualified shared fill retains seeded sampling and excludes paging, grammar and metadata", () => {
+  const supported = { ...capabilities, sharedFill: true, turboQuantBatch: true, compiledDecode: true };
+  const features = { pagedKv: false, fill: true, compiledDecode: true };
+  for (const shape of [request, { ...request, userSeed: true }, { ...request, kvQuant: true },
+    { ...request, turboQuant: true }]) {
+    expect(resolveExecution(shape, supported, features)).toMatchObject({
+      method: "autoregressive", mechanism: "continuous", fill: true,
+      promptCache: true, checkpoint: false, compiledDecode: false,
+    });
+  }
+  for (const extra of [{ hasGrammar: true }, { wantsLogprobs: true }, { hasDraft: true }])
+    expect(resolveExecution({ ...request, ...extra }, supported, features).fill).toBe(false);
+  expect(resolveExecution(request, { ...supported, pagedBatch: true }, { ...features, pagedKv: true }).fill).toBe(false);
+  expect(resolveExecution({ ...request, userSeed: true }, { ...supported, continuous: false }, features).fill).toBe(false);
 });
 
 test("compiled replay permission is fixed by graph capability and request composition", () => {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createKvMaintenance } from "../../src/backends/mlx/kv-maintenance";
-import { KVCache, RotatingKVCache, QuantizedKVCache, RotatingQuantizedKVCache, TurboQuantKVCache, type Cache } from "../../src/model/gemma4-base";
+import { KVCache, RotatingKVCache, QuantizedKVCache, RotatingQuantizedKVCache, TurboQuantKVCache, type Cache, type BatchableCache } from "../../src/model/gemma4-base";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
 import * as ops from "../../src/mlx/ops";
@@ -83,6 +83,30 @@ test("TurboQuant append work stops at its conversion boundary", () => {
     expect(maintain.maxAppendTokens!(caches)).toBe(Number.POSITIVE_INFINITY);
   } finally { for (const cache of caches) cache.dispose(); }
 });
+
+for (const format of ["affine", "rotating", "turboquant"] as const) {
+  test(`${format} shared append limits follow logical row offsets through retirement`, () => {
+    const maintain = createKvMaintenance({ quantizedKvStart: 5,
+      ...(format === "turboquant" ? { turboQuant: { kBits: 8, vBits: 3 } } : { kvBits: 4 }) });
+    const rows: Cache[] = [2, 4, 7].map(length => {
+      const row = format === "rotating" ? new RotatingKVCache(8) : new KVCache();
+      populate(row, length); return row;
+    });
+    let group: BatchableCache | undefined;
+    try {
+      maintain(rows); maintain.prepareBatch!(rows);
+      group = (rows[0] as BatchableCache).makeEmptyBatch();
+      group.mergeRows(rows);
+      expect(group.rowOffsets).toEqual([2, 4, 7]);
+      // The physical batch offset is seven, but two rows still await conversion.
+      expect(maintain.maxAppendTokens!([group])).toBe(1);
+      group.filterRows([0, 2]);
+      expect(maintain.maxAppendTokens!([group])).toBe(3);
+      group.filterRows([1]);
+      expect(maintain.maxAppendTokens!([group])).toBe(Infinity);
+    } finally { group?.dispose(); for (const row of rows) row.dispose(); }
+  });
+}
 
 
 test("delayed batch preparation binds layer precision before interpreting row membership", async () => {

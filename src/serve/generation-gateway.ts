@@ -485,6 +485,7 @@ export class GenerationGateway {
       decodeTps: st.decodeMs > 0 && st.generatedTokens > 1 ? ((st.generatedTokens - 1) / st.decodeMs) * 1000 : 0,
       cacheTokens: [],
       ...(st.spec ? { spec: st.spec } : {}),
+      ...(st.fill ? { fill: st.fill } : {}),
     };
   }
 

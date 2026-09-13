@@ -409,8 +409,15 @@ fast-forwarding"). Injected tokens are billed in `completion_tokens` like any
 other generated token; `decodeSteps` counts ordinary sampling steps, so
 `injected / (injected + decodeSteps)` is the share appended without sampling.
 Injected positions still run through the model layers. The field is absent when the feature is off or the
-request's shape refuses it (fixed `seed`, `logprobs`, structured output,
-media, a mounted draft model, quantized KV).
+request's shape excludes it, including `logprobs`, structured output, media
+or a mounted draft model. Strict shared fill supports bf16, affine KV and
+TurboQuant layouts and retains absolute sampling positions for explicit seeds.
+Its `usage.fill` statistics use the same fields as explicit serial execution.
+Known tokens still advance model state. All-known steps skip intermediate
+vocabulary heads and use the model-qualified append geometry, including the
+specialized Qwen B1 append. Wider Qwen rows retain one-position arithmetic. Compiled
+replay, paging, interruption checkpoints and echo verification remain outside
+this shared method. Explicit serial fill still excludes user-fixed seeds.
 
 Under `MLX_BUN_FILL=echo` a second, weaker source joins: spans copied from
 earlier in the same session, carried under policy `verify`. Those ride the same

@@ -232,6 +232,7 @@ interface BatchRequestFields {
 
 export interface BatchStats {
   spec?: import("../../generate").GenerateStats["spec"];
+  fill?: import("../../generate").GenerateStats["fill"];
   promptTokens: number;
   generatedTokens: number;
   /** Prompt tokens served from the prompt cache (Phase 3.2): a joiner's solo
@@ -260,6 +261,7 @@ export type RowPromptCache = import("./checkpoint-state").MlxPrefixCache;
 
 export interface Row {
   spec?: import("../../generate").GenerateStats["spec"];
+  fill?: import("../../generate").GenerateStats["fill"];
   req: BatchRequest;
   resolve: (s: BatchStats) => void;
   reject: (e: unknown) => void;
@@ -1638,6 +1640,7 @@ export class MlxBatchExecutionGroup {
     const first = row.firstTokenAt || now;
     row.resolve({
       ...(row.spec ? { spec: row.spec } : {}),
+      ...(row.fill ? { fill: row.fill } : {}),
       promptTokens: row.promptTokens,
       generatedTokens: row.generated,
       cachedTokens: row.cachedTokens,

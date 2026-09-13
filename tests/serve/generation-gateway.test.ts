@@ -14,6 +14,7 @@ import { configureRuntime } from "../../src/runtime-config";
 import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 import { bindMlxGateway, type MlxBatchGroup } from "../../src/backends/mlx/gateway-binding";
 import { PromptResponseTrace } from "../../src/serve/prompt-response-trace";
+import { FillSession } from "../../src/fill/fill-session";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -24,6 +25,31 @@ const stubModel = {
 } as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
+
+test("the serving binding submits seeded strict fill as a shared method and retains its statistics", async () => {
+  const fill = new FillSession({ rows: [], echo: null, eos: [] }, [1]);
+  const group: MlxBatchGroup = {
+    activeRows: 0, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: undefined,
+    kick() {}, async close() {},
+    async submit(request) {
+      expect(request.method?.key).toContain('"fill"');
+      expect(request.sample).toBeUndefined();
+      expect((request.method!.data as { fill: FillSession }).fill).toBe(fill);
+      await request.onToken(7);
+      return { promptTokens: 1, cachedTokens: 0, generatedTokens: 1,
+        finishReason: "length", prefillMs: 1, decodeMs: 1, fill: fill.stats };
+    },
+  };
+  const g = new GenerationGateway({ ...bindMlxGateway(stubModel), createBatchGroup: () => group }, 8, stubSerial);
+  const shape = { ...batchable, userSeed: true }, options = { fill, seed: 42, maxTokens: 1 };
+  const placement = g.place(shape, options);
+  expect(placement.execution).toMatchObject({ mechanism: "continuous", fill: true, compiledDecode: false });
+  const output: number[] = [];
+  try {
+    const result = await g.run([1], options, token => { output.push(token); }, undefined, shape, placement);
+    expect(output).toEqual([7]); expect(result.fill).toBe(fill.stats);
+  } finally { await g.close(); }
+});
 
 for (const reason of ["stop", "length"] as const) {
   test(`continuous statistics preserve ${reason} at the token budget`, async () => {

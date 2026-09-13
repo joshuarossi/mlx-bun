@@ -1108,16 +1108,13 @@ The bar for this tier is NOT token identity (sampling never guaranteed that):
 it is a paired A/B on task success and wall clock over mocked-replay agent
 sessions. Default off until that lands.
 
-**Composition.** Serial lane only, and it never FORCES a request serial — a
-batch-placed request simply does not fill, because `generate()` is the only
-site that reads `options.fill`. Refused for: a compiled grammar (forced tokens
-are its job), `logprobs`/`top_logprobs` (injected tokens have no distribution
-row — the same rule as `shouldUseGrammarJump`), a user-fixed `seed`
-(reproducibility: the step index would skip injected positions), media
-prompts, a mounted draft model, quantized/TurboQuant KV (post-conversion
-multi-token append is L-generic but unvalidated), and sliding-window models
-(RotatingKVCache multi-token append is O(window) via `#updateConcat` — one
-warning, then no fill).
+**Composition.** Strict fill has serial and shared methods. Shared fill keeps
+request-local sampler history and absolute seeded positions while using the
+same preparation and encoded-row interfaces as other methods. Echo verification
+remains an explicit serial operation. Grammar, probability metadata, media,
+mounted drafting, paging and interrupted-generation checkpoints remain separate
+compositions. Quantized committed append is supported by the qualified model
+bindings described below; quantized echo verification remains inactive.
 
 **Mismatch policy.** If `parseGeneratedToolCalls` rejects the emitted markup
 on a request whose rows fired, `usage.fill.parseFallback` increments and
@@ -1607,6 +1604,67 @@ wall time, first-tool-call latency and task success. Extend the current
 grammar/KV/batch/logprobs/seed exclusions individually after their own gates.
 The full experimental matrix and completion rule are in
 [decode-speed-program.md](decode-speed-program.md#7-qwen38-27b-research-program).
+
+#### Shared strict-fill method
+
+`backends/mlx/fill-group.ts` composes `MlxPrefillCohort`, `MlxStateRows`, the
+model graph, the sampler and the common prompt-cache interface. The scheduler
+continues to select work through `MlxGroupedMethod`. It does not compile tool
+schemas or choose filled tokens. A request owns its `FillSession`, partial
+proposal and sampler history.
+
+Ordinary samples retain build-next-before-read overlap. The method commits a
+token to sampler history only when that token becomes model input. An in-flight
+sample replaced by a strict continuation never enters history. Known positions
+skip sampling; if every next position is known, the method also omits the
+vocabulary projection. The model binding supplies the maximum committed chunk
+size for the current row geometry. When every row has a known continuation and
+the model permits wider chunks, the method uses the same append operation as
+explicit serial execution. Qualified Qwen B1 uses its specialized multi-position
+operation; wider rows retain one-position arithmetic and pipeline overlap.
+Performance parity remains a measured acceptance gate.
+
+Before a row joins, the method flushes pending outputs. Retirement and
+cancellation settle exactly the emitted prefix of a proposal once. Cache
+publication uses the tokens actually consumed by the model, which can lead
+visible output by one pipelined position or the remaining committed span.
+The cache owns RAM retention and
+queued SSD persistence. No storage work is awaited by the method.
+
+The row-aware `appendHiddenRows` interface separately accepts borrowed `[B,L]`
+inputs and asks the model for its maximum chunk length at the actual B. The
+qualified Qwen binding retains its specialized B1 append and declares one
+position for wider rows. Full hidden outputs, live cache bytes and subsequent
+logits match ordinary same-B forwards after retirement on M1 MiniCPM/Qwen0.8B
+and M4 packed Qwen27B with bf16, KV4 and k8v3.
+
+`tests/unit/fill-group.test.ts` exercises actual shared execution, including
+mixed sampled/filled rows, head omission, stream stops, length limits,
+consumer failures, cancellation and late joins. `tests/parity/shared-fill.test.ts`
+compares ordinary, empty-fill and saved-continuation arms at matched B1/B2/B4
+with seeded sampling, presence/repetition penalties and bf16/KV4/k8v3. All
+nine cases pass on M1 MiniCPM, Qwen0.8B and Gemma4-e4b and M4 packed Qwen27B.
+Gemma's sliding layers remain bf16 in the TurboQuant arm.
+
+The M4 delayed-conversion gate caught two composition defects. Shared row
+layouts did not expose their pending precision boundary to committed append;
+the affine attention view also bypassed the model's single-position reduction
+policy. The cache now publishes `maxAppendTokens()` from logical row offsets,
+including padding and retirement, and the attention view carries the qualified
+committed-position policy to its codec. Both delayed KV4 and k8v3 seeded cases
+pass after splitting the five-token span into two and three positions at the
+boundary. Separate B1 full-hidden/cache-byte/continuation comparisons pass for
+bf16, KV4, k8v3 and both delayed formats. Earlier failed logs are retained.
+
+The first unequal-prompt comparison did not fix the admission geometry and
+produced different later tokens; preserve it as an unmatched experiment.
+A later fixture reused a short suffix which recurred during stochastic
+sampling and wrongly supplied the same continuation twice. The numerical
+gate now supplies a saved span at one exact position. Parser/source validity
+has its own tests; numerical replay does not prove arbitrary suffix asserts.
+The failed logs and corrected runs remain in `reports/prefill-observation/`.
+Serving binding tests also cover seeded placement and `usage.fill` propagation.
+The six-arm M4 HTTP comparison preserves all 108 responses and all paired token/cache counts, with six durable SSD restarts. Sequential shared strict-fill performance matches serial within 0.13%; the fill-off comparison and concurrent latency tradeoffs are recorded in benchmarks.md. Model-declared codec eligibility is resolved once at binding: unsupported multi-position formats still use shared one-position fill. A separate k4v3 seeded gate proves that execution with no specialized append.
 
 ### 7.5 Logical jump-ahead prefill
 

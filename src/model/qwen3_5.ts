@@ -459,7 +459,7 @@ export class Qwen3Attention {
     if (cache.attentionState) {
       const view = cache.attentionState.appendAndFetch(k, v);
       k.dispose(); v.dispose();
-      try { attn = view.attend(q, this.scale, mask); } finally { view.dispose(); }
+      try { attn = view.attend(q, this.scale, mask, independentRows); } finally { view.dispose(); }
     } else if (quantized) {
       const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
@@ -678,10 +678,14 @@ export class Qwen35Model {
     return {
       affineKvBits: [4, 8],
       turboQuantFormats: [{ kBits: 8, vBits: 3 }],
-      maxChunkSize: (state: readonly Cache[]) => qwenAppendChunkSize(state[0]!.offset),
+      maxChunkSize: (state: readonly Cache[], rows = 1) => rows === 1 ? qwenAppendChunkSize(state[0]!.offset) : 1,
       forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
+        // Wider cohorts retain their ordinary one-position numerical graph.
+        // The specialized multi-position append remains qualified at B=1.
+        if (ids.shape.length === 2 && ids.shape[0]! > 1 && ids.shape[1] === 1)
+          return this.forwardHidden(ids, cache);
         if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)
-          throw new Error("Qwen committed-token append supports one row and at most four positions");
+          throw new Error("Qwen committed-token append supports one position per shared row or up to four positions at B=1");
         const hidden = this.embed.encode(ids);
         return this.forwardLayers(hidden, cache, true);
       },

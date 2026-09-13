@@ -14,7 +14,7 @@ import { QuantizedKVCache, type Cache, type Mask, type KvAttentionState, type Kv
 export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuantizedKVCache> implements KvAttentionState {
   constructor(readonly groupSize: number, readonly bits: number, readonly start: number,
     readonly maintain: (rows: Cache[]) => void, row?: Cache) {
-    super({ signature: `kv:delayed-quant:${bits}:${groupSize}:${start}`, maintain,
+    super({ signature: `kv:delayed-quant:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof QuantizedKVCache,
       makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits) }, row);
   }
@@ -44,7 +44,7 @@ export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuan
       this.syncPositions(true);
     } catch (error) { for (const view of views) view.dispose(); throw error; }
     return {
-      attend(q, scale, mask) {
+      attend(q, scale, mask, independentPositions) {
         const outputs: MlxArray[] = [];
         try {
           for (const [row, view] of views.entries()) {
@@ -57,7 +57,7 @@ export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuan
               end[end.length - 1] = pads[row]! + lengths[row]!;
             }
             using arr = mask.arr ? mask.arr.slice(start!, end!) : null;
-            outputs.push(view.attend(qr, scale, { mode: mask.mode, arr }));
+            outputs.push(view.attend(qr, scale, { mode: mask.mode, arr }, independentPositions));
           }
           return outputs.length === 1 ? ops.contiguous(outputs[0]!) : ops.concatAxis(outputs, 0);
         } finally { for (const output of outputs) output.dispose(); }

@@ -39,8 +39,9 @@ export function resolveExecution(
   const pagedKv = features.pagedKv && !request.hasVision && !request.hasAdapters;
   if (features.pagedKv && !pagedKv) reasons.push("paged-kv-bypassed-for-media-or-adapters");
   const promptCache = method !== "speculative" && !request.hasVision;
-  const fill = features.fill && method === "autoregressive" && mechanism === "serial" &&
-    !request.hasDraft && !request.hasVision && !request.userSeed && !request.hasGrammar &&
+  const sharedFill = mechanism === "continuous" && capabilities.sharedFill === true && !pagedKv;
+  const fill = features.fill && method === "autoregressive" && (mechanism === "serial" || sharedFill) &&
+    !request.hasDraft && !request.hasVision && (!request.userSeed || sharedFill) && !request.hasGrammar &&
     !request.wantsLogprobs;
   // Cache-format eligibility belongs to the method's append binding.
   if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
@@ -48,7 +49,7 @@ export function resolveExecution(
     (mechanism === "serial" || capabilities.sharedCheckpoints === true) && promptCache && !pagedKv && !request.hasGrammar &&
     !features.fill && !request.wantsLogprobs;
   const compiledDecode = features.compiledDecode === true && capabilities.compiledDecode === true &&
-    method === "autoregressive" && !request.hasAdapters && !pagedKv;
+    method === "autoregressive" && !request.hasAdapters && !pagedKv && !(sharedFill && fill);
   if (features.compiledDecode && !compiledDecode) reasons.push("compiled-decode-unavailable-for-request");
   const grammarJump = grammarProposals || (features.grammarJump === true && request.hasGrammar &&
     method === "autoregressive" && mechanism === "serial" && !request.wantsLogprobs);

@@ -17,7 +17,7 @@ export class DelayedTurboQuantKVCache extends FullTransitioningKvRows<BatchedTur
   constructor(readonly kBits: number, readonly vBits: number, readonly start: number,
     readonly maintain: (rows: Cache[]) => void, row?: Cache,
     readonly fusedDecode = turboQuantFusedDecode()) {
-    super({ signature: `kv:delayed-turboquant:${kBits}:${vBits}:${start}`, maintain,
+    super({ signature: `kv:delayed-turboquant:${kBits}:${vBits}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof TurboQuantKVCache,
       makeLayout: () => new BatchedTurboQuantKVCache(kBits, vBits, fusedDecode) }, row);
   }

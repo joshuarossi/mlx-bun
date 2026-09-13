@@ -11,7 +11,7 @@ import { captureKvAttention, combineKvDonorAttention } from "./kv-attention-view
 export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvRows<RotatingAffineLayout> implements KvAttentionState, PaddedPrefillCache {
   constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number, readonly start: number,
     readonly maintain: (rows: Cache[]) => void, row?: Cache, readonly speculative = false) {
-    super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, maintain,
+    super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof AlignedRotatingCache && row.inner instanceof BatchedRotatingQuantCache,
       makeLayout: () => speculative ? new SpeculativeRotatingAffineLayout(maxSize, groupSize, bits) : new RotatingAffineLayout(maxSize, groupSize, bits), prepareRows: alignRotatingRows,
       packRows: (layout, rows) => layout.adoptAlignedRows(rows as readonly AlignedRotatingCache[]),

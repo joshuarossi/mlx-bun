@@ -136,9 +136,9 @@ describe("fill is refused by composition", () => {
     await withRuntime({ MLX_BUN_FILL: undefined }, () => refused("default off", body()));
   });
 
-  test("a user-fixed seed (reproducibility), logprobs, and top_logprobs", async () => {
+  test("seed support belongs to execution; logprobs and top_logprobs need sampled positions", async () => {
     await withRuntime(STRICT, async () => {
-      await refused("seed", body({ seed: 7 }));
+      expect(await fillOf(harness(), body({ seed: 7 }))).toBeInstanceOf(FillSession);
       await refused("logprobs", body({ logprobs: true }));
       await refused("top_logprobs", body({ logprobs: true, top_logprobs: 3 }));
     });
@@ -173,9 +173,7 @@ describe("fill is refused by composition", () => {
     });
   });
 
-  // Continuous (batch) placement needs no refusal here: generate() is the only
-  // site that reads options.fill, so a batch-placed request simply does not
-  // fill. Nothing in this feature forces a request onto the serial lane.
+  // The execution binding selects strict shared fill after request preparation.
 });
 
 describe("MLX_BUN_FILL=echo (Lab tier)", () => {
@@ -215,7 +213,7 @@ describe("MLX_BUN_FILL=echo (Lab tier)", () => {
 
   test("the body-level refusals apply to echo mode too", async () => {
     await withRuntime({ ...STRICT, MLX_BUN_FILL: "echo" }, async () => {
-      expect(await fillOf(harness(), body({ seed: 7 }))).toBeUndefined();
+      expect(await fillOf(harness(), body({ seed: 7 }))).toBeInstanceOf(FillSession);
       expect(await fillOf(harness(), body({ logprobs: true }))).toBeUndefined();
     });
   });

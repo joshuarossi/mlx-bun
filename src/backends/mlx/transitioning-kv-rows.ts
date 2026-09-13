@@ -17,6 +17,7 @@ export interface SpeculativeTransitionedKvLayout extends TransitionedKvLayout {
 }
 export interface KvRowTransition<Layout extends TransitionedKvLayout> {
   readonly signature: string;
+  readonly conversionOffset?: number;
   maintain(rows: Cache[]): void;
   converted(row: Cache): boolean;
   makeLayout(): Layout;
@@ -77,6 +78,13 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
   get rowOffsets(): readonly number[] { return this.packed?.rowOffsets ?? this.positions.rowOffsets; }
   get leftPad(): readonly number[] { return this.packed?.leftPad ?? this.positions.leftPad; }
   get offset(): number { return this.packed?.offset ?? this.positions.offset; }
+  maxAppendTokens(): number {
+    if (this.packed) return this.packed.maxAppendTokens?.() ?? Infinity;
+    const end = this.transition.conversionOffset;
+    if (end === undefined) return Infinity;
+    return Math.min(Infinity, ...this.rowOffsets.map((offset, row) =>
+      offset < end && !this.transition.converted(this.rows[row]!) ? end - offset : Infinity));
+  }
   get batchSize(): number | null { return this.packed?.batchSize ?? this.positions.batchSize; }
   get ropeOffsetArr(): MlxArray | undefined { return this.packed ? this.packed.ropeOffsetArr : this.positions.ropeOffsetArr; }
   bytesPerToken(): number { return this.packed?.bytesPerToken?.() ?? Math.max(0, ...this.rows.map(row => row.bytesPerToken?.() ?? 0)); }

@@ -297,7 +297,8 @@ export interface RotatedValueAttentionState {
  * again. It owns its tensor handles independently of later cache membership or
  * precision changes. Query/mask inputs are borrowed; outputs are owned. */
 export interface KvAttentionView {
-  attend(q: MlxArray, scale: number, mask: Mask): MlxArray;
+  /** Qualified committed spans retain the single-position reduction order. */
+  attend(q: MlxArray, scale: number, mask: Mask, independentPositions?: boolean): MlxArray;
   dispose(): void;
 }
 
@@ -325,6 +326,8 @@ export interface KvDonorAttention extends KvAttentionView {
 }
 
 export interface Cache {
+  /** Maximum committed positions before this state changes precision. */
+  maxAppendTokens?(): number;
   captureDonorRows?(): KvDonorRows;
   captureDonorAttention?(): KvDonorAttention;
   /** A preparation method commits each request's own precision boundary.

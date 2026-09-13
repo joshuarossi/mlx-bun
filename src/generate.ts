@@ -27,7 +27,7 @@ import { denoiseAsync } from "./diffusion/diffusion-generate";
 import { bindLegacyDenoisingModel, type MlxDenoisingBinding } from "./backends/mlx/diffusion";
 import type { RuntimeModel } from "./model/factory";
 import {
-  assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel,
+  assertMlxAutoregressiveBinding, bindLegacyAutoregressiveModel, supportsCommittedAppendCache,
   type MlxAutoregressiveBinding, type MlxModelMemory, type MlxDecodeStep, type MlxTokenAppend,
 } from "./backends/mlx/autoregressive";
 import { createKvMaintenance } from "./backends/mlx/kv-maintenance";
@@ -203,10 +203,9 @@ export function shouldUseGrammarJump(
 }
 
 /** Composition gate for token fast-forwarding, enforced inside the engine
- *  (the serve layer refuses more shapes it alone can see — a user-fixed seed,
- *  a mounted draft model, continuous placement: src/serve/request-prep.ts,
- *  src/serve/chat-stage.ts). Throws when MLX_BUN_FILL names the unbuilt echo
- *  tier — an operator who asked for K3c must not get K3b silently.
+ *  The serving planner owns request-level eligibility, including explicit
+ *  seeds in serial execution and mounted draft models. Shared strict fill
+ *  has its own grouped method and uses the same append-format declaration.
  *   - grammar: forced-token production is the grammar's job; two producers in
  *     one iteration is forbidden (asserted in the loop).
  *   - logprobs/top_logprobs: injected tokens are never sampled, so they have
@@ -225,17 +224,11 @@ export function shouldUseFill(
 ): boolean {
   if (!options.fill) return false;
   if (resolveFillMode(runtime.value("MLX_BUN_FILL") ?? "off") === "off") return false;
-  const affineSupported = options.kvConfig?.length
-    ? options.kvConfig.every(layer => append?.affineKvBits?.includes(layer.bits))
-    : !options.kvBits || !!append?.affineKvBits?.includes(options.kvBits);
-  const cacheSupported = options.turboQuant
-    ? !!append?.turboQuantFormats?.some(format => format.kBits === options.turboQuant!.kBits && format.vBits === options.turboQuant!.vBits)
-    : affineSupported;
   return options.grammar === undefined &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0) &&
     options.promptEmbeddings === undefined &&
-    cacheSupported;
+    supportsCommittedAppendCache(append, options);
 }
 
 /** Compatibility entry point for callers that perform a single conversion.

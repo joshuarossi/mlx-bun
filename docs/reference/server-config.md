@@ -598,7 +598,7 @@ GPU (one `AsyncMutex`).
 | structured output (`response_format` / `guided_*`) | ✅ batches — per-row grammar matchers (`MLX_BUN_GRAMMAR_BATCH=0` forces serial) |
 | `temperature` / `top_p` / `top_k` | ✅ batches (each row samples with its own seed) |
 | `stop` sequences | ✅ batches (per-row `StopMatcher`) |
-| `tools` / `tool_choice` | ✅ batches (per-row tool router) |
+| `tools` / `tool_choice` | ✅ batches (per-row tool router); opt-in `MLX_BUN_FILL=strict` uses the shared known-token method |
 | `--thinking` / `enable_thinking` | ✅ batches (template-render concern) |
 | multi-turn / long prompt | ✅ batches with prompt-cache reuse: a joiner restores the longest usable cached prefix and prefills only the suffix (`cached_tokens` reported) |
 
@@ -662,6 +662,18 @@ not disable performance settings as a category.
 - Trellis, compiled activations, affine row reuse and TurboQuant kernel choices
   belong to the numerical backend and remain independent of admission policy.
 
+`MLX_BUN_FILL=strict` uses a grouped method for eligible tool requests. Each
+row owns its fill session and sampler history. Known positions bypass sampling;
+when all next positions are known, the method omits the vocabulary head.
+Shared fill uses the model-qualified multi-position append when all active
+rows have known spans and the model permits that geometry. Qualified Qwen B1
+uses its specialized append; wider rows currently advance one position per step. The shared method supports
+bf16, affine KV4/KV8 and supported TurboQuant layouts, including explicit seeds.
+It does not use compiled replay, interrupted-generation checkpoints, paging,
+probability metadata, media, grammar or a mounted draft provider. Echo mode
+remains separate and is inactive under shared placement. Fill stays off by default;
+per-model performance acceptance remains separate from numerical replay.
+
 Executors capture an immutable runtime configuration. Later host configuration
 changes do not change an active request's kernel choices. TurboQuant storage
 carries its decode policy through RAM copies, row extraction and delayed
@@ -669,9 +681,10 @@ conversion; restored SSD state is opened under the receiving binding's policy.
 
 ## Known limitations under shared execution
 
-1. Media and direct tool-call fill still use the explicit serial executor.
-   Grammar has shared masking and opt-in verified proposals; direct serial
-   jump-forward is a different algorithm.
+1. Media still uses the explicit serial executor. Strict tool-call fill now
+   has a shared method; echo verification and fill with speculation or paging
+   remain unsupported there. Grammar has shared masking and opt-in verified
+   proposals; direct serial jump-forward is a different algorithm.
 2. Aggregate admission is opt-in through `--kv-budget`. Without it, concurrent
    contexts can exceed available memory. Default fit estimates remain advisory.
 3. Native GLM MTP has tiny-model/same-B oracle coverage; final Colibri artifact
@@ -757,7 +770,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | --- | --- | --- | --- | --- |
 | Structured output (`response_format` json_object/json_schema) | on | both | L2 (oMLX) | request field; `MLX_BUN_GRAMMAR=0` kills |
 | Structured-output continuations (shared verified proposals / serial direct jump) | off | shared and serial | Lab | `MLX_BUN_GRAMMAR_JUMP=1` |
-| Token fast-forwarding for tool calls (template-determined spans in one forward) | off | serial only | opt-in; identity tested on covered fixtures, parser/held-out gates remain (`tests/parity/fill-strict.test.ts`) | `MLX_BUN_FILL=strict` |
+| Token fast-forwarding for tool calls (template-determined spans) | off | serial + shared strict method | opt-in; identity tested on covered fixtures, parser/held-out gates remain (`tests/parity/fill-strict.test.ts`) | `MLX_BUN_FILL=strict` |
 | Echo injection (session self-copy spans, verified against the same forward's logits) | off | serial only | Lab (paired A/B on task success + wall clock before any default) | `MLX_BUN_FILL=echo`, `MLX_BUN_FILL_K`, `MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX` |
 | `guided_grammar` (EBNF) / `guided_regex`¹ / `guided_choice` / `structured_outputs` | on | both | L2 | request fields |
 | Structured output × speculative decoding | on when both active | Qwen grouped MTP, lookup and standalone drafting / eligible serial methods | Lab | — |
@@ -774,7 +787,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Stop sequences / streaming / usage accounting | on | both | — | request fields |
 | HLG tone-curve sampling | off | serial | Lab | `--hlg-sampling on` |
 | Spec-decode telemetry (`usage.speculation`) | on with a draft | Qwen shared MTP, lookup and standalone drafting / eligible serial methods | — | — |
-| Token-fast-forwarding telemetry (`usage.fill`) | on with `MLX_BUN_FILL=strict` | serial | — | — |
+| Token-fast-forwarding telemetry (`usage.fill`) | on with `MLX_BUN_FILL=strict` | serial + shared | — | — |
 | Per-turn lane telemetry (`usage.lane`: serial / serial+spec / batched) | on | both | — | — |
 
 ### Model coverage (per-model validated cells)
@@ -841,7 +854,7 @@ composition cells in one run).
   `--memory-budget <GB>` + `--ssd-cache <dir>`; MoE adds
   `--expert-offload`. Start-zero TurboQuant supports shared execution.
 
-**Remaining exclusions:** media, direct fill, and unsupported provider/layout
+**Remaining exclusions:** media, echo/speculative fill, and unsupported provider/layout
 combinations. Qualified ordinary resume, paged storage and grouped draft
 providers are implemented; see the compatibility matrix above.
 Qwen ordinary, shared MTP and prompt lookup support positive library thresholds for uniform

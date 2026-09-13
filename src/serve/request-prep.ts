@@ -283,9 +283,9 @@ export function createRequestPrep(input: {
    *
    *  Refusals owned here (body-level); the ones only ChatStage can see —
    *  a compiled grammar, media prompts and a mounted draft model — are applied
-   *  there. Cache formats belong to the append binding. Continuous placement needs no
-   *  refusal: generate() is the only fill site, so a batched request simply
-   *  does not fill.
+   *  there. The execution binding owns cache-format and method support. Strict
+   *  shared execution keeps the sampler's absolute token positions, including
+   *  known tokens; an explicit seed therefore remains replayable.
    *
    *  MLX_BUN_FILL=echo additionally arms the echo index (K3c, Lab tier): the
    *  strict rows keep policy "assert", and copied spans ride the same
@@ -298,9 +298,7 @@ export function createRequestPrep(input: {
     const mode = resolveFillMode();
     if (mode === "off") return null;
     if (!tools?.length) return null;
-    // A user-fixed seed means reproducibility: the sampler's step index would
-    // skip the injected positions, so an identical request could not replay.
-    if (req.seed !== undefined) return null;
+    // Seed support is selected by the execution binding after placement.
     // Injected tokens are never sampled — they have no logprob row.
     if (req.logprobs === true) return null;
     if (typeof req.top_logprobs === "number" && req.top_logprobs > 0) return null;

@@ -7,6 +7,7 @@ import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { bindMlxGraph } from "./graph";
 import type { PrefillPolicy } from "../../inference/prefill";
 import { resolveMlxPrefillPolicy } from "./prefill-policy";
+import type { KvSchemeOptions } from "../../kv-scheme";
 
 /** One declaration shared by planning and both native execution lanes. */
 export function legacyCompiledDecodeAvailable(model: RuntimeModel): boolean {
@@ -38,8 +39,21 @@ export interface MlxTokenAppend {
   /** Affine formats whose committed append retains one-token arithmetic. */
   readonly affineKvBits?: readonly number[];
   readonly turboQuantFormats?: readonly { readonly kBits: number; readonly vBits: number }[];
-  maxChunkSize(state: readonly Cache[]): number;
+  /** Maximum positions per row at this cohort size; omitted rows means B=1. */
+  maxChunkSize(state: readonly Cache[], rows?: number): number;
   forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
+}
+
+/** The model declares which codecs retain its committed-span arithmetic. */
+export function supportsCommittedAppendCache(
+  append: Pick<MlxTokenAppend, "affineKvBits" | "turboQuantFormats"> | null | undefined,
+  options: Pick<KvSchemeOptions, "kvBits" | "kvConfig" | "turboQuant">,
+): boolean {
+  if (options.turboQuant) return !!append?.turboQuantFormats?.some(format =>
+    format.kBits === options.turboQuant!.kBits && format.vBits === options.turboQuant!.vBits);
+  return options.kvConfig?.length
+    ? options.kvConfig.every(layer => append?.affineKvBits?.includes(layer.bits))
+    : !options.kvBits || !!append?.affineKvBits?.includes(options.kvBits);
 }
 
 /** One replaceable binding owns all graph-specific operations used by the AR

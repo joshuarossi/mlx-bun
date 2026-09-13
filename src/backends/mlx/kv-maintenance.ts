@@ -53,6 +53,7 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     if (start > 0) maintain.maxAppendTokens = (cache) => {
       let remaining = Number.POSITIVE_INFINITY;
       for (const c of cache) {
+        remaining = Math.min(remaining, c.maxAppendTokens?.() ?? Infinity);
         const conversion = c.turboConversion ?? (c instanceof KVCache ? c : undefined);
         if (conversion && conversion.offset < start)
           remaining = Math.min(remaining, start - conversion.offset);
@@ -103,6 +104,7 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     for (let layer = 0; layer < cache.length; layer++) {
       if (byLayer && !byLayer.has(layer)) continue;
       const c = cache[layer]!;
+      remaining = Math.min(remaining, c.maxAppendTokens?.() ?? Infinity);
       const conversion = c.affineConversion ?? (c instanceof KVCache || c instanceof RotatingKVCache ? c : undefined);
       if (conversion && conversion.offset < start)
         remaining = Math.min(remaining, start - conversion.offset);

@@ -20,6 +20,7 @@ import type { DraftProvider } from "../../spec/source";
 import { constraintDraftProvider } from "../../spec/ngram-source";
 import { targetRowLayoutFactory } from "./target-layout-capability";
 import { bindSpeculativeGroupRequests } from "./speculative-group";
+import { bindFillGroupRequests } from "./fill-group";
 import type { GenerateOptions } from "../../generate";
 import type { ExecutionRequirements, ResolvedExecution } from "../../contracts/execution";
 import { resolveExecution } from "../../engine/execution-plan";
@@ -72,6 +73,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
     Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
   const adapterState = "loraState" in model ? model.loraState : undefined;
+  const fillRequests = supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   return {
     config: model.config, runtime,
     configureContinuation: services => { continuationServices = services; },
@@ -93,7 +95,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));
     },
     methodRequest: (execution, options) => execution?.method === "speculative"
-      ? (execution.grammarJump ? grammarProposals : speculative)?.(options) : undefined,
+      ? (execution.grammarJump ? grammarProposals : speculative)?.(options)
+      : execution?.fill ? fillRequests?.(options) : undefined,
     ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
       const selected = [...adapters];
       return { key, enter() {
@@ -113,6 +116,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
+        sharedFill: !!fillRequests && !!options.fill && !options.fill.plan.echo,
         speculativeLogprobs: scheduling.continuous && !!sharedMethod,
         sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
