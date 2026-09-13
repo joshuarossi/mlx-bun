@@ -2778,3 +2778,79 @@ The derived review is `qwen-media-comparison-review.json`; completed one-off
 sources are retained in `completed-qwen-media-tool-sources.json`. Encoder feature
 caching, chunked media prefill and broader speculative/media compositions remain
 separate optimization work.
+
+
+## Qwen encoder reuse through shared RAM and SSD storage (2026-09-13)
+
+The exact-object cache retains Qwen encoder outputs under the existing RAM
+budget and SSD writer. Keys include preprocessed pixel bytes, grids, encoder
+schema and a one-time SHA-256 of the loaded encoder tensors. Requests still
+render their own positions and run media language-model prefill. This does not
+cache preprocessing or enable media KV-prefix reuse.
+
+**M4 Pro 24 GB, diagnostic, source-controlled ABBA.** Runtime control `64e4226`,
+candidate `dbd7bc3`; the same interleaved k300 packed Qwen3.8-27B artifact,
+Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2, KV4, default cap eight, no draft,
+compiled decode off, fill off and temperature zero/seed 42. Both use the normal
+RAM cache; these timing arms do not configure SSD. Each process first warms an
+image, video and text request, preserving those timings separately. It then
+runs six repetitions of each scenario. Images are 512×512 and 768×512 solid-color
+PNGs; video is the earlier one-second 64×64 red clip. Media emits 16 tokens.
+
+| Scenario | Control A → cached A, ms | Control B → cached B, ms | Complete-time change |
+|---|---:|---:|---:|
+| Repeated 512×512 image | 4,070.27 → 3,886.72 | 4,065.97 → 3,881.26 | −4.51% / −4.54% |
+| Repeated small video | 2,676.05 → 2,627.50 | 2,676.22 → 2,627.71 | −1.81% / −1.81% |
+| Two image requests | 8,058.20 → 7,586.82 | 8,052.03 → 7,584.61 | −5.85% / −5.81% |
+
+All 96 measured requests complete; all 48 paired responses and full usage
+records match. Both arms observe actual B2 in every two-image repetition.
+Every paired complete-time cell improves. The first two-image repetition
+includes the initially unseen blue image; its gains are smaller than later
+fully cached repetitions. Three encoder objects retain 7,208,960 additional
+bytes, or 6.875 MiB, in the same cache as the text checkpoint.
+
+Exact weight identity has a first-use cost. The first image after loading the
+model completes in 5,525.19 → 6,132.09 ms and 5,539.03 → 6,107.68 ms.
+The additional 568.65–606.90 ms is recovered after about four subsequent
+repetitions of this image. These two first-use samples are not a tail-latency
+estimate. The cache remains useful for repeated media; a one-shot image pays
+the initial cost. Disabling the RAM cache supplies no object port and avoids
+both hashing and feature retention.
+
+Activity contains 136 process/GPU/swap samples, with Bun the last GPU submitter
+in 130 and desktop/browser processes in six. Retained swap ranges from
+4,636.12 to 4,668.12 MiB. Sampled peak Bun RSS changes from
+12,663.06 → 12,696.30 MiB and 12,627.34 → 12,678.23 MiB. These monitored
+conditions remain diagnostic. All raw samples, including first-use costs and
+background activity, are preserved.
+
+The preceding small-media prototype preserves all 132 response/full-usage pairs
+across 264 requests. It reduces complete time by 0.18–2.59% across both arm orders,
+while avoiding 63 of 68 encoder calls per candidate process. It uses six
+repetitions of the earlier 64/96-pixel image and video fixtures. This prototype
+memoizes encoder results in the measurement runner; the table above measures
+the integrated shared-cache implementation with larger images.
+
+Correctness and persistence checks pass on both Macs. The object store shares
+its byte cap with prefix checkpoints, lends independent native views, retains
+unwritten victims until SSD completion, rejects stale restore publication after
+clear, and preserves newer resident publication during a competing restore.
+A real Qwen image request reuses the encoder once with identical output and
+logprobs. A new HTTP server restores it with a 16-byte RAM budget, makes no
+additional tower call, reproduces output/logprobs and flushes durably. The M4
+also passes two separate processes: the writer encodes once, the reader encodes
+zero times, exact encoder-weight fingerprints match, and every response,
+logprob and usage field matches after verified SSD restore. The retained
+small SSD artifact is in the report directory.
+
+The complete model-free run passes 2,358 tests with 14 fixture skips. Subsequent
+weight-identity/disabled-cache changes pass 57 focused tests; types, hygiene and
+CI pass. Native HTTP acceptance passes four cases and 31 assertions per Mac.
+Raw reports: `reports/prefill-observation/qwen-encoder-{control,candidate}-{a,b}.json`,
+`qwen-encoder-integrated-{control,candidate}-{a,b}.json`,
+`qwen-encoder-{prototype,integrated}-review.json`, and `encoder-process-*`.
+Completed runner sources are in `completed-encoder-cache-tool-sources.json`.
+Gemma encoder caching, media KV-prefix reuse and broader media compositions
+remain separate opportunities; these results do not require another unchanged
+text-only Kanban run.

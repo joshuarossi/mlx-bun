@@ -835,8 +835,10 @@ Preprocessing and video extraction are not cached by this change.
 also identifies individual media items by hash and retains encoder outputs
 across requests. Here the existing cache owns both RAM residency and queued
 SSD persistence on unified memory. The bounded Qwen screen and integrated
-acceptance are recorded in benchmarks.md when complete; they do not establish
-a general-media quality or throughput guarantee.
+acceptance pass on M4; both-machine native/HTTP checks and fresh-process SSD
+reuse preserve their recorded outputs. [Measurements](../reference/benchmarks.md#qwen-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13)
+include the one-time weight-fingerprint cost. Gemma encoder reuse and media
+KV-prefix caching remain separate work.
 
 
 ## 6. Optional paged KV
