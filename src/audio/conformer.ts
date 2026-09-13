@@ -43,6 +43,7 @@
 // mlx inline-temporary hazard (CLAUDE.md): every op result is held in a
 // local and disposed; no nested `ops.foo(x.slice(...))` chains.
 
+import { tensorFingerprint } from "../model/fingerprint";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "../mlx/array";
 import { C, Dtype } from "../mlx/ffi";
@@ -115,6 +116,13 @@ interface AttnContext {
 
 export class AudioTower {
   #weights = new Map<string, MlxArray>();
+  #cacheIdentity?: string;
+  /** Immutable encoder weights and computation settings, hashed once on use. */
+  get cacheIdentity(): string {
+    return this.#cacheIdentity ??= new Bun.CryptoHasher("sha256")
+      .update("gemma-audio-raw-v1").update(JSON.stringify([this.cfg, this.embedScale]))
+      .update(tensorFingerprint(this.#weights)).digest("hex");
+  }
   readonly cfg: AudioTowerConfig;
   readonly embedScale: number;
 

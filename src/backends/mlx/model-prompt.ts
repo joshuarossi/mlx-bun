@@ -4,7 +4,7 @@ import { Gemma4Model } from "../../model/gemma4";
 import { Qwen35Model } from "../../model/qwen3_5";
 import { spliceImageTokens } from "../../vision/diffusion-vision";
 import { buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages, extractVideos,
-  type VisionEncoder, type VisionTokenIds } from "../../vision/prompt";
+  type MultimodalTowers } from "../../vision/prompt";
 import { buildQwen3VLVisionPrompt } from "../../vision/qwen3vl-prompt";
 import type { Qwen3VLVisionTower } from "../../vision/qwen3vl-tower";
 import { normalizeMessages, type ChatRequestParams } from "../../serve/chat-request";
@@ -64,7 +64,7 @@ export async function buildModelPrompt(
       // Failures throw into the prompt-build 400.
       const wavs = await Promise.all(audio.map(ensureWav));
       // The towers are only ever non-null for Gemma4 (loader gates).
-      const mp = await nativeWork(async () => {
+      const towers = await nativeWork(async () => {
         const audioTower = getAudioTower(ctx);
         if (!audioTower || !ctx.audioTokenIds) {
           throw new RequestError(400,
@@ -72,21 +72,23 @@ export async function buildModelPrompt(
             `a model whose config.json carries audio_config and whose ` +
             `sidecar ships the audio tensors (e.g. gemma-4 e4b OptiQ)`);
         }
-        let visionSide: { tower: VisionEncoder; tokenIds: VisionTokenIds } | undefined;
+        let visionSide: MultimodalTowers<{ softTokens: number }>["vision"];
         if (hasImages) {
           const tower = getVisionTower(ctx);
           if (!tower) throw new RequestError(400, "model has no vision sidecar");
-          visionSide = { tower, tokenIds: ctx.visionTokenIds };
+          visionSide = { tower, tokenIds: ctx.visionTokenIds,
+            cache: objects && tower.cacheIdentity ? new EncoderCache(objects, tower.cacheIdentity) : undefined };
         }
-        return buildMultimodalPrompt(
-          ctx.model as Gemma4Model,
-          {
-            ...(visionSide ? { vision: visionSide } : {}),
-            audio: { tower: audioTower, tokenIds: ctx.audioTokenIds },
-          },
-          ctx.tokenizer, ctx.template, messages, images, wavs, toolList,
-        );
+        return {
+          ...(visionSide ? { vision: visionSide } : {}),
+          audio: { tower: audioTower, tokenIds: ctx.audioTokenIds,
+            cache: objects ? new EncoderCache(objects, audioTower.cacheIdentity) : undefined },
+        };
       });
+      const mp = await buildMultimodalPrompt(
+        ctx.model as Gemma4Model, towers, ctx.tokenizer, ctx.template,
+        messages, images, wavs, toolList, nativeWork,
+      );
       // bidirMask is null whenever audio is present (§3.3 Q1: mixed
       // prompts run fully causal); the union mask does the per-layer
       // id zeroing either way.
@@ -153,14 +155,16 @@ export async function buildModelPrompt(
       const { messages, images } = await extractImages(normalizeMessages(body.messages));
       // The tower is only ever non-null for Gemma4 (sidecar gate in
       // makeVisionLoader), so the model narrow is safe here.
-      const vp = await nativeWork(async () => {
+      const { tower, encoderCache } = await nativeWork(async () => {
         const tower = getVisionTower(ctx);
         if (!tower) throw new RequestError(400, "model has no vision sidecar");
-        return buildVisionPrompt(
-          ctx.model as Gemma4Model, tower, ctx.tokenizer, ctx.template,
-          messages, images, ctx.visionTokenIds, toolList,
-        );
+        return { tower, encoderCache: objects && tower.cacheIdentity
+          ? new EncoderCache(objects, tower.cacheIdentity) : undefined };
       });
+      const vp = await buildVisionPrompt(
+        ctx.model as Gemma4Model, tower, ctx.tokenizer, ctx.template,
+        messages, images, ctx.visionTokenIds, toolList, nativeWork, encoderCache,
+      );
       return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, imageMask: vp.imageMask } };
     }
     const text = prep.promptIdsFor(body, toolList);

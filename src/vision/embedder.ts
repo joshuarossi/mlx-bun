@@ -7,6 +7,7 @@
 //
 // Sidecar weights stay bf16; features come out bf16 like text embeddings.
 
+import { tensorFingerprint } from "../model/fingerprint";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "../mlx/array";
 import { C } from "../mlx/ffi";
@@ -18,6 +19,13 @@ const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 
 export class VisionTower {
   #weights = new Map<string, MlxArray>();
+  #cacheIdentity?: string;
+  /** Immutable encoder weights and computation settings, hashed once on use. */
+  get cacheIdentity(): string {
+    return this.#cacheIdentity ??= new Bun.CryptoHasher("sha256")
+      .update("gemma-vision-v1").update(JSON.stringify([this.embedScale, this.rmsNormEps]))
+      .update(tensorFingerprint(this.#weights)).digest("hex");
+  }
   readonly embedScale: number;
   readonly rmsNormEps: number;
 

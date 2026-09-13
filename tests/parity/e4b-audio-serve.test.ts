@@ -15,7 +15,8 @@
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import type { Gemma4Model } from "../../src/model/gemma4";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { encode } from "fast-png";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -148,6 +149,56 @@ describe.skipIf(!optIn || !haveWeights || !haveFixture)(
         } finally { media.stop(true); restore(); }
       }
     }, 30_000);
+
+    for (const storage of ["ram", "ssd"] as const) test(`mixed image/audio reuse through ${storage} preserves output and logprobs`, async () => {
+      const { getAudioTower, getVisionTower } = await import("../../src/serve/model-host");
+      const audioTower = getAudioTower(ctx)!, visionTower = getVisionTower(ctx)!;
+      const audioProbe = spyOn(audioTower, "features"), imageProbe = spyOn(visionTower, "features");
+      const dir = mkdtempSync(join(tmpdir(), "mlx-bun-gemma-encoder-"));
+      const options = storage === "ssd"
+        ? { promptCacheBytes: 16, ssdCacheDir: dir, ssdCacheVerify: true }
+        : { promptCacheBytes: 32 * 2 ** 20 };
+      let fresh = createServer(ctx, 0, options);
+      const data = Uint8Array.from({ length: 64 * 64 * 3 }, (_, i) => i % 3 === 1 ? 255 : 0);
+      const png = Buffer.from(encode({ width: 64, height: 64, channels: 3, data })).toString("base64");
+      const request = { messages: [{ role: "user", content: [
+        { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
+        { type: "input_audio", input_audio: { data: speechB64, format: "wav" } },
+        { type: "text", text: "Transcribe the audio, then name the image color." },
+      ] }], temperature: 0, seed: 42, max_tokens: 16, logprobs: true, top_logprobs: 2 };
+      const submit = async () => {
+        const response = await fetch(`http://127.0.0.1:${fresh.port}/v1/chat/completions`, {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request),
+        });
+        expect(response.status).toBe(200); return await response.json() as any;
+      };
+      const flush = async () => {
+        const result = await (await fetch(`http://127.0.0.1:${fresh.port}/admin/cache/flush`, { method: "POST" })).json() as any;
+        expect(result.durable).toBe(true);
+      };
+      try {
+        const first = await submit();
+        expect(first.choices[0].logprobs.content.length).toBeGreaterThan(0);
+        if (storage === "ssd") {
+          await flush();
+          const stats = await (await fetch(`http://127.0.0.1:${fresh.port}/stats`)).json() as any;
+          expect(stats.prompt_cache.bytes).toBe(0);
+          expect(stats.ssd_cache.entries).toBe(2);
+          fresh.stop(true); fresh = createServer(ctx, 0, options);
+        }
+        const second = await submit();
+        expect(second.choices).toEqual(first.choices);
+        expect(second.usage).toEqual(first.usage);
+        expect(audioProbe).toHaveBeenCalledTimes(1);
+        expect(imageProbe).toHaveBeenCalledTimes(1);
+        const stats = await (await fetch(`http://127.0.0.1:${fresh.port}/stats`)).json() as any;
+        expect(storage === "ssd" ? stats.prompt_cache.object_restores : stats.prompt_cache.object_hits).toBe(2);
+        if (storage === "ssd") await flush();
+      } finally {
+        fresh.stop(true); audioProbe.mockRestore(); imageProbe.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }, 120_000);
 
     test("m4a (AAC) transcodes via CoreAudio and still transcribes", async () => {
       // Build the m4a at test time from the tracked WAV fixture (afconvert is

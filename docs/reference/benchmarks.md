@@ -2854,3 +2854,24 @@ Completed runner sources are in `completed-encoder-cache-tool-sources.json`.
 Gemma encoder caching, media KV-prefix reuse and broader media compositions
 remain separate opportunities; these results do not require another unchanged
 text-only Kanban run.
+
+
+## Gemma encoder reuse through shared RAM and SSD storage (2026-09-13)
+
+Gemma image/audio preparation now retains encoder features through the same
+exact-object cache used by Qwen. Comparison source is `4289bce`; runtime and
+model configuration are unchanged. Each Mac supplies its own baseline.
+
+On M1 Max 32 GB and M4 Pro 24 GB, all six prepared prompts match the original
+in complete embeddings, token IDs, bidirectional mask and multimodal mask.
+The cases are image, audio and mixed input, each repeated with retained features.
+Both Macs pass all nine real-model HTTP checks with 49 assertions, including
+mixed image/audio reuse in RAM and from a new server's verified SSD cache.
+Outputs, all requested logprobs and full usage match; each encoder runs once,
+and neither runs after SSD restore. Existing transcription, actual B2 decode,
+download concurrency, transcode and malformed-request checks also pass.
+This proves retention identity for these fixtures; it does not extend the
+model's separately documented external-oracle tier.
+
+Reports: `reports/prefill-observation/gemma-encoder-{control,candidate}-{m1,m4}.json`
+and `gemma-encoder-http-{m1,m4}.log`. The matched M4 timing comparison is pending.

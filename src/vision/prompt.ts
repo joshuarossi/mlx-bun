@@ -17,6 +17,8 @@
 //     multimodal soft tokens (image | audio) — multimodalMask, decoupled
 //     from the bidirectional mask.
 
+import type { EncoderCache } from "../backends/mlx/encoder-cache";
+import type { PromptNativeWork } from "../serve/model-binding";
 import { MlxArray } from "../mlx/array";
 import { Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -35,6 +37,7 @@ import { fetchMediaBytes, videoMediaFetchPolicy } from "../media-fetch";
  *  embed_scale). The two own different preprocessing, so the tower carries
  *  its own. */
 export interface VisionEncoder<P extends { softTokens: number } = { softTokens: number }> {
+  readonly cacheIdentity?: string;
   preprocess(bytes: Uint8Array): Promise<P>;
   features(pre: P): MlxArray;
   dispose?(): void;
@@ -76,8 +79,8 @@ export interface AudioTokenIds {
 /** The towers a multimodal prompt may need; pass only what the request uses
  *  (vision-only and audio-only fall out as special cases). */
 export interface MultimodalTowers<P extends { softTokens: number }> {
-  vision?: { tower: VisionEncoder<P>; tokenIds: VisionTokenIds };
-  audio?: { tower: AudioTower; tokenIds: AudioTokenIds };
+  vision?: { tower: VisionEncoder<P>; tokenIds: VisionTokenIds; cache?: EncoderCache };
+  audio?: { tower: AudioTower; tokenIds: AudioTokenIds; cache?: EncoderCache };
 }
 
 /** Extract image bytes from OpenAI-style content parts, rewriting the
@@ -223,6 +226,7 @@ export async function buildMultimodalPrompt<P extends { softTokens: number }>(
   images: Uint8Array[],
   audio: Uint8Array[],
   tools: ToolDefinition[] | null = null,
+  nativeWork: PromptNativeWork = (work) => work(),
 ): Promise<MultimodalPrompt> {
   if (images.length > 0 && !towers.vision)
     throw new Error("images present but no vision tower configured");
@@ -280,70 +284,87 @@ export async function buildMultimodalPrompt<P extends { softTokens: number }>(
   if (audIdx !== audio.length)
     throw new Error(`${audio.length} audio clips but ${audIdx} <|audio|> markers`);
 
-  // embed text tokens, then overwrite soft-token rows with tower features
-  const idsArr = ops.fromInt32(spliced, [1, spliced.length]);
-  let embeds = model.embed.encode(idsArr);
-  idsArr.dispose();
-  const hidden = embeds.shape[2]!;
-  for (const run of runs) {
-    let cast: MlxArray;
-    if (run.kind === "image") {
-      // vision towers return pre-divided by embed_scale (their oracle's
-      // frontend convention) — cast to the embedding dtype and splice.
-      const feats = towers.vision!.tower.features(pre[run.index]!); // [1, soft, hidden]
-      cast = feats.astype(embeds.dtype);
-      feats.dispose();
-    } else {
-      // audio mirrors gen-e4b-audio-golden.py EXACTLY:
-      //   features.astype(embeds.dtype) / embed_scale
-      // — raw f32 embed_audio output, cast to bf16 FIRST, then divided by a
-      // weak (dtype-following, i.e. bf16) embed_scale scalar. The order is
-      // load-bearing for the bit-exact greedy gate (see AudioTower.features).
-      const clip = clips[run.index]!;
-      const raw = towers.audio!.tower.features(clip.mel, clip.frames, false); // [1, n, hidden] f32
-      if (raw.shape[1] !== clip.softTokens) {
-        const n = raw.shape[1];
-        raw.dispose();
-        embeds.dispose();
-        throw new Error(`audio tower produced ${n} frames but splice expects ${clip.softTokens}`);
-      }
-      const bf = raw.astype(embeds.dtype);
-      raw.dispose();
-      const scale = ops.scalarLike(towers.audio!.tower.embedScale, bf);
-      cast = ops.div(bf, scale);
-      bf.dispose();
-      scale.dispose();
+  // Exact encoded objects contain no request positions or template state.
+  // CPU preprocessing and SSD reads run before acquiring native execution.
+  const keys = runs.map(run => towers[run.kind === "image" ? "vision" : "audio"]?.cache
+    ? new Bun.CryptoHasher("sha256").update(`gemma-${run.kind}-input-v1`)
+      .update(run.kind === "image" ? images[run.index]! : audio[run.index]!).digest("hex")
+    : "");
+  const reused: (MlxArray | null)[] = [];
+  try {
+    for (const [index, run] of runs.entries()) {
+      const cache = run.kind === "image" ? towers.vision?.cache : towers.audio?.cache;
+      reused.push(cache ? await cache.take(keys[index]!) : null);
     }
-    const { start, length } = run;
-    const updated = ops.sliceUpdate(embeds, cast, [0, start, 0], [1, start + length, hidden]);
-    cast.dispose();
-    embeds.dispose();
-    embeds = updated;
-  }
+    return await nativeWork(async () => {
+      // embed text tokens, then overwrite soft-token rows with tower features
+      using idsArr = ops.fromInt32(spliced, [1, spliced.length]);
+      let embeds = model.embed.encode(idsArr);
+      try {
+        const hidden = embeds.shape[2]!;
+        for (const [runIndex, run] of runs.entries()) {
+          let cast: MlxArray;
+          if (run.kind === "image") {
+            // vision towers return pre-divided by embed_scale (their oracle's
+            // frontend convention) — cast to the embedding dtype and splice.
+            const cached = reused[runIndex];
+            using feats = cached ?? towers.vision!.tower.features(pre[run.index]!); // [1, soft, hidden]
+            reused[runIndex] = null;
+            if (!cached) towers.vision!.cache?.put(keys[runIndex]!, feats);
+            cast = feats.astype(embeds.dtype);
+          } else {
+            // audio mirrors gen-e4b-audio-golden.py EXACTLY:
+            //   features.astype(embeds.dtype) / embed_scale
+            // — raw f32 embed_audio output, cast to bf16 FIRST, then divided by a
+            // weak (dtype-following, i.e. bf16) embed_scale scalar. The order is
+            // load-bearing for the bit-exact greedy gate (see AudioTower.features).
+            const clip = clips[run.index]!;
+            const cached = reused[runIndex];
+            using raw = cached ?? towers.audio!.tower.features(clip.mel, clip.frames, false); // [1, n, hidden] f32
+            reused[runIndex] = null;
+            if (raw.shape[1] !== clip.softTokens) {
+              const n = raw.shape[1];
+              throw new Error(`audio tower produced ${n} frames but splice expects ${clip.softTokens}`);
+            }
+            if (!cached) towers.audio!.cache?.put(keys[runIndex]!, raw);
+            using bf = raw.astype(embeds.dtype);
+            using scale = ops.scalarLike(towers.audio!.tower.embedScale, bf);
+            cast = ops.div(bf, scale);
+          }
+          const { start, length } = run;
+          try {
+            const updated = ops.sliceUpdate(embeds, cast, [0, start, 0], [1, start + length, hidden]);
+            embeds.dispose();
+            embeds = updated;
+          } finally { cast.dispose(); }
+        }
 
-  // masks over the spliced sequence: union multimodal soft tokens (per-layer
-  // id zeroing) always; image-only bidirectional overlay only when NO audio
-  // is present (§3.3 Q1).
-  const mmInts = new Int32Array(spliced.length);
-  for (let i = 0; i < spliced.length; i++) {
-    const id = spliced[i]!;
-    mmInts[i] = (vIds && id === vIds.imageTokenId) || (aIds && id === aIds.audioTokenId) ? 1 : 0;
-  }
-  const mmI32 = MlxArray.fromInt32(mmInts, [spliced.length]);
-  const multimodalMask = mmI32.astype(Dtype.bool);
-  mmI32.dispose();
+        // masks over the spliced sequence: union multimodal soft tokens (per-layer
+        // id zeroing) always; image-only bidirectional overlay only when NO audio
+        // is present (§3.3 Q1).
+        const mmInts = new Int32Array(spliced.length);
+        for (let i = 0; i < spliced.length; i++) {
+          const id = spliced[i]!;
+          mmInts[i] = (vIds && id === vIds.imageTokenId) || (aIds && id === aIds.audioTokenId) ? 1 : 0;
+        }
+        const mmI32 = MlxArray.fromInt32(mmInts, [spliced.length]);
+        const multimodalMask = mmI32.astype(Dtype.bool);
+        mmI32.dispose();
 
-  let bidirMask: MlxArray | null = null;
-  if (images.length > 0 && audio.length === 0) {
-    const imgInts = new Int32Array(spliced.length);
-    for (let i = 0; i < spliced.length; i++)
-      imgInts[i] = spliced[i] === vIds!.imageTokenId ? 1 : 0;
-    const imgI32 = MlxArray.fromInt32(imgInts, [spliced.length]);
-    bidirMask = imgI32.astype(Dtype.bool);
-    imgI32.dispose();
-  }
+        let bidirMask: MlxArray | null = null;
+        if (images.length > 0 && audio.length === 0) {
+          const imgInts = new Int32Array(spliced.length);
+          for (let i = 0; i < spliced.length; i++)
+            imgInts[i] = spliced[i] === vIds!.imageTokenId ? 1 : 0;
+          const imgI32 = MlxArray.fromInt32(imgInts, [spliced.length]);
+          bidirMask = imgI32.astype(Dtype.bool);
+          imgI32.dispose();
+        }
 
-  return { ids: spliced, embeddings: embeds, bidirMask, multimodalMask };
+        return { ids: spliced, embeddings: embeds, bidirMask, multimodalMask };
+      } catch (error) { embeds.dispose(); throw error; }
+    });
+  } finally { for (const tensor of reused) tensor?.dispose(); }
 }
 
 /** Vision-only prompt (back-compat wrapper over buildMultimodalPrompt —
@@ -360,10 +381,12 @@ export async function buildVisionPrompt<P extends { softTokens: number }>(
   images: Uint8Array[],
   tokenIds: VisionTokenIds,
   tools: ToolDefinition[] | null = null,
+  nativeWork: PromptNativeWork = (work) => work(),
+  cache?: EncoderCache,
 ): Promise<VisionPrompt> {
   const mp = await buildMultimodalPrompt(
-    model, { vision: { tower, tokenIds } }, tokenizer, template,
-    messages, images, [], tools,
+    model, { vision: { tower, tokenIds, cache } }, tokenizer, template,
+    messages, images, [], tools, nativeWork,
   );
   // no audio was passed, so the union mask IS the image mask — reuse it for
   // the zero-image edge (the original builder returned an all-false mask).

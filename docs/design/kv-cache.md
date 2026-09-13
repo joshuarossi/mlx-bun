@@ -831,14 +831,26 @@ The producer retains its own result while storage takes a separate native view.
 The object lookup finishes before the prompt builder enters the native queue.
 Preprocessing and video extraction are not cached by this change.
 
+Gemma's encoder-free and SigLIP vision towers and its audio tower use the same
+`EncoderCache` adapter. Each tower hashes its immutable weight names, shapes,
+dtypes, bytes and computation settings once. Image/WAV content hashes and a
+producer revision identify individual objects. Vision retains its existing
+pre-divided features; audio retains raw float32 features, then each prompt casts
+them to its embedding dtype before dividing by the embedding scale. That order
+is unchanged. CPU image preprocessing and audio mel extraction precede the
+native execution lease, as do RAM/SSD lookups. The producer never caches chat
+tokens, bidirectional masks or positions. Custom vision encoders without an
+immutable `cacheIdentity` continue to encode normally.
+
 [vLLM's encoder cache](https://docs.vllm.ai/en/v0.18.0/api/vllm/v1/core/encoder_cache_manager/)
 also identifies individual media items by hash and retains encoder outputs
 across requests. Here the existing cache owns both RAM residency and queued
 SSD persistence on unified memory. The bounded Qwen screen and integrated
 acceptance pass on M4; both-machine native/HTTP checks and fresh-process SSD
 reuse preserve their recorded outputs. [Measurements](../reference/benchmarks.md#qwen-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13)
-include the one-time weight-fingerprint cost. Gemma encoder reuse and media
-KV-prefix caching remain separate work.
+include the one-time weight-fingerprint cost. Gemma prepared inputs and mixed
+RAM/SSD HTTP reuse pass both-machine identity checks; matched timing is pending.
+Media KV-prefix caching remains separate work.
 
 
 ## 6. Optional paged KV
