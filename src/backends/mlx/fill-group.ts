@@ -4,7 +4,7 @@ import type { Cache } from "../../model/gemma4-base";
 import type { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { clearCache } from "../../mlx/ffi";
-import { makeStepSampler, type DeviceStepSampler } from "../../sampler";
+import { makeStepSampler, type DeviceStepSampler, type NumberStepSampler } from "../../sampler";
 import type { FillSession, Proposal } from "../../fill/fill-session";
 import { disposeResources, cleanupFailure, withResource } from "../../engine/resources";
 import { snapshotGenerationPolicy } from "./request-policy";
@@ -15,6 +15,9 @@ import { leaseCacheStates } from "./state-views";
 import { createKvMaintenance, type KvMaintenance } from "./kv-maintenance";
 import { bindLegacyAutoregressiveModel, supportsCommittedAppendCache, type MlxAutoregressiveBinding, type MlxTokenAppend } from "./autoregressive";
 import { appendHiddenRows } from "./fill-append";
+import { advanceSpeculativeOutputs } from "./speculative-round";
+import { bindRowCacheRollback } from "./rollback";
+import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "./speculative";
 import type { MlxForwardWork } from "./mixed-iteration";
 import type { MlxGroupedMethod, MlxGroupMethodHost, MlxGroupMethodRequest,
   MlxGroupPreparation, Row } from "./batch-group";
@@ -44,8 +47,9 @@ class FillGroup implements MlxGroupedMethod {
   readonly #binding: MlxAutoregressiveBinding;
   readonly #maintain: KvMaintenance;
   readonly #append: MlxTokenAppend | null | undefined;
+  readonly #verify: MlxSpeculativeTargetBinding;
   readonly #requests = new Map<Row, RequestState>();
-  #target: MlxStateRows | null = null;
+  #target: MlxStateRows<ReturnType<typeof targetCacheLayout>> | null = null;
   #pending: MlxArray | null = null;
   #known: boolean[] = [];
   #real: boolean[] = [];
@@ -53,12 +57,22 @@ class FillGroup implements MlxGroupedMethod {
 
   constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel, options: GenerateOptions) {
     this.#binding = bindLegacyAutoregressiveModel(model);
+    this.#verify = bindSpeculativeTargetModel(model);
     this.#maintain = createKvMaintenance(options);
     const append = this.#binding.createAppend?.({ hasAdapters: !!this.#binding.adapters?.active.length, pagedKv: false });
     this.#append = supportsCommittedAppendCache(append, options) ? append : null;
   }
 
-  get runningTokens(): number { return this.host.rows.length * Math.max(1, this.#burstLength()); }
+  get runningTokens(): number { return this.host.rows.length * Math.max(1, this.#burstLength(), this.#verifyLength()); }
+
+  #verifyLength(): number {
+    if (!this.#pending || this.#known.some(known => !known) || !this.host.rows.length ||
+        !this.host.rows.every(row => this.#requests.get(row)!.proposal?.value.policy === "verify")) return 0;
+    return Math.max(...this.host.rows.map(row => {
+      const proposal = this.#requests.get(row)!.proposal!;
+      return proposal.value.ids.length - proposal.emitted;
+    }));
+  }
 
   #burstLength(): number {
     const rows = this.host.rows;
@@ -66,7 +80,7 @@ class FillGroup implements MlxGroupedMethod {
         (this.#append?.maxChunkSize(this.#target!.caches, rows.length) ?? 1) <= 1) return 0;
     return Math.min(...rows.map(row => {
       const proposal = this.#requests.get(row)!.proposal;
-      return proposal ? proposal.value.ids.length - proposal.emitted : 0;
+      return proposal?.value.policy === "assert" ? proposal.value.ids.length - proposal.emitted : 0;
     }));
   }
 
@@ -157,6 +171,7 @@ class FillGroup implements MlxGroupedMethod {
     }
     const rows = [...this.host.rows], B = rows.length;
     if (!B) return;
+    if (!work && this.#verifyLength() > 1) { await this.#verifyKnown(); return; }
     const burst = this.#burstLength();
     if (!work && burst > 1) { await this.#appendKnown(burst); return; }
     const previous = this.#pending, known = this.#known, real = this.#real;
@@ -174,7 +189,8 @@ class FillGroup implements MlxGroupedMethod {
           using current = input.slice([index, 0], [index + 1, 1]);
           request.sampling.commitDevice(current);
         }
-        const value = request.proposal?.value.ids[request.proposal.emitted + Number(!!previous && known[index])];
+        const value = request.proposal?.value.policy === "assert"
+          ? request.proposal.value.ids[request.proposal.emitted + Number(!!previous && known[index])] : undefined;
         nextKnown.push(value !== undefined); nextReal.push(row.sampled < row.req.maxTokens);
         return value;
       });
@@ -211,7 +227,113 @@ class FillGroup implements MlxGroupedMethod {
       }
       await this.#emitRows(values, known);
     } else if (anyLive) for (const row of rows) row.fed.push(row.current);
+    this.#checkPendingProposals();
     if (++this.#steps % 256 === 0) clearCache();
+  }
+
+  /** The pending sample already verifies an echo's first token. Mixed
+   * assert/verify rows keep the ordinary pipeline; homogeneous echo rows can
+   * advance the remaining span through the shared target verifier. */
+  #checkPendingProposals(): void {
+    if (!this.#pending) return;
+    const rows = this.host.rows;
+    if (!rows.some(row => this.#requests.get(row)!.proposal?.value.policy === "verify")) return;
+    const tokens = this.#pending.toIntTokens();
+    for (const [index, row] of rows.entries()) {
+      const request = this.#requests.get(row)!, proposal = request.proposal;
+      if (proposal?.value.policy !== "verify") continue;
+      if (tokens[index] === proposal.value.ids[proposal.emitted]) this.#known[index] = true;
+      else {
+        request.fill.commit(proposal.value, proposal.emitted);
+        request.proposal = undefined;
+      }
+    }
+  }
+
+  async #verifyKnown(): Promise<void> {
+    // Publish the already verified pending token before changing geometry.
+    await this.#flush();
+    const rows = [...this.host.rows];
+    if (!rows.length) return;
+    const pending = rows.map(row => row.current);
+    const proposals = rows.map(row => {
+      const proposal = this.#requests.get(row)!.proposal;
+      return proposal?.value.policy === "verify" ? proposal.value.ids.slice(proposal.emitted) : [];
+    });
+    const depth = Math.max(...proposals.map(ids => ids.length));
+    const samplers = rows.map(row => {
+      const sampling = this.#requests.get(row)!.sampling;
+      sampling.commitNumbers([row.current]);
+      let previous: number | undefined;
+      // A second sample is requested only after the preceding candidate was
+      // accepted. Leave the final correction out of manual processor history
+      // until the next forward actually consumes it.
+      return { ...sampling, independent: undefined,
+        async sample(scores, step) {
+          if (previous !== undefined) sampling.commitNumbers([previous]);
+          const result = sampling.sample(scores, step);
+          try { previous = result.token.toIntTokens()[0]!; return { token: previous, extras: result.extras }; }
+          finally { result.token.dispose(); }
+        },
+      } satisfies NumberStepSampler;
+    });
+    const positions = rows.map(() => 0), halted = new Set<Row>();
+    const rollback = bindRowCacheRollback(this.#target!.caches, rows.length);
+    const verifying = rows.filter(row => this.#requests.get(row)!.proposal?.value.policy === "verify")
+      .map(row => this.#requests.get(row)!.fill);
+    const pin = this.#verify.pinVerify?.();
+    try {
+      const completed = await advanceSpeculativeOutputs(rows.map((row, index) => ({
+        pending: pending[index]!, step: row.sampled, remaining: row.req.maxTokens - row.generated,
+        eosTokenIds: row.req.eosTokenIds, sampling: samplers[index]!,
+        output: { commit: async ids => {
+          const position = positions[index]!;
+          positions[index] = position + 1;
+          const known = position < proposals[index]!.length && ids[0] === proposals[index]![position];
+          if (!known) this.#settleProposal(row);
+          row.generated++;
+          const reason = await this.#emit(row, ids[0]!, known);
+          if (reason === "stop") { halted.add(row); return false; }
+        } },
+      })), depth, { draft: () => proposals, commit: () => {} }, {
+        transaction: { ...rollback,
+          begin(depth) {
+            const start = performance.now(); rollback.begin(depth);
+            const elapsed = performance.now() - start;
+            for (const fill of verifying) fill.noteVerifyEvent(elapsed);
+          },
+          resolve(accepted) {
+            const start = performance.now(); rollback.resolve(accepted);
+            const elapsed = performance.now() - start;
+            for (const fill of verifying) fill.stats.checkpointMs += elapsed;
+          },
+        },
+        forward: async ids => {
+          const result = await this.#verify.forward(ids, this.#target!.caches);
+          const context = result.ctxML ?? result.hidden;
+          try { return { logits: this.#verify.projectLogits(result.hidden), context }; }
+          catch (error) { context.dispose(); throw error; }
+          finally { if (result.ctxML) result.hidden.dispose(); }
+        },
+      });
+      const keep: number[] = [];
+      for (const [index, row] of rows.entries()) {
+        const output = completed.outputs[index]!, round = completed.rounds[index]!;
+        if (output.kind !== "failed" && output.kind !== "cancelled")
+          row.fed.push(pending[index]!, ...round.drafts.slice(0, output.accepted));
+        row.sampled += round.acceptance.emitted.length + Number(round.acceptance.sawEos);
+        if (output.kind === "continue") { row.current = output.pending; keep.push(index); }
+        else if (output.kind === "failed") row.reject(output.error);
+        else if (output.kind === "cancelled") row.reject(row.req.signal?.reason ?? new Error(output.reason));
+        else {
+          if (!halted.has(row) && round.acceptance.sawEos && row.generated < row.req.maxTokens) row.generated++;
+          this.#put(row, this.#target!.extractRow(index));
+          this.#settleProposal(row); this.host.finish(row, output.kind);
+        }
+      }
+      if (keep.length !== rows.length) this.host.filterRows(keep);
+      if (++this.#steps % 256 === 0) clearCache();
+    } finally { pin?.close(); }
   }
 
   /** Multi-position arithmetic is model-owned. Wider cohorts whose model
@@ -278,8 +400,7 @@ class FillGroup implements MlxGroupedMethod {
     if (!known) {
       const proposal = request.fill.push(token, row.req.maxTokens - row.generated);
       if (proposal) {
-        if (proposal.policy === "assert" && proposal.origin !== "echo") request.proposal = { value: proposal, emitted: 0 };
-        else request.fill.commit(proposal, 0);
+        request.proposal = { value: proposal, emitted: 0 };
       }
     }
     const more = await this.host.publish(row, token);
@@ -302,7 +423,7 @@ class FillGroup implements MlxGroupedMethod {
         } else {
           keep.push(index);
           const request = this.#requests.get(row)!;
-          if (!known[index] && request.proposal && this.#pending) {
+          if (!known[index] && request.proposal?.value.policy === "assert" && this.#pending) {
             replacement.set(index, request.proposal.value.ids[0]!);
             request.fill.noteWastedSample(); this.#known[index] = true;
           }

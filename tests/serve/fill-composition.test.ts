@@ -20,6 +20,7 @@ import {
   makeTokenizer,
   NO_TOOL_CALLS_TEMPLATE,
   QWEN_STYLE_TEMPLATE,
+  QWEN_XML_TEMPLATE,
   WEATHER_TOOL,
 } from "../support/fill-fixtures";
 
@@ -79,8 +80,26 @@ function harness(overrides: {
   const engine = new ScriptedEngine(overrides.stats);
   const chat = new ChatStage(ctx, prep, { peekPrefixLen: () => 0 }, 4096);
   const inference = new InferenceStage(new CompletionExecutor(engine));
-  return { chat, inference, engine, tokenizer: fake };
+  return { chat, inference, engine, tokenizer: fake, prep };
 }
+
+test("stable cache boundaries include historical tool turns that omit the empty thinking primer", () => {
+  const template = QWEN_XML_TEMPLATE.replace("{% else %}{{ m.content }}", "{% else %}{% if m.role == 'assistant' %}<think>\n\n</think>\n\n{% endif %}{{ m.content }}")
+    .replace("assistant\n{% endif %}", "assistant\n<think>\n\n</think>\n\n{% endif %}");
+  const h = harness({ template });
+  for (const content of ["Save this sentence.", "Save this substantially longer sentence with several additional words."]) {
+    const request = { messages: [{ role: "user", content }] };
+    const prompt = h.prep.promptIdsFor(request, [WEATHER_TOOL]).ids;
+    const boundary = h.prep.stableLenFor(request, [WEATHER_TOOL], prompt);
+    expect(h.tokenizer.decode(prompt.slice(boundary))).toBe("<think>\n\n</think>\n\n");
+    for (const reply of [{ role: "assistant", content: "x" }, { role: "assistant", content: null,
+      tool_calls: [{ id: "call", type: "function" as const,
+        function: { name: WEATHER_TOOL.function.name, arguments: { city: "Paris" } } }] }]) {
+      const next = h.prep.promptIdsFor({ messages: [...request.messages, reply, { role: "user", content: "Continue." }] }, [WEATHER_TOOL]).ids;
+      expect(next.slice(0, boundary)).toEqual(prompt.slice(0, boundary));
+    }
+  }
+});
 
 const withRuntime = async <T>(env: RuntimeOverrides, fn: () => Promise<T>): Promise<T> => {
   const restore = configureRuntime(env);

@@ -3282,3 +3282,94 @@ Sources remain `6fe0a7f`. Reports: `r24-mlp-layer1-gate.f32.json`,
 `completed-r24-weight-screen-tool-sources.json`, all under
 `reports/prefill-observation/`. The raw matrix, sampled rows, full spectrum,
 failed runner-API attempt and native errors are preserved.
+
+## Shared echo verification on M4 Pro (2026-09-13)
+
+Shared fill now supplies copied-session proposals to the existing grouped target
+verifier. This is opt-in `MLX_BUN_FILL=echo`, compared with shared `strict` on
+identical source. It is not an MTP or default-serving TPS comparison.
+
+M4 Pro 24 GB, Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2; packed
+`Qwen3.8-27B-q3-trellis-ldlq-k300-packed-interleave2-rd`, KV4/group64,
+fixed 256-token prefill, compiled decode off, no drafter, default batch cap
+eight, 1 GiB RAM cache and 4 GiB SSD budget. Requests use temperature zero,
+seed 42 and thinking disabled. Four fresh CLI servers run strict/echo/echo/strict.
+Each arm contains a first request, three repetitions of four saved tool
+fixtures, a seeded repeat, ordinary prose with tools, four concurrent requests
+and a new-process SSD restart. Tools are not executed. Full requests, SSE,
+source hashes and activity samples are retained.
+
+The repeated comparison contains **80 responses, 38 measured pairs plus two
+first-request pairs**. All 38 measured pairs preserve response text, parsed
+tool arguments, finish reason and complete usage apart from the intended fill
+counters. All first-request pairs also match. Every response uses the batched
+lane. All four final flushes are durable with zero missing, pending, dropped or
+failed writes; the four restarted servers successfully reuse stored state.
+
+Per-fixture medians over three repetitions, in milliseconds:
+
+| Fixture | Strict → echo, AB | Change | Strict → echo, BA | Change |
+|---|---:|---:|---:|---:|
+| Copy sentence | 3051.96 → 2672.91 | −12.42% | 3060.71 → 2690.29 | −12.10% |
+| Copy URL | 4884.43 → 2861.68 | −41.41% | 4879.74 → 2891.76 | −40.74% |
+| First saved suite call | 1583.26 → 1562.26 | −1.33% | 1572.13 → 1612.07 | +2.54% |
+| Following saved suite call | 1909.70 → 1889.51 | −1.06% | 1922.13 → 1882.03 | −2.09% |
+
+The sentence accepts nine echo tokens and the URL accepts thirty, each in one
+verification event with no rejected tokens. The two suite fixtures accept no
+echo tokens. Ordinary prose changes −1.04%/−1.33%. The final completion of the
+four concurrent requests changes 7104.49→5751.98 ms (−19.04%) and
+6967.29→5505.37 ms (−20.98%); these are request completion measurements, not
+proof of a fixed four-row GPU geometry. First copy requests change
+7726.29→7149.52 ms and 7481.18→7156.00 ms, including initial setup.
+
+All arms finish with six RAM entries/960,970,752 bytes, ten SSD
+entries/1,611,411,552 bytes and eleven restores. Sampled peak server RSS is
+13,195.67→13,279.28 MiB and 13,241.59→13,199.47 MiB. The 66 activity samples
+include substantial Codex-renderer CPU activity; one contains a remaining
+headless-browser/test process. Retained swap ranges 3493.00–4576.25 MiB.
+These remain diagnostics with recorded machine activity, not quiet standard
+suite numbers. The repeat supports a targeted copy-span benefit; fill remains
+off by default and general task benefit is unmeasured.
+
+The first identical-source ABBA is preserved separately: all 38 measured
+response/usage pairs also match, but sentence timing changes +22.71%/−20.80%,
+URL −12.98%/−46.70%, and the suite controls swing +51.32%/−13.88% and
++37.74%/−11.36%. Headless Chromium and Node/Vitest workloads appear in its
+71 activity samples; swap grows from 4237.44 to 6689.94 MiB and peaks at
+7653.12 MiB. This prompted the unchanged-source repeat after those workloads
+finished. It supplies correctness evidence, not a speed-selection result.
+Neither run changes production source during execution.
+
+### Shared echo state and template-boundary acceptance
+
+M1 Qwen0.8B/Gemma-e4b and M4 packed Qwen27B each pass 15 native cases across
+B1/B2/B4, bf16/KV4/k8v3 and delayed quantization. The audit compares samplers on
+the same logits and processor history; it covers rejected and mixed proposals
+and stopping inside a verified span. Published token keys match consumed
+state. B2 SSD reopening preserves all live state and two subsequent logit
+vectors against the retained RAM clone. Gemma sliding-window layers remain
+bf16 in the TurboQuant arm. The original 21-case strict-fill replay also passes
+on M1 without changing its assertions. New model-free verified-output cases
+cover EOS, length limits, consumer stop/failure and cancellation independently
+of sibling rows.
+
+Actual HTTP copy/seeded-concurrency/follow-up/restart tests pass six cases each
+on M1 Qwen0.8B/Gemma-e4b and M4 packed Qwen27B, covering RAM and SSD with all
+three cache formats. They exposed a separate template-boundary miss on
+Qwen0.8B: the initial 305-token prompt shares only 301 tokens with the next
+rendered tool turn, because the template omits its empty thinking primer.
+The previous 304-token recurrent snapshot could not match. Probing text and
+tool replies followed by a new user turn now retains the reusable 301-token
+boundary. Existing KV is never relabeled under different tokens. Packed Qwen's
+fixture already reused its generated history; both behaviors are retained in
+the evidence.
+
+An early wide-verification versus sequential-output comparison produced
+changed sampled tokens. It is preserved as an unmatched numerical-geometry
+experiment; echo does not promise identical samples to one-position decoding.
+All 2,367 model-free tests pass with 14 fixture skips, and typechecks and hygiene
+pass. Reports are under `reports/prefill-observation/`: `shared-echo-*`,
+`completed-echo-cache-inspection.json` and the completed echo tool-source
+archive. Sources are `cb408ec` plus the captured implementation diff; every
+production file hash is stored in each HTTP report.

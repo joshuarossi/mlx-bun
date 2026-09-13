@@ -620,6 +620,11 @@ The template's primer length is measured canonically and applied to the actual
 history-preserving token sequence. This can change input token counts, and
 therefore continuation logits, relative to re-encoding all generated text.
 Logit parity remains a contract for the same input IDs and execution shape.
+The stable-boundary probe includes both text and tool replies followed by a
+new user turn. Qwen can omit an empty thinking primer when rendering a prior
+tool turn; a text-only probe retained three extra tokens in the small-model
+HTTP fixture and prevented recurrent-cache reuse. The corrected probe keeps
+the last shared prefix. It never rewrites existing KV under the changed text.
 Republishing an identical token sequence refreshes its existing provenance
 entry without decoding the whole conversation again. Equality covers every ID;
 equal text from different IDs still replaces provenance. This avoids repeated

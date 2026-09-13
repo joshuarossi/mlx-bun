@@ -1666,6 +1666,43 @@ The failed logs and corrected runs remain in `reports/prefill-observation/`.
 Serving binding tests also cover seeded placement and `usage.fill` propagation.
 The six-arm M4 HTTP comparison preserves all 108 responses and all paired token/cache counts, with six durable SSD restarts. Sequential shared strict-fill performance matches serial within 0.13%; the fill-off comparison and concurrent latency tradeoffs are recorded in benchmarks.md. Model-declared codec eligibility is resolved once at binding: unsupported multi-position formats still use shared one-position fill. A separate k4v3 seeded gate proves that execution with no specialized append.
 
+#### Shared echo verification
+
+The fill method accepts both asserted and verified proposals. A pending
+sample checks the first echo token without replacing the sampler's choice.
+When all live rows have a verified echo continuation, the method supplies
+those proposals to `advanceSpeculativeOutputs`, the same grouped target
+verification and output-aligned rollback operation used by speculative
+providers. Mixed proposed/unproposed rows keep the ordinary sampled pipeline.
+No scheduler or storage branch chooses echo tokens.
+
+Each request retains its own seed and processor history. The sampler adapter
+commits a token when it becomes model input; rejected proposals never enter
+that history. Output delivery determines how much state survives a consumer
+stop, then the common cache receives the corresponding tokens and row state.
+The cache retains RAM donors and owns SSD persistence. Checkpoint telemetry
+includes the shared cohort's begin and resolve time for each participating
+request. Fill remains opt-in and does not yet compose with a mounted drafter
+or shared paged execution.
+
+`shared-echo.test.ts` audits the real sampler against an independent sampler
+on the exact same score tensor and selected-token history, across B1/B2/B4,
+bf16, KV4, k8v3 and delayed quantization. It covers accepted, first-rejected,
+partially rejected and mixed proposals plus a consumer stopping inside the
+span. Published cache keys must match emitted history and every layer offset.
+B2 retained state also survives SSD store/reopen with identical state and two
+subsequent logit vectors against its RAM clone. These checks pass on M1
+Qwen0.8B/Gemma-e4b and M4 packed Qwen27B. HTTP tests cover actual copied tool arguments,
+seeded concurrent requests, follow-up reuse and durable SSD restart.
+
+An early experiment compared multi-position verification against one-position
+ordinary decoding and found changed sampled tokens. That comparison changes
+numerical geometry and is preserved as an unmatched experiment, not an exact
+oracle. The original strict-fill exact replay gate remains unchanged. Echo
+acceptance preserves the sampler's decision for the verified logits; it does
+not promise identical text to a different forward shape. Request timing and
+paired-response results are recorded in benchmarks.md.
+
 ### 7.5 Logical jump-ahead prefill
 
 Proposal by Josh Rossi, recorded 2026-09-08. Research proposal, not an

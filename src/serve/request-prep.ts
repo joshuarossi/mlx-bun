@@ -5,7 +5,7 @@
 // tool-call stream router. Resolved ONCE per server (createRequestPrep) and
 // captured by the route handlers. Extracted from src/server.ts (repo-taming
 // Phase 4).
-import type { ToolDefinition } from "../chat-template";
+import type { ChatMessage, ToolDefinition } from "../chat-template";
 import {
   fillEchoConfig,
   fillMaxSpan,
@@ -227,17 +227,25 @@ export function createRequestPrep(input: {
       const canonical = ctx.tokenizer.encode(ctx.template.render(normalizeMessages(req.messages), opts));
       const current = canonical[0] === canonical[1] && canonical[0] === ctx.tokenizer.bosTokenId
         ? canonical.slice(1) : canonical;
-      const probe = ctx.tokenizer.encode(
-        ctx.template.render(
-          [...normalizeMessages(req.messages), { role: "assistant", content: "x" }],
-          opts,
-        ),
-      );
-      const probeTrimmed =
-        probe[0] === probe[1] && probe[0] === ctx.tokenizer.bosTokenId ? probe.slice(1) : probe;
-      let i = 0;
-      const n = Math.min(current.length, probeTrimmed.length);
-      while (i < n && current[i] === probeTrimmed[i]) i++;
+      const replies: ChatMessage[] = [{ role: "assistant", content: "x" }];
+      // Some templates retain an empty think primer for text replies but
+      // omit it before a tool call. Both reply forms must preserve the
+      // boundary retained by an untrimmable recurrent cache.
+      if (tools?.length) replies.push({ role: "assistant", content: null, tool_calls: [{
+        id: "cache-boundary-probe", type: "function",
+        function: { name: tools[0]!.function.name, arguments: {} },
+      }] });
+      let i = current.length;
+      for (const reply of replies) {
+        const probe = ctx.tokenizer.encode(ctx.template.render([
+          ...normalizeMessages(req.messages), reply, { role: "user", content: "x" },
+        ], opts));
+        const probeTrimmed = probe[0] === probe[1] && probe[0] === ctx.tokenizer.bosTokenId ? probe.slice(1) : probe;
+        let common = 0;
+        const n = Math.min(i, probeTrimmed.length);
+        while (common < n && current[common] === probeTrimmed[common]) common++;
+        i = common;
+      }
       // Generated-history provenance may use a different BPE segmentation
       // inside old turns. Measure the primer canonically, then subtract it
       // from the actual request IDs that inference will receive.

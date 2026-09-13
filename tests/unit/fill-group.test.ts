@@ -49,9 +49,11 @@ function fixture(cache?: RowPromptCache, specializedAppend = false) {
   return { model, group,
     start() { held = false; group.kick(); },
     submit(prompt: number[], options: { fill?: boolean; maxTokens?: number;
+      verify?: number[];
       onToken?: (token: number) => boolean | void; signal?: AbortSignal } = {}) {
-      const fill = new FillSession({ rows: options.fill === false ? [] : [{ trigger: [7], emit: [11, 12, 13], kind: "scaffold" }],
-        echo: null, eos: [16] }, prompt);
+      const fill = new FillSession({ rows: options.fill === false || options.verify ? [] : [{ trigger: [7], emit: [11, 12, 13], kind: "scaffold" }],
+        echo: null, eos: [16] }, prompt, options.verify ? { sources: [{ name: "verified-copy", propose: view =>
+          view.length === prompt.length + 3 ? { ids: options.verify!, policy: "verify", origin: "echo" } : null }] } : undefined);
       const output: number[] = [];
       const completion = group.submit({ promptIds: prompt, maxTokens: options.maxTokens ?? 32,
         eosTokenIds: [16], method: method({ fill, temperature: 0 }), signal: options.signal,
@@ -59,6 +61,46 @@ function fixture(cache?: RowPromptCache, specializedAppend = false) {
       return { fill, output, completion };
     } };
 }
+
+test.each(["eos", "limit", "stop", "failure", "cancel"] as const)("verified shared outputs align row state at %s", async end => {
+  const stored: number[][] = [];
+  const f = fixture({ take: () => null, put(tokens, caches) {
+    try {
+      expect(caches[0]!.offset).toBe(tokens.length);
+      const planes = caches[0]!.state();
+      using live = planes[0]!.slice([0, 0, 0, 0], [1, 1, tokens.length, 4]);
+      expect([...live.toFloat32()]).toEqual(tokens.flatMap(token => [token, token, token, token]));
+      stored.push([...tokens]);
+    } finally { caches.forEach(cache => cache.dispose()); }
+  } });
+  const cancellation = new AbortController();
+  const verify = [8, 9, 10, 11, 12, 13, 14, 15];
+  const run = f.submit([1, 4], { verify, maxTokens: end === "limit" ? 5 : 32, signal: cancellation.signal,
+    onToken(token) {
+      if (token !== 9) return;
+      if (end === "stop") return false;
+      if (end === "failure") throw new Error("consumer failed");
+      if (end === "cancel") cancellation.abort(new Error("consumer cancelled"));
+    } });
+  const sibling = f.submit([1, 4], { verify });
+  const results = Promise.allSettled([run.completion, sibling.completion]);
+  f.start();
+  try {
+    const [first, second] = await results;
+    expect(second.status).toBe("fulfilled");
+    expect(sibling.output).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(sibling.fill.stats.verifyAccepted).toBe(8);
+    expect(sibling.fill.stats.verifyEvents).toBeGreaterThan(0);
+    expect(first.status).toBe(end === "failure" || end === "cancel" ? "rejected" : "fulfilled");
+    if (first.status === "fulfilled") {
+      expect(first.value.generatedTokens).toBe(end === "eos" ? 12 : 5);
+      expect(first.value.finishReason).toBe(end === "limit" ? "length" : "stop");
+      expect(run.fill.stats.verifyAccepted).toBe(end === "eos" ? 8 : 2);
+    }
+    expect(stored.length).toBe(end === "failure" || end === "cancel" ? 1 : 2);
+    expect(run.output).toEqual(end === "eos" ? sibling.output : [5, 6, 7, 8, 9]);
+  } finally { await f.group.close(); }
+});
 
 test.each([false, true])("shared fill preserves pipelining and bypasses heads, specialized append=%s", async specialized => {
   const stored: number[][] = [];

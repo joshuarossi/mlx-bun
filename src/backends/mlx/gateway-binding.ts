@@ -137,7 +137,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
-        sharedFill: !!fillRequests && !!options.fill && !options.fill.plan.echo,
+        sharedFill: !!fillRequests && !!options.fill,
         speculativeLogprobs: scheduling.continuous && !!sharedMethod,
         sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
