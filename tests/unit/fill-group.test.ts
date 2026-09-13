@@ -49,11 +49,11 @@ function fixture(cache?: RowPromptCache, specializedAppend = false) {
   return { model, group,
     start() { held = false; group.kick(); },
     submit(prompt: number[], options: { fill?: boolean; maxTokens?: number;
-      verify?: number[];
+      verify?: number[]; verifyAfter?: number;
       onToken?: (token: number) => boolean | void; signal?: AbortSignal } = {}) {
       const fill = new FillSession({ rows: options.fill === false || options.verify ? [] : [{ trigger: [7], emit: [11, 12, 13], kind: "scaffold" }],
         echo: null, eos: [16] }, prompt, options.verify ? { sources: [{ name: "verified-copy", propose: view =>
-          view.length === prompt.length + 3 ? { ids: options.verify!, policy: "verify", origin: "echo" } : null }] } : undefined);
+          view.length === prompt.length + (options.verifyAfter ?? 3) ? { ids: options.verify!, policy: "verify", origin: "echo" } : null }] } : undefined);
       const output: number[] = [];
       const completion = group.submit({ promptIds: prompt, maxTokens: options.maxTokens ?? 32,
         eosTokenIds: [16], method: method({ fill, temperature: 0 }), signal: options.signal,
@@ -99,6 +99,35 @@ test.each(["eos", "limit", "stop", "failure", "cancel"] as const)("verified shar
     }
     expect(stored.length).toBe(end === "failure" || end === "cancel" ? 1 : 2);
     expect(run.output).toEqual(end === "eos" ? sibling.output : [5, 6, 7, 8, 9]);
+  } finally { await f.group.close(); }
+});
+
+test("an ordinary row discovering a strict span keeps its append policy beside an echo row", async () => {
+  const f = fixture();
+  const echo = f.submit([1, 4], { verify: [8, 9, 10, 11, 12, 13, 14, 15] });
+  const strict = f.submit([1, 3]);
+  f.start();
+  try {
+    await Promise.all([echo.completion, strict.completion]);
+    expect(echo.output).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(strict.output).toEqual([4, 5, 6, 7, 11, 12, 13, 14, 15]);
+    expect(echo.fill.stats.verifyAccepted).toBe(8);
+    expect(strict.fill.stats.strict).toBe(3);
+  } finally { await f.group.close(); }
+});
+
+test("a newly discovered echo keeps the declared token work and its remaining continuation", async () => {
+  const f = fixture();
+  const first = f.submit([1, 4], { verify: [8, 9, 10] });
+  const next = f.submit([1, 4], { verifyAfter: 4, verify: [9, 10, 11, 12, 13, 14, 15] });
+  f.start();
+  try {
+    await Promise.all([first.completion, next.completion]);
+    expect(first.output).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    expect(next.output).toEqual(first.output);
+    expect(first.fill.stats.verifyAccepted).toBe(3);
+    expect(next.fill.stats.verifyAccepted).toBe(7);
+    expect(f.model.events).toContain("forward:8,9,10,8,9,10");
   } finally { await f.group.close(); }
 });
 

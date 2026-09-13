@@ -1670,15 +1670,19 @@ The six-arm M4 HTTP comparison preserves all 108 responses and all paired token/
 
 The fill method accepts both asserted and verified proposals. A pending
 sample checks the first echo token without replacing the sampler's choice.
-When all live rows have a verified echo continuation, the method supplies
-those proposals to `advanceSpeculativeOutputs`, the same grouped target
+When a live row has a verified echo continuation, the method supplies
+its proposal to `advanceSpeculativeOutputs`, the same grouped target
 verification and output-aligned rollback operation used by speculative
-providers. Mixed proposed/unproposed rows keep the ordinary sampled pipeline.
+providers. Ordinary rows join with empty proposals and retain only their
+consumed inputs. Asserted spans keep their append policy. Proposals discovered
+while publishing pending output stay within the scheduler's declared token
+work; any remainder belongs to the request's next iteration.
 No scheduler or storage branch chooses echo tokens.
 
 Each request retains its own seed and processor history. The sampler adapter
 commits a token when it becomes model input; rejected proposals never enter
-that history. Output delivery determines how much state survives a consumer
+that history. Eligible plain-greedy rows use the sampler's existing independent
+verification kernel. Output delivery determines how much state survives a consumer
 stop, then the common cache receives the corresponding tokens and row state.
 The cache retains RAM donors and owns SSD persistence. Checkpoint telemetry
 includes the shared cohort's begin and resolve time for each participating
@@ -1688,8 +1692,8 @@ or shared paged execution.
 `shared-echo.test.ts` audits the real sampler against an independent sampler
 on the exact same score tensor and selected-token history, across B1/B2/B4,
 bf16, KV4, k8v3 and delayed quantization. It covers accepted, first-rejected,
-partially rejected and mixed proposals plus a consumer stopping inside the
-span. Published cache keys must match emitted history and every layer offset.
+partially rejected, mixed and staggered proposals plus a consumer stopping inside
+the span. Published cache keys must match emitted history and every layer offset.
 B2 retained state also survives SSD store/reopen with identical state and two
 subsequent logit vectors against its RAM clone. These checks pass on M1
 Qwen0.8B/Gemma-e4b and M4 packed Qwen27B. HTTP tests cover actual copied tool arguments,
@@ -1702,6 +1706,15 @@ oracle. The original strict-fill exact replay gate remains unchanged. Echo
 acceptance preserves the sampler's decision for the verified logits; it does
 not promise identical text to a different forward shape. Request timing and
 paired-response results are recorded in benchmarks.md.
+
+The next composition gap is fill with a mounted drafter. The grouped draft
+interface currently commits acceptance counts against its own proposed token
+stream. An external copied or asserted continuation also needs the provider
+to consume those committed tokens and the corresponding target context before
+its next proposal. Substituting token IDs after drafting would leave draft
+state misaligned. Add that operation to the provider interface, preserve
+request-owned sampling, and publish target/draft checkpoints at the same
+consumed boundary. Scheduling and RAM/SSD placement need no fill-specific path.
 
 ### 7.5 Logical jump-ahead prefill
 

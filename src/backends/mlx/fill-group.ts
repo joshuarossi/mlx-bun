@@ -66,11 +66,11 @@ class FillGroup implements MlxGroupedMethod {
   get runningTokens(): number { return this.host.rows.length * Math.max(1, this.#burstLength(), this.#verifyLength()); }
 
   #verifyLength(): number {
-    if (!this.#pending || this.#known.some(known => !known) || !this.host.rows.length ||
-        !this.host.rows.every(row => this.#requests.get(row)!.proposal?.value.policy === "verify")) return 0;
+    if (!this.#pending || !this.host.rows.length ||
+        this.host.rows.some(row => this.#requests.get(row)!.proposal?.value.policy === "assert")) return 0;
     return Math.max(...this.host.rows.map(row => {
-      const proposal = this.#requests.get(row)!.proposal!;
-      return proposal.value.ids.length - proposal.emitted;
+      const proposal = this.#requests.get(row)!.proposal;
+      return proposal ? proposal.value.ids.length - proposal.emitted : 0;
     }));
   }
 
@@ -171,7 +171,8 @@ class FillGroup implements MlxGroupedMethod {
     }
     const rows = [...this.host.rows], B = rows.length;
     if (!B) return;
-    if (!work && this.#verifyLength() > 1) { await this.#verifyKnown(); return; }
+    const verifyLength = this.#verifyLength();
+    if (!work && verifyLength > 1) { await this.#verifyKnown(verifyLength); return; }
     const burst = this.#burstLength();
     if (!work && burst > 1) { await this.#appendKnown(burst); return; }
     const previous = this.#pending, known = this.#known, real = this.#real;
@@ -231,9 +232,9 @@ class FillGroup implements MlxGroupedMethod {
     if (++this.#steps % 256 === 0) clearCache();
   }
 
-  /** The pending sample already verifies an echo's first token. Mixed
-   * assert/verify rows keep the ordinary pipeline; homogeneous echo rows can
-   * advance the remaining span through the shared target verifier. */
+  /** The pending sample already verifies an echo's first token. Asserted
+   * continuations keep their append policy; other rows can join a verified
+   * span with an empty proposal through the existing row verifier. */
   #checkPendingProposals(): void {
     if (!this.#pending) return;
     const rows = this.host.rows;
@@ -250,15 +251,21 @@ class FillGroup implements MlxGroupedMethod {
     }
   }
 
-  async #verifyKnown(): Promise<void> {
+  async #verifyKnown(width: number): Promise<void> {
     // Publish the already verified pending token before changing geometry.
     await this.#flush();
     const rows = [...this.host.rows];
     if (!rows.length) return;
+    // Publishing an ordinary row can discover a strict template span. Let
+    // its append policy choose the next operation before verifying echoes.
+    if (rows.some(row => this.#requests.get(row)!.proposal?.value.policy === "assert")) return;
     const pending = rows.map(row => row.current);
     const proposals = rows.map(row => {
       const proposal = this.#requests.get(row)!.proposal;
-      return proposal?.value.policy === "verify" ? proposal.value.ids.slice(proposal.emitted) : [];
+      // A newly discovered proposal cannot exceed this iteration's declared
+      // token work. Its remaining continuation stays request-owned.
+      return proposal?.value.policy === "verify"
+        ? proposal.value.ids.slice(proposal.emitted, proposal.emitted + width - 1) : [];
     });
     const depth = Math.max(...proposals.map(ids => ids.length));
     const samplers = rows.map(row => {
@@ -268,7 +275,7 @@ class FillGroup implements MlxGroupedMethod {
       // A second sample is requested only after the preceding candidate was
       // accepted. Leave the final correction out of manual processor history
       // until the next forward actually consumes it.
-      return { ...sampling, independent: undefined,
+      return { ...sampling,
         async sample(scores, step) {
           if (previous !== undefined) sampling.commitNumbers([previous]);
           const result = sampling.sample(scores, step);
@@ -277,7 +284,7 @@ class FillGroup implements MlxGroupedMethod {
         },
       } satisfies NumberStepSampler;
     });
-    const positions = rows.map(() => 0), halted = new Set<Row>();
+    const halted = new Set<Row>();
     const rollback = bindRowCacheRollback(this.#target!.caches, rows.length);
     const verifying = rows.filter(row => this.#requests.get(row)!.proposal?.value.policy === "verify")
       .map(row => this.#requests.get(row)!.fill);
@@ -287,9 +294,8 @@ class FillGroup implements MlxGroupedMethod {
         pending: pending[index]!, step: row.sampled, remaining: row.req.maxTokens - row.generated,
         eosTokenIds: row.req.eosTokenIds, sampling: samplers[index]!,
         output: { commit: async ids => {
-          const position = positions[index]!;
-          positions[index] = position + 1;
-          const known = position < proposals[index]!.length && ids[0] === proposals[index]![position];
+          const proposal = this.#requests.get(row)!.proposal;
+          const known = proposal?.value.policy === "verify" && ids[0] === proposal.value.ids[proposal.emitted];
           if (!known) this.#settleProposal(row);
           row.generated++;
           const reason = await this.#emit(row, ids[0]!, known);

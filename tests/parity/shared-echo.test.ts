@@ -50,7 +50,7 @@ describe.skipIf(!path)("shared echo verification", async () => {
       const scheme = resolveKvScheme(format.startsWith("kv") ? { override: 4, quantizedKvStart }
         : format.startsWith("k") ? { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart } : {});
       let baseline: number[][] = [];
-      for (const arm of ["empty", "verify", "reject-first", "reject-tail", "mixed", "stop"] as const) {
+      for (const arm of ["empty", "verify", "reject-first", "reject-tail", "mixed", "staggered", "stop"] as const) {
         let held = true;
         const checkpoints = new Map<number, { tokens: number[]; caches: ReturnType<typeof model.makeCache>; retain?: () => void }>();
         const cache: MlxPrefixCache = { take: () => null, put(tokens, caches, _ns, retain) {
@@ -85,13 +85,14 @@ describe.skipIf(!path)("shared echo verification", async () => {
             const prompt = Array.from({ length: 7 }, (_, i) => 30 + row + i);
             const options: GenerateOptions = { ...scheme.generationOptions, temperature: 0.6, topP: 0.95,
               seed: 42 + row, presencePenalty: 0.2, repetitionPenalty: 1.05 };
-            const ids = baseline[row]?.slice(3, 8) ?? [];
+            const start = arm === "staggered" && B > 1 && row === B - 1 ? 4 : 3;
+            const ids = baseline[row]?.slice(start, start + 5) ?? [];
             if (arm === "reject-first") ids[0] = ids[0] === 0 ? 1 : 0;
             if (arm === "reject-tail") ids[2] = ids[2] === 0 ? 1 : 0;
             proposals.push(ids);
             const fill = new FillSession({ rows: [], echo: null, eos: [] }, prompt, {
               sources: arm === "empty" || (arm === "mixed" && row === B - 1) ? [] : [{
-                name: "saved-echo", propose: view => view.length === prompt.length + 3
+                name: "saved-echo", propose: view => view.length === prompt.length + start
                   ? { ids, policy: "verify", origin: "echo" } : null,
               }],
             });
@@ -102,6 +103,8 @@ describe.skipIf(!path)("shared echo verification", async () => {
           });
           held = false; group.kick(); await Promise.all(requests);
           if (arm === "empty") baseline = output;
+          if (arm === "mixed" && B > 1)
+            expect(fills.reduce((sum, fill) => sum + fill.stats.verifyEvents, 0)).toBeGreaterThan(0);
           for (const [row, tokens] of output.entries()) {
             expect(tokens).toEqual(selected[row]!.slice(0, tokens.length));
             expect(tokens.length).toBe(arm === "stop" && row === 0 ? 5 : 24);
@@ -111,7 +114,7 @@ describe.skipIf(!path)("shared echo verification", async () => {
             expect(checkpoint.tokens.length).toBeGreaterThanOrEqual(history.length - 1);
             expect(checkpoint.tokens.length).toBeLessThanOrEqual(history.length);
             expect(checkpoint.caches.map(c => c.offset)).toEqual(checkpoint.caches.map(() => checkpoint.tokens.length));
-            if (B === 2 && ["verify", "reject-tail", "stop"].includes(arm)) {
+            if (B === 2 && ["verify", "reject-tail", "staggered", "stop"].includes(arm)) {
               const dir = mkdtempSync(join(tmpdir(), "mlx-bun-echo-state-"));
               const options = { dir, maxBytes: 4 * 2 ** 30, configFingerprint: "echo-test", tokenizerHash: "ids", modelId: path, verify: true };
               const ram = cloneKvCaches(checkpoint.caches);
@@ -137,8 +140,9 @@ describe.skipIf(!path)("shared echo verification", async () => {
             }
             if (arm === "empty" || (arm === "mixed" && row === B - 1)) continue;
             const proposal = proposals[row]!;
+            const start = arm === "staggered" && B > 1 && row === B - 1 ? 4 : 3;
             let accepted = 0;
-            while (accepted < proposal.length && tokens[3 + accepted] === proposal[accepted]) accepted++;
+            while (accepted < proposal.length && tokens[start + accepted] === proposal[accepted]) accepted++;
             expect(fills[row]!.stats.verifyAccepted).toBe(accepted);
             expect(fills[row]!.stats.verifyRejected).toBe(proposal.length - accepted);
             expect(fills[row]!.stats.echo).toBe(accepted);

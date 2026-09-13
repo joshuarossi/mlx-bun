@@ -689,8 +689,10 @@ rows have known spans and the model permits that geometry. Qualified Qwen B1
 uses its specialized append; wider rows currently advance one position per step. The shared method supports
 bf16, affine KV4/KV8 and supported TurboQuant layouts, including explicit seeds.
 It does not use compiled replay, interrupted-generation checkpoints, paging,
-probability metadata, media, grammar or a mounted draft provider. Echo mode
-remains separate and is inactive under shared placement. Fill stays off by default;
+probability metadata, media, grammar or a mounted draft provider.
+`MLX_BUN_FILL=echo` uses the same shared method with sampled verification and
+row-specific rollback. Ordinary rows can join with empty proposals; eligible
+plain-greedy requests reuse independent verification sampling. Fill stays off by default;
 per-model performance acceptance remains separate from numerical replay.
 
 Executors capture an immutable runtime configuration. Later host configuration

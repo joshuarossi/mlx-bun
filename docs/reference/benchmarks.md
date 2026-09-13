@@ -3373,3 +3373,45 @@ pass. Reports are under `reports/prefill-observation/`: `shared-echo-*`,
 `completed-echo-cache-inspection.json` and the completed echo tool-source
 archive. Sources are `cb408ec` plus the captured implementation diff; every
 production file hash is stored in each HTTP report.
+
+### Mixed echo cohorts and independent greedy sampling
+
+A source-controlled M4 Pro ABBA compares `d893afb` with ordinary rows joining
+verified echo spans and the existing independent greedy sampler enabled in
+that method. Both arms use echo and the settings above. Only `fill-group.ts`
+changes between arms; the candidate is restored afterward and the source audit
+finds no unexpected changes. All 80 responses complete, all 38 measured pairs
+and both first-request pairs preserve responses and full usage apart from fill
+counters, and all four SSD flush/restart checks pass with clean server exits.
+
+| Fixture | Control → candidate AB, ms | Change | Control → candidate BA, ms | Change |
+|---|---:|---:|---:|---:|
+| Copy sentence | 2657.24 → 2657.33 | +0.00% | 2659.77 → 2675.60 | +0.60% |
+| Copy URL | 2862.60 → 2878.90 | +0.57% | 2852.66 → 2859.32 | +0.23% |
+| First saved suite call | 1577.26 → 1553.15 | −1.53% | 1575.84 → 1555.43 | −1.30% |
+| Following saved suite call | 1887.28 → 1894.08 | +0.36% | 1895.86 → 1878.38 | −0.92% |
+| Four concurrent requests, last completion | 5619.97 → 5355.71 | −4.70% | 5461.38 → 5391.45 | −1.28% |
+
+Sequential copy performance is effectively unchanged. One concurrent suite
+request completes later in both orders: 3664.40→4262.67 ms and
+3482.71→4311.00 ms. This is a throughput/latency tradeoff, not domination of
+every row. Ordinary prose changes −0.04%/−0.14%; first-copy setup changes
+−1.31%/−1.07%. The candidate persists eleven entries instead of ten; all final
+flushes report zero missing, pending, dropped or failed writes. Retain mixed
+verification as part of opt-in echo, with no default change or additional
+Kanban speed claim.
+
+The 61 activity samples contain renderer CPU work in 57 top-CPU positions.
+Retained swap ranges 4163.44–4814.25 MiB. Sampled peak server RSS is
+13,283.00→13,208.25 MiB and 13,288.22→13,241.27 MiB. These are monitored
+serving diagnostics, not quiet standard-suite numbers.
+
+Native sampling/state checks pass all fifteen Qwen cases on both Macs, plus
+five Gemma B2 formats on M1. Mixed cases now require actual verification events.
+A final staggered-proposal check passes KV4 B2 and k8v3 B4 on each machine,
+including SSD state and subsequent logits. It covers a proposal discovered
+while another row publishes pending output; the method retains its remainder
+without exceeding declared scheduler work. Unit coverage also preserves newly
+discovered asserted spans. All 2,369 model-free tests pass with 14 fixture skips;
+typechecks and documentation checks pass. Reports: `shared-echo-mixed-*` and
+`shared-echo-staggered-*` under `reports/prefill-observation/`.
