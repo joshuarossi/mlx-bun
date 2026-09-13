@@ -1616,13 +1616,17 @@ be interpreted as complete queue attribution. The shared serving HTTP reader
 accepts a trace ID to correlate server phases with each scheduled request.
 
 The offline renderer and replay fixtures are implemented. It imports the
-existing native/serve formats, retains failures and provenance, and suppresses
+existing native/serve formats and saved Pi task results, retains failures and provenance, and suppresses
 speed ratios for incompatible work or unqualified runs. Its current metrics
 and limitations live in benchmarks.md. A bounded MiniCPM M1 diagnostic passes
 the real measurement path with the explicit reference control; concurrent
 output differences remain visible. Fixed-source block log-ratio intervals now
 use a deterministic bootstrap across distinct workload seeds, with duplicate
-seeds excluded and at least five blocks required. Quality inputs, the frozen
+seeds excluded and at least five blocks required. Task imports load adjacent
+`quality.json` checks with file hashes, report failures and blocked categories,
+and retain source/settings, per-turn request hashes, timing, usage and final
+SSD flush records. Task rows do not enter engine-speed pairing. The model
+quality/weight-size inputs, frozen
 final protocol and quiet final matrix remain acceptance work;
 rendering saved evidence does not close this gate.
 

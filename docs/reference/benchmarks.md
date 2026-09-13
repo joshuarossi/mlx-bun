@@ -5,6 +5,29 @@ measurements. Model support and configuration limits are in the
 [model roster](models.md). Historical experiments, failures, and source hashes
 remain in the [campaign ledger](../archive/investigations/benchmark-ledger-through-v0.4.0.md).
 
+To compare saved results locally, run:
+
+```sh
+bun scripts/bench/report.ts --out reports/comparison.html <result.json>...
+```
+
+The standalone HTML accepts serving schema-4, native schema-1 and saved Pi
+`fresh-pi-kanban-task` results. A task's adjacent `quality.json` supplies its
+individual app acceptance checks. The report shows completed output tokens,
+task time, weighted post-first-output throughput, summed first-output waits,
+cache hits, final persistence status, tool errors and captured settings.
+Missing data remains unknown; failed or incomplete tasks have no completed-task
+throughput. Quality scores are calculated from the checks, with failures and
+blocked checks shown separately. File hashes identify the imported evidence;
+the renderer does not rerun app validation. Task rows never supply engine-speed
+ratios. Model quality versus weight size still requires separate input support.
+
+The five saved Kanban runs below render together in
+`reports/kanban-decode-fixed-prefill-r1/comparison.html`. Browser review confirms
+their recorded scores and timings, expandable acceptance/turn records, and
+no blocking script errors. Model-free tests cover missing records, failed
+execution, contradictory summaries, escaping and CLI import.
+
 ## 1. Parity (porting correctness) — bit-exact vs the oracle
 
 These recorded results compare logits under matching model, cache, execution
