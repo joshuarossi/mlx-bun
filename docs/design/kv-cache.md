@@ -822,8 +822,9 @@ The durability coordinator includes attachment-only objects; RAM eviction waits
 for the shared writer to finish as it does for conversation checkpoints.
 
 The Qwen encoder adapter hashes exact preprocessed pixel bytes, grid dimensions
-and its schema revision. The containing SSD store supplies model/configuration,
-tokenizer and native numerical identity. Different image bytes or grids miss;
+and its schema revision. A SHA-256 of the actual loaded encoder tensors supplies weight identity,
+computed once under native preparation. The containing SSD store also supplies
+configuration, tokenizer and native numerical identity. Different image bytes or grids miss;
 repeated media can reuse the tensor across request histories. Prompt rendering,
 video timestamps, mRoPE positions, sampling and scheduling remain independent.
 The producer retains its own result while storage takes a separate native view.

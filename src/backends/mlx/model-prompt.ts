@@ -129,10 +129,10 @@ export async function buildModelPrompt(
       const { messages: withVideos, images } =
         await extractImages(normalizeMessages(body.messages));
       const { messages, videos } = await extractVideos(withVideos);
-      const tower = await nativeWork(async () => {
+      const { tower, encoderCache } = await nativeWork(async () => {
         const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
         if (!tower) throw new RequestError(400, "model has no vision sidecar");
-        return tower;
+        return { tower, encoderCache: objects ? new EncoderCache(objects, tower.cacheIdentity) : undefined };
       });
       const vp = await buildQwen3VLVisionPrompt(
         ctx.model as Qwen35Model, tower, ctx.tokenizer, ctx.template, messages, images,
@@ -143,7 +143,7 @@ export async function buildModelPrompt(
           visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
         },
         prep.templateOptionsFor(body, toolList),
-        videos, nativeWork, objects ? new EncoderCache(objects) : undefined,
+        videos, nativeWork, encoderCache,
       );
       return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, mrope: vp.mrope } };
     }

@@ -31,3 +31,15 @@ export function configFingerprint(config: ModelConfig): string {
   h.update(payload);
   return h.digest("hex").slice(0, 16);
 }
+
+/** Exact immutable model-component identity, calculated once while its owner
+ * holds the native execution lease. Names/shapes/dtypes disambiguate layouts. */
+export function tensorFingerprint(entries: Iterable<readonly [string,
+  Pick<import("../mlx/array").MlxArray, "dtype" | "shape" | "rawBytesView">]>): string {
+  const hash = new Bun.CryptoHasher("sha256");
+  for (const [name, tensor] of [...entries].sort(([a], [b]) => a.localeCompare(b))) {
+    hash.update(JSON.stringify([name, tensor.dtype, tensor.shape]));
+    hash.update(tensor.rawBytesView());
+  }
+  return hash.digest("hex");
+}

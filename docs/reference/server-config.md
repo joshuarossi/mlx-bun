@@ -169,7 +169,7 @@ operation already running completes before that boundary.
 
 
 Qwen image/video encoder features use the existing prompt-cache RAM budget and,
-when configured, its SSD persistence layer. Exact preprocessed content and the
+when configured, its SSD persistence layer. Exact encoder-weight and preprocessed-content hashes plus the
 encoder schema identify reusable features; each request still renders its own
 tokens, timestamps and positions. No separate media-cache capacity is allocated.
 `--prompt-cache 0` disables retention. Image preprocessing and video extraction

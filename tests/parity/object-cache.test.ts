@@ -27,9 +27,9 @@ describe.skipIf(process.env.MLX_BUN_TEST_OBJECT_CACHE !== "1")("shared tensor-ob
     try {
       const data = MlxArray.fromFloat32(new Float32Array([1, -0, 3.25, -9, 5, 6, 7, 8]), [2, 4]);
       const expected = Buffer.from(data.rawBytes()).toString("hex");
-      cache.objects.put("encoder:image-a", [{ schema: "features-v1", metadata: { grid: "1,2,2" }, tensors: [data] }]);
+      cache.objects!.put("encoder:image-a", [{ schema: "features-v1", metadata: { grid: "1,2,2" }, tensors: [data] }]);
       expect(cache.totalBytes).toBe(32);
-      const held = await cache.objects.take("encoder:image-a");
+      const held = await cache.objects!.take("encoder:image-a");
       const flush = await cache.durability.flush();
       expect(flush.durable).toBe(true);
       expect(cache.totalBytes).toBe(0);
@@ -40,11 +40,11 @@ describe.skipIf(process.env.MLX_BUN_TEST_OBJECT_CACHE !== "1")("shared tensor-ob
       expect(restarted.scan()).toBe(1);
       const restoredCache = new TieredPromptCache(128, restarted, cold(restarted));
       try {
-        const restored = await restoredCache.objects.take("encoder:image-a");
+        const restored = await restoredCache.objects!.take("encoder:image-a");
         expect(restored!.value[0]!.metadata.grid).toBe("1,2,2");
         expect(Buffer.from(restored!.value[0]!.tensors[0]!.rawBytes()).toString("hex")).toBe(expected);
         expect(restoredCache.totalBytes).toBe(32);
-        expect(await restoredCache.objects.take("encoder:image-b")).toBeNull();
+        expect(await restoredCache.objects!.take("encoder:image-b")).toBeNull();
         restored!.dispose();
         expect((await restoredCache.durability.flush()).durable).toBe(true);
       } finally { restoredCache.clear(); }

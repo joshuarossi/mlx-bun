@@ -141,10 +141,14 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   /** Exact tensor objects share this store's byte budget, eviction and writer.
    * Empty token history denotes no conversation; the private namespace is the
    * complete object identity. No fabricated language tokens enter the index. */
-  readonly objects: import("./contracts/object-cache").ObjectCache<CheckpointAttachment[]> = {
+  readonly #objects: import("./contracts/object-cache").ObjectCache<CheckpointAttachment[]> = {
     take: key => this.#takeObject(`object:${key}`),
     put: (key, value) => this.put([], [], `object:${key}`, undefined, value),
   };
+
+  get objects(): import("./contracts/object-cache").ObjectCache<CheckpointAttachment[]> | undefined {
+    return this.maxBytes > 0 || this.#cold ? this.#objects : undefined;
+  }
 
   async #takeObject(ns: string): Promise<{ value: CheckpointAttachment[]; dispose(): void } | null> {
     let entry = this.findExact([], ns);
