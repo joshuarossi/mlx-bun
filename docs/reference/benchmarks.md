@@ -3458,3 +3458,81 @@ Completed benchmark SSD payloads were deleted during workspace cleanup after
 their measurements and restore checks. Cleanup manifests record each removed
 path and size; transcripts, measurements, source manifests and generated apps
 remain. Historical SSD cache directories require regeneration before reuse.
+
+### Full Kanban task with echo and MTP2 — M4 Pro 24 GB
+
+The requested fresh task runs on `7966b92` through Pi 0.85.1, Node 23.11.0,
+Bun 1.4.2 and the released native pack. Qwen chooses the tool calls; Pi executes
+them. The task starts in an empty directory with the same original prompt and
+initial request as the accepted fixed-prefill run. Both use the packed 27B
+artifact, folded RTN4 MTP companion, two draft tokens, KV4/g64, fixed 256-token
+prefill, default shared cap eight, seed 42, temperature 0.6, top-p 0.95,
+top-k 20, xhigh thinking, 131,072 context, 4 GiB RAM cache and 64 GiB SSD cache.
+The new run enables echo. Its integrated source also includes the changes since
+`721ac4c`; this is a whole-task observation, not a source-isolated echo A/B.
+
+| Measurement | Previous fixed-prefill task | Echo + MTP2 task |
+|---|---:|---:|
+| Task wall time | 69m52.768s | 82m55.067s |
+| Generated tokens | 67,816 | 76,089 |
+| Requests | 17 | 25 |
+| Observed streaming tokens/sec | 16.4908 | 16.4774 |
+| Sum of first-output waits | 75.877s | 316.757s |
+| First response tokens | 35,002 | 39,039 |
+| Follow-up session cache hits | 16/16 | 24/24 |
+| Inference failures / retries / compactions | 0 / 0 / 0 | 0 / 0 / 0 |
+| Failed model-chosen shell checks | 0 | 7 |
+| Untouched-app browser acceptance | 17/18 | 17/18 |
+
+Streaming rate uses total completion tokens divided by the sum of each
+request's stream wall time minus its first semantic-output wait, as in the
+previous report. First-output waits include more than prefill and must not be
+labeled pure prefill time. Tool arguments can remain buffered while generation
+continues. A one-second process sample during such a pause shows active native
+evaluation; the sample is retained with the activity log.
+
+The observed rate changes −0.08%, effectively flat. The task takes 18.66%
+longer and generates 12.20% more tokens. Responses diverge during the first
+reasoning turn despite identical initial inputs; later requests and work differ.
+This run establishes no task-speed win for echo, which remains opt-in.
+
+Echo records 19,147 matched tokens in 1,151 wide verification events, with
+27,415 rejected proposed tokens. Matched prefixes include tokens established
+by ordinary MTP sampling; they are not an additive count of avoided decodes.
+The first response alone records 6,047 matches. Learned-draft statistics stay
+separate. Total checkpoint bookkeeping is 1.144 seconds; this is not the full
+cost of verification or companion consumption.
+
+All 24 follow-ups reuse the session cache. Final flush is durable with zero
+missing, pending, dropped or failed snapshots. Fifty writes leave 38 resident
+SSD entries totaling 68,652,904,448 bytes under the explicit 64 GiB budget;
+the longest retained prefix is 82,800 tokens. Older SSD entries are removed
+under that budget. Final RAM residency is one 2,019,268,608-byte entry. Production
+source hashes remain unchanged for the complete task and settings checks pass.
+After the server exits, the runner removes disposable SSD payloads and retains
+a per-file cleanup manifest, cache metadata, full transcripts and the app.
+
+The seven failed shell checks belong to Qwen's generated test script: one
+relative module lookup from `/tmp`, one incorrect description-search assertion,
+two incorrect persisted-shape assertions, one invalid `window.localStorage`
+mock reset, and two missing `window.Kanban.state` mock setups. The description
+query matched both test cards; the script incorrectly expected only one.
+Persisted counts expected two where there were three. The model corrected its
+test script. These command failures are distinct from inference failures.
+
+Independent browser evaluation on M1, after generation ends, passes 17 of the
+same 18 categories and meets the requested 16/18 target. The new app passes
+filter reset, which failed previously. Keyboard-only card editing now fails:
+cards have no keyboard focus target and Enter does not open their editor.
+Keyboard creation and mouse editing work. Native column/card dragging, Done
+indication, full card fields, archive/restore, title/description search,
+combined filters, reload persistence and both themes pass. All ten generated
+source files remain byte-identical throughout evaluation. No repair prompt or
+manual app edit is supplied. Initial favicon 404 only; final browser console
+has no errors. Evaluator locator mistakes are recorded separately.
+
+Reports, full responses, source hashes, quality protocol and screenshots:
+`reports/kanban-echo-mtp-r1/`. Previous report:
+`reports/kanban-decode-fixed-prefill-r1/`. Both task trajectories, including the
+failed checks, remain available. Completed benchmark KV cleanup removes
+215.31 GiB on M4 and 63.76 GiB on M1; model artifacts, transcripts and apps stay.
