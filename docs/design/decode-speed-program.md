@@ -1142,13 +1142,17 @@ SSD boundary-before-transfer fix, Qwen tool-parameter parser,
 
 ### 7.9 Project kernel coverage
 
-The current AST census has 37 custom Metal kernel construction sites in 15
-files; frozen source controls retain the two old-core affine kernels the
+The current AST census has 44 custom Metal kernel construction sites in 18
+files, plus 12 direct compiled-function construction sites. The seven additions
+since the earlier census are three paged-attention kernels, two normalized
+greedy reductions, masked recurrent update and row-length-aware state replay.
+Frozen source controls retain the two old-core affine kernels the
 MLX 0.32.2 consolidation removed (§7.12). The initial inventory also counted
 355 calls into 162 distinct MLX C APIs; that count includes allocation,
 configuration and graph operations, not native GPU kernels. Runtime
 specializations still need shape, dtype, layout and stream coverage. Evidence:
-`reports/qwen38-rd/project-kernel-consolidated-census.json` (current), with
+`reports/prefill-observation/kernel-census.json` (current), with
+`reports/qwen38-rd/project-kernel-consolidated-census.json` and
 the earlier censuses in `project-kernel-inventory.json`,
 `project-kernel-coverage.json`, `project-kernel-vector-expand-addendum.json`,
 `project-kernel-turboquant-addendum.json`, `project-kernel-inverse-addendum.json`
@@ -1157,12 +1161,14 @@ and `project-kernel-wide-addendum.json`.
 | Owned kernel family | Sites | Current evidence and next coverage |
 |---|---:|---|
 | Packed grammar mask | 1 | Exact micro and HTTP outputs; serving timing inconclusive under external load. |
+| Normalized greedy partial and final reductions | 2 | Same-machine operator and actual-model comparisons pass on both Macs; MiniCPM standard AB/BA improves throughput while packed Qwen MTP3/TQ is flat. Metadata, stochastic and custom samplers retain their prior path. |
+| Direct paged-attention bf16, affine score and affine value | 3 | C5 operation/model/state and native HTTP checks pass. Recorded wins and regressions do not justify a default; block formats and attention remain optional through the cache/model interfaces. |
 | Joint TurboQuant K/V decoding and selected inverse rotation | 2 | Experimental opt-in; exact operation/lifetime and R6/RTN4 integrated model gates pass on MLX 0.32.2. Integrated inverse-rotation HTTP passes six pairs per quant with decode gains in every pair; R6 complete time improves and RTN4 complete time is inconclusive. Six deferred-consumer pairs per MiniCPM/Gemma also improve complete requests on consolidated source. Combined/pressure and quiet acceptance remain. Direct packed-key attention is exact but slower. Details live in turboquant.md. |
 | Flash attention forward, D, dKV and dQ | 4 | D256 alternative screen fails one KL gate; other attention shapes and backward costs remain. |
 | GLM sparse-attention rank and contract keys | 2 | Both keys now use uint32 with stable score sorting. Operation and complete tiny-model state gates pass; six balanced pairs per shape improve selection latency. Real Colibri serving remains unmeasured. |
 | GLM q4/q8 streamed expert gate/up and down | 4 | Synthetic resident-slot geometry screen and six balanced repeats preserve intermediate/output bytes and cleanup. BF16 timing is bimodal across identical process configurations; no geometry default retained. Attribute that variation before further timing claims. Real model and I/O overlap remain unmeasured. |
 | Qwen causal convolution, SiLU and copied tail | 1 | Exact operation/model/state gates; fusion has no compelling full-model speed win. |
-| Gated recurrent update | 1 | Unrolling, geometry, compilation and normalization fusion screened; full-model gains too small to retain. |
+| Gated recurrent update, masked update and prefix-state replay | 3 | Unrolling, geometry, compilation and normalization fusion screened; full-model gains too small to retain. Masked padding and row-length replay preserve inactive state and accepted-prefix state in composed native/serving gates. Uniform state-only replay did not establish a serving win and remains unselected. |
 | Qwen multimodal rotary embedding | 1 | Direct-stride fusion preserves operation/model state, but the complete-forward gain is too small to retain. Actual image/video HTTP coverage remains. |
 | Trellis reduce, scatter, expand and gate/up variants | 9 | Shared rows and fusion improve measured cells. Device codebook lookup loses. A scoped threadgroup integer table improves repeated M3/4 scatter, full forwards and MTP HTTP requests with exact outputs; M1 loses and stays procedural. Scheduling and prefill controls remain. Broader bit/axis/shape/model coverage remains. |
 | Trellis split-K projection and accumulation | 2 | Short-prefill model/serving acceptance; larger shapes and additional artifacts remain. |

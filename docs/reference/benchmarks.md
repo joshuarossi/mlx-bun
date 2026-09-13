@@ -135,8 +135,9 @@ prefill, cache restore and initial model execution. A warm-cache TTFT difference
 is not a direct measurement of server overhead or of model decode speed. The
 decode and aggregate columns answer different questions and must stay labeled.
 Raw evidence paths in this document are machine-local, not downloadable reports.
-A clean-checkout oracle setup and a self-contained evidence bundle are still
-preparation work; do not treat a skipped parity test as successful reproduction.
+The clean-checkout oracle setup is verified above. A downloadable evidence
+bundle remains preparation work; do not treat a skipped parity test as
+successful reproduction.
 
 ### Coverage beyond the four-model summary
 
