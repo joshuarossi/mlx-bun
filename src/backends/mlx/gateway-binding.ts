@@ -17,6 +17,7 @@ import { disposeResources } from "../../engine/resources";
 import { legacyCompiledDecodeAvailable } from "./autoregressive";
 import { MlxBatchExecutionGroup, type MlxBatchExecutionGroupOptions, type MlxGroupMethodRequest } from "./batch-group";
 import type { DraftProvider } from "../../spec/source";
+import { constraintDraftProvider } from "../../spec/ngram-source";
 import { targetRowLayoutFactory } from "./target-layout-capability";
 import { bindSpeculativeGroupRequests } from "./speculative-group";
 import type { GenerateOptions } from "../../generate";
@@ -66,6 +67,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   };
   const speculative = draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
+  const grammarProvider = runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
+    ? constraintDraftProvider() : undefined;
+  const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
+    Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
   const adapterState = "loraState" in model ? model.loraState : undefined;
   return {
     config: model.config, runtime,
@@ -80,14 +85,15 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         restore: entry => services.checkpoints!.restore(entry, model),
         interval: services.checkpointEveryTokens!, identity: services.identity });
     },
-    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache) : undefined,
+    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache, runtime) : undefined,
     prefixNamespace: (execution, options, adapters) => {
-      if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters);
+      if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters, runtime.flag("MLX_BUN_PAGED_ATTN", false));
       if (execution?.method !== "speculative") return adapters;
-      const namespace = draft?.provider.grouped?.checkpointNamespace?.();
+      const namespace = (execution.grammarJump ? grammarProvider : draft?.provider)?.grouped?.checkpointNamespace?.();
       return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));
     },
-    methodRequest: (execution, options) => execution?.method === "speculative" ? speculative?.(options) : undefined,
+    methodRequest: (execution, options) => execution?.method === "speculative"
+      ? (execution.grammarJump ? grammarProposals : speculative)?.(options) : undefined,
     ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
       const selected = [...adapters];
       return { key, enter() {
@@ -97,26 +103,29 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       } };
     } } : {}),
     plan(request, options, scheduling) {
+      const sharedMethod = request.hasDraft ? speculative : grammarProposals;
+      const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
         sharedCheckpoints: !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
-        groupedMethods: speculative ? ["autoregressive", "speculative"] : ["autoregressive"],
-        speculativeLogprobs: scheduling.continuous && !!speculative,
-        sharedSpeculativeAdapters: scheduling.continuous && !!speculative && !!adapterState &&
-          draft?.provider.grouped?.supportsTargetAdapters === true,
+        groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
+        sharedGrammarProposals: !!grammarProposals,
+        speculativeLogprobs: scheduling.continuous && !!sharedMethod,
+        sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
+          provider?.grouped?.supportsTargetAdapters === true,
         turboQuantBatch: scheduling.quantizedBatch,
-        speculativeTurboQuant: scheduling.continuous && !!speculative && !!options.turboQuant,
+        speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
         grammarBatch: runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
         speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
-          (scheduling.continuous && !!speculative && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
+          (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
           (!options.kvConfig?.length && model instanceof Qwen35Model &&
-            (options.kvBits === 4 || (scheduling.continuous && !!speculative && options.kvBits === 8)) &&
-            (options.quantizedKvStart === 0 || (scheduling.continuous && !!speculative)))
+            (options.kvBits === 4 || (scheduling.continuous && !!sharedMethod && options.kvBits === 8)) &&
+            (options.quantizedKvStart === 0 || (scheduling.continuous && !!sharedMethod)))
         ),
       }, {
         pagedKv: !!options.pagedKv, fill: !!options.fill,

@@ -75,6 +75,7 @@ import { hostname, release, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { EvalDB, gitCommit } from "../src/evaldb";
 import { checkMachine } from "../src/preflight";
+import { P2R_TRACE_PREFIX, type P2RTraceRecord } from "../src/serve/prompt-response-trace";
 // Offline report consumers import the measurement helpers. Resolving the
 // reference here would make saved-result rendering depend on a local Python
 // installation, including any stale MLX_BUN_ORACLE_VENV override.
@@ -113,7 +114,7 @@ export function engineBenchmarkArgs(args: string[]): string[] {
 }
 
 function benchmarkRuntimeEnvironment(): Record<string, string> {
-  const names = ["MLX_BUN_LIBMLXC", "MLX_BUN_TRELLIS", "MLX_BUN_TRELLIS_VARIANT",
+  const names = ["MLX_BUN_P2R_TRACE", "MLX_BUN_P2R_SYNC", "MLX_BUN_MIXED_PREFILL", "MLX_BUN_MIXED_TOKEN_BUDGET", "MLX_BUN_MIXED_PACKED_MLP", "MLX_BUN_LIBMLXC", "MLX_BUN_TRELLIS", "MLX_BUN_TRELLIS_VARIANT",
     "MLX_BUN_TRELLIS_ASYNC_EXPAND", "MLX_BUN_EARLY_FIRST_TOKEN", "MLX_BUN_FILL",
     "MLX_BUN_MTP_PROMPT_CACHE", "MLX_BUN_QWEN_SPEC_KV4", "MLX_BUN_RD_CONTEXT_LIMIT",
     "MLX_BUN_RD_PREFILL_CHUNK", "MLX_BUN_PREFILL_TAIL_SPLIT", "MLX_BUN_TURBOQUANT_FUSED_DECODE", "MLX_BUN_PAGED_KV"];
@@ -127,7 +128,7 @@ const opt = (name: string, dflt: string): string => {
   return i > -1 ? argv[i + 1]! : dflt;
 };
 const flag = (n: string): boolean => argv.includes(`--${n}`);
-const DIAGNOSTIC = flag("diagnostic");
+const DIAGNOSTIC = flag("diagnostic") || process.env.MLX_BUN_P2R_TRACE === "1";
 
 const DECODE_TOKENS = Number(opt("tokens", "192"));
 const CTX_TOKENS = Number(opt("context", "16384"));
@@ -344,6 +345,8 @@ export interface ReqResult {
 interface ReqOpts {
   apiKey?: string;
   modelId?: string;
+  /** Correlate HTTP timings with the server's optional phase trace. */
+  traceId?: string;
   bodyExtra?: Record<string, unknown>;
   /** Phase budget (B1) — ALWAYS set by callers; the default only guards
    *  against a forgotten call site (never rely on Bun's implicit 300 s). */
@@ -379,6 +382,7 @@ async function measureStreamRequest(base: string, route: "chat/completions" | "c
     headers: {
       "content-type": "application/json",
       ...(o.apiKey ? { authorization: `Bearer ${o.apiKey}` } : {}),
+      ...(o.traceId ? { "x-mlx-bun-trace-id": o.traceId } : {}),
     },
     body: JSON.stringify({
       model: o.modelId ?? "bench", stream: true, max_tokens: maxTokens, temperature: 0,
@@ -611,6 +615,8 @@ export interface RestartDurability {
 }
 
 export interface CellResult {
+  /** Complete traces, grouped by child PID because monotonic clocks reset on restart. */
+  promptResponseTraces?: Array<{ pid: number; record: P2RTraceRecord }>;
   cell: Cell;
   readyMs: number;
   /** RSS right after the server answers /v1/models — the loaded-but-idle
@@ -662,8 +668,8 @@ export interface CellResult {
 /** Ring-buffered stderr tail (B1): the old harness piped stderr and never
  *  read it, so a dying child's last words were lost (and a chatty one
  *  could block on a full pipe). Last N lines ride along in failure records. */
-function pumpStderr(stream: ReadableStream<Uint8Array>, ring: string[]): void {
-  void (async () => {
+function pumpStderr(stream: ReadableStream<Uint8Array>, ring: string[], onLine?: (line: string) => void): Promise<void> {
+  return (async () => {
     const reader = stream.getReader();
     const dec = new TextDecoder();
     let buf = "";
@@ -677,6 +683,7 @@ function pumpStderr(stream: ReadableStream<Uint8Array>, ring: string[]): void {
           const line = buf.slice(0, nl);
           buf = buf.slice(nl + 1);
           if (line.trim()) {
+            onLine?.(line);
             ring.push(line);
             if (ring.length > STDERR_TAIL_LINES) ring.shift();
           }
@@ -734,11 +741,18 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
   };
 
   const stderrTail: string[] = [];
+  const promptResponseTraces: NonNullable<CellResult["promptResponseTraces"]> = [];
+  const collectTrace = (pid: number) => (line: string) => {
+    if (line.startsWith(P2R_TRACE_PREFIX)) {
+      try { promptResponseTraces.push({ pid, record: JSON.parse(line.slice(P2R_TRACE_PREFIX.length)) }); }
+      catch { /* Preserve malformed diagnostics in stderr rather than breaking the pipe. */ }
+    }
+  };
   // stdout "ignore": we never read it, and an unread pipe can block a
   // chatty server. stderr is pumped into the ring buffer above.
   let proc = Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe" });
   let pid = proc.pid;
-  pumpStderr(proc.stderr, stderrTail);
+  let stderrDone = pumpStderr(proc.stderr, stderrTail, collectTrace(pid));
   const base = `http://127.0.0.1:${port}`;
   const assertAlive = () => {
     if (proc.exitCode !== null || proc.signalCode)
@@ -784,7 +798,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
   let respawnUsed = false;
 
   const killProc = async (graceMs = 5_000): Promise<void> => {
-    try { proc.kill(); } catch { return; }
+    try { proc.kill(); } catch { /* Already exited; still drain its diagnostics. */ }
     let timer: ReturnType<typeof setTimeout> | null = null;
     const grace = new Promise<void>((resolve) => {
       timer = setTimeout(resolve, graceMs);
@@ -793,11 +807,12 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
     await Promise.race([proc.exited.then(() => {}), grace]);
     if (timer) clearTimeout(timer);
     try { proc.kill(9); } catch { /* gone */ }
+    await stderrDone;
   };
   const spawnProc = (): void => {
     proc = Bun.spawn(cmd, { stdout: "ignore", stderr: "pipe" });
     pid = proc.pid;
-    pumpStderr(proc.stderr, stderrTail);
+    stderrDone = pumpStderr(proc.stderr, stderrTail, collectTrace(pid));
   };
   /** Cheap 1-token request: is the server still answering at all? */
   const drainProbe = async (): Promise<boolean> => {
@@ -1057,6 +1072,7 @@ async function runCell(c: Cell, port: number, withContext: boolean, ssdDir: stri
 
     return {
       cell: c, readyMs, idleRssMB, coldStartMs, restart,
+      ...(process.env.MLX_BUN_P2R_TRACE === "1" ? { promptResponseTraces } : {}),
       parity,
       peakRssMB, rssByLeg,
       decodeTps: decode?.picked ?? null, decodeTag: decode?.tag ?? "",

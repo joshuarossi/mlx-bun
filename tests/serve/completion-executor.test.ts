@@ -116,6 +116,7 @@ describe("CompletionExecutor", () => {
     expect(records[0]!.events.map((event) => event.phase)).toEqual([
       "completion.total",
       "completion.placement",
+      "response.token_route",
     ]);
   });
 

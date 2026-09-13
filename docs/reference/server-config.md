@@ -23,6 +23,39 @@ Sections: [Start flags](#start-flags) · [`--isolate` semantics](#--isolate-sema
 · [Fidelity tiers](#fidelity-tiers-and-the-decode-route---l1----l2) · [Feature matrix](#feature-matrix)
 · [Performance & recipes](#performance-characteristics--recipes) · [`GET /stats`](#observability--get-stats).
 
+## Configuration ownership
+
+CLI presets and explicit flags resolve before model loading. Request preparation
+combines server defaults with request overrides once; explicit request values
+win. A bound execution keeps its immutable runtime snapshot across awaits.
+The tables below own the individual defaults and effective-value rules; this
+map identifies who consumes them.
+
+| Settings | Owning interface / implementation | Binding and use |
+|---|---|---|
+| Model selection, host/port, isolation, native paths, shutdown | CLI and server host | Startup and process lifecycle; no model-forward policy |
+| Batch capacity, queue/KV budget, prefill cohort budget, `MIXED_PREFILL`, `MIXED_TOKEN_BUDGET` | Scheduling policy and execution group | Choose admission and work size; never choose a codec or sample |
+| Draft kind/model/depth, `DSPARK_MINCONF`, `GRAMMAR_DRAFT_TOKENS` | Draft provider and inference method | Bind provider policy; propose tokens through the shared verifier |
+| `GRAMMAR_BATCH`, `BATCH_SSM`, `QWEN_SPEC_KV4`, compiled/grammar/fill eligibility | Model gateway and execution planner | Resolve supported composition before placement |
+| Temperature, seed, penalties, probability filters, logprobs, `BATCH_VEC_SAMPLE` | Sampling session | Request-owned policy and RNG; selected-token output remains device-backed where supported |
+| Thinking/template defaults, grammar schema, `GRAMMAR`, `TOKEN_MASK` | Chat renderer and grammar controller | Render and compile per request; no scheduling decisions |
+| KV scheme/start/group size, `PAGED_KV`, `PAGED_ATTN`, `TURBOQUANT_FUSED_DECODE` | KV scheme, request-state policy and codec | Capture layout/kernel choice; preserve it through deferred construction and RAM copies |
+| Prompt/SSD budgets, demotion, `SSD_*`, `CACHE_RETENTION`, `SESSION_CACHE`, `MTP_PROMPT_CACHE` | Prefix cache and persistence service | Cache owns residency and session lookup; persistence owns queued storage work |
+| `COMPILED_DECODE`, `COMPILED_GEGLU`, `COMPILED_SWIGLU`, `NO_FUSED_SDPA`, `TRELLIS*`, `MIXED_PACKED_MLP` | Model backend and numerical kernels | Read bound execution policy; select implementations by supported tensor geometry |
+| `RD_PREFILL_CHUNK`, `PREFILL_TAIL_SPLIT`, `EARLY_FIRST_TOKEN`, `BATCH_NO_PIPELINE`, `BATCH_EXTEND` | Prefill/step execution and row state | Preserve method boundaries, output ordering and state ownership; the batch-prefixed names remain compatibility controls |
+| `FILL*`, `GRAMMAR_JUMP` | Fill session or grammar proposal provider | Capture request policy; supported methods consume proposals/appends independently of scheduling |
+| Context limits, checkpoints, media access, trace/debug settings | Request preparation, checkpoint service, media adapter and diagnostics | Each service applies its own options; evaluation-only settings stay in the evaluation adapter |
+
+Environment names in this map omit the `MLX_BUN_` prefix. Historical A/B switches
+remain available while their control paths are supported. They are not alternate
+configuration systems. Internal boolean reads use the same `runtimeFlag` port;
+the old `flagOn` wrapper has been removed. CLI aliases remain compatible.
+
+Paged request state captures both its cache namespace and its direct-attention
+choice. Changing host settings after binding cannot change later prefetch, lookup,
+publication or cache construction for that request. The same rule applies to
+TurboQuant's fused codec across copies and delayed precision conversion.
+
 ## Start flags
 
 How flags are parsed (`src/cli.ts` `opt`/`flag`/`positional`):
@@ -164,6 +197,13 @@ adapter-revision and KV-policy identities separate incompatible state.
 publishes checkpoints for processed tokens through the same cache.
 Long-conversation performance acceptance remains open.
 
+Uniform KV4 attention automatically groups three query heads for the key
+multiplication on M4 Pro when B≤2, L=3, GQA6/D256, N≥8192 and bf16/f32
+match the qualified shape. Masking, softmax and value multiplication retain
+their existing geometry. This internal selection needs no additional flag;
+other shapes and machines keep the existing implementation. Exactness and
+timing evidence are in [benchmarks.md](benchmarks.md#three-query-affine-attention-head-grouping).
+
 In v0.4.0, Qwen uniform affine KV4 with
 `quantizedKvStart=0` supports configured speculative execution by default.
 `MLX_BUN_QWEN_SPEC_KV4=0` restores the ordinary-decode compatibility control. Recurrent state and draft KV keep their original precision. Shared Qwen MTP
@@ -172,14 +212,25 @@ KV remains incompatible. Strict legacy serial speculation retains bf16/KV4.
 The KV4 control does not disable bf16, KV8 or TQ shared speculation. Six paired M4 Pro combined suites and two completed Kanban tasks support
 this default. Configuring a drafter and selecting KV4 remain explicit choices.
 
-For controlled experiments, `MLX_BUN_RD_PREFILL_CHUNK` sets the prefill chunk,
-default 2048. Shared ordinary and speculative methods use the group's captured
-default; an explicit group option overrides the environment and a library
-request's `prefillChunkSize` overrides that default for its request.
+The shared prefill policy selects a chunk once per request. The usual size is
+2,048 tokens. For recurrent-attention models with materialized SDPA scores,
+it halves that size until the estimated per-layer score workspace is at most
+1 GiB (minimum eight queries, where native fused decode attention applies).
+Qwen3.8-27B therefore uses 2,048 at 10,398 prompt tokens and 256 at 78,678.
+This changes the work size; it does not reject or shorten the request.
+Ordinary and speculative execution consume the same bound policy.
+
+`MLX_BUN_RD_PREFILL_CHUNK` selects an explicit fixed chunk. A group option
+supersedes the environment, and a library request's `prefillChunkSize`
+supersedes either. Explicit values bypass the automatic choice.
 `MLX_BUN_RD_CONTEXT_LIMIT` sets an explicit request context cap
-without enlarging it. Both require positive integers; the context cap is unset
-by default. These are benchmark controls, not changes to the published model
-profile or sampling policy.
+without enlarging it. Both controls require positive integers; the context
+cap is unset by default. Sampling and the published model context remain
+independent of prefill chunk selection. To reproduce a seeded response, keep
+the prefill chunk policy fixed along with the model, runtime, machine and
+sampling settings. Changing chunk boundaries can change numerical results
+and the sampled continuation. The [Kanban comparison](benchmarks.md#full-kanban-after-decode-integration)
+records this effect on the same M4 Pro with identical initial request JSON.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
@@ -205,6 +256,13 @@ profile or sampling policy.
 | `--hlg-shoulder` | nats ∈ [0, 100] | `4` | serial | HLG highlight rolloff scale. Only with `--hlg-sampling on`. |
 | `--hlg-toe` | nats ∈ [0, 100] | `6` | serial | HLG shadow rolloff scale. Only with `--hlg-sampling on`. |
 | `--hlg-pivot-offset` | nats ∈ [0, 100] | `6` | serial | HLG pivot: nats below the top token. Only with `--hlg-sampling on`. |
+
+Greedy sampling without requested logprobs uses a shared normalized-selection
+kernel after applying penalties and grammar masks. It preserves dtype-rounded
+scores and lowest-ID ties while avoiding a full normalized vocabulary output.
+Independent speculative verification uses the same operation. Requests needing
+logprobs, stochastic sampling or a custom sampler keep their existing operations;
+no new flag is required. Measurements are in [benchmarks](benchmarks.md#fused-normalized-greedy-selection).
 
 ### Media and UX
 
@@ -369,7 +427,7 @@ chat stage (`src/serve/chat-stage.ts`). Full field list: [server-api.md](./serve
 All `MLX_BUN_*` variables are captured once at process start into an
 immutable snapshot (`src/runtime-config.ts`); CLI flags install overrides
 into the same snapshot before the model loads. Boolean levers read the
-literal strings `"1"`/`"0"` — `flagOn` treats any other value as unset.
+literal strings `"1"`/`"0"` — `runtimeFlag` treats any other value as unset.
 Under `--isolate` the whole environment is inherited by the engine child.
 
 ### Serving levers (flag-backed and lane kill switches)
@@ -377,7 +435,10 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | Env var | CLI flag | Default | Effect |
 | --- | --- | --- | --- |
 | `MLX_BUN_COMPILED_DECODE` | `--compiled-decode` | on (`"0"` disables) | Compiled decode graph replay (serial lane; batch lane at B=1). |
-| `MLX_BUN_EARLY_FIRST_TOKEN` | — | off (`=1`) | Serial/native generation yields token zero before constructing the next decode step. This can reduce first visible output latency when token zero contains visible text. Later decode remains pipelined. Serial fill, grammar, checkpoint resume and single-token budgets retain their existing order. When a native consumer stops at the first yield and retains caller-owned caches, a non-aborted return completes that token’s M=1 forward before returning the cache. This preserves the ordinary pipeline’s boundary for later prefix reuse. Aborted requests do not start another forward; caches owned and disposed by the generation need no alignment. Native M1 packed-Qwen/MiniCPM/Gemma continuation gates pass; M4 packed/affine and serving acceptance remain. The continuous scheduler also yields after preparation creates its first active row when no other request is queued, allowing prepared output to flush before decode. It then rechecks cancellation, admission and shutdown; queued short admissions still group together. The setting is captured by generation and the batch runtime. Experimental pending broader cached/pressure and quiet-machine acceptance. |
+| `MLX_BUN_MIXED_PREFILL` | — | off (`=1`) | Lab mixed prefill/decode execution for Gemma 4 and Qwen3.5/3.8 text groups, including grouped speculative methods. The scheduler reserves running tokens before prompt work; the model packs feed-forward operations across real tokens while attention and KV state retain their original group geometry. Methods supply candidate-token demand and per-group hidden taps; speculative verification preserves its existing matmul geometry. Packed matmuls can select different kernels from solo decode; this does not claim solo-logit identity or a measured serving win. |
+| `MLX_BUN_MIXED_PACKED_MLP` | — | on (`=0` disables) | Lab control inside mixed model work: disable feed-forward packing while keeping the same scheduling budget and attention geometry, to measure packing separately from chunk scheduling. No effect when mixed execution is off. |
+| `MLX_BUN_MIXED_TOKEN_BUDGET` | — | `256` | Total real tokens in an enabled mixed iteration, including running decode rows. At least one token per participating row progresses. A lone preparation retains its existing chunk setting. Precision transitions and checkpoint endpoints remain method-owned. |
+| `MLX_BUN_EARLY_FIRST_TOKEN` | — | on (`=0` disables) | Eligible ordinary generation yields token zero before constructing the next decode step; later decode remains pipelined. The continuous scheduler yields after preparation creates its first active row when no other request is queued, allowing prepared output to flush before decode. It then rechecks cancellation, admission and shutdown; queued short admissions still group together. Serial fill, grammar, checkpoint resume and single-token budgets retain their existing order. If a native consumer stops at the first yield and retains caller-owned caches, a non-aborted return completes that token’s M=1 forward before returning the cache, preserving the ordinary pipeline’s boundary for prefix reuse. Aborted requests do not start another forward; generation-owned caches need no alignment. The setting is captured by generation and the batch runtime. Native M1/M4 state and continuation, HTTP cancellation/overlap and cached/SSD gates pass. Monitored paired chat measurements support earlier visible output; they do not establish higher decode throughput, and an invisible token zero need not improve client latency. See benchmarks.md. |
 | `MLX_BUN_TURBOQUANT_FUSED_DECODE` | — | off (`=1`) | Experimental packed K/V decode fusion for an existing `--kv-quant turbo:...` cache, captured when each cache is created. A shared Metal operation unpacks keys and values, applies the existing key zero/scale and Lloyd-Max value scale, and preserves the codec's eager or deferred inverse rotation. It accepts supported bit widths, head dimensions 64/128/256/512 and 32/64-element groups with fp16/bf16/f32 metadata. Eager k8v3 with B1/H4, head dimension 256, fp16 metadata, group32 and at least 8192 cached tokens also fuses inverse rotation; other shapes keep the existing rotation path. Unsupported inputs, CPU streams and shapeless traces retain ordinary operations. Quantization, stored cache format and serving eligibility are unchanged. Joint-decoder Qwen native/serial and repeated long-context HTTP gates pass. The inverse operation passes both integrated Qwen model gates and six HTTP pairs per quant. MiniCPM/Gemma deferred-consumer serving gates also pass. The shared codec/layout supports ordinary and supported drafting groups without changing this kernel selection. Gemma now owns pre-write row positions across cache appends; the fix passes native checks on both Macs. Combined settings, pressure and strict M4 Pro acceptance remain. |
 | `MLX_BUN_NO_FUSED_SDPA` | `--fused-sdpa` (inverted) | follows `--kv-quant` | `=1` forces the stock unfused SDPA everywhere. |
 | `MLX_BUN_COMPILED_GEGLU` | `--compiled-activations` | on (`"0"` disables) | Gemma geglu via mlx-lm's `@mx.compile` closure. `=0` → uncompiled composition (same parity, slower). |
@@ -386,14 +447,15 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_TRELLIS` | — | `kernel` (`=expand`) | Packed trellis-coded weights (`mode: "trellis"` modules, Q2b — design: `docs/design/turboquant.md`). `kernel` serves them through the Metal decode kernels (M≤4 matvec; larger M expands one tensor to bf16 and runs a stock matmul). `=expand` decodes every trellis tensor at LOAD into 8-bit g64 affine (+~4 GiB at 27B, the eval-carrier numerics) and serves it through the stock quantized path — the fallback for a machine where the kernels lose. |
 | `MLX_BUN_TRELLIS_VARIANT` | — | `13` | Trellis kernel variant (see [Q2b experiments](../design/turboquant.md)): `6` = code computed inline × reciprocal, weight served as f32 code×scale; `1` adds a residual step and bf16 rounding to reproduce the fake-quant artifact's weights. `0`/`2`/`3`/`4`/`5` are bench-only decoder variants. Variants `7`–`13` retain variant-6 decode values; `13` is the measured default. These variants tune work assignment; `11` tiles eligible short axis-1 prefills, `12` adds split-K axis-0 prefill at M=5..8, and `13` also vectorizes remaining bf16 expansion for k2/k3/k4, T=256, L=12. On MLX 0.32.2/M3+ the axis-1 M5..15 path instead uses direct packed decoding with native wide-matvec arithmetic when Qwen's RMSNorm establishes aligned row-contiguous inputs; callers without that layout proof use native expansion/matmul. Qwen27B additionally selects an integer codebook for its interleaved k3 down projection at M=3/4 with bf16 activations; other calls retain the computed decoder. Prefill rounds weights to the activation dtype. |
 | `MLX_BUN_TRELLIS_ASYNC_EXPAND` | — | off (`=1`) | Experimental variant-13 expansion scheduling. Submit an expanded projection asynchronously while MLX active allocation is below 75% of the device's recommended working set; retain blocking evaluation above it. Other variants are unchanged. Uses the execution's runtime-policy snapshot and preserves the caller's layer barriers. The threshold is not a total-memory cap. Qwen27B integrated native, repeated serial/continuous HTTP and both saved-agent pressure gates pass on M4 Pro 24 GB. Broader-model, combined-optimization and quiet M4 Pro acceptance remain. |
-| `MLX_BUN_PAGED_KV` | `--paged-kv` | off (`=1`) | Paged KV cache; the same refusals and prompt-cache bypass as the flag. |
+| `MLX_BUN_PAGED_KV` | `--paged-kv` | off (`=1`) | Paged KV cache; the same eligibility and separate RAM/SSD namespace as the flag. |
 | `MLX_BUN_ALLOW_PRIVATE_MEDIA` | `--allow-private-media` | off (`=1`) | Permit media fetches to private/loopback/link-local hosts (timeout + size cap still apply). |
 | `MLX_BUN_EXPERT_OFFLOAD` | `--expert-offload` | off | `=<dir>` — the path of a built expert-offload file, activated at module load (`src/expert-offload.ts`) for scripts and library runs that never parse serve flags. The CLI flag builds the file and activates it itself. |
 | `MLX_BUN_PREFILL_TAIL_SPLIT` | — | on (`"0"` disables) | Oracle prefill convention: drain the prompt to len−1, then compute step-0 logits from a separate L=1 forward of the last prompt token (mlx-lm `generate_step` and its batched engine). Both lanes. The spec lane follows its own oracle's shape under the same flag (mlx-lm `speculative_generate_step`: target and draft drain to len−1, no separate step 0). `=0` restores the full-final-chunk convention everywhere — ulp-different at step 0, flips near-tie greedy streams vs mlx-lm. |
 | `MLX_BUN_GRAMMAR` | — | on (`"0"` disables) | `=0` disables structured-output mask compilation; requested constraints take the graceful-degrade route (chat prompt injection + a `Warning` header; raw completions header only). |
 | `MLX_BUN_TOKEN_MASK` | `host` \| `metal` | `host` | Experimental grammar-mask implementation. `metal` uploads packed bits and applies the same additive mask in a compiled shared Metal kernel. Captured when the grammar controller is created; serving performance gates remain open. |
-| `MLX_BUN_GRAMMAR_JUMP` | — | **off** (`=1`) | Jump-forward decoding for structured output (SGLang's technique via xgrammar's `findJumpForwardString`): when the grammar forces a unique continuation, the **serial** lane emits its retokenized ids with one multi-token forward. Lossless in string space and always grammar-valid, but the token stream can legally differ from an unjumped run — no oracle, hence opt-in. Skipped when `logprobs`/`top_logprobs` is requested; SentencePiece-family tokenizers that can't reproduce a mid-stream span never jump. The batch lane does not jump. |
-| `MLX_BUN_FILL` | — | **off** (`=strict` \| `=echo`) | **Token fast-forwarding** — lookup, not speculation. Spans of the assistant turn that the request's `tools` + the chat template already DETERMINE (tool-call open scaffold, the rest of a tool name after its first disambiguating token, a sole-required-key skeleton) are appended as committed context in bounded model forwards, and sampling resumes after them. No draft, no verify, no rollback — an injected token is context, indistinguishable to the model from one it sampled. Rows are compiled per request by diffing probe renderings of the model's OWN template, always sliced from a rendering carrying the REAL tool names and schema keys (so a span can never split a merged token such as Qwen3.5's `=get`), so a template that does not render `tool_calls` yields no rows and no fill. Key and call-close assertions require a closed object schema with exactly one required property and no pattern properties; optional/additional arguments stay available. If no property is required, the compiler preserves the empty-argument choice. Template-derived rows require a fresh request-local parser context. Tool-only output after closed reasoning qualifies; quoted/fenced examples, incomplete delimiters and ambiguous literals decline. Requests with more than 32 tools decline template-derived fills. Held-out identity coverage remains open. **Serial lane only** (it never forces a request off the batch lane) and refused for: fixed `seed`, `logprobs`/`top_logprobs`, structured output (grammar owns forced tokens), image/audio/video prompts, a mounted draft model, quantized/TurboQuant KV, and sliding-window models (one warning). Injection bypasses the sampler — a behavior-policy deviation at `temperature > 0` — hence opt-in. `=echo` additionally arms the **echo index** (Lab tier): spans copied from earlier in the same session, held under policy `verify` — the engine appends them in the same single forward, reads the argmax already in that forward's logits at every span position (free, no extra pass), keeps the prefix the model agrees with, and rewinds the rest through the same cache contract the spec lane's rounds use. A wrong echo costs a rewound forward, never a wrong token. Strict rows stay policy `assert` (no readback, no checkpoint). Telemetry: `usage.fill`. |
+| `MLX_BUN_GRAMMAR_JUMP` | — | **off** (`=1`) | Grammar-supplied continuations. Eligible shared requests without a configured drafter propose xgrammar's forced string to the existing target verifier; the sampler validates every emitted token, including requested logprobs. Candidates leave the matcher unchanged until sampling. Affine/TurboQuant layouts compose through their speculative capabilities; paged requests keep ordinary grammar sampling. Explicit serial execution retains direct jump-forward: it emits retokenized forced spans with one multi-token forward, skips jumping with logprobs, and can choose different tokens than ordinary sampling. A configured drafter retains its own proposal policy. This remains opt-in; tokenization/verification width can change numerical trajectories. |
+| `MLX_BUN_GRAMMAR_DRAFT_TOKENS` | — | `3` | Maximum grammar candidates per shared verification round when `MLX_BUN_GRAMMAR_JUMP=1`. Changes proposal depth, independently of scheduler capacity. |
+| `MLX_BUN_FILL` | — | **off** (`=strict` \| `=echo`) | **Token fast-forwarding** — lookup, not speculation. Spans of the assistant turn that the request's `tools` + the chat template already DETERMINE (tool-call open scaffold, the rest of a tool name after its first disambiguating token, a sole-required-key skeleton) are appended as committed context in bounded model forwards, and sampling resumes after them. No draft, no verify, no rollback — an injected token is context, indistinguishable to the model from one it sampled. Rows are compiled per request by diffing probe renderings of the model's OWN template, always sliced from a rendering carrying the REAL tool names and schema keys (so a span can never split a merged token such as Qwen3.5's `=get`), so a template that does not render `tool_calls` yields no rows and no fill. Key and call-close assertions require a closed object schema with exactly one required property and no pattern properties; optional/additional arguments stay available. If no property is required, the compiler preserves the empty-argument choice. Template-derived rows require a fresh request-local parser context. Tool-only output after closed reasoning qualifies; quoted/fenced examples, incomplete delimiters and ambiguous literals decline. Requests with more than 32 tools decline template-derived fills. Held-out identity coverage remains open. **Serial lane only** (it never forces a request off the batch lane) and refused for: fixed `seed`, `logprobs`/`top_logprobs`, structured output (grammar owns forced tokens), image/audio/video prompts, a mounted draft model and sliding-window models (one warning). The qualified Qwen27B append binding supports affine KV4/KV8 and TurboQuant K8V3, including per-layer affine selection; it preserves each committed token's one-token attention arithmetic while sharing projections. Other model bindings must declare format support. Delayed conversion splits committed work at the cache policy's precision boundary. Verify-policy quantized proposals remain inactive. Injection bypasses the sampler — a behavior-policy deviation at `temperature > 0` — hence opt-in. `=echo` additionally arms the **echo index** (Lab tier): spans copied from earlier in the same session, held under policy `verify` — the engine appends them in the same single forward, reads the argmax already in that forward's logits at every span position (free, no extra pass), keeps the prefix the model agrees with, and rewinds the rest through the same cache contract the spec lane's rounds use. A wrong echo costs a rewound forward, never a wrong token. Strict rows stay policy `assert` (no readback, no checkpoint). Telemetry: `usage.fill`. |
 | `MLX_BUN_FILL_MAX_SPAN` | — | `32` (floor 2) | Hard cap on one injected span. |
 | `MLX_BUN_FILL_APPEND_CHUNK_SIZE` | — | `0` (model limit) | Execution chunk cap for assert-policy fill, captured by each FillSession. Zero selects the model's qualified limit; a positive value can lower that limit. The Qwen 27B text path on `applegpu_g16s`, validated on the M4 Pro, supports up to four positions with supported affine projections and optional Trellis MLPs. It rechecks the limit after each chunk and splits at MLX's attention arithmetic boundaries to preserve one-token numerics. Other configurations use one position per forward. The engine commits the complete span before emission and resumes sampling after it, with no intermediate vocabulary heads or verification. Verify-policy proposals keep a single forward for recurrent rollback. The injected-token cap is unchanged. Library callers can set `FillSession`'s `appendChunkSize` option. Held-out, broader-model and quiet M4 Pro acceptance remain. |
 | `MLX_BUN_FILL_K` | — | `8` (floor 2) | Echo anchor length: the k-gram that must match before a copied span is proposed (the corpus study's token-level threshold). |
@@ -404,7 +466,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 | `MLX_BUN_BATCH_SSM` | — | on (`"0"` forces serial) | `=0` excludes SSMCache (Qwen3.5 gated-DeltaNet hybrids) from the batch capability gate → those models route serial. |
 | `MLX_BUN_BATCH_EXTEND` | — | on (`"0"` reverts) | Joining rows append to the running batch's KV in one pad+concat (mlx-lm `BatchKVCache.extend`). `=0` reverts to whole-batch re-merge (numerically equivalent, O(B·S)). |
 | `MLX_BUN_BATCH_VEC_SAMPLE` | — | on (`"0"` reverts) | Vectorized greedy batch sampling; `=0` falls back to per-row sampling (bit-equal A/B). |
-| `MLX_BUN_BATCH_NO_PIPELINE` | — | off (`=1`) | Read each batch step's tokens synchronously instead of pipelined (A/B lever; numerically equivalent, slower). Read once at module load. |
+| `MLX_BUN_BATCH_NO_PIPELINE` | — | off (`=1`) | Read each batch step's tokens synchronously instead of pipelined (A/B lever; numerically equivalent, slower). Captured when the execution group is constructed. |
 | `MLX_BUN_SSD_WRITEBEHIND` | — | on (`"0"` disables) | Proactive persistence after cache publication. A CPU worker packs, hashes and writes immutable state without a generation lock. Writing does not evict RAM. `=0` keeps eviction-triggered persistence; RAM victims remain resident until their SSD copy commits. |
 | `MLX_BUN_SSD_LAYOUT` | — | `whole` | `blocks` writes immutable content-addressed blocks with atomic checkpoint manifests (format 5). Existing whole files remain readable. Shared blocks count once toward an explicit SSD cap and survive deletion of other referencing checkpoints. Experimental space/time tradeoff; see benchmarks. |
 | `MLX_BUN_SSD_SEGMENTED` | — | on (`"0"` disables) | With block storage, read contiguous spans directly and pack arbitrary strides in at most 1 MiB scratch. `=0` retains whole-tensor CPU packing for paired measurements. |
@@ -435,15 +497,26 @@ Under `--isolate` the whole environment is inherited by the engine child.
 
 | Env var | Value | Effect |
 | --- | --- | --- |
-| `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (admission wait, prefill, token-zero, …) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
-| `MLX_BUN_P2R_SYNC` | `=1` (with `MLX_BUN_P2R_TRACE`) | Attribution mode: synchronizes the GPU at phase boundaries so each phase is charged its own work (MLX is lazy — without it, unsubmitted work lands in the next phase). Slows the traced request. |
+| `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (request-slot wait, execution admission wait, cache prefetch/restore, prefill forward/evaluation/maintenance/checkpoints, mixed-forward token counts, token-zero, bounded initial token routing, response writes) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
+| `MLX_BUN_P2R_SYNC` | `=1` (with `MLX_BUN_P2R_TRACE`) | Token-zero attribution mode: synchronizes hidden/cache state, projection and sampling at the instrumented boundaries. This changes overlap and slows the traced request. Ordinary prefill traces add no synchronization: forward includes any backend evaluation, while evaluate measures the remaining state wait. |
+| `MLX_BUN_SPEC_TRACE` | `=1` | Explicit serial speculative-loop round diagnostics, captured once at run setup. |
 | `MLX_BUN_LANE_DEBUG` | `=1` | Logs each request's scheduling placement (`mechanism` + shape) to stderr. |
-| `MLX_BUN_BATCH_STEP_TRACE` | `=1` | Per-step phase timing in the batch scheduler (build / read / emit / gap), read once at module load; summarized by `stepTraceReport()`. |
+| `MLX_BUN_BATCH_STEP_TRACE` | `=1` | Per-step phase timing in the batch scheduler (build / read / emit / gap), captured when the execution group is constructed; summarized by `stepTraceReport()`. |
 | `MLX_BUN_GRAMMAR_DEBUG` | `=1` | Logs per-step grammar row state in the batch scheduler. |
 | `MLX_BUN_PREFILL_MEM_LOG` | `=1` | Logs active/peak memory after each serial prefill chunk. |
 | `MLX_BUN_EXPERT_TRACE` | `=<path>` | Records every MoE router decision as JSONL to that path (adds a per-call GPU→host sync — a measurement tool, not a serving path). |
 | `MLX_BUN_PI_DEBUG` | any non-empty | Extra `[pi-web]` logging (prompt fingerprint, tool/memory surface) for the web-chat pi session. |
 | `MLX_BUN_EVAL_DEBUG` | `=1` | HumanEval: pipe the sandbox's stderr and print failures. |
+
+P2R records include a process-local `startedAtMs` origin to align concurrent
+requests. Prefill `workId` attributes identify shared spans recorded on several
+rows; these spans and their nested children must not be summed as separate
+GPU work. The first eight token-routing spans stop at the first semantic event
+and distinguish hidden channel markers from visible output. With tracing
+enabled, `bench-serve.ts all` retains complete records by child PID in
+`promptResponseTraces`, including records emitted during shutdown. Summarize a
+saved report with `bun scripts/bench/prefill-trace.ts report.md.json --out
+breakdown.json`. Clocks from different server processes are independent.
 
 ### Eval and training
 
@@ -552,13 +625,13 @@ declared composition may still require the serial mechanism as shown above.
 | Option | serial (`--batch 1`) | `--batch N` (N>1) |
 | --- | --- | --- |
 | `--kv-quant config` | ✅ applied to all requests | ✅ batches where the loaded cache capability supports the per-layer scheme; otherwise routes serial |
-| `--kv-quant 4`/`8` | ✅ applied to all requests | ✅ server start=0 converts during prefill and batches on supported cache layouts; delayed library thresholds still use serial |
+| `--kv-quant 4`/`8` | ✅ applied to all requests | ✅ server start=0 converts during prefill and batches on supported cache layouts; delayed library thresholds use qualified shared affine row layouts |
 | `--kv-quant turbo[:k<bits>v<bits>]` | ✅ ordinary decode; strict serial speculation remains excluded | ✅ ordinary TQ, including delayed library conversion; supported grouped drafting also supports delayed library conversion |
 | `--kv-quant off` / unset | ✅ bf16 (the L1 default) | ✅ bf16 |
-| `--paged-kv` | ✅ | ✅ Gemma4 bf16; prompt-cache bypass |
+| `--paged-kv` | ✅ | ✅ Gemma4 bf16/affine4/8 with separate RAM/SSD namespace; experimental direct attention is opt-in |
 | `--memory-budget` | ✅ per-request admission | ✅ per-request admission — not aggregate (use `--kv-budget`) |
 | `--kv-budget` | n/a | ✅ aggregate queue/reject across rows |
-| `--prompt-cache` / `--ssd-cache` | ✅ prefix reuse + SSD restore | ✅ on both lanes: joiners `take()` at admission; never-merged rows `put()` back |
+| `--prompt-cache` / `--ssd-cache` | ✅ prefix/output reuse + SSD restore | ✅ immutable prefill/output checkpoints, session lookup and queued SSD persistence |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
 | `--thinking` | ✅ | ✅ |
 | vision / audio / video request | ✅ | ✅ via serial lane |
@@ -567,54 +640,51 @@ declared composition may still require the serial mechanism as shown above.
 | `seed` | ✅ | ✅ request-local sampling |
 | `tools` / `stop` | ✅ | ✅ (batches) |
 | structured output (`response_format`/`guided_*`) | ✅ (mask in the decode loop) | ✅ (batches; per-row matchers) |
-| `--draft-model` / `--draft-kind` | ✅ eligible spec decode | ✅ qualified MTP/lookup/standalone-draft groups, including grammar/logprobs; other providers remain serial |
-| GLM `--mtp on` | ✅ native MTP spec decode | ⚠️ default-on MTP routes every request serial+spec; `--mtp off` exposes ordinary GLM batching |
+| `--draft-model` / `--draft-kind` | ✅ eligible spec decode | ✅ qualified MTP, lookup, standalone, Gemma assistant/DeepSpec/DSpark groups, including grammar/logprobs |
+| GLM `--mtp on` | ✅ native MTP spec decode | ✅ native MTP uses grouped state/verification; tiny-model and oracle tests pass, final Colibri artifact testing is deferred |
 | `--compiled-decode` | ✅ | ✅ at **B=1 only**: a lone request's adopted serial-class caches replay the same compiled step; B>1 steps run the plain graph |
-| `--fused-sdpa` / `--force-wire` | ✅ (serial decode route) | n/a — compat mode, no perf flags by design |
+| `--fused-sdpa` | ✅ eligible affine attention | ✅ kernel eligibility depends on dtype, quantization and mask geometry |
+| `--force-wire` | ✅ serial wired scope | not applied by the shared executor |
 
-### `--batch N` is compat mode — perf flags don't apply by design
+### Shared execution and kernel settings
 
-The bit-parity guarantee (mlx-lm B=N) is the *whole point* of `--batch N`,
-and it requires running the plain forward path. The scheduler
-([batch-scheduler.ts](../../src/serve/batch-scheduler.ts)) drives the
-model through `forwardHidden`/`logitsFromHidden` directly (not
-`generate()`), so:
+The scheduler selects request work. The inference method advances it through
+model-owned numerical operations. Specialized kernels and sampling policies
+remain available wherever their backend capabilities qualify; batching does
+not disable performance settings as a category.
 
-- **`--compiled-decode`** engages at **B=1 only** (adopt-don't-copy: the
-  lone request's caches stay serial-class, so the scheduler replays the
-  serial engine's compiled step — same kill switch). A second row ⇒ the
-  plain batched graph.
-- **`--fused-sdpa`** never engages in the batched lane (an L2 serial-lane
-  composition).
-- **`--force-wire`** doesn't wire (the scheduler bypasses `generate()`'s
-  wired scope).
-- **Always-on bit-exact kernels still run.** The compiled activations are
-  bit-exact with the spelled-out MLP, so they stay on in both lanes —
-  "compat mode" means *no parity-breaking optionality*, not -O0.
+- `--compiled-decode` uses the qualified compiled graph for one active,
+  unpadded request. Multi-row steps use the batched graph.
+- `--fused-sdpa` follows affine kernel eligibility. Padded/array masks can
+  require the ordinary attention operation; this is an attention decision.
+- `--force-wire` controls the explicit serial wired scope. The shared executor
+  does not enter that scope.
+- Trellis, compiled activations, affine row reuse and TurboQuant kernel choices
+  belong to the numerical backend and remain independent of admission policy.
 
-## Known limitations under `--batch N`
+Executors capture an immutable runtime configuration. Later host configuration
+changes do not change an active request's kernel choices. TurboQuant storage
+carries its decode policy through RAM copies, row extraction and delayed
+conversion; restored SSD state is opened under the receiving binding's policy.
 
-Deliberate v1 scope, not bugs:
+## Known limitations under shared execution
 
-1. **Other draft providers lack shared state.** Qwen MTP, prompt lookup and
-   standalone drafting reuse aligned prefill and completed-output state through
-   the common RAM/SSD cache. Supported full-attention targets also retain
-   lookup and standalone-draft state. Gemma assistant drafting retains its target hidden
-   and donor KV through the same cache. Other providers start fresh. Long-conversation timing and pressure
-   acceptance remain open.
-2. **Aggregate admission is opt-in** via `--kv-budget`; without it N
-   large-context rows can collectively exceed memory.
-3. **Coverage depends on composition.** Same-B Gemma oracle tests cover
-   sliding-window wrap and late joins. Broader media, resume, paged and method
-   combinations remain open in Phase 18.
-4. **bf16 by contract; mixed-KV batching beyond it.** mlx-lm's batched
-   path *is* bf16. Per-layer `config` batching is a beyond-mlx-lm
-   composition verified per row against the optiq oracle. Batched
-   uniform/TurboQuant now has shared layouts; additional same-B external
-   oracle and feature-composition checks remain.
-5. **`extend` join** appends a joining request to the running batch's
-   full-attention KV in one pad+concat (`MLX_BUN_BATCH_EXTEND=0` reverts
-   to whole-batch re-merge); sliding-window layers still re-merge on join.
+1. Media and direct tool-call fill still use the explicit serial executor.
+   Grammar has shared masking and opt-in verified proposals; direct serial
+   jump-forward is a different algorithm.
+2. Aggregate admission is opt-in through `--kv-budget`. Without it, concurrent
+   contexts can exceed available memory. Default fit estimates remain advisory.
+3. Native GLM MTP has tiny-model/same-B oracle coverage; final Colibri artifact
+   testing is deferred. DSpark/DFlash execution has fixture coverage, with no
+   trained checkpoint available for a performance claim.
+4. Paged Gemma storage supports bf16/affine4/8. TurboQuant pages, per-layer
+   paged KV and paged speculative methods remain unsupported. Qualified
+   ordinary resume and adapter resume are implemented; exact combinations are
+   tracked in [batching](../design/batching.md).
+5. Stock bf16, affine mixed-KV and TurboQuant retain separate correctness
+   contracts. A passing storage test does not qualify an untested model or
+   numerical geometry. Existing accepted matrices remain in the design and
+   benchmark references.
 
 ## Fidelity tiers and the decode route (`--l1` / `--l2`)
 
@@ -686,7 +756,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Feature | Default | Lane | Tier | Knob |
 | --- | --- | --- | --- | --- |
 | Structured output (`response_format` json_object/json_schema) | on | both | L2 (oMLX) | request field; `MLX_BUN_GRAMMAR=0` kills |
-| Structured-output jump-forward (grammar-forced spans in one forward) | off | serial only | Lab | `MLX_BUN_GRAMMAR_JUMP=1` |
+| Structured-output continuations (shared verified proposals / serial direct jump) | off | shared and serial | Lab | `MLX_BUN_GRAMMAR_JUMP=1` |
 | Token fast-forwarding for tool calls (template-determined spans in one forward) | off | serial only | opt-in; identity tested on covered fixtures, parser/held-out gates remain (`tests/parity/fill-strict.test.ts`) | `MLX_BUN_FILL=strict` |
 | Echo injection (session self-copy spans, verified against the same forward's logits) | off | serial only | Lab (paired A/B on task success + wall clock before any default) | `MLX_BUN_FILL=echo`, `MLX_BUN_FILL_K`, `MLX_BUN_FILL_CANDIDATES`, `MLX_BUN_FILL_INDEX_MAX` |
 | `guided_grammar` (EBNF) / `guided_regex`¹ / `guided_choice` / `structured_outputs` | on | both | L2 | request fields |
@@ -715,7 +785,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Gemma 4 (1B/e4b/12B/26B, + vision e4b/12B, + audio e4b) | ✅ L1/L2 | ✅ | sliding+full interleaved; MoE 26B |
 | Qwen3.5 (gated-DeltaNet hybrid) | ✅ L1/L2 | ✅ (SSM path) | `MLX_BUN_BATCH_SSM=0` reverts |
 | Qwen3.8-27B (same qwen3_5 graph) | ✅ L1 | ✅ (SSM path) | native MTP head via `--draft-model`/`--draft-kind mtp` (lossless-gated; slower on a quiet box — opt-in); images and video serve (mlx-vlm oracle) |
-| GLM-5.2 / Colibri | ✅ chat/text, Messages, Responses, SSE, tools, grammar, logprobs | ✅ compressed MLA/DSA scheduler | native MTP defaults to serial+spec; `--mtp off` enables batching; embeddings, vision/audio, adapters, training unsupported |
+| GLM-5.2 / Colibri | ✅ chat/text, Messages, Responses, SSE, tools, grammar, logprobs | ✅ compressed MLA/DSA scheduler | native MTP shares the executor; final Colibri artifact testing is deferred; embeddings, vision/audio, adapters, training unsupported |
 | DiffusionGemma-26B (non-autoregressive) | ✅ (own engine) | — serial always | first bit-exact non-AR port |
 | Tier-0 universal (llama/qwen2/qwen3/olmo2/…, 11 archs) | ✅ L1 | ✅ plain full-attention archs² | gemma2-family / sliding-window universal → serial |
 
@@ -761,8 +831,8 @@ composition cells in one run).
   On 12B+ add `--draft-model <small-same-tokenizer>`.
 - *Several clients at once (throughput):*
   `mlx-bun serve <model> --batch 4 --ssd-cache <dir> --kv-budget <GB>` —
-  supports qualified start-zero TurboQuant and a grouped Qwen MTP companion.
-  Other draft providers still use serial speculation.
+  supports the qualified grouped methods and cache layouts in the compatibility
+  matrix. Use the default cap eight unless a workload calls for another cap.
 - *UI must never lag / survive engine crashes:* add `--isolate`
   (`--model-pool 2` to keep two models resident).
 - *Reproducibility:* bare / `--l1` (≡ mlx-lm), `--l1 --batch 1` (strict
@@ -771,8 +841,9 @@ composition cells in one run).
   `--memory-budget <GB>` + `--ssd-cache <dir>`; MoE adds
   `--expert-offload`. Start-zero TurboQuant supports shared execution.
 
-**Remaining exclusions:** media, paged KV, generation resume, fill and draft
-providers without grouped implementations still need shared execution work.
+**Remaining exclusions:** media, direct fill, and unsupported provider/layout
+combinations. Qualified ordinary resume, paged storage and grouped draft
+providers are implemented; see the compatibility matrix above.
 Qwen ordinary, shared MTP and prompt lookup support positive library thresholds for uniform
 affine KV4/KV8 and TurboQuant. Ordinary Gemma supports positive affine KV4/KV8
 thresholds, including sliding-window layers. Other-model delayed affine remains
@@ -785,8 +856,8 @@ SSD headers. This avoids a full prefill when re-encoding identical generated
 text would choose a different BPE segmentation. Edited text retains ordinary
 tokenization. Input token counts can differ from encoding the full prompt again;
 cache state is always matched by exact IDs and execution namespace.
-Strict serial deletion and complete feature parity
-remain acceptance work in Phase 6/18.
+Strict serial deletion is deferred. Remaining feature and performance work
+is tracked in Phase 6/18.
 
 ## Observability — `GET /stats`
 

@@ -11,13 +11,14 @@ import { cloneKvCaches } from "../../kv-store";
 import type { Cache } from "../../model/gemma4-base";
 import { targetCacheLayout } from "./cache-layout";
 import { MlxStateRows } from "./state-rows";
-import { bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "./speculative";
+import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "./speculative";
 import { bindLegacyDraftTarget } from "./draft-target";
 import { bindRowCacheRollback } from "./rollback";
 import { createKvMaintenance } from "./kv-maintenance";
 import { disposeAttachments, type CheckpointAttachment } from "./checkpoint-state";
 import { advanceSpeculativeOutputs } from "./speculative-round";
 import { MlxPrefillRows, type MlxPrefillState } from "./prefill-rows";
+import type { MlxForwardWork } from "./mixed-iteration";
 import type { MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, MlxGroupedMethod, Row } from "./batch-group";
 
 interface RequestState {
@@ -33,8 +34,8 @@ interface RequestState {
 
 /** Binding owns graph/layout selection. The executor receives only the method
  * key and lifecycle; sampling, checkpoints and numerical state remain ports. */
-export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: DraftProvider, depth: number) {
-  const binding = bindLegacySpeculativeModel(model, provider);
+export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
+  const binding = bindSpeculativeTargetModel(model);
   return (input: GenerateOptions): MlxGroupMethodRequest => {
     const options = captureSpeculativeOptions(input);
     return {
@@ -54,7 +55,14 @@ class SpeculativeGroup implements MlxGroupedMethod {
   #steps = 0;
 
   constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel,
-    readonly provider: DraftProvider, readonly binding: MlxSpeculativeBinding, readonly depth: number) {}
+    readonly provider: Pick<DraftProvider, "id" | "grouped">, readonly binding: MlxSpeculativeTargetBinding, readonly depth: number) {}
+
+  get runningTokens(): number {
+    const rows = this.host.rows;
+    if (!rows.length) return 0;
+    // Target verification consumes the pending token and the draft candidates.
+    return rows.length * (1 + Math.min(this.depth, Math.max(...rows.map(row => row.req.maxTokens - row.generated))));
+  }
 
   prepare(first: Row): MlxGroupPreparation {
     const method = this;
@@ -134,7 +142,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
           } else { prefix.append([null]); appended = true; }
           return { row, request, solo: caches, retain: retained, pos: row.cachedTokens,
             end: request.prefixLength, pendingPrompt, transferred: false, closed: false,
-            chunkSize: options.prefillChunkSize ?? method.host.prefillChunkSize,
+            chunkSize: options.prefillChunkSize ?? row.req.prefillChunkSize ?? method.host.prefillChunkSize,
             boundary: method.host.promptCache ? Math.min(row.req.snapshotAt ?? prompt.length, prompt.length - 1) : -1 };
         } catch (error) {
           return cleanupFailure(error, () => disposeResources([
@@ -148,9 +156,9 @@ class SpeculativeGroup implements MlxGroupedMethod {
         return { start: state.pos, end, kind: end === state.end ? "final" : "drain",
           snapshot: end === state.boundary && end > state.row.cachedTokens, batchYield: true, maintain: true };
       },
-      async forward(ids, caches) {
+      async forward(ids, caches, _states, work) {
         const taps = prefix!.tapLayers;
-        const output = await method.binding.forward(ids, caches, taps.length ? [...taps] : undefined);
+        const output = await method.binding.forward(ids, caches, taps.length ? [...taps] : undefined, work);
         context = output.ctxML;
         return output.hidden;
       },
@@ -211,7 +219,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
       get canAdmit() { return target.canAdmit; },
       get tokenWeight() { return target.tokenWeight + ready.reduce((sum, state) => sum + state.row.promptTokens - state.row.cachedTokens, 0); },
       admit: row => target.admit(row),
-      advance: async () => {
+      advance: async work => {
         // Publication returns to scheduling before prepared state joins active
         // decode. This preserves the first-output flush boundary at every B.
         if (ready.length) {
@@ -225,7 +233,8 @@ class SpeculativeGroup implements MlxGroupedMethod {
               maintain.prepareBatch?.(state.caches);
               this.#target ??= new MlxStateRows(state.caches.map(targetCacheLayout));
               this.#draft ??= this.provider.grouped!.open({ target: bindLegacyDraftTarget(this.model, this.#target.caches),
-                checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps) } });
+                checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps) },
+                constraints: { propose: async (row, maxTokens) => this.host.rows[row]!.req.grammar?.proposeTokens(maxTokens) ?? [] } });
               applyStateChanges([() => this.#target!.prepareAppend(state.caches),
                 () => this.#draft!.prepareAppend([state.draft]), () => ({ commit: () => {
                   state.request.retain = state.retain; state.retain = undefined;
@@ -236,7 +245,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
           }
           return target.rows.length === 0;
         }
-        const done = await target.advance();
+        const done = await target.advance(work);
         return done && ready.length === 0;
       },
       dispose() {
@@ -259,7 +268,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
     } finally { disposeResources(tokens); }
   }
 
-  async advance(): Promise<void> {
+  async advance(work?: MlxForwardWork): Promise<void> {
     const active = [...this.host.rows];
     const live = active.flatMap((row, index) => row.req.signal?.aborted ? [] : [index]);
     if (live.length !== active.length) {
@@ -284,7 +293,8 @@ class SpeculativeGroup implements MlxGroupedMethod {
         transaction: bindRowCacheRollback(this.#target!.caches, rows.length),
         forward: async ids => {
           const taps = this.#draft!.tapLayers;
-          const result = await this.binding.forward(ids, this.#target!.caches, taps.length ? [...taps] : undefined);
+          const result = await this.binding.forward(ids, this.#target!.caches, taps.length ? [...taps] : undefined,
+            work ? (tokens, caches, options) => work(tokens, caches, { ...options, preserveTokenGeometry: true }) : undefined);
           const context = result.ctxML ?? result.hidden;
           try { return { logits: this.binding.projectLogits(result.hidden), context }; }
           catch (error) { context.dispose(); throw error; }

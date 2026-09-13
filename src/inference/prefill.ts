@@ -1,3 +1,9 @@
+/** Request-level chunk policy. Execution consumes the selected size; model
+ * backends can account for their temporary workspace without changing admission. */
+export interface PrefillPolicy {
+  chunkSize(promptTokens: number): number;
+}
+
 export interface PrefillPosition {
   readonly length: number;
   readonly position: number;

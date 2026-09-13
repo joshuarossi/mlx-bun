@@ -546,13 +546,13 @@ They do not require repeating completed checks or withholding the current defaul
 | Scheduling and ordinary decode | Default cap eight uses shared execution at B1/B>1; explicit `--batch 1` retains serial | Keep the batched default using existing measurements; address specific regressions separately. Serial removal is deferred |
 | Speculative decode | Qwen MTP, prompt lookup, standalone, assistant, DeepSpec and seeded DSpark/DFlash providers are integrated through shared B1/B>1 interfaces, with the native/HTTP/cache checks recorded below | Finish specific unsupported combinations and measured regressions; GLM artifact testing is deferred and no trained DSpark/DFlash checkpoint exists |
 | Sampling and logprobs | Shared sampler contract; ordinary groups capture logprobs and accept explicit seeds | Extend same-B oracle/feature compositions and matched performance; preserve per-request RNG/history |
-| Grammar and fill | Grammar batches where enabled; grammar jump and fill remain serial-only | Shared constraint/proposal contracts and qualified batch compositions |
+| Grammar and fill | Shared grammar proposals use grouped verification; explicit serial direct jumps remain a separate algorithm. Fill remains serial-only | Fill through shared committed-token append; keep grammar proposals opt-in after mixed timing results |
 | Adapters and media | Compatible adapter groups use shared execution; media remains serial | Adapter performance and broader compositions; media preparation and compatible state through shared execution |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | Direct paged-attention kernel, block sharing and quantized/speculative paging remain separate extensions; do not repeat the completed row-layout gates |
-| Prefix and output reuse | Ordinary execution and Qwen MTP prefill/completed decode use the shared RAM/SSD cache | Finish composed native, long Kanban and pressure/timing acceptance; identical retention semantics at B=1 and B>1 |
+| Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
 | Usage and cleanup | The gateway forwards timing/rates; the missing first-token timestamp in ordinary batch admission is now fixed | Consistent events/accounting, row cancellation, failure cleanup and persistence on shutdown |
-| Configuration | Placement still chooses path-specific implementations | One resolved configuration per concern; no setting silently disappears when B changes |
+| Configuration | Bound configuration reaches each owner, including delayed KV conversion, copied codecs and paged cache identity; the flag-owner inventory is complete | Preserve the contract when adding settings; completed policy tests and fixed-settings performance remain accepted |
 
 Tests must exercise actual B>1 work, not requests routed back to serial.
 Completed checks remain evidence for their recorded source and settings. A new
@@ -1839,3 +1839,153 @@ after their source files and reports were verified in a content-addressed local 
 `reports/pr-closeout/checkout-archive/`, with per-checkout manifests, SHA-256
 objects and the recorded base commit. The PR retains the implementation and
 findings; bulky raw experiment data stays local under the repository policy.
+
+
+### Scheduling reference algorithms and request observations
+
+The next scheduling baseline is an iteration token budget, following the
+upstream implementations below. Review date: 2026-09-12. Read implementation
+order as well as configuration docs; scheduling first does not necessarily
+mean delivering output before the iteration's other GPU work finishes.
+
+| Reference | Algorithm and ownership | Application here |
+|---|---|---|
+| [vLLM V1 scheduler, `dff76bc`](https://github.com/vllm-project/vllm/blob/dff76bc3e8d702901e6dda5971f9506a6c1bc00f/vllm/v1/core/sched/scheduler.py#L562) | Tracks computed tokens against required tokens, including speculative positions. Allocates the iteration budget to running requests before waiting requests. Prefill chunks and decode tokens can enter the same execution batch. | Represent remaining work through the scheduling interface; methods supply valid token work and the backend owns batch packing and kernels. |
+| [llama.cpp server, `3057bb6`](https://github.com/ggml-org/llama.cpp/blob/3057bb66c86c46d5781e50e85462a760ba7d1feb/tools/server/server-context.cpp#L2974) | Adds generating/drafting slots before filling the remaining batch capacity with compatible prompt tokens. Logical batch and physical microbatch capacities are distinct. HTTP workers own parsing, templates and streaming; one inference thread owns slots. | Preserve execution ownership while allowing request preparation and response transport to progress independently. A shared request count is insufficient; account for token work too. |
+| [mlx-lm generator, `dcbcf78`](https://github.com/ml-explore/mlx-lm/blob/dcbcf786c0cf56f9a12fabe9468c887781431ae2/mlx_lm/generate.py#L1783) | Advances generation first, admits/splits prompt rows, then processes bounded prompt chunks. Prompt and generation batches remain separate. Responses return after prompt processing, whose cache evaluation synchronizes. The pinned oracle has the same order. | This is the closest numerical/backend reference, but its response timing is not evidence that output is immediately flushed. Compare its actual request timeline. |
+| [LangChain streaming](https://docs.langchain.com/oss/python/langchain/streaming) | Routes model-provided text, reasoning and tool-call chunks through the agent application. | Reference for stream semantics; this layer does not select GPU prefill/decode work. |
+
+[vLLM's tuning guidance](https://docs.vllm.ai/en/latest/configuration/optimization/#chunked-prefill)
+explicitly treats token budget as a latency/throughput tradeoff. Its GPU-specific
+budget recommendations are not Apple Silicon defaults. Start with the established
+algorithm, measure the same submitted work on M4, and retain deviations only
+with recorded benefits and costs. No framework guarantees one universally best
+chunk size or latency policy.
+
+The established backend exposes `advance()` and `advancePreparation()`
+operations. `MlxPrefillRows` groups prompt rows, while ordinary and speculative
+methods advance decoding rows separately. The existing preparation budget limits
+cohort admission; it is not vLLM's combined per-iteration token budget. True mixed
+execution therefore needs backend work as well as scheduling policy. Padding a
+single decode token to a long prompt's width would defeat the intended saving.
+
+Phase 18 S1b adds bounded mixed work. The method retains request identity,
+computed/required positions and candidate state. Scheduling allocates
+bounded work to active requests and then queued requests; the backend executes
+compatible selections. Sampling and cache ownership remain unchanged. Acceptance
+covers lone requests, arrivals during prefill and decode, unequal lengths,
+cancellation/retirement, speculative work and quantized state. Compare first
+semantic output, inter-output gaps, total workload time, occupancy, padding and
+memory alongside aggregate throughput. Same-B numerical contracts remain binding.
+
+The P2R observer now separates row preparation, forward, remaining cache
+execution, maintenance, checkpoint capture, projection, completion and companion
+work. Shared work IDs and process-local time origins allow cross-request
+attribution without counting shared GPU work several times. Bounded initial
+routing spans expose hidden control tokens. Measurement semantics and the report
+command live in [server-config](../reference/server-config.md); measured results
+live in [benchmarks](../reference/benchmarks.md#prefill-observation-and-scheduling-screen).
+The simple active-before-prefill experiment remains an unadopted patch in the
+local report directory; it is not the mixed execution design above.
+
+A second bounded screen submits shared prefill evaluation asynchronously and
+polls MLX completion while allowing Bun to service I/O. MLX's
+[`array::is_available`](https://github.com/ml-explore/mlx/blob/main/mlx/array.cpp)
+checks the completion event, not merely graph submission; the pinned native
+pack exports mlx-c's `_mlx_array_is_available`. This avoids holding the host
+thread during the GPU wait, but changes when requests become visible to the
+existing scheduler. Both M1 MiniCPM arm orders delay the first staggered
+request substantially; aggregate results are inconsistent. The candidate is
+removed. [Measurements](../reference/benchmarks.md#nonblocking-prefill-completion-screen)
+retain the excluded patch. Host responsiveness and request scheduling must be
+measured together before retaining a different completion boundary.
+
+
+#### Mixed token execution
+
+The Lab Gemma and Qwen3.5/3.8 paths execute running decode and queued prompt work together.
+`ExecutionGroup.mixedPreparation` reports running-token demand and the minimum
+prompt work needed for progress. The scheduler reserves that demand and assigns
+the remaining iteration budget to preparation. Existing cohort admission still
+accounts for total prompt work. Removing that limit was measured and rejected:
+on this M4 workload, larger cohorts lost throughput and delayed later first
+outputs. Both variants execute the same bounded mixed-token model port.
+
+`MlxPreparationWork` carries a token allowance and forward operation into the
+shared preparation driver. It limits actual tokens across rows while preserving
+planned precision conversions and checkpoint endpoints. `runMixedTokenIteration`
+collects the preparation and decode forward inputs. The model's `MixedTokenModel`
+port receives independent `TokenGroup` inputs with their existing row geometry
+and caches. Decode finishes sampling, publication and retirement before a
+completed preparation can join the active rows. A restored or cancelled
+preparation can finish without producing model work; an exhausted decode can
+publish its pending token without another forward.
+
+Gemma reuses its existing attention and feed-forward layer interfaces. Attention
+retains each group's RoPE positions, masks, SDPA shape and cache operations.
+`mapPackedTokens` concatenates only real tokens for the feed-forward block and
+restores each group's output shape afterwards. It adds no padding or host
+readback. This is shared feed-forward execution, not a fully packed attention
+kernel. The unpacked control keeps the same scheduler budget to isolate the
+packing benefit. The original single-group model call remains unchanged.
+
+Packing can change GEMV/GEMM dispatch relative to solo generation. The numerical
+contract therefore uses the pinned oracle with the same packed feed-forward
+geometry and independent attention shapes. The real-model test passes on M4 for
+Gemma e4b, 12B and 26B with bf16 and uniform affine KV4, continuation, and unequal
+decode/prefill row counts. The
+uniform-KV oracle explicitly uses stock quantized SDPA on both sides. Native
+state tests also cover bounded preparation with immediate and delayed affine
+and TurboQuant conversion. Failure, cancellation and retirement tests exercise
+the shared execution group and the work coordinator.
+
+Qwen reuses its attention/DeltaNet and feed-forward blocks through the same
+model port. Masks, convolution tails and recurrent state remain per group;
+layer evaluation materializes both residual and cache outputs to bound prefill
+memory. Each `TokenGroup` can supply a borrowed layer-capture callback and
+request preservation of its matmul geometry. Speculative methods use those
+options for target verification, including pending tokens and draft candidates,
+and keep provider companion updates in their preparation/verification adapters.
+The scheduler sees the method’s target-token demand, not its draft algorithm.
+Hidden captures belong to each work item instead of a shared mutable model tap.
+
+The measured default decision is to retain mixed execution as opt-in. Gemma
+first-output latency improves with an aggregate-throughput cost; Qwen MTP has
+no first-output win and loses aggregate throughput, despite a shorter worst
+streaming pause. This closes the bounded S1b comparison. Trace phase
+`engine.mixed_forward` records the model-call construction span and real token
+counts; GPU waits remain at the existing evaluation/readback boundaries. The
+[measured comparison](../reference/benchmarks.md#mixed-prefill-and-decode-token-work)
+records latency, throughput, streaming gaps and the unpacked control. Runtime
+settings live in [server-config](../reference/server-config.md).
+
+
+### Grammar candidates through the shared verifier
+
+`GrammarController.proposeTokens` reads xgrammar's forced continuation without
+advancing the matcher. It joins the existing WASM queue so concurrent requests
+cannot overlap calls into the single WASM instance. A request-owned constraint
+port supplies candidates to the same grouped verifier used by learned drafts
+and prompt lookup. The sampler applies each request's mask and commits its
+accepted tokens; scheduling only sees method work. Target graph binding no
+longer requires a serial draft constructor.
+
+The constraint provider reuses prompt lookup's committed-history ownership and
+checkpoint format. It never searches history and has no serial draft method.
+Empty candidate lists use the verifier's existing one-token step. Candidate
+rejection and row retirement keep target and companion state aligned through
+the existing transaction and output interfaces.
+
+`MLX_BUN_GRAMMAR_JUMP=1` selects this method for eligible shared structured-output
+requests without a configured drafter; `MLX_BUN_GRAMMAR_DRAFT_TOKENS` controls
+depth separately from batching. Shared logprobs remain available because every
+output is sampled. Explicit serial retains direct retokenized jump-forward.
+That algorithm skips target sampling for forced spans; the shared proposal
+algorithm verifies them. Both remain opt-in and must be compared separately.
+
+The focused MiniCPM and packed-Qwen checks cover nonmutating proposals, B1 and
+concurrent requests, independent stopping/cancellation, affine/TurboQuant and
+logprob delivery. Fixed bf16 MiniCPM outputs match ordinary decoding. Affine
+MiniCPM can choose different valid tokenizations across verification widths;
+repeated fixed-configuration outputs match. Same-geometry verifier/KV oracles
+remain the numerical contract. Performance is recorded in benchmarks.md.

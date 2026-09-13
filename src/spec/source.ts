@@ -145,6 +145,12 @@ export interface DraftRowSampling {
   sample(logprobs: MlxArray, steps: readonly number[]): MlxArray;
 }
 
+/** Request-owned constraints can propose known continuations without changing
+ * their committed state. The target verifier still decides every output. */
+export interface DraftRowConstraints {
+  propose(row: number, maxTokens: number): Promise<number[]>;
+}
+
 export interface DraftRowCheckpoint {
   readonly processedTokens: number;
   readonly attachment: CheckpointAttachment;
@@ -194,7 +200,7 @@ export interface GroupedDraftProvider {
   readonly supportsTargetAdapters?: boolean;
   openPrefill(options: { target: TargetView;
     checkpoints: readonly (DraftRowCheckpoint | null)[] }): DraftPrefillGroup;
-  open(options: { target: TargetView; sampling: DraftRowSampling;
+  open(options: { target: TargetView; sampling: DraftRowSampling; constraints?: DraftRowConstraints;
     checkpoints: readonly DraftRowCheckpoint[] }): DraftRowGroup;
 }
 

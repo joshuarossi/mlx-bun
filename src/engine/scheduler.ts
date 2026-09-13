@@ -35,6 +35,17 @@ export async function driveExecutionGroup(
           (group.preparingTokens ?? 0) + (group.nextPreparationTokens ?? 0) <= (group.maxPreparationTokens ?? Infinity)) {
         if (!group.admitNext()) break;
       }
+      const mixed = group.preparing && group.active ? group.mixedPreparation : undefined;
+      if (mixed && group.advanceMixed) {
+        // Reserve the method's running-token demand first; prompt work fills
+        // the rest. A budget smaller than one token per row still progresses.
+        const budget = Math.max(group.maxIterationTokens ?? Infinity,
+          mixed.runningTokens + mixed.minimumPreparationTokens);
+        await group.advanceMixed(budget);
+        lastYield = clock.now();
+        await clock.yield();
+        continue;
+      }
       if (group.preparing) {
         const activeBefore = group.active;
         await group.advancePreparation();

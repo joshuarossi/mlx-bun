@@ -184,6 +184,32 @@ test.each([undefined, 7])("ordinary prefill and method hosts share a captured ch
   } finally { await ordinary.close(); await method.close(); restore(); }
 });
 
+test("automatic request chunks reach ordinary and grouped preparation without rewriting caller settings", async () => {
+  const f = fixture(), chunks: number[] = [], methodChunks: (number | undefined)[] = [];
+  Object.assign(f.model.config.text, { numHiddenLayers: 2, numAttentionHeads: 24,
+    globalHeadDim: 256, headDim: 256, layerTypes: ["linear_attention", "full_attention"] });
+  f.model.forwardHidden = ids => { chunks.push(ids.shape[1]!); throw new Error("observed chunk"); };
+  const runtime = createRuntimeConfig({});
+  const ordinary = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, runtime });
+  const method = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, runtime });
+  const request = { ...f.request, promptIds: Array.from({ length: 78_678 }, () => 0) };
+  const bound = methodFixture(f, "auto-prefill", []);
+  try {
+    for (const override of [undefined, 512]) {
+      await expect(ordinary.submit({ ...request, prefillChunkSize: override })).rejects.toThrow("observed chunk");
+      await method.submit({ ...request, prefillChunkSize: override, maxTokens: 1, onToken() {}, method: {
+        ...bound, open(host) {
+          const active = bound.open(host);
+          return { ...active, prepare(row) { methodChunks.push(row.req.prefillChunkSize); return active.prepare(row); } };
+        },
+      } });
+    }
+    expect(chunks).toEqual([256, 512]);
+    expect(methodChunks).toEqual(chunks);
+    expect(request.prefillChunkSize).toBeUndefined();
+  } finally { await ordinary.close(); await method.close(); }
+});
+
 test("one executor batches compatible methods and drains before changing method", async () => {
   const f = fixture(), events: string[] = [];
   const first = methodFixture(f, "first", events), second = methodFixture(f, "second", events);
@@ -342,5 +368,64 @@ test("a nearly completed prefill keeps its admission weight until it retires", a
     expect(shapes).toEqual([[1, 4], [1, 4], [1, 4]]);
     expect(group.activeRows + group.pendingRows).toBe(0);
     expect(f.calls.disposals).toBe(f.calls.allocations);
+  } finally { await group.close(); }
+});
+
+test.each(["finish", "cancel", "consumer", "grammar"])("mixed work preserves row ownership and completion through %s", async mode => {
+  const f = fixture();
+  const { captureKvAttention } = await import("../../src/model/kv-attention-view");
+  const { PromptResponseTrace } = await import("../../src/serve/prompt-response-trace");
+  type TokenGroup = import("../../src/model/token-groups").TokenGroup;
+  const shapes: number[][][] = [], outputs: number[][] = [[], [], []];
+  const failures: unknown[] = [], siblings: Promise<unknown>[] = [];
+  const controller = new AbortController();
+  let accepted = 0, readied = 0;
+  const grammar = { isTerminated: false, accept() { accepted++; }, async ready() { readied++; } } as unknown as NonNullable<BatchRequest["grammar"]>;
+  const forward: RuntimeModel["forwardHidden"] = (ids, caches) => {
+    const [batch, count] = ids.shape;
+    using reshaped = ops.reshape(ids, [batch!, 1, count!, 1]);
+    using zeros = ops.zeros([batch!, 1, count!, 8], Dtype.float32);
+    using expanded = ops.add(reshaped, zeros);
+    using kv = expanded.astype(Dtype.float32);
+    for (const cache of caches) {
+      const view = cache.attentionState?.appendAndFetch(kv, kv) ?? captureKvAttention(cache, kv, kv);
+      view.dispose();
+    }
+    return ops.zeros([batch!, count!, 8], Dtype.float32);
+  };
+  f.model.forwardHidden = forward;
+  f.model.logitsFromHidden = hidden => ops.copyOf(hidden);
+  (f.model as RuntimeModel & { forwardHiddenMixed(groups: readonly TokenGroup[]): import("../../src/mlx/array").MlxArray[] }).forwardHiddenMixed = groups => {
+    shapes.push(groups.map(group => [...group.ids.shape]));
+    return groups.map(group => forward(group.ids, group.cache));
+  };
+  const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 4, prefillChunkSize: 32,
+    runtime: createRuntimeConfig({ MLX_BUN_MIXED_PREFILL: "1", MLX_BUN_MIXED_TOKEN_BUDGET: "9" }) });
+  const request = (index: number): BatchRequest => ({
+    promptIds: Array.from({ length: index ? 31 + index : 5 }, (_, t) => t + index * 100),
+    maxTokens: index ? 3 : 12, eosTokenIds: [], sample: logits => ops.argmaxAxis(logits, -1),
+    signal: index === 1 ? controller.signal : undefined,
+    grammar: mode === "grammar" && index === 0 ? grammar : undefined,
+    trace: new PromptResponseTrace({ traceId: `mixed-${index}`, requestId: `${index}`, route: "test", emit() {} }),
+    onToken(token) {
+      outputs[index]!.push(token);
+      if (index === 0 && outputs[0]!.length === 1) {
+        for (const sibling of [1, 2]) siblings.push(group.submit(request(sibling)).catch(error => { failures.push(error); return error; }));
+      }
+      if (index === 0 && outputs[0]!.length === 2 && mode === "cancel") controller.abort(new Error("cancelled"));
+      if (index === 1 && mode === "consumer") throw new Error("consumer failed");
+    },
+  });
+  try {
+    const first = await group.submit(request(0));
+    await Promise.all(siblings);
+    expect(first.generatedTokens).toBe(12);
+    expect(outputs[0]).toHaveLength(12); expect(outputs[2]).toHaveLength(3);
+    expect(outputs[1]).toHaveLength(mode === "cancel" ? 0 : mode === "consumer" ? 1 : 3);
+    expect(failures).toHaveLength(mode === "cancel" || mode === "consumer" ? 1 : 0);
+    if (mode === "grammar") { expect(accepted).toBeGreaterThan(0); expect(readied).toBeGreaterThan(0); }
+    expect(shapes.length).toBeGreaterThan(0);
+    expect(shapes.every(groups => groups.reduce((sum, [b, n]) => sum + b! * n!, 0) <= 9)).toBe(true);
+    expect(group.activeRows + group.pendingRows).toBe(0);
   } finally { await group.close(); }
 });

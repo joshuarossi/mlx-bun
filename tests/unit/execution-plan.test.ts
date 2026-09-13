@@ -69,6 +69,9 @@ test("fill cannot run in another method, continuous group, or resumable checkpoi
   expect(resolveExecution(request, capabilities, features).fill).toBe(false);
   expect(resolveExecution(request, { ...capabilities, continuous: false }, features))
     .toMatchObject({ fill: true, checkpoint: false });
+  // The selected method's append binding decides cache-format support.
+  expect(resolveExecution({ ...request, kvQuant: true }, { ...capabilities, continuous: false }, features).fill).toBe(true);
+  expect(resolveExecution({ ...request, turboQuant: true }, { ...capabilities, continuous: false }, features).fill).toBe(true);
   expect(resolveExecution({ ...request, hasDraft: true }, capabilities, features).fill).toBe(false);
   const denoising = resolveExecution(request, { ...capabilities, method: "denoising" }, features);
   expect(denoising).toMatchObject({ method: "denoising", mechanism: "serial", fill: false, checkpoint: false });
@@ -154,4 +157,26 @@ test("bound ordinary checkpoint capability qualifies shared requests without cha
   expect(resolveExecution({ ...request, hasDraft: true }, { ...supported,
     speculativeLogprobs: true, groupedMethods: ["autoregressive", "speculative"] }).checkpoint).toBe(false);
   expect(resolveExecution(request, supported, { pagedKv: false, fill: true }).checkpoint).toBe(false);
+});
+
+test("grammar proposals select the shared verifier only when its request combination is supported", () => {
+  const grammar = { ...request, hasGrammar: true };
+  const features = { pagedKv: false, fill: false, grammarJump: true };
+  const supported = { ...capabilities, sharedGrammarProposals: true,
+    groupedMethods: ["autoregressive", "speculative"] };
+  expect(resolveExecution(grammar, supported, features)).toMatchObject({
+    method: "speculative", mechanism: "continuous", grammarJump: true,
+  });
+  expect(resolveExecution({ ...grammar, wantsLogprobs: true }, { ...supported, speculativeLogprobs: true }, features))
+    .toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: true });
+  expect(resolveExecution(grammar, supported).method).toBe("autoregressive");
+  for (const option of [{ wantsLogprobs: true }, { kvQuant: true }, { turboQuant: true }, { hasAdapters: true }])
+    expect(resolveExecution({ ...grammar, ...option }, supported, features).method).toBe("autoregressive");
+  expect(resolveExecution({ ...grammar, kvQuant: true }, { ...supported, speculativeKvQuant: true }, features).grammarJump).toBe(true);
+  expect(resolveExecution({ ...grammar, turboQuant: true }, { ...supported,
+    turboQuantBatch: true, speculativeTurboQuant: true }, features).grammarJump).toBe(true);
+  expect(resolveExecution(grammar, { ...supported, groupedMethods: ["autoregressive"] }, features).method).toBe("autoregressive");
+  expect(resolveExecution({ ...grammar, hasDraft: true }, supported, features)).toMatchObject({
+    method: "speculative", grammarJump: false,
+  });
 });

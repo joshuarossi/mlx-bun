@@ -1,3 +1,4 @@
+import { configureRuntime } from "../../src/runtime-config";
 import { test, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -87,11 +88,12 @@ test.skipIf(!enabled)("assistant TQ donors match independent codec and same-B op
     }
     return digest(a);
   };
-  const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
+  let restore = () => {};
   const drafter = await GemmaAssistantDrafter.load(artifact!);
   try {
     for (const fused of ["0", "1"]) for (const run of expected) {
-      process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused;
+      restore();
+      restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
       const B = run.B, label = `fused=${fused} B=${B}`;
       using emb = data([B, 1, backbone], 3);
       using sk = data([B, text.num_key_value_heads, 8, text.head_dim], 17), sv = data(sk.shape, 29);
@@ -138,7 +140,6 @@ test.skipIf(!enabled)("assistant TQ donors match independent codec and same-B op
     }
   } finally {
     drafter.dispose(); clearCache();
-    if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+    restore();
   }
 }, 180000);

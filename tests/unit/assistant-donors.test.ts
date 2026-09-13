@@ -1,3 +1,4 @@
+import { configureRuntime } from "../../src/runtime-config";
 import { expect, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
@@ -95,8 +96,7 @@ function donorMask(width: number, starts: readonly number[], ends: readonly numb
 
 for (const fused of ["0", "1"]) for (const [kBits, vBits] of [[8, 3], [4, 2]]) {
   test(`TQ donor snapshots preserve decoded-value arithmetic and own their state (${kBits}/${vBits}, fused=${fused})`, () => {
-    const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused;
+    const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
     const solo = new TurboQuantKVCache(kBits!, vBits!);
     let donor: KvDonorAttention | undefined;
     let keys: MlxArray | undefined, values: MlxArray | undefined;
@@ -115,14 +115,12 @@ for (const fused of ["0", "1"]) for (const [kBits, vBits] of [[8, 3], [4, 2]]) {
       exactDonorArray(actual, expected);
     } finally {
       donor?.dispose(); keys?.dispose(); values?.dispose(); solo.dispose();
-      if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-      else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+      restore();
     }
   });
 
   test(`packed TQ donors exclude prefill padding and rejected suffixes (${kBits}/${vBits}, fused=${fused})`, () => {
-    const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused;
+    const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
     const cache = new BatchedTurboQuantKVCache(kBits!, vBits!);
     let snapshot: KvDonorAttention | undefined;
     let keys: MlxArray | undefined, values: MlxArray | undefined;
@@ -166,15 +164,13 @@ for (const fused of ["0", "1"]) for (const [kBits, vBits] of [[8, 3], [4, 2]]) {
       expect(kept.shape).toEqual([2, 1, 1, 64]);
     } finally {
       snapshot?.dispose(); keys?.dispose(); values?.dispose(); cache.dispose();
-      if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-      else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+      restore();
     }
   });
 }
 
 for (const fused of ["0", "1"]) test(`delayed donor capture neither converts nor advances padded rows (fused=${fused})`, () => {
-  const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-  process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused;
+  const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
   const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 4 });
   const cache = new DelayedTurboQuantKVCache(8, 3, 4, maintain);
   let mixed: KvDonorAttention | undefined, reference: MlxArray | undefined;
@@ -226,8 +222,7 @@ for (const fused of ["0", "1"]) test(`delayed donor capture neither converts nor
     exactDonorArray(result, reference);
   } finally {
     mixed?.dispose(); reference?.dispose(); cache.dispose();
-    if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+    restore();
   }
 });
 

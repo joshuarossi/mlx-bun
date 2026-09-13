@@ -9,6 +9,7 @@
 // and the XTC-off path is unchanged.)
 
 import { Dtype } from "./mlx/ffi";
+import { normalizedArgmax } from "./mlx/normalized-argmax";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
 import type { TokenLogprobs } from "./contracts/generation";
@@ -826,6 +827,7 @@ export function makeStepSampler(
   const captureSelected = config.captureSelectedLogprob === true;
   const captureTop = Math.max(0, config.captureTopLogprobs ?? 0);
   const capture = captureSelected || captureTop > 0;
+  const greedyWithoutMetadata = (options.temperature ?? 0) === 0 && !options.curve && !capture && !config.sampler;
   let history: MlxArray | null = null;
 
   const seedHistory = (tokens: readonly number[]): void => {
@@ -888,6 +890,8 @@ export function makeStepSampler(
         current = next;
         ownsCurrent = current !== input;
       }
+      if (greedyWithoutMetadata)
+        return { token: normalizedArgmax(current), extras: null };
       logprobs = toLogprobs(current);
       if (ownsCurrent) current.dispose();
       current = input;
@@ -994,10 +998,7 @@ export function makeStepSampler(
 /** Stateless sampling across rows or verification positions. Preserve the
  * normalized-score argmax, including rounding-created ties. */
 export const independentGreedySampling = Object.freeze({
-  sample(logits: MlxArray): MlxArray {
-    using logprobs = toLogprobs(logits);
-    return ops.argmaxAxis(logprobs, -1);
-  },
+  sample: normalizedArgmax,
 });
 
 /** logits [..., V] → logprobs [..., V] (logits - logsumexp). */

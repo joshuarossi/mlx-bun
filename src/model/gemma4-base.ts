@@ -12,7 +12,7 @@ import type { ModelConfig } from "../config";
 import { quantFor } from "../config";
 import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
+import { Dtype, deviceArchitecture } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { quantizedMatmulRows } from "../mlx/quantized-rows";
 import { expertOffloadArray } from "../expert-offload";
@@ -1671,8 +1671,9 @@ export class TurboQuantKVCache implements Cache {
   /** Experimental operation selection, captured once for this cache. */
   readonly #codec: KvCodec<TurboQuantTensor>;
 
-  constructor(readonly kBits: number, readonly vBits: number) {
-    this.#codec = new TurboQuantCodec(kBits, vBits, process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1");
+  constructor(readonly kBits: number, readonly vBits: number,
+    readonly fusedDecode = runtimeValue("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1") {
+    this.#codec = new TurboQuantCodec(kBits, vBits, fusedDecode);
   }
 
   captureDonorRows(): KvDonorRows {
@@ -1940,8 +1941,23 @@ export function quantizedSdpaUnfused(
     vT = expand(vq);
   }
 
-  let scores = ops.quantizedMatmulQT(queries, kT, true, groupSize, bits);
+  // M4 Pro's native key matvec retains exact arithmetic when three GQA
+  // heads share a batch. Restore score geometry before softmax/value work.
+  const groupHeads = B <= 2 && H === 24 && KV === 4 && L === 3 && D === 256 &&
+    N >= 8192 && groupSize === 64 && bits === 4 &&
+    (q.dtype === Dtype.bfloat16 || q.dtype === Dtype.float32) &&
+    deviceArchitecture() === "applegpu_g16s";
+  let keyQueries = queries;
+  if (groupHeads) {
+    keyQueries = ops.reshape(queries, [B, KV, 2, 9, D]);
+    owned.push(keyQueries);
+  }
+  let scores = ops.quantizedMatmulQT(keyQueries, kT, true, groupSize, bits);
   owned.push(scores);
+  if (groupHeads) {
+    scores = ops.reshape(scores, [B, KV, nRep, L, N]);
+    owned.push(scores);
+  }
 
   let maskArr: MlxArray | null = null;
   let ownsMask = false;

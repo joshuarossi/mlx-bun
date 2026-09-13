@@ -215,6 +215,17 @@ fusedSdpaRuntimeOk(q, mask)` in `src/model/generated/gemma4-*.ts`) that are
 per-generation-decidable and should be hoisted out of the token path; compiled
 decode already achieves the debranched line dynamically (trace once, replay).
 
+The shared greedy operation uses native logsumexp followed by tiled normalized
+score/index reductions in `src/mlx/normalized-argmax.ts`. It preserves rounding
+and lowest-ID ties without materializing the normalized vocabulary array.
+The step sampler applies processors and grammar first, and selects this operation
+only for built-in greedy requests that do not require metadata. Independent
+verification calls the same operation. Fixed-shape compilation caches each
+geometry; enclosing shapeless graphs retain native operations. No scheduler,
+model-family branch or separate sampling setting selects this optimization.
+Actual-model and operation comparisons, plus both-machine serving measurements,
+are recorded in benchmarks.md under fused normalized greedy selection.
+
 ### Layer 0 — the SSD spill substrate
 
 It is almost always faster to cache to SSD and mmap it back than to
@@ -1824,7 +1835,7 @@ flowchart TB
     output -->|response events| server
     method <-->|borrow, update, snapshot, rollback| state
     session <-->|restore / publish prefill checkpoint| cache
-    method -.->|publish generated checkpoint: still open| cache
+    method -->|publish generated checkpoint| cache
     cache <-->|fast reuse| ram
     ram <-->|spill and restore when needed| persistence
 ```
@@ -1854,12 +1865,12 @@ SSD spill; an explicit durability flush can wait for persistence.
 | Chat template | `ChatTemplate.render` | Expose the renderer as its own narrow port instead of requiring a concrete serving context. Record rendered-stable boundaries for generated checkpoint alignment. |
 | Tokenizer | `LoadedTokenizer` | Reuse the same encode/decode contract across preparation, caching and output. Keep incremental encoding inside this component. |
 | Session / scheduling | `InferenceEngine`, `GenerationSession`, `ExecutionGroup`, `SchedulingClock` | Close all feature and performance gaps before deleting the remaining serial executor. |
-| Inference method | `InferenceMethod`; shared MTP method in the isolated candidate | Complete every shared-method composition and acceptance gate. Draft depth belongs here, independently of queue policy. |
+| Inference method | `InferenceMethod`; shared ordinary and speculative methods | Complete every shared-method composition and acceptance gate. Draft depth belongs here, independently of queue policy. |
 | Numerical graph / kernels | `AutoregressiveGraph`, `GraphFactory`, backend bindings | Continue hardware-specific fusion and kernel optimization behind these contracts. |
 | Sampler | `SamplingSession` | Retain one set of sampling/history/logprob semantics for ordinary and speculative execution. |
-| Active state / codec | `Cache`, `KvAttentionState` / `KvAttentionView`, row layouts, `SpeculativeTransaction`, checkpoint attachments | Appending and attending are separate operations. One captured view can serve multiple model layers while retaining pre-write positions and tensor ownership. Delayed rotating affine and broader model/layout composition remain open. |
-| Reusable cache | `PrefixCache.take/put`, shared `PromptCache` | Generated-output checkpoints and next-request token alignment remain open. Prefill reuse is already implemented. |
-| Persistence | `ColdTier`, `SpillSink`, `SsdCacheStore`, `SsdDurabilityCoordinator` | Complete combined M4 pressure/restart acceptance. RAM and SSD remain interchangeable retention tiers behind cache operations. |
+| Active state / codec | `Cache`, `KvAttentionState` / `KvAttentionView`, row layouts, `SpeculativeTransaction`, checkpoint attachments | Appending and attending are separate operations. One captured view can serve multiple model layers while retaining pre-write positions and tensor ownership. Delayed affine/TurboQuant and rotating layouts are integrated; qualify additional model/layout combinations separately. |
+| Reusable cache | `PrefixCache.take/put`, shared `PromptCache` | Prefill and processed generated output populate the same immutable RAM/SSD cache. Session lookup and rendered-token alignment are integrated. |
+| Persistence | `ColdTier`, `SpillSink`, `SsdCacheStore`, `SsdDurabilityCoordinator` | Queued persistence, native/restart checks and full Kanban durability acceptance are complete. RAM/SSD retention remains behind cache operations. |
 
 An interface boundary does not require copying tensors, downloading logits,
 or adding an RPC or synchronization per token. Device handles can stay lazy;
@@ -1876,6 +1887,32 @@ Contract sources: [generation](../../src/contracts/generation.ts),
 [cache tiers](../../src/prompt-cache.ts).
 Performance evidence and default selection live in
 [benchmarks.md](../reference/benchmarks.md); open acceptance remains in Phase 6/18.
+
+#### Kernel configuration ownership
+
+Shared and serial bindings execute within one immutable `RuntimeConfig`.
+Numerical helpers read that scope; they do not read process environment in
+forward loops. The serial speculative trace switch is captured once per run.
+Trellis mode resolves through the same configuration port at weight creation.
+
+TurboQuant caches capture their codec's fused-decode choice at construction.
+RAM clones, full-prefill row restoration, batch layout factories, extraction
+and delayed conversion preserve that choice. KV maintenance binds its runtime
+before conversion, including conversion performed after a host setting changes.
+SSD formats contain numerical state, not a frozen process configuration; their
+receiving cache factory selects the destination binding's policy.
+
+The configuration tests change host settings around scoped construction,
+copy/extraction and delayed conversion. Existing codec/donor tests now select
+both fused settings through `configureRuntime`, so they exercise the same
+configuration contract as serving. Paged request policies also bind the numerical
+namespace and construction policy before deferred lookup or allocation, including
+when a gateway outlives later host configuration changes. The serving reference
+maps flags to their owning interfaces and records supported combinations. The
+legacy internal `flagOn` wrapper is removed; CLI controls remain compatible.
+The new paged-policy tests first reproduce both deferred-setting failures, then
+pass with the captured policy. Paged operation/layout checks pass on both Macs;
+the full local model-free suite and all typechecks pass.
 
 ### 12.15 Package boundaries before community outreach
 
@@ -1921,3 +1958,30 @@ package includes the whole `docs/` tree, including archived investigations
 and active plans. Review that allowlist during packaging work; these are not
 runtime dependencies. This dry run inventories the candidate but does not
 replace installation and asset checks against an actual tarball.
+
+
+### 12.15 Prefill workspace policy
+
+`PrefillPolicy` selects a request's chunk size independently of scheduling,
+cache placement and sampling. The MLX backend captures model geometry and
+explicit configuration when it binds the policy. Ordinary generation,
+shared rows and speculative preparation consume the selected size through
+their existing prefill interfaces. A caller's explicit request value wins.
+The automatic recurrent-attention policy bounds the temporary materialized
+SDPA score workspace; it does not inspect live free memory or refuse work.
+Default values and precedence live in [server configuration](../reference/server-config.md).
+
+### 12.16 Committed append cache formats
+
+`MlxTokenAppend` declares supported affine precisions and TurboQuant K/V
+formats. Qualified Qwen27B bindings expose KV4/KV8 and K8V3.
+Request preparation supplies template-derived candidates; placement selects
+an eligible method without inspecting numerical cache formats. The ordinary
+method consumes the binding's declaration once and uses its committed-append
+operation. Qwen shares projection work over known tokens while retaining each
+query's one-token affine attention calculation and causal KV extent.
+`KvMaintenance.maxAppendTokens` bounds a committed chunk at a pending
+precision transition; the method runs maintenance before continuing.
+Verification remains a separate method capability: enabling committed
+quantized appends does not enable quantized echo verification. No default fill setting or
+shared-group support is inferred from that declaration.

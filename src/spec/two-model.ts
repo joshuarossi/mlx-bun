@@ -16,7 +16,7 @@
 import { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { clearCache } from "../mlx/ffi";
-import { flagOn } from "../runtime-config";
+import { runtimeFlag } from "../runtime-config";
 import { loadModelConfig } from "../config";
 import { Weights } from "../weights";
 import { createModel, type RuntimeModel } from "../model/factory";
@@ -93,7 +93,7 @@ class TwoModelSource implements DraftSource {
       { sample: (logprobs, steps) => sampler(logprobs, steps[0]!) }, [null]);
   }
   async prefill(promptIds: number[]): Promise<void> {
-    const tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+    const tailSplit = runtimeFlag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     const upTo = tailSplit && promptIds.length > 1 ? promptIds.length - 1 : promptIds.length;
     for (let at = this.processed; at < upTo; at += PREFILL_CHUNK) {
       const end = Math.min(at + PREFILL_CHUNK, upTo);

@@ -1415,22 +1415,30 @@ decode. The machine still fails the quiet preflight, so these are diagnostic
 results. Both external-drive failures remain recorded separately. Evidence:
 `fill-append-http-internal-repeat.json` and `fill-append-http-internal-review.json`.
 
-Quantized-KV composition remains disabled. A direct R6 append screen with
-TurboQuant k8v3 preserves hidden rows, logits, live cache state and four
-continuations at prefixes 128 and 1021, but exposes retained temporary state
-views between chunks. `appendFillHidden` now uses the existing
-`leaseCacheStates` ownership interface, as prefill does. Explicit release
-removes the extra 21,528,576 and 131,153,920 active bytes in those two checks;
-both ordinary and fused TurboQuant decoding then have identical post-arm
-allocation and numerical results. This fixes the research composition's
-view lifetime; the ordinary served path already excludes this combination.
-Seven targeted ownership tests and all three typechecks pass. The affine
-KV4 comparison fails both contexts, first changing recurrent state at layer
-4 after the first attention layer. Keep its failure and the composition
-guard. Other quant/cache modes, longer contexts and actual serving
-performance remain unqualified. Evidence:
-`fill-append-quant-cache-review.json` and
-`fill-append-state-ownership-native-test.log`.
+The original quantized-KV append screen passed TurboQuant K8V3 after fixing
+retained temporary state views through `leaseCacheStates`, but affine KV4
+changed recurrent state after the first full-attention layer. That failure
+is now resolved: multi-token affine attention selected different arithmetic
+from one-token decode, both in tiled and ordinary unfused forms. The model's
+committed-append path now computes each query against its own causal KV
+prefix using the one-token attention operation, while retaining shared
+projection work. No sampled decode or ordinary prefill arithmetic changes.
+
+On M4 Pro, packed and RTN4 Qwen27B both preserve complete hidden/logit/cache
+bytes and four subsequent continuations for KV4/KV8 at prefixes 128 and
+1021, including the attention boundary. The real KV4 generation loop also
+preserves emitted IDs, final state, subsequent logits and active allocation,
+with nonzero fill and zero verification. The append binding declares affine
+format support; HTTP preparation and placement leave that decision to the
+method. K8V3 TurboQuant now uses the same declaration and delayed-conversion
+boundary interface. Both Qwen artifacts pass real-generation state/continuation
+and six-pair HTTP comparisons; quantized echo verification remains separate.
+Full numerical and HTTP measurements live in benchmarks.md. Tests:
+`tests/unit/quantized-append-attention.test.ts`,
+`tests/parity/qwen-affine-append.test.ts`, and
+`MLX_BUN_TEST_FILL_KV_BITS=4` with the existing strict-fill parity test.
+Earlier failure/lease evidence remains `fill-append-quant-cache-review.json`
+and `fill-append-state-ownership-native-test.log`.
 
 The literal/reasoning checks deliberately decline ambiguous text, including some
 otherwise valid prose with unmatched quote characters. This is bounded

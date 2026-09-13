@@ -57,23 +57,40 @@ test("an independent binding runs without a RuntimeModel or class-based dispatch
   expect(seen).toEqual({ forwards: 4, steps: 0, allocations: 1, disposals: 1 });
 });
 
-for (const early of [false, true]) {
+test("prefill policy supplies the request default while explicit sizes take precedence", async () => {
+  const captured: number[] = [];
+  const policy = { chunkSize(length: number) { captured.push(length); return 2; } };
+  const automatic = fixture(), explicit = fixture();
+  for (const [source, override] of [[automatic, undefined], [explicit, 2]] as const) {
+    const generation = generateAutoregressive({ ...source.binding, prefillPolicy: policy }, [0, 1, 2, 3], {
+      temperature: 0, maxTokens: 2, prefillChunkSize: override,
+    });
+    const tokens = [];
+    for await (const token of generation) tokens.push(token.token);
+    expect(tokens).toEqual([4, 5]);
+  }
+  expect(captured).toEqual([4]);
+  expect(automatic.seen).toEqual(explicit.seen);
+});
+
+for (const early of [undefined, false, true]) {
+  const enabled = early !== false;
   test(`first-token scheduling uses the captured binding policy: early=${early}`, async () => {
     const { binding, seen } = fixture();
     const generation = generateAutoregressive({ ...binding,
-      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: early ? "1" : "0" }),
+      runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: early === undefined ? undefined : early ? "1" : "0" }),
     }, [0, 1], { temperature: 0, maxTokens: 5, prefillChunkSize: 1,
       logprobs: true, topLogprobs: 3 });
-    const restore = configureRuntime({ MLX_BUN_EARLY_FIRST_TOKEN: early ? "0" : "1" });
+    const restore = configureRuntime({ MLX_BUN_EARLY_FIRST_TOKEN: enabled ? "0" : "1" });
     try {
       const iter = generation[Symbol.asyncIterator]();
       const first = await iter.next();
       expect(first.value).toMatchObject({ token: 2, index: 0 });
       expect(first.value?.logprobs).toBeDefined();
-      expect(seen.forwards).toBe(early ? 2 : 3);
+      expect(seen.forwards).toBe(enabled ? 2 : 3);
       await iter.return(undefined);
       expect(generation.stats!.generatedTokens).toBe(1);
-      expect(generation.stats!.cacheTokens).toEqual(early ? [0, 1] : [0, 1, 2]);
+      expect(generation.stats!.cacheTokens).toEqual(enabled ? [0, 1] : [0, 1, 2]);
       expect(seen.disposals).toBe(1);
     } finally { restore(); }
   });
@@ -295,11 +312,12 @@ test("cancellation after a prefill chunk prevents the next chunk and releases it
   expect(seen.disposals).toBe(1);
 });
 
-test("cancellation after decode dispatch emits no token and closes the decoder before state", async () => {
+test("pipeline cancellation after decode dispatch emits no token and closes the decoder before state", async () => {
   const { binding, seen, advance, logits } = fixture();
   const abort = new AbortController();
   let closed = false;
-  const generation = generateAutoregressive({ ...binding, createDecode: () => ({
+  const generation = generateAutoregressive({ ...binding,
+    runtime: createRuntimeConfig({ MLX_BUN_EARLY_FIRST_TOKEN: "0" }), createDecode: () => ({
     tryStep(token, state) {
       advance(state, 1);
       const result = { logits: logits(token.toIntTokens()), evalWith: [] };

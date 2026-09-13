@@ -58,7 +58,7 @@ cache hits. Its first response matches exactly; directory timestamps change
 the next input. Browser acceptance remains 16/18 with the same two defects.
 Evidence: `reports/kanban-cache-fixed-repeat-r1/`; previous runs are preserved.
 
-Cache persistence correction is implemented on `fix/ssd-background-persistence`.
+Cache persistence correction is merged through PR #51.
 One cache owns RAM residency and SSD persistence. A CPU worker writes immutable
 state without the generation lock; eviction retains unwritten victims until
 SSD completion. All 2,249 model-free tests pass, with 14 fixture skips; focused tests pass
@@ -90,6 +90,28 @@ browser defects as before; task time and output length increase. Reports:
 `reports/kanban-session-cache-r2/`; r1 preserves a runner directory mismatch.
 [Full comparison](docs/reference/benchmarks.md#full-kanban-with-session-cache-and-queued-persistence).
 
+Prefill observation and mixed token work are complete on
+`perf/prefill-observation` for Gemma/Qwen and grouped speculative methods.
+The scheduler owns token budgets; methods own candidate demand and hidden taps;
+models retain attention/recurrent state per group. Same-geometry oracles,
+affine/TQ MTP and lookup lifecycle/generated-cache checks pass. M4 comparisons
+keep mixed work off by default: Gemma buys lower first-output latency with a
+throughput cost; Qwen MTP reduces its worst pause but loses first-output latency
+and throughput. R17 generated RAM/SSD cache acceptance is also complete, based
+on the already-finished Kanban retention/durability run. Remaining Phase 6/18
+work is the specific feature/configuration and performance work listed in PLAN.
+
+Shared grammar proposals are implemented and measured; the option remains off
+because HTTP results vary by machine and model. Empty-candidate rollback
+snapshots are removed with exact state and unchanged benchmark responses.
+Configuration consolidation is complete, including codec copies, delayed
+conversion, paged identity/construction and the flag-owner map. All checks pass.
+The shared normalized greedy kernel passes both-machine operation and actual-model
+checks. Standard AB/BA pairs improve MiniCPM throughput while Qwen MTP3/TQ stays
+effectively flat; no Qwen speedup is claimed. Full suites/types pass. Measurements
+and remaining work are recorded in benchmarks.md and PLAN.md. [Draft PR #52](https://github.com/joshuarossi/mlx-bun/pull/52)
+contains this branch. Ordinary KV4 now passes the original 78k cached-repeat
+failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing passes with all 19 responses/counts unchanged. Affine/TQ committed appends pass both Qwen artifacts and delayed conversion. Early first output is adopted after retained-state and monitored HTTP checks. Fixed-arrival two/four/eight-wave comparisons favor default throughput with exact outputs and documented stream-pause tradeoffs. M4 three-head KV4 attention grouping is integrated in 721ac4c after full-model and serving comparisons. The automatic-prefill Kanban task completes but misses the app-quality target. A four-arm replay isolates its initial divergence to chunk selection; early-output controls match. The full fixed-256 control is complete with unchanged source, identical first response/MTP counts, successful cache durability and 17/18 untouched-app acceptance. Keep fixed chunks in the task-comparison profile; the general automatic default is unchanged. This closes the requested integrated-task check. Continue the remaining kernel/coverage and final-report work in PLAN. Reports: reports/kanban-decode-integrated-r1 and reports/kanban-decode-fixed-prefill-r1.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
@@ -100,7 +122,7 @@ browser defects as before; task time and output length increase. Reports:
 | Repo taming (docs/files/agent instructions/seams) | Docs map, repository gates, request pipeline and shared prefill extraction landed; the engine refactor is merged. | D6 retention decisions still need workload measurements. True B-wide prefill remains Phase 18 S1a. | main |
 | TurboQuant weights — Q campaign (sub-4 bpw) | **Q3 PASSED** (KL 0.1553 @ 3.55 bpw; flagship 0.1646 @ 4.80; MMLU 88 / tGSM 48 / rawGSM 44). **Q2b packed format LANDED 2026-09-02**: 12.14 GiB artifact, decode bit-identical to the fake-quant, KL 0.1550 through our engine, coherent generation; M1 Max decode **9.3 tok/s vs 18.9** flagship after three kernel rounds. **down_proj axis settled — KEEP THE ROTATED AXIS**: `--down-axis in` is 11.3 vs 9.3 tok/s at identical KL/MMLU/tGSM but rawGSM **29/50 vs 44/50**, strictly nested (15 regressions, 0 gains), failure = immediate EOS — incoherence processing must reach the CODED axis (third instance of "KL is the screen, not the verdict"). Carry-forward: `…-k300-packed` (12.14 GiB, 9.3 tok/s) | Q5 2.75-budget arm; q2a/q2b task columns; rawGSM EOS-cliff root cause (now with two arms exhibiting it) | chore/tame-jungle |
 | Resumable long-agent generation | The merged path passes seven saved boundaries in both serial and continuous serving, with identical responses and durable final SSD flushes. The longest prompt has 14,465 tokens and generates 512. Earlier Pi stopped on an unparsed tool call and did not complete its app task. | Repeat pressure/reliability coverage as graph barriers or kernels change; investigate the separate affine transient-allocation control. Evidence: turn-8 repro and decode-speed-program §7. | main |
-| K3 token fast-forwarding (fill) | Parser guards and model-owned appends are integrated. Both Qwen quants preserve logits, state and continuation at MLX attention boundaries. Model-free/typecheck, cancellation and final internal-SSD serving gates pass. All twelve paired comparisons retain request-time gains with 96 exact responses and no failures. | Extend held-out/combined/pressure coverage. Quantized-KV and speculative combinations stay gated pending validation. See speculative-decoding §7.4. | main |
+| K3 token fast-forwarding (fill) | Parser guards and model-owned appends are integrated. Both Qwen quants preserve logits, state and continuation at MLX attention boundaries. Model-free/typecheck, cancellation and final internal-SSD serving gates pass. All twelve paired comparisons retain request-time gains with 96 exact responses and no failures. | KV4/KV8 and K8V3 committed appends now pass model/HTTP gates on the qualified Qwen binding. Extend held-out/shared/speculative coverage; quantized verification stays inactive. See speculative-decoding §7.4. | main |
 | Serving architecture consolidation | S0–S3 merged in v0.2.0 | S4 real-conversation smoke remains. Phase 6/18 now also require shared execution at B=1/B>1, method/cache/scheduler interfaces and configuration cleanup; those are open implementation work. | main |
 | Interface-based engine refactor | R1–R9 and R10 code migration merged in `673b43f`, PR #46. Model-owned execution, shared prefill/sessions, policy capture and state ownership landed. Current checkpoint: typechecks and model-free suite pass. The earlier M4 delta-golden discrepancy was reproduced in the pinned oracle and explicitly regenerated on unchanged inputs. | Share target and quiet M4 Pro acceptance with Phase 6 R0. Upstream loaded-machine repeats establish no 27B speed win. See engine architecture §12.13 and decode-speed-program §7.1. | main |
 | Memory / the Dreaming | write path + nightly synthesis built; ingest is NOT wired into the nightly run; `memory synthesize --since/--model` parsed but unapplied | wire ingest into `runPipeline`; decide the embeddings-as-instruments question; promote wiki-full to a real vault | main |

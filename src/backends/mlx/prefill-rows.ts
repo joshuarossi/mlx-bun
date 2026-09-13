@@ -9,7 +9,18 @@ import type { MlxGroupPreparation, Row } from "./batch-group";
 import { evalCacheState } from "./prefill";
 import { prefillCacheLayout } from "./cache-layout";
 import { MlxStateRows } from "./state-rows";
+import type { P2RTracePhase, P2RTraceAttributes } from "../../serve/prompt-response-trace";
+import type { MlxForwardWork, MlxPreparationWork } from "./mixed-iteration";
 import type { KvMaintenance } from "./kv-maintenance";
+
+// Shared work is recorded on every participating request. workId identifies
+// duplicates when constructing a process timeline; row spans are not additive.
+let nextWorkId = 0;
+function traceRows(states: readonly MlxPrefillState[], phase: P2RTracePhase, attributes: P2RTraceAttributes) {
+  if (!states.some(state => state.row.req.trace)) return null;
+  const closes = states.map(state => state.row.req.trace?.begin(phase, attributes));
+  return { [Symbol.dispose]() { for (const close of closes) close?.(); } };
+}
 
 export interface MlxPrefillStep extends PrefillStep {
   /** Some methods maintain their final target chunk before sampling. */
@@ -34,7 +45,7 @@ export interface MlxPrefillRowsHost<State extends MlxPrefillState> {
   plan(state: State): MlxPrefillStep;
   /** Already prepared state can complete without any target forward. */
   ready?(state: State): boolean;
-  forward(ids: MlxArray, caches: Cache[], states: readonly State[]): Promise<MlxArray>;
+  forward(ids: MlxArray, caches: Cache[], states: readonly State[], work?: MlxForwardWork): Promise<MlxArray>;
   project(hidden: MlxArray, caches: Cache[], completed: readonly State[]): MlxArray | null;
   /** Consume method context after target maintenance, before snapshots. */
   afterForward?(ids: MlxArray, caches: Cache[], states: readonly State[], hidden: MlxArray): void | Promise<void>;
@@ -105,7 +116,8 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     for (const cache of this.#stateRows.caches) cache.prefillMaintenance?.beginPrefill();
   }
 
-  async advance(): Promise<boolean> {
+  async advance(workLimit?: MlxPreparationWork): Promise<boolean> {
+    let remaining = workLimit?.maxTokens ?? Infinity;
     // Complete restored inputs before merging: their cache coverage must not
     // introduce padding or a zero-width forward into unrelated cold rows.
     if (this.operations.ready && this.#states.some(state => this.operations.ready!(state))) {
@@ -122,7 +134,10 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
       this.#states = remaining; this.#rows = remaining.map(state => state.row);
       if (!remaining.length) { this.dispose(); return true; }
     }
-    this.#synchronizeRows();
+    {
+      using span = traceRows(this.#states, "prefill.row_sync", { workId: ++nextWorkId, batchSize: this.#states.length });
+      this.#synchronizeRows();
+    }
     const keep: number[] = [];
     for (const [index, state] of this.#states.entries()) {
       if (!state.row.req.signal?.aborted) { keep.push(index); continue; }
@@ -132,15 +147,22 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     if (!this.#states.length) { this.dispose(); return true; }
     while (this.#states.length) {
       for (const state of this.#states) state.planned ??= this.operations.plan(state);
-      const count = Math.min(...this.#states.map(state => state.planned!.end - state.pos));
+      const count = Math.min(Math.max(1, Math.floor(remaining / this.#states.length)),
+        ...this.#states.map(state => state.planned!.end - state.pos));
+      const work = { workId: ++nextWorkId, batchSize: this.#states.length, tokensPerRow: count };
       const closes = this.#states.map(state => state.row.req.trace?.begin("prefill.chunk", {
-        mechanism: "continuous", startToken: state.pos, batchSize: this.#states.length,
+        mechanism: "continuous", startToken: state.pos, ...work,
       }));
       const caches = this.#stateRows?.caches ?? this.#states[0]!.solo;
       try {
         using ids = count ? ops.fromInt32(this.#states.flatMap(state => state.row.req.promptIds.slice(state.pos, state.pos + count)),
           [this.#states.length, count]) : null;
-        using hidden = ids ? await this.operations.forward(ids, caches, this.#states) : null;
+        let forwarded: MlxArray | null;
+        {
+          using span = traceRows(this.#states, "prefill.forward", work);
+          forwarded = ids ? await this.operations.forward(ids, caches, this.#states, workLimit?.forward) : null;
+        }
+        using hidden = forwarded;
         const drains: number[] = [], finals: number[] = [];
         let batchYield = false;
         for (const [row, state] of this.#states.entries()) {
@@ -152,25 +174,42 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
         }
         const maintained = [...drains, ...finals.filter(row => this.#states[row]!.planned!.maintain)];
         if (count && (maintained.length || !finals.length)) {
-          evalCacheState(caches);
+          {
+            using span = traceRows(this.#states, "prefill.evaluate", work);
+            evalCacheState(caches);
+          }
+          using span = traceRows(this.#states, "prefill.kv_maintenance", work);
           if (this.#stateRows) {
             for (const cache of caches) cache.prefillMaintenance?.commitPrefill(maintained);
           } else if (maintained.length) this.operations.maintain?.(this.#states[0]!.solo);
-          clearCache();
+          // A scheduler budget can split one planned chunk into many pieces.
+          // Resolve state at each yield, but retain allocator reuse until the
+          // method's maintenance boundary instead of purging it every piece.
+          if (maintained.length) clearCache();
         }
-        if (ids) {
+        if (ids && this.operations.afterForward) {
+          using span = traceRows(this.#states, "prefill.companion", work);
           const companion = this.operations.afterForward?.(ids, caches, this.#states, hidden!);
           if (companion) await companion;
         }
         for (const row of [...drains, ...finals]) {
           const state = this.#states[row]!;
-          if (state.planned!.snapshot) this.operations.checkpoint(state, () =>
-            this.#stateRows ? this.#stateRows.extractRow(row) : cloneKvCaches(state.solo, this.operations.stateCodecs), row);
+          if (state.planned!.snapshot) {
+            using span = traceRows([state], "prefill.checkpoint", { ...work, row });
+            this.operations.checkpoint(state, () =>
+              this.#stateRows ? this.#stateRows.extractRow(row) : cloneKvCaches(state.solo, this.operations.stateCodecs), row);
+          }
           if (!finals.includes(row)) state.planned = undefined;
         }
-        using logits = hidden && finals.length ? this.operations.project(hidden, caches, finals.map(row => this.#states[row]!)) : null;
+        let projected: MlxArray | null = null;
+        if (hidden && finals.length) {
+          using span = traceRows(this.#states, "prefill.project", work);
+          projected = this.operations.project(hidden, caches, finals.map(row => this.#states[row]!));
+        }
+        using logits = projected;
         for (const row of finals) {
           const state = this.#states[row]!;
+          using span = traceRows([state], "prefill.complete", { ...work, row });
           if (this.#stateRows) state.solo = this.#stateRows.extractRow(row);
           using part = logits ? logits.slice([row, logits.shape[1]! - 1, 0], [row + 1, logits.shape[1]!, logits.shape[2]!]) : null;
           try {
@@ -185,7 +224,8 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
         for (const cache of caches) (cache as { releaseRopeArr?: () => void }).releaseRopeArr?.();
         if (finals.length) this.#filter(this.#states.flatMap((_, row) => finals.includes(row) ? [] : [row]));
         if (!this.#states.length) { this.dispose(); return true; }
-        if (batchYield || finals.length) return false;
+        remaining -= count * work.batchSize;
+        if (batchYield || finals.length || remaining < this.#states.length) return false;
       } finally { for (const close of closes) close?.(); }
     }
     return true;

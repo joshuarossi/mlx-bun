@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createKvMaintenance } from "../../src/backends/mlx/kv-maintenance";
-import { KVCache, RotatingKVCache, QuantizedKVCache, RotatingQuantizedKVCache, type Cache } from "../../src/model/gemma4-base";
+import { KVCache, RotatingKVCache, QuantizedKVCache, RotatingQuantizedKVCache, TurboQuantKVCache, type Cache } from "../../src/model/gemma4-base";
 import { MlxArray } from "../../src/mlx/array";
 import { Dtype } from "../../src/mlx/ffi";
 import * as ops from "../../src/mlx/ops";
@@ -21,9 +21,11 @@ test("shared KV maintenance preserves populated boundary, layer policy and conve
   const caches: Cache[] = [new KVCache(), new RotatingKVCache(8), new KVCache()];
   const references = [new KVCache(), new RotatingKVCache(8)];
   try {
+    expect(maintain.maxAppendTokens!(caches)).toBe(3);
     maintain(caches);
     expect(caches[0]).toBeInstanceOf(KVCache);
     for (const cache of [...caches, ...references]) populate(cache as KVCache | RotatingKVCache, 2);
+    expect(maintain.maxAppendTokens!(caches)).toBe(1);
     maintain(caches);
     expect(caches[0]).toBeInstanceOf(KVCache);
     expect(caches[1]).toBeInstanceOf(RotatingKVCache);
@@ -32,6 +34,7 @@ test("shared KV maintenance preserves populated boundary, layer policy and conve
     expect(caches[0]).toBeInstanceOf(QuantizedKVCache);
     expect(caches[1]).toBeInstanceOf(RotatingQuantizedKVCache);
     expect(caches[2]).toBeInstanceOf(KVCache);
+    expect(maintain.maxAppendTokens!(caches)).toBe(Number.POSITIVE_INFINITY);
     for (let layer = 0; layer < 2; layer++) {
       const entry = config[layer]!;
       const expected = references[layer]!.toQuantized(entry.groupSize, entry.bits);
@@ -64,6 +67,20 @@ test("uniform defaults wait for 5000 tokens; explicit zero still skips empty cac
     createKvMaintenance({ kvBits: 4, quantizedKvStart: 0 })(caches);
     expect(caches[0]).toBeInstanceOf(QuantizedKVCache);
     expect(caches[1]).toBeInstanceOf(RotatingQuantizedKVCache);
+  } finally { for (const cache of caches) cache.dispose(); }
+});
+
+test("TurboQuant append work stops at its conversion boundary", () => {
+  const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 3 });
+  const caches: Cache[] = [new KVCache()];
+  try {
+    populate(caches[0] as KVCache, 2);
+    expect(maintain.maxAppendTokens!(caches)).toBe(1);
+    populate(caches[0] as KVCache, 1);
+    maintain(caches);
+    expect(caches[0]).toBeInstanceOf(TurboQuantKVCache);
+    expect(caches[0]!.minimumReusableOffset).toBe(3);
+    expect(maintain.maxAppendTokens!(caches)).toBe(Number.POSITIVE_INFINITY);
   } finally { for (const cache of caches) cache.dispose(); }
 });
 

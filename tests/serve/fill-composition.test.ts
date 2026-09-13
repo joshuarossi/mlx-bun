@@ -156,10 +156,12 @@ describe("fill is refused by composition", () => {
       refused("draft", body(), harness({ draft: { model: {} } })));
   });
 
-  test("a quantized-KV scheme (multi-token append after conversion is unvalidated)", async () => {
+  test("cache formats reach the engine, which owns append eligibility", async () => {
     await withRuntime(STRICT, async () => {
-      await refused("kvBits", body(), harness({ kvScheme: { kvBits: 4, kvGroupSize: 64 } }));
-      await refused("turboQuant", body(), harness({ kvScheme: { turboQuant: { kBits: 4, vBits: 4 } } }));
+      for (const kvScheme of [{ kvBits: 4, kvGroupSize: 64 }, { turboQuant: { kBits: 4, vBits: 4 } }]) {
+        const h = harness({ kvScheme });
+        expect(await fillOf(h, body())).toBeInstanceOf(FillSession);
+      }
     });
   });
 

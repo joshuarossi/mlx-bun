@@ -132,12 +132,11 @@ export class ChatStage {
     // table for this request's tools. Refused for the shapes only this stage
     // can see — a compiled grammar (forced tokens are its job), media prompts
     // (embeddings prefill / mRoPE), a mounted draft model (the spec loop is a
-    // different executor and never reads options.fill), and quantized-KV
-    // schemes (post-conversion multi-token append is unvalidated). The
+    // different executor and never reads options.fill). Cache-format support
+    // is declared by the engine's model-owned append binding. The
     // body-level refusals live in prep.fillPlanFor.
     let fillSession: import("../fill/fill-session").FillSession | null = null;
-    if (!grammarCtrl && !vision && !diffusionPixels && !ctx.draft &&
-        !options.kvBits && !options.kvConfig?.length && !options.turboQuant) {
+    if (!grammarCtrl && !vision && !diffusionPixels && !ctx.draft) {
       fillSession = prep.fillPlanFor(body, tools, promptIds);
       if (fillSession) options.fill = fillSession;
     }

@@ -10,8 +10,11 @@
 // shared maybeQuantizeKv path).
 
 import type { ModelConfig } from "../config";
+import { quantizedAppendAttention } from "./quantized-append-attention";
 import { gatedDeltaState } from "./qwen3-delta-state";
 import type { Weights } from "../weights";
+import { runtimeFlag } from "../runtime-config";
+import { mapTokenGroups, type TokenGroup } from "./token-groups";
 import { MlxArray } from "../mlx/array";
 import { Dtype, deviceArchitecture } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -461,7 +464,9 @@ export class Qwen3Attention {
       const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
       v.dispose();
-      attn = quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
+      attn = independentRows && L > 1
+        ? quantizedAppendAttention(q, keys, values, this.scale, quantized.groupSize, quantized.bits)
+        : quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
       disposeTriple(keys);
       disposeTriple(values);
     } else {
@@ -560,22 +565,24 @@ export class Qwen3Layer {
   }
 
   forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null): MlxArray {
-    const xn = this.inputNorm.forward(x);
-    const r = this.isLinear
+    using h = this.forwardAttn(x, faMask, cache, independentRows, ssmMask);
+    return this.forwardMlp(h, independentRows);
+  }
+
+  forwardAttn(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null): MlxArray {
+    using xn = this.inputNorm.forward(x);
+    using r = this.isLinear
       ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows, ssmMask)
       : this.selfAttn!.forward(xn, faMask, cache, independentRows);
-    xn.dispose();
-    const h = ops.add(x, r);
-    r.dispose();
-    const hn = this.postAttnNorm.forward(h);
+    return ops.add(x, r);
+  }
+
+  forwardMlp(h: MlxArray, independentRows = false): MlxArray {
+    using hn = this.postAttnNorm.forward(h);
     // RMSNorm allocates an aligned row-contiguous output. Pass that layout
     // proof so Trellis can match native small-prefill matmul without an eval.
-    const m = this.mlp.forward(hn, true, independentRows);
-    hn.dispose();
-    const out = ops.add(h, m);
-    h.dispose();
-    m.dispose();
-    return out;
+    using m = this.mlp.forward(hn, true, independentRows);
+    return ops.add(h, m);
   }
 }
 
@@ -669,6 +676,8 @@ export class Qwen35Model {
         return null;
     }
     return {
+      affineKvBits: [4, 8],
+      turboQuantFormats: [{ kBits: 8, vBits: 3 }],
       maxChunkSize: (state: readonly Cache[]) => qwenAppendChunkSize(state[0]!.offset),
       forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
         if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)
@@ -682,6 +691,48 @@ export class Qwen35Model {
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
     const h = this.embed.encode(ids);
     return this.forwardLayers(h, cache);
+  }
+
+  /** Attention and DeltaNet retain disjoint row state. Only tokenwise MLP
+   * work is eligible for packing; verification can preserve its geometry. */
+  forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
+    if (work.length === 1 && !work[0]!.captureLayer) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
+    const groups: Array<{ h: MlxArray; mask?: Mask; ssmMask?: MlxArray | null }> = [];
+    const results: MlxArray[] = [];
+    const pack = runtimeFlag("MLX_BUN_MIXED_PACKED_MLP", true);
+    const bounded = work.some(group => group.ids.shape[1]! > TRELLIS_MATVEC_MAX_M);
+    try {
+      for (const { ids, cache } of work) {
+        const group: typeof groups[number] = { h: this.embed.encode(ids) }; groups.push(group);
+        group.mask = cache[this.faIdx]!.makeMask(ids.shape[1]!, null);
+        group.ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(ids.shape[1]!);
+      }
+      for (const [i, layer] of this.layers.entries()) {
+        const mids: MlxArray[] = [];
+        try {
+          for (const [row, group] of groups.entries())
+            mids.push(layer.forwardAttn(group.h, group.mask!, work[row]!.cache[i]!, false, group.ssmMask));
+          const outputs = mapTokenGroups(work, mids, hidden => layer.forwardMlp(hidden), pack);
+          for (const [row, group] of groups.entries()) { group.h.dispose(); group.h = outputs[row]!; }
+          // Materialize every layer's recurrent tail as well as the residual.
+          // It is not a dependency of h and otherwise pins prefill buffers.
+          if (bounded) {
+            const caches = work.map(group => group.cache[i]!);
+            const state = caches.map(cache => cache.state());
+            try { ops.evalAll([...groups.map(group => group.h), ...state.flat()]); }
+            finally { for (const [row, cache] of caches.entries())
+              if (cache.stateNeedsDispose) for (const value of state[row]!) value.dispose(); }
+          }
+          for (const [row, group] of groups.entries()) work[row]!.captureLayer?.(i, group.h);
+        } finally { for (const mid of mids) mid.dispose(); }
+      }
+      for (const [row, group] of groups.entries()) {
+        const hidden = this.finalNorm.forward(group.h); results.push(hidden);
+        work[row]!.captureLayer?.(this.layers.length, hidden);
+      }
+      return results;
+    } catch (error) { for (const result of results) result.dispose(); throw error; }
+    finally { for (const group of groups) { group.h.dispose(); group.mask?.arr?.dispose(); group.ssmMask?.dispose(); } }
   }
 
   /** Active vision mRoPE request state (serial lane; set by the generation

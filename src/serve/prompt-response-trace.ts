@@ -10,16 +10,27 @@ export type P2RTracePhase =
   | "request.prompt_prepare"
   | "completion.total"
   | "completion.placement"
+  | "engine.request_wait"
   | "engine.admission_wait"
+  | "engine.mixed_forward"
   | "cache.lookup_restore"
+  | "cache.prefetch"
   | "prefill.total"
   | "prefill.batch_setup"
   | "prefill.chunk"
+  | "prefill.row_sync"
+  | "prefill.forward"
+  | "prefill.evaluate"
+  | "prefill.checkpoint"
+  | "prefill.project"
+  | "prefill.complete"
+  | "prefill.companion"
   | "prefill.kv_maintenance"
   | "token_zero.total"
   | "token_zero.forward"
   | "token_zero.head"
   | "token_zero.sample"
+  | "response.token_route"
   | "response.first_write"
   | "response.final_write";
 
@@ -42,6 +53,8 @@ export interface P2RTraceRecord {
   route: string;
   clock: "monotonic-ms";
   outcome: P2RTraceOutcome;
+  /** Process-local monotonic origin; aligns concurrent requests in one server. */
+  startedAtMs?: number;
   totalMs: number;
   events: P2RTraceEvent[];
   attributes?: P2RTraceAttributes;
@@ -129,6 +142,7 @@ export class PromptResponseTrace {
       route: this.route,
       clock: "monotonic-ms",
       outcome,
+      startedAtMs: this.#startedAt,
       totalMs,
       events: [...this.#events].sort((a, b) => a.startMs - b.startMs),
       ...(attributes ? { attributes } : {}),

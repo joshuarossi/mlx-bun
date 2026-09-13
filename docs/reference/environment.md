@@ -37,6 +37,20 @@ diagnostic; run-to-run spread is the stability signal, and the harness retries
 unstable cells (`scripts/bench-serve.ts`; `benchmarks.md`, "Running the
 benchmark").
 
+A performance decision must account for concurrent work during the timed
+comparison. For unstable pairs, capture process activity, GPU utilization and
+VM/page-in changes before and during the repeat; keep timestamps that align
+those observations with each measured request or forward. A preflight snapshot
+alone cannot identify interference during a run. CPU usage or retained swap
+alone does not establish GPU contention or active paging. Preserve all original
+samples and label unresolved comparisons inconclusive rather than attributing
+an outlier to the candidate. GPU-wide counters and the last submitting PID are
+observations, not complete per-process GPU attribution. The serving decode
+samples use different nonce-bearing prompts; speculative acceptance and target
+call counts can therefore vary within an arm. Compare matching request hashes
+and work counters across arms before interpreting their TPS spread as temporal
+instability.
+
 ## External storage loading
 
 On the M4 Pro with MLX 0.32.2, two RTN4 first-request warmups from

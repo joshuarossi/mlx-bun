@@ -1,3 +1,5 @@
+import { runMixedTokenIteration, type MlxForwardWork, type MlxPreparationWork } from "./mixed-iteration";
+import type { MixedTokenModel } from "../../model/token-groups";
 import type { OrdinaryContinuation } from "./continuation";
 import type { MlxRequestStatePolicy } from "./request-state-policy";
 import { AdmissionRejected } from "../../engine/admission";
@@ -63,6 +65,8 @@ import { MlxPrefillCohort, type PrefillState } from "./prefill-cohort";
 // optimization is a later refinement (batching-v2-plan item a).
 
 import { MlxArray } from "../../mlx/array";
+import type { PrefillPolicy } from "../../inference/prefill";
+import { resolveMlxPrefillPolicy } from "./prefill-policy";
 import * as ops from "../../mlx/ops";
 import { activeMemory, cacheMemory, clearCache, Dtype, peakMemory } from "../../mlx/ffi";
 import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../../runtime-config";
@@ -139,7 +143,7 @@ export interface MlxGroupPreparation {
   readonly tokenWeight?: number;
   readonly canAdmit?: boolean;
   admit?(row: Row): void;
-  advance(): Promise<boolean>;
+  advance(work?: MlxPreparationWork): Promise<boolean>;
   dispose(): void;
 }
 export interface MlxGroupMethodHost {
@@ -153,8 +157,10 @@ export interface MlxGroupMethodHost {
   finish(row: Row, reason: "stop" | "length"): void;
 }
 export interface MlxGroupedMethod {
+  /** Maximum target tokens in the next iteration, including candidates. */
+  readonly runningTokens?: number;
   prepare(row: Row): MlxGroupPreparation;
-  advance(): Promise<void>;
+  advance(work?: MlxForwardWork): Promise<void>;
   filterRows(keep: readonly number[], discard: boolean): void;
   dispose(): void;
 }
@@ -239,6 +245,8 @@ export interface BatchStats {
   /** Wall-clock from the first emitted token to finish. */
   decodeMs: number;
 }
+
+let nextMixedWorkId = 0;
 
 /** The slice of PromptCache the scheduler drives (structural — the server's
  *  PromptCache satisfies it). take() on admission (any joiner: a restored
@@ -374,6 +382,7 @@ export class MlxBatchExecutionGroup {
   readonly #lock: ExclusiveLock | undefined;
   readonly #admissionHeld: (() => boolean) | undefined;
   readonly #prefillChunkSize: number;
+  readonly #prefillPolicy: PrefillPolicy;
   readonly #prefillBatchTokenLimit: number;
   readonly #prefillTailSplit: boolean;
   readonly #kvBudgetBytes: number | undefined;
@@ -411,8 +420,8 @@ export class MlxBatchExecutionGroup {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
-    this.#prefillChunkSize = Math.max(1, Math.floor(opts.prefillChunkSize ??
-      this.#runtime.number("MLX_BUN_RD_PREFILL_CHUNK", 2048)));
+    this.#prefillPolicy = resolveMlxPrefillPolicy(model.config, this.#runtime, opts.prefillChunkSize);
+    this.#prefillChunkSize = this.#prefillPolicy.chunkSize(0);
     this.#prefillBatchTokenLimit = opts.prefillBatchTokenLimit ?? 2048;
     this.#prefillTailSplit = this.#runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
     this.#kvBudgetBytes = opts.kvBudgetBytes;
@@ -537,6 +546,7 @@ export class MlxBatchExecutionGroup {
     if (this.#closed) return Promise.reject(new Error("scheduler closed"));
     if (req.signal?.aborted) return Promise.reject(req.signal.reason);
     if (this.#pending.length >= this.#maxQueued) return Promise.reject(new AdmissionRejected());
+    req = { ...req, prefillChunkSize: req.prefillChunkSize ?? this.#prefillPolicy.chunkSize(req.promptIds.length) };
     return new Promise<BatchStats>((resolve, reject) => {
       let abortListener: (() => void) | null = null;
       const cleanup = () => {
@@ -608,6 +618,38 @@ export class MlxBatchExecutionGroup {
       canBurst: () => this.#contextCompatible(this.#pending[0]!) &&
         (this.#kvBudgetBytes === undefined ||
           this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes),
+      get mixedPreparation() {
+        return scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
+          (!scheduler.#method || scheduler.#method.runningTokens !== undefined) &&
+          typeof (scheduler.model as RuntimeModel & Partial<MixedTokenModel>).forwardHiddenMixed === "function"
+          ? { runningTokens: scheduler.#method?.runningTokens ?? scheduler.#running.length,
+            minimumPreparationTokens: scheduler.#prefill?.rows.length ?? 0 }
+          : undefined;
+      },
+      get maxIterationTokens() { return scheduler.#runtime.number("MLX_BUN_MIXED_TOKEN_BUDGET", 256); },
+      advanceMixed: async tokenBudget => {
+        this.#promptCache?.reclaim?.();
+        const advanced = await runMixedTokenIteration({
+          prepare: forward => this.#advancePreparation({ forward,
+            maxTokens: tokenBudget - (this.#method?.runningTokens ?? this.#running.length) }),
+          decode: forward => this.#method ? this.#method.advance(forward) : this.#step(forward),
+          forward: async (ids, cache, options) => options?.captureLayer
+            ? (this.model as RuntimeModel & MixedTokenModel).forwardHiddenMixed([{ ids, cache, ...options }])[0]!
+            : this.#forwardHidden(ids, cache),
+          mixed: groups => {
+            const workId = `mixed:${++nextMixedWorkId}`;
+            const tokens = groups.map(group => group.ids.shape[0]! * group.ids.shape[1]!);
+            const closes = [...this.#running, ...(this.#prefill?.rows ?? [])].map(row =>
+              row.req.trace?.begin("engine.mixed_forward", { workId,
+                decodeTokens: tokens[0]!, prefillTokens: tokens[1]!, packedTokens: tokens[0]! + tokens[1]! }));
+            try { return (this.model as RuntimeModel & MixedTokenModel).forwardHiddenMixed(groups); }
+            finally { for (const close of closes) close?.(); }
+          },
+        });
+        if (!advanced && this.#running.length) {
+          if (this.#method) await this.#method.advance(); else await this.#step();
+        }
+      },
       advancePreparation: () => {
         this.#promptCache?.reclaim?.();
         return this.#advancePreparation();
@@ -637,7 +679,7 @@ export class MlxBatchExecutionGroup {
       await driveExecutionGroup(group, {
         now: () => performance.now(),
         yield: () => new Promise<void>((resolve) => setImmediate(resolve)),
-      }, this.#runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") === "1");
+      }, this.#runtime.flag("MLX_BUN_EARLY_FIRST_TOKEN", true));
     } finally { this.#looping = false; }
   }
 
@@ -713,11 +755,11 @@ export class MlxBatchExecutionGroup {
     for (const row of rows) row.reject(error);
   }
 
-  async #advancePreparation(): Promise<void> {
+  async #advancePreparation(work?: MlxPreparationWork): Promise<void> {
     const p = this.#prefill!, rows = p.rows;
     this.#preparationPublishedOutput = false;
     try {
-      if (await p.advance()) this.#prefill = null;
+      if (await p.advance(work)) this.#prefill = null;
     } catch (error) {
       this.#prefill = null;
       let failure = error;
@@ -839,7 +881,7 @@ export class MlxBatchExecutionGroup {
     // later pipeline step. Grammar and explicit eager-output modes retain
     // their read-before-advance order.
     if (!this.#inners && !p.row.req.grammar && !this.#noPipeline &&
-        this.#runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") !== "1" && !forceAttribution) {
+        !this.#runtime.flag("MLX_BUN_EARLY_FIRST_TOKEN", true) && !forceAttribution) {
       let owned: MlxArray | null = sampled;
       try {
         ops.asyncEvalAll([sampled]);
@@ -1155,7 +1197,7 @@ export class MlxBatchExecutionGroup {
    *  Rows that finish get one extra harmless KV write from the already-built
    *  step; filter drops the row (mlx-lm behaves identically). Length-finished
    *  rows are known in advance and are NOT sampled (placeholder slot). */
-  async #step(): Promise<void> {
+  async #step(forward?: MlxForwardWork): Promise<void> {
     if (this.#stepTrace) {
       const now = performance.now();
       if (STEP_T.lastEnd) STEP_T.gap += now - STEP_T.lastEnd;
@@ -1183,7 +1225,7 @@ export class MlxBatchExecutionGroup {
     const hasLiveGrammar = anyLive && rows.some(
       (r) => r.req.grammar && !r.req.grammar.isTerminated,
     );
-    if (hasLiveGrammar) return this.#stepGrammar();
+    if (hasLiveGrammar) return this.#stepGrammar(forward);
 
     let nextToks: MlxArray | null = null;
     let nextReal: boolean[] | null = null;
@@ -1217,7 +1259,7 @@ export class MlxBatchExecutionGroup {
       let lg: MlxArray | null = null;
       let evalWith: MlxArray[] = [];
       if (
-        this.#compiled && B === 1 && unpadded && this.#running[0]!.req.compiledDecode !== false &&
+        !forward && this.#compiled && B === 1 && unpadded && this.#running[0]!.req.compiledDecode !== false &&
         (!this.#pendingToks || this.#pendingToks.dtype === Dtype.uint32) &&
         // A filtered-to-one BATCHED rot-quant cache subclasses the serial
         // class (so supports() passes) but carries batched ring state —
@@ -1259,7 +1301,7 @@ export class MlxBatchExecutionGroup {
           const ids = this.#pendingToks
             ? ops.reshape(this.#pendingToks, [B, 1]) // feed the unread tokens
             : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
-          const h = await this.#forwardHidden(ids, fwd);
+          const h = await (forward ? forward(ids, fwd) : this.#forwardHidden(ids, fwd));
           ids.dispose();
           lg = this.model.logitsFromHidden(h); // [B,1,V]
           h.dispose();
@@ -1415,7 +1457,7 @@ export class MlxBatchExecutionGroup {
    *  finish("stop") in #emitRows. On a cold start (first step after prefill)
    *  there is no pending array to read; the prefill already accepted token 0
    *  and fired the fill, so we just await ready() + sample. */
-  async #stepGrammar(): Promise<void> {
+  async #stepGrammar(forward?: MlxForwardWork): Promise<void> {
     const rows = this.#running;
     const B = rows.length;
     const inners = this.#inners!;
@@ -1462,7 +1504,7 @@ export class MlxBatchExecutionGroup {
         const ids = prev
           ? ops.reshape(prev, [B, 1]) // feed the unread tokens (device array)
           : ops.fromInt32(rows.map((r) => r.current), [B, 1]); // pipeline cold
-        const h = await this.#forwardHidden(ids, fwd);
+        const h = await (forward ? forward(ids, fwd) : this.#forwardHidden(ids, fwd));
         ids.dispose();
         const lg = this.model.logitsFromHidden(h); // [B,1,V]
         h.dispose();

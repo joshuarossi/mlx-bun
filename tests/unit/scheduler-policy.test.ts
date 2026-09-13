@@ -221,3 +221,18 @@ test("remaining preparation work can admit a late request after an earlier chunk
   await driveExecutionGroup(group, { now: () => 25, async yield() {} });
   expect(forwards).toEqual([[3000], [952, 1000]]);
 });
+
+test.each([2, 16])("mixed scheduling reserves running demand before prompt tokens, budget=%i", async budget => {
+  const f = fixture([3]); f.state.active = 1;
+  Object.defineProperties(f.group, {
+    mixedPreparation: { get: () => ({ runningTokens: 4, minimumPreparationTokens: 2 }) },
+    maxIterationTokens: { value: budget },
+  });
+  f.group.advanceMixed = async tokens => {
+    f.events.push(`mixed:${tokens}`); f.state.remaining = 0; f.state.active = 0;
+  };
+  await f.run();
+  expect(f.events).toContain(`mixed:${Math.max(budget, 6)}`);
+  expect(f.events.some(event => event.startsWith("prepare:") || event.startsWith("advance:"))).toBe(false);
+  expect(f.events.filter(event => event === "release-execution")).toHaveLength(1);
+});
