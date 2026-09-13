@@ -958,6 +958,99 @@ prompt, so it supplies no cached-latency evidence. The caller-owned native
 alignment checks above and prior cancellation/overlap/SSD gates remain accepted.
 
 
+### Fixed arrivals under the batched default
+
+M4 Pro 24 GB, packed Qwen27B, Bun 1.4.2 and MLX 0.32.2. The execution
+source is `383e840` plus the request-wait tracing change subsequently committed
+as `50f9c3d`; each arm retains identical before/after source hashes. Two blocks
+reverse serial/default order. Default serving omits a batch override (cap eight);
+the control uses `--batch 1`. Both use KV4, no draft, no prompt cache,
+automatic prefill sizing and the new early-output default with its flag unset.
+This isolates ordinary scheduling from MTP and cache reuse.
+
+Three waves start six seconds apart, with arrivals spaced 250 ms within a wave.
+Each wave has two, four or eight requests; clients submit on the fixed schedule
+without waiting for earlier completions. Each distinct inventory prompt has
+90 or 91 tokens and requests 32 thinking tokens at temperature zero. All 168
+requests finish at the full budget, all 84 serial/default response pairs match
+exactly, and usage confirms the intended lane. Recorded client submission
+lateness is retained separately from server queueing. Phase tracing is on,
+without synchronization attribution; server stats and process/GPU/VM activity
+are observed throughout. These are bounded repeated-arrival diagnostics, not
+an uninstrumented steady-state capacity measurement.
+
+| Requests per wave | Serial aggregate tok/s, two orders | Default aggregate tok/s, two orders | Default aggregate gain | Serial p95 first-output latency | Default p95 first-output latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2 | 7.952 / 7.929 | 10.731 / 10.843 | 34.95% / 36.76% | 8.64 / 8.68 s | 2.56 / 2.56 s |
+| 4 | 7.967 / 7.946 | 12.022 / 12.726 | 50.90% / 60.16% | 30.61 / 30.74 s | 8.20 / 8.54 s |
+| 8 | 7.942 / 7.947 | 13.505 / 13.469 | 70.04% / 69.50% | 75.83 / 75.80 s | 32.57 / 32.73 s |
+
+The default reaches two active rows in the lightest workload and eight in both
+heavier workloads, where waves overlap. At the highest load, median combined
+request-slot/execution-admission wait falls from 39.3–39.5 s to 12.9 s.
+The whole queue clears sooner, but individual requests do not all dominate the
+serial control: in the first highest-load block, the first response completes
+in 19.69 s versus 5.24 s serial, and the longest visible-output gap is 6.50 s
+versus 1.21 s. New prefills interrupt existing streams. These results support
+the batched default’s aggregate benefit while preserving its latency tradeoff.
+They are not a single-request decode-TPS comparison or a completed-task quality
+evaluation; the 32-token responses end during reasoning.
+
+The activity logs include intermittent mediaanalysisd GPU submissions, desktop
+GPU work and VM activity. All samples and both arm orders are retained; no CPU
+percentage or retained-swap threshold excludes an arm. The measured gains are
+consistent across orders, but the exact ratios are not promoted as quiet-box
+capacity claims. An earlier attempt lost GPU telemetry because whole-registry
+plist-to-JSON conversion failed; it is retained separately and does not supply
+this table. The corrected observer extracts the convertible GPU submission
+metadata before any benchmark server starts.
+
+Raw results, per-request server spans, output events and activity:
+`reports/prefill-observation/sustained-serving-packed-observed-m4.json`;
+analysis: `sustained-serving-review.json`. The failed-observer attempt uses
+`sustained-serving-packed-m4` and its note file. Existing cancellation,
+independent recovery and long multi-turn RAM/SSD gates remain accepted.
+
+The load-four follow-up tests two existing scheduling controls in opposite arm
+orders, with 12 requests per arm and the same source/workload. A global
+32-token prefill chunk preserves all 24 paired responses but increases complete
+workload time by 3.85%/12.57%; first-request completion grows from 16.84/16.55 s
+to 22.58/22.63 s. Worst output gaps shrink from 3.54/3.53 s to 3.08/3.06 s.
+Mixed iteration work with budget 32 and feed-forward packing disabled also
+preserves all 24 pairs, but increases complete time by 39.48%/46.89% and
+first-request completion from 16.83/15.98 s to 21.88/20.89 s. Its worst gaps
+shrink to 2.60/1.94 s from 3.52/3.48 s. Activity and source records are retained;
+these controls do not justify a default change. The existing larger-work-unit
+policy stays selected. Raw records: `sustained-chunk32-packed-m4.json` and
+`sustained-unpacked32-packed-m4.json` under the same report directory.
+
+### Three-query affine attention head grouping
+
+The R13 screen groups two or three query heads only for the quantized key
+multiplication, then restores score shape before masking/softmax. Value
+multiplication retains its original geometry. Native KV4/group64 cases cover
+B1/B2, GQA6/D256, three query tokens, contexts 128/8,192/32,768, bf16/f32 and
+both contiguous and transposed queries. The copied ungrouped control matches
+the production implementation in every case on both Macs.
+
+M1 Max: each grouped candidate changes 16 of 24 complete outputs, all at the
+two longer contexts; the difference is already present in key scores. The M1
+path is not eligible for this exact optimization. M4 Pro: both candidates
+preserve every tested key score and complete attention output (24 cases each).
+
+Six alternating three-arm blocks time complete attention construction and GPU
+evaluation, 30 calls per arm, at the two longer contexts in bf16. On M4 Pro,
+grouping three heads reduces median paired attention time by 7.48–11.44%
+across all eight batch/context/layout cells; all six pairs improve in each
+cell. Grouping two heads is inconsistent (−2.46% to +0.62%), so the three-head
+candidate proceeds to full-model verification. Ten of eleven observer samples
+identify the benchmark as last GPU submitter; the initial sample identifies
+mediaanalysisd. No whole-model or serving speedup is established by this screen.
+
+Raw records: `reports/prefill-observation/head-pair-{m1-control,m1-key-stage,m4-key-stage}.json`,
+`head-pair-perf-m4.json`, `head-pair-perf-m4.activity.json` and
+`head-pair-perf-review.json`. The original M1 screen is also retained.
+
 ### Native integer ranges and monitored model comparison
 
 Bun 1.4.2 can construct ordinary nonnegative int32 position ranges through

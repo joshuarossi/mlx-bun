@@ -111,7 +111,7 @@ checks. Standard AB/BA pairs improve MiniCPM throughput while Qwen MTP3/TQ stays
 effectively flat; no Qwen speedup is claimed. Full suites/types pass. Measurements
 and remaining work are recorded in benchmarks.md and PLAN.md. [Draft PR #52](https://github.com/joshuarossi/mlx-bun/pull/52)
 contains this branch. Ordinary KV4 now passes the original 78k cached-repeat
-failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing passes with all 19 responses/counts unchanged. Affine/TQ committed appends pass both Qwen artifacts and delayed conversion. Early first output is adopted after retained-state and monitored HTTP checks. Next: fixed-arrival sustained serving at loads two/four/eight.
+failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing passes with all 19 responses/counts unchanged. Affine/TQ committed appends pass both Qwen artifacts and delayed conversion. Early first output is adopted after retained-state and monitored HTTP checks. Fixed-arrival two/four/eight-wave comparisons favor default throughput with exact outputs and documented stream-pause tradeoffs. Next: M4 full-model verification of three-head KV4 attention grouping.
 
 ## Threads (one row each; the PLAN.md heading is the source of truth)
 
