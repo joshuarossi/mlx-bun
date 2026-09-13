@@ -77,7 +77,51 @@ The latest standard comparison is shown first, with machine conditions and
 losses retained. These diagnostic results are observations of this workload,
 not a universal speed ranking.
 
-### Integrated default batched h2h — M4 Pro (2026-09-13)
+### Default batched h2h after token-history reuse — M4 Pro (2026-09-13)
+
+The final two standard suites use `9411c11`, Bun 1.4.2 and MLX 0.32.2 on the
+24 GB M4 Pro, with the same artifacts, workload and opposite arm orders as the
+initial integrated comparison below. Early output stays enabled; no arm forces
+serial. All 18 cells and 342 requests complete without phase failures. The 114
+default requests report batched execution, and all twelve Bun cells complete
+SSD flush/restore. Both source snapshots and recorded diffs remain fixed.
+
+Each entry is **order A / order B**. These are observed SSE-window and concurrent
+completion rates; the response qualifications below apply.
+
+| Model | Default short tok/s | Reference short tok/s | Default aggregate tok/s | Reference aggregate tok/s |
+|---|---:|---:|---:|---:|
+| MiniCPM5-1B | 277.56 / 274.51 | 224.54 / 223.13 | 704.24 / 703.01 | 405.49 / 391.53 |
+| Gemma4-e4b | 58.26 / 59.06 | 54.17 / 54.14 | 170.41 / 170.03 | 131.45 / 131.21 |
+| Gemma4-12B | 26.35 / 26.53 | 25.53 / 25.50 | 74.50 / 74.96 | 65.36 / 65.29 |
+
+All 30 short and 18 context comparisons preserve input hashes, response text,
+usage counts and finish status against both the September 11 run and the
+matching pre-fix order. Both Gemmas also preserve the pre-fix concurrent outputs;
+MiniCPM concurrent outputs vary. Historical concurrent texts differ on every
+model, so those rates do not establish identical-output historical speed ratios.
+The stock MiniCPM thinking-boundary difference remains a separate qualification.
+
+MiniCPM cached 64-token completion improves to 393.10 / 403.64 ms from
+403.93 / 409.10 ms in the initial integrated matrix; TTFT remains 14.92 / 16.62 ms.
+This confirms a smaller request-level benefit with default early output than
+the dedicated off-control pairs below. Other changes stay visible: e4b cached
+completion is 1332.60 / 1350.75 ms and 12B is 2653.13 / 2660.25 ms. Short decode
+is effectively close to the initial matrix, with mixed directions by model and
+order. This is not evidence of a broad new decode-kernel gain.
+
+The diagnostic observer records 232 samples without collection errors. During
+222 active-worker samples, an owned inference process is last GPU submitter in
+205; eleven name Codex and six Terminal. Median collection cost is 16 ms,
+maximum 53 ms. Last submission does not measure utilization. The retained
+activity and machine reports accompany these results; no additional quietness
+or statistical significance claim is made.
+
+Raw plans, both suites, activity and comparisons:
+`reports/prefill-observation/standard-history-reuse-*`. The combined offline
+serving/task/quality report is `reports/prefill-observation/integrated-comparison.html`.
+
+### Initial integrated default batched h2h — M4 Pro (2026-09-13)
 
 Two complete standard suites use source `565bc13`, Bun 1.4.2 and MLX 0.32.2
 on the 24 GB M4 Pro. They retain the September 11 artifacts and complete
@@ -194,7 +238,7 @@ The provenance/retention tests pass, including exact BPE IDs, same-text/differen
 replacement and eviction order. All three TypeScript projects pass. Raw
 sampler/cache screens, instrumented timings and reuse pairs are under
 `reports/prefill-observation/minicpm-{sampler-control,cache-control,history-observation,history-reuse}-*`.
-The full standard matrix with early output enabled is the next acceptance step.
+The full default-on standard matrix above completes this specific acceptance step.
 
 ### Default batched h2h without serial controls — M4 Pro (2026-09-11)
 
@@ -1480,6 +1524,36 @@ stock server capability. The bf16 control uses unmodified `BatchKVCache`.
 No production engine change or performance claim follows from this test.
 Logs: `reports/prefill-observation/padded-affine-m1-final.log` and
 `padded-affine-m4.log`; the initial reference broadcast error is preserved.
+
+### Same-batch rotating affine oracle
+
+The same oracle test adds Gemma4-e4b's actual 512-token sliding window and
+KV-sharing layers. Equal-length B1/B4 cases prefill 510 tokens before six
+teacher-forced steps, crossing the ring boundary before B4→B2 retirement and
+reordering. Unequal cases start with `[505, 509, 507, 511]` tokens and exercise
+physical padding during the same transition. Each mode covers bf16, uniform
+KV4/KV8 and alternating KV4/KV8/bf16 cache layers.
+
+On both M1 Max and M4 Pro with MLX 0.32.2, all 48 equal-length and 24
+unequal-length complete logit-vector hashes match each machine's own pinned
+reference. The M1 `gemma-4-e4b-it-OptiQ-4bit` snapshot is
+`98d7dc6a93ae05583e8a10018c8099459b58aeeb`; M4 uses
+`fcdb12d740cd813634064567fc7cb51159b34253`. These are separate same-artifact
+comparisons on each host, not a cross-machine byte comparison.
+
+Equal-length rows use OptiQ's existing rotating quantized cache. Unequal rows
+compose that storage with unmodified mlx-lm `BatchRotatingKVCache` for offsets,
+padding and masks. The latter keeps separate bf16 state solely for reference
+bookkeeping; attention consumes only the OptiQ quantized storage. Row filtering
+applies to both. The existing GQA mask broadcast shim remains explicit. This is
+a test-only composed reference, not a stock server claim or a solo-row oracle.
+The bf16 cases use the stock cache directly. No production arithmetic changes.
+
+Set `MLX_BUN_TEST_BATCH_AFFINE_ORACLE=1` and
+`MLX_BUN_TEST_BATCH_AFFINE_ROTATING=1`, with optional
+`MLX_BUN_TEST_BATCH_AFFINE_PADDING=1`; `MLX_BUN_TEST_BATCH_AFFINE_MODEL` selects
+the local artifact path. Logs: `reports/prefill-observation/rotating-affine-oracle-{m1,m4}.log`
+and `padded-rotating-affine-oracle-{m1,m4}.log`.
 
 ### Recurrent prefill attribution
 
