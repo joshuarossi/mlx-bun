@@ -2930,3 +2930,72 @@ Raw timing: `gemma-encoder-{control,candidate}-{a,b}.json`, reviewed in
 `gemma-encoder-process-{write,read}.json` and `gemma-encoder-process-review.json`.
 Completed runner sources: `completed-gemma-encoder-tool-sources.json`.
 Media KV-prefix reuse remains open.
+
+
+## Latency-aware MLP allocation screen (2026-09-13)
+
+The existing production `tq-trellis-kernel-bench.ts` measures actual packed
+Qwen3.8-27B matrices at k2/k3/k4, using layers 0/1/56 of the accepted interleaved
+artifact. Gate/up are one fused producer for M≤4; down projection is separate.
+M is the number of rows in an MLP call, not the scheduler's request count.
+Current variant 13 is used on Bun 1.4.2 / MLX 0.32.2, with 20 measured rounds
+and eight queued calls per evaluation. Forward/reverse sweep orders use the
+same matrix hashes. All 228 self-reference reader checks match; these are
+harness checks against the same implementation, not cross-bit or external
+oracle quality claims. No runtime source or artifact changes in this screen.
+
+Complete MLP medians below average the two sweep-order medians. The independent
+fused-gate/up and down timings supply the allocation cost model.
+
+| Machine / M | k2, ms | k3, ms | k4, ms |
+|---|---:|---:|---:|
+| M1 Max 32 GB / 1 | 1.182 | 1.113 | 1.141 |
+| M1 Max / 3 | 1.677 | 1.558 | 1.559 |
+| M1 Max / 4 | 2.034 | 1.974 | 1.938 |
+| M1 Max / 16 | 10.986 | 11.519 | 8.851 |
+| M4 Pro 24 GB / 1 | 0.985 | 0.985 | 0.926 |
+| M4 Pro / 3 | 1.164 | 1.171 | 1.135 |
+| M4 Pro / 4 | 1.294 | 1.284 | 1.245 |
+| M4 Pro / 16 | 5.381 | 5.419 | 5.357 |
+
+Bit count alone does not order execution cost. The k4 M1/M16 complete MLP is
+23.2% faster than k3 in both sweep orders, while k3 is faster at M1/M1. These
+are role/MLP diagnostics with repeated inputs, not full-model TPS measurements.
+Both Macs record background activity and retained swap: 2712.19 MiB on M1,
+3980.12 MiB on M4. No quiet classification is claimed. Source/native geometry
+and per-round samples remain in the reports; source commits differ only in
+unrelated Gemma/tests/docs changes, with identical kernel hashes.
+
+A multiple-choice knapsack then minimizes normalized sensitivity loss plus a
+weighted sum of measured producer times. Its 128 decisions tie each layer's
+gate/up and choose down independently. k is 2, 3 or 4, subject to the existing
+3.00 average MLP-bit budget and 6,423,969,792 packed MLP bytes. Attention, GDN,
+embedding and head remain unchanged. Eight latency weights, zero through eight,
+run against each machine/M profile. At zero latency weight, every profile
+reproduces the existing k300 allocation exactly.
+
+The sensitivity source is the previously saved EXL3 per-tensor table. It ranks
+an external codec's losses; neither its absolute divergence nor candidate loss
+changes establish Trellis quality. The following are proposal estimates only.
+
+| Profile, latency weight | Estimated summed MLP-role time change | External-codec loss proxy change | Changed tensors |
+|---|---:|---:|---:|
+| M1 / M1, weight 1 | −0.52% | +0.26% | 8 |
+| M4 / M1, weight 1 | −0.09% | +0.07% | 4 |
+| M4 / M4, weight 1 | −0.07% | +0.05% | 4 |
+| M1 / M16, weight 2 | −6.20% | +9.01% | 60 |
+| M4 / M1, weight 8 | −1.12% | +4.68% | 52 |
+
+Keep the current artifact. This MLP-only screen finds little estimated decode
+headroom at a fixed size and a larger M1-prefill tradeoff that needs real quality
+evaluation. No candidate has been quantized or promoted. The checked primary
+model directories contain quantized targets/references, but no complete original
+Qwen bf16 weight snapshot. Re-encoding the existing k300 weights cannot restore
+precision for promoted tensors. Teacher-based quantization and frozen
+KL/MMLU/tGSM/rawGSM acceptance remain open, as do non-MLP allocation and the
+other R19 calibration/rounding choices.
+
+Reports: `reports/prefill-observation/r19-cost/` contains all 48 kernel runs,
+`cost-review.json`, all 64 `allocation-proposals.json` cells and archived
+`completed-allocation-source.json`. The existing production script is retained;
+the completed one-off allocator is removed.
