@@ -37,6 +37,52 @@ test("an enabled lone admission yields before decode and retains its execution l
   expect(f.events.filter((event) => event === "release-execution")).toHaveLength(1);
 });
 
+test("a preparation task borrows the active group's lease before its next decode", async () => {
+  const f = fixture([]); f.state.active = 1;
+  let pending = 1;
+  Object.defineProperty(f.group, "pendingTasks", { get: () => pending });
+  f.group.advanceTask = async () => {
+    expect(f.state.active).toBe(1);
+    f.events.push("encode"); pending--;
+    f.state.queued.push(1);
+  };
+  await f.run();
+  expect(f.events.slice(0, 6)).toEqual(["reserve", "acquire", "encode", "admit", "prepare:1", "advance:2"]);
+  expect(f.events.filter(event => event === "acquire")).toHaveLength(1);
+});
+
+test("exclusive model mutation drains before a pending preparation task", async () => {
+  const f = fixture([]); f.state.active = 1; f.state.held = true;
+  let pending = 1;
+  Object.defineProperty(f.group, "pendingTasks", { get: () => pending });
+  f.group.advanceTask = async () => { f.events.push("encode"); pending--; };
+  f.group.waitForWork = async () => {
+    if (f.state.held) { f.events.push("exclusive"); f.state.held = false; }
+    else f.state.closed = true;
+  };
+  await f.run();
+  expect(f.events.indexOf("advance:1")).toBeLessThan(f.events.indexOf("exclusive"));
+  expect(f.events.indexOf("release-execution")).toBeLessThan(f.events.indexOf("exclusive"));
+  expect(f.events.indexOf("exclusive")).toBeLessThan(f.events.indexOf("encode"));
+  expect(f.events.filter(event => event === "acquire")).toHaveLength(2);
+});
+
+test("an exclusive waiter arriving during preparation prevents new row admission", async () => {
+  const f = fixture([]); f.state.active = 1;
+  let pending = 1;
+  Object.defineProperty(f.group, "pendingTasks", { get: () => pending });
+  f.group.advanceTask = async () => {
+    f.events.push("encode"); pending--; f.state.held = true; f.state.queued.push(1);
+  };
+  f.group.waitForWork = async () => {
+    if (f.state.held) { f.events.push("exclusive"); f.state.held = false; }
+    else f.state.closed = true;
+  };
+  await f.run();
+  expect(f.events.indexOf("advance:1")).toBeLessThan(f.events.indexOf("exclusive"));
+  expect(f.events.indexOf("exclusive")).toBeLessThan(f.events.indexOf("admit"));
+});
+
 test("the early preparation yield preserves queued short-admission grouping", async () => {
   const f = fixture([1, 1], true); await f.run();
   expect(f.events.slice(0, 7)).toEqual(["reserve", "acquire", "admit", "prepare:1", "admit", "prepare:1", "advance:2"]);

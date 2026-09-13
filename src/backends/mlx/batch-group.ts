@@ -100,6 +100,8 @@ import { SSMCache } from "../../model/qwen3-delta";
 import type { RuntimeModel } from "../../model/factory";
 import type { GrammarController } from "../../grammar";
 import { independentGreedySampling } from "../../sampler";
+import { ExecutionTasks } from "../../engine/execution-tasks";
+import { CancellationSource, GenerationCancelled } from "../../engine/cancellation";
 import { acquireModelWiredLimit } from "../../generate";
 import { batchRowKvBytes } from "../../serve/kv-budget";
 import type { PromptResponseTrace } from "../../serve/prompt-response-trace";
@@ -142,6 +144,7 @@ export interface MlxGroupPreparation {
   readonly rows: readonly Row[];
   readonly tokenWeight?: number;
   readonly canAdmit?: boolean;
+  readonly supportsMixedWork?: boolean;
   admit?(row: Row): void;
   advance(work?: MlxPreparationWork): Promise<boolean>;
   dispose(): void;
@@ -177,6 +180,8 @@ export type BatchRequest = BatchRequestFields & (
 );
 
 interface BatchRequestFields {
+  /** Borrowed prepared input; its owner retains it through preparation. */
+  promptInput?: import("./prompt-input").MlxPromptInput;
   cacheSessionId?: string;
   /** Optional ordinary continuation policy; owns persistence and sampler recovery. */
   continuation?: OrdinaryContinuation;
@@ -353,6 +358,7 @@ type LayerInner =
 type Row1 = { keys: MlxArray; values: MlxArray };
 
 export class MlxBatchExecutionGroup {
+  readonly #tasks = new ExecutionTasks();
   readonly #runtime: RuntimeConfig;
   readonly #noPipeline: boolean;
   readonly #stepTrace: boolean;
@@ -576,6 +582,21 @@ export class MlxBatchExecutionGroup {
     this.#ensureLoop();
   }
 
+  /** Read-only native preparation borrows a boundary of the live execution
+   * group. Model mutation still requires the gateway's exclusive drain. */
+  runPreparation<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.#closed) return Promise.reject(new Error("scheduler closed"));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    const cancellation = signal ? new CancellationSource() : undefined;
+    const abort = () => cancellation?.cancel("requested");
+    signal?.addEventListener("abort", abort, { once: true });
+    const result = this.#tasks.enqueue(work, cancellation).catch(error => {
+      throw error instanceof GenerationCancelled && signal?.aborted ? signal.reason : error;
+    }).finally(() => signal?.removeEventListener("abort", abort));
+    this.#ensureLoop();
+    return result;
+  }
+
   #ensureLoop(): void {
     if (this.#wake) { this.#wake(); return; }
     if (this.#looping || this.#closed) return;
@@ -594,6 +615,8 @@ export class MlxBatchExecutionGroup {
   async #drive(): Promise<void> {
     const scheduler = this;
     const group: ExecutionGroup = {
+      get pendingTasks() { return scheduler.#tasks.pending; },
+      advanceTask: () => this.#tasks.advance(),
       get active() { return scheduler.#running.length; },
       get queued() { return scheduler.#pending.length; },
       get preparing() { return scheduler.#prefill !== null; },
@@ -621,7 +644,7 @@ export class MlxBatchExecutionGroup {
         (this.#kvBudgetBytes === undefined ||
           this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes),
       get mixedPreparation() {
-        return scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
+        return scheduler.#prefill?.supportsMixedWork !== false && scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
           (!scheduler.#method || scheduler.#method.runningTokens !== undefined) &&
           typeof (scheduler.model as RuntimeModel & Partial<MixedTokenModel>).forwardHiddenMixed === "function"
           ? { runningTokens: scheduler.#method?.runningTokens ?? scheduler.#running.length,
@@ -777,6 +800,7 @@ export class MlxBatchExecutionGroup {
   }
 
   #failAll(error: unknown): void {
+    this.#tasks.rejectAll(error);
     const p = this.#prefill;
     const rows = new Set([...this.#running, ...this.#pending, ...(p?.rows ?? [])]);
     const retain = this.#adoptedRetain;

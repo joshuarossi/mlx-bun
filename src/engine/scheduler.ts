@@ -18,8 +18,8 @@ export async function driveExecutionGroup(
   try {
     while (!group.closed) {
       group.pruneCancelled();
-      const held = group.admissionHeld;
-      if (!group.active && !group.preparing && (held || !group.queued)) {
+      let held = group.admissionHeld;
+      if (!group.active && !group.preparing && (held || (!group.queued && !group.pendingTasks))) {
         release();
         await group.waitForWork();
         continue;
@@ -27,6 +27,15 @@ export async function driveExecutionGroup(
       residency ??= group.reserveResidency();
       if (!execution && group.acquireExecution) execution = await group.acquireExecution();
       if (group.closed) break;
+
+      // One preparation task per iteration. An exclusive model mutation
+      // keeps its existing drain priority; preparation cannot prolong it.
+      if (!held && group.pendingTasks && group.advanceTask) {
+        await group.advanceTask();
+        if (group.closed) break;
+        group.pruneCancelled();
+        held = group.admissionHeld;
+      }
 
       if (!group.preparing && !held && group.queued && group.active < group.maxActive)
         group.admitNext();

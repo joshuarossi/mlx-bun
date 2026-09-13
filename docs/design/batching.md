@@ -136,7 +136,7 @@ continuous  iff
   model is not DiffusionGemmaModel           (non-autoregressive)
   AND batch > 1
   AND #modelCachesBatchable()                (cache-capability gate, below)
-  AND !hasVision                             (offset-0 prefill + bidirectional mask)
+  AND (!hasVision OR model supports prepared media input)
   AND adapter state supports compatible groups (when adapters are selected)
   AND KV scheme supports the loaded cache layouts
   AND selected method has a grouped implementation
@@ -547,12 +547,47 @@ They do not require repeating completed checks or withholding the current defaul
 | Speculative decode | Qwen MTP, prompt lookup, standalone, assistant, DeepSpec and seeded DSpark/DFlash providers are integrated through shared B1/B>1 interfaces, with the native/HTTP/cache checks recorded below | Finish specific unsupported combinations and measured regressions; GLM artifact testing is deferred and no trained DSpark/DFlash checkpoint exists |
 | Sampling and logprobs | Shared sampler contract; ordinary groups capture logprobs and accept explicit seeds | Extend same-B oracle/feature compositions and matched performance; preserve per-request RNG/history |
 | Grammar and fill | Shared grammar proposals use grouped verification. Shared strict fill composes prefill, rows, sampling and committed append; native and HTTP/cache/timing gates pass | Speculative/echo fill and other named combinations remain. Keep grammar proposals opt-in after mixed timing results |
-| Adapters and media | Compatible adapter groups use shared execution; media remains serial | Adapter performance and broader compositions; media preparation and compatible state through shared execution |
+| Adapters and media | Compatible adapter groups use shared execution; Gemma4 prepared image/audio input now enters the ordinary group, with serving validation in progress | Finish native/HTTP media and lifecycle acceptance, Qwen request-owned positions, adapter performance and broader compositions |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | C1–C5 add shared SSD blocks and optional direct bf16/affine paged attention with native/HTTP evidence. TQ pages and paged speculation remain extensions; reuse completed row-layout gates |
 | Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
 | Usage and cleanup | The gateway forwards timing/rates; the missing first-token timestamp in ordinary batch admission is now fixed | Consistent events/accounting, row cancellation, failure cleanup and persistence on shutdown |
 | Configuration | Bound configuration reaches each owner, including delayed KV conversion, copied codecs and paged cache identity; the flag-owner inventory is complete | Preserve the contract when adding settings; completed policy tests and fixed-settings performance remain accepted |
+
+### Prepared media and execution tasks
+
+`MlxPromptInput` lets the model binding consume prepared embeddings and return
+an owned final hidden row. `MlxPrefillCohort` retains initialization, precision
+maintenance, projection and completion. An indivisible media attention span
+declines prefill joins and mixed token packing; it processes the whole prompt
+before entering ordinary shared decode. Sampling, row merging, retirement and
+cancellation remain in their existing owners. The uncached request-state policy
+prevents reuse by token IDs alone, which do not identify the media contents.
+
+Native preparation uses `ExecutionTasks` through the portable scheduler's
+optional task boundary. The queue owns cancellation and failure settlement;
+the scheduler owns when to advance it under the existing execution lease.
+A task cannot replace model state. Exclusive mutations retain drain priority,
+including a waiter arriving while preparation is running. Started work settles
+before its owner releases native resources. The queue uses the portable
+cancellation contract; the MLX binding adapts request AbortSignals.
+`ModelPromptBuilder` receives a `PromptNativeWork` callback. Media downloads
+and container transcoding finish outside that callback; lazy tower loading
+and native prompt construction enter it. Encoder-local preprocessing remains
+part of prompt construction. Grammar compilation enters the same execution
+domain without putting template rendering or tokenization on the queue.
+
+Gemma4 binds image/audio embeddings to this input interface. Qwen's request
+mRoPE state still lives on the model during serial execution and is not yet
+qualified for shared media rows. Diffusion retains its separate method.
+The input and task tests cover atomic boundaries, final projection geometry,
+full same-machine Gemma logits/cache/continuation, active B1/B2 logit identity,
+cancellation and mutation priority. M1 audio HTTP checks preserve the existing
+transcription golden, exercise actual B2 decode and complete text generation
+while an audio download is held open. The complete model-free suite and all
+three TypeScript projects pass. M4 media performance acceptance is in progress;
+see `tests/parity/shared-media-input.test.ts` and
+`reports/prefill-observation/shared-media-*`.
 
 Tests must exercise actual B>1 work, not requests routed back to serial.
 Completed checks remain evidence for their recorded source and settings. A new

@@ -141,9 +141,13 @@ identity. MLX runtime or GPU architecture changes select a fresh cache
 directory and leave the previous directory intact. A different backend codec
 identity refuses incompatible files. Adapter namespaces include the mounted weight contents and
 scale, so a changed adapter starts with a fresh prefix and checkpoint.
-Native media and grammar preparation waits for the generation execution lease
-and retains a reservation through completion. At most one media preparation and
-`--batch` grammar preparations can be retained. Generation and preparation
+Native media and grammar preparation uses the backend execution lease between
+decode iterations when the backend supports queued preparation. Exclusive model
+changes retain drain priority. Media downloads and container transcoding run
+outside that lease; a slow remote URL does not hold up decode. Preparations
+retain a reservation through request
+completion. Gemma4 shared serving can retain up to `--batch` media preparations;
+other media bindings retain one. Grammar preparation retains up to `--batch`. Generation and preparation
 queues each allow 64 waiting requests; overflow returns `429` before a response
 stream opens, or a terminal stream error after it opens. Disconnects release
 queued reservations and completed preparation resources.
@@ -268,7 +272,7 @@ no new flag is required. Measurements are in [benchmarks](benchmarks.md#fused-no
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
-| `--allow-private-media` | (bool) | off | serial (media requests) | Let `image_url`/`audio_url`/`video_url` parts fetch from **private/loopback/link-local** hosts. Off by default: a request's URL is attacker-controlled, so `src/media-fetch.ts` refuses non-http(s) schemes and private/loopback/link-local/CGNAT destinations — including hosts that *resolve* there and every redirect hop (SSRF guard). Independent of the flag, every remote fetch has a 10 s timeout and a 64 MB streaming-enforced cap; violations are clean `400`s. `data:` URLs are never policy-checked. Env mirror `MLX_BUN_ALLOW_PRIVATE_MEDIA=1`. |
+| `--allow-private-media` | (bool) | off | both (model-qualified media) | Let `image_url`/`audio_url`/`video_url` parts fetch from **private/loopback/link-local** hosts. Off by default: a request's URL is attacker-controlled, so `src/media-fetch.ts` refuses non-http(s) schemes and private/loopback/link-local/CGNAT destinations — including hosts that *resolve* there and every redirect hop (SSRF guard). Independent of the flag, every remote fetch has a 10 s timeout and a 64 MB streaming-enforced cap; violations are clean `400`s. `data:` URLs are never policy-checked. Env mirror `MLX_BUN_ALLOW_PRIVATE_MEDIA=1`. |
 | `--no-open` | (bool) | off | both | Skip the automatic browser open. By default an interactive TTY opens `http://<host>:<port>/#/chat` once the server is ready; non-TTY runs never open. Parent-only under `--isolate`. |
 
 ### Parity tier and kill switches
@@ -587,7 +591,7 @@ GPU (one `AsyncMutex`).
 
 | Request property | Continuous scheduler? |
 | --- | --- |
-| vision / audio / video parts | ❌ serial — offset-0 single-sequence prefill + media masks |
+| vision / audio / video parts | Gemma4 image/audio use atomic media prefill followed by shared decode; Qwen vision/video and diffusion remain serial |
 | LoRA `adapter` (resolves to ≥1) | ✅ identical ordered adapter sets share a group; different sets wait for the next group |
 | `logprobs` / `top_logprobs` | ✅ ordinary and qualified MTP/lookup/standalone-draft groups capture per-request probabilities; other exclusions still apply |
 | explicit `seed` | ✅ request-local random stream; reproducibility also depends on model arithmetic and batch composition |
@@ -634,7 +638,7 @@ declared composition may still require the serial mechanism as shown above.
 | `--prompt-cache` / `--ssd-cache` | ✅ prefix/output reuse + SSD restore | ✅ immutable prefill/output checkpoints, session lookup and queued SSD persistence |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
 | `--thinking` | ✅ | ✅ |
-| vision / audio / video request | ✅ | ✅ via serial lane |
+| vision / audio / video request | ✅ | Gemma4 image/audio shared; Qwen vision/video and diffusion via serial |
 | LoRA `adapter` | ✅ | ✅ compatible groups on adapter-capable backends |
 | `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency | ✅ | ✅ (batches — per-row processors) |
 | `seed` | ✅ | ✅ request-local sampling |
@@ -681,7 +685,8 @@ conversion; restored SSD state is opened under the receiving binding's policy.
 
 ## Known limitations under shared execution
 
-1. Media still uses the explicit serial executor. Strict tool-call fill now
+1. Gemma4 image/audio uses shared decode after an indivisible embeddings prefill.
+   Qwen vision/video and diffusion retain the explicit serial executor. Strict tool-call fill now
    has a shared method; echo verification and fill with speculation or paging
    remain unsupported there. Grammar has shared masking and opt-in verified
    proposals; direct serial jump-forward is a different algorithm.
@@ -776,7 +781,7 @@ Everything mlx-bun serves, with its default, lane, fidelity tier, and knob.
 | Structured output × speculative decoding | on when both active | Qwen grouped MTP, lookup and standalone drafting / eligible serial methods | Lab | — |
 | Quantized KV × speculative decoding | Shared Qwen supports uniform KV4/KV8 and TQ with zero or positive conversion thresholds; strict serial supports qualified KV4; per-layer mixed KV remains excluded | Qwen grouped MTP, lookup and standalone drafting / eligible serial methods | scheme and method gates | `MLX_BUN_QWEN_SPEC_KV4=0` disables the KV4 composition |
 | Tool calling (Gemma sentinel / CPM+Qwen XML / GLM `arg_key`+`arg_value`) + `role:"tool"` loops | on | both | — | request `tools` |
-| Vision (`image_url`; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on for models with a tower; SSRF guard on remote URLs | serial | L1/L2 | `--allow-private-media` |
+| Vision (`image_url`; PNG/JPEG/HEIC/AVIF/WebP/TIFF/GIF/BMP) | on for models with a tower; SSRF guard on remote URLs | Gemma4 shared; other media bindings serial | L1/L2 | `--allow-private-media` |
 | Video input (`video_url`/`video`; AVFoundation sidecar, 2 fps, ≤768 frames, 256 MB body cap; never with audio) | on for Qwen3.5-family | serial | mlx-vlm oracle | `--allow-private-media`, `MLX_BUN_FRAME_EXTRACT` |
 | Audio input (`input_audio`/`audio`/`audio_url`; WAV native, mp3/m4a/flac/ogg/aiff via CoreAudio; ≤30 s per clip; mixes with images) | on for models with `audio_config` + sidecar tower (e4b) | serial³ | L2 (greedy stream exact vs optiq's internal model) | `--allow-private-media` |
 | LoRA adapters (mount at start / hot-swap) | off | compatible groups | — | `--adapter <dir>`, `POST /v1/adapters` |

@@ -32,6 +32,10 @@ interface PrefillHost {
 
 /** Ordinary sampling/cache policy over the shared target preparation driver. */
 export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
+  override get canAdmit(): boolean {
+    return super.canAdmit && this.supportsMixedWork;
+  }
+  get supportsMixedWork(): boolean { return !this.rows.some(row => row.req.promptInput); }
   constructor(readonly host: PrefillHost) {
     super({
       stateCodecs: host.stateCodecs, maintain: host.maintain,
@@ -59,6 +63,7 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
           });
           const closeSetup = row.req.trace?.begin("prefill.batch_setup", { mechanism: "continuous" });
           owned ??= { caches: row.req.statePolicy?.create() ?? host.model.makeCache() }; closeSetup?.();
+          if (row.req.promptInput) host.maintain?.(owned.caches);
           return { row, solo: owned.caches, pos: hit?.tokens.length ?? 0, retain: owned.retain, snapAt, closePrefill };
         } catch (error) {
           return cleanupFailure(error, () => disposeResources([...(owned?.caches ?? []),
@@ -66,10 +71,15 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
         } finally { closeCache?.(); }
       },
       ready: state => !!state.continuation,
-      plan(state) { return nextPrefillStep({ length: state.row.promptTokens, position: state.pos,
+      plan(state) {
+        if (state.row.req.promptInput) return { kind: "final", start: state.pos,
+          end: state.row.promptTokens, snapshot: false, batchYield: false, atomic: true };
+        return nextPrefillStep({ length: state.row.promptTokens, position: state.pos,
         chunkSize: state.row.req.prefillChunkSize ?? host.chunkSize,
         tailSplit: host.tailSplit, snapshotAt: state.snapAt }); },
-      forward: (ids, caches, _states, work) => work ? work(ids, caches) : host.forward(ids, caches),
+      forward: (ids, caches, states, work) => states[0]?.row.req.promptInput
+        ? Promise.resolve(states[0].row.req.promptInput.forward(ids, caches))
+        : work ? work(ids, caches) : host.forward(ids, caches),
       project: host.project.bind(host),
       complete: (state, logits) => state.continuation ? host.resume!(state) : host.complete(state, logits!), reject: host.reject.bind(host),
       checkpoint(state, capture) {

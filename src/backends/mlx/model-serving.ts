@@ -8,8 +8,8 @@ import { buildModelPrompt } from "./model-prompt";
 import { MLX_VERSION, deviceArchitecture } from "../../mlx/ffi";
 
 export function modelPromptBuilder(context: ServingContext): ModelServingBinding["buildPrompt"] {
-  return context.serving?.buildPrompt ?? ((body, tools, ownership, prep) =>
-    buildModelPrompt(context as ServerContext, prep, body, tools, ownership));
+  return context.serving?.buildPrompt ?? ((body, tools, ownership, prep, nativeWork) =>
+    buildModelPrompt(context as ServerContext, prep, body, tools, ownership, nativeWork));
 }
 
 /** Existing model classes enter the interface once here. New implementations
@@ -27,7 +27,7 @@ export function modelServingBinding(context: ServingContext): ModelServingBindin
     stateCompatibility: `mlx-${MLX_VERSION}-${deviceArchitecture()}`,
     gateway: bindMlxGateway(model, ctx.draft ?? undefined),
     createSerial: (services) => createMlxSerialExecutor(serial, services),
-    buildPrompt: (body, tools, ownership, prep) => buildModelPrompt(ctx, prep, body, tools, ownership),
+    buildPrompt: (body, tools, ownership, prep, nativeWork) => buildModelPrompt(ctx, prep, body, tools, ownership, nativeWork),
     restore: (store, entry) => store.restore(entry, model),
     restoreAsync: (store, entry) => store.restoreAsync(entry, model),
     async signal(ids, count, minimum) {

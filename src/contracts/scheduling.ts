@@ -9,6 +9,10 @@ export interface ExecutionContext {
 /** A backend execution group exposes bounded work units and readiness. Queue
  * payloads, tensors, cache merging and sampling remain inside its adapter. */
 export interface ExecutionGroup {
+  /** Native preparation may borrow the execution lease between work units.
+   * Payloads and task failures belong to the backend's queue. */
+  readonly pendingTasks?: number;
+  advanceTask?(): Promise<void>;
   readonly active: number;
   readonly queued: number;
   readonly preparing: boolean;

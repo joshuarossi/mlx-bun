@@ -15,6 +15,8 @@ import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 import { bindMlxGateway, type MlxBatchGroup } from "../../src/backends/mlx/gateway-binding";
 import { PromptResponseTrace } from "../../src/serve/prompt-response-trace";
 import { FillSession } from "../../src/fill/fill-session";
+import { resolveExecution } from "../../src/engine/execution-plan";
+import type { MlxArray } from "../../src/mlx/array";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -25,6 +27,60 @@ const stubModel = {
 } as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
+
+for (const fail of [false, true]) test(`prepared media ownership reaches shared submission, failure=${fail}`, async () => {
+  let disposed = 0, bound = 0;
+  const vision = { embeddings: { dispose() { disposed++; } } as unknown as MlxArray };
+  const input = { forward(): MlxArray { throw new Error("fake group does not forward"); } };
+  const policy = { key: "uncached-media", create: () => [new KVCache()] };
+  const group: MlxBatchGroup = {
+    activeRows: 0, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: undefined,
+    kick() {}, async close() {},
+    async submit(request) {
+      expect(disposed).toBe(0);
+      expect(request.promptInput).toBe(input);
+      expect(request.statePolicy).toBe(policy);
+      expect(request.statePolicy?.promptCache).toBeUndefined();
+      if (fail) throw new Error("prepared submission failed");
+      await request.onToken(7);
+      return { promptTokens: 1, cachedTokens: 0, generatedTokens: 1,
+        finishReason: "length", prefillMs: 1, decodeMs: 1 };
+    },
+  };
+  const binding = { ...bindMlxGateway(stubModel),
+    mediaInput(value: typeof vision) { expect(value).toBe(vision); bound++; return input; },
+    plan: (shape: RequestShape) => resolveExecution(shape, { method: "autoregressive", continuous: true,
+      mediaBatch: true, quantizedBatch: true, grammarBatch: true, checkpoints: false }),
+    statePolicy: () => policy, createBatchGroup: () => group,
+  };
+  const g = new GenerationGateway(binding, 8, stubSerial);
+  const shape = { ...batchable, hasVision: true }, options = { maxTokens: 1 };
+  try {
+    expect(g.mediaBatchingEnabled).toBe(true);
+    const placement = g.place(shape, options);
+    const run = g.run([1], options, () => {}, vision, shape, placement);
+    if (fail) await expect(run).rejects.toThrow("prepared submission failed");
+    else expect((await run).generatedTokens).toBe(1);
+    expect(bound).toBe(1); expect(disposed).toBe(1);
+  } finally { await g.close(); }
+});
+
+test("native preparation uses the backend boundary queue without draining active rows", async () => {
+  let calls = 0, active = 2;
+  const abort = new AbortController();
+  const group: MlxBatchGroup = {
+    get activeRows() { return active; }, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: undefined,
+    kick() {}, async close() { active = 0; }, async submit() { throw new Error("unused"); },
+    async runPreparation(work, signal) { calls++; expect(signal).toBe(abort.signal); return work(); },
+  };
+  const g = new GenerationGateway({ ...bindMlxGateway(stubModel), createBatchGroup: () => group }, 8, stubSerial);
+  try {
+    expect(await g.runPreparation(async () => 13, abort.signal)).toBe(13);
+    abort.abort(new Error("cancelled"));
+    await expect(g.runPreparation(async () => 14, abort.signal)).rejects.toThrow("cancelled");
+    expect(calls).toBe(1);
+  } finally { await g.close(); }
+});
 
 test("the serving binding submits seeded strict fill as a shared method and retains its statistics", async () => {
   const fill = new FillSession({ rows: [], echo: null, eos: [] }, [1]);

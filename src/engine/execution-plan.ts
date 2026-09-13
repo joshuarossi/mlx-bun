@@ -8,7 +8,7 @@ export function resolveExecution(
   const reasons: string[] = [];
   const sharedRequestExclusions = [
     [!capabilities.continuous, "continuous-unavailable"],
-    [request.hasVision, "media-requires-serial"],
+    [request.hasVision && !capabilities.mediaBatch, "media-requires-serial"],
     [request.hasAdapters && !capabilities.adapterBatch, "adapters-require-serial"],
     [request.kvQuant && !capabilities.quantizedBatch, "kv-scheme-requires-serial"],
     [request.turboQuant && !capabilities.turboQuantBatch, "turbo-kv-requires-serial"],
@@ -18,7 +18,7 @@ export function resolveExecution(
   const sharedAdapterMethod = capabilities.sharedSpeculativeAdapters === true &&
     !sharedRequestExclusions.some(([excluded]) => excluded) &&
     capabilities.groupedMethods?.includes("speculative") === true;
-  const grammarProposals = features.grammarJump === true && request.hasGrammar && !request.hasDraft &&
+  const grammarProposals = features.grammarJump === true && request.hasGrammar && !request.hasDraft && !request.hasVision &&
     (!request.wantsLogprobs || capabilities.speculativeLogprobs === true) && !features.pagedKv && capabilities.method === "autoregressive" &&
     capabilities.sharedGrammarProposals === true && capabilities.groupedMethods?.includes("speculative") === true &&
     (!request.hasAdapters || sharedAdapterMethod) && (!request.kvQuant || capabilities.speculativeKvQuant === true) &&

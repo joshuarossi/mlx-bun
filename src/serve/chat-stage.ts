@@ -12,7 +12,7 @@ import {
 } from "./chat-request";
 import type { InferenceRequest } from "./inference-request";
 import type { ServingContext } from "./model-host";
-import type { BuiltPrompt, ModelPromptBuilder } from "./model-binding";
+import type { BuiltPrompt, ModelPromptBuilder, PromptNativeWork } from "./model-binding";
 import { modelPromptBuilder } from "../backends/mlx/model-serving";
 import { RequestError } from "./pipeline";
 import { RequestOwnership } from "./request-plan";
@@ -40,9 +40,14 @@ export class ChatStage {
         message.content.some((part) => part.type !== "text"));
     const native = media || body.response_format != null || !!body.guided_grammar ||
       !!body.guided_regex || !!body.guided_choice?.length || body.structured_outputs != null;
+    const nativeWork: PromptNativeWork = async (work) => {
+      signal?.throwIfAborted();
+      const entered = async () => { signal?.throwIfAborted(); return work(); };
+      return this.preparation ? this.preparation.run(entered, signal) : entered();
+    };
     const build = async () => {
       signal?.throwIfAborted();
-      const result = await this.runPrepared(request, requestId);
+      const result = await this.runPrepared(request, requestId, nativeWork);
       if (signal?.aborted) {
         result.plan.ownership.dispose();
         signal.throwIfAborted();
@@ -52,14 +57,15 @@ export class ChatStage {
     if (!native || !this.preparation) return build();
     let reservation = await this.preparation.reserve?.(media ? "media" : "constraint", signal);
     try {
-      const result = await this.preparation.run(build, signal);
+      const result = await build();
       if (reservation) result.plan.ownership.retain(reservation);
       reservation = undefined;
       return result;
     } finally { reservation?.dispose(); }
   }
 
-  private async runPrepared(request: ChatRequest, requestId?: string): Promise<InferenceRequest> {
+  private async runPrepared(request: ChatRequest, requestId: string | undefined,
+    nativeWork: PromptNativeWork): Promise<InferenceRequest> {
     const { ctx, prep } = this;
     let body = request.params;
     const id = requestId ?? `chatcmpl-${crypto.randomUUID()}`;
@@ -83,7 +89,7 @@ export class ChatStage {
       !!body.guided_regex || !!body.guided_choice?.length ||
       body.structured_outputs != null;
     if (grammarReq) {
-      const g = await prep.compileGrammarForRequest(body);
+      const g = await nativeWork(() => prep.compileGrammarForRequest(body));
       grammarCtrl = ownership.own(g.controller);
       if (!g.controller && g.degradeHint) {
         const degraded = applyGrammarDegrade(body, g.degradeHint);
@@ -94,7 +100,7 @@ export class ChatStage {
 
     let built: BuiltPrompt;
     try {
-      built = await this.buildPrompt(body, tools, ownership, prep);
+      built = await this.buildPrompt(body, tools, ownership, prep, nativeWork);
     } catch (e) {
       if (e instanceof RequestError) return reject(e.status, e.message);
       return reject(400, `prompt build failed: ${(e as Error).message}`);

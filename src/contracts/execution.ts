@@ -18,6 +18,8 @@ export interface ExecutionCapabilities {
   readonly quantizedBatch: boolean;
   readonly grammarBatch: boolean;
   readonly adapterBatch?: boolean;
+  /** Prepared media can enter the ordinary shared execution group. */
+  readonly mediaBatch?: boolean;
   readonly pagedBatch?: boolean;
   readonly checkpoints: boolean;
   /** Bound ordinary driver can restore/capture this request configuration. */

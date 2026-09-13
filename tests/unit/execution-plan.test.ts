@@ -18,6 +18,18 @@ test("logprobs compose with continuous ordinary decoding", () => {
   expect(plan.reasons).not.toContain("logprobs-require-serial");
 });
 
+test("prepared media uses ordinary shared decode without token-only reuse or speculative proposals", () => {
+  const supported = { ...capabilities, mediaBatch: true, sharedGrammarProposals: true,
+    sharedFill: true, sharedCheckpoints: true, groupedMethods: ["autoregressive", "speculative"] };
+  for (const options of [{}, { hasDraft: true }, { hasGrammar: true }, { wantsLogprobs: true }]) {
+    const plan = resolveExecution({ ...request, hasVision: true, ...options }, supported,
+      { pagedKv: false, fill: true, grammarJump: true });
+    expect(plan).toMatchObject({ mechanism: "continuous", method: "autoregressive",
+      promptCache: false, checkpoint: false, fill: false, grammarJump: false });
+  }
+  expect(resolveExecution({ ...request, hasVision: true }, capabilities).mechanism).toBe("serial");
+});
+
 test("an explicit seed composes with ordinary logprobs and grammar in continuous execution", () => {
   const plan = resolveExecution({ ...request, userSeed: true, wantsLogprobs: true, hasGrammar: true }, capabilities);
   expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous" });

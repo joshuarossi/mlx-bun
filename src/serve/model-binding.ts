@@ -21,9 +21,13 @@ export interface BuiltPrompt {
   diffusionPixels: MlxArray | null;
 }
 
+/** Enter the model's execution domain for native preparation. Fetching and
+ * container transcoding stay outside this callback. */
+export type PromptNativeWork = <T>(work: () => Promise<T>) => Promise<T>;
+
 export interface ModelPromptBuilder {
   (body: ChatRequestParams, tools: ChatRequestParams["tools"] | null,
-    ownership: RequestOwnership, prep: RequestPrep): Promise<BuiltPrompt>;
+    ownership: RequestOwnership, prep: RequestPrep, nativeWork?: PromptNativeWork): Promise<BuiltPrompt>;
 }
 
 /** Model-owned native services. A replacement supplies this one binding;

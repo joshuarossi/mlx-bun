@@ -24,13 +24,18 @@ import { bindFillGroupRequests } from "./fill-group";
 import type { GenerateOptions } from "../../generate";
 import type { ExecutionRequirements, ResolvedExecution } from "../../contracts/execution";
 import { resolveExecution } from "../../engine/execution-plan";
+import { bindEmbeddingsInput, type MlxPromptInput } from "./prompt-input";
+import type { Vision } from "../../serve/generation-gateway";
 
 export interface MlxBatchGroup extends Pick<MlxBatchExecutionGroup,
-  "activeRows" | "pendingRows" | "projectedKvBytes" | "kvBudgetBytes" | "submit" | "kick" | "close"> {}
+  "activeRows" | "pendingRows" | "projectedKvBytes" | "kvBudgetBytes" | "submit" | "kick" | "close"> {
+  runPreparation?<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T>;
+}
 
 /** A model implementation owns capability checks and the execution group.
  * Scheduling never inspects concrete model/cache classes. */
 export interface MlxGatewayBinding {
+  mediaInput?(input: Vision): MlxPromptInput;
   configureContinuation?(services: MlxSerialServices): void;
   continuationRequest?(execution: ResolvedExecution | undefined, options: GenerateOptions, prompt: number[],
     onToken: Parameters<typeof createOrdinaryContinuationRequest>[0]["onToken"]): ReturnType<typeof createOrdinaryContinuationRequest> | undefined;
@@ -74,7 +79,11 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
   const adapterState = "loraState" in model ? model.loraState : undefined;
   const fillRequests = supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
+  const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
+    bindEmbeddingsInput((ids, caches) => model.forwardEmbeddings(input.embeddings,
+      caches, input.imageMask ?? null, ids, input.multimodalMask ?? null)) : undefined;
   return {
+    mediaInput,
     config: model.config, runtime,
     configureContinuation: services => { continuationServices = services; },
     continuationRequest(execution, options, prompt, onToken) {
@@ -87,7 +96,13 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         restore: entry => services.checkpoints!.restore(entry, model),
         interval: services.checkpointEveryTokens!, identity: services.identity });
     },
-    statePolicy: (execution, options, capacity) => execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache, runtime) : undefined,
+    statePolicy: (execution, options, capacity) => {
+      // Media token IDs alone do not identify the prepared embeddings.
+      // Preserve the existing uncached media policy through the state port.
+      if (execution?.method === "autoregressive" && !execution.promptCache)
+        return { key: "uncached-prepared-input", create: () => model.makeCache() };
+      return execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache, runtime) : undefined;
+    },
     prefixNamespace: (execution, options, adapters) => {
       if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters, runtime.flag("MLX_BUN_PAGED_ATTN", false));
       if (execution?.method !== "speculative") return adapters;
@@ -114,6 +129,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
+        mediaBatch: !!mediaInput,
         groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         sharedFill: !!fillRequests && !!options.fill && !options.fill.plan.echo,

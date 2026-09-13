@@ -41,7 +41,9 @@ class ScriptedEngine implements CompletionEngine {
   }
 }
 
-function harness(overrides: { contextLimit?: number; defaultAdapter?: string; preparation?: import("../../src/serve/preparation").PreparationExecutor } = {}) {
+function harness(overrides: { contextLimit?: number; defaultAdapter?: string;
+  preparation?: import("../../src/serve/preparation").PreparationExecutor;
+  buildPrompt?: import("../../src/serve/model-binding").ModelPromptBuilder } = {}) {
   const tokenizer: LoadedTokenizer = {
     encode: () => [7, 8, 9],
     decode: (ids) => ids.map((id) => `t${id}`).join(" "),
@@ -73,13 +75,78 @@ function harness(overrides: { contextLimit?: number; defaultAdapter?: string; pr
   const contextLimit = overrides.contextLimit ?? 4096;
   const chat = new ChatStage(
     ctx, prep, { peekPrefixLen: (ids: number[]) => { peeks.push(ids); return 0; } },
-    contextLimit, overrides.defaultAdapter, overrides.preparation);
+    contextLimit, overrides.defaultAdapter, overrides.preparation, overrides.buildPrompt);
   const text = new TextCompletionStage(ctx, prep, contextLimit, undefined, overrides.defaultAdapter);
   const inference = new InferenceStage(new CompletionExecutor(engine));
   return { chat, text, inference, engine, peeks, resolvedSpecs, prep };
 }
 
 const user = [{ role: "user", content: "hi" }];
+test("media fetch waits outside native execution; reservation survives until completion", async () => {
+  const fetched = Promise.withResolvers<void>();
+  const entered = Promise.withResolvers<void>();
+  const encoded = Promise.withResolvers<void>();
+  let nativeHeld = false, reservations = 0, calls = 0;
+  const h = harness({
+    preparation: {
+      async reserve() { reservations++; return { dispose() { reservations--; } }; },
+      async run(work) {
+        expect(nativeHeld).toBe(false);
+        nativeHeld = true; calls++;
+        try { return await work(); } finally { nativeHeld = false; }
+      },
+    },
+    async buildPrompt(_body, _tools, _ownership, _prep, nativeWork) {
+      await fetched.promise;
+      return nativeWork!(async () => {
+        expect(nativeHeld).toBe(true);
+        entered.resolve();
+        await encoded.promise;
+        return { promptIds: [7, 8, 9], vision: undefined, startInThinking: false,
+          probeStableLen: false, diffusionPixels: null };
+      });
+    },
+  });
+  const pending = h.chat.run(new ChatRequest({ messages: [{ role: "user",
+    content: [{ type: "image_url", image_url: { url: "https://example.com/image.png" } }] }] }));
+  await Promise.resolve();
+  expect(reservations).toBe(1);
+  expect(calls).toBe(0);
+  expect(nativeHeld).toBe(false);
+  fetched.resolve();
+  await entered.promise;
+  expect(nativeHeld).toBe(true);
+  encoded.resolve();
+  const result = await pending;
+  expect(nativeHeld).toBe(false);
+  expect(calls).toBe(1);
+  expect(reservations).toBe(1);
+  result.plan.ownership.dispose();
+  expect(reservations).toBe(0);
+});
+
+test("disconnect during media fetch never enters native execution and releases its reservation", async () => {
+  const fetched = Promise.withResolvers<void>();
+  let calls = 0, reservations = 0;
+  const h = harness({ preparation: {
+    async reserve() { reservations++; return { dispose() { reservations--; } }; },
+    async run(work) { calls++; return work(); },
+  }, async buildPrompt(_body, _tools, _ownership, _prep, nativeWork) {
+    await fetched.promise;
+    return nativeWork!(async () => { throw new Error("must not encode"); });
+  } });
+  const abort = new AbortController();
+  const pending = h.chat.run(new ChatRequest({ messages: [{ role: "user",
+    content: [{ type: "image_url", image_url: { url: "https://example.com/image.png" } }] }] }),
+    "fetching", abort.signal).catch(error => error);
+  await Promise.resolve();
+  abort.abort(new Error("disconnected"));
+  fetched.resolve();
+  expect((await pending).message).toContain("disconnected");
+  expect(calls).toBe(0);
+  expect(reservations).toBe(0);
+});
+
 test("native preparation waits for admission and an aborted waiter allocates nothing", async () => {
   let resume!: () => void;
   const gate = new Promise<void>((resolve) => { resume = resolve; });

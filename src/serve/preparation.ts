@@ -17,11 +17,11 @@ export async function acquireReservation(pool: Pick<AdmissionPool, "acquire">, s
   finally { signal?.removeEventListener("abort", abort); }
 }
 
-/** One retained media preparation at a time; grammar rows may form a batch. */
+/** Bound retained preparations independently from the execution queue. */
 export function createPreparationExecutor(
-  run: PreparationExecutor["run"], grammarCapacity: number,
+  run: PreparationExecutor["run"], grammarCapacity: number, mediaCapacity = 1,
 ): PreparationExecutor & { close(): void } {
-  const media = new AdmissionPool(1);
+  const media = new AdmissionPool(Math.max(1, mediaCapacity));
   const constraints = new AdmissionPool(Math.max(1, grammarCapacity));
   return {
     run,

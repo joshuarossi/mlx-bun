@@ -12,6 +12,7 @@ import type { KvSchemeOptions } from "../../src/kv-scheme";
 import { leaseCacheStates } from "../../src/backends/mlx/state-views";
 import { PromptResponseTrace, type P2RTraceRecord } from "../../src/serve/prompt-response-trace";
 import { withResource } from "../../src/engine/resources";
+import { bindEmbeddingsInput } from "../../src/backends/mlx/prompt-input";
 
 const dispose = (cache: Cache[]) => { for (const layer of cache) layer.dispose(); };
 function row(id: number, length: number, chunkSize: number, signal?: AbortSignal): Row {
@@ -71,6 +72,48 @@ async function drain(cohort: MlxPrefillCohort) {
   for (let step = 0; step < 100; step++) if (await cohort.advance()) return;
   throw new Error("cohort did not finish");
 }
+
+test("prepared inputs keep their whole attention span and project only the final hidden row", async () => {
+  const f = fixture(), request = row(1, 270, 5);
+  const shapes: number[][] = [];
+  request.req.promptInput = bindEmbeddingsInput((ids, caches) => {
+    shapes.push([...ids.shape]);
+    const tokens = [...ids.toIntTokens()];
+    using kv = MlxArray.fromFloat32(Float32Array.from(tokens.flatMap(token =>
+      Array.from({ length: 128 }, (_, column) => Math.sin(token + column / 13)))), [1, 1, tokens.length, 128]);
+    for (const cache of caches) captureKvAttention(cache, kv, kv).dispose();
+    return ops.reshape(ids, [1, tokens.length, 1]);
+  });
+  try {
+    f.cohort.admit(request);
+    expect(f.cohort.canAdmit).toBe(false);
+    expect(await f.cohort.advance({ maxTokens: 1,
+      forward: async () => { throw new Error("prepared input entered text mixed work"); } })).toBe(true);
+    expect(shapes).toEqual([[1, 270]]);
+    expect(f.shapes).toEqual([]);
+    expect(f.snapshots.size).toBe(0);
+    expect(f.rejected).toEqual([]);
+    const control = fixture();
+    try {
+      control.cohort.admit(row(1, 270, 5)); await drain(control.cohort);
+      expect(f.completed.get(1000)).toEqual(control.completed.get(1000));
+    } finally { control.cohort.dispose(); }
+  } finally { f.cohort.dispose(); }
+});
+
+test("cancelled prepared input never forwards and releases its fresh row", async () => {
+  const f = fixture(), abort = new AbortController(), request = row(1, 270, 5, abort.signal);
+  let calls = 0;
+  request.req.promptInput = { forward() { calls++; throw new Error("unexpected forward"); } };
+  try {
+    f.cohort.admit(request); abort.abort(new Error("cancelled before prepared prefill"));
+    expect(await f.cohort.advance()).toBe(true);
+    expect(calls).toBe(0);
+    expect(f.completed.size).toBe(0);
+    expect(f.rejected).toEqual([abort.signal.reason]);
+    expect(f.cohort.rows).toEqual([]);
+  } finally { f.cohort.dispose(); }
+});
 
 const schemes: [string, KvSchemeOptions][] = [
   ["plain", {}],

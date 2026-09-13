@@ -12,7 +12,7 @@ import { getAudioTower, getVisionTower, type ServerContext } from "../../serve/m
 import { RequestError } from "../../serve/pipeline";
 import type { RequestOwnership } from "../../serve/request-plan";
 import type { RequestPrep } from "../../serve/request-prep";
-import type { BuiltPrompt } from "../../serve/model-binding";
+import type { BuiltPrompt, PromptNativeWork } from "../../serve/model-binding";
 
 export async function buildModelPrompt(
     ctx: ServerContext,
@@ -20,6 +20,7 @@ export async function buildModelPrompt(
     body: ChatRequestParams,
     tools: ChatRequestParams["tools"] | null,
     ownership: RequestOwnership,
+    nativeWork: PromptNativeWork = (work) => work(),
   ): Promise<BuiltPrompt> {
     const toolList = tools ?? null;
     const partOf = (types: string[]) => body.messages.some(
@@ -53,19 +54,6 @@ export async function buildModelPrompt(
       // audio on a model whose tower is unavailable is an explicit 400
       // — never a silent text-only degrade (that leniency is only for
       // requests without the media, getVisionTower's contract).
-      const audioTower = getAudioTower(ctx);
-      if (!audioTower || !ctx.audioTokenIds) {
-        throw new RequestError(400,
-          `model ${ctx.modelId} has no audio tower — audio input needs ` +
-          `a model whose config.json carries audio_config and whose ` +
-          `sidecar ships the audio tensors (e.g. gemma-4 e4b OptiQ)`);
-      }
-      let visionSide: { tower: VisionEncoder; tokenIds: VisionTokenIds } | undefined;
-      if (hasImages) {
-        const tower = getVisionTower(ctx);
-        if (!tower) throw new RequestError(400, "model has no vision sidecar");
-        visionSide = { tower, tokenIds: ctx.visionTokenIds };
-      }
       const { messages: withAudioParts, images } =
         await extractImages(normalizeMessages(body.messages));
       const { messages, audio } = await extractAudio(withAudioParts);
@@ -74,14 +62,29 @@ export async function buildModelPrompt(
       // Failures throw into the prompt-build 400.
       const wavs = await Promise.all(audio.map(ensureWav));
       // The towers are only ever non-null for Gemma4 (loader gates).
-      const mp = await buildMultimodalPrompt(
-        ctx.model as Gemma4Model,
-        {
-          ...(visionSide ? { vision: visionSide } : {}),
-          audio: { tower: audioTower, tokenIds: ctx.audioTokenIds },
-        },
-        ctx.tokenizer, ctx.template, messages, images, wavs, toolList,
-      );
+      const mp = await nativeWork(async () => {
+        const audioTower = getAudioTower(ctx);
+        if (!audioTower || !ctx.audioTokenIds) {
+          throw new RequestError(400,
+            `model ${ctx.modelId} has no audio tower — audio input needs ` +
+            `a model whose config.json carries audio_config and whose ` +
+            `sidecar ships the audio tensors (e.g. gemma-4 e4b OptiQ)`);
+        }
+        let visionSide: { tower: VisionEncoder; tokenIds: VisionTokenIds } | undefined;
+        if (hasImages) {
+          const tower = getVisionTower(ctx);
+          if (!tower) throw new RequestError(400, "model has no vision sidecar");
+          visionSide = { tower, tokenIds: ctx.visionTokenIds };
+        }
+        return buildMultimodalPrompt(
+          ctx.model as Gemma4Model,
+          {
+            ...(visionSide ? { vision: visionSide } : {}),
+            audio: { tower: audioTower, tokenIds: ctx.audioTokenIds },
+          },
+          ctx.tokenizer, ctx.template, messages, images, wavs, toolList,
+        );
+      });
       // bidirMask is null whenever audio is present (§3.3 Q1: mixed
       // prompts run fully causal); the union mask does the per-layer
       // id zeroing either way.
@@ -106,7 +109,7 @@ export async function buildModelPrompt(
         throw new RequestError(400, "DiffusionGemma image input supports exactly one image");
       const rendered = ctx.template.render(messages, { tools: toolList, addGenerationPrompt: true });
       const rawIds = ctx.tokenizer.encode(rendered, /* addSpecialTokens */ false);
-      const { pixels, softTokens } = await dm.visionTower.preprocess(images[0]!);
+      const { pixels, softTokens } = await nativeWork(() => dm.visionTower!.preprocess(images[0]!));
       const diffusionPixels = ownership.own(pixels);
       const promptIds = spliceImageTokens(rawIds, [softTokens], {
         image: ctx.visionTokenIds.imageTokenId,
@@ -121,36 +124,40 @@ export async function buildModelPrompt(
       // image/video spans splice into input embeddings and the request
       // carries mRoPE positions + delta (PLAN 14v/14w). Videos decode
       // to sampled frames via the AVFoundation sidecar.
-      const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
-      if (!tower) throw new RequestError(400, "model has no vision sidecar");
       const { messages: withVideos, images } =
         await extractImages(normalizeMessages(body.messages));
       const { messages, videos } = await extractVideos(withVideos);
-      const vp = await buildQwen3VLVisionPrompt(
-        ctx.model, tower, ctx.tokenizer, ctx.template, messages, images,
-        {
-          imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
-          videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
-          visionStartId: (ctx.model.config.raw.vision_start_token_id as number) ?? 248053,
-          visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
-        },
-        prep.templateOptionsFor(body, toolList),
-        videos,
-      );
+      const vp = await nativeWork(async () => {
+        const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
+        if (!tower) throw new RequestError(400, "model has no vision sidecar");
+        return buildQwen3VLVisionPrompt(
+          ctx.model as Qwen35Model, tower, ctx.tokenizer, ctx.template, messages, images,
+          {
+            imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
+            videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
+            visionStartId: (ctx.model.config.raw.vision_start_token_id as number) ?? 248053,
+            visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
+          },
+          prep.templateOptionsFor(body, toolList),
+          videos,
+        );
+      });
       return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, mrope: vp.mrope } };
     }
     if (hasImages) {
       // Loads (and caches) the tower on first image request — text-only
       // sessions never pay for it.
-      const tower = getVisionTower(ctx);
-      if (!tower) throw new RequestError(400, "model has no vision sidecar");
       const { messages, images } = await extractImages(normalizeMessages(body.messages));
       // The tower is only ever non-null for Gemma4 (sidecar gate in
       // makeVisionLoader), so the model narrow is safe here.
-      const vp = await buildVisionPrompt(
-        ctx.model as Gemma4Model, tower, ctx.tokenizer, ctx.template,
-        messages, images, ctx.visionTokenIds, toolList,
-      );
+      const vp = await nativeWork(async () => {
+        const tower = getVisionTower(ctx);
+        if (!tower) throw new RequestError(400, "model has no vision sidecar");
+        return buildVisionPrompt(
+          ctx.model as Gemma4Model, tower, ctx.tokenizer, ctx.template,
+          messages, images, ctx.visionTokenIds, toolList,
+        );
+      });
       return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, imageMask: vp.imageMask } };
     }
     const text = prep.promptIdsFor(body, toolList);

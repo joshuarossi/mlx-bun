@@ -7,13 +7,14 @@
 // The NUMERICS are gated offline (tests/e4b-audio.test.ts: full greedy stream
 // oracle-EXACT). This gates the WIRING: content-part detection → extractAudio
 // → ensureWav (CoreAudio transcode for non-WAV) → buildMultimodalPrompt →
-// embeddings prefill on the SERIAL lane — and the failure surfaces (explicit
+// embeddings prefill followed by shared decode — and the failure surfaces (explicit
 // 400s, never a silent text-only degrade). Default server config = bf16 KV +
 // batch lane live (batch defaults > 1), so the transcription must match the
-// offline golden exactly AND the routing assertion is non-vacuous: text
-// requests ride the batch lane while audio drains to serial.
+// offline golden exactly AND the routing assertion is non-vacuous:
+// text and audio requests both enter the shared executor.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
+import type { Gemma4Model } from "../../src/model/gemma4";
 import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -46,9 +47,14 @@ describe.skipIf(!optIn || !haveWeights || !haveFixture)(
 
     const { createServer, loadContext } = await import("../../src/server");
     const ctx = await loadContext(SNAPSHOT_E4B, "gemma-4-e4b-it-optiq");
+    const model = ctx.model as Gemma4Model, batches: number[] = [];
+    const forward = model.forwardHidden.bind(model);
+    const probe = spyOn(model, "forwardHidden").mockImplementation((ids, caches) => {
+      batches.push(ids.shape[0]!); return forward(ids, caches);
+    });
     const server = createServer(ctx, 0); // defaults: bf16 KV, batch lane live
     const base = `http://localhost:${server.port}`;
-    afterAll(() => server.stop(true));
+    afterAll(() => { server.stop(true); probe.mockRestore(); });
 
     const speechB64 = Buffer.from(
       await Bun.file(speech.wav).arrayBuffer(),
@@ -84,9 +90,8 @@ describe.skipIf(!optIn || !haveWeights || !haveFixture)(
       const body = (await res.json()) as any;
       expect(body.choices[0].message.content.trim()).toBe(expectedText);
       expect(body.usage.prompt_tokens).toBeGreaterThan(0);
-      // Serial-lane routing: audio (embeddings prefill) must never enter the
-      // batch lane — submitted_rows only advances for batched rows.
-      expect(await submittedRows()).toBe(before);
+      expect(body.usage.lane).toBe("batched");
+      expect(await submittedRows()).toBe(before + 1);
       // ...and the batch lane IS live on this server (non-vacuous check):
       // a plain text request advances it.
       const textRes = await chat({
@@ -94,8 +99,52 @@ describe.skipIf(!optIn || !haveWeights || !haveFixture)(
         max_tokens: 4, temperature: 0,
       });
       expect(textRes.status).toBe(200);
-      expect(await submittedRows()).toBe(before + 1);
+      expect(await submittedRows()).toBe(before + 2);
     }, 600_000);
+
+    test("two prepared audio requests share actual B2 decode", async () => {
+      const before = await submittedRows(); batches.length = 0;
+      const responses = await Promise.all([chat(audioReq(speechB64, "wav")), chat(audioReq(speechB64, "wav"))]);
+      for (const response of responses) {
+        expect(response.status).toBe(200);
+        const body = await response.json() as any;
+        expect(body.usage.lane).toBe("batched");
+        expect(body.choices[0].message.content).toMatch(/quick brown fox/i);
+      }
+      expect(await submittedRows()).toBe(before + 2);
+      expect(batches).toContain(2);
+    }, 600_000);
+
+    test("a stalled audio download leaves text decode available", async () => {
+      const { configureRuntime } = await import("../../src/runtime-config");
+      const restore = configureRuntime({ MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" });
+      const arrived = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      const media = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch() {
+        arrived.resolve(); await release.promise;
+        return new Response(Bun.file(speech.wav), { headers: { "content-type": "audio/wav" } });
+      } });
+      const pending = chat({ messages: [{ role: "user", content: [
+        { type: "audio_url", audio_url: { url: `http://127.0.0.1:${media.port}/speech.wav` } },
+        { type: "text", text: speech.text },
+      ] }], temperature: 0, max_tokens: 32 });
+      try {
+        await arrived.promise;
+        const text = await fetch(`${base}/v1/chat/completions`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "Say ping." }],
+            temperature: 0, max_tokens: 4 }), signal: AbortSignal.timeout(5000),
+        });
+        expect(text.status).toBe(200);
+        expect((await text.json() as any).usage.lane).toBe("batched");
+      } finally {
+        release.resolve();
+        try {
+          const response = await pending;
+          expect(response.status).toBe(200);
+          expect((await response.json() as any).choices[0].message.content.trim()).toBe(expectedText);
+        } finally { media.stop(true); restore(); }
+      }
+    }, 30_000);
 
     test("m4a (AAC) transcodes via CoreAudio and still transcribes", async () => {
       // Build the m4a at test time from the tracked WAV fixture (afconvert is

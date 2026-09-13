@@ -23,6 +23,9 @@ function traceRows(states: readonly MlxPrefillState[], phase: P2RTracePhase, att
 }
 
 export interface MlxPrefillStep extends PrefillStep {
+  /** A non-causal input cannot be split at a scheduler token budget.
+   * Its preparation must decline joins until this step completes. */
+  readonly atomic?: boolean;
   /** Some methods maintain their final target chunk before sampling. */
   readonly maintain?: boolean;
 }
@@ -147,7 +150,8 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     if (!this.#states.length) { this.dispose(); return true; }
     while (this.#states.length) {
       for (const state of this.#states) state.planned ??= this.operations.plan(state);
-      const count = Math.min(Math.max(1, Math.floor(remaining / this.#states.length)),
+      const count = Math.min(this.#states.some(state => state.planned!.atomic) ? Infinity
+        : Math.max(1, Math.floor(remaining / this.#states.length)),
         ...this.#states.map(state => state.planned!.end - state.pos));
       const work = { workId: ++nextWorkId, batchSize: this.#states.length, tokensPerRow: count };
       const closes = this.#states.map(state => state.row.req.trace?.begin("prefill.chunk", {

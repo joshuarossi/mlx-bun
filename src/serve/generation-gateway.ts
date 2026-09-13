@@ -94,10 +94,9 @@ class AsyncMutex {
   }
 }
 
-/** Embeddings-prefill payload for media prompts (vision and/or audio — the
- *  name predates audio). Any request carrying one routes to the serial lane
- *  (shape.hasVision) and prefills through generate()'s promptEmbeddings
- *  path, bypassing the prompt cache. */
+/** Prepared embeddings for vision/audio prompts. Qualified models consume
+ * this through shared preparation and decode; other bindings retain serial
+ * execution. Token-only prefix caching remains disabled for media. */
 export type Vision = {
   embeddings: MlxArray;
   /** bool [L] image-token mask for the bidirectional attention overlay.
@@ -318,6 +317,19 @@ export class GenerationGateway {
     try { return await fn(); } finally { lease.dispose(); }
   }
 
+  /** Preparation reads model weights without replacing active model state.
+   * A compatible backend can perform it between existing decode iterations. */
+  runPreparation<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.#closed) return Promise.reject(new Error("generation gateway is closed"));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    const group = this.batchingEnabled ? this.#ensureScheduler() : undefined;
+    return group?.runPreparation
+      ? group.runPreparation(work, signal)
+      : this.runExclusive(work, undefined, signal);
+  }
+
+  get mediaBatchingEnabled(): boolean { return this.batchingEnabled && !!this.#binding.mediaInput; }
+
   /** Run one generation on the appropriate lane. onToken is invoked per emitted
    *  token (its `false` halts); resolves with stats when the generation ends. */
   async run(
@@ -347,9 +359,14 @@ export class GenerationGateway {
           try { releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId); }
           finally { closePrefetch?.(); }
         }
-      } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options, vision)); }
+      } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options,
+        placement.mechanism === "continuous" ? undefined : vision)); }
       return await this.#run(promptIds, options, onToken, vision, shape, placement, signal, trace);
-    } finally { try { releasePrefix?.(); } finally { reservation.dispose(); } }
+    } finally {
+      disposeResources([{ dispose: () => releasePrefix?.() }, reservation,
+        ...(placement.mechanism === "continuous" && vision
+          ? [vision.embeddings, vision.imageMask, vision.multimodalMask].filter(value => value != null) : [])]);
+    }
   }
 
   async #run(
@@ -362,7 +379,8 @@ export class GenerationGateway {
     signal?: AbortSignal,
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
-    const disposeUnstarted = () => disposeUnstartedRequest(options, vision);
+    const disposeUnstarted = () => disposeUnstartedRequest(options,
+      placement.mechanism === "continuous" ? undefined : vision);
     if (placement.shape !== shape) {
       disposeUnstarted();
       throw new Error("generation placement does not belong to this request shape");
@@ -449,6 +467,7 @@ export class GenerationGateway {
     try {
       st = await this.#ensureScheduler().submit({
         promptIds, context, cacheNamespace, cacheSessionId: options.cacheSessionId, prefillChunkSize: options.prefillChunkSize,
+        ...(vision ? { promptInput: this.#binding.mediaInput!(vision) } : {}),
         continuation: continuation?.continuation,
         statePolicy: this.#binding.statePolicy?.(placement.execution, options, promptIds.length + (options.maxTokens ?? 512)),
         compiledDecode: placement.execution?.compiledDecode,
