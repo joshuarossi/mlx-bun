@@ -679,7 +679,7 @@ export class MlxBatchExecutionGroup {
       await driveExecutionGroup(group, {
         now: () => performance.now(),
         yield: () => new Promise<void>((resolve) => setImmediate(resolve)),
-      }, this.#runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") === "1");
+      }, this.#runtime.flag("MLX_BUN_EARLY_FIRST_TOKEN", true));
     } finally { this.#looping = false; }
   }
 
@@ -881,7 +881,7 @@ export class MlxBatchExecutionGroup {
     // later pipeline step. Grammar and explicit eager-output modes retain
     // their read-before-advance order.
     if (!this.#inners && !p.row.req.grammar && !this.#noPipeline &&
-        this.#runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") !== "1" && !forceAttribution) {
+        !this.#runtime.flag("MLX_BUN_EARLY_FIRST_TOKEN", true) && !forceAttribution) {
       let owned: MlxArray | null = sampled;
       try {
         ops.asyncEvalAll([sampled]);

@@ -893,7 +893,70 @@ native counterpart to the existing M1 checks for the final caller-owned M=1
 alignment; it is correctness evidence, not a latency measurement.
 
 Logs: `reports/prefill-observation/first-token-cache-{packed,rtn4}-m4.log`.
-The first-token option remains off while its serving/default decision is open.
+The monitored serving comparison below closes the default-selection gate.
+
+### Earlier first output: monitored serving comparison
+
+M4 Pro 24 GB, Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2, source
+`34e1eb4` held unchanged within every comparison. Packed Qwen27B and the
+RTN4 storage control each run six alternating AB/BA blocks in default continuous
+serving (cap eight, no batch override) and explicit serial (`--batch 1`).
+Only `MLX_BUN_EARLY_FIRST_TOKEN=0/1` changes. Both use affine KV4,
+1 GiB prompt cache, no draft, temperature zero, 32-token maximum and a distinct
+warmup. Each arm measures a short non-thinking response twice and a reasoning
+response cold/cached. The prompts have 20/421 tokens; outputs have 6/32 tokens.
+The short repeat has no cache hit; the reasoning repeat reuses 420 tokens.
+
+The HTTP reader is `measureChatRequest` from `bench-serve.ts`: first output
+means a content, reasoning or tool delta, not headers or an empty SSE event.
+All 192 requests finish, all 96 pairs preserve complete text, prompt/output/cache
+counts and finish reason, and usage confirms the intended execution lane.
+Every paired request emits its first semantic output earlier with the option.
+
+| Artifact / lane | Short first: paired median saved | Short repeat: saved | Reasoning cold: saved | Reasoning cached: saved | Complete-time paired median changes across the four cells |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Packed / default continuous | 69.31 ms | 72.79 ms | 73.60 ms | 69.57 ms | −0.04% to +0.63% |
+| Packed / explicit serial | 70.31 ms | 68.54 ms | 85.65 ms | 70.60 ms | +0.01% to +0.42% |
+| RTN4 / default continuous | 55.10 ms | 54.05 ms | 58.84 ms | 50.50 ms | −0.14% to +0.92% |
+| RTN4 / explicit serial | 50.46 ms | 51.95 ms | 50.98 ms | 56.37 ms | −0.14% to +2.20% |
+
+For packed Qwen with default serving, median cached first output falls from
+164.24 to 94.46 ms. This is an output-latency improvement. Starting the output
+interval earlier changes post-first-output TPS arithmetic; it does not mean
+more model work was completed per second. Complete-request times remain close,
+with the short-response tradeoffs shown above.
+
+Activity was sampled throughout each run, including process CPU/RSS, GPU last
+submitter and VM counters. In measured request windows, the benchmark server
+was the last GPU submitter in 131/132 and 128/129 packed samples. Other samples
+were WindowServer/Codex; the two packed runs recorded no swap-outs in intervals
+whose endpoints both fall inside a request. RTN4 had 99/105 and 92/104 server
+samples, with macOS mediaanalysisd appearing once and ten times respectively,
+and active paging. Those RTN4 complete-time changes are not attributed to the
+code alone; a monitored repeat follows. CPU activity and retained swap are
+recorded context, not automatic rejection criteria. Last-submitter sampling
+cannot account for every GPU command.
+
+The RTN4 repeat keeps the same six-pair protocol and source. All 48 additional
+pairs preserve outputs/counts; 47 emit first output earlier (one cold reasoning
+pair does not). Paired median savings are 50.39/53.21/53.21/52.06 ms for default
+continuous and 53.64/51.95/54.52/53.97 ms for serial, in the table’s column order.
+Complete-time cell medians are +0.14..+0.61% and −0.04..+0.99% respectively.
+The server accounts for 100/104 and 100/105 request-window GPU last-submitter
+samples; the others are desktop applications, with no mediaanalysisd sample.
+Neither repeat records swap-outs inside the paired request-window intervals.
+This supports earlier output as the default, with a small complete-time
+tradeoff rather than a throughput gain. The original overlapped RTN4 results
+remain above. Repeat records use the suffix `-cache1-repeat-m4`; analysis is
+`first-token-http-repeat-review.json`.
+
+Raw results, source manifests, responses, event timings and activity:
+`reports/prefill-observation/first-token-http-{packed,rtn4}-{continuous,serial}-cache1-m4{.json,.activity.json,.log}`;
+paired analysis: `first-token-http-final-review.json`. The earlier aborted
+0.25 GiB cache screen is retained separately: it failed to retain the reasoning
+prompt, so it supplies no cached-latency evidence. The caller-owned native
+alignment checks above and prior cancellation/overlap/SSD gates remain accepted.
+
 
 ### Native integer ranges and monitored model comparison
 

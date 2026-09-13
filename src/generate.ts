@@ -1063,7 +1063,7 @@ async function* generateInner(
     const grammarJump = options.decodePolicy?.grammarJump ?? shouldUseGrammarJump(options, runtime);
     // Yield token zero before its own decode forward. The captured runtime
     // keeps this scheduling choice stable across consumer awaits.
-    const earlyFirstToken = runtime.value("MLX_BUN_EARLY_FIRST_TOKEN") === "1" &&
+    const earlyFirstToken = runtime.flag("MLX_BUN_EARLY_FIRST_TOKEN", true) &&
       maxTokens > 1 && !resuming && !fillOn && !options.grammar;
     while (!stop) {
       options.signal?.throwIfAborted();
