@@ -2547,3 +2547,92 @@ frozen ledger. These links preserve previous section URLs.
 
 <a id="shared-ordinary-continuation-composition-m4-pro-2026-09-11"></a>
 - [Shared ordinary continuation composition (M4 Pro, 2026-09-11)](../archive/investigations/benchmark-ledger-through-v0.4.0.md#shared-ordinary-continuation-composition-m4-pro-2026-09-11)
+
+## Native submission thresholds on MLX 0.32.2 (2026-09-13)
+
+The R16 `25/25` candidate changes MLX's native command-buffer submission
+thresholds, independently of request scheduling. The current-version screen
+uses `aaf6082`, Bun 1.4.2 and native pack 0.4.0 / MLX 0.32.2. Every request
+uses default shared serving; no `--batch 1` override. Both threshold variables
+are absent in controls and set to `25` in candidates. Runtime defaults remain
+unchanged. The benchmark now records these native environment overrides in its
+JSON alongside the existing engine settings.
+
+Each model runs four standard suites in default/candidate/candidate/default
+order, with bf16 KV, no draft, 1 GiB RAM cache, SSD restart, 192-token short
+requests and a 4,096-token context target. Actual rendered context is 2,721
+for Llama, 2,307 for MiniCPM and 2,448 for Gemma. Compiled decode and strict
+fill are off; early output remains on. Each percentage below compares adjacent
+opposite arms, preserving both orders. Cached completion includes the whole
+request, averaged over the two warm context requests by the suite review.
+
+| Machine and model | Short decode TPS change, A/B and B/A | Context decode TPS change | Cached completion time change | Four-request throughput change |
+|---|---:|---:|---:|---:|
+| M4 Pro 24 GB, Llama 3.2 1B 4-bit | +8.31% / +1.90% | +14.10% / +10.84% | −11.55% / −10.58% | +3.35% / +3.06% |
+| M4 Pro 24 GB, MiniCPM5 1B | +1.92% / +0.29% | +5.03% / +3.16% | −5.68% / −6.33% | +3.23% / +2.59%, changed text |
+| M4 Pro 24 GB, Gemma 4 e4b | +1.15% / −1.11% | +1.85% / +1.12% | −1.64% / −0.82% | +0.04% / +0.07% |
+| M4 Pro 24 GB, Gemma 4 12B | +0.08% / −0.39% | −0.25% / +0.01% | +0.20% / +0.05% | −0.64% / +0.52% |
+| M1 Max 32 GB, Llama 3.2 3B 4-bit, first screen | −5.32% / −7.36% | −8.01% / −9.04% | +9.02% / +12.48% | −6.90% / −1.88% |
+
+All 380 requests complete, with every SSD restart durable. All 190 paired
+inputs, complete usage objects, output counts and finish reasons match.
+All paired text matches except the eight MiniCPM concurrent responses across
+two pairs. Their throughput is recorded but does not establish an identical-work
+speedup. Full native logits and prefix/live/continuation cache-state hashes
+match all ten cases on M4 Llama 1B and all ten on M1 Llama 3B, at context
+positions 0/127/511/1023/4095 and append lengths 1/4. These native cases use B1;
+they do not establish a B4 numerical contract from HTTP text alone.
+
+A second M1 Llama 3B screen reverses the order to
+candidate/default/default/candidate. All 76 requests and all 38 paired
+responses/usage records match, with four durable SSD restarts. Short decode
+changes −5.22%/−4.46%, context decode −5.55%/−8.62%, cached completion
++6.15%/+5.72%, and aggregate throughput −2.01%/−1.54%. This reproduces the
+slowdown in the opposite order; activity remains recorded, so the conclusion
+is to retain native defaults on this measured configuration. Raw evidence:
+`llama3-submission-m1-r2-*`.
+
+The M4 Llama control rises from 278.01 to 295.30 short TPS between arms,
+while candidates are 301.11/300.92. Both orders are retained. M1 candidate arms
+coincide with more indexing/browser activity and some desktop GPU submissions;
+the first screen alone cannot isolate its observed slowdown. All screens are
+diagnostic. Activity sampling records last GPU submitters, not exclusive
+ownership or time spent by each process. M4 retained swap stays at 3,279 MB;
+M1 decreases from 3,532 to 3,412 MB. Cold prefill and peak RSS results are mixed.
+
+In upstream MLX 0.32.2, `Device` reads these overrides at construction and
+shares them across command encoders. Its public header exposes a getter, with
+no scoped setter for these fields. Changing an environment variable around a
+model call after initialization cannot implement a model-owned policy.
+This screen therefore does not introduce a per-request setting or a universal
+startup default. See the pinned [device implementation](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/device.cpp)
+and [device interface](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/device.h).
+
+The packed Qwen3.8 27B agent profile also completes four ABBA suites:
+interleaved k300 weights, folded RTN4 MTP2, KV4/group64, 4 GiB RAM cache,
+fixed 256-token prefill, Trellis v13 and synchronous expansion. Actual context
+is 10,399 tokens. All 76 responses, 38 paired inputs/text/full usage records
+and four durable SSD restarts match. Short decode changes −2.75%/+0.13%,
+context decode −3.60%/−0.81%, cached completion +4.15%/+1.08%, and aggregate
+throughput +0.44%/−0.80%. The 183 activity samples record Bun as last GPU
+submitter 172 times, Terminal seven times and the desktop Codex process four
+times. This supports retaining the current Qwen setting. Raw evidence:
+`qwen-submission-current-*`.
+
+Across the first screens and both follow-ups, all 532 requests complete;
+all 266 paired inputs and full usage records match, with only the eight
+MiniCPM concurrent text differences described above. This closes the current
+submission-threshold screen with no universal default change. The measured
+M4 Llama profile can use the existing startup overrides when desired:
+
+```sh
+MLX_MAX_OPS_PER_BUFFER=25 MLX_MAX_MB_PER_BUFFER=25 bun scripts/bench-serve.ts all --model-path /path/to/Llama-3.2-1B-Instruct-4bit --arms mlx-bun --no-serial --kv-quant off --prompt-cache 1 --context 4096 --tokens 192 --diagnostic
+```
+
+Raw reports, plans, activity samples and pair reviews are under
+`reports/prefill-observation/`: `llama-submission-current-*`,
+`submission-stock-current-*`, `llama3-submission-m1-*` and
+`submission-llama{1-native-m4,3-native-m1}-*`. Native environment capture was
+added after the M4 Llama HTTP screen; that screen's launch plan records the
+same overrides. The standard reports capture unchanged engine source before
+and after each suite. Older MLX 0.31.2 measurements remain separate evidence.
