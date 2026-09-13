@@ -472,14 +472,12 @@ export function where(cond: MlxArray, x: MlxArray, y: MlxArray, s: S = gpuStream
   );
 }
 
-// arange is built host-side and uploaded. The original mlx_arange binding
-// broke once the calling path got JIT-optimized; a standalone repro
-// (lab/repro/bun-ffi-f64/) traced the root cause to a Bun bug: after DFG
-// tier-up, typed-array reads following a bun:ffi call return stale values
-// (the JIT eliminates the load across the native call). Not f64 marshaling
-// — args reach C intact. See PLAN.md Phase 4 findings. Reuse large ranges
-// across attention layers and sampling, but bound their retained storage:
-// causal masks request a new range on every round once context exceeds 64K.
+// The old native arange workaround concerned stale typed-array out-pointer
+// reads after Bun JIT tier-up, not f64 argument marshaling. outArray uses
+// native pointer reads now. Large nonnegative unit-step int32 ranges avoid
+// host construction; small/general integer ranges retain JS conversion,
+// including its wrapping behavior outside int32. Cache storage stays bounded
+// as causal masks request new lengths on successive long-context rounds.
 const arangeCache = new Map<string, { array: MlxArray; bytes: number }>();
 const ARANGE_CACHE_MIN = 65536;
 const ARANGE_CACHE_BYTES = 8 * 1024 * 1024;
@@ -498,8 +496,10 @@ export function arange(start: number, stop: number, step: number, dtype: Dtype, 
   }
 
   let arr: MlxArray;
-  if (dtype === Dtype.int32) {
-    // host-built int32 leaf (the Bun-f64-FFI-safe path — see note above).
+  const nativePositions = n === 0 ||
+    (n >= ARANGE_CACHE_MIN && step === 1 && start >= 0 && stop <= 2147483647);
+  if (dtype === Dtype.int32 && !nativePositions) {
+    // Preserve JS conversion for small/general integer ranges.
     const data = new Int32Array(n);
     for (let i = 0; i < n; i++) data[i] = start + i * step;
     arr = MlxArray.fromInt32(data, [n]);

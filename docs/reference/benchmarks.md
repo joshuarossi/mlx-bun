@@ -882,6 +882,91 @@ remains inactive. Raw evidence in `reports/prefill-observation/`:
 `tq-fill-delayed-native-m4.log`, `tq-fill-rtn4-native-m4.log`,
 `tq-fill-http{-rtn4,}-m4.json`, and `tq-fill-http-review.json`.
 
+### Retained-cache alignment after early first-token return
+
+M4 Pro 24 GB, `756a7df` plus the empty-range fix (the tested prompts do not
+use empty ranges). `first-token-cache.test.ts` passes on both packed and RTN4
+Qwen27B: prompts of 76 and 421 tokens preserve token zero, retained token IDs,
+complete cache state and subsequent full logits/state for suffix lengths
+1, 2, 4, 5 and 16. Each artifact passes 28 assertions. This closes the M4
+native counterpart to the existing M1 checks for the final caller-owned M=1
+alignment; it is correctness evidence, not a latency measurement.
+
+Logs: `reports/prefill-observation/first-token-cache-{packed,rtn4}-m4.log`.
+The first-token option remains off while its serving/default decision is open.
+
+### Native integer ranges and monitored model comparison
+
+Bun 1.4.2 can construct ordinary nonnegative int32 position ranges through
+native MLX after the existing FFI out-pointer read fix. Direct range checks
+match 39,330,480 values; native conversion differs from JS Int32Array for
+starts outside int32, so the candidate preserves the host implementation for
+general ranges. A narrowed candidate only changes unit-step ranges of at least
+65,536 elements, plus empty ranges whose host buffer has no FFI pointer.
+
+The final range/mask loop evaluates 128 growing four-query masks per arm,
+with six alternating pairs at each context size. Median paired time reductions
+are 26.94% / 40.19% on M1 Max at 65,536 / 131,072 initial positions, and
+30.88% / 39.76% on M4 Pro. Median loop times are 45.60→34.00 / 56.97→34.43 ms
+on M1 and 19.67→13.71 / 25.16→15.07 ms on M4. These are operator measurements,
+not decode TPS. Raw results: `native-arange-final2-m1.json` and
+`native-arange-final-m4.json` in the report directory below. A reusable
+power-of-two prefix adds inconsistent benefit on M1 and remains unselected. The first six-pair M4 full-model comparison preserves every hidden,
+logit and cache-state hash but contains large timing outliers. It did not record
+other process/GPU activity throughout each pair; its apparent regression does
+not support a rejection decision. The requested monitored repeat also preserves
+all 54 paired hidden/logit/state results, and the large slowdowns disappear.
+Median paired complete-time changes are -0.10% at one token, -0.14% at four
+and -0.14% at 128. These are effectively flat, not a material model-speed gain.
+
+The model probe uses packed Qwen27B and a synthetic 77,077-token zero-filled
+KV4 attention history, with recurrent state from four real input tokens. It
+warms each query length, then times three complete target forwards at lengths
+1, 4 and 128; these are decode/verification/prefill shapes, not a real task or
+complete speculative round. Raw initial results and all outliers remain in
+`reports/prefill-observation/native-arange-model-pairs-m4.json` and
+`native-arange-model-review.json`. No serving speed claim or default change is
+based on this screen. The repeat captures 247 process/GPU/VM snapshots with
+forward timestamps. Of 95 snapshots inside timed forwards, 93 name the
+benchmark as the last GPU submitter and two name Terminal. ChatGPT's renderer
+is CPU-active throughout most of the run; Resolve's main process is absent
+while an idle ResolvePython helper remains. Limited
+paging still occurs, and sampled last-submitter data cannot prove exclusive
+GPU execution or establish the cause of the earlier outliers. Complete records
+are `native-arange-model-repeat-m4.json`,
+`native-arange-model-repeat-activity-m4.json`, and
+`native-arange-model-repeat-review.json`.
+
+The standard serving script then runs two opposite arm orders on the same M4,
+with default batching, KV4, MTP2, 1 GiB prompt cache, 64 decode tokens and the
+same frozen workload seed. All 30 paired requests preserve text, token/cache
+counts, finish reasons and complete speculation counters, including concurrent
+requests. Source fingerprints stay fixed inside every arm; there are no phase
+failures. This is a short serving screen, not a new long-Kanban acceptance run.
+
+| Pair order | Median decode baseline → native | Aggregate baseline → native |
+| --- | ---: | ---: |
+| Baseline, native | 19.425 → 19.351 tok/s | 10.483 → 10.464 tok/s |
+| Native, baseline | 19.413 → 19.416 tok/s | 10.550 → 10.552 tok/s |
+
+Cold/cached first-output times are also effectively unchanged. The five decode
+prompts have different draft acceptance; matching each request across arms gives
+median decode-rate changes of +0.115% and +0.122%. Neither this nor the model
+screen establishes a material serving gain. Activity capture retains 412
+process/GPU/VM samples: 378 last-submitter observations name the benchmark or
+its server, with desktop clients in the remainder. Paging and background CPU
+activity remain recorded; these diagnostic results do not establish exclusive
+GPU use or explain the earlier unmonitored outliers.
+
+The small range-construction change is retained for lower measured operator
+cost and removal of large host Int32Array construction, with effectively flat
+measured model/serving performance. General integer conversion and the 8 MiB
+cache bound remain unchanged. The empty-range FFI failure is fixed. The final
+model-free suite passes 2,306 tests with 14 fixture skips; typechecks pass.
+Evidence: `native-arange-serving-{0,1}-{baseline,native}-m4.md.json`,
+`native-arange-serving-activity-m4.json` and `native-arange-serving-review.json`
+in the same report directory.
+
 ### Same-batch affine full-attention oracle
 
 `tests/parity/batched-affine-oracle.test.ts` compares MiniCPM5-1B OptiQ against
