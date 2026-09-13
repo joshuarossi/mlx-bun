@@ -2702,5 +2702,79 @@ Macs. Derived comparisons: `shared-media-comparison-review.json`. The initial
 control attempted a text-only local snapshot; its explicit missing-audio-sidecar
 failure remains in `shared-media-control-a-missing-sidecar.*`. The completed
 runner source is retained in `completed-shared-media-tool-sources.json`.
-Qwen's request-specific mRoPE state and video/encoder-cache measurements remain
-separate work.
+Qwen's request-specific mRoPE state and video acceptance follow below.
+Encoder-cache measurements remain separate work.
+
+
+## Shared Qwen image and video execution (2026-09-13)
+
+Qwen image/video decode now carries each request's mRoPE position delta through
+an input-state interface. The current row order and device-resident cache offsets
+determine positions after merging and retirement. The model receives positions
+explicitly; shared execution never changes the legacy serial mRoPE field.
+Image/video preprocessing stays outside the native execution lease. Encoder
+execution and the full media prefill remain atomic.
+
+**M4 Pro 24 GB, diagnostic, source-controlled ABBA.** Control runtime source
+`011a19c`; candidate `a24151b`; Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2.
+Both use the existing interleaved k300 packed Qwen3.8-27B artifact, KV4, batch cap
+eight, no draft, ordinary RAM caching, no SSD, compiled decode off and fill off.
+Each fresh process warms image/video/text once, then repeats six scenarios three
+times. Inputs are solid-color PNGs with different 64/96-pixel grids, a one-second
+red MP4 and a text request. Media generates 64 tokens; text generates 128.
+Temperature is zero, seed 42, thinking disabled. This bounded media comparison
+is separate from the standard text-only h2h script.
+
+Median complete time includes all requests in a concurrent set:
+
+| Scenario | Control A → shared A, ms | Control B → shared B, ms | Paired change |
+|---|---:|---:|---:|
+| One image | 6,302.69 → 6,302.58 | 6,296.41 → 6,304.66 | −0.00% / +0.13% |
+| One video | 6,873.32 → 6,848.58 | 6,846.71 → 6,859.52 | −0.36% / +0.19% |
+| Two images | 12,625.07 → 7,715.17 | 12,558.80 → 7,724.26 | −38.89% / −38.50% |
+| Four images | 25,195.82 → 10,935.59 | 25,140.36 → 11,044.71 | −56.60% / −56.07% |
+| Image + video | 13,189.18 → 8,624.31 | 13,150.96 → 8,637.60 | −34.61% / −34.32% |
+| Text + two images | 24,297.23 → 19,337.81 | 24,267.51 → 19,383.98 | −20.41% / −20.12% |
+
+All 156 measured requests complete. All 78 paired inputs and full usage records
+excluding the intended lane change match. Response text matches in 54/78 pairs:
+all lone-image, lone-video and mixed-text scenarios, plus some concurrent-image
+rows. The other 24 pairs change text when serial media becomes B2/B4 work.
+These differing batch geometries do not establish a same-B numerical failure,
+and this short color fixture does not establish unchanged general media quality.
+The first pair's probe wrapped only `forwardHidden`, missing the new position
+forward. Its recorded zero widths mean unobserved, not B0. The corrected probe
+in the second pair observes B2 for two images/image+video and B4 for four images
+in every repetition. No engine change separates the candidate arms.
+
+The first submitted image in the four-image set completes in
+6,304.57 → 10,697.33 ms and 6,297.85 → 10,802.06 ms; its first visible output
+changes from 815.21 → 823.53 ms and 809.46 → 843.48 ms. First image+video output
+changes from 812.34 → 899.53 ms and 809.51 → 838.27 ms. Concurrent total time
+improves while the first request can finish later. Explicit serial remains
+available; this is not strict latency domination.
+
+The 476 activity samples identify Bun as last GPU submitter in 470 cases;
+initial desktop processes and two Chrome samples account for the others.
+Retained swap ranges from 3,067.31 to 3,932.88 MiB across the four processes.
+Sampled peak Bun RSS is 12,610–12,633 MiB. Process/activity records are preserved,
+including desktop activity; this comparison is diagnostic, not quiet-qualified.
+
+Numerical acceptance uses the same machine and geometry. Frozen pre-change
+module-global and explicit-position forwards match all 40 complete logit/cache
+snapshots per Mac across eight B1/B2, length-seven/17, bf16/delayed-KV4 cases.
+This is a source comparison, not a new independent Python oracle. Shared
+B1/B2/B4 padded and retiring rows also match an independently constructed CPU
+position grid for bf16, delayed KV4 and delayed K8V3, nine cases per Mac. The M4
+uses the actual packed 27B artifact; the M1 source/group checks use Qwen0.8B.
+Real image HTTP checks on the packed 27B pass on both Macs, including logprobs,
+different image grids, correct red/blue responses, actual B2 and no mutation of
+legacy model position state. Tests: `qwen-media-state.test.ts` and
+`qwen-media-serve.test.ts` under `tests/parity/`.
+
+Raw manifests, complete stream events, timing/activity, source comparisons and
+native/HTTP logs are on both Macs under `reports/prefill-observation/qwen-media-*`.
+The derived review is `qwen-media-comparison-review.json`; completed one-off
+sources are retained in `completed-qwen-media-tool-sources.json`. Encoder feature
+caching, chunked media prefill and broader speculative/media compositions remain
+separate optimization work.
