@@ -20,15 +20,18 @@ import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { goldenAt } from "../support/goldens";
-import { SNAPSHOT_E4B, snapshotE4bAvailable } from "../support/paths";
+import { SNAPSHOT_E4B } from "../support/paths";
 
 interface AudioFixture { wav: string; text: string; decoded: string }
 interface AudioGolden { fixtures: Record<string, AudioFixture> }
 
 const optIn = process.env.MLX_BUN_TEST_AUDIO_SERVE === "1";
+// Select an existing complete sidecar snapshot when a machine also holds a
+// text-only copy of the same repository revision.
+const modelPath = process.env.MLX_BUN_TEST_AUDIO_MODEL ?? SNAPSHOT_E4B;
 const haveWeights =
-  (await snapshotE4bAvailable()) &&
-  existsSync(`${SNAPSHOT_E4B}/optiq_vision.safetensors`);
+  existsSync(`${modelPath}/config.json`) &&
+  existsSync(`${modelPath}/optiq_vision.safetensors`);
 const goldenFile = goldenAt("e4b-audio.json");
 const golden = (await goldenFile.exists())
   ? ((await goldenFile.json()) as AudioGolden)
@@ -46,7 +49,7 @@ describe.skipIf(!optIn || !haveWeights || !haveFixture)(
     if (!optIn || !haveWeights || !haveFixture || !speech) return;
 
     const { createServer, loadContext } = await import("../../src/server");
-    const ctx = await loadContext(SNAPSHOT_E4B, "gemma-4-e4b-it-optiq");
+    const ctx = await loadContext(modelPath, "gemma-4-e4b-it-optiq");
     const model = ctx.model as Gemma4Model, batches: number[] = [];
     const forward = model.forwardHidden.bind(model);
     const probe = spyOn(model, "forwardHidden").mockImplementation((ids, caches) => {

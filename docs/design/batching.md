@@ -547,7 +547,7 @@ They do not require repeating completed checks or withholding the current defaul
 | Speculative decode | Qwen MTP, prompt lookup, standalone, assistant, DeepSpec and seeded DSpark/DFlash providers are integrated through shared B1/B>1 interfaces, with the native/HTTP/cache checks recorded below | Finish specific unsupported combinations and measured regressions; GLM artifact testing is deferred and no trained DSpark/DFlash checkpoint exists |
 | Sampling and logprobs | Shared sampler contract; ordinary groups capture logprobs and accept explicit seeds | Extend same-B oracle/feature compositions and matched performance; preserve per-request RNG/history |
 | Grammar and fill | Shared grammar proposals use grouped verification. Shared strict fill composes prefill, rows, sampling and committed append; native and HTTP/cache/timing gates pass | Speculative/echo fill and other named combinations remain. Keep grammar proposals opt-in after mixed timing results |
-| Adapters and media | Compatible adapter groups use shared execution; Gemma4 prepared image/audio input now enters the ordinary group, with serving validation in progress | Finish native/HTTP media and lifecycle acceptance, Qwen request-owned positions, adapter performance and broader compositions |
+| Adapters and media | Compatible adapter groups use shared execution; Gemma4 prepared image/audio input passes both-machine native/HTTP and M4 ABBA acceptance in the ordinary group | Qwen request-owned positions, lone-media latency costs, adapter performance and broader compositions |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | C1–C5 add shared SSD blocks and optional direct bf16/affine paged attention with native/HTTP evidence. TQ pages and paged speculation remain extensions; reuse completed row-layout gates |
 | Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
@@ -582,10 +582,12 @@ mRoPE state still lives on the model during serial execution and is not yet
 qualified for shared media rows. Diffusion retains its separate method.
 The input and task tests cover atomic boundaries, final projection geometry,
 full same-machine Gemma logits/cache/continuation, active B1/B2 logit identity,
-cancellation and mutation priority. M1 audio HTTP checks preserve the existing
+cancellation and mutation priority. Both-machine audio HTTP checks preserve the existing
 transcription golden, exercise actual B2 decode and complete text generation
 while an audio download is held open. The complete model-free suite and all
-three TypeScript projects pass. M4 media performance acceptance is in progress;
+three TypeScript projects pass. The M4 ABBA media comparison preserves every
+response and token count; concurrent completion improves with documented lone-
+request and first-submitted-request costs in [benchmarks.md](../reference/benchmarks.md#shared-gemma-media-execution-2026-09-13);
 see `tests/parity/shared-media-input.test.ts` and
 `reports/prefill-observation/shared-media-*`.
 

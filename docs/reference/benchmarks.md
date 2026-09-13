@@ -2636,3 +2636,71 @@ Raw reports, plans, activity samples and pair reviews are under
 added after the M4 Llama HTTP screen; that screen's launch plan records the
 same overrides. The standard reports capture unchanged engine source before
 and after each suite. Older MLX 0.31.2 measurements remain separate evidence.
+
+## Shared Gemma media execution (2026-09-13)
+
+Gemma4 image/audio requests now use prepared embeddings followed by ordinary
+shared decode. Media downloads and container transcoding run outside the native
+execution lease. A held audio download no longer blocks text generation. The
+encoder and full media prefill remain indivisible work at execution boundaries.
+
+**M4 Pro 24 GB, diagnostic, source-controlled ABBA.** Control runtime source
+`48e234c`; candidate `97eb80e`; Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2.
+Both use the existing Gemma4-e4b OptiQ snapshot `fcdb12d…` with its complete
+912 MiB vision/audio sidecar, bf16 KV, default batch cap eight, no draft,
+compiled decode off and fill off. The ordinary RAM cache remains enabled;
+media bypasses token-only caching and no SSD cache is configured. Each fresh
+process warms audio, image and text once, then repeats six scenarios three
+times. Inputs are the existing speech-fox WAV/transcription request, a solid
+red 64×64 PNG, and a 128-token counting request. These are bounded media
+measurements, separate from the standard text-only h2h script.
+
+Median complete times per scenario, including all requests in a concurrent set:
+
+| Scenario | Control A → shared A, ms | Control B → shared B, ms | Paired change |
+|---|---:|---:|---:|
+| One audio request | 356.49 → 361.08 | 359.01 → 363.55 | +1.29% / +1.26% |
+| One image request | 608.93 → 615.98 | 606.89 → 617.48 | +1.16% / +1.75% |
+| Two audio requests | 717.98 → 574.82 | 720.70 → 580.56 | −19.94% / −19.45% |
+| Four audio requests | 1,433.86 → 963.54 | 1,435.50 → 931.34 | −32.80% / −35.12% |
+| Two image requests | 1,227.89 → 1,196.56 | 1,217.94 → 1,198.98 | −2.55% / −1.56% |
+| Text + audio + image | 3,242.79 → 3,208.42 | 3,251.49 → 3,208.60 | −1.06% / −1.32% |
+
+All 156 measured requests complete. All 78 paired responses and complete usage
+records excluding the intentionally changed `lane` field match. Audio returns
+11 tokens and images two; the text request returns 128. Controls send media
+through serial execution despite cap eight. Candidates send it through shared
+execution, with actual B2/B4 audio forwards and B2 image forwards observed.
+The very short image outputs do not reach B2 in every repetition.
+
+Aggregate completion improves at a cost to individual latency. With four audio
+requests, the first submitted request completes in 531.08 → 933.57 ms and
+528.46 → 930.99 ms. Its first visible output changes from 168.36 → 178.23 ms
+and 169.50 → 182.36 ms. Lone-audio first-output medians are 197.90 → 203.11 ms
+and 168.78 → 203.45 ms. Shared media is integrated; these results do not establish
+strict domination of explicit serial execution. The small lone-request cost and
+encoder scheduling remain optimization opportunities.
+
+Activity records contain 57 process/GPU/swap samples. The last GPU submitter is
+Bun in 53 samples; the four initial samples show Terminal or the desktop app.
+Retained swap remains 2,883.81 MiB throughout. Browser and desktop CPU activity
+is retained in the raw records. No competing inference/training process was
+observed. This is monitored diagnostic evidence, not a quiet-machine label.
+
+Both-machine prepared-input tests compare complete same-machine logits, live
+cache state and continuation for image/audio/mixed masks at lengths seven and
+17, using bf16 and delayed KV4. Queued native preparation preserves every
+captured active B1/B2 logit vector. Both-machine HTTP checks preserve the existing
+audio transcription golden, exercise actual B2 audio decode, transcode AAC,
+handle malformed input, and complete text while an audio download is held open.
+The model-free suite passes 2,353 tests with 14 existing fixture skips; all three
+TypeScript projects and hygiene pass.
+
+Raw source/input/native manifests, stream events, timing samples and activity:
+`reports/prefill-observation/shared-media-{control,candidate}-{a,b}.json` on both
+Macs. Derived comparisons: `shared-media-comparison-review.json`. The initial
+control attempted a text-only local snapshot; its explicit missing-audio-sidecar
+failure remains in `shared-media-control-a-missing-sidecar.*`. The completed
+runner source is retained in `completed-shared-media-tool-sources.json`.
+Qwen's request-specific mRoPE state and video/encoder-cache measurements remain
+separate work.
