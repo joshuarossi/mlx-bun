@@ -77,6 +77,59 @@ The latest standard comparison is shown first, with machine conditions and
 losses retained. These diagnostic results are observations of this workload,
 not a universal speed ranking.
 
+### Lossless weight interleaving with RAM/SSD caching — M4 Pro 24 GB (2026-09-13)
+
+R6's remaining cache-enabled acceptance compares the original and two-block
+interleaved Qwen3.8-27B k300 packed artifacts. The existing inverse-code proof
+establishes identical quantized weights. All twelve standard suites use source
+`2c88d72`, Bun 1.4.2, MLX 0.32.2, variant 13, KV4 group 64, folded RTN4 MTP2,
+fixed prefill 256 and default shared scheduling. RAM prompt caching is 4 GiB;
+the standard script also tests SSD flush and fresh-process restore. No forced
+serial arm is used. Async expansion, compiled decode and fill are off.
+
+Six balanced original/interleaved pairs complete all 228 requests with no
+failures. Every request reports the batched lane. All 114 paired request
+hashes, response text hashes, complete usage records, counts and finish reasons
+match, including the four concurrent streams. Every SSD flush is durable with
+no pending, dropped or failed writes, and all twelve restarts reuse 10,398
+prompt tokens. The measured context has 10,399 tokens. All suites retain the
+same source hash at start and save.
+
+Each cell below is **original / interleaved**. Short decode produces 192 tokens;
+cached context completion produces 64, and aggregate uses four 128-token streams.
+
+| Pair, original/interleaved suite | Short decode tok/s | Context decode tok/s | Cached completion ms | Aggregate tok/s |
+|---|---:|---:|---:|---:|
+| 0/1 | 18.824 / 19.125 | 20.767 / 21.283 | 3150.0 / 3068.8 | 16.727 / 16.927 |
+| 3/2 | 18.737 / 19.314 | 20.719 / 21.313 | 3152.1 / 3070.7 | 16.817 / 16.930 |
+| 4/5 | 18.737 / 19.331 | 20.693 / 21.369 | 3156.2 / 3062.1 | 16.796 / 16.917 |
+| 7/6 | 18.728 / 19.141 | 20.745 / 21.265 | 3154.8 / 3068.4 | 16.810 / 16.922 |
+| 8/9 | 18.729 / 19.345 | 20.768 / 21.339 | 3147.9 / 3064.6 | 16.843 / 16.915 |
+| 11/10 | 18.742 / 19.159 | 20.739 / 21.300 | 3154.5 / 3066.6 | 16.798 / 16.915 |
+
+Interleaving improves short decode in all six pairs by 1.60–3.29%, and cached
+completion time falls 2.58–2.98%. Median paired changes are +2.65% short decode,
++2.73% context decode, −2.69% cached completion time and +0.68% aggregate
+throughput. Short complete-request time falls in every pair by 1.32–2.88%.
+Cold-context first-output time is essentially flat, decreasing 0.07–0.18%.
+Peak RSS changes are mixed, −0.72% to +0.49%; there is no general memory claim.
+This closes R6's cache-enabled acceptance for the existing interleaved artifact.
+It does not change registry artifacts or qualify other weight bit widths.
+
+The diagnostic run records 545 activity samples, 539 with active Bun work;
+524 identify an active Bun process as the last GPU submitter. Fifteen active
+samples instead identify Codex or Terminal. There are no observer errors.
+Last submission does not measure utilization, and this is not a contention-free
+claim. CPU activity and retained swap remain recorded with the raw evidence.
+
+Command profile: `bun scripts/bench-serve.ts all --model-path <artifact>
+--label qwen38-k300 --arms mlx-bun --no-serial --draft-model <folded-rtn4>
+--num-draft-tokens 2 --kv-quant 4 --prompt-cache 4 --context 16384 --tokens 192
+--diagnostic`, with fixed prefill 256 and the environment above.
+Raw evidence on both Macs: `reports/prefill-observation/interleave-cache-shared-{0..11}.md.json`,
+matching text/log reports, plan, activity and review. The plan records full
+artifact paths, ordering and exact commands.
+
 ### Fused TurboQuant default — shared serving (2026-09-13)
 
 The default candidate changes only packed KV decoding for requests that already
