@@ -2,6 +2,9 @@
 // with visual tensors; no downloads or persistent server.
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { encode } from "fast-png";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Qwen35Model } from "../../src/model/qwen3_5";
 const path = process.env.MLX_BUN_TEST_QWEN_MEDIA_SERVE_MODEL;
 describe.skipIf(!path)("Qwen shared image serving", async () => {
@@ -16,10 +19,10 @@ describe.skipIf(!path)("Qwen shared image serving", async () => {
   const server = createServer(ctx, 0, { kvQuant: 4 });
   afterAll(() => { server.stop(true); probe.mockRestore(); });
   function request(color: [number, number, number], width: number, maxTokens: number,
-    extra: Record<string, unknown> = {}) {
+    extra: Record<string, unknown> = {}, port = server.port) {
     const data = Uint8Array.from({ length: width * 64 * 3 }, (_, i) => color[i % 3]!);
     const png = Buffer.from(encode({ width, height: 64, channels: 3, data })).toString("base64");
-    return fetch(`http://127.0.0.1:${server.port}/v1/chat/completions`, {
+    return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: [{ role: "user", content: [
         { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
@@ -70,5 +73,38 @@ describe.skipIf(!path)("Qwen shared image serving", async () => {
       expect(stats.prompt_cache.object_hits).toBeGreaterThan(0);
       expect(stats.prompt_cache.bytes).toBeGreaterThan(0);
     } finally { encode.mockRestore(); }
+  }, 120_000);
+  test("a new server restores encoder features from SSD without running the tower", async () => {
+    const { getVisionTower } = await import("../../src/serve/model-host");
+    const tower = getVisionTower(ctx) as unknown as import("../../src/vision/qwen3vl-tower").Qwen3VLVisionTower;
+    const encode = spyOn(tower, "encode");
+    const dir = mkdtempSync(join(tmpdir(), "mlx-bun-media-cache-"));
+    const options = { kvQuant: 4 as const, promptCacheBytes: 16, ssdCacheDir: dir, ssdCacheVerify: true };
+    let firstServer = createServer(ctx, 0, options);
+    let restoredServer: ReturnType<typeof createServer> | undefined;
+    try {
+      const first = await request([255, 0, 255], 96, 8, { logprobs: true, top_logprobs: 2 }, firstServer.port);
+      expect(first.status).toBe(200);
+      const a = await first.json() as any;
+      const flushed = await (await fetch(`http://127.0.0.1:${firstServer.port}/admin/cache/flush`, { method: "POST" })).json() as any;
+      expect(flushed.durable).toBe(true);
+      const before = await (await fetch(`http://127.0.0.1:${firstServer.port}/stats`)).json() as any;
+      expect(before.prompt_cache.bytes).toBe(0);
+      expect(before.ssd_cache.entries).toBe(1);
+      firstServer.stop(true);
+      restoredServer = createServer(ctx, 0, options);
+      const second = await request([255, 0, 255], 96, 8, { logprobs: true, top_logprobs: 2 }, restoredServer.port);
+      expect(second.status).toBe(200);
+      const b = await second.json() as any;
+      expect(b.choices).toEqual(a.choices);
+      expect(encode).toHaveBeenCalledTimes(1);
+      const after = await (await fetch(`http://127.0.0.1:${restoredServer.port}/stats`)).json() as any;
+      expect(after.prompt_cache.object_restores).toBe(1);
+      const finalFlush = await (await fetch(`http://127.0.0.1:${restoredServer.port}/admin/cache/flush`, { method: "POST" })).json() as any;
+      expect(finalFlush.durable).toBe(true);
+    } finally {
+      firstServer.stop(true); restoredServer?.stop(true); encode.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 120_000);
 });
