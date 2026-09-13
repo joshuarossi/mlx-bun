@@ -1631,8 +1631,11 @@ use a deterministic bootstrap across distinct workload seeds, with duplicate
 seeds excluded and at least five blocks required. Task imports load adjacent
 `quality.json` checks with file hashes, report failures and blocked categories,
 and retain source/settings, per-turn request hashes, timing, usage and final
-SSD flush records. Task rows do not enter engine-speed pairing. The model
-quality/weight-size inputs, frozen
+SSD flush records. Task rows do not enter engine-speed pairing. The read-only
+quality-ledger exporter supplies portable model accuracy/KL/size records,
+with source rows, configuration and machine provenance retained. Legacy
+dataset/artifact identity limitations remain explicit; importing history
+does not establish current-artifact quality acceptance. The frozen
 final protocol and quiet final matrix remain acceptance work;
 rendering saved evidence does not close this gate.
 

@@ -20,7 +20,23 @@ Missing data remains unknown; failed or incomplete tasks have no completed-task
 throughput. Quality scores are calculated from the checks, with failures and
 blocked checks shown separately. File hashes identify the imported evidence;
 the renderer does not rerun app validation. Task rows never supply engine-speed
-ratios. Model quality versus weight size still requires separate input support.
+ratios.
+
+To add saved model-quality results, export the existing evaluation ledger:
+
+```sh
+bun scripts/bench/quality-report.ts --db "$HOME/.cache/mlx-bun/evals.sqlite" --out reports/quality.json
+bun scripts/bench/report.ts --out reports/comparison.html reports/quality.json <result.json>...
+```
+
+The exporter reads SQLite without changing it. The portable JSON retains task
+accuracy, sample count, KL statistics/reference, safetensors size, captured
+configuration, commit, machine record and notes. Plots group accuracy and size
+by task and recorded machine; missing size stays unknown. Legacy rows do not
+guarantee dataset revision, sample selection or artifact content hashes, so
+the report supplies no inferred quality deltas or performance ratios. The M1
+ledger's 77 rows are preserved in `reports/prefill-observation/quality-ledger-m1.json`;
+the rendered table and plots are in `quality-history.html` beside it.
 
 The five saved Kanban runs below render together in
 `reports/kanban-decode-fixed-prefill-r1/comparison.html`. Browser review confirms
