@@ -25,6 +25,7 @@ import type { GenerateOptions } from "../../generate";
 import type { ExecutionRequirements, ResolvedExecution } from "../../contracts/execution";
 import { resolveExecution } from "../../engine/execution-plan";
 import { bindEmbeddingsInput, type MlxPromptInput } from "./prompt-input";
+import { bindQwenMediaInput } from "./qwen-prompt-input";
 import type { Vision } from "../../serve/generation-gateway";
 
 export interface MlxBatchGroup extends Pick<MlxBatchExecutionGroup,
@@ -81,7 +82,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const fillRequests = supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
     bindEmbeddingsInput((ids, caches) => model.forwardEmbeddings(input.embeddings,
-      caches, input.imageMask ?? null, ids, input.multimodalMask ?? null)) : undefined;
+      caches, input.imageMask ?? null, ids, input.multimodalMask ?? null))
+    : model instanceof Qwen35Model ? (input: Vision) => bindQwenMediaInput(model, input.embeddings, input.mrope!)
+    : undefined;
   return {
     mediaInput,
     config: model.config, runtime,

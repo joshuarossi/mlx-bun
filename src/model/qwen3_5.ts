@@ -39,8 +39,8 @@ import { materializeCopy } from "../mlx/materialize";
 import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
 import type { QwenConvolution } from "./qwen-conv";
 import {
-  activeMrope, applyInterleavedRope, buildMropePositions, mropeInvFreq,
-  setActiveMrope, type MropeRequestState,
+  applyInterleavedRope, buildMropePositions, mropeInvFreq,
+  type MropeRequestState, type MropeForwardState,
 } from "./qwen3-mrope";
 
 const PREFIX = "language_model";
@@ -409,7 +409,8 @@ export class Qwen3Attention {
     this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
   }
 
-  forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false): MlxArray {
+  forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false,
+    mrope: MropeForwardState | null = null): MlxArray {
     const [B, L] = x.shape as [number, number, number];
 
     // q_proj emits 2× head_dim per head → split into queries + gate.
@@ -436,11 +437,10 @@ export class Qwen3Attention {
     // position as ropeOffsetArr (rows have different prompt lengths); the
     // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
     // form (tests/unit/compile.test.ts). Serial lane: scalar offset, unchanged.
-    // Vision requests (serial lane only) install activeMrope for the current
-    // forward: 3D interleaved positions via the manual apply — the reference
+    // Media forwards supply their own 3D interleaved positions. The reference
     // never uses the fused fast-rope kernel when position_ids are supplied,
     // so this IS the oracle's own arithmetic. Text-only stays on ops.rope.
-    const mr = activeMrope;
+    const mr = mrope;
     const offArr = (cache as { ropeOffsetArr?: MlxArray }).ropeOffsetArr;
     if (mr) {
       q = disposing(q, applyInterleavedRope(q, mr));
@@ -564,16 +564,18 @@ export class Qwen3Layer {
     this.postAttnNorm = new RMSNorm(weights.tensor(`${prefix}.post_attention_layernorm.weight`), config.text.rmsNormEps);
   }
 
-  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null): MlxArray {
-    using h = this.forwardAttn(x, faMask, cache, independentRows, ssmMask);
+  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null,
+    mrope: MropeForwardState | null = null): MlxArray {
+    using h = this.forwardAttn(x, faMask, cache, independentRows, ssmMask, mrope);
     return this.forwardMlp(h, independentRows);
   }
 
-  forwardAttn(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null): MlxArray {
+  forwardAttn(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null,
+    mrope: MropeForwardState | null = null): MlxArray {
     using xn = this.inputNorm.forward(x);
     using r = this.isLinear
       ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows, ssmMask)
-      : this.selfAttn!.forward(xn, faMask, cache, independentRows);
+      : this.selfAttn!.forward(xn, faMask, cache, independentRows, mrope);
     return ops.add(x, r);
   }
 
@@ -697,6 +699,15 @@ export class Qwen35Model {
     return this.forwardLayers(h, cache);
   }
 
+  /** Borrowed request positions, including different positions for each row. */
+  forwardHiddenAtPositions(ids: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {
+    return this.forwardLayers(this.embed.encode(ids), cache, false, positions);
+  }
+
+  forwardEmbeddingsAtPositions(embeds: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {
+    return this.forwardLayers(ops.contiguous(embeds), cache, false, positions);
+  }
+
   /** Attention and DeltaNet retain disjoint row state. Only tokenwise MLP
    * work is eligible for packing; verification can preserve its geometry. */
   forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
@@ -741,8 +752,8 @@ export class Qwen35Model {
 
   /** Active vision mRoPE request state (serial lane; set by the generation
    *  gateway around a vision request's run, null for text-only — which keeps
-   *  the bit-exact fast-rope path). While set, forwardLayers installs the
-   *  per-forward interleaved cos/sin consumed by every full-attn layer. */
+   *  the bit-exact fast-rope path). The explicit serial executor scopes this value.
+   *  Shared media forwards pass request-owned positions directly. */
   mrope: MropeRequestState | null = null;
   #mropeInvFreq: MlxArray | null = null;
 
@@ -777,7 +788,8 @@ export class Qwen35Model {
     tap.captured.set(i, copy);
   }
 
-  protected forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false): MlxArray {
+  protected forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false,
+    positions?: MlxArray): MlxArray {
     const L = h0.shape[1]!;
     // One full-attention mask shared by all full layers (same offset); linear
     // layers see no ssm mask at B=1.
@@ -786,15 +798,13 @@ export class Qwen35Model {
     // Vision requests: one interleaved-mRoPE cos/sin table per forward,
     // shared by all 12 full-attention layers (positions are layer-invariant).
     let mropeFwd: ReturnType<typeof buildMropePositions> | null = null;
-    if (this.mrope) {
+    if (positions || this.mrope) {
       const t = this.config.text;
       const ropeDims = Math.trunc(t.headDim * t.partialRotaryFactor);
       const base = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
       this.#mropeInvFreq ??= mropeInvFreq(ropeDims, base);
-      mropeFwd = buildMropePositions(
-        this.mrope, cache[this.faIdx]!.offset, L, this.#mropeInvFreq, ropeDims,
-      );
-      setActiveMrope(mropeFwd);
+      mropeFwd = positions ? { posIds: positions, invFreq: this.#mropeInvFreq, rotaryDims: ropeDims }
+        : buildMropePositions(this.mrope!, cache[this.faIdx]!.offset, L, this.#mropeInvFreq, ropeDims);
     }
     let h: MlxArray | null = h0;
     const prof = (globalThis as Record<string, unknown>).__deltaProf as
@@ -803,7 +813,7 @@ export class Qwen35Model {
     try {
       for (let i = 0; i < this.layers.length; i++) {
         const tl = prof ? performance.now() : 0;
-        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows, ssmMask);
+        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows, ssmMask, mropeFwd);
         h.dispose();
         h = next;
         if (L > TRELLIS_MATVEC_MAX_M) {
@@ -827,10 +837,7 @@ export class Qwen35Model {
       h = null; // consumed — the finally must not double-free
       return out;
     } finally {
-      if (mropeFwd) {
-        setActiveMrope(null);
-        mropeFwd.posIds.dispose();
-      }
+      if (mropeFwd && !positions) mropeFwd.posIds.dispose();
       // A mid-loop layer throw must not strand the mask array or the
       // in-flight [1,L,H] residual (2026-08-18 review).
       faMask.arr?.dispose();

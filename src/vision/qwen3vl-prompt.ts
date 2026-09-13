@@ -18,7 +18,7 @@ import type { ChatMessage, ChatTemplate, ToolDefinition } from "../chat-template
 import type { LoadedTokenizer } from "../tokenizer";
 import type { Qwen35Model } from "../model/qwen3_5";
 import { qwenRopeIndex, type MropeRequestState } from "../model/qwen3-mrope";
-import { preprocessQwen3VLImage, preprocessQwen3VLVideoFrames, pyFixed1 } from "./qwen3vl-preprocess";
+import { preprocessQwen3VLImage, preprocessQwen3VLVideoFrames, pyFixed1, type Qwen3VLPreprocessed } from "./qwen3vl-preprocess";
 import { extractVideoFrames } from "./video-frames";
 import { QWEN3VL_MERGE_SIZE } from "./qwen3vl-preprocess";
 import type { Qwen3VLVisionTower } from "./qwen3vl-tower";
@@ -50,6 +50,7 @@ export async function buildQwen3VLVisionPrompt(
   tokenIds: Qwen3VLTokenIds,
   renderOptions: Parameters<ChatTemplate["render"]>[1] = {},
   videos: Uint8Array[] = [],
+  nativeWork: <T>(work: () => Promise<T>) => Promise<T> = work => work(),
 ): Promise<Qwen3VLVisionPrompt> {
   // The request's full template options (tools, enableThinking,
   // reasoningEffort, preserveThinking) flow through — a media prompt must
@@ -71,9 +72,9 @@ export async function buildQwen3VLVisionPrompt(
 
   // Preprocess each medium in its own appearance order; videos decode to
   // sampled frames through the AVFoundation sidecar first.
-  const imagePps = [];
+  const imagePps: Qwen3VLPreprocessed[] = [];
   for (const img of images) imagePps.push(await preprocessQwen3VLImage(img));
-  const videoPps = [];
+  const videoPps: Qwen3VLPreprocessed[] = [];
   for (const vid of videos)
     videoPps.push(preprocessQwen3VLVideoFrames(await extractVideoFrames(vid)));
 
@@ -126,71 +127,73 @@ export async function buildQwen3VLVisionPrompt(
   // path can't reach any of it (2026-08-18 review: repeated failing media
   // requests would otherwise strand un-admitted GPU memory on the GC
   // backstop).
-  const idsArr = ops.fromInt32(ids, [1, ids.length]);
-  const textEmb = model.embed.encode(idsArr); // [1, L, H]
-  idsArr.dispose();
-  const owned: MlxArray[] = [];
-  try {
-    const H = textEmb.shape[2]!;
-    const segments: MlxArray[] = [];
-    let cursor = 0;
-    imgIdx = 0;
-    vidIdx = 0;
-    // A video's tower features cover ALL its frame groups; consecutive pad
-    // RUNS consume consecutive feature-row windows.
-    let vidFeat: MlxArray | null = null;
-    let vidRow = 0;
-    for (let i = 0; i < ids.length; ) {
-      const isImage = ids[i] === tokenIds.imageTokenId;
-      const isVideo = ids[i] === tokenIds.videoTokenId;
-      if (isImage || isVideo) {
-        // Measure this contiguous pad run.
-        let runEnd = i;
-        while (runEnd < ids.length && ids[runEnd] === ids[i]) runEnd++;
-        const runLen = runEnd - i;
-        if (cursor < i) {
-          const seg = textEmb.slice([0, cursor, 0], [1, i, H]);
-          segments.push(seg);
-          owned.push(seg);
-        }
-        let rows: MlxArray;
-        if (isImage) {
-          const feat = tower.encode(imagePps[imgIdx++]!); // [runLen, H]
-          owned.push(feat);
-          rows = feat;
-        } else {
-          if (!vidFeat) {
-            vidFeat = tower.encode(videoPps[vidIdx]!); // [imageTokens, H]
-            owned.push(vidFeat);
-            vidRow = 0;
+  return nativeWork(async () => {
+    const idsArr = ops.fromInt32(ids, [1, ids.length]);
+    const textEmb = model.embed.encode(idsArr); // [1, L, H]
+    idsArr.dispose();
+    const owned: MlxArray[] = [];
+    try {
+      const H = textEmb.shape[2]!;
+      const segments: MlxArray[] = [];
+      let cursor = 0;
+      imgIdx = 0;
+      vidIdx = 0;
+      // A video's tower features cover ALL its frame groups; consecutive pad
+      // RUNS consume consecutive feature-row windows.
+      let vidFeat: MlxArray | null = null;
+      let vidRow = 0;
+      for (let i = 0; i < ids.length; ) {
+        const isImage = ids[i] === tokenIds.imageTokenId;
+        const isVideo = ids[i] === tokenIds.videoTokenId;
+        if (isImage || isVideo) {
+          // Measure this contiguous pad run.
+          let runEnd = i;
+          while (runEnd < ids.length && ids[runEnd] === ids[i]) runEnd++;
+          const runLen = runEnd - i;
+          if (cursor < i) {
+            const seg = textEmb.slice([0, cursor, 0], [1, i, H]);
+            segments.push(seg);
+            owned.push(seg);
           }
-          const sl = vidFeat.slice([vidRow, 0], [vidRow + runLen, H]);
-          owned.push(sl);
-          rows = sl;
-          vidRow += runLen;
-          if (vidRow >= videoPps[vidIdx]!.imageTokens) {
-            vidFeat = null;
-            vidIdx++;
+          let rows: MlxArray;
+          if (isImage) {
+            const feat = tower.encode(imagePps[imgIdx++]!); // [runLen, H]
+            owned.push(feat);
+            rows = feat;
+          } else {
+            if (!vidFeat) {
+              vidFeat = tower.encode(videoPps[vidIdx]!); // [imageTokens, H]
+              owned.push(vidFeat);
+              vidRow = 0;
+            }
+            const sl = vidFeat.slice([vidRow, 0], [vidRow + runLen, H]);
+            owned.push(sl);
+            rows = sl;
+            vidRow += runLen;
+            if (vidRow >= videoPps[vidIdx]!.imageTokens) {
+              vidFeat = null;
+              vidIdx++;
+            }
           }
-        }
-        const feat3 = ops.reshape(rows, [1, runLen, H]);
-        segments.push(feat3);
-        owned.push(feat3);
-        cursor = runEnd;
-        i = cursor;
-      } else i++;
+          const feat3 = ops.reshape(rows, [1, runLen, H]);
+          segments.push(feat3);
+          owned.push(feat3);
+          cursor = runEnd;
+          i = cursor;
+        } else i++;
+      }
+      if (cursor < ids.length) {
+        const seg = textEmb.slice([0, cursor, 0], [1, ids.length, H]);
+        segments.push(seg);
+        owned.push(seg);
+      }
+      const embeddings = segments.length === 1
+        ? ops.contiguous(segments[0]!)
+        : ops.concatAxis(segments, 1);
+      return { ids, embeddings, mrope };
+    } finally {
+      for (const s of owned) s.dispose();
+      textEmb.dispose();
     }
-    if (cursor < ids.length) {
-      const seg = textEmb.slice([0, cursor, 0], [1, ids.length, H]);
-      segments.push(seg);
-      owned.push(seg);
-    }
-    const embeddings = segments.length === 1
-      ? ops.contiguous(segments[0]!)
-      : ops.concatAxis(segments, 1);
-    return { ids, embeddings, mrope };
-  } finally {
-    for (const s of owned) s.dispose();
-    textEmb.dispose();
-  }
+  });
 }

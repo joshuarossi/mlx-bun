@@ -146,7 +146,7 @@ decode iterations when the backend supports queued preparation. Exclusive model
 changes retain drain priority. Media downloads and container transcoding run
 outside that lease; a slow remote URL does not hold up decode. Preparations
 retain a reservation through request
-completion. Gemma4 shared serving can retain up to `--batch` media preparations;
+completion. Gemma4 and Qwen shared serving can retain up to `--batch` media preparations;
 other media bindings retain one. Grammar preparation retains up to `--batch`. Generation and preparation
 queues each allow 64 waiting requests; overflow returns `429` before a response
 stream opens, or a terminal stream error after it opens. Disconnects release
@@ -591,7 +591,7 @@ GPU (one `AsyncMutex`).
 
 | Request property | Continuous scheduler? |
 | --- | --- |
-| vision / audio / video parts | Gemma4 image/audio use atomic media prefill followed by shared decode; Qwen vision/video and diffusion remain serial |
+| vision / audio / video parts | Gemma4 image/audio and Qwen image/video use atomic media prefill followed by shared decode; diffusion retains its separate serial method |
 | LoRA `adapter` (resolves to ≥1) | ✅ identical ordered adapter sets share a group; different sets wait for the next group |
 | `logprobs` / `top_logprobs` | ✅ ordinary and qualified MTP/lookup/standalone-draft groups capture per-request probabilities; other exclusions still apply |
 | explicit `seed` | ✅ request-local random stream; reproducibility also depends on model arithmetic and batch composition |
@@ -638,7 +638,7 @@ declared composition may still require the serial mechanism as shown above.
 | `--prompt-cache` / `--ssd-cache` | ✅ prefix/output reuse + SSD restore | ✅ immutable prefill/output checkpoints, session lookup and queued SSD persistence |
 | `--temperature`/`--top-p`/`--top-k` | ✅ | ✅ (per-row) |
 | `--thinking` | ✅ | ✅ |
-| vision / audio / video request | ✅ | Gemma4 image/audio shared; Qwen vision/video and diffusion via serial |
+| vision / audio / video request | ✅ | Gemma4 image/audio and Qwen image/video shared; diffusion via its serial method |
 | LoRA `adapter` | ✅ | ✅ compatible groups on adapter-capable backends |
 | `repetition_penalty` / `min_p` / `xtc_*` / `logit_bias` / presence+frequency | ✅ | ✅ (batches — per-row processors) |
 | `seed` | ✅ | ✅ request-local sampling |
@@ -686,7 +686,7 @@ conversion; restored SSD state is opened under the receiving binding's policy.
 ## Known limitations under shared execution
 
 1. Gemma4 image/audio uses shared decode after an indivisible embeddings prefill.
-   Qwen vision/video and diffusion retain the explicit serial executor. Strict tool-call fill now
+   Qwen image/video positions stay with each request through shared decode; diffusion retains its separate serial method. Strict tool-call fill now
    has a shared method; echo verification and fill with speculation or paging
    remain unsupported there. Grammar has shared masking and opt-in verified
    proposals; direct serial jump-forward is a different algorithm.

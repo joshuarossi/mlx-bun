@@ -108,7 +108,7 @@ export type Vision = {
    *  where zeroing falls back to imageMask. */
   multimodalMask?: MlxArray;
   /** Qwen3.5/3.8 vision: the request's mRoPE positions + decode delta,
-   *  installed on the model for exactly this serial run (server-side). */
+   *  owned by shared forward input, or scoped to the explicit serial run. */
   mrope?: import("../model/qwen3-mrope").MropeRequestState;
 };
 

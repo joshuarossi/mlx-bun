@@ -127,21 +127,22 @@ export async function buildModelPrompt(
       const { messages: withVideos, images } =
         await extractImages(normalizeMessages(body.messages));
       const { messages, videos } = await extractVideos(withVideos);
-      const vp = await nativeWork(async () => {
+      const tower = await nativeWork(async () => {
         const tower = getVisionTower(ctx) as unknown as Qwen3VLVisionTower | null;
         if (!tower) throw new RequestError(400, "model has no vision sidecar");
-        return buildQwen3VLVisionPrompt(
-          ctx.model as Qwen35Model, tower, ctx.tokenizer, ctx.template, messages, images,
-          {
-            imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
-            videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
-            visionStartId: (ctx.model.config.raw.vision_start_token_id as number) ?? 248053,
-            visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
-          },
-          prep.templateOptionsFor(body, toolList),
-          videos,
-        );
+        return tower;
       });
+      const vp = await buildQwen3VLVisionPrompt(
+        ctx.model as Qwen35Model, tower, ctx.tokenizer, ctx.template, messages, images,
+        {
+          imageTokenId: (ctx.model.config.raw.image_token_id as number) ?? 248056,
+          videoTokenId: (ctx.model.config.raw.video_token_id as number) ?? 248057,
+          visionStartId: (ctx.model.config.raw.vision_start_token_id as number) ?? 248053,
+          visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
+        },
+        prep.templateOptionsFor(body, toolList),
+        videos, nativeWork,
+      );
       return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, mrope: vp.mrope } };
     }
     if (hasImages) {

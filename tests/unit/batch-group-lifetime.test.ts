@@ -162,6 +162,33 @@ function methodFixture(f: ReturnType<typeof fixture>, key: string, events: strin
   } };
 }
 
+test("forward-state compatibility groups rows independently of method and cache policy", async () => {
+  const f = fixture(), groups: Array<Array<string | undefined>> = [];
+  const bound = methodFixture(f, "same-method", []);
+  let held = true;
+  const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 4, admissionHeld: () => held });
+  const method = { ...bound, open(host: Parameters<typeof bound.open>[0]) {
+    const active = bound.open(host);
+    return { ...active, async advance() {
+      groups.push(host.rows.map(row => row.req.promptInput?.decodeState?.key));
+      await active.advance();
+    } };
+  } };
+  const unused = (): never => { throw new Error("fixture method owns forwarding"); };
+  try {
+    const requests = ["grid-a", "grid-a", undefined, "grid-b", "grid-b"].map((key, row) =>
+      group.submit({ ...f.request, promptIds: [row + 1], maxTokens: 4, onToken() {}, method,
+        ...(key ? { promptInput: { forward: unused, decodeState: { key, forward: unused } } } : {}),
+      }));
+    held = false; group.kick();
+    await Promise.all(requests);
+    expect(groups.every(rows => new Set(rows).size === 1)).toBe(true);
+    expect(groups.some(rows => rows.length === 2 && rows[0] === "grid-a")).toBe(true);
+    expect(groups.some(rows => rows.length === 2 && rows[0] === "grid-b")).toBe(true);
+    expect(groups.some(rows => rows.length === 1 && rows[0] === undefined)).toBe(true);
+  } finally { await group.close(); }
+});
+
 test.each([undefined, 7])("ordinary prefill and method hosts share a captured chunk setting, explicit=%s", async explicit => {
   const f = fixture(), chunks: number[] = [], observed: number[] = [];
   f.model.forwardHidden = ids => { chunks.push(ids.shape[1]!); throw new Error("observed first chunk"); };

@@ -6,6 +6,14 @@ import type { Cache } from "../../model/gemma4-base";
  * Decode, sampling and row retirement use the ordinary execution group. */
 export interface MlxPromptInput {
   forward(ids: MlxArray, caches: Cache[]): MlxArray;
+  readonly decodeState?: MlxDecodeState;
+}
+
+/** Additional model-owned forward state. Equal keys declare compatible row
+ * state; the backend supplies the current row order after joins/retirement. */
+export interface MlxDecodeState {
+  readonly key: string;
+  forward(ids: MlxArray, caches: Cache[], rows: readonly MlxDecodeState[]): MlxArray;
 }
 
 /** Preserve the ordinary generator's projection geometry for a prepared

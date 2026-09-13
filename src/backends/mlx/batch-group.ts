@@ -380,6 +380,7 @@ export class MlxBatchExecutionGroup {
   #pendingReal: boolean[] | null = null;
   #method: MlxGroupedMethod | undefined;
   #methodKey: string | undefined;
+  #decodeStateKey: string | undefined;
   #steps = 0; // decode-step counter (clearCache cadence)
   #cacheMaintenanceSteps = 0;
   #looping = false;
@@ -644,7 +645,7 @@ export class MlxBatchExecutionGroup {
         (this.#kvBudgetBytes === undefined ||
           this.projectedKvBytes + this.#rowKvBytes(this.#pending[0]!) <= this.#kvBudgetBytes),
       get mixedPreparation() {
-        return scheduler.#prefill?.supportsMixedWork !== false && scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
+        return scheduler.#decodeStateKey === undefined && scheduler.#prefill?.supportsMixedWork !== false && scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
           (!scheduler.#method || scheduler.#method.runningTokens !== undefined) &&
           typeof (scheduler.model as RuntimeModel & Partial<MixedTokenModel>).forwardHiddenMixed === "function"
           ? { runningTokens: scheduler.#method?.runningTokens ?? scheduler.#running.length,
@@ -709,7 +710,7 @@ export class MlxBatchExecutionGroup {
   }
 
   #contextCompatible(row: Row): boolean {
-    return (!this.#running.length && !this.#prefill) || ((row.req.context?.key ?? "") === this.#contextKey && row.req.method?.key === this.#methodKey && row.req.statePolicy?.key === this.#statePolicy?.key);
+    return (!this.#running.length && !this.#prefill) || ((row.req.context?.key ?? "") === this.#contextKey && row.req.method?.key === this.#methodKey && row.req.statePolicy?.key === this.#statePolicy?.key && row.req.promptInput?.decodeState?.key === this.#decodeStateKey);
   }
 
   #leaveContext(): void {
@@ -724,6 +725,7 @@ export class MlxBatchExecutionGroup {
     const row = this.#pending.shift()!;
     try {
       this.#statePolicy = row.req.statePolicy;
+      this.#decodeStateKey = row.req.promptInput?.decodeState?.key;
       row.cacheNamespace = typeof row.req.cacheNamespace === "function"
         ? row.req.cacheNamespace() : row.req.cacheNamespace;
       const key = row.req.context?.key ?? "";
@@ -1232,6 +1234,11 @@ export class MlxBatchExecutionGroup {
     const rows = this.#running;
     const B = rows.length;
     const inners = this.#inners!;
+    const decodeState = rows[0]?.req.promptInput?.decodeState;
+    if (decodeState) {
+      const states = rows.map(row => row.req.promptInput!.decodeState!);
+      forward = async (ids, caches) => decodeState.forward(ids, caches, states);
+    }
 
     // A row is live if it still needs tokens sampled; a row whose pending
     // unread token is its last (sampled == maxTokens) only awaits emission.

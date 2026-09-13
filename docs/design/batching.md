@@ -547,7 +547,7 @@ They do not require repeating completed checks or withholding the current defaul
 | Speculative decode | Qwen MTP, prompt lookup, standalone, assistant, DeepSpec and seeded DSpark/DFlash providers are integrated through shared B1/B>1 interfaces, with the native/HTTP/cache checks recorded below | Finish specific unsupported combinations and measured regressions; GLM artifact testing is deferred and no trained DSpark/DFlash checkpoint exists |
 | Sampling and logprobs | Shared sampler contract; ordinary groups capture logprobs and accept explicit seeds | Extend same-B oracle/feature compositions and matched performance; preserve per-request RNG/history |
 | Grammar and fill | Shared grammar proposals use grouped verification. Shared strict fill composes prefill, rows, sampling and committed append; native and HTTP/cache/timing gates pass | Speculative/echo fill and other named combinations remain. Keep grammar proposals opt-in after mixed timing results |
-| Adapters and media | Compatible adapter groups use shared execution; Gemma4 prepared image/audio input passes both-machine native/HTTP and M4 ABBA acceptance in the ordinary group | Qwen request-owned positions, lone-media latency costs, adapter performance and broader compositions |
+| Adapters and media | Compatible adapter groups use shared execution; Gemma4 prepared image/audio input passes both-machine native/HTTP and M4 ABBA acceptance in the ordinary group | Qwen image/video serving/performance acceptance, lone-media latency costs, adapter performance and broader compositions |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | C1–C5 add shared SSD blocks and optional direct bf16/affine paged attention with native/HTTP evidence. TQ pages and paged speculation remain extensions; reuse completed row-layout gates |
 | Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
@@ -577,9 +577,17 @@ and native prompt construction enter it. Encoder-local preprocessing remains
 part of prompt construction. Grammar compilation enters the same execution
 domain without putting template rendering or tokenization on the queue.
 
-Gemma4 binds image/audio embeddings to this input interface. Qwen's request
-mRoPE state still lives on the model during serial execution and is not yet
-qualified for shared media rows. Diffusion retains its separate method.
+Gemma4 binds image/audio embeddings to this input interface. Qwen binds
+image/video embeddings and a `MlxDecodeState` carrying each request's position
+delta. The backend passes the current row order to that state after joins and
+retirement. Its forward uses the cache's logical position array on device;
+attention receives explicit positions without a module-global variable.
+Input-state compatibility remains separate from cache-layout compatibility.
+Media forwards with additional position state decline mixed-token packing.
+Qwen image/video preprocessing completes outside the native execution lease.
+Diffusion retains its separate method. Qwen's source-controlled M1 native
+comparison and padded B1/B2/B4 affine/TurboQuant checks pass; real image/video
+serving and M4 comparison are in progress.
 The input and task tests cover atomic boundaries, final projection geometry,
 full same-machine Gemma logits/cache/continuation, active B1/B2 logit identity,
 cancellation and mutation priority. Both-machine audio HTTP checks preserve the existing
