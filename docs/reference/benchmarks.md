@@ -1322,9 +1322,28 @@ include B4→B2 retirement and reordering to rows `[3, 1]`. Complete float32
 logit byte hashes match at all 36 steps on both M1 Max and M4 Pro (74 assertions
 per machine). The reference receives only the fixed input plan, never native
 outputs. These equal-length rows close the full-attention unpadded cell;
-unequal padding and rotating mixed-KV remain separate numerical contracts.
+the padded extension below uses an explicitly composed reference. Rotating
+mixed-KV remains a separate numerical contract.
 Run with `MLX_BUN_TEST_BATCH_AFFINE_ORACLE=1` and the pinned oracle environment.
 Logs: `reports/prefill-observation/batched-affine-oracle-{m1,m4}.log`.
+
+The unequal-length extension uses prompt lengths `[5, 9, 7, 11]`, then six
+teacher-forced decode steps with B4→B2 reordering/retirement to `[3, 1]`.
+All 24 complete logit-vector hashes match on each machine for bf16, KV4,
+KV8 and alternating KV4/KV8/bf16 layers (50 assertions per machine).
+Enable this case with `MLX_BUN_TEST_BATCH_AFFINE_PADDING=1` alongside the
+oracle opt-in. The existing equal-length mode remains available.
+
+Pinned mlx-lm lacks a padded quantized batch cache. The test composes its
+`QuantizedKVCache` with `BatchKVCache` positions and causal masking. Its
+quantized GQA helper also needs one broadcast axis for a per-row mask:
+`[B,1,L,N]` becomes `[B,1,1,L,N]` against grouped scores. That test-only
+adapter preserves the pinned model and attention arithmetic; it receives no
+Bun cache or output values. This is a composed numerical reference, not a
+stock server capability. The bf16 control uses unmodified `BatchKVCache`.
+No production engine change or performance claim follows from this test.
+Logs: `reports/prefill-observation/padded-affine-m1-final.log` and
+`padded-affine-m4.log`; the initial reference broadcast error is preserved.
 
 ### Recurrent prefill attribution
 

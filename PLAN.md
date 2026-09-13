@@ -325,7 +325,7 @@ keeps storage, policy and attention kernels behind separate interfaces.
       against solo geometry with a KL envelope; it does not establish the
       same-B external oracle. The new MiniCPM full-attention B1/B4 KV4/KV8/mixed
       same-B test passes 36 complete vectors per machine, including retirement
-      and reordering. Unequal padding and rotating mixed-KV remain.
+      and reordering. Unequal-length full-attention bf16/KV4/KV8/mixed cases now match all 24 vectors per machine through a documented test-only composition of pinned storage, positions and masking; stock mlx-lm lacks this cache. Rotating mixed-KV remains.
 - [~] **L3 (Lab) composition:** TQ layouts, donors, generated RAM/SSD reuse,
       grammar proposals and mixed iteration work are implemented and measured.
       Their individual numerical contracts and opt-in decisions remain valid.
