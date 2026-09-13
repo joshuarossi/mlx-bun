@@ -2874,4 +2874,59 @@ This proves retention identity for these fixtures; it does not extend the
 model's separately documented external-oracle tier.
 
 Reports: `reports/prefill-observation/gemma-encoder-{control,candidate}-{m1,m4}.json`
-and `gemma-encoder-http-{m1,m4}.log`. The matched M4 timing comparison is pending.
+and `gemma-encoder-http-{m1,m4}.log`.
+
+M4 Pro 24 GB ABBA compares runtime source `4289bce` with `4521024`, using
+Gemma e4b OptiQ snapshot `fcdb12d740cd813634064567fc7cb51159b34253`,
+Bun 1.4.2 / MLX 0.32.2, bf16 KV, default cap eight, no draft, an 8,000,000,000-byte
+RAM cache and no SSD during timing. Compiled decode uses its existing default.
+The runner's `MLX_BUN_COMPILED=0` is an unused environment name, not the
+`MLX_BUN_COMPILED_DECODE` option; both arms use identical runtime settings.
+Inputs are a 64×64 red PNG and the existing speech WAV, with temperature zero
+and seed 42. Six repetitions per scenario follow separately recorded audio,
+image and 128-token text warmups. Audio returns 11 tokens, image two, and the
+single mixed-media request 12, under unchanged 32/16-token budgets.
+
+All 168 paired measured responses retain complete content, reasoning and usage.
+Medians below are request completion times, not isolated decode throughput.
+
+| Workload | Control A → candidate A, ms | Change | Control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| One audio request | 354.57 → 326.65 | −7.87% | 357.16 → 327.08 | −8.42% |
+| One image request | 611.51 → 413.51 | −32.38% | 625.98 → 414.56 | −33.77% |
+| Two audio requests | 570.41 → 519.37 | −8.95% | 575.19 → 517.19 | −10.08% |
+| Four audio requests | 923.95 → 855.95 | −7.36% | 931.98 → 856.43 | −8.11% |
+| Two image requests | 1196.14 → 833.21 | −30.34% | 1229.68 → 834.23 | −32.16% |
+| Concurrent text, audio and image | 3147.68 → 2927.42 | −7.00% | 3182.60 → 2932.27 | −7.87% |
+| One request containing image and audio | 901.25 → 680.19 | −24.53% | 922.33 → 682.12 | −26.04% |
+
+Audio cohorts observe actual B2/B4 in every repetition. The image pair's overlap
+changes: the control observes B2, while the candidate's first request finishes
+much earlier, at 420.37/423.92 ms versus 1196.12/1229.67 ms. The runner's forward
+probe does not observe compiled B1 calls; zero in that raw field means unobserved.
+This is request-level acceptance, not a fixed-B2 kernel comparison.
+
+First-use audio costs 946.84 → 1222.28 ms and 899.07 → 1227.05 ms; image costs
+625.77 → 882.39 ms and 627.98 → 871.59 ms. Weight fingerprints and first cache
+publication add 275.44/327.98 ms for audio and 256.62/243.62 ms for images.
+At the repeated B1 savings above, that cost is recovered after roughly 10–11
+additional audio uses or two image uses. The two feature objects add exactly
+1,996,800 resident bytes, about 1.90 MiB, to the existing shared cache budget.
+
+These are diagnostic measurements. All 94 activity samples retain process,
+GPU-submitter and swap observations; Bun is the last GPU submitter in 87,
+with desktop applications in seven. Retained swap is 3996.12 MiB throughout.
+Sampled peak Bun RSS is 7628.20 → 7558.05 MiB and 7644.98 → 7398.94 MiB.
+Both comparison orders favor reuse despite the recorded background activity.
+
+A separate M4 process reloads the model and restores both features from verified
+SSD storage. Request, encoder fingerprints, output, every requested top-ten
+logprob and full usage match; encoder calls change from one per tower to zero.
+Both processes finish with durable persistence. Both-machine HTTP/native checks,
+all 2,360 model-free tests, typechecks and hygiene pass.
+
+Raw timing: `gemma-encoder-{control,candidate}-{a,b}.json`, reviewed in
+`gemma-encoder-comparison-review.json`. Fresh-process evidence:
+`gemma-encoder-process-{write,read}.json` and `gemma-encoder-process-review.json`.
+Completed runner sources: `completed-gemma-encoder-tool-sources.json`.
+Media KV-prefix reuse remains open.

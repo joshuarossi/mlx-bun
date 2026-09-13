@@ -849,7 +849,10 @@ SSD persistence on unified memory. The bounded Qwen screen and integrated
 acceptance pass on M4; both-machine native/HTTP checks and fresh-process SSD
 reuse preserve their recorded outputs. [Measurements](../reference/benchmarks.md#qwen-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13)
 include the one-time weight-fingerprint cost. Gemma prepared inputs and mixed
-RAM/SSD HTTP reuse pass both-machine identity checks; matched timing is pending.
+RAM/SSD HTTP reuse pass both-machine identity checks. Its M4 ABBA preserves all
+168 paired responses/usage and improves every measured workload; first-use
+cost and changed image overlap are recorded in the
+[Gemma measurements](../reference/benchmarks.md#gemma-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13).
 Media KV-prefix caching remains separate work.
 
 
