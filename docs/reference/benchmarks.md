@@ -77,6 +77,125 @@ The latest standard comparison is shown first, with machine conditions and
 losses retained. These diagnostic results are observations of this workload,
 not a universal speed ranking.
 
+### Integrated default batched h2h — M4 Pro (2026-09-13)
+
+Two complete standard suites use source `565bc13`, Bun 1.4.2 and MLX 0.32.2
+on the 24 GB M4 Pro. They retain the September 11 artifacts and complete
+`bench-serve-v2` workload: five 192-token short decode samples, a 16,384-token
+context target and four concurrent 128-token requests. Order A runs default
+Bun, stock reference, then mixed-KV Bun; order B reverses those arms. Neither
+forces serial. All 114 default-Bun requests report the batched lane.
+
+Each table entry shows **order A / order B**. Short decode is the median
+visible SSE-window rate; aggregate is completed output tokens divided by
+the four-request wall time.
+
+| Model | Default short tok/s | Reference short tok/s | Default aggregate tok/s | Reference aggregate tok/s |
+|---|---:|---:|---:|---:|
+| MiniCPM5-1B | 277.73 / 276.32 | 224.79 / 223.01 | 708.87 / 701.73 | 401.82 / 397.40 |
+| Gemma4-e4b | 59.39 / 58.64 | 54.06 / 53.99 | 171.35 / 170.60 | 131.69 / 131.62 |
+| Gemma4-12B | 26.68 / 26.53 | 25.52 / 25.53 | 75.18 / 74.28 | 65.37 / 65.38 |
+
+Against the September 11 default rows below, short decode ranges from 1.7%
+lower to 0.1% higher across these models. Observed aggregate throughput rises
+0.3–1.3% for MiniCPM, 2.8–3.3% for e4b and 8.2–9.5% for 12B. Those historical
+comparisons are observations across sessions. The fresh reference is also
+slower than its September 11 result, so the changing reference margin alone
+cannot establish an engine improvement.
+
+Every historical default short/context request matches input hash, output
+text, prompt/generated/cached counts and finish status: 30 short and 18
+context comparisons across the two runs. Concurrent inputs and counts match,
+but several texts differ, including between the two MiniCPM orders. These
+aggregate rows are not identical-output speed ratios. Both Gemmas match all
+fresh reference short-decode outputs; MiniCPM retains its documented stock
+reference thinking-boundary difference. All fresh context texts match;
+e4b has one cache-count difference per suite, and concurrent Gemma cache counts
+differ between stacks.
+
+All 18 cells complete without phase failures. The twelve Bun cells flush
+durably and restore their SSD prefixes. Source snapshots remain unchanged.
+Losses remain visible: MiniCPM context SSE throughput is 159.00–160.15 tok/s
+versus 176.56 previously, with cached 64-token completion at 403.93–409.10 ms
+versus 384.75 ms. Its first output improves to 14.29–15.51 ms from 28.81 ms.
+Gemma e4b cached completion is 1342.87–1345.22 ms versus 1300.40 ms; 12B is
+2657.35–2658.98 ms versus 2606.45 ms. The MiniCPM on/off and source controls
+below separate output-window effects from complete-request cost.
+
+Both suites are diagnostic. Initial free memory is 89% with 3,976 MB of
+retained swap. A five-second observer has no collection errors and identifies
+an owned inference process as last GPU submitter in 201 of 219 active-worker
+samples. Eleven name Codex and seven name Terminal; last submission is not
+utilization or proof of exclusive GPU time. The observer takes a median 16 ms
+and maximum 52 ms per sample. Preserve these conditions when comparing runs;
+two opposite orders do not supply a statistical significance claim.
+
+Raw suites, activity, frozen command plan and comparisons are
+`reports/prefill-observation/standard-integrated-{0,1}.md.json`,
+`standard-integrated-activity.jsonl`, `standard-integrated-plan.json` and
+`standard-integrated-review.json`. Packed Qwen remains outside this
+stock-reference matrix because its artifact has no stock loader.
+
+#### MiniCPM output timing and source controls
+
+Four standard MiniCPM suites on the same M4 use early-output order off/on/on/off
+at fixed source `565bc13`. Cached 9,062-token prompts generate 64 tokens.
+Earlier output reduces median cached TTFT from 25.71–28.14 ms to 14.46–14.76 ms;
+complete time remains 406.43–409.63 ms across the four suites. The SSE interval
+starts earlier, explaining part of its lower displayed decode rate. Keep the
+early-output default. This does not explain the whole historical completion gap.
+
+A fresh old/current/current/old comparison uses `47620a5` and `565bc13`, with
+the current measurement scripts and support helpers on both sources. Early
+output is off throughout. Cached completion is 396.20 / 409.04 / 406.45 / 383.96 ms.
+The old source therefore reproduces a smaller completion cost under these
+conditions. Peak RSS is approximately 1,253–1,275 MB old versus 1,485–1,491 MB
+current. That observation alone does not attribute either difference to an
+individual cache or decode change.
+
+Both four-suite controls retain all short/context input hashes, response texts,
+counts and finish status. Concurrent texts vary despite matching requests and
+counts, including within one source, and do not support identical-output ratios.
+Each suite has a fixed source snapshot and no phase failures. The source
+control observer names an owned inference worker as last GPU submitter in all
+eight active-worker samples. The early-output control has eight owned and one
+Terminal sample. These are bounded diagnostic controls, not utilization traces.
+Raw plans, requests, source hashes, activity and comparisons are under
+`reports/prefill-observation/minicpm-{early,source}-control-*`.
+
+#### Reuse identical token-history conversions
+
+The sampler-only old/current/current/old control holds all other source at
+`565bc13`: cached completion is 403.80 / 405.04 / 406.35 / 403.97 ms. This small
+change does not explain the historical gap. An earlier cache-source screen
+at `c953f2f` also reproduces approximately 406–410 ms. Its tracked source matches
+that commit, with ten later, unreferenced modules left in the temporary tree;
+full source manifests retain that distinction.
+
+A separate instrumented run measures `GeneratedTokenHistory.remember` taking
+7.45–21.62 ms to decode 9,125 IDs into text. Cache publication can repeat that
+same checkpoint. The retained implementation compares IDs against the bounded
+provenance entries and refreshes an exact match without another decode or copy.
+It still decodes new sequences and replaces provenance when different IDs spell
+the same text. It changes no model, sampler or cache-state computation.
+
+A paired standard-suite screen uses treatment/control/control/treatment, early
+output off and otherwise identical `565bc13` source. The cached 64-token
+completion medians are **390.69 / 408.83 / 407.37 / 392.76 ms**, improvements of
+4.4% and 3.6% within the adjacent pairs. All 24 short/context comparisons against
+the first suite preserve input hashes, response text, usage counts and finish
+status. Concurrent outputs remain partly variable. All four suites complete
+without failures or changing source snapshots; all eight active-worker samples
+name an owned inference worker as last GPU submitter. The observer median is
+20.5 ms with a 50 ms maximum. These diagnostic pairs support the specific reuse
+change, not a cross-model or statistical significance claim.
+
+The provenance/retention tests pass, including exact BPE IDs, same-text/different-ID
+replacement and eviction order. All three TypeScript projects pass. Raw
+sampler/cache screens, instrumented timings and reuse pairs are under
+`reports/prefill-observation/minicpm-{sampler-control,cache-control,history-observation,history-reuse}-*`.
+The full standard matrix with early output enabled is the next acceptance step.
+
 ### Default batched h2h without serial controls — M4 Pro (2026-09-11)
 
 This comparison uses default batching without a forced-serial arm.

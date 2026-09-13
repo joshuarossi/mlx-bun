@@ -620,6 +620,10 @@ The template's primer length is measured canonically and applied to the actual
 history-preserving token sequence. This can change input token counts, and
 therefore continuation logits, relative to re-encoding all generated text.
 Logit parity remains a contract for the same input IDs and execution shape.
+Republishing an identical token sequence refreshes its existing provenance
+entry without decoding the whole conversation again. Equality covers every ID;
+equal text from different IDs still replaces provenance. This avoids repeated
+text conversion during request completion and preserves the retention limit.
 
 Cache pressure maintenance uses 85% of the smaller of the recommended device
 working set and an explicit allocator limit as a residency target. It includes

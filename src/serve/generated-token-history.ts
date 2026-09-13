@@ -19,6 +19,15 @@ export class GeneratedTokenHistory implements PromptTokenHistory {
 
   remember(tokens: readonly number[]): void {
     if (!tokens.length) return;
+    // Repeated requests can publish the same generated checkpoint. Its text
+    // and IDs are already owned here; refresh recency without decoding the
+    // entire conversation again on the request's completion path.
+    for (const [text, ids] of this.#entries) {
+      if (ids.length !== tokens.length || !ids.every((id, i) => id === tokens[i])) continue;
+      this.#entries.delete(text);
+      this.#entries.set(text, ids);
+      return;
+    }
     const ids = [...tokens], text = this.codec.decode(ids, false);
     // An unfinished UTF-8 token is not a text boundary. A later checkpoint
     // can supply a complete prefix instead.

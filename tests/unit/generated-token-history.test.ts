@@ -55,6 +55,23 @@ describe("generated token provenance", () => {
     expect(history.resolve(codec.decode(ids), ids)).toBe(ids);
   });
 
+  test("repeated checkpoints reuse decoded text and refresh retention without losing token identity", () => {
+    let decodes = 0;
+    const history = new GeneratedTokenHistory({ ...codec, decode(ids, special) {
+      decodes++;
+      return codec.decode(ids);
+    } }, 100, 2);
+    history.remember([5, 1, 2]);
+    history.remember([4]);
+    history.remember([5, 1, 2]);
+    expect(decodes).toBe(2);
+    history.remember([5, 4]); // evicts [4], not the refreshed checkpoint
+    const ids = [5, 3, 4];
+    expect(history.resolve(codec.decode(ids), ids)).toEqual([5, 1, 2, 4]);
+    history.remember([5, 3]); // same text, different IDs must replace provenance
+    expect(history.resolve(codec.decode(ids), ids)).toBe(ids);
+  });
+
   test("retention is bounded and incomplete UTF-8 tails are not reusable boundaries", () => {
     const history = new GeneratedTokenHistory(codec, 100, 1);
     history.remember([5, 1, 2]);
