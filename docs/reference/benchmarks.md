@@ -3026,5 +3026,64 @@ boundary explicitly. The failed assumptions and inspection remain preserved.
 
 Reports: `reports/prefill-observation/media-prefix-native-{m1,m4}.log`,
 `media-prefix-http-{m1,m4}.log`, `media-prefix-trim-inspection.log` and
-`completed-media-prefix-inspection.json`. Matched M4 timing is pending; the
-option remains off by default. Qwen media KV reuse is still separate work.
+`completed-media-prefix-inspection.json`. M4 same-source ABBA on `7ea35fb` uses the existing e4b OptiQ fixture, bf16 KV,
+default cap eight and compiled decode, six repetitions per workload, and the
+same encoded-feature cache in both arms. Only media prefix reuse is toggled.
+No SSD participates in these timings; the separate restart checks cover it.
+
+| Workload | Control A → candidate A, ms | Change | Control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| One audio request | 327.80 → 230.48 | −29.69% | 328.98 → 230.11 | −30.06% |
+| One image request | 413.04 → 73.55 | −82.19% | 414.24 → 72.74 | −82.44% |
+| Two audio requests | 517.89 → 296.59 | −42.73% | 521.07 → 294.76 | −43.43% |
+| Four audio requests | 858.40 → 407.62 | −52.51% | 862.02 → 405.85 | −52.92% |
+| Two image requests | 834.56 → 148.10 | −82.25% | 834.20 → 146.39 | −82.45% |
+| Concurrent text, audio and image | 2923.02 → 2329.57 | −20.30% | 2934.48 → 2339.33 | −20.28% |
+| One request containing image and audio | 681.82 → 287.71 | −57.80% | 683.60 → 285.89 | −58.18% |
+
+Of 168 paired measured requests, 158 retain identical content/reasoning and
+non-cache token usage. The ten changed mixed-media replies add a terminal
+period after “Red”, increasing completion count from 12 to 13; their transcription
+and color are unchanged. Prompt cached counts intentionally change. Audio
+reuses 82 tokens and image 279. The first mixed-media request is uncached;
+subsequent mixed-media requests reuse its state. This is same-workload request
+acceptance, not identical full-prefill geometry or a bit-identical token stream.
+The native retained-state checks above use matched geometry.
+
+All scenarios improve in both comparison orders. Concurrent occupancy changes
+as preparation gets shorter; the mixed text/audio/image case reaches B3 instead
+of B2. The runner's zero forward-probe field means unobserved compiled B1, not
+zero active rows. These are complete request times, not isolated decode TPS.
+
+First-use audio is 1170.63 → 1296.42 ms and 1319.00 → 1294.70 ms; first-use image
+is 876.81 → 879.04 ms and 878.60 → 907.45 ms. The extra prefix records retain
+93,757,440 bytes, about 89.41 MiB, in the same cache budget. The 74 activity
+samples name Bun as last GPU submitter in 70 and desktop applications in four;
+retained swap is 3964.12 MiB throughout. Sampled peak Bun RSS is
+7408.44 → 7114.09 MiB and 7183.34 → 7082.58 MiB. Diagnostic classification remains.
+
+Raw comparisons: `gemma-media-prefix-{control,candidate}-{a,b}.json`, with
+`gemma-media-prefix-review.json`. Qwen prefix integration and its separate
+serving/timing acceptance are in progress before final default selection.
+
+
+### Qwen prepared-media KV identity and continuation
+
+Qwen uses the same shared prefix-cache port. Its producer identity additionally
+includes prepared image/video hashes, rendered timestamps and mRoPE positions
+through the last media span. Recurrent layers keep their exact-prefix rule.
+The native binding resumes the new request's positioned text forward from the
+retained offset; no global model position state is changed.
+
+Both Macs pass all 12 request-owned media state tests with 78 assertions. New
+cases preserve complete logits, attention/recurrent state, donor immutability
+and continuation after bf16, delayed KV4 and delayed k8v3 prefixes. M1 uses the
+existing Qwen3.5 0.8B fixture and M4 the actual packed 27B artifact; each comparison
+uses its own model and machine. Both Macs then pass five actual packed 27B HTTP
+tests with 57 assertions: image follow-ups through KV4 and k8v3 in RAM and a
+new server's verified SSD cache, different-image isolation, and video-history
+reuse with timestamps/positions. The follow-ups reuse generated output tokens.
+
+Reports: `reports/prefill-observation/qwen-media-prefix-native-{m1,m4}.log` and
+`qwen-media-prefix-http-{m1,m4}.log`. A matched M4 session replay is next; the
+shared media-prefix option remains off pending that comparison.

@@ -871,7 +871,11 @@ RAM/SSD lookup, generated snapshots, prefetch and persistence. The prepared-inpu
 interface receives the cache's starting position. An uncached input performs
 its atomic media prefill; a restored prefix resumes text after all media through
 the model's ordinary forward method. Scheduling and sampling are unchanged.
-Explicit serial and Qwen media prefix reuse remain unqualified.
+Qwen supplies the same opaque identity with prepared image/video hashes,
+rendered timestamps and all mRoPE positions through its final media span. Its
+resumed text forward uses the current request positions and preserves the
+recurrent state. Recurrent layers still require an exact retained prefix;
+explicit serial prefix reuse remains unqualified.
 
 The existing minimum reusable offset still identifies a precision transition.
 If delayed quantization occurs after an atomic media prefill, its cached state

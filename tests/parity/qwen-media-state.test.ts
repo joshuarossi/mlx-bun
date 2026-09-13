@@ -93,4 +93,70 @@ describe.skipIf(!path)("Qwen request-owned media positions", async () => {
       expect(arms[1]).toEqual(arms[0]);
     }, 120_000);
   }
+  for (const format of ["bf16", "kv4-delayed", "k8v3-delayed"] as const)
+    test(`${format} retained media prefix preserves recurrent state and positioned continuation`, async () => {
+      const { PromptCache } = await import("../../src/prompt-cache");
+      const { cloneKvCaches } = await import("../../src/kv-store");
+      const { createKvMaintenance } = await import("../../src/backends/mlx/kv-maintenance");
+      const { MlxPrefillCohort } = await import("../../src/backends/mlx/prefill-cohort");
+      const { leaseCacheStates } = await import("../../src/backends/mlx/state-views");
+      const { withResource, disposeResources } = await import("../../src/engine/resources");
+      const prefix = Array.from({ length: 17 }, (_, i) => 40 + i), tail = [90, 91, 92, 93, 94, 95, 96];
+      const prompt = [...prefix, ...tail], positions = state(prompt.length, 0);
+      using ids = ops.fromInt32(prefix, [1, prefix.length]);
+      using embeddings = model.embed.encode(ids);
+      using initialPositions = mropePositionIds(positions, 0, prefix.length);
+      const maintain = createKvMaintenance(format === "bf16" ? {} : format === "kv4-delayed"
+        ? { kvBits: 4, quantizedKvStart: 8 } : { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 8 });
+      const donor = model.makeCache(), cache = new PromptCache(8e9), namespace = `qwen-media-${format}`;
+      const cachesHash = (caches: Cache[]) => caches.map(c => ({ signature: c.signature(), offset: c.offset,
+        arrays: withResource(leaseCacheStates([c]), values => values.map(value => {
+          const shape = value.shape;
+          using live = shape.length === 4 && shape[2]! > c.offset
+            ? value.slice([0, 0, 0, 0], [shape[0]!, shape[1]!, c.offset, shape[3]!]) : null;
+          return hash(live ?? value);
+        })) }));
+      const output: unknown[] = [];
+      const finish = (caches: Cache[], logits: MlxArray) => {
+        const first = { logits: hash(logits), caches: cachesHash(caches) };
+        maintain(caches);
+        using next = ops.fromInt32([123], [1, 1]);
+        using pos = ops.fromInt32(Array(3).fill(prompt.length + positions.delta), [3, 1, 1]);
+        using hidden = model.forwardHiddenAtPositions(next, caches, pos);
+        using result = model.logitsFromHidden(hidden);
+        return { first, next: { logits: hash(result), caches: cachesHash(caches) } };
+      };
+      try {
+        maintain(donor);
+        using initial = model.forwardEmbeddingsAtPositions(embeddings, donor, initialPositions); initial.eval();
+        cache.put(prefix, cloneKvCaches(donor), namespace);
+        const before = cachesHash(cache.findExact(prefix, namespace)!.caches);
+        maintain(donor);
+        using tailIds = ops.fromInt32(tail, [1, tail.length]);
+        using tailPositions = mropePositionIds(positions, prefix.length, tail.length);
+        using hidden = model.forwardHiddenAtPositions(tailIds, donor, tailPositions);
+        using tip = hidden.slice([0, tail.length - 1, 0], [1, tail.length, hidden.shape[2]!]);
+        using logits = model.logitsFromHidden(tip); output.push(finish(donor, logits));
+        const row = {
+          req: { promptIds: prompt, cacheNamespace: namespace, maxTokens: 1, eosTokenIds: [],
+            sample: () => { throw new Error("unused"); }, onToken() {},
+            promptInput: bindQwenMediaInput(model, embeddings, positions) },
+          cacheNamespace: namespace, resolve() {}, reject(error: unknown) { throw error; },
+          current: 0, generated: 0, sampled: 0, promptTokens: prompt.length, cachedTokens: 0,
+          admittedAt: 0, firstTokenAt: 0, fed: [], fedTainted: false, merged: false,
+        } satisfies import("../../src/backends/mlx/batch-group").Row;
+        const cohort = new MlxPrefillCohort({ model, chunkSize: 2, tailSplit: true, maintain, promptCache: cache,
+          forward: async () => { throw new Error("generic prefill selected"); }, project: h => model.logitsFromHidden(h),
+          async complete(value, lg) { output.push(finish(value.solo, lg)); disposeResources(value.solo); },
+          reject: (_row, error) => { throw error; },
+        });
+        try {
+          cohort.admit(row); expect(await cohort.advance({ maxTokens: 1 })).toBe(true);
+          expect(row.cachedTokens).toBe(prefix.length); expect(output[1]).toEqual(output[0]);
+          expect(cachesHash(cache.findExact(prefix, namespace)!.caches)).toEqual(before);
+          expect(model.mrope).toBeNull();
+        } finally { cohort.dispose(); }
+      } finally { disposeResources(donor); cache.clear(); }
+    }, 120_000);
+
 });

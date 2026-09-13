@@ -147,7 +147,7 @@ export async function buildModelPrompt(
         prep.templateOptionsFor(body, toolList),
         videos, nativeWork, encoderCache,
       );
-      return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, mrope: vp.mrope } };
+      return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, mrope: vp.mrope, prefixIdentity: vp.prefixIdentity } };
     }
     if (hasImages) {
       // Loads (and caches) the tower on first image request — text-only

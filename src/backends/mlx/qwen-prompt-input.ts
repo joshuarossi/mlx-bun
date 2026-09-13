@@ -31,9 +31,10 @@ class QwenMediaDecodeState implements MlxDecodeState {
 /** The prompt owns its grid; only its continuation delta survives into decode. */
 export function bindQwenMediaInput(model: Qwen35Model, embeddings: MlxArray,
   state: MropeRequestState): MlxPromptInput {
-  const input = bindEmbeddingsInput((ids, caches) => {
-    using positions = mropePositionIds(state, 0, ids.shape[1]!);
-    return model.forwardEmbeddingsAtPositions(embeddings, caches, positions);
+  const input = bindEmbeddingsInput((ids, caches, start) => {
+    using positions = mropePositionIds(state, start, ids.shape[1]!);
+    return start > 0 ? model.forwardHiddenAtPositions(ids, caches, positions)
+      : model.forwardEmbeddingsAtPositions(embeddings, caches, positions);
   });
   return { ...input, decodeState: new QwenMediaDecodeState(model, state.delta) };
 }

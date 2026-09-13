@@ -36,6 +36,7 @@ export interface Qwen3VLTokenIds {
 
 export interface Qwen3VLVisionPrompt {
   ids: number[];
+  prefixIdentity?: string;
   /** [1, L, H] bf16 spliced input embeddings (caller owns → generate()). */
   embeddings: MlxArray;
   /** Request mRoPE state for Qwen35Model.mrope. */
@@ -97,11 +98,13 @@ export async function buildQwen3VLVisionPrompt(
   const grids: [number, number, number][] = [];
   let imgIdx = 0;
   let vidIdx = 0;
+  let lastMediaEnd = 0;
   for (const t of rawIds) {
     if (t === tokenIds.imageTokenId) {
       const pp = imagePps[imgIdx++]!;
       grids.push(pp.gridThw);
       for (let i = 0; i < pp.imageTokens; i++) ids.push(tokenIds.imageTokenId);
+      lastMediaEnd = ids.length;
     } else if (t === tokenIds.videoTokenId) {
       const pp = videoPps[vidIdx++]!;
       const [gridT, gridH, gridW] = pp.gridThw;
@@ -115,6 +118,7 @@ export async function buildQwen3VLVisionPrompt(
         for (let i = 0; i < frameTokens; i++) ids.push(tokenIds.videoTokenId);
         ids.push(visionEndId);
       }
+      lastMediaEnd = ids.length;
     } else ids.push(t);
   }
 
@@ -138,6 +142,11 @@ export async function buildQwen3VLVisionPrompt(
     .update(`qwen3vl-v1:${JSON.stringify(pp.gridThw)}:${pp.rows}:${pp.cols}:`)
     .update(new Uint8Array(pp.pixelValues.buffer, pp.pixelValues.byteOffset, pp.pixelValues.byteLength))
     .digest("hex")) : [];
+  const prefixIdentity = encoderCache && lastMediaEnd > 0
+    ? createHash("sha256").update("qwen-prepared-prefix-v1").update(encoderCache.identity)
+      .update(JSON.stringify({ keys, tokens: ids.slice(0, lastMediaEnd), delta: mrope.delta,
+        positions: mrope.positions.map(axis => Array.from(axis.slice(0, lastMediaEnd))),
+      })).digest("hex") : undefined;
   const reused: Array<MlxArray | null> = [];
   try {
     for (const key of keys) reused.push(await encoderCache!.take(key));
@@ -212,7 +221,7 @@ export async function buildQwen3VLVisionPrompt(
         const embeddings = segments.length === 1
           ? ops.contiguous(segments[0]!)
           : ops.concatAxis(segments, 1);
-        return { ids, embeddings, mrope };
+        return { ids, embeddings, mrope, prefixIdentity };
       } finally {
         for (const s of owned) s.dispose();
         textEmb.dispose();
