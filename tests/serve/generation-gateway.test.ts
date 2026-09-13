@@ -13,6 +13,7 @@ import { KvScheme, resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
 import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 import { bindMlxGateway, type MlxBatchGroup } from "../../src/backends/mlx/gateway-binding";
+import { PromptResponseTrace } from "../../src/serve/prompt-response-trace";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -83,6 +84,58 @@ const batchable: RequestShape = {
   hasGrammar: false,
   hasDraft: false,
 };
+
+for (const abortWaiting of [false, true]) {
+  test(`request-slot trace includes waiting before the execution lease: abort=${abortWaiting}`, async () => {
+    let releaseFirst!: () => void, enteredFirst!: () => void;
+    const held = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const entered = new Promise<void>(resolve => { enteredFirst = resolve; });
+    let now = 0, calls = 0, prefetchReleases = 0;
+    const g = new GenerationGateway(stubModel, 1, async () => {
+      if (calls++ === 0) { enteredFirst(); await held; }
+      return {} as never;
+    }, { promptCache: {
+      take: () => null, put() {},
+      async prefetch(ids) {
+        if (ids[0] === 2) now += 11;
+        return () => { prefetchReleases++; };
+      },
+    } });
+    const shape = { ...batchable }, placement = g.place(shape);
+    const first = g.run([1], {}, () => {}, undefined, shape, placement);
+    await entered;
+    now = 100;
+    const trace = new PromptResponseTrace({ traceId: "queued", requestId: "queued",
+      route: "/v1/chat/completions", clock: () => now, emit() {} });
+    const abort = new AbortController();
+    const second = g.run([2], {}, () => {}, undefined, shape, placement, abort.signal, trace);
+    const settled = second.then(() => "success", () => "abort");
+    try {
+      now = 175;
+      if (abortWaiting) abort.abort();
+      releaseFirst();
+      await first;
+      const outcome = await settled;
+      expect(outcome).toBe(abortWaiting ? "abort" : "success");
+      const record = trace.finish(outcome as "success" | "abort")!;
+      expect(record.events.find(e => e.phase === "engine.request_wait"))
+        .toMatchObject({ startMs: 0, durationMs: 75, attributes: { capacity: 1 } });
+      const prefetch = record.events.find(e => e.phase === "cache.prefetch");
+      const admission = record.events.find(e => e.phase === "engine.admission_wait");
+      if (abortWaiting) {
+        expect(prefetch).toBeUndefined();
+        expect(admission).toBeUndefined();
+        expect(calls).toBe(1);
+        expect(prefetchReleases).toBe(1);
+      } else {
+        expect(prefetch).toMatchObject({ startMs: 75, durationMs: 11 });
+        expect(admission).toMatchObject({ startMs: 86, durationMs: 0 });
+        expect(calls).toBe(2);
+        expect(prefetchReleases).toBe(2);
+      }
+    } finally { releaseFirst(); await settled; await g.close(); }
+  });
+}
 
 describe("GenerationGateway.place", () => {
   test("a binding keeps its runtime snapshot while later bindings see new flags", () => {

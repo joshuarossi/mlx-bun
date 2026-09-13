@@ -559,8 +559,10 @@ function renderReport(
           if (!rows.length) continue;
           const med = (f: (sample: Sample) => number) => median(rows.map(f));
           const prompt = med((s) => phaseDuration(s.trace, "request.prompt_prepare"));
-          const queue = med((s) => phaseDuration(s.trace, "engine.admission_wait"));
-          const cache = med((s) => phaseDuration(s.trace, "cache.lookup_restore"));
+          const queue = med((s) => phaseDuration(s.trace, "engine.request_wait") +
+            phaseDuration(s.trace, "engine.admission_wait"));
+          const cache = med((s) => phaseDuration(s.trace, "cache.prefetch") +
+            phaseDuration(s.trace, "cache.lookup_restore"));
           const setup = med((s) => phaseDuration(s.trace, "prefill.batch_setup"));
           const chunks = med((s) => phaseDuration(s.trace, "prefill.chunk"));
           const prefill = med((s) => phaseDuration(s.trace, "prefill.total"));

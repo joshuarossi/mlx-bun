@@ -1597,6 +1597,15 @@ numbers are historical controls until the workload and version metadata match.
 
 ### 7.10 Final benchmark and HTML comparison report
 
+Request tracing separates the gateway’s request-slot wait (`engine.request_wait`)
+from execution-lock or row-admission wait (`engine.admission_wait`). Cache
+prefetch/restore preparation has its own `cache.prefetch` span before execution;
+later cache selection remains `cache.lookup_restore`. The prompt-response
+report sums the two queue spans and the two cache spans in their respective
+columns. Historical records without the new spans omit that work and must not
+be interpreted as complete queue attribution. The shared serving HTTP reader
+accepts a trace ID to correlate server phases with each scheduled request.
+
 The offline renderer and replay fixtures are implemented. It imports the
 existing native/serve formats, retains failures and provenance, and suppresses
 speed ratios for incompatible work or unqualified runs. Its current metrics

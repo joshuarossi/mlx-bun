@@ -345,6 +345,8 @@ export interface ReqResult {
 interface ReqOpts {
   apiKey?: string;
   modelId?: string;
+  /** Correlate HTTP timings with the server's optional phase trace. */
+  traceId?: string;
   bodyExtra?: Record<string, unknown>;
   /** Phase budget (B1) — ALWAYS set by callers; the default only guards
    *  against a forgotten call site (never rely on Bun's implicit 300 s). */
@@ -380,6 +382,7 @@ async function measureStreamRequest(base: string, route: "chat/completions" | "c
     headers: {
       "content-type": "application/json",
       ...(o.apiKey ? { authorization: `Bearer ${o.apiKey}` } : {}),
+      ...(o.traceId ? { "x-mlx-bun-trace-id": o.traceId } : {}),
     },
     body: JSON.stringify({
       model: o.modelId ?? "bench", stream: true, max_tokens: maxTokens, temperature: 0,

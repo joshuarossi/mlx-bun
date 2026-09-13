@@ -486,7 +486,7 @@ Under `--isolate` the whole environment is inherited by the engine child.
 
 | Env var | Value | Effect |
 | --- | --- | --- |
-| `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (admission wait, prefill forward/evaluation/maintenance/checkpoints, mixed-forward token counts, token-zero, bounded initial token routing, response writes) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
+| `MLX_BUN_P2R_TRACE` | `=1` | Per-request prompt→response phase trace (request-slot wait, execution admission wait, cache prefetch/restore, prefill forward/evaluation/maintenance/checkpoints, mixed-forward token counts, token-zero, bounded initial token routing, response writes) for `/v1/chat/completions` and `/v1/completions`; records print to stderr as JSON lines. The trace id is `x-mlx-bun-trace-id` when the request sends it. |
 | `MLX_BUN_P2R_SYNC` | `=1` (with `MLX_BUN_P2R_TRACE`) | Token-zero attribution mode: synchronizes hidden/cache state, projection and sampling at the instrumented boundaries. This changes overlap and slows the traced request. Ordinary prefill traces add no synchronization: forward includes any backend evaluation, while evaluate measures the remaining state wait. |
 | `MLX_BUN_SPEC_TRACE` | `=1` | Explicit serial speculative-loop round diagnostics, captured once at run setup. |
 | `MLX_BUN_LANE_DEBUG` | `=1` | Logs each request's scheduling placement (`mechanism` + shape) to stderr. |
