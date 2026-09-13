@@ -1072,13 +1072,34 @@ task's prefix. Early-output on/off preserves the complete response and usage
 within each chunk setting. This isolates the initial divergence to prefill
 chunking, not to the early-output option. It does not establish a general
 quality regression from chunking. A full fixed-256 control with the integrated
-engine is the next acceptance step. No application repair is included.
+engine is running. Its complete first response reproduces all 35,002 tokens,
+128,406 reasoning characters, tool arguments and MTP counts: 27,506 drafted,
+21,249 accepted across 13,753 rounds. First-response wall time is 1,967.818 s
+versus 2,000.478 s previously. This is response identity, not a record of every
+logit vector. The next request differs only in generated tool IDs and the
+actual empty directory's listing timestamps. Full app acceptance remains
+pending; no application repair is included.
 
 Raw requests/responses, source hashes, process/GPU observations, final cache
 flush, app, screenshots and the unchanged acceptance protocol are under
-`reports/kanban-decode-integrated-r1/`. The completed test's SSD cache is being
-moved intact to the M1 report directory to make room for the control on M4;
-the control retains the same RAM/SSD capacities.
+`reports/kanban-decode-integrated-r1/`. All 40 SSD snapshots are archived in
+the M1 report directory; their 67,578,265,600 bytes match the pre-transfer
+file-size manifest. The transfer completes before the control's first response
+ends. Its early overlap is recorded in process observations, so the control
+is a quality comparison rather than a quiet timing pair. It retains the same
+RAM/SSD capacities.
+
+A bounded passive sample during the fixed-256 first response records median
+GPU activity of 98.28% and nominal thermal status. `mactop`'s byte-bandwidth
+fields are unavailable on this installation. A separate read-only IOReport
+sample captures PMP `DCS BW` rate histograms: the aggregate `AMCC RD+WR`
+weighted labels range from 102.07 to 107.49 GB/s over five samples. These are
+coarse system-wide rate estimates, not accumulated byte counters or per-kernel
+attribution. The GPU-specific histogram saturates its highest 32 GB/s bin in
+78–81% of samples and cannot supply a usable GPU bandwidth average. ANE
+traffic histograms have no residency in this short window. No GPU calibration
+workload runs. Raw telemetry: `pmp-readonly.jsonl`, `pmp-review.json` and
+`mactop-readonly.json` in the fixed-prefill report directory.
 
 ### Three-query affine attention head grouping
 

@@ -226,7 +226,11 @@ supersedes either. Explicit values bypass the automatic choice.
 `MLX_BUN_RD_CONTEXT_LIMIT` sets an explicit request context cap
 without enlarging it. Both controls require positive integers; the context
 cap is unset by default. Sampling and the published model context remain
-independent of prefill chunk selection.
+independent of prefill chunk selection. To reproduce a seeded response, keep
+the prefill chunk policy fixed along with the model, runtime, machine and
+sampling settings. Changing chunk boundaries can change numerical results
+and the sampled continuation. The [Kanban comparison](benchmarks.md#full-kanban-after-decode-integration)
+records this effect on the same M4 Pro with identical initial request JSON.
 
 | Flag | Arg | Default | Lane/tier | What it does |
 | --- | --- | --- | --- | --- |
