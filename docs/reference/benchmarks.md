@@ -1024,6 +1024,62 @@ these controls do not justify a default change. The existing larger-work-unit
 policy stays selected. Raw records: `sustained-chunk32-packed-m4.json` and
 `sustained-unpacked32-packed-m4.json` under the same report directory.
 
+### Full Kanban after decode integration
+
+September 13, 2026, M4 Pro 24 GB. The fresh task on `721ac4c` uses the same
+packed Qwen artifact, folded RTN4 MTP depth two, affine KV4, batch cap eight,
+4 GiB RAM cache, 64 GiB SSD cache, pinned Pi/profile, seed 42 and sampling
+settings as `kanban-session-cache-r2`. Automatic prefill replaces the earlier
+explicit 256-token chunks, and early output uses its new default. The initial
+request is identical. Source remains fixed, Pi and server exit successfully,
+and there are no inference failures or retries. Pi records one tool error.
+
+| Measurement | Previous session-cache task | Integrated task |
+|---|---:|---:|
+| Task wall time | 83m57.098s | 82m27.681s |
+| Generated tokens | 76,031 | 77,137 |
+| Requests | 25 | 20 |
+| Weighted post-first-output throughput | 15.542 tok/s | 15.885 tok/s |
+| Sum of pre-first-output intervals | 143.024 s | 73.060 s |
+| Follow-ups with cached input | 24/24 | 19/19 |
+| Durable final SSD flush | Yes | Yes |
+| Missing / failed snapshots at final flush | 0 / 0 | 0 / 0 |
+| SSD entries after final flush | 38 | 40 |
+| Verified app acceptance categories | 16/18 | 10/18 |
+
+The task is 1.8% shorter with 1.5% more output and 2.2% higher measured
+throughput. This is not an engine-only speed ratio: the first reasoning
+response already differs, generating 48,804 tokens instead of 35,002, and
+later tool inputs and output lengths differ. The five-second observer records
+967 server last-submitter samples out of 984 during the task; the others
+identify desktop processes. All activity records are retained, with no
+observer errors. Retained swap at startup is recorded, not used as a veto.
+
+The untouched app fails six categories and leaves two blocked by missing
+editing controls. Its DOM helper stringifies child arrays, so label and modal
+action buttons appear as object text. This blocks card editing, complete card
+creation and column confirmation actions. A separate wrong callback argument
+throws during column naming. Positive label/assignee filters and persistence
+of edited fields cannot be verified through the broken UI. Card/column
+dragging, Done indicators, card archive/restore, search, theme persistence and
+the other passing checks have browser evidence. Generated source hashes are
+unchanged by validation. This run does not meet the 16/18 quality target.
+
+A four-arm first-request replay on the same source keeps every request field
+fixed except a 64-token output cap. Fixed 256-token chunks reproduce the
+previous task's response prefix; automatic chunks reproduce the integrated
+task's prefix. Early-output on/off preserves the complete response and usage
+within each chunk setting. This isolates the initial divergence to prefill
+chunking, not to the early-output option. It does not establish a general
+quality regression from chunking. A full fixed-256 control with the integrated
+engine is the next acceptance step. No application repair is included.
+
+Raw requests/responses, source hashes, process/GPU observations, final cache
+flush, app, screenshots and the unchanged acceptance protocol are under
+`reports/kanban-decode-integrated-r1/`. The completed test's SSD cache is being
+moved intact to the M1 report directory to make room for the control on M4;
+the control retains the same RAM/SSD capacities.
+
 ### Three-query affine attention head grouping
 
 The R13 screen groups two or three query heads only for the quantized key
