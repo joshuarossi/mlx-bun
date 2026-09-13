@@ -1037,6 +1037,8 @@ M1 Max: each grouped candidate changes 16 of 24 complete outputs, all at the
 two longer contexts; the difference is already present in key scores. The M1
 path is not eligible for this exact optimization. M4 Pro: both candidates
 preserve every tested key score and complete attention output (24 cases each).
+Each comparison computes its reference on the same Mac as the candidate.
+No M1 result is compared against an M4 golden or output.
 
 Six alternating three-arm blocks time complete attention construction and GPU
 evaluation, 30 calls per arm, at the two longer contexts in bf16. On M4 Pro,
@@ -1092,7 +1094,9 @@ setup with a below-threshold prompt are retained and excluded from timing.
 ### M1 wide-prefill qualification
 
 Forcing the existing M3+ trellis wide-prefill kernel on M1 Max changes
-output bytes in 35 of 66 cases against expanded-bf16 native matmul. The
+output bytes in 35 of 66 cases against expanded-bf16 native matmul computed
+on that same M1, in the same process and loaded MLX runtime. This operation
+screen does not use M4 outputs or substitute for a full model oracle. The
 screen covers M5–15, two/three/four-bit codes, input width 5,120 and output
 widths 128/17,408. All 33 full-width cases differ; the smaller width also
 differs at three-bit M14/M15. The current kernel is therefore not selected
