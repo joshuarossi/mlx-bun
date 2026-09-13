@@ -23,7 +23,7 @@ export class ChatStage {
   constructor(
     private readonly ctx: ServingContext,
     private readonly prep: RequestPrep,
-    private readonly promptCache: Pick<PromptCache, "peekPrefixLen">,
+    private readonly promptCache: Pick<PromptCache, "peekPrefixLen"> & Partial<Pick<PromptCache, "objects">>,
     /** Admission ceiling (fit() / the GLM memory plan), resolved once. */
     private readonly contextLimit: number | null,
     /** `serve --adapter <dir>` startup default; a request's explicit
@@ -100,7 +100,7 @@ export class ChatStage {
 
     let built: BuiltPrompt;
     try {
-      built = await this.buildPrompt(body, tools, ownership, prep, nativeWork);
+      built = await this.buildPrompt(body, tools, ownership, prep, nativeWork, this.promptCache.objects);
     } catch (e) {
       if (e instanceof RequestError) return reject(e.status, e.message);
       return reject(400, `prompt build failed: ${(e as Error).message}`);

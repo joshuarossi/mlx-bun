@@ -802,6 +802,42 @@ and a durable final flush; independent app acceptance retains two defects.
 both the benefits and the limits. Existing idle-demotion settings remain in
 effect; session preference changes budget/pressure victim selection.
 
+
+### 5.13 Exact tensor objects in the shared cache
+
+`ObjectCache<Value>` exposes exact-key lookup and ownership transfer separately
+from `PrefixCache` matching. `PromptCache.objects` uses the same resident records,
+byte accounting, retention policy, pressure callback and SSD durability queue.
+An object has an empty conversation history, no target KV layers and a private
+namespace containing its full key. Its versioned tensor attachment owns the
+payload. It never supplies a language-model prefix. No synthetic language token
+IDs or second RAM budget are introduced.
+
+RAM reads lend immutable native views. Evicting the resident entry cannot
+invalidate a request's borrowed tensors. A cold read uses the existing async
+serializer with an empty target-layer schema, outside the execution queue;
+publication joins the same RAM policy. Cache clear invalidates pending restore
+publication. A newer resident publication wins over an older in-flight restore.
+The durability coordinator includes attachment-only objects; RAM eviction waits
+for the shared writer to finish as it does for conversation checkpoints.
+
+The Qwen encoder adapter hashes exact preprocessed pixel bytes, grid dimensions
+and its schema revision. The containing SSD store supplies model/configuration,
+tokenizer and native numerical identity. Different image bytes or grids miss;
+repeated media can reuse the tensor across request histories. Prompt rendering,
+video timestamps, mRoPE positions, sampling and scheduling remain independent.
+The producer retains its own result while storage takes a separate native view.
+The object lookup finishes before the prompt builder enters the native queue.
+Preprocessing and video extraction are not cached by this change.
+
+[vLLM's encoder cache](https://docs.vllm.ai/en/v0.18.0/api/vllm/v1/core/encoder_cache_manager/)
+also identifies individual media items by hash and retains encoder outputs
+across requests. Here the existing cache owns both RAM residency and queued
+SSD persistence on unified memory. The bounded Qwen screen and integrated
+acceptance are recorded in benchmarks.md when complete; they do not establish
+a general-media quality or throughput guarantee.
+
+
 ## 6. Optional paged KV
 
 `PagedKVCache` stores full-attention planes in per-request block pools.

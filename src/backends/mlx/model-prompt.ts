@@ -13,6 +13,7 @@ import { RequestError } from "../../serve/pipeline";
 import type { RequestOwnership } from "../../serve/request-plan";
 import type { RequestPrep } from "../../serve/request-prep";
 import type { BuiltPrompt, PromptNativeWork } from "../../serve/model-binding";
+import { EncoderCache } from "./encoder-cache";
 
 export async function buildModelPrompt(
     ctx: ServerContext,
@@ -21,6 +22,7 @@ export async function buildModelPrompt(
     tools: ChatRequestParams["tools"] | null,
     ownership: RequestOwnership,
     nativeWork: PromptNativeWork = (work) => work(),
+    objects?: import("../../contracts/object-cache").ObjectCache<import("./checkpoint-state").CheckpointAttachment[]>,
   ): Promise<BuiltPrompt> {
     const toolList = tools ?? null;
     const partOf = (types: string[]) => body.messages.some(
@@ -141,7 +143,7 @@ export async function buildModelPrompt(
           visionEndId: (ctx.model.config.raw.vision_end_token_id as number) ?? 248054,
         },
         prep.templateOptionsFor(body, toolList),
-        videos, nativeWork,
+        videos, nativeWork, objects ? new EncoderCache(objects) : undefined,
       );
       return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, mrope: vp.mrope } };
     }

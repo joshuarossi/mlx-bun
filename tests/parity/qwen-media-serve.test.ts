@@ -54,4 +54,21 @@ describe.skipIf(!path)("Qwen shared image serving", async () => {
     expect(batches).toContain(2);
     expect(model.mrope).toBeNull();
   }, 120_000);
+  test("repeated image features reuse the common cache with identical B1 output and logprobs", async () => {
+    const { getVisionTower } = await import("../../src/serve/model-host");
+    const tower = getVisionTower(ctx) as unknown as import("../../src/vision/qwen3vl-tower").Qwen3VLVisionTower;
+    const encode = spyOn(tower, "encode");
+    try {
+      const first = await request([0, 255, 0], 96, 16, { logprobs: true, top_logprobs: 2 });
+      const second = await request([0, 255, 0], 96, 16, { logprobs: true, top_logprobs: 2 });
+      expect(first.status).toBe(200); expect(second.status).toBe(200);
+      const a = await first.json() as any, b = await second.json() as any;
+      expect(b.choices).toEqual(a.choices);
+      expect(b.usage.completion_tokens).toBe(a.usage.completion_tokens);
+      expect(encode).toHaveBeenCalledTimes(1);
+      const stats = await (await fetch(`http://127.0.0.1:${server.port}/stats`)).json() as any;
+      expect(stats.prompt_cache.object_hits).toBeGreaterThan(0);
+      expect(stats.prompt_cache.bytes).toBeGreaterThan(0);
+    } finally { encode.mockRestore(); }
+  }, 120_000);
 });

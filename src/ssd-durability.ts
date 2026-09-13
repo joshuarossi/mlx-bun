@@ -55,7 +55,8 @@ export class SsdDurabilityCoordinator {
   ) {}
 
   schedule(tokens: number[], ns = "", replace = true): void {
-    if (tokens.length === 0) return;
+    // Exact tensor objects use an empty history and still need persistence.
+    if (tokens.length === 0 && !this.promptCache.findExact(tokens, ns)?.attachments?.length) return;
     // PromptCache can hold unrelated entries with the same namespace and
     // length. Include the tokens so one conversation cannot cancel another
     // conversation's pending durability record.

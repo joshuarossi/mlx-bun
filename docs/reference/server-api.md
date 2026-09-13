@@ -871,7 +871,7 @@ vision/audio, adapters, and training are not emulated by the serving port.
 ```jsonc
 {
   "server": { "owner": "serve" | "pi-session" | "embedded", "model": "...", "started_at": 0 },
-  "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0 },
+  "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0, "object_hits": 0, "object_misses": 0, "object_restores": 0 },
   "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
   "kv_quant": { "mode": "bf16" | "uniform-kv8" | "turbo k8v3" | "mixed (kv_config.json)",
                  "layers": { "kv4": 8, "bf16": 40 },     // turbo: { "turbo-k8v3": 8, "bf16": 40 }
@@ -1070,6 +1070,15 @@ the A/B control described in server-config.md.
 state prepared from SSD before execution. A session miss counts execution
 lookups with session metadata that need ordinary candidate search. Prefix scans
 count ordinary execution searches, not tokenization or preparation probes.
+
+
+Qwen image/video encoder reuse reports `prompt_cache.object_hits`,
+`object_misses` and `object_restores`. A hit borrows an exact RAM tensor object;
+a miss may restore from SSD or recompute. Object entries and bytes are included
+in the existing cache totals and share its RAM budget and persistence queue.
+These counters do not count language-model KV prefix hits. Media prompt KV
+reuse remains disabled because token IDs alone do not identify media contents.
+
 
 ## POST /admin/cache/session/close
 

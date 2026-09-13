@@ -585,6 +585,8 @@ attention receives explicit positions without a module-global variable.
 Input-state compatibility remains separate from cache-layout compatibility.
 Media forwards with additional position state decline mixed-token packing.
 Qwen image/video preprocessing completes outside the native execution lease.
+Exact encoder features now use the shared cache object port; SSD reads finish
+before native preparation. Cache placement remains independent of batching.
 Diffusion retains its separate method. Qwen's source-controlled native comparison
 and padded B1/B2/B4 affine/TurboQuant checks pass on both Macs, as do real image
 HTTP checks on the packed 27B. The M4 image/video ABBA comparison preserves full

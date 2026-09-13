@@ -296,7 +296,7 @@ keeps storage, policy and attention kernels behind separate interfaces.
       evidence remains accepted; numerical comparisons use the same batch geometry.
       GLM native MTP/DSA has tiny-model and independent same-B state coverage;
       its final Colibri artifact is deferred. No trained DSpark/DFlash exists.
-      **Current:** Gemma media acceptance is complete with recorded latency costs. Qwen image/video acceptance also passes both-machine native/HTTP and M4 ABBA checks; encoder caching remains open. **Remaining:** broader fill combinations,
+      **Current:** Gemma media acceptance is complete with recorded latency costs. Qwen image/video acceptance also passes both-machine native/HTTP and M4 ABBA checks; Qwen encoder objects now share RAM/SSD storage and pass M1 ownership/HTTP checks; M4 integrated timing is in progress. **Remaining:** broader fill combinations,
       adapter performance, named unsupported combinations and measured latency costs.
       The [feature matrix](docs/design/batching.md#consolidation-matrix) owns those gaps.
       Grammar proposals and mixed work stay off after measured tradeoffs.

@@ -477,6 +477,11 @@ export function createServer(
           const hit = ssdStore!.findExact(tokens, ns);
           return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null;
         },
+        restoreObjectAsync: async (handle: unknown) => {
+          const loaded = await ssdStore!.restoreAsync(handle as import("./ssd-cache").SsdIndexEntry,
+            { makeCache: () => [] });
+          return loaded ? { ...loaded, retain: () => {} } : null;
+        },
         restore: (handle: unknown) => {
           const loaded = serving.restore(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
           if (!loaded) return null;
@@ -891,6 +896,9 @@ export function createServer(
             session_hits: promptCache.sessionHits,
             session_misses: promptCache.sessionMisses,
             prefix_scans: promptCache.prefixScans,
+            object_hits: promptCache.objectHits,
+            object_misses: promptCache.objectMisses,
+            object_restores: promptCache.objectRestores,
           },
           ...(ssdStore ? {
             ssd_cache: {
