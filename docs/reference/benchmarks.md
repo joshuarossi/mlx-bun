@@ -3063,8 +3063,9 @@ retained swap is 3964.12 MiB throughout. Sampled peak Bun RSS is
 7408.44 → 7114.09 MiB and 7183.34 → 7082.58 MiB. Diagnostic classification remains.
 
 Raw comparisons: `gemma-media-prefix-{control,candidate}-{a,b}.json`, with
-`gemma-media-prefix-review.json`. Qwen prefix integration and its separate
-serving/timing acceptance are in progress before final default selection.
+`gemma-media-prefix-review.json`. Together with the Qwen comparison below,
+these results select prepared media-prefix reuse by default. Encoder-only
+comparison remains available with `MLX_BUN_MEDIA_PREFIX_CACHE=0`.
 
 
 ### Qwen prepared-media KV identity and continuation
@@ -3085,5 +3086,72 @@ new server's verified SSD cache, different-image isolation, and video-history
 reuse with timestamps/positions. The follow-ups reuse generated output tokens.
 
 Reports: `reports/prefill-observation/qwen-media-prefix-native-{m1,m4}.log` and
-`qwen-media-prefix-http-{m1,m4}.log`. A matched M4 session replay is next; the
-shared media-prefix option remains off pending that comparison.
+`qwen-media-prefix-http-{m1,m4}.log`.
+
+
+### Qwen media-session KV reuse on M4 Pro (2026-09-13)
+
+A same-source ABBA comparison on `a382cad` replays a frozen corpus captured on
+the M4 Pro with the packed 27B artifact, KV4, default cap eight and compiled
+decode, no speculation, an 8,000,000,000-byte shared RAM budget and no SSD.
+Both arms reuse encoder features; only `MLX_BUN_MEDIA_PREFIX_CACHE` changes.
+The corpus has image, video and two concurrent image sessions. Each session
+contains an initial response capped at 16 tokens and a one-word follow-up
+capped at eight. Three repetitions per arm give 96 measured requests and
+48 matched pairs. Corpus/source hashes match and every source diff is empty.
+
+| Workload | Session control A → candidate A, ms | Change | Session control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| Image conversation | 6988.85 → 4636.54 | -33.66% | 6985.57 → 4633.27 | -33.67% |
+| Video conversation | 4471.45 → 3470.36 | -22.39% | 4484.69 → 3469.52 | -22.64% |
+| Two image conversations | 14638.65 → 9008.47 | -38.46% | 14664.64 → 9025.04 | -38.46% |
+
+All 48 paired responses, reasoning and non-cache token counts are identical.
+Every measured follow-up hits its session cache in each enabled arm, reusing
+306 image tokens, 122 video tokens or 307/434 tokens for the image pair.
+The initial requests still recompute because Qwen's recurrent state cannot
+rewind the longer completed conversation. Their median completion changes range
+from −0.08% to +0.36% across the pairs.
+
+| Follow-up | Control A → candidate A, ms | Change | Control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| Image conversation | 3117.09 → 749.70 | -75.95% | 3107.98 → 750.40 | -75.86% |
+| Video conversation | 1847.86 → 833.79 | -54.88% | 1840.45 → 830.34 | -54.88% |
+| Two image conversations | 7049.63 → 1423.41 | -79.81% | 7065.98 → 1425.51 | -79.83% |
+
+The positioned-forward probe observes B2 on initial paired image decode and
+B1 on those short follow-ups in both arms. These are conversation and request
+times, not isolated decode throughput. Prefix records add 1,299,787,776 bytes
+of retained state to the three encoder objects, within the same cache budget.
+First-use red-image warmup is 6075.29 → 6145.35 ms and 6124.64 → 6125.24 ms.
+
+All 104 activity samples are retained: Bun is the last GPU submitter in 100,
+and desktop applications in four. Swap stays at 3956.12 MiB. Sampled peak Bun
+RSS is 12702.22 → 12655.58 MiB and 12686.38 → 12673.36 MiB. These monitored
+comparisons are diagnostic. Both orders support selecting media-prefix reuse
+by default; the explicit encoder-only switch remains available.
+
+Reports: `reports/prefill-observation/qwen-media-prefix-fixture.json`,
+`qwen-media-prefix-session-{control,candidate}-{a,b}.json`,
+`qwen-media-prefix-session-review.json` and
+`completed-qwen-media-prefix-tool-sources.json`.
+
+
+### Media KV restore in a fresh process
+
+On M1 Max, both actual e4b OptiQ and packed Qwen27B pass a separate-process
+restore comparison. The writer generates an image response, flushes its
+checkpoint to SSD and copies that durable directory before issuing a follow-up
+against warm RAM. A new process loads the copied directory and submits the
+identical follow-up. Complete response choices, top-ten log probabilities and
+full usage match the warm RAM result for each model.
+
+Gemma reuses 294 tokens with bf16 KV; Qwen reuses 45 with KV4. Each new process
+restores two SSD records: the encoder feature and generated conversation state.
+The initial durable directories contain 27,160,576 and 156,312,992 bytes,
+respectively. The recorded read stats precede persistence of the new follow-up;
+they are evidence of restored initial state, not a final follow-up flush.
+
+Source: `a382cad`. Reports and retained SSD directories are under
+`reports/prefill-observation/{gemma,qwen}-media-prefix-process-*`;
+`completed-media-prefix-process-tool-source.json` preserves the retired runner.

@@ -9,6 +9,10 @@ import type { Qwen35Model } from "../../src/model/qwen3_5";
 const path = process.env.MLX_BUN_TEST_QWEN_MEDIA_SERVE_MODEL;
 describe.skipIf(!path)("Qwen shared image serving", async () => {
   if (!path) return;
+  // Isolate encoder reuse from the independently tested conversation KV cache.
+  const { configureRuntime } = await import("../../src/runtime-config");
+  const restoreMediaCache = configureRuntime({ MLX_BUN_MEDIA_PREFIX_CACHE: "0" });
+  afterAll(restoreMediaCache);
   const { createServer, loadContext } = await import("../../src/server");
   const ctx = await loadContext(path, "qwen-media-test");
   const model = ctx.model as Qwen35Model, batches: number[] = [];

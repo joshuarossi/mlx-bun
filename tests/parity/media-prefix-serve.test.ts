@@ -1,5 +1,5 @@
 // Real media identity + shared generated-prefix storage. No downloads.
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { encode } from "fast-png";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,11 +8,8 @@ import { join } from "node:path";
 const path = process.env.MLX_BUN_TEST_MEDIA_PREFIX_MODEL;
 describe.skipIf(!path)("shared media prefix reuse", async () => {
   if (!path) return;
-  const { configureRuntime } = await import("../../src/runtime-config");
-  const restore = configureRuntime({ MLX_BUN_MEDIA_PREFIX_CACHE: "1" });
   const { createServer, loadContext } = await import("../../src/server");
   const ctx = await loadContext(path, "media-prefix-test");
-  afterAll(restore);
   function messages(color: [number, number, number], instruction = "Name this image's single color. Answer with one word.") {
     const data = Uint8Array.from({ length: 64 * 64 * 3 }, (_, i) => color[i % 3]!);
     const png = Buffer.from(encode({ width: 64, height: 64, channels: 3, data })).toString("base64");

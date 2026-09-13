@@ -134,7 +134,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         mediaBatch: !!mediaInput,
-        mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", false),
+        mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         sharedFill: !!fillRequests && !!options.fill && !options.fill.plan.echo,

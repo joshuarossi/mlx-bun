@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { encode } from "fast-png";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,11 +8,8 @@ const path = process.env.MLX_BUN_TEST_QWEN_MEDIA_SERVE_MODEL;
 const videoPath = process.env.MLX_BUN_TEST_QWEN_MEDIA_VIDEO;
 describe.skipIf(!path)("Qwen prepared-media prefix reuse", async () => {
   if (!path) return;
-  const { configureRuntime } = await import("../../src/runtime-config");
-  const restore = configureRuntime({ MLX_BUN_MEDIA_PREFIX_CACHE: "1" });
   const { createServer, loadContext } = await import("../../src/server");
   const ctx = await loadContext(path, "qwen-media-prefix");
-  afterAll(restore);
   function image(color: [number, number, number]) {
     const data = Uint8Array.from({ length: 64 * 64 * 3 }, (_, i) => color[i % 3]!);
     const png = Buffer.from(encode({ width: 64, height: 64, channels: 3, data })).toString("base64");

@@ -49,6 +49,10 @@ describe.skipIf(!optIn || !haveWeights || !haveFixture)(
   async () => {
     if (!optIn || !haveWeights || !haveFixture || !speech) return;
 
+    // Isolate encoder reuse from the independently tested conversation KV cache.
+    const { configureRuntime } = await import("../../src/runtime-config");
+    const restoreMediaCache = configureRuntime({ MLX_BUN_MEDIA_PREFIX_CACHE: "0" });
+    afterAll(restoreMediaCache);
     const { createServer, loadContext } = await import("../../src/server");
     const ctx = await loadContext(modelPath, "gemma-4-e4b-it-optiq");
     const model = ctx.model as Gemma4Model, batches: number[] = [];

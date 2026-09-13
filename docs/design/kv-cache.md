@@ -853,7 +853,7 @@ RAM/SSD HTTP reuse pass both-machine identity checks. Its M4 ABBA preserves all
 168 paired responses/usage and improves every measured workload; first-use
 cost and changed image overlap are recorded in the
 [Gemma measurements](../reference/benchmarks.md#gemma-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13).
-Media KV-prefix caching remains separate work.
+Prepared media conversation state uses the same cache, as described below.
 
 
 ### 5.14 Prepared media prefix identity
@@ -866,7 +866,7 @@ include identical media and preceding tokens; a changed media set or a change
 from image-only bidirectional attention to mixed causal input cannot collide.
 Appending later text leaves the identity stable.
 
-With `MLX_BUN_MEDIA_PREFIX_CACHE=1`, the shared Gemma binding uses ordinary
+By default, the shared Gemma binding uses ordinary
 RAM/SSD lookup, generated snapshots, prefetch and persistence. The prepared-input
 interface receives the cache's starting position. An uncached input performs
 its atomic media prefill; a restored prefix resumes text after all media through
@@ -875,7 +875,8 @@ Qwen supplies the same opaque identity with prepared image/video hashes,
 rendered timestamps and all mRoPE positions through its final media span. Its
 resumed text forward uses the current request positions and preserves the
 recurrent state. Recurrent layers still require an exact retained prefix;
-explicit serial prefix reuse remains unqualified.
+explicit serial prefix reuse remains unqualified. `MLX_BUN_MEDIA_PREFIX_CACHE=0`
+selects encoder-only reuse for comparisons.
 
 The existing minimum reusable offset still identifies a precision transition.
 If delayed quantization occurs after an atomic media prefill, its cached state

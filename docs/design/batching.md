@@ -547,7 +547,7 @@ They do not require repeating completed checks or withholding the current defaul
 | Speculative decode | Qwen MTP, prompt lookup, standalone, assistant, DeepSpec and seeded DSpark/DFlash providers are integrated through shared B1/B>1 interfaces, with the native/HTTP/cache checks recorded below | Finish specific unsupported combinations and measured regressions; GLM artifact testing is deferred and no trained DSpark/DFlash checkpoint exists |
 | Sampling and logprobs | Shared sampler contract; ordinary groups capture logprobs and accept explicit seeds | Extend same-B oracle/feature compositions and matched performance; preserve per-request RNG/history |
 | Grammar and fill | Shared grammar proposals use grouped verification. Shared strict fill composes prefill, rows, sampling and committed append; native and HTTP/cache/timing gates pass | Speculative/echo fill and other named combinations remain. Keep grammar proposals opt-in after mixed timing results |
-| Adapters and media | Compatible adapter groups use shared execution; Gemma4 image/audio and Qwen image/video inputs pass both-machine native/HTTP and M4 ABBA acceptance in the ordinary group | Encoder feature caching, lone-media latency costs, adapter performance and broader compositions |
+| Adapters and media | Compatible adapter groups use shared execution; Gemma4 image/audio and Qwen image/video inputs, encoder caching and generated media-prefix reuse pass native/HTTP and M4 comparisons | Chunked media prefill, lone-media latency costs, adapter performance and broader compositions |
 | KV layout | Full and rotating affine/TurboQuant layouts, delayed/per-layer transitions, speculative donors and ordinary paged storage are integrated and tested below | C1–C5 add shared SSD blocks and optional direct bf16/affine paged attention with native/HTTP evidence. TQ pages and paged speculation remain extensions; reuse completed row-layout gates |
 | Prefix and output reuse | Ordinary and grouped methods publish generated target/companion state to one RAM/SSD cache | Native/HTTP and full Kanban retention/durability acceptance are complete; investigate new regressions without reopening unchanged gates |
 | Generation resume | Shared ordinary resume is integrated after both-machine native/HTTP compiled, quantized/delayed and mixed-grammar checks, combined suites and eight M4 timing arms. The packed-model fixture now owns fresh weights per server | Adapter resume is integrated through the same policy; native/HTTP composition checks accompany it. Reuse the completed ordinary resume evidence |
@@ -561,8 +561,13 @@ an owned final hidden row. `MlxPrefillCohort` retains initialization, precision
 maintenance, projection and completion. An indivisible media attention span
 declines prefill joins and mixed token packing; it processes the whole prompt
 before entering ordinary shared decode. Sampling, row merging, retirement and
-cancellation remain in their existing owners. The uncached request-state policy
-prevents reuse by token IDs alone, which do not identify the media contents.
+cancellation remain in their existing owners. Prepared media producers supply
+an opaque identity for their exact media, encoder and preceding token prefix.
+The ordinary cache combines this with the adapter namespace to retain generated
+conversation state in RAM/SSD. Inputs without that identity remain uncached;
+token IDs alone do not identify media contents. The input binding resumes
+positioned text from the retained offset. Cache ownership and precision boundaries
+are described in [kv-cache](kv-cache.md#514-prepared-media-prefix-identity).
 
 Native preparation uses `ExecutionTasks` through the portable scheduler's
 optional task boundary. The queue owns cancellation and failure settlement;
