@@ -49,6 +49,15 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     const runtime = runtimeConfig();
     const fusedDecode = runtime.value("MLX_BUN_TURBOQUANT_FUSED_DECODE") === "1";
     const maintain: KvMaintenance = (cache) => withRuntimeConfig(runtime, () => maybeTurboQuantizeKv(cache, scheme, start));
+    if (start > 0) maintain.maxAppendTokens = (cache) => {
+      let remaining = Number.POSITIVE_INFINITY;
+      for (const c of cache) {
+        const conversion = c.turboConversion ?? (c instanceof KVCache ? c : undefined);
+        if (conversion && conversion.offset < start)
+          remaining = Math.min(remaining, start - conversion.offset);
+      }
+      return remaining;
+    };
     maintain.preparePrefill = (cache) => {
       for (let layer = 0; layer < cache.length; layer++) {
         const row = cache[layer]!;

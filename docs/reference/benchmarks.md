@@ -811,13 +811,76 @@ throughout their six blocks.
 
 The append binding declares supported affine formats. Preparation and
 placement pass the candidate to the method without duplicating cache-format
-checks. Fill remains opt-in and serial-only. TurboQuant, affine verification,
-shared-group fill and held-out quality are separate cells. The full local
+checks. Fill remains opt-in and serial-only. The TurboQuant extension is measured
+below; quantized verification, shared-group fill and held-out quality remain
+separate cells. The full local
 suite passes 2,303 tests with 14 fixture skips; typechecks and expanded
 operation/ownership checks pass. Diagnostic raw reports:
 `reports/prefill-observation/affine-append-{attention,model,model-rtn4}-m4.json`,
 `affine-fill-native-m4.log`, and `affine-fill-http{-rtn4,}-m4.json` in the same directory.
 The first native timing arms include cold work and are not speed evidence.
+
+### Affine fill across saved session fixtures
+
+M4 Pro 24 GB, clean `eb510cd`, packed Qwen27B, KV4, explicit serial, no
+prompt cache, temperature zero, thinking off and a 128-token budget. The
+existing `bash-suite`, `read-edit-loop` and `grep-repeat` fixtures supply ten
+assistant turns with their recorded tool results. The replay reconstructs
+tool schemas through the existing fill harness; it executes no tools.
+
+Two opposite arm orders produce 40 successful requests, with all 20 paired
+comparisons retaining identical text, tool names/arguments, finish reasons
+and prompt/completion counts. Six distinct turns use fill in both blocks,
+for 192 injected tokens total and zero verification. Every filled comparison
+is faster. Turns without fill range from 1.5% faster to 0.4% slower. Median
+paired complete-time reduction across all turns is 7.59%; this is a small
+fixed-fixture diagnostic, not a full Kanban or general task-quality result.
+The generated answers need not match the recorded assistant's actions;
+the comparison checks whether enabling fill changes those answers.
+
+Tracked source and the append-kernel hash stay unchanged throughout. Raw
+requests, expected fixture output and both served outputs are retained in
+`reports/prefill-observation/affine-fill-fixtures-m4.json`; derived pairs are
+in `affine-fill-fixtures-review.json`. These results broaden the tool-history
+screen without replacing the held-out real-session quality requirement.
+
+### TurboQuant committed fill
+
+M4 Pro 24 GB, `eb510cd` plus the format-declaration/maintenance patch, packed
+and RTN4 Qwen27B. The model-owned append binding now declares K8V3 support;
+cache maintenance limits chunks at delayed TurboQuant conversion boundaries.
+This reuses the existing attention path without introducing a new kernel.
+
+The real generation gate preserves emitted IDs, complete final state,
+subsequent logits and active allocation on both artifacts. Packed also passes
+conversion eight tokens after the prompt. Each case emits 26 tokens, fills 12
+and performs no verification. The initial packed allocation assertion failed
+because the test retained temporary codec views; using the cache-state lease
+API fixes the harness. That failed result is retained alongside the passing
+rerun. The model-free suite passes 2,304 tests with 14 fixture skips, and all
+three TypeScript checks pass.
+
+Six alternating HTTP pairs per artifact use the same weather/bash requests
+as the affine comparison: fresh servers, explicit serial, K8V3 fused decode,
+no prompt cache or draft, temperature zero, thinking off and max 128 tokens.
+All 48 responses preserve text, tool calls, finish reasons and token counts.
+Each enabled request fills 19 tokens with zero verification. Every paired
+request improves; source and append-kernel hashes remain fixed throughout.
+
+| Artifact | Fixture | Median wall time off → on | Median paired reduction |
+| --- | --- | ---: | ---: |
+| Packed Qwen27B | Weather | 5,765.87 → 4,392.07 ms | 17.45% |
+| Packed Qwen27B | Bash | 6,462.54 → 4,906.06 ms | 16.21% |
+| RTN4 Qwen27B | Weather | 4,869.22 → 4,756.31 ms | 3.04% |
+| RTN4 Qwen27B | Bash | 5,021.60 → 4,917.02 ms | 3.07% |
+
+These diagnostic tool-request results do not establish ordinary decode TPS
+or a speed advantage over affine KV; the codec comparisons ran at different
+times. Fill remains opt-in and serial-only, and quantized echo verification
+remains inactive. Raw evidence in `reports/prefill-observation/`:
+`tq-fill-native-m4.log` (initial failure), `tq-fill-native-v2-m4.log`,
+`tq-fill-delayed-native-m4.log`, `tq-fill-rtn4-native-m4.log`,
+`tq-fill-http{-rtn4,}-m4.json`, and `tq-fill-http-review.json`.
 
 ### Same-batch affine full-attention oracle
 

@@ -677,6 +677,7 @@ export class Qwen35Model {
     }
     return {
       affineKvBits: [4, 8],
+      turboQuantFormats: [{ kBits: 8, vBits: 3 }],
       maxChunkSize: (state: readonly Cache[]) => qwenAppendChunkSize(state[0]!.offset),
       forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
         if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)

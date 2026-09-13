@@ -213,7 +213,7 @@ export function shouldUseGrammarJump(
  *     no distribution row (same rule as shouldUseGrammarJump).
  *   - promptEmbeddings: vision/audio prompts (and mRoPE) — untested shape.
  *   - affine KV: the model's append binding declares its supported formats.
- *     TurboQuant and verify-policy affine appends remain separate gates. */
+ *     Verify-policy quantized appends remain a separate gate. */
 export function shouldUseFill(
   options: Pick<
     GenerateOptions,
@@ -221,19 +221,21 @@ export function shouldUseFill(
     | "kvBits" | "kvConfig" | "turboQuant"
   >,
   runtime: RuntimeConfig = runtimeConfig(),
-  append?: Pick<MlxTokenAppend, "affineKvBits"> | null,
+  append?: Pick<MlxTokenAppend, "affineKvBits" | "turboQuantFormats"> | null,
 ): boolean {
   if (!options.fill) return false;
   if (resolveFillMode(runtime.value("MLX_BUN_FILL") ?? "off") === "off") return false;
   const affineSupported = options.kvConfig?.length
     ? options.kvConfig.every(layer => append?.affineKvBits?.includes(layer.bits))
     : !options.kvBits || !!append?.affineKvBits?.includes(options.kvBits);
+  const cacheSupported = options.turboQuant
+    ? !!append?.turboQuantFormats?.some(format => format.kBits === options.turboQuant!.kBits && format.vBits === options.turboQuant!.vBits)
+    : affineSupported;
   return options.grammar === undefined &&
     !options.logprobs &&
     !(options.topLogprobs && options.topLogprobs > 0) &&
     options.promptEmbeddings === undefined &&
-    affineSupported &&
-    options.turboQuant === undefined;
+    cacheSupported;
 }
 
 /** Compatibility entry point for callers that perform a single conversion.
@@ -697,7 +699,7 @@ async function* generateInner(
   // restore a pre-round snapshot and bit-exactly replay the accepted prefix.
   // A model whose caches can do neither still gets assert-policy fills; verify
   // proposals are dropped and counted (stats.verifyUnsupported).
-  const verifyCapable = fillOn && !options.kvBits && !options.kvConfig?.length && cache.every(
+  const verifyCapable = fillOn && !options.kvBits && !options.kvConfig?.length && !options.turboQuant && cache.every(
     (c) => c.isTrimmable() || typeof rewindable(c).specRoundRollback === "function",
   );
   closeBatchSetup?.();

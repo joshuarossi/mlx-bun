@@ -1973,7 +1973,8 @@ Default values and precedence live in [server configuration](../reference/server
 
 ### 12.16 Committed append cache formats
 
-`MlxTokenAppend` declares the affine formats supported by its model graph.
+`MlxTokenAppend` declares supported affine precisions and TurboQuant K/V
+formats. Qualified Qwen27B bindings expose KV4/KV8 and K8V3.
 Request preparation supplies template-derived candidates; placement selects
 an eligible method without inspecting numerical cache formats. The ordinary
 method consumes the binding's declaration once and uses its committed-append
@@ -1981,6 +1982,6 @@ operation. Qwen shares projection work over known tokens while retaining each
 query's one-token affine attention calculation and causal KV extent.
 `KvMaintenance.maxAppendTokens` bounds a committed chunk at a pending
 precision transition; the method runs maintenance before continuing.
-Verification remains a separate method capability: enabling committed affine
-appends does not enable affine echo verification. No default fill setting or
+Verification remains a separate method capability: enabling committed
+quantized appends does not enable quantized echo verification. No default fill setting or
 shared-group support is inferred from that declaration.

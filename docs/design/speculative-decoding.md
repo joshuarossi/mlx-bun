@@ -1430,7 +1430,9 @@ bytes and four subsequent continuations for KV4/KV8 at prefixes 128 and
 preserves emitted IDs, final state, subsequent logits and active allocation,
 with nonzero fill and zero verification. The append binding declares affine
 format support; HTTP preparation and placement leave that decision to the
-method. TurboQuant and affine verify-policy composition remain separate.
+method. K8V3 TurboQuant now uses the same declaration and delayed-conversion
+boundary interface. Both Qwen artifacts pass real-generation state/continuation
+and six-pair HTTP comparisons; quantized echo verification remains separate.
 Full numerical and HTTP measurements live in benchmarks.md. Tests:
 `tests/unit/quantized-append-attention.test.ts`,
 `tests/parity/qwen-affine-append.test.ts`, and

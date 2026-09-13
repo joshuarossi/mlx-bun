@@ -113,6 +113,9 @@ test("the append binding owns affine fill format support", () => {
     expect(shouldUseFill({ ...options, kvBits: 2, kvConfig: [{ layerIdx: 3, bits: 4, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(true);
     expect(shouldUseFill({ ...options, kvConfig: [{ layerIdx: 3, bits: 2, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(false);
     expect(shouldUseFill({ ...options, turboQuant: { kBits: 8, vBits: 3 } }, runtimeConfig(), supported)).toBe(false);
+    const rotated = { turboQuantFormats: [{ kBits: 8, vBits: 3 }] };
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 8, vBits: 3 } }, runtimeConfig(), rotated)).toBe(true);
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 4, vBits: 3 } }, runtimeConfig(), rotated)).toBe(false);
   } finally { restore(); }
 });
 

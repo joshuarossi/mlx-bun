@@ -37,6 +37,7 @@ export interface MlxDecodeStep {
 export interface MlxTokenAppend {
   /** Affine formats whose committed append retains one-token arithmetic. */
   readonly affineKvBits?: readonly number[];
+  readonly turboQuantFormats?: readonly { readonly kBits: number; readonly vBits: number }[];
   maxChunkSize(state: readonly Cache[]): number;
   forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
 }
