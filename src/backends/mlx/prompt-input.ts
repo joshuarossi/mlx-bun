@@ -5,7 +5,7 @@ import type { Cache } from "../../model/gemma4-base";
  * retains its tensors; the model binding returns an owned final hidden row.
  * Decode, sampling and row retirement use the ordinary execution group. */
 export interface MlxPromptInput {
-  forward(ids: MlxArray, caches: Cache[]): MlxArray;
+  forward(ids: MlxArray, caches: Cache[], start?: number): MlxArray;
   readonly decodeState?: MlxDecodeState;
 }
 
@@ -19,10 +19,10 @@ export interface MlxDecodeState {
 /** Preserve the ordinary generator's projection geometry for a prepared
  * embedding sequence: process the whole prompt, then project only its tip. */
 export function bindEmbeddingsInput(
-  forward: (ids: MlxArray, caches: Cache[]) => MlxArray,
+  forward: (ids: MlxArray, caches: Cache[], start: number) => MlxArray,
 ): MlxPromptInput {
-  return { forward(ids, caches) {
-    using hidden = forward(ids, caches);
+  return { forward(ids, caches, start = 0) {
+    using hidden = forward(ids, caches, start);
     const [batch, length, width] = hidden.shape;
     return hidden.slice([0, length! - 1, 0], [batch!, length!, width!]);
   } };

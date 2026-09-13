@@ -96,7 +96,7 @@ export async function buildModelPrompt(
         ...noMedia,
         promptIds: mp.ids,
         vision: {
-          embeddings: mp.embeddings,
+          embeddings: mp.embeddings, prefixIdentity: mp.prefixIdentity,
           ...(mp.bidirMask ? { imageMask: mp.bidirMask } : {}),
           multimodalMask: mp.multimodalMask,
         },
@@ -165,7 +165,7 @@ export async function buildModelPrompt(
         ctx.model as Gemma4Model, tower, ctx.tokenizer, ctx.template,
         messages, images, ctx.visionTokenIds, toolList, nativeWork, encoderCache,
       );
-      return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, imageMask: vp.imageMask } };
+      return { ...noMedia, promptIds: vp.ids, vision: { embeddings: vp.embeddings, imageMask: vp.imageMask, prefixIdentity: vp.prefixIdentity } };
     }
     const text = prep.promptIdsFor(body, toolList);
     return {

@@ -2999,3 +2999,32 @@ Reports: `reports/prefill-observation/r19-cost/` contains all 48 kernel runs,
 `cost-review.json`, all 64 `allocation-proposals.json` cells and archived
 `completed-allocation-source.json`. The existing production script is retained;
 the completed one-off allocator is removed.
+
+
+## Gemma prepared-media KV reuse (2026-09-13)
+
+The experimental `MLX_BUN_MEDIA_PREFIX_CACHE=1` option combines the producer's
+media/token identity with the ordinary cache namespace. Generated conversation
+state uses the existing RAM residency and SSD persistence interfaces. Repeated
+media encoder caching remains enabled independently in both comparison arms.
+
+Both M1 Max 32 GB and M4 Pro 24 GB pass 23 native prepared-input tests with
+98 assertions, including complete logits/state and continuation after retained
+image, audio and mixed prefixes. New resumed cases use bf16, delayed affine KV4
+and delayed k8v3. Both Macs also pass 11 real-model HTTP tests with 188 assertions:
+bf16, start-zero KV4/k8v3 and delayed KV4/k8v3 through RAM and verified SSD
+restart, plus mixed/audio identity. Follow-ups reuse generated output tokens;
+different images and changed media sets miss correctly. The fixture's TurboQuant
+configuration quantizes full-attention layers while sliding layers remain bf16.
+
+The first delayed-precision test incorrectly expected a shorter repeated prompt
+to hit after conversion. Inspection records minimum reusable offset 280 on
+trimmable generated entries at offsets 282/301. The shorter request needs offset
+279, before conversion, so it correctly recomputes; growing conversation turns
+hit. The runtime was unchanged for that finding, and the tests now assert the
+boundary explicitly. The failed assumptions and inspection remain preserved.
+
+Reports: `reports/prefill-observation/media-prefix-native-{m1,m4}.log`,
+`media-prefix-http-{m1,m4}.log`, `media-prefix-trim-inspection.log` and
+`completed-media-prefix-inspection.json`. Matched M4 timing is pending; the
+option remains off by default. Qwen media KV reuse is still separate work.

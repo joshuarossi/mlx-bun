@@ -98,6 +98,8 @@ class AsyncMutex {
  * this through shared preparation and decode; other bindings retain serial
  * execution. Token-only prefix caching remains disabled for media. */
 export type Vision = {
+  /** Producer identity includes all media and preceding rendered tokens. */
+  prefixIdentity?: string;
   embeddings: MlxArray;
   /** bool [L] image-token mask for the bidirectional attention overlay.
    *  Absent when the prompt carries ANY audio — audio(-containing) prompts
@@ -352,9 +354,11 @@ export class GenerationGateway {
       try {
         const adapters = options.adapters?.length
           ? this.opts.adapterNamespace?.(options.adapters) ?? JSON.stringify(options.adapters) : "";
-        const namespace = this.#binding.prefixNamespace?.(placement.execution, options, adapters) ??
+        const baseNamespace = this.#binding.prefixNamespace?.(placement.execution, options, adapters) ??
           (placement.execution?.method === "speculative" ? null : adapters);
-        if (!vision && namespace !== null) {
+        const namespace = baseNamespace !== null && vision?.prefixIdentity
+          ? JSON.stringify(["prepared-prefix-v1", vision.prefixIdentity, baseNamespace]) : baseNamespace;
+        if ((!vision || placement.execution?.promptCache) && namespace !== null) {
           const closePrefetch = this.opts.promptCache?.prefetch ? trace?.begin("cache.prefetch") : undefined;
           try { releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId); }
           finally { closePrefetch?.(); }
@@ -443,8 +447,10 @@ export class GenerationGateway {
 
     const adapters = options.adapters?.length ? [...options.adapters] : undefined;
     const adapterKey = adapters ? JSON.stringify(adapters) : "";
-    const cacheNamespace = adapters
-      ? () => this.opts.adapterNamespace?.(adapters) ?? adapterKey : "";
+    const adapterNamespace = () => adapters ? this.opts.adapterNamespace?.(adapters) ?? adapterKey : "";
+    const cacheNamespace = vision?.prefixIdentity
+      ? () => JSON.stringify(["prepared-prefix-v1", vision.prefixIdentity, adapterNamespace()])
+      : adapters ? adapterNamespace : "";
     const context = adapters
       ? this.#binding.bindAdapterContext?.(adapters, `adapters:${adapterKey}`) : undefined;
 

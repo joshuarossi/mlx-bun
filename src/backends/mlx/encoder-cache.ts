@@ -5,7 +5,7 @@ import type { MlxArray } from "../../mlx/array";
 /** Encoder-owned tensor schema over the cache's exact-object interface. */
 export class EncoderCache {
   constructor(private readonly objects: ObjectCache<CheckpointAttachment[]>,
-    private readonly identity: string) {}
+    readonly identity: string) {}
 
   async take(key: string): Promise<MlxArray | null> {
     const lease = await this.objects.take(`encoder-v1:${this.identity}:${key}`);

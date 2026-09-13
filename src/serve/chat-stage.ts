@@ -176,6 +176,7 @@ export class ChatStage {
         topLogprobs,
         adapterIds,
         hasVision: !!vision,
+        hasPreparedPrefixIdentity: !!vision?.prefixIdentity,
         userSeed: body.seed !== undefined,
         hasGrammar: !!grammarCtrl,
         hasDraft: !!ctx.draft,

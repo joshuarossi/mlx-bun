@@ -30,6 +30,15 @@ test("prepared media uses ordinary shared decode without token-only reuse or spe
   expect(resolveExecution({ ...request, hasVision: true }, capabilities).mechanism).toBe("serial");
 });
 
+test("prepared-prefix identity enables qualified shared reuse independently of media decode", () => {
+  const media = { ...request, hasVision: true, hasPreparedPrefixIdentity: true };
+  const supported = { ...capabilities, mediaBatch: true, mediaPrefixCache: true, sharedCheckpoints: true };
+  expect(resolveExecution(media, supported)).toMatchObject({ mechanism: "continuous", promptCache: true, checkpoint: false });
+  expect(resolveExecution({ ...media, hasPreparedPrefixIdentity: false }, supported).promptCache).toBe(false);
+  expect(resolveExecution(media, { ...supported, mediaPrefixCache: false }).promptCache).toBe(false);
+  expect(resolveExecution(media, { ...supported, continuous: false })).toMatchObject({ mechanism: "serial", promptCache: false });
+});
+
 test("an explicit seed composes with ordinary logprobs and grammar in continuous execution", () => {
   const plan = resolveExecution({ ...request, userSeed: true, wantsLogprobs: true, hasGrammar: true }, capabilities);
   expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous" });

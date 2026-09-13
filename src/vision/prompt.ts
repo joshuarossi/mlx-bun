@@ -45,6 +45,7 @@ export interface VisionEncoder<P extends { softTokens: number } = { softTokens: 
 
 export interface VisionPrompt {
   ids: number[];
+  prefixIdentity?: string;
   /** Unscaled merged embeddings [1, L, hidden] — caller disposes. */
   embeddings: MlxArray;
   /** bool [L] image-token mask — caller disposes. */
@@ -53,6 +54,8 @@ export interface VisionPrompt {
 
 export interface MultimodalPrompt {
   ids: number[];
+  /** Includes every media item and the exact token prefix through the last one. */
+  prefixIdentity?: string;
   /** Unscaled merged embeddings [1, L, hidden] — caller disposes. */
   embeddings: MlxArray;
   /** bool [L] image-token mask for the bidirectional attention overlay.
@@ -290,6 +293,16 @@ export async function buildMultimodalPrompt<P extends { softTokens: number }>(
     ? new Bun.CryptoHasher("sha256").update(`gemma-${run.kind}-input-v1`)
       .update(run.kind === "image" ? images[run.index]! : audio[run.index]!).digest("hex")
     : "");
+  const lastMedia = runs.at(-1);
+  // A matching namespace guarantees any reused prefix includes all media.
+  // The audio-presence bit also identifies Gemma's causal/bidirectional policy.
+  const prefixIdentity = lastMedia && keys.every(Boolean)
+    ? new Bun.CryptoHasher("sha256").update("gemma-prepared-prefix-v1")
+      .update(JSON.stringify({ audio: audio.length > 0,
+        tokens: spliced.slice(0, lastMedia.start + lastMedia.length),
+        media: runs.map((run, i) => [run.kind, keys[i],
+          (run.kind === "image" ? towers.vision : towers.audio)!.cache!.identity]),
+      })).digest("hex") : undefined;
   const reused: (MlxArray | null)[] = [];
   try {
     for (const [index, run] of runs.entries()) {
@@ -361,7 +374,7 @@ export async function buildMultimodalPrompt<P extends { softTokens: number }>(
           imgI32.dispose();
         }
 
-        return { ids: spliced, embeddings: embeds, bidirMask, multimodalMask };
+        return { ids: spliced, embeddings: embeds, bidirMask, multimodalMask, prefixIdentity };
       } catch (error) { embeds.dispose(); throw error; }
     });
   } finally { for (const tensor of reused) tensor?.dispose(); }
@@ -392,5 +405,5 @@ export async function buildVisionPrompt<P extends { softTokens: number }>(
   // the zero-image edge (the original builder returned an all-false mask).
   const imageMask = mp.bidirMask ?? mp.multimodalMask;
   if (mp.bidirMask) mp.multimodalMask.dispose();
-  return { ids: mp.ids, embeddings: mp.embeddings, imageMask };
+  return { ids: mp.ids, embeddings: mp.embeddings, imageMask, prefixIdentity: mp.prefixIdentity };
 }

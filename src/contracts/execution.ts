@@ -1,6 +1,7 @@
 /** Request facts only. Native resources remain with the preparation owner. */
 export interface ExecutionRequirements {
   readonly hasVision: boolean;
+  readonly hasPreparedPrefixIdentity?: boolean;
   readonly hasAdapters: boolean;
   readonly hasRepetitionPenalty: boolean;
   readonly userSeed: boolean;
@@ -20,6 +21,7 @@ export interface ExecutionCapabilities {
   readonly adapterBatch?: boolean;
   /** Prepared media can enter the ordinary shared execution group. */
   readonly mediaBatch?: boolean;
+  readonly mediaPrefixCache?: boolean;
   readonly pagedBatch?: boolean;
   readonly checkpoints: boolean;
   /** Bound ordinary driver can restore/capture this request configuration. */

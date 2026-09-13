@@ -39,6 +39,7 @@ export interface RequestPlanInput {
   topLogprobs: number;
   adapterIds: string[];
   hasVision: boolean;
+  hasPreparedPrefixIdentity?: boolean;
   userSeed: boolean;
   hasGrammar: boolean;
   hasDraft: boolean;
@@ -137,6 +138,7 @@ export function planRequest(input: RequestPlanInput): PlanRequestResult {
 
   const shape: RequestShape = {
     hasVision: input.hasVision,
+    hasPreparedPrefixIdentity: input.hasPreparedPrefixIdentity,
     hasAdapters: !!options.adapters?.length,
     hasRepetitionPenalty: !!options.repetitionPenalty,
     hasLogitsExtras: !!(

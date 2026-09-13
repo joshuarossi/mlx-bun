@@ -128,4 +128,70 @@ describe.skipIf(!path)("shared prepared media input", async () => {
         } finally { cohort.dispose(); }
       }, 120_000);
     }
+  for (const kind of ["image", "audio", "mixed"] as const) for (const format of ["bf16", "kv4-delayed", "k8v3-delayed"] as const)
+    test(`${kind} ${format} resumes a retained prepared prefix through the ordinary cache port`, async () => {
+      const { PromptCache } = await import("../../src/prompt-cache");
+      const { cloneKvCaches } = await import("../../src/kv-store");
+      const prefix = Array.from({ length: 17 }, (_, i) => 40 + i);
+      const tail = Array.from({ length: 7 }, (_, i) => 100 + i), prompt = [...prefix, ...tail];
+      using ids = ops.fromInt32(prefix, [1, prefix.length]);
+      using raw = MlxArray.fromFloat32(Float32Array.from({ length: prefix.length * model.config.text.hiddenSize },
+        (_, i) => Math.sin(i / 17) * 0.02), [1, prefix.length, model.config.text.hiddenSize]);
+      using embeddings = raw.astype(Dtype.bfloat16);
+      using maskIds = ops.fromInt32(prefix.map((_, i) => i >= 2 && i <= 4 ? 1 : 0), [prefix.length]);
+      using mask = maskIds.astype(Dtype.bool);
+      const maintain = createKvMaintenance(format === "bf16" ? {} : format === "kv4-delayed"
+        ? { kvBits: 4, quantizedKvStart: 8 } : { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 8 });
+      const donor = model.makeCache(), cache = new PromptCache(8e9);
+      const namespace = `prepared-fixture-${kind}-${format}`;
+      const output: unknown[] = [];
+      const finish = (caches: Cache[], logits: MlxArray) => {
+        const first = { logits: array(logits), state: state(caches) };
+        maintain(caches);
+        using nextIds = ops.fromInt32([123], [1, 1]);
+        using hidden = model.forwardHidden(nextIds, caches);
+        using next = model.logitsFromHidden(hidden);
+        return { first, next: { logits: array(next), state: state(caches) } };
+      };
+      try {
+        maintain(donor);
+        using initial = model.forwardEmbeddings(embeddings, donor, kind === "image" ? mask : null,
+          ids, kind === "image" ? null : mask);
+        initial.eval();
+        cache.put(prefix, cloneKvCaches(donor), namespace);
+        const before = state(cache.findExact(prefix, namespace)!.caches);
+        maintain(donor);
+        using tailIds = ops.fromInt32(tail, [1, tail.length]);
+        using hidden = model.forwardHidden(tailIds, donor);
+        using tip = hidden.slice([0, tail.length - 1, 0], [1, tail.length, hidden.shape[2]!]);
+        using logits = model.logitsFromHidden(tip);
+        output.push(finish(donor, logits));
+        const starts: number[] = [];
+        const row = {
+          req: { promptIds: prompt, cacheNamespace: namespace, maxTokens: 1, eosTokenIds: [],
+            sample: () => { throw new Error("unused"); }, onToken() {},
+            promptInput: bindEmbeddingsInput((tokens, caches, start) => {
+              starts.push(start); expect([...tokens.toIntTokens()]).toEqual(tail);
+              return model.forwardHidden(tokens, caches);
+            }) },
+          cacheNamespace: namespace,
+          resolve() {}, reject(error: unknown) { throw error; }, current: 0, generated: 0, sampled: 0,
+          promptTokens: prompt.length, cachedTokens: 0, admittedAt: 0, firstTokenAt: 0,
+          fed: [], fedTainted: false, merged: false,
+        } satisfies Row;
+        const cohort = new MlxPrefillCohort({ model, chunkSize: 2, tailSplit: true, maintain, promptCache: cache,
+          forward: async () => { throw new Error("generic prefill selected"); },
+          project: h => model.logitsFromHidden(h),
+          async complete(value, lg) { output.push(finish(value.solo, lg)); disposeResources(value.solo); },
+          reject: (_row, error) => { throw error; },
+        });
+        try {
+          cohort.admit(row); expect(await cohort.advance({ maxTokens: 1 })).toBe(true);
+          expect(starts).toEqual([prefix.length]); expect(row.cachedTokens).toBe(prefix.length);
+          expect(output[1]).toEqual(output[0]);
+          expect(state(cache.findExact(prefix, namespace)!.caches)).toEqual(before);
+        } finally { cohort.dispose(); }
+      } finally { disposeResources(donor); cache.clear(); }
+    }, 120_000);
+
 });

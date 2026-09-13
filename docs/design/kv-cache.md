@@ -856,6 +856,31 @@ cost and changed image overlap are recorded in the
 Media KV-prefix caching remains separate work.
 
 
+### 5.14 Prepared media prefix identity
+
+The Gemma producer can supply a versioned `prefixIdentity` containing every
+media item's exact input/encoder identity, its causal policy, and the rendered
+token prefix through the last media span. The ordinary cache namespace combines
+this identity with the adapter namespace. Consequently, matching histories
+include identical media and preceding tokens; a changed media set or a change
+from image-only bidirectional attention to mixed causal input cannot collide.
+Appending later text leaves the identity stable.
+
+With `MLX_BUN_MEDIA_PREFIX_CACHE=1`, the shared Gemma binding uses ordinary
+RAM/SSD lookup, generated snapshots, prefetch and persistence. The prepared-input
+interface receives the cache's starting position. An uncached input performs
+its atomic media prefill; a restored prefix resumes text after all media through
+the model's ordinary forward method. Scheduling and sampling are unchanged.
+Explicit serial and Qwen media prefix reuse remain unqualified.
+
+The existing minimum reusable offset still identifies a precision transition.
+If delayed quantization occurs after an atomic media prefill, its cached state
+can serve a later conversation turn but cannot rewind before that conversion.
+A shorter request recomputes normally. Start-zero affine/TurboQuant and bf16
+retain their applicable prefix-trimming behavior. This is cache selection,
+not request admission or a memory refusal.
+
+
 ## 6. Optional paged KV
 
 `PagedKVCache` stores full-attention planes in per-request block pools.

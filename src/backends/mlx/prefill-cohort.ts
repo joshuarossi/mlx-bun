@@ -78,7 +78,7 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
         chunkSize: state.row.req.prefillChunkSize ?? host.chunkSize,
         tailSplit: host.tailSplit, snapshotAt: state.snapAt }); },
       forward: (ids, caches, states, work) => states[0]?.row.req.promptInput
-        ? Promise.resolve(states[0].row.req.promptInput.forward(ids, caches))
+        ? Promise.resolve(states[0].row.req.promptInput.forward(ids, caches, states[0].pos))
         : work ? work(ids, caches) : host.forward(ids, caches),
       project: host.project.bind(host),
       complete: (state, logits) => state.continuation ? host.resume!(state) : host.complete(state, logits!), reject: host.reject.bind(host),

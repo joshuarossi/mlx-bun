@@ -81,7 +81,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const adapterState = "loraState" in model ? model.loraState : undefined;
   const fillRequests = supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
-    bindEmbeddingsInput((ids, caches) => model.forwardEmbeddings(input.embeddings,
+    bindEmbeddingsInput((ids, caches, start) => start > 0 ? model.forwardHidden(ids, caches)
+      : model.forwardEmbeddings(input.embeddings,
       caches, input.imageMask ?? null, ids, input.multimodalMask ?? null))
     : model instanceof Qwen35Model ? (input: Vision) => bindQwenMediaInput(model, input.embeddings, input.mrope!)
     : undefined;
@@ -133,6 +134,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         mediaBatch: !!mediaInput,
+        mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", false),
         groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         sharedFill: !!fillRequests && !!options.fill && !options.fill.plan.echo,
