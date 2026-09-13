@@ -3155,3 +3155,130 @@ they are evidence of restored initial state, not a final follow-up flush.
 Source: `a382cad`. Reports and retained SSD directories are under
 `reports/prefill-observation/{gemma,qwen}-media-prefix-process-*`;
 `completed-media-prefix-process-tool-source.json` preserves the retired runner.
+
+
+### R24 activation quantization and resource bounds (2026-09-13)
+
+This is a feasibility screen, not a new model-quality or serving-speed claim.
+The pinned MLX 0.32.2 oracle runs five alternating paired blocks per cell,
+with three warmups and ten completed evaluations per arm. Synthetic seeded
+bf16 inputs use the Qwen MLP gate/up dimensions, K=5120 and N=17408. Both arms
+share the same pre-quantized weights. The control uses `quantized_matmul`;
+the candidate uses `qqmm`, adding activation quantization. No model is loaded.
+Each comparison is within one machine and format, not against packed Trellis.
+
+| Format | M | M1 control → candidate, ms | Change | M4 control → candidate, ms | Change |
+|---|---:|---:|---:|---:|---:|
+| nvfp4 | 1 | 0.760 → 0.792 | +4.18% | 0.360 → 0.360 | -0.21% |
+| nvfp4 | 4 | 0.814 → 0.829 | +1.75% | 0.402 → 0.396 | -1.62% |
+| nvfp4 | 16 | 1.438 → 1.652 | +14.84% | 1.112 → 1.166 | +4.83% |
+| nvfp4 | 256 | 8.658 → 21.093 | +143.62% | 7.014 → 15.388 | +119.39% |
+| mxfp8 | 1 | 0.502 → 0.512 | +1.89% | 0.510 → 0.509 | -0.22% |
+| mxfp8 | 4 | 0.677 → 0.680 | +0.49% | 0.639 → 0.642 | +0.39% |
+| mxfp8 | 16 | 1.467 → 1.868 | +27.35% | 1.139 → 1.714 | +50.51% |
+| mxfp8 | 256 | 8.866 → 25.453 | +187.08% | 7.160 → 24.139 | +237.16% |
+
+Numbers are medians of block medians. Small-M cells have mixed block-level
+noise; no small speed win is established. Every M=16/256 cell is slower in
+all five pairs on both machines. Relative squared output error versus the
+same quantized weights with bf16 activations is 0.0090–0.0095 for NVFP4 and
+0.00069–0.00072 for MXFP8. These are synthetic operation errors, not task scores.
+The capability smoke also records that INT8 input to ordinary QMM is cast back
+to the floating scale dtype. A constant NVFP4 example produces 136 where its
+unquantized dot product is 128; MXFP8 produces 128 for that example.
+
+The pinned [Metal implementation](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/quantized.cpp#L1865)
+quantizes/dequantizes activations before dispatching the weight kernel. Native
+`mlx_qqmm` is exported by the current pack, but it does not provide a packed
+Trellis W3A8 operation. Do not add a serving option for this measured loss.
+Reopen with an operation that consumes compressed activations directly and
+passes a whole-model quality comparison.
+
+These short diagnostic screens have three activity samples per machine. M1
+names Python as last GPU submitter in all three; M4 names Python twice and a
+desktop application once. Swap remains 2656.12 MiB on M1 and 3924.12 MiB on M4.
+Sources are `6fe0a7f` on both machines; each uses its pinned 0.32.2 oracle.
+Reports: `reports/prefill-observation/r24-activation-screen-{m1,m4}.json`,
+`r24-activation-screen-review.json`, `r24-activation-native-capability.json`,
+the adjacent native graph exports and `completed-r24-activation-tool-source.json`.
+
+The separate static resource screen reads the actual packed snapshot's
+configuration and safetensors headers, without allocating model tensors.
+Its 192 MLP matrices contain 17,112,760,320 parameters and occupy
+6,423,969,792 payload bytes, 49.27% of the 13,038,407,512-byte artifact.
+Those file fractions are not fractions of decode time: the artifact also
+contains media and MTP weights, and R19 shows bit count does not predict latency.
+
+| Candidate resource | Calculated bound and assumptions |
+|---|---|
+| MLP mean three → two bits | Save 2,139,095,040 raw code bytes before changed codebooks/metadata. This is 16.41% of artifact bytes, with unchanged other tensors; no latency or quality prediction. |
+| Sparse MLP correction | A flat uint32 index plus fp16 value costs about 97.92/489.60/979.20 MiB at 0.1%/0.5%/1% density, excluding row pointers/alignment. Overhead is 0.048/0.24/0.48 bits per original MLP weight. |
+| Low-rank MLP replacement | bf16 factors use `2*r*(5120+17408)` bytes per matrix. Rank 128/256/512 across all MLP projections uses 1056/2112/4224 MiB. Rank must be below about 742 to beat raw three-bit matrix bytes. Task quality at those ranks is unmeasured. |
+| One-matrix calibration | One f32 MLP matrix is 340 MiB. Full f32 input covariance is 100 MiB for gate/up and 1156 MiB for down; solver copies, activations and the resident model are additional. Layerwise fitting is a candidate; whole-model residency is unnecessary. |
+| Full 27B training | Approximate bf16 weights alone use 50.29 GiB. At 12 bytes/parameter for weights, gradients and Adam moments, state uses 301.75 GiB; a separate f32 master adds another 100.58 GiB. This full-resident form cannot fit either Mac. Offload is a different, unmeasured training design. |
+| Adapter-only recovery | Existing adapters use f32 parameters. Rank-eight adapters on all MLP matrices would have 34,603,008 parameters and 528 MiB for parameters, gradients and two moments, before activations/base weights. This is a proposed capacity bound: the packed model currently excludes Trellis MLPs from its adapter targets. |
+| B1 activation traffic | One MLP's three bf16 matrix inputs/outputs total 135,168 bytes before fusion/cache effects. Halving that saves at most 67,584 bytes against about 100,270,080 raw three-bit weight bytes, only 0.067%. Larger M is a separate compute/traffic regime. |
+
+Calculations: `reports/prefill-observation/r24-feasibility-bounds.json`.
+They establish neither absence of task-quality loss nor a maximum TPS gain.
+
+
+#### Actual-weight approximation and derivative screens
+
+The packed layer-one gate matrix is expanded through the existing Bun decoder
+to bf16, then converted losslessly to f32 for inspection. Its SHA-256 is
+`90a28e05d53aad2f4e920af988ad0ca2f81c98c38d3dc92fd4f7ee90659267f8`.
+This is the current k3 reconstruction, not unavailable original bf16 weights.
+M1 computes the complete singular spectrum with pinned MLX's CPU SVD.
+The spectrum's squared sum agrees with direct f64 matrix energy within
+3.8e-8 relative error.
+
+| Rank | bf16 factor bytes | Best unweighted squared reconstruction error |
+|---|---:|---:|
+| 128 | 5,767,168 | 84.59% |
+| 256 | 11,534,336 | 75.95% |
+| 512 | 23,068,672 | 63.11% |
+| 741 | 33,386,496 | 54.19% |
+| 1024 | 46,137,344 | 45.17% |
+| 2048 | 92,274,688 | 23.09% |
+| 4096 | 184,549,376 | 3.42% |
+
+These are ideal unweighted truncation errors before factor quantization.
+A rank that beats raw W3 bytes has large error on this matrix. Do not build a
+whole-model plain-SVD format from this result. Activation-aware factorization,
+other layers and actual task quality remain unmeasured.
+
+A second M1 screen takes 64 uniformly spaced rows of the same matrix, retaining
+all 5120 columns per row, and re-encodes them with the existing unweighted
+L12/k2/T256 tail-biting codec. Sparse corrections select the largest individual
+squared errors. The error bound assumes exact residual recovery while charging
+six bytes per entry; actual fp16 residual rounding, row indexes and sparse
+execution can only add costs/error relative to that bound.
+
+| Corrected density | Effective bits/weight | Remaining squared error relative to current k3 |
+|---|---:|---:|
+| 0% | 2.0031 | 7.3684% |
+| 0.1% | 2.0510 | 7.2675% |
+| 0.5% | 2.2431 | 6.9977% |
+| 1% | 2.4830 | 6.7328% |
+| 2% | 2.9630 | 6.2937% |
+
+The near-three-bit arm leaves substantial additional error for little size
+saving. It is not selected for a model conversion. This small unweighted
+sample does not settle activation-calibrated sparse methods, original-weight
+recovery, other matrices or whole-model quality. No sparse speedup is claimed.
+
+On M4, differentiating the actual packed matrix through its current forward
+fails at M=1/4/16 with the native missing `CustomKernel` VJP error. Differentiating
+the same frozen matrix after bf16 expansion succeeds with a gradient of shape
+`[1,5120]`. This identifies a missing packed backward operation, rather than
+an inability to train any adapter. The packed model also explicitly excludes
+Trellis MLPs from `loraTargets()`. Expanded backwards require the temporary
+memory already included in the resource screen; no training option is added.
+
+Sources remain `6fe0a7f`. Reports: `r24-mlp-layer1-gate.f32.json`,
+`r24-low-rank-spectrum.json`, `r24-mlp-sample.json`,
+`r24-sparse-residual-screen.json`, `r24-packed-gradient-m4.json` and
+`completed-r24-weight-screen-tool-sources.json`, all under
+`reports/prefill-observation/`. The raw matrix, sampled rows, full spectrum,
+failed runner-API attempt and native errors are preserved.
