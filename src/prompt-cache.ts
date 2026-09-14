@@ -70,6 +70,8 @@ export interface ColdTier {
   restore(handle: unknown): { tokens: number[]; caches: Cache[]; attachments?: CheckpointAttachment[]; retain: () => void } | null;
   findExact?(tokens: number[], ns: string): { prefixLen: number; handle: unknown } | null;
   restoreAsync?(handle: unknown): Promise<ReturnType<ColdTier["restore"]>>;
+  /** Tensor objects have no target layers; restore with their own schema. */
+  restoreObjectAsync?(handle: unknown): Promise<ReturnType<ColdTier["restore"]>>;
   /** Borrow live caches and finish persistence before returning. A false
    *  result prevents a required demotion. */
   store(tokens: number[], caches: Cache[], ns: string, attachments?: CheckpointAttachment[]): boolean | void;
@@ -136,6 +138,53 @@ interface EntryRecord extends RetentionCandidate {
 }
 
 export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]> {
+  /** Exact tensor objects share this store's byte budget, eviction and writer.
+   * Empty token history denotes no conversation; the private namespace is the
+   * complete object identity. No fabricated language tokens enter the index. */
+  readonly #objects: import("./contracts/object-cache").ObjectCache<CheckpointAttachment[]> = {
+    take: key => this.#takeObject(`object:${key}`),
+    put: (key, value) => this.put([], [], `object:${key}`, undefined, value),
+  };
+
+  get objects(): import("./contracts/object-cache").ObjectCache<CheckpointAttachment[]> | undefined {
+    return this.maxBytes > 0 || this.#cold ? this.#objects : undefined;
+  }
+
+  async #takeObject(ns: string): Promise<{ value: CheckpointAttachment[]; dispose(): void } | null> {
+    let entry = this.findExact([], ns);
+    if (entry) this.objectHits++;
+    else this.objectMisses++;
+    if (!entry) {
+      const cold = this.#cold;
+      const hit = cold?.findExact?.([], ns);
+      if (!hit || !cold?.restoreObjectAsync) return null;
+      const epoch = this.#epoch;
+      const loaded = await cold.restoreObjectAsync(hit.handle);
+      if (!loaded) return null;
+      this.objectRestores++;
+      if (epoch !== this.#epoch) { this.#disposeEntry({ ...loaded, ns }, false); return null; }
+      // Another request may have published this immutable object during IO.
+      entry = this.findExact([], ns);
+      if (entry) this.#disposeEntry({ ...loaded, ns }, false);
+      else {
+        this.#publishingPrefetch = true;
+        try { this.put([], loaded.caches, ns, loaded.retain, loaded.attachments); }
+        catch (error) { this.#disposeEntry({ ...loaded, ns }, false); throw error; }
+        finally { this.#publishingPrefetch = false; }
+        entry = this.findExact([], ns);
+      }
+    }
+    if (!entry) return null;
+    const borrowed = this.#borrow(this.#records.get(entry)!, 0, ns);
+    try { this.evictToBudget(); this.reclaim(); }
+    catch (error) { this.#disposeEntry(borrowed, false); throw error; }
+    let released = false;
+    return { value: borrowed.attachments ?? [], dispose: () => {
+      if (released) return; released = true;
+      this.#disposeEntry(borrowed, false);
+    } };
+  }
+
   readonly maxBytes: number;
   #entries: EntryRecord[] = [];
   #clock = 0;
@@ -144,6 +193,9 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   sessionHits = 0;
   sessionMisses = 0;
   prefixScans = 0;
+  objectHits = 0;
+  objectMisses = 0;
+  objectRestores = 0;
 
   closeSession(sessionId: string): void {
     for (const record of this.#sessions.get(sessionId)?.values() ?? []) record.sessions--;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { NgramProvider } from "../../src/spec/ngram-source";
+import { NgramProvider, constraintDraftProvider } from "../../src/spec/ngram-source";
 import { disposeAttachments } from "../../src/backends/mlx/checkpoint-state";
 import { attachmentBytes } from "../../src/backends/mlx/checkpoint-state";
 import { configureRuntime } from "../../src/runtime-config";
@@ -92,4 +92,30 @@ test("prompt lookup captures request prefill policy and accepts explicit process
       finally { disposeAttachments([full]); }
     } finally { changed(); source.dispose(); }
   } finally { original(); provider.dispose(); }
+});
+
+test("constraint proposals commit only verified tokens and follow current row membership", async () => {
+  const provider = constraintDraftProvider();
+  const prefix = provider.grouped.openPrefill({ target: null as never, checkpoints: [null, null] });
+  const { fromInt32 } = await import("../../src/mlx/ops");
+  using ids = fromInt32([9, 8], [2, 1]);
+  prefix.prefill(ids);
+  const seeds = [prefix.capture(0), prefix.capture(1)];
+  let proposals = [[10, 11, 12], [20, 21]];
+  const group = provider.grouped.open({ target: null as never, sampling: null as never,
+    checkpoints: seeds, constraints: { propose: async (row, depth) => proposals[row]!.slice(0, depth) } });
+  disposeAttachments(seeds.map(seed => seed.attachment)); prefix.dispose();
+  try {
+    expect(await group.draft([1, 2], 3, [0, 0])).toEqual(proposals);
+    group.commit([1, 0], null as never);
+    const captured = [group.capture(0), group.capture(1)];
+    try { expect(captured.map(s => s.attachment.tensors[0]!.toIntTokens())).toEqual([[9, 1, 10], [8, 2]]); }
+    finally { disposeAttachments(captured.map(s => s.attachment)); }
+    group.filterRows([1]); proposals = [[30, 31]];
+    expect(await group.draft([22], 1, [1])).toEqual([[30]]);
+    group.commit([1], null as never);
+    const last = group.capture(0);
+    try { expect(last.attachment.tensors[0]!.toIntTokens()).toEqual([8, 2, 22, 30]); }
+    finally { disposeAttachments([last.attachment]); }
+  } finally { group.dispose(); }
 });

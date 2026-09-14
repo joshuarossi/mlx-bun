@@ -20,6 +20,7 @@ import {
   makeTokenizer,
   NO_TOOL_CALLS_TEMPLATE,
   QWEN_STYLE_TEMPLATE,
+  QWEN_XML_TEMPLATE,
   WEATHER_TOOL,
 } from "../support/fill-fixtures";
 
@@ -79,8 +80,26 @@ function harness(overrides: {
   const engine = new ScriptedEngine(overrides.stats);
   const chat = new ChatStage(ctx, prep, { peekPrefixLen: () => 0 }, 4096);
   const inference = new InferenceStage(new CompletionExecutor(engine));
-  return { chat, inference, engine, tokenizer: fake };
+  return { chat, inference, engine, tokenizer: fake, prep };
 }
+
+test("stable cache boundaries include historical tool turns that omit the empty thinking primer", () => {
+  const template = QWEN_XML_TEMPLATE.replace("{% else %}{{ m.content }}", "{% else %}{% if m.role == 'assistant' %}<think>\n\n</think>\n\n{% endif %}{{ m.content }}")
+    .replace("assistant\n{% endif %}", "assistant\n<think>\n\n</think>\n\n{% endif %}");
+  const h = harness({ template });
+  for (const content of ["Save this sentence.", "Save this substantially longer sentence with several additional words."]) {
+    const request = { messages: [{ role: "user", content }] };
+    const prompt = h.prep.promptIdsFor(request, [WEATHER_TOOL]).ids;
+    const boundary = h.prep.stableLenFor(request, [WEATHER_TOOL], prompt);
+    expect(h.tokenizer.decode(prompt.slice(boundary))).toBe("<think>\n\n</think>\n\n");
+    for (const reply of [{ role: "assistant", content: "x" }, { role: "assistant", content: null,
+      tool_calls: [{ id: "call", type: "function" as const,
+        function: { name: WEATHER_TOOL.function.name, arguments: { city: "Paris" } } }] }]) {
+      const next = h.prep.promptIdsFor({ messages: [...request.messages, reply, { role: "user", content: "Continue." }] }, [WEATHER_TOOL]).ids;
+      expect(next.slice(0, boundary)).toEqual(prompt.slice(0, boundary));
+    }
+  }
+});
 
 const withRuntime = async <T>(env: RuntimeOverrides, fn: () => Promise<T>): Promise<T> => {
   const restore = configureRuntime(env);
@@ -136,9 +155,9 @@ describe("fill is refused by composition", () => {
     await withRuntime({ MLX_BUN_FILL: undefined }, () => refused("default off", body()));
   });
 
-  test("a user-fixed seed (reproducibility), logprobs, and top_logprobs", async () => {
+  test("seed support belongs to execution; logprobs and top_logprobs need sampled positions", async () => {
     await withRuntime(STRICT, async () => {
-      await refused("seed", body({ seed: 7 }));
+      expect(await fillOf(harness(), body({ seed: 7 }))).toBeInstanceOf(FillSession);
       await refused("logprobs", body({ logprobs: true }));
       await refused("top_logprobs", body({ logprobs: true, top_logprobs: 3 }));
     });
@@ -151,15 +170,17 @@ describe("fill is refused by composition", () => {
     });
   });
 
-  test("a mounted draft model: the spec loop is a different executor", async () => {
-    await withRuntime(STRICT, () =>
-      refused("draft", body(), harness({ draft: { model: {} } })));
+  test("a mounted draft model delegates fill eligibility to the method binding", async () => {
+    await withRuntime(STRICT, async () =>
+      expect(await fillOf(harness({ draft: { model: {} } }), body())).toBeInstanceOf(FillSession));
   });
 
-  test("a quantized-KV scheme (multi-token append after conversion is unvalidated)", async () => {
+  test("cache formats reach the engine, which owns append eligibility", async () => {
     await withRuntime(STRICT, async () => {
-      await refused("kvBits", body(), harness({ kvScheme: { kvBits: 4, kvGroupSize: 64 } }));
-      await refused("turboQuant", body(), harness({ kvScheme: { turboQuant: { kBits: 4, vBits: 4 } } }));
+      for (const kvScheme of [{ kvBits: 4, kvGroupSize: 64 }, { turboQuant: { kBits: 4, vBits: 4 } }]) {
+        const h = harness({ kvScheme });
+        expect(await fillOf(h, body())).toBeInstanceOf(FillSession);
+      }
     });
   });
 
@@ -171,9 +192,7 @@ describe("fill is refused by composition", () => {
     });
   });
 
-  // Continuous (batch) placement needs no refusal here: generate() is the only
-  // site that reads options.fill, so a batch-placed request simply does not
-  // fill. Nothing in this feature forces a request onto the serial lane.
+  // The execution binding selects strict shared fill after request preparation.
 });
 
 describe("MLX_BUN_FILL=echo (Lab tier)", () => {
@@ -213,7 +232,7 @@ describe("MLX_BUN_FILL=echo (Lab tier)", () => {
 
   test("the body-level refusals apply to echo mode too", async () => {
     await withRuntime({ ...STRICT, MLX_BUN_FILL: "echo" }, async () => {
-      expect(await fillOf(harness(), body({ seed: 7 }))).toBeUndefined();
+      expect(await fillOf(harness(), body({ seed: 7 }))).toBeInstanceOf(FillSession);
       expect(await fillOf(harness(), body({ logprobs: true }))).toBeUndefined();
     });
   });

@@ -41,13 +41,29 @@ function fixture() {
       admittedAt: 0, firstTokenAt: 0, fed: [], fedTainted: false, merged: false };
     return request;
   };
-  return { method, row, shapes, inputs, snapshots, failures, joined,
+  return { method, model, row, shapes, inputs, snapshots, failures, joined,
     dispose() { method.dispose(); cache.clear(); provider.dispose(); } };
 }
 async function drain(preparation: MlxGroupPreparation) {
   for (let step = 0; step < 30; step++) if (await preparation.advance()) return;
   throw new Error("preparation did not drain");
 }
+
+test("budgeted method prefill retains companion history through an injected model work port", async () => {
+  const f = fixture(), row = f.row([1, 2, 3, 4, 5, 6, 7]);
+  const preparation = f.method.prepare(row);
+  let calls = 0;
+  try {
+    while (!await preparation.advance({ maxTokens: 2, forward: async (ids, caches) => {
+      expect(ids.shape[0]! * ids.shape[1]!).toBeLessThanOrEqual(2); calls++;
+      return f.model.forwardHidden(ids, caches);
+    } })) { /* each bounded chunk returns to the scheduler */ }
+    expect(calls).toBe(4);
+    expect(f.joined).toEqual([row]);
+    expect(f.method.runningTokens).toBe(3);
+    expect(f.snapshots).toEqual([{ tokens: [1, 2, 3, 4, 5, 6], history: [1, 2, 3, 4, 5, 6], offset: 6 }]);
+  } finally { preparation.dispose(); f.dispose(); }
+});
 
 test("lookup joins during prefill preserve target coverage and companion histories", async () => {
   const f = fixture(), a = f.row([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), b = f.row([11, 12, 13, 14, 15, 16, 17]);

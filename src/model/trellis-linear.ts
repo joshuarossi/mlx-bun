@@ -41,7 +41,7 @@ import * as ops from "../mlx/ops";
 import { MetalKernel } from "../mlx/metal-kernel";
 import type { Weights } from "../weights";
 import { quantFor, type ModelConfig, type QuantSpec } from "../config";
-import { runtimeFlag, runtimeNumber } from "../runtime-config";
+import { runtimeFlag, runtimeNumber, runtimeValue } from "../runtime-config";
 import { lut1mad, wordsPerBlock } from "../quantize/trellis";
 import { QuantizedLinear } from "./gemma4-base";
 import { REDUCE_SHARED_M_SOURCE, GATEUP_SHARED_M_SOURCE } from "./trellis-shared-m";
@@ -475,7 +475,7 @@ export function expandTrellis(codes: MlxArray, scales: MlxArray, g: TrellisGeome
 export type TrellisMode = "kernel" | "expand";
 
 export function trellisModeFromEnv(): TrellisMode {
-  const v = process.env.MLX_BUN_TRELLIS;
+  const v = runtimeValue("MLX_BUN_TRELLIS");
   if (v === "expand") return "expand";
   return "kernel";
 }

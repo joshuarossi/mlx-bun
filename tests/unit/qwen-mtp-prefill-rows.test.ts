@@ -45,6 +45,21 @@ function fixture() {
   return { rows, feed, inspect, forwards };
 }
 
+test("external verified tokens retain independent companion prefixes and true hidden rows", () => {
+  const { rows, feed, inspect } = fixture();
+  try {
+    rows.append([null, null]); feed([[1, 2, 3], [11, 12, 13]]);
+    using tokens = ops.fromInt32([4, 5, 6, 14, 15, 16], [2, 3]);
+    using context = MlxArray.fromFloat32(Float32Array.from([40, 50, 60, 140, 150, 160]), [2, 3, 1]);
+    rows.consume(tokens, context, [3, 1]);
+    inspect(0, [2, 3, 4, 5, 6], [10, 20, 30, 40, 50], 60);
+    inspect(1, [12, 13, 14], [110, 120, 130], 140);
+    feed([[7], [15]]);
+    inspect(0, [2, 3, 4, 5, 6, 7], [10, 20, 30, 40, 50, 60], 70);
+    inspect(1, [12, 13, 14, 15], [110, 120, 130, 140], 150);
+  } finally { rows.dispose(); }
+});
+
 test("MTP prefill shares the graph at B1/B3 and keeps the last true hidden outside companion KV", () => {
   for (const B of [1, 3]) {
     const { rows, feed, inspect, forwards } = fixture();

@@ -5,6 +5,45 @@ measurements. Model support and configuration limits are in the
 [model roster](models.md). Historical experiments, failures, and source hashes
 remain in the [campaign ledger](../archive/investigations/benchmark-ledger-through-v0.4.0.md).
 
+To compare saved results locally, run:
+
+```sh
+bun scripts/bench/report.ts --out reports/comparison.html <result.json>...
+```
+
+The standalone HTML accepts serving schema-4, native schema-1 and saved Pi
+`fresh-pi-kanban-task` results. A task's adjacent `quality.json` supplies its
+individual app acceptance checks. The report shows completed output tokens,
+task time, weighted post-first-output throughput, summed first-output waits,
+cache hits, final persistence status, tool errors and captured settings.
+Missing data remains unknown; failed or incomplete tasks have no completed-task
+throughput. Quality scores are calculated from the checks, with failures and
+blocked checks shown separately. File hashes identify the imported evidence;
+the renderer does not rerun app validation. Task rows never supply engine-speed
+ratios.
+
+To add saved model-quality results, export the existing evaluation ledger:
+
+```sh
+bun scripts/bench/quality-report.ts --db "$HOME/.cache/mlx-bun/evals.sqlite" --out reports/quality.json
+bun scripts/bench/report.ts --out reports/comparison.html reports/quality.json <result.json>...
+```
+
+The exporter reads SQLite without changing it. The portable JSON retains task
+accuracy, sample count, KL statistics/reference, safetensors size, captured
+configuration, commit, machine record and notes. Plots group accuracy and size
+by task and recorded machine; missing size stays unknown. Legacy rows do not
+guarantee dataset revision, sample selection or artifact content hashes, so
+the report supplies no inferred quality deltas or performance ratios. The M1
+ledger's 77 rows are preserved in `reports/prefill-observation/quality-ledger-m1.json`;
+the rendered table and plots are in `quality-history.html` beside it.
+
+The five saved Kanban runs below render together in
+`reports/kanban-decode-fixed-prefill-r1/comparison.html`. Browser review confirms
+their recorded scores and timings, expandable acceptance/turn records, and
+no blocking script errors. Model-free tests cover missing records, failed
+execution, contradictory summaries, escaping and CLI import.
+
 ## 1. Parity (porting correctness) — bit-exact vs the oracle
 
 These recorded results compare logits under matching model, cache, execution
@@ -37,6 +76,398 @@ records the model, native wheel and oracle provenance.
 The latest standard comparison is shown first, with machine conditions and
 losses retained. These diagnostic results are observations of this workload,
 not a universal speed ranking.
+
+### Lossless weight interleaving with RAM/SSD caching — M4 Pro 24 GB (2026-09-13)
+
+R6's remaining cache-enabled acceptance compares the original and two-block
+interleaved Qwen3.8-27B k300 packed artifacts. The existing inverse-code proof
+establishes identical quantized weights. All twelve standard suites use source
+`2c88d72`, Bun 1.4.2, MLX 0.32.2, variant 13, KV4 group 64, folded RTN4 MTP2,
+fixed prefill 256 and default shared scheduling. RAM prompt caching is 4 GiB;
+the standard script also tests SSD flush and fresh-process restore. No forced
+serial arm is used. Async expansion, compiled decode and fill are off.
+
+Six balanced original/interleaved pairs complete all 228 requests with no
+failures. Every request reports the batched lane. All 114 paired request
+hashes, response text hashes, complete usage records, counts and finish reasons
+match, including the four concurrent streams. Every SSD flush is durable with
+no pending, dropped or failed writes, and all twelve restarts reuse 10,398
+prompt tokens. The measured context has 10,399 tokens. All suites retain the
+same source hash at start and save.
+
+Each cell below is **original / interleaved**. Short decode produces 192 tokens;
+cached context completion produces 64, and aggregate uses four 128-token streams.
+
+| Pair, original/interleaved suite | Short decode tok/s | Context decode tok/s | Cached completion ms | Aggregate tok/s |
+|---|---:|---:|---:|---:|
+| 0/1 | 18.824 / 19.125 | 20.767 / 21.283 | 3150.0 / 3068.8 | 16.727 / 16.927 |
+| 3/2 | 18.737 / 19.314 | 20.719 / 21.313 | 3152.1 / 3070.7 | 16.817 / 16.930 |
+| 4/5 | 18.737 / 19.331 | 20.693 / 21.369 | 3156.2 / 3062.1 | 16.796 / 16.917 |
+| 7/6 | 18.728 / 19.141 | 20.745 / 21.265 | 3154.8 / 3068.4 | 16.810 / 16.922 |
+| 8/9 | 18.729 / 19.345 | 20.768 / 21.339 | 3147.9 / 3064.6 | 16.843 / 16.915 |
+| 11/10 | 18.742 / 19.159 | 20.739 / 21.300 | 3154.5 / 3066.6 | 16.798 / 16.915 |
+
+Interleaving improves short decode in all six pairs by 1.60–3.29%, and cached
+completion time falls 2.58–2.98%. Median paired changes are +2.65% short decode,
++2.73% context decode, −2.69% cached completion time and +0.68% aggregate
+throughput. Short complete-request time falls in every pair by 1.32–2.88%.
+Cold-context first-output time is essentially flat, decreasing 0.07–0.18%.
+Peak RSS changes are mixed, −0.72% to +0.49%; there is no general memory claim.
+This closes R6's cache-enabled acceptance for the existing interleaved artifact.
+It does not change registry artifacts or qualify other weight bit widths.
+
+The diagnostic run records 545 activity samples, 539 with active Bun work;
+524 identify an active Bun process as the last GPU submitter. Fifteen active
+samples instead identify Codex or Terminal. There are no observer errors.
+Last submission does not measure utilization, and this is not a contention-free
+claim. CPU activity and retained swap remain recorded with the raw evidence.
+
+Command profile: `bun scripts/bench-serve.ts all --model-path <artifact>
+--label qwen38-k300 --arms mlx-bun --no-serial --draft-model <folded-rtn4>
+--num-draft-tokens 2 --kv-quant 4 --prompt-cache 4 --context 16384 --tokens 192
+--diagnostic`, with fixed prefill 256 and the environment above.
+Raw evidence on both Macs: `reports/prefill-observation/interleave-cache-shared-{0..11}.md.json`,
+matching text/log reports, plan, activity and review. The plan records full
+artifact paths, ordering and exact commands.
+
+### Shared strict tool continuations — M4 Pro 24 GB (2026-09-13)
+
+The shared strict-fill method reuses prefill, row state, sampling and generated
+RAM/SSD caching. Qualified Qwen B1 uses its existing multi-position append;
+wider cohorts preserve one-position arithmetic. Fill remains off by default.
+
+Six bounded HTTP arms use the interleaved Qwen3.8-27B k300 packed artifact,
+Bun 1.4.2, MLX 0.32.2, variant 13, KV4 group 64 from start zero, fixed prefill
+256, 1 GiB RAM cache and a fresh 4 GiB SSD directory per arm. No draft is loaded;
+compiled decode and async expansion are off. Shared arms omit `--batch` and
+use the default cap eight; serial controls explicitly use `--batch 1`.
+Each arm includes ten saved tool-turn fixtures, warmup, explicit seed, an
+ordinary response with tools available, four concurrent requests and an SSD
+restart. Temperature is zero; tools are recorded fixtures and are not executed.
+
+All 108 responses complete without errors. Every paired input, response text,
+tool name/arguments, finish reason, token count and cached-token count matches.
+All six SSD flushes are durable with zero missing, dropped or failed snapshots;
+each fresh process restores 284 tokens of the 285-token restart request.
+All shared responses report `lane: batched`. Shared strict arms each inject
+220 tokens across 13 requests; serial injects 201 across 12 because explicit
+serial fill excludes user-fixed seeds.
+
+| Arm, in execution order | Ten-fixture total ms | Ordinary response ms | Slowest of four concurrent requests ms |
+|---|---:|---:|---:|
+| Shared, fill off | 38,020.4 | 19,655.7 | 4,065.9 |
+| Shared, strict fill | 32,888.2 | 19,685.0 | 3,826.5 |
+| Serial, strict fill | 32,847.0 | 19,659.9 | 7,353.8 |
+| Serial, strict fill | 32,850.0 | 19,670.4 | 7,375.3 |
+| Shared, strict fill | 32,855.4 | 19,666.0 | 4,083.5 |
+| Shared, fill off | 38,013.7 | 19,671.4 | 3,986.8 |
+
+Shared strict fill reduces the sequential fixture total by **13.50% / 13.57%**
+against shared fill-off. Its total differs from serial strict fill by
+**+0.13% / +0.02%**. Ordinary response time changes +0.15% / −0.03% against
+shared fill-off. Concurrent fill-on/off timing is mixed. Shared execution
+finishes the four-request set sooner than serial, but the first submitted
+request takes 3,468 / 2,379 ms versus 1,520 / 1,522 ms under serial. These are
+request durations from concurrently issued calls, not a stationary-load
+capacity measurement. The throughput/first-request latency tradeoff remains.
+
+The run preserves 634 source/config hashes with no start/end changes and 88
+activity samples with no observer failures. It is a diagnostic measurement;
+CPU, GPU and memory activity are retained. Source is `16c2201` plus the saved
+shared-fill diff. A subsequent binding correction uses the same model-declared
+format predicate in both execution methods: KV8 retains specialized append,
+while k4v3 fills through one-position execution. Both seeded native checks pass;
+the measured KV4 selection is unchanged.
+
+The earlier HTTP attempt accidentally shared one SSD directory across arms.
+Its responses remain available, but its timing cannot isolate the fill change.
+The corrected run above uses separate directories. Native delayed-conversion
+failures also remain recorded: exposing cache-owned append boundaries and
+propagating committed attention policy fixes both. Full hidden values, live
+cache bytes and continuation logits pass on M4 across bf16/KV4/k8v3 and delayed
+formats, including B2 retirement into a specialized B1 append. Equivalent M1
+MiniCPM row-state checks pass. Seeded method replay also covers M1 Qwen0.8B and
+Gemma4-e4b. This closes the covered shared strict-fill HTTP/cache comparison;
+speculative/echo fill, media and broader held-out task combinations remain open.
+
+Raw evidence on both Macs: `reports/prefill-observation/shared-fill-http.json`,
+`shared-fill-http-review.json`, activity/server logs and the exact source bundle.
+The `shared-fill-http-initial*` files preserve the invalid-cache experiment.
+Native logs use the `shared-fill-append-*`, `shared-fill-burst-*` and
+`shared-fill-format-selection-*` prefixes.
+
+### Fused TurboQuant default — shared serving (2026-09-13)
+
+The default candidate changes only packed KV decoding for requests that already
+select TurboQuant. The existing accepted kernel, codec bytes and eligibility
+rules are unchanged; `MLX_BUN_TURBOQUANT_FUSED_DECODE=0` supplies the control.
+The standard script runs off/default/default/off with default shared scheduling,
+192 short output tokens, a 16,384-token context target, four concurrent streams,
+4 GiB RAM cache and SSD restart. Each machine compares its own outputs.
+
+M1 Max 32 GB uses MiniCPM5-1B OptiQ-4bit with k8v3 and ordinary decode. The
+measured context contains 9,062 tokens. All four suites complete without errors;
+all 76 requests report the batched lane, and all four SSD flush/restart checks
+pass. Source hashes remain fixed. Each paired short/context response and full
+usage record is identical. Three of four concurrent responses differ in each
+pair while counts and finish reasons match; their throughput is an observed
+serving result, not an identical-output speed ratio.
+
+| M1 MiniCPM metric | Off → default, first pair | Off → default, reverse pair |
+|---|---:|---:|
+| Short decode (tokens/s) | 62.02 → 91.28 | 58.30 → 79.90 |
+| Short complete request (ms) | 3,126.77 → 2,160.84 | 3,327.89 → 2,433.64 |
+| Decode at context (tokens/s) | 32.61 → 67.71 | 31.84 → 67.87 |
+| Cached 64-token completion (ms) | 1,964.74 → 956.20 | 2,018.15 → 948.01 |
+| Cold context first output (ms) | 3,973.51 → 3,838.52 | 3,956.20 → 3,844.87 |
+| Four-stream aggregate (tokens/s) | 219.29 → 259.28 | 200.76 → 258.06 |
+| Peak sampled RSS (MiB) | 1,459.05 → 1,423.50 | 1,467.69 → 1,463.06 |
+
+Short complete time falls 26.9–30.9%; cached complete time falls 51.3–53.0%.
+The observer records 28 samples with no collection errors; 22 of 27 active-Bun
+samples name that process as the last GPU submitter, and five name Terminal.
+This is a diagnostic serving comparison, with two balanced pairs rather than
+a statistical significance claim. It supports the earlier repeated codec
+measurements; it does not change the default cache quantization format.
+
+Reports: `reports/prefill-observation/tq-default-minicpm-m1-{0..3}.md.json`,
+`.../tq-default-minicpm-m1-review.json` and the adjacent activity/plan files.
+M4 Pro 24 GB uses the packed interleaved Qwen3.8-27B target, its folded RTN4
+companion at MTP3, k8v3 and fixed 256-token prefill chunks. Asynchronous weight
+expansion is explicitly off in both arms. All four suites complete with 76
+batched requests, no failures, fixed source hashes and durable SSD restart.
+Every paired request, including concurrent requests, matches input, response
+text, complete usage and finish reason. The measured context has 10,399 tokens.
+
+| M4 Qwen/MTP3 metric | Off → default, first pair | Off → default, reverse pair |
+|---|---:|---:|
+| Short decode (tokens/s) | 18.56 → 18.03 | 18.18 → 18.33 |
+| Short complete request (ms) | 11,527.54 → 11,867.76 | 11,749.39 → 11,665.97 |
+| Decode at context (tokens/s) | 12.67 → 21.58 | 12.66 → 21.53 |
+| Cached 64-token completion (ms) | 5,230.11 → 3,053.58 | 5,230.00 → 3,059.66 |
+| Cold context first output (ms) | 93,008.61 → 90,598.29 | 93,032.18 → 90,656.40 |
+| Four-stream aggregate (tokens/s) | 17.14 → 17.23 | 17.13 → 17.21 |
+| Peak sampled RSS (MiB) | 15,086.63 → 15,140.56 | 15,160.28 → 15,103.94 |
+
+Cached complete time falls 41.5–41.6% and context decode improves about 70% in
+both pairs. Short complete time is mixed: +2.95% in the first pair and −0.71%
+in the reverse. No broad short-decode or memory saving is claimed. The observer
+records 188 samples without errors; 178 of 185 active-Bun samples name a test
+process as the last GPU submitter. Other samples name Codex, Terminal or
+loginwindow. Retained swap and process activity stay in the diagnostic records.
+
+These results support selecting the existing fused decoder by default for
+TurboQuant, with the short-Qwen tradeoff explicit and `=0` retained. They also
+confirm its composition with shared MTP. They do not change quantization or
+claim a new Kanban speedup: that accepted task uses affine KV4.
+Reports: `reports/prefill-observation/tq-default-shared-{0..3}.md.json`,
+`.../tq-default-shared-review.json`, the source patch and activity/plan files.
+Both-machine focused checks and existing native gates remain separate from
+this serving comparison. The default change passes 2,320 model-free tests
+with 14 fixture skips, all three typechecks and hygiene.
+
+### Combined TurboQuant/MTP expansion pressure — M4 Pro (2026-09-13)
+
+The saved seven-request agent-boundary fixture passes on M4 Pro 24 GB with
+variant 13, fused TurboQuant k8v3, the packed interleaved Qwen target and folded
+RTN4 draft at MTP depth 3. Three fresh shared servers compare synchronous
+expansion with 8 GiB and 1 GiB RAM caches, then bounded asynchronous expansion
+with a 1 GiB cache. Shared capacity is four; these requests arrive sequentially
+and use actual B=1. The separate concurrent-row gates remain the B>1 evidence.
+
+All 21 responses preserve choices and complete usage records, including draft
+acceptance. The final request has 14,467 prompt tokens, reuses 12,955 and emits
+512 tokens. Each server persists 14 SSD entries (5,373,652,992 bytes), including
+the final 14,979-token checkpoint, with zero pending, missing, dropped or failed
+writes. All servers exit successfully; source, fixture and artifact-config
+hashes remain fixed. This run tests persistence but does not trigger an SSD
+restore. Existing restart tests supply that separate evidence.
+
+| Expansion / RAM limit | Final RAM entries / bytes | Async / blocking submissions | Maximum observed active allocation |
+|---|---:|---:|---:|
+| Synchronous / 8 GiB | 6 / 2,933,437,440 | 0 / 4,224 | 15,974,600,266 B |
+| Synchronous / 1 GiB | 1 / 598,766,592 | 0 / 4,224 | 13,872,975,434 B |
+| Bounded async / 1 GiB | 1 / 598,766,592 | 4,017 / 207 | 14,736,281,254 B |
+
+The asynchronous arm exercises both sides of the existing allocation threshold.
+Its observer preserves every projection argument, including the contiguous-row
+proof used by wide prefill. Five-second process/GPU samples, RSS, vmmap and
+system memory records are retained. The last GPU submitter belongs to the test
+server in 49/50, 49/50 and 29/49 samples respectively; the remaining samples
+name Codex or Terminal. A last-submitter field does not establish sustained
+GPU ownership or utilization by that process. The machine starts with 84% free memory
+and 3,481 MB retained swap. This is a completed combined-pressure correctness
+gate; its sequential arm order does not establish a performance gain.
+The bounded expansion flag remains off by default.
+
+Raw evidence and the checked summary are
+`reports/prefill-observation/combined-tq-mtp-pressure{,-review}.json`, with
+`pressure-*.server.log`, boundary observations and the captured runner sources
+in `completed-acceptance-runner-sources.json`. The three SSD directories remain
+on M4 at the paths recorded in each row.
+
+### Default batched h2h after token-history reuse — M4 Pro (2026-09-13)
+
+The final two standard suites use `9411c11`, Bun 1.4.2 and MLX 0.32.2 on the
+24 GB M4 Pro, with the same artifacts, workload and opposite arm orders as the
+initial integrated comparison below. Early output stays enabled; no arm forces
+serial. All 18 cells and 342 requests complete without phase failures. The 114
+default requests report batched execution, and all twelve Bun cells complete
+SSD flush/restore. Both source snapshots and recorded diffs remain fixed.
+
+Each entry is **order A / order B**. These are observed SSE-window and concurrent
+completion rates; the response qualifications below apply.
+
+| Model | Default short tok/s | Reference short tok/s | Default aggregate tok/s | Reference aggregate tok/s |
+|---|---:|---:|---:|---:|
+| MiniCPM5-1B | 277.56 / 274.51 | 224.54 / 223.13 | 704.24 / 703.01 | 405.49 / 391.53 |
+| Gemma4-e4b | 58.26 / 59.06 | 54.17 / 54.14 | 170.41 / 170.03 | 131.45 / 131.21 |
+| Gemma4-12B | 26.35 / 26.53 | 25.53 / 25.50 | 74.50 / 74.96 | 65.36 / 65.29 |
+
+All 30 short and 18 context comparisons preserve input hashes, response text,
+usage counts and finish status against both the September 11 run and the
+matching pre-fix order. Both Gemmas also preserve the pre-fix concurrent outputs;
+MiniCPM concurrent outputs vary. Historical concurrent texts differ on every
+model, so those rates do not establish identical-output historical speed ratios.
+The stock MiniCPM thinking-boundary difference remains a separate qualification.
+
+MiniCPM cached 64-token completion improves to 393.10 / 403.64 ms from
+403.93 / 409.10 ms in the initial integrated matrix; TTFT remains 14.92 / 16.62 ms.
+This confirms a smaller request-level benefit with default early output than
+the dedicated off-control pairs below. Other changes stay visible: e4b cached
+completion is 1332.60 / 1350.75 ms and 12B is 2653.13 / 2660.25 ms. Short decode
+is effectively close to the initial matrix, with mixed directions by model and
+order. This is not evidence of a broad new decode-kernel gain.
+
+The diagnostic observer records 232 samples without collection errors. During
+222 active-worker samples, an owned inference process is last GPU submitter in
+205; eleven name Codex and six Terminal. Median collection cost is 16 ms,
+maximum 53 ms. Last submission does not measure utilization. The retained
+activity and machine reports accompany these results; no additional quietness
+or statistical significance claim is made.
+
+Raw plans, both suites, activity and comparisons:
+`reports/prefill-observation/standard-history-reuse-*`. The combined offline
+serving/task/quality report is `reports/prefill-observation/integrated-comparison.html`.
+
+### Initial integrated default batched h2h — M4 Pro (2026-09-13)
+
+Two complete standard suites use source `565bc13`, Bun 1.4.2 and MLX 0.32.2
+on the 24 GB M4 Pro. They retain the September 11 artifacts and complete
+`bench-serve-v2` workload: five 192-token short decode samples, a 16,384-token
+context target and four concurrent 128-token requests. Order A runs default
+Bun, stock reference, then mixed-KV Bun; order B reverses those arms. Neither
+forces serial. All 114 default-Bun requests report the batched lane.
+
+Each table entry shows **order A / order B**. Short decode is the median
+visible SSE-window rate; aggregate is completed output tokens divided by
+the four-request wall time.
+
+| Model | Default short tok/s | Reference short tok/s | Default aggregate tok/s | Reference aggregate tok/s |
+|---|---:|---:|---:|---:|
+| MiniCPM5-1B | 277.73 / 276.32 | 224.79 / 223.01 | 708.87 / 701.73 | 401.82 / 397.40 |
+| Gemma4-e4b | 59.39 / 58.64 | 54.06 / 53.99 | 171.35 / 170.60 | 131.69 / 131.62 |
+| Gemma4-12B | 26.68 / 26.53 | 25.52 / 25.53 | 75.18 / 74.28 | 65.37 / 65.38 |
+
+Against the September 11 default rows below, short decode ranges from 1.7%
+lower to 0.1% higher across these models. Observed aggregate throughput rises
+0.3–1.3% for MiniCPM, 2.8–3.3% for e4b and 8.2–9.5% for 12B. Those historical
+comparisons are observations across sessions. The fresh reference is also
+slower than its September 11 result, so the changing reference margin alone
+cannot establish an engine improvement.
+
+Every historical default short/context request matches input hash, output
+text, prompt/generated/cached counts and finish status: 30 short and 18
+context comparisons across the two runs. Concurrent inputs and counts match,
+but several texts differ, including between the two MiniCPM orders. These
+aggregate rows are not identical-output speed ratios. Both Gemmas match all
+fresh reference short-decode outputs; MiniCPM retains its documented stock
+reference thinking-boundary difference. All fresh context texts match;
+e4b has one cache-count difference per suite, and concurrent Gemma cache counts
+differ between stacks.
+
+All 18 cells complete without phase failures. The twelve Bun cells flush
+durably and restore their SSD prefixes. Source snapshots remain unchanged.
+Losses remain visible: MiniCPM context SSE throughput is 159.00–160.15 tok/s
+versus 176.56 previously, with cached 64-token completion at 403.93–409.10 ms
+versus 384.75 ms. Its first output improves to 14.29–15.51 ms from 28.81 ms.
+Gemma e4b cached completion is 1342.87–1345.22 ms versus 1300.40 ms; 12B is
+2657.35–2658.98 ms versus 2606.45 ms. The MiniCPM on/off and source controls
+below separate output-window effects from complete-request cost.
+
+Both suites are diagnostic. Initial free memory is 89% with 3,976 MB of
+retained swap. A five-second observer has no collection errors and identifies
+an owned inference process as last GPU submitter in 201 of 219 active-worker
+samples. Eleven name Codex and seven name Terminal; last submission is not
+utilization or proof of exclusive GPU time. The observer takes a median 16 ms
+and maximum 52 ms per sample. Preserve these conditions when comparing runs;
+two opposite orders do not supply a statistical significance claim.
+
+Raw suites, activity, frozen command plan and comparisons are
+`reports/prefill-observation/standard-integrated-{0,1}.md.json`,
+`standard-integrated-activity.jsonl`, `standard-integrated-plan.json` and
+`standard-integrated-review.json`. Packed Qwen remains outside this
+stock-reference matrix because its artifact has no stock loader.
+
+#### MiniCPM output timing and source controls
+
+Four standard MiniCPM suites on the same M4 use early-output order off/on/on/off
+at fixed source `565bc13`. Cached 9,062-token prompts generate 64 tokens.
+Earlier output reduces median cached TTFT from 25.71–28.14 ms to 14.46–14.76 ms;
+complete time remains 406.43–409.63 ms across the four suites. The SSE interval
+starts earlier, explaining part of its lower displayed decode rate. Keep the
+early-output default. This does not explain the whole historical completion gap.
+
+A fresh old/current/current/old comparison uses `47620a5` and `565bc13`, with
+the current measurement scripts and support helpers on both sources. Early
+output is off throughout. Cached completion is 396.20 / 409.04 / 406.45 / 383.96 ms.
+The old source therefore reproduces a smaller completion cost under these
+conditions. Peak RSS is approximately 1,253–1,275 MB old versus 1,485–1,491 MB
+current. That observation alone does not attribute either difference to an
+individual cache or decode change.
+
+Both four-suite controls retain all short/context input hashes, response texts,
+counts and finish status. Concurrent texts vary despite matching requests and
+counts, including within one source, and do not support identical-output ratios.
+Each suite has a fixed source snapshot and no phase failures. The source
+control observer names an owned inference worker as last GPU submitter in all
+eight active-worker samples. The early-output control has eight owned and one
+Terminal sample. These are bounded diagnostic controls, not utilization traces.
+Raw plans, requests, source hashes, activity and comparisons are under
+`reports/prefill-observation/minicpm-{early,source}-control-*`.
+
+#### Reuse identical token-history conversions
+
+The sampler-only old/current/current/old control holds all other source at
+`565bc13`: cached completion is 403.80 / 405.04 / 406.35 / 403.97 ms. This small
+change does not explain the historical gap. An earlier cache-source screen
+at `c953f2f` also reproduces approximately 406–410 ms. Its tracked source matches
+that commit, with ten later, unreferenced modules left in the temporary tree;
+full source manifests retain that distinction.
+
+A separate instrumented run measures `GeneratedTokenHistory.remember` taking
+7.45–21.62 ms to decode 9,125 IDs into text. Cache publication can repeat that
+same checkpoint. The retained implementation compares IDs against the bounded
+provenance entries and refreshes an exact match without another decode or copy.
+It still decodes new sequences and replaces provenance when different IDs spell
+the same text. It changes no model, sampler or cache-state computation.
+
+A paired standard-suite screen uses treatment/control/control/treatment, early
+output off and otherwise identical `565bc13` source. The cached 64-token
+completion medians are **390.69 / 408.83 / 407.37 / 392.76 ms**, improvements of
+4.4% and 3.6% within the adjacent pairs. All 24 short/context comparisons against
+the first suite preserve input hashes, response text, usage counts and finish
+status. Concurrent outputs remain partly variable. All four suites complete
+without failures or changing source snapshots; all eight active-worker samples
+name an owned inference worker as last GPU submitter. The observer median is
+20.5 ms with a 50 ms maximum. These diagnostic pairs support the specific reuse
+change, not a cross-model or statistical significance claim.
+
+The provenance/retention tests pass, including exact BPE IDs, same-text/different-ID
+replacement and eviction order. All three TypeScript projects pass. Raw
+sampler/cache screens, instrumented timings and reuse pairs are under
+`reports/prefill-observation/minicpm-{sampler-control,cache-control,history-observation,history-reuse}-*`.
+The full default-on standard matrix above completes this specific acceptance step.
 
 ### Default batched h2h without serial controls — M4 Pro (2026-09-11)
 
@@ -112,8 +543,9 @@ prefill, cache restore and initial model execution. A warm-cache TTFT difference
 is not a direct measurement of server overhead or of model decode speed. The
 decode and aggregate columns answer different questions and must stay labeled.
 Raw evidence paths in this document are machine-local, not downloadable reports.
-A clean-checkout oracle setup and a self-contained evidence bundle are still
-preparation work; do not treat a skipped parity test as successful reproduction.
+The clean-checkout oracle setup is verified above. A downloadable evidence
+bundle remains preparation work; do not treat a skipped parity test as
+successful reproduction.
 
 ### Coverage beyond the four-model summary
 
@@ -671,6 +1103,1203 @@ from the pinned system prompt. Its first tool call targeted a nonexistent
 path. That runner error is preserved and excluded from the task comparison;
 it was not an engine failure.
 
+### Ordinary KV4 long-context cached repeat on current code
+
+M4 Pro 24 GB, 2026-09-12 UTC, source `38f6af4`, Bun 1.4.2, MLX 0.32.2.
+The standard benchmark repeats the previously failing ordinary packed-Qwen
+workload: the 12.14 GiB interleaved Trellis artifact, affine KV4, no drafter,
+default batch capacity eight, 4 GiB RAM cache, temporary SSD, 256-token prefill
+chunks and seed `mtp-late-context-block-0`. Context target 125,000 produces
+78,678 actual prompt tokens. Async Trellis expansion is off. This diagnostic
+run starts with 1,603 MiB retained swap and 91% free memory, without GPU competition.
+
+| Measurement | Current result |
+|---|---:|
+| Cold context first output | 881,534.26 ms |
+| Context prefill | 89.251 tok/s |
+| Context decode, median of three | 7.289 tok/s |
+| Cached repeat first output, two repeats | 313.71 / 313.40 ms |
+| SSD restart first output | 2,444.30 ms |
+| Reused tokens, cached repeat and restart | 78,677 |
+| Peak sampled RSS | 14,937 MiB |
+| Failed requests / retries | 0 / 0 |
+
+All three context requests retain the original first-attempt SHA-256
+`53c5eaa0296a1831e871bf2b519215ee830bfa2e27d0af0d96a58b8e1d1d824f`.
+Each generates 64 tokens; all three responses are identical, including the
+cold response from the old successful first attempt. The old second request
+failed with Metal OOM; its subsequent retry changed the prompt hash and token
+count. That retry is not a matched performance control. Current cold prefill
+is effectively unchanged from the original 881,941.45 ms. This closes the
+recorded ordinary cached-repeat failure on current source; it does not claim
+a decode speedup or validate the old 2,048-token chunk at this context.
+
+The final flush is durable: 16 entries, longest durable prefix 78,741 tokens,
+zero pending snapshots/spills and zero dropped/failed spills. The source hash
+`7c469ff1dbe847ca99342ae0d0c70b728ab39e297626a4d3be194cafc3e0bc1f`
+remains unchanged. Raw report: `reports/prefill-observation/late-context-ordinary.md.json`;
+original failure: `reports/qwen38-closeout/composition-baseline/decode-prefill-policy-kv4-plain-late-context-chunk256-0.md.json`.
+
+### Long-context KV4/MTP2 and TurboQuant/MTP3
+
+M4 Pro 24 GB, 2026-09-12 UTC, fixed source `38f6af4`, same artifact,
+workload and 256-token chunks as the ordinary long-context control above.
+Both speculative arms use the folded RTN4 companion, default batch capacity
+eight, 4 GiB RAM plus temporary SSD, and fused TQ decoding where applicable.
+These are ordered diagnostic settings screens, with 1,603 MiB retained swap;
+they are not balanced source-only speed comparisons.
+
+| Setting | Short decode median tok/s | Decode at 78,678 tok/s | Cold context TTFT ms | Cached repeat TTFT ms | SSD restart TTFT ms | Aggregate ×4 tok/s |
+|---|---:|---:|---:|---:|---:|---:|
+| Ordinary KV4 | 11.536 | 7.289 | 881,534 | 313.40 | 2,444.30 | 27.146 |
+| TQ K8V3 / MTP3 | 18.032 | 10.181 | 884,991 | 513.57 | 2,842.60 | 17.424 |
+| KV4 / MTP2 | 19.559 | 12.756 | 882,927 | 207.76 | 2,538.03 | 16.708 |
+
+All arms complete without failures or retries, and every source hash stays
+fixed during its run. All three context requests in each arm have the exact
+original request hash, produce 64 tokens and retain identical response text
+within that arm. Each speculative restart reuses 78,677 tokens. Its final
+SSD flush has 24 durable entries and zero pending, dropped or failed spills.
+TQ's longest durable prefix is 78,742 and KV4's is 78,741 tokens. Peak sampled
+RSS is 15,125 MiB with TQ and 15,317 MiB with KV4; this is process RSS, not
+isolated codec storage.
+
+Current KV4/MTP2 matches all 19 request hashes and all 15 individually issued
+responses from the previous prefill-policy control, including the long-context
+output. Four concurrent responses change. The current short KV4 samples have
+a 1.16 max/min spread; no precise short-decode speedup follows from this run.
+At long context, KV4/MTP2 remains the faster measured agent configuration;
+ordinary KV4 has the highest aggregate throughput on this short concurrent
+workload. Changing KV format or draft width can change text and acceptance,
+so these rows cannot isolate kernel cost. The companion's `block_size=3`
+already selects MTP2 by default. TQ/MTP3 remains an available setting with
+successful long-context/cache acceptance, not the preferred agent preset.
+
+Raw evidence: `reports/prefill-observation/late-context-{ordinary,tq-mtp3,kv4-mtp2}.md.json`.
+
+### Automatic prefill sizing at long context
+
+M4 Pro 24 GB, same workload and settings as the KV4/MTP2 row above, on
+`5188f8a` plus the request-policy candidate. The manual
+`MLX_BUN_RD_PREFILL_CHUNK=256` override is removed. The captured backend policy
+selects 2,048 tokens for short requests and 256 at 78,678 tokens, bounding the
+estimated materialized attention workspace to 1 GiB. This changes work size,
+not admission, and explicit settings retain precedence.
+
+All 19 request hashes, response hashes, generated counts and cached counts
+match the fixed-256 control, including all four concurrent responses. There
+are no failures or retries. Long-context decode is 12.696 versus 12.756 tok/s;
+cold context TTFT is 889,846 versus 882,927 ms, cached-repeat TTFT 210.65 versus
+207.76 ms, and SSD restart 2,554.05 versus 2,538.03 ms. Short cold TTFT decreases
+from 6,470.61 to 5,916.70 ms; this single ordered comparison is an acceptance
+screen, not a balanced speed claim. Aggregate throughput is 16.640 versus
+16.708 tok/s. The automatic arm's sampled RSS peaks at 15,567 MiB.
+
+The restart reuses 78,677 tokens. Final flush records 24 durable entries,
+longest prefix 78,741, and zero pending, dropped or failed spills. Source hash
+`bee0cb78d2c21e9873145b5caa8286af79959e750b047b9260e3eb7499b7689a`
+is unchanged through the run. The policy is adopted across ordinary,
+shared and speculative request bindings; focused override/ownership checks,
+2,300 model-free tests and all three typechecks pass. Raw evidence:
+`reports/prefill-observation/late-context-auto-kv4-mtp2.md.json`.
+
+### Affine KV composition for committed token appends
+
+M4 Pro 24 GB, Bun 1.4.2 / native pack 0.4.0, `d3dffa9` plus the append
+candidate, measured 2026-09-13 UTC. The old KV4 failure is an attention
+arithmetic change: appending four tokens selects a multi-query quantized
+operation rather than the one-token operation used by decode. Both tiled
+and ordinary unfused attention differ in the diagnostic. Preserving each
+query's causal prefix and one-token operation removes every difference,
+while projection work remains shared over the committed span.
+
+The operation test passes 72 combinations on both Macs: B1/B2, one/four
+positions, KV4/KV8, groups 32/64/128 and bf16/fp16/fp32 (216 assertions each).
+Packed and RTN4 Qwen27B pass complete hidden, logit and cache-byte identity
+plus four continuations at prefixes 128 and 1021 with KV4/KV8. The latter
+crosses the 1,023/1,024 attention boundary. The real packed-model KV4 generation
+loop also retains emitted IDs, final live state, subsequent logits and active
+allocation; 12 of its 26 tokens are filled with no verification. A separate
+real-generation case converts KV eight tokens after the prompt, inside the
+committed output span, and retains the same complete state/output checks.
+The cache policy supplies that boundary; the method splits and converts
+before continuing. Log: `affine-fill-delayed-native-m4.log`.
+
+Six alternating HTTP pairs use fresh servers, explicit serial execution,
+KV4, disabled prompt caching, temperature zero, thinking off and a 128-token
+budget. Each server warms the weather request before measuring weather and
+shell-tool fixtures. The packed arm preserves all 24 responses: tool names,
+arguments, text, finish reasons and prompt/completion counts. All twelve
+paired request comparisons improve. Median paired complete-time reductions
+are 16.90% for weather and 16.05% for shell-tool output; median wall times
+are 4,898.64→4,068.83 ms and 5,234.14→4,397.59 ms. Each enabled request fills
+19 tokens with zero verification. Tools are buffered until a complete call,
+so these are request-time results, not ordinary decode tok/s. The matching
+RTN4 comparison also preserves all 24 responses and improves every pair.
+Its median paired reductions are 3.13% and 2.77%, with median wall times
+4,030.36→3,901.19 ms and 4,307.17→4,159.80 ms. All enabled RTN4 requests
+also fill 19 tokens without verification. Both arms retain fixed source
+throughout their six blocks.
+
+The append binding declares supported affine formats. Preparation and
+placement pass the candidate to the method without duplicating cache-format
+checks. Fill remains opt-in and serial-only. The TurboQuant extension is measured
+below; quantized verification, shared-group fill and held-out quality remain
+separate cells. The full local
+suite passes 2,303 tests with 14 fixture skips; typechecks and expanded
+operation/ownership checks pass. Diagnostic raw reports:
+`reports/prefill-observation/affine-append-{attention,model,model-rtn4}-m4.json`,
+`affine-fill-native-m4.log`, and `affine-fill-http{-rtn4,}-m4.json` in the same directory.
+The first native timing arms include cold work and are not speed evidence.
+
+### Affine fill across saved session fixtures
+
+M4 Pro 24 GB, clean `eb510cd`, packed Qwen27B, KV4, explicit serial, no
+prompt cache, temperature zero, thinking off and a 128-token budget. The
+existing `bash-suite`, `read-edit-loop` and `grep-repeat` fixtures supply ten
+assistant turns with their recorded tool results. The replay reconstructs
+tool schemas through the existing fill harness; it executes no tools.
+
+Two opposite arm orders produce 40 successful requests, with all 20 paired
+comparisons retaining identical text, tool names/arguments, finish reasons
+and prompt/completion counts. Six distinct turns use fill in both blocks,
+for 192 injected tokens total and zero verification. Every filled comparison
+is faster. Turns without fill range from 1.5% faster to 0.4% slower. Median
+paired complete-time reduction across all turns is 7.59%; this is a small
+fixed-fixture diagnostic, not a full Kanban or general task-quality result.
+The generated answers need not match the recorded assistant's actions;
+the comparison checks whether enabling fill changes those answers.
+
+Tracked source and the append-kernel hash stay unchanged throughout. Raw
+requests, expected fixture output and both served outputs are retained in
+`reports/prefill-observation/affine-fill-fixtures-m4.json`; derived pairs are
+in `affine-fill-fixtures-review.json`. These results broaden the tool-history
+screen without replacing the held-out real-session quality requirement.
+
+### TurboQuant committed fill
+
+M4 Pro 24 GB, `eb510cd` plus the format-declaration/maintenance patch, packed
+and RTN4 Qwen27B. The model-owned append binding now declares K8V3 support;
+cache maintenance limits chunks at delayed TurboQuant conversion boundaries.
+This reuses the existing attention path without introducing a new kernel.
+
+The real generation gate preserves emitted IDs, complete final state,
+subsequent logits and active allocation on both artifacts. Packed also passes
+conversion eight tokens after the prompt. Each case emits 26 tokens, fills 12
+and performs no verification. The initial packed allocation assertion failed
+because the test retained temporary codec views; using the cache-state lease
+API fixes the harness. That failed result is retained alongside the passing
+rerun. The model-free suite passes 2,304 tests with 14 fixture skips, and all
+three TypeScript checks pass.
+
+Six alternating HTTP pairs per artifact use the same weather/bash requests
+as the affine comparison: fresh servers, explicit serial, K8V3 fused decode,
+no prompt cache or draft, temperature zero, thinking off and max 128 tokens.
+All 48 responses preserve text, tool calls, finish reasons and token counts.
+Each enabled request fills 19 tokens with zero verification. Every paired
+request improves; source and append-kernel hashes remain fixed throughout.
+
+| Artifact | Fixture | Median wall time off → on | Median paired reduction |
+| --- | --- | ---: | ---: |
+| Packed Qwen27B | Weather | 5,765.87 → 4,392.07 ms | 17.45% |
+| Packed Qwen27B | Bash | 6,462.54 → 4,906.06 ms | 16.21% |
+| RTN4 Qwen27B | Weather | 4,869.22 → 4,756.31 ms | 3.04% |
+| RTN4 Qwen27B | Bash | 5,021.60 → 4,917.02 ms | 3.07% |
+
+These diagnostic tool-request results do not establish ordinary decode TPS
+or a speed advantage over affine KV; the codec comparisons ran at different
+times. Fill remains opt-in and serial-only, and quantized echo verification
+remains inactive. Raw evidence in `reports/prefill-observation/`:
+`tq-fill-native-m4.log` (initial failure), `tq-fill-native-v2-m4.log`,
+`tq-fill-delayed-native-m4.log`, `tq-fill-rtn4-native-m4.log`,
+`tq-fill-http{-rtn4,}-m4.json`, and `tq-fill-http-review.json`.
+
+### Retained-cache alignment after early first-token return
+
+M4 Pro 24 GB, `756a7df` plus the empty-range fix (the tested prompts do not
+use empty ranges). `first-token-cache.test.ts` passes on both packed and RTN4
+Qwen27B: prompts of 76 and 421 tokens preserve token zero, retained token IDs,
+complete cache state and subsequent full logits/state for suffix lengths
+1, 2, 4, 5 and 16. Each artifact passes 28 assertions. This closes the M4
+native counterpart to the existing M1 checks for the final caller-owned M=1
+alignment; it is correctness evidence, not a latency measurement.
+
+Logs: `reports/prefill-observation/first-token-cache-{packed,rtn4}-m4.log`.
+The monitored serving comparison below closes the default-selection gate.
+
+### Earlier first output: monitored serving comparison
+
+M4 Pro 24 GB, Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2, source
+`34e1eb4` held unchanged within every comparison. Packed Qwen27B and the
+RTN4 storage control each run six alternating AB/BA blocks in default continuous
+serving (cap eight, no batch override) and explicit serial (`--batch 1`).
+Only `MLX_BUN_EARLY_FIRST_TOKEN=0/1` changes. Both use affine KV4,
+1 GiB prompt cache, no draft, temperature zero, 32-token maximum and a distinct
+warmup. Each arm measures a short non-thinking response twice and a reasoning
+response cold/cached. The prompts have 20/421 tokens; outputs have 6/32 tokens.
+The short repeat has no cache hit; the reasoning repeat reuses 420 tokens.
+
+The HTTP reader is `measureChatRequest` from `bench-serve.ts`: first output
+means a content, reasoning or tool delta, not headers or an empty SSE event.
+All 192 requests finish, all 96 pairs preserve complete text, prompt/output/cache
+counts and finish reason, and usage confirms the intended execution lane.
+Every paired request emits its first semantic output earlier with the option.
+
+| Artifact / lane | Short first: paired median saved | Short repeat: saved | Reasoning cold: saved | Reasoning cached: saved | Complete-time paired median changes across the four cells |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Packed / default continuous | 69.31 ms | 72.79 ms | 73.60 ms | 69.57 ms | −0.04% to +0.63% |
+| Packed / explicit serial | 70.31 ms | 68.54 ms | 85.65 ms | 70.60 ms | +0.01% to +0.42% |
+| RTN4 / default continuous | 55.10 ms | 54.05 ms | 58.84 ms | 50.50 ms | −0.14% to +0.92% |
+| RTN4 / explicit serial | 50.46 ms | 51.95 ms | 50.98 ms | 56.37 ms | −0.14% to +2.20% |
+
+For packed Qwen with default serving, median cached first output falls from
+164.24 to 94.46 ms. This is an output-latency improvement. Starting the output
+interval earlier changes post-first-output TPS arithmetic; it does not mean
+more model work was completed per second. Complete-request times remain close,
+with the short-response tradeoffs shown above.
+
+Activity was sampled throughout each run, including process CPU/RSS, GPU last
+submitter and VM counters. In measured request windows, the benchmark server
+was the last GPU submitter in 131/132 and 128/129 packed samples. Other samples
+were WindowServer/Codex; the two packed runs recorded no swap-outs in intervals
+whose endpoints both fall inside a request. RTN4 had 99/105 and 92/104 server
+samples, with macOS mediaanalysisd appearing once and ten times respectively,
+and active paging. Those RTN4 complete-time changes are not attributed to the
+code alone; a monitored repeat follows. CPU activity and retained swap are
+recorded context, not automatic rejection criteria. Last-submitter sampling
+cannot account for every GPU command.
+
+The RTN4 repeat keeps the same six-pair protocol and source. All 48 additional
+pairs preserve outputs/counts; 47 emit first output earlier (one cold reasoning
+pair does not). Paired median savings are 50.39/53.21/53.21/52.06 ms for default
+continuous and 53.64/51.95/54.52/53.97 ms for serial, in the table’s column order.
+Complete-time cell medians are +0.14..+0.61% and −0.04..+0.99% respectively.
+The server accounts for 100/104 and 100/105 request-window GPU last-submitter
+samples; the others are desktop applications, with no mediaanalysisd sample.
+Neither repeat records swap-outs inside the paired request-window intervals.
+This supports earlier output as the default, with a small complete-time
+tradeoff rather than a throughput gain. The original overlapped RTN4 results
+remain above. Repeat records use the suffix `-cache1-repeat-m4`; analysis is
+`first-token-http-repeat-review.json`.
+
+Raw results, source manifests, responses, event timings and activity:
+`reports/prefill-observation/first-token-http-{packed,rtn4}-{continuous,serial}-cache1-m4{.json,.activity.json,.log}`;
+paired analysis: `first-token-http-final-review.json`. The earlier aborted
+0.25 GiB cache screen is retained separately: it failed to retain the reasoning
+prompt, so it supplies no cached-latency evidence. The caller-owned native
+alignment checks above and prior cancellation/overlap/SSD gates remain accepted.
+
+
+### Fixed arrivals under the batched default
+
+M4 Pro 24 GB, packed Qwen27B, Bun 1.4.2 and MLX 0.32.2. The execution
+source is `383e840` plus the request-wait tracing change subsequently committed
+as `50f9c3d`; each arm retains identical before/after source hashes. Two blocks
+reverse serial/default order. Default serving omits a batch override (cap eight);
+the control uses `--batch 1`. Both use KV4, no draft, no prompt cache,
+automatic prefill sizing and the new early-output default with its flag unset.
+This isolates ordinary scheduling from MTP and cache reuse.
+
+Three waves start six seconds apart, with arrivals spaced 250 ms within a wave.
+Each wave has two, four or eight requests; clients submit on the fixed schedule
+without waiting for earlier completions. Each distinct inventory prompt has
+90 or 91 tokens and requests 32 thinking tokens at temperature zero. All 168
+requests finish at the full budget, all 84 serial/default response pairs match
+exactly, and usage confirms the intended lane. Recorded client submission
+lateness is retained separately from server queueing. Phase tracing is on,
+without synchronization attribution; server stats and process/GPU/VM activity
+are observed throughout. These are bounded repeated-arrival diagnostics, not
+an uninstrumented steady-state capacity measurement.
+
+| Requests per wave | Serial aggregate tok/s, two orders | Default aggregate tok/s, two orders | Default aggregate gain | Serial p95 first-output latency | Default p95 first-output latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 2 | 7.952 / 7.929 | 10.731 / 10.843 | 34.95% / 36.76% | 8.64 / 8.68 s | 2.56 / 2.56 s |
+| 4 | 7.967 / 7.946 | 12.022 / 12.726 | 50.90% / 60.16% | 30.61 / 30.74 s | 8.20 / 8.54 s |
+| 8 | 7.942 / 7.947 | 13.505 / 13.469 | 70.04% / 69.50% | 75.83 / 75.80 s | 32.57 / 32.73 s |
+
+The default reaches two active rows in the lightest workload and eight in both
+heavier workloads, where waves overlap. At the highest load, median combined
+request-slot/execution-admission wait falls from 39.3–39.5 s to 12.9 s.
+The whole queue clears sooner, but individual requests do not all dominate the
+serial control: in the first highest-load block, the first response completes
+in 19.69 s versus 5.24 s serial, and the longest visible-output gap is 6.50 s
+versus 1.21 s. New prefills interrupt existing streams. These results support
+the batched default’s aggregate benefit while preserving its latency tradeoff.
+They are not a single-request decode-TPS comparison or a completed-task quality
+evaluation; the 32-token responses end during reasoning.
+
+The activity logs include intermittent mediaanalysisd GPU submissions, desktop
+GPU work and VM activity. All samples and both arm orders are retained; no CPU
+percentage or retained-swap threshold excludes an arm. The measured gains are
+consistent across orders, but the exact ratios are not promoted as quiet-box
+capacity claims. An earlier attempt lost GPU telemetry because whole-registry
+plist-to-JSON conversion failed; it is retained separately and does not supply
+this table. The corrected observer extracts the convertible GPU submission
+metadata before any benchmark server starts.
+
+Raw results, per-request server spans, output events and activity:
+`reports/prefill-observation/sustained-serving-packed-observed-m4.json`;
+analysis: `sustained-serving-review.json`. The failed-observer attempt uses
+`sustained-serving-packed-m4` and its note file. Existing cancellation,
+independent recovery and long multi-turn RAM/SSD gates remain accepted.
+
+The load-four follow-up tests two existing scheduling controls in opposite arm
+orders, with 12 requests per arm and the same source/workload. A global
+32-token prefill chunk preserves all 24 paired responses but increases complete
+workload time by 3.85%/12.57%; first-request completion grows from 16.84/16.55 s
+to 22.58/22.63 s. Worst output gaps shrink from 3.54/3.53 s to 3.08/3.06 s.
+Mixed iteration work with budget 32 and feed-forward packing disabled also
+preserves all 24 pairs, but increases complete time by 39.48%/46.89% and
+first-request completion from 16.83/15.98 s to 21.88/20.89 s. Its worst gaps
+shrink to 2.60/1.94 s from 3.52/3.48 s. Activity and source records are retained;
+these controls do not justify a default change. The existing larger-work-unit
+policy stays selected. Raw records: `sustained-chunk32-packed-m4.json` and
+`sustained-unpacked32-packed-m4.json` under the same report directory.
+
+### Full Kanban after decode integration
+
+September 13, 2026, M4 Pro 24 GB. The fresh task on `721ac4c` uses the same
+packed Qwen artifact, folded RTN4 MTP depth two, affine KV4, batch cap eight,
+4 GiB RAM cache, 64 GiB SSD cache, pinned Pi/profile, seed 42 and sampling
+settings as `kanban-session-cache-r2`. Automatic prefill replaces the earlier
+explicit 256-token chunks, and early output uses its new default. The initial
+request is identical. The earlier engine also defaulted to 2,048-token
+chunks when no override was supplied; this comparison removed the task's
+explicit override. Source remains fixed, Pi and server exit successfully,
+and there are no inference failures or retries. Pi records one tool error.
+
+| Measurement | Previous session-cache task | Integrated task |
+|---|---:|---:|
+| Task wall time | 83m57.098s | 82m27.681s |
+| Generated tokens | 76,031 | 77,137 |
+| Requests | 25 | 20 |
+| Weighted post-first-output throughput | 15.542 tok/s | 15.885 tok/s |
+| Sum of pre-first-output intervals | 143.024 s | 73.060 s |
+| Follow-ups with cached input | 24/24 | 19/19 |
+| Durable final SSD flush | Yes | Yes |
+| Missing / failed snapshots at final flush | 0 / 0 | 0 / 0 |
+| SSD entries after final flush | 38 | 40 |
+| Verified app acceptance categories | 16/18 | 10/18 |
+
+The task is 1.8% shorter with 1.5% more output and 2.2% higher measured
+throughput. This is not an engine-only speed ratio: the first reasoning
+response already differs, generating 48,804 tokens instead of 35,002, and
+later tool inputs and output lengths differ. The five-second observer records
+967 server last-submitter samples out of 984 during the task; the others
+identify desktop processes. All activity records are retained, with no
+observer errors. Retained swap at startup is recorded, not used as a veto.
+
+The untouched app fails six categories and leaves two blocked by missing
+editing controls. Its DOM helper stringifies child arrays, so label and modal
+action buttons appear as object text. This blocks card editing, complete card
+creation and column confirmation actions. A separate wrong callback argument
+throws during column naming. Positive label/assignee filters and persistence
+of edited fields cannot be verified through the broken UI. Card/column
+dragging, Done indicators, card archive/restore, search, theme persistence and
+the other passing checks have browser evidence. Generated source hashes are
+unchanged by validation. This run does not meet the 16/18 quality target.
+
+A four-arm first-request replay on the same source keeps every request field
+fixed except a 64-token output cap. Fixed 256-token chunks reproduce the
+previous task's response prefix; automatic chunks reproduce the integrated
+task's prefix. Early-output on/off preserves the complete response and usage
+within each chunk setting. This isolates the initial divergence to prefill
+chunking, not to the early-output option. It does not establish a general
+quality regression from chunking. The full fixed-256 control on the same
+integrated source is complete. No application repair or additional prompt is
+included.
+
+| Measurement | Previous session-cache task | Integrated, fixed-256 control |
+|---|---:|---:|
+| Task wall time | 83m57.098s | 69m52.768s |
+| Generated tokens | 76,031 | 67,816 |
+| Requests | 25 | 17 |
+| Weighted post-first-output throughput | 15.542 tok/s | 16.491 tok/s |
+| Sum of pre-first-output intervals | 143.024 s | 75.877 s |
+| Follow-ups with cached input | 24/24 | 16/16 |
+| Durable final SSD flush | Yes | Yes |
+| Missing / failed snapshots at final flush | 0 / 0 | 0 / 0 |
+| Verified app acceptance categories | 16/18 | 17/18 |
+
+The control reproduces the complete initial response: 35,002 tokens,
+128,406 reasoning characters, identical tool arguments and MTP counts:
+27,506 drafted, 21,249 accepted across 13,753 rounds. First-response wall time
+is 1,967.818 s versus 2,000.478 s previously. This is response identity, not a
+record of every logit vector. The next request differs only in generated tool
+IDs and the actual empty directory's listing timestamps; later outputs diverge.
+The full task is 16.8% shorter with 10.8% fewer tokens and 6.1% higher observed
+throughput. Different subsequent work and context lengths prevent attributing
+that whole-task ratio to the engine alone.
+
+The untouched app meets the requested 16/18 target, passing 17 categories.
+Creating/editing labeled and assigned cards, column operations, native drag
+and reorder, Done indicators, archive/restore, search, persisted fields and
+order, light/dark themes and keyboard create/edit all pass. The remaining
+failure is the earlier filter-reset defect: the all-items options omit an
+empty value, so choosing them filters for their display text and hides every
+card. Reload clears the filters. Keyboard editing improves over the prior
+three 16/18 tasks. All 14 generated files retain their pre-validation hashes;
+no blocking JavaScript error occurs. This is a successful task control, not
+proof of quality consistency across prompts or seeds. Retain fixed-256 chunks
+in this task-comparison profile; this result does not justify replacing the
+general automatic policy based on one changed trajectory.
+
+Pi and server exit successfully with unchanged engine source, zero tool
+errors, retries or compactions. Final persistence retains 34 SSD entries and
+48,310,636,544 bytes, with longest durable prefix 73,035 and no pending,
+dropped, failed or missing snapshots. The five-second observer records the
+server as last GPU submitter in 823 of 834 task samples; the other samples
+identify Codex and Terminal, with no observer errors.
+
+Raw requests/responses, source hashes, activity, cache flushes, untouched apps
+and browser evidence are under `reports/kanban-decode-integrated-r1/` and
+`reports/kanban-decode-fixed-prefill-r1/`. All 40 SSD snapshots from the first
+run are archived in the M1 report directory; their 67,578,265,600 bytes match
+the pre-transfer file-size manifest. The transfer overlaps the control's
+first response and completes before it ends. This is a quality comparison,
+not a quiet timing pair; both tasks retain the same RAM/SSD capacities.
+
+A bounded passive sample during the fixed-256 first response records median
+GPU activity of 98.28% and nominal thermal status. `mactop`'s byte-bandwidth
+fields are unavailable on this installation. A separate read-only IOReport
+sample captures PMP `DCS BW` rate histograms: the aggregate `AMCC RD+WR`
+weighted labels range from 102.07 to 107.49 GB/s over five samples. These are
+coarse system-wide rate estimates, not accumulated byte counters or per-kernel
+attribution. The GPU-specific histogram saturates its highest 32 GB/s bin in
+78–81% of samples and cannot supply a usable GPU bandwidth average. ANE
+traffic histograms have no residency in this short window. No GPU calibration
+workload runs. Raw telemetry: `pmp-readonly.jsonl`, `pmp-review.json` and
+`mactop-readonly.json` in the fixed-prefill report directory.
+
+### Three-query affine attention head grouping
+
+The R13 screen groups two or three query heads only for the quantized key
+multiplication, then restores score shape before masking/softmax. Value
+multiplication retains its original geometry. Native KV4/group64 cases cover
+B1/B2, GQA6/D256, three query tokens, contexts 128/8,192/32,768, bf16/f32 and
+both contiguous and transposed queries. The copied ungrouped control matches
+the production implementation in every case on both Macs.
+
+M1 Max: each grouped candidate changes 16 of 24 complete outputs, all at the
+two longer contexts; the difference is already present in key scores. The M1
+path is not eligible for this exact optimization. M4 Pro: both candidates
+preserve every tested key score and complete attention output (24 cases each).
+Each comparison computes its reference on the same Mac as the candidate.
+No M1 result is compared against an M4 golden or output.
+
+Six alternating three-arm blocks time complete attention construction and GPU
+evaluation, 30 calls per arm, at the two longer contexts in bf16. On M4 Pro,
+grouping three heads reduces median paired attention time by 7.48–11.44%
+across all eight batch/context/layout cells; all six pairs improve in each
+cell. Grouping two heads is inconsistent (−2.46% to +0.62%), so the three-head
+candidate proceeds to the full-model verification below. Ten of eleven observer samples
+identify the benchmark as last GPU submitter; the initial sample identifies
+mediaanalysisd. These operation timings alone do not establish serving speed.
+
+The subsequent M4 Pro 24 GB comparison uses Bun 1.4.2, MLX 0.32.2,
+source `a740464` with only the key-head reshape changed, and the packed
+Qwen3.8-27B artifact. Six alternating baseline/candidate blocks evaluate
+three full L3 forwards and four L1 continuations per cell. Attention history
+is padded to the target length after a real four-token initialization;
+recurrent state retains that initialization. This is a synthetic state and
+timing test, not a long-prompt quality evaluation. All 72 paired measured
+forwards, 96 continuation vectors and retained states match exactly.
+
+| Batch | Attention prefix | Baseline forward ms | Grouped forward ms | Median paired change |
+|---|---:|---:|---:|---:|
+| 1 | 8,192 | 117.50 | 115.61 | −1.28% |
+| 1 | 32,768 | 143.61 | 140.27 | −2.12% |
+| 2 | 8,192 | 361.77 | 359.48 | −0.62% |
+| 2 | 32,768 | 429.62 | 423.21 | −1.67% |
+
+Every native pair improves in each cell. A separate HTTP comparison uses a
+real 9,067-token rendered prompt, KV4, MTP depth two and default batch cap
+eight. Each fresh server warms the prompt, then measures two 64-token greedy
+responses with 9,066 cached tokens. Six alternating blocks preserve all 12
+paired responses, usage records and speculation decisions. Median paired
+complete request time decreases 0.89%, with all pairs improving; median
+decode throughput is 18.11 versus 18.29 tok/s. The shared benchmark request
+measurement captures complete streams. All 83 process/GPU samples inside
+measured requests identify the server as last GPU submitter, with no observer
+errors. This sampled observation cannot exclude activity between samples.
+RAM supplies these hits; write-behind is disabled and there are no SSD restores.
+This is a targeted serving comparison, not a replacement standard h2h matrix.
+
+Three-head selection is automatic only on `applegpu_g16s` for B1/B2,
+24 query heads/four KV heads, L3/D256, KV4/group64, bf16/f32 and N≥8,192.
+An additional 32 M4 cases at N=65,536/131,072 preserve key and output bytes.
+The permanent strided-KV regression passes on both Macs. The complete local
+model-free suite passes 2,310 tests with 14 fixture skips; typechecks pass.
+
+Raw records: `reports/prefill-observation/head-pair-{m1-control,m1-key-stage,m4-key-stage}.json`,
+`head-pair-perf-m4.json`, `head-pair-perf-m4.activity.json` and
+`head-pair-perf-review.json`, `head-pair-large-m4.json`,
+`head-pair-model-review.json`, `head-pair-http-v2-review.json` and their
+per-arm JSON/activity records. The original M1 screen and the aborted HTTP
+setup with a below-threshold prompt are retained and excluded from timing.
+
+### M1 wide-prefill qualification
+
+Forcing the existing M3+ trellis wide-prefill kernel on M1 Max changes
+output bytes in 35 of 66 cases against expanded-bf16 native matmul computed
+on that same M1, in the same process and loaded MLX runtime. This operation
+screen does not use M4 outputs or substitute for a full model oracle. The
+screen covers M5–15, two/three/four-bit codes, input width 5,120 and output
+widths 128/17,408. All 33 full-width cases differ; the smaller width also
+differs at three-bit M14/M15. The current kernel is therefore not selected
+on M1. No speed claim is made for the failing candidate. Raw records:
+`reports/prefill-observation/trellis-wide-prem3-m1.json`.
+
+### Native integer ranges and monitored model comparison
+
+Bun 1.4.2 can construct ordinary nonnegative int32 position ranges through
+native MLX after the existing FFI out-pointer read fix. Direct range checks
+match 39,330,480 values; native conversion differs from JS Int32Array for
+starts outside int32, so the candidate preserves the host implementation for
+general ranges. A narrowed candidate only changes unit-step ranges of at least
+65,536 elements, plus empty ranges whose host buffer has no FFI pointer.
+
+The final range/mask loop evaluates 128 growing four-query masks per arm,
+with six alternating pairs at each context size. Median paired time reductions
+are 26.94% / 40.19% on M1 Max at 65,536 / 131,072 initial positions, and
+30.88% / 39.76% on M4 Pro. Median loop times are 45.60→34.00 / 56.97→34.43 ms
+on M1 and 19.67→13.71 / 25.16→15.07 ms on M4. These are operator measurements,
+not decode TPS. Raw results: `native-arange-final2-m1.json` and
+`native-arange-final-m4.json` in the report directory below. A reusable
+power-of-two prefix adds inconsistent benefit on M1 and remains unselected. The first six-pair M4 full-model comparison preserves every hidden,
+logit and cache-state hash but contains large timing outliers. It did not record
+other process/GPU activity throughout each pair; its apparent regression does
+not support a rejection decision. The requested monitored repeat also preserves
+all 54 paired hidden/logit/state results, and the large slowdowns disappear.
+Median paired complete-time changes are -0.10% at one token, -0.14% at four
+and -0.14% at 128. These are effectively flat, not a material model-speed gain.
+
+The model probe uses packed Qwen27B and a synthetic 77,077-token zero-filled
+KV4 attention history, with recurrent state from four real input tokens. It
+warms each query length, then times three complete target forwards at lengths
+1, 4 and 128; these are decode/verification/prefill shapes, not a real task or
+complete speculative round. Raw initial results and all outliers remain in
+`reports/prefill-observation/native-arange-model-pairs-m4.json` and
+`native-arange-model-review.json`. No serving speed claim or default change is
+based on this screen. The repeat captures 247 process/GPU/VM snapshots with
+forward timestamps. Of 95 snapshots inside timed forwards, 93 name the
+benchmark as the last GPU submitter and two name Terminal. ChatGPT's renderer
+is CPU-active throughout most of the run; Resolve's main process is absent
+while an idle ResolvePython helper remains. Limited
+paging still occurs, and sampled last-submitter data cannot prove exclusive
+GPU execution or establish the cause of the earlier outliers. Complete records
+are `native-arange-model-repeat-m4.json`,
+`native-arange-model-repeat-activity-m4.json`, and
+`native-arange-model-repeat-review.json`.
+
+The standard serving script then runs two opposite arm orders on the same M4,
+with default batching, KV4, MTP2, 1 GiB prompt cache, 64 decode tokens and the
+same frozen workload seed. All 30 paired requests preserve text, token/cache
+counts, finish reasons and complete speculation counters, including concurrent
+requests. Source fingerprints stay fixed inside every arm; there are no phase
+failures. This is a short serving screen, not a new long-Kanban acceptance run.
+
+| Pair order | Median decode baseline → native | Aggregate baseline → native |
+| --- | ---: | ---: |
+| Baseline, native | 19.425 → 19.351 tok/s | 10.483 → 10.464 tok/s |
+| Native, baseline | 19.413 → 19.416 tok/s | 10.550 → 10.552 tok/s |
+
+Cold/cached first-output times are also effectively unchanged. The five decode
+prompts have different draft acceptance; matching each request across arms gives
+median decode-rate changes of +0.115% and +0.122%. Neither this nor the model
+screen establishes a material serving gain. Activity capture retains 412
+process/GPU/VM samples: 378 last-submitter observations name the benchmark or
+its server, with desktop clients in the remainder. Paging and background CPU
+activity remain recorded; these diagnostic results do not establish exclusive
+GPU use or explain the earlier unmonitored outliers.
+
+The small range-construction change is retained for lower measured operator
+cost and removal of large host Int32Array construction, with effectively flat
+measured model/serving performance. General integer conversion and the 8 MiB
+cache bound remain unchanged. The empty-range FFI failure is fixed. The final
+model-free suite passes 2,306 tests with 14 fixture skips; typechecks pass.
+Evidence: `native-arange-serving-{0,1}-{baseline,native}-m4.md.json`,
+`native-arange-serving-activity-m4.json` and `native-arange-serving-review.json`
+in the same report directory.
+
+### Same-batch affine full-attention oracle
+
+`tests/parity/batched-affine-oracle.test.ts` compares MiniCPM5-1B OptiQ against
+the pinned Python oracle with the same actual tensor batch: B1 and B4, uniform
+KV4/KV8 and alternating KV4/KV8/bf16 layers. Six teacher-forced steps per case
+include B4→B2 retirement and reordering to rows `[3, 1]`. Complete float32
+logit byte hashes match at all 36 steps on both M1 Max and M4 Pro (74 assertions
+per machine). The reference receives only the fixed input plan, never native
+outputs. These equal-length rows close the full-attention unpadded cell;
+the padded extension below uses an explicitly composed reference. Rotating
+mixed-KV remains a separate numerical contract.
+Run with `MLX_BUN_TEST_BATCH_AFFINE_ORACLE=1` and the pinned oracle environment.
+Logs: `reports/prefill-observation/batched-affine-oracle-{m1,m4}.log`.
+
+The unequal-length extension uses prompt lengths `[5, 9, 7, 11]`, then six
+teacher-forced decode steps with B4→B2 reordering/retirement to `[3, 1]`.
+All 24 complete logit-vector hashes match on each machine for bf16, KV4,
+KV8 and alternating KV4/KV8/bf16 layers (50 assertions per machine).
+Enable this case with `MLX_BUN_TEST_BATCH_AFFINE_PADDING=1` alongside the
+oracle opt-in. The existing equal-length mode remains available.
+
+Pinned mlx-lm lacks a padded quantized batch cache. The test composes its
+`QuantizedKVCache` with `BatchKVCache` positions and causal masking. Its
+quantized GQA helper also needs one broadcast axis for a per-row mask:
+`[B,1,L,N]` becomes `[B,1,1,L,N]` against grouped scores. That test-only
+adapter preserves the pinned model and attention arithmetic; it receives no
+Bun cache or output values. This is a composed numerical reference, not a
+stock server capability. The bf16 control uses unmodified `BatchKVCache`.
+No production engine change or performance claim follows from this test.
+Logs: `reports/prefill-observation/padded-affine-m1-final.log` and
+`padded-affine-m4.log`; the initial reference broadcast error is preserved.
+
+### Same-batch rotating affine oracle
+
+The same oracle test adds Gemma4-e4b's actual 512-token sliding window and
+KV-sharing layers. Equal-length B1/B4 cases prefill 510 tokens before six
+teacher-forced steps, crossing the ring boundary before B4→B2 retirement and
+reordering. Unequal cases start with `[505, 509, 507, 511]` tokens and exercise
+physical padding during the same transition. Each mode covers bf16, uniform
+KV4/KV8 and alternating KV4/KV8/bf16 cache layers.
+
+On both M1 Max and M4 Pro with MLX 0.32.2, all 48 equal-length and 24
+unequal-length complete logit-vector hashes match each machine's own pinned
+reference. The M1 `gemma-4-e4b-it-OptiQ-4bit` snapshot is
+`98d7dc6a93ae05583e8a10018c8099459b58aeeb`; M4 uses
+`fcdb12d740cd813634064567fc7cb51159b34253`. These are separate same-artifact
+comparisons on each host, not a cross-machine byte comparison.
+
+Equal-length rows use OptiQ's existing rotating quantized cache. Unequal rows
+compose that storage with unmodified mlx-lm `BatchRotatingKVCache` for offsets,
+padding and masks. The latter keeps separate bf16 state solely for reference
+bookkeeping; attention consumes only the OptiQ quantized storage. Row filtering
+applies to both. The existing GQA mask broadcast shim remains explicit. This is
+a test-only composed reference, not a stock server claim or a solo-row oracle.
+The bf16 cases use the stock cache directly. No production arithmetic changes.
+
+Set `MLX_BUN_TEST_BATCH_AFFINE_ORACLE=1` and
+`MLX_BUN_TEST_BATCH_AFFINE_ROTATING=1`, with optional
+`MLX_BUN_TEST_BATCH_AFFINE_PADDING=1`; `MLX_BUN_TEST_BATCH_AFFINE_MODEL` selects
+the local artifact path. Logs: `reports/prefill-observation/rotating-affine-oracle-{m1,m4}.log`
+and `padded-rotating-affine-oracle-{m1,m4}.log`.
+
+### Recurrent prefill attribution
+
+Packed interleaved Qwen3.8-27B, bf16 KV, 2,048-token chunks, Bun 1.4.2 and
+native pack 0.4.0, measured 2026-09-12 UTC. Fixed teacher-forced inputs use
+`100 + (position * 7) % 600`. A temporary observer evaluates each gated-delta
+kernel's inputs, then times kernel construction plus completed output/state
+evaluation. It separately records the producer wait and complete prefill.
+Control and attributed arms have identical complete hidden/state byte hashes
+at every length on each machine. Cross-machine hashes are not an exact oracle.
+
+| Machine | Prompt tokens | Control prefill ms | Attributed prefill ms | Gated-delta total ms | Delta calls |
+|---|---:|---:|---:|---:|---:|
+| M1 Max 32 GB | 1,024 | 7,866.36 | 7,988.69 | 265.16 | 48 |
+| M1 Max 32 GB | 4,096 | 34,738.57 | 45,542.79 | 1,391.01 | 96 |
+| M1 Max 32 GB | 8,192 | 77,849.86 | 109,295.84 | 3,475.44 | 192 |
+| M4 Pro 24 GB | 1,024 | 7,588.05 | 7,680.57 | 208.20 | 48 |
+| M4 Pro 24 GB | 4,096 | 30,385.33 | 30,477.49 | 809.46 | 96 |
+| M4 Pro 24 GB | 8,192 | 61,995.30 | 61,908.50 | 1,610.26 | 192 |
+
+On M4, measured gated-delta work is about 2.6–2.7% of complete prefill.
+That scale does not support treating sequential recurrence as the principal
+prefill bottleneck. M1 attribution perturbs the larger controls substantially;
+its stage times are diagnostic, not clean critical-path shares. Neither this
+synchronous observer nor a parallel recurrence algorithm is retained. A
+chunkwise rewrite changes floating-point ordering and needs its own state and
+quality contract; these measurements close attribution, not that numerical gate.
+Weight expansion, projections and attention remain the larger prefill targets.
+
+Raw reports: `reports/prefill-observation/gdn-prefill-attribution-{m1,m4}.json`.
+The operation probe is removed after recording these results. Existing serial
+recurrence remains the pinned-oracle implementation.
+
+### Nonblocking prefill completion screen
+
+M1 Max 32 GB, 2026-09-12 UTC, MiniCPM5-1B OptiQ snapshot
+`664aabaed233c653f82716d8dc822234d0091f78`, bf16 KV, Bun 1.4.2 and native pack
+0.4.0. A temporary candidate replaces synchronous cache evaluation at shared
+prefill maintenance boundaries with `mlx_async_eval`, checking each output's
+native completion event once per millisecond. It retains state views until
+completion and changes neither GPU operations nor the scheduler. The standard
+benchmark uses default batch capacity eight, 192-token decode samples, four
+aggregate requests staggered by 25 ms with context target 2,048, and workload
+`prefill-long-0`. These diagnostic AB/BA pairs record roughly 4 GiB retained
+swap and background host activity; they do not qualify an engine speed claim.
+
+| Pair | B1 decode, control → candidate tok/s | Aggregate, control → candidate tok/s | First aggregate request TTFT, control → candidate ms |
+|---|---:|---:|---:|
+| A/B | 272.154 → 282.112 | 191.540 → 180.567 | 381.49 → 739.48 |
+| B/A | 269.658 → 280.016 | 192.581 → 194.464 | 366.92 → 711.87 |
+
+Every arm completes, keeps a fixed source hash and preserves all 15 request
+hashes and prompt/generated/cached token counts. Each pair preserves 12 of 15
+response texts; three concurrent trajectories change. Single-request outputs
+remain exact. Aggregate throughput is inconsistent, and first-request latency
+nearly doubles in both orders. Earlier host admission changes subsequent
+batch scheduling. The candidate is **not adopted**; the original synchronous
+prefill boundary remains. A local eight-matmul probe confirms that completion
+polling frees the event loop and adds up to about one millisecond to the wait,
+but that mechanism alone does not establish a serving benefit.
+
+Raw reports and the excluded patch: `reports/prefill-observation/async-prefill-{before,after}{,-repeat}.md.json`,
+`async-prefill-candidate.patch`, and `async-eval-probe-m1.json` in that directory.
+
+### Prefill observation and scheduling screen
+
+M4 Pro 24 GB, 2026-09-12 UTC, Bun 1.4.2, MLX 0.32.2/native pack 0.4.0.
+Merged base `debee3e`; Gemma 4 12B OptiQ snapshot
+`5b1101065d2094c8f12aa87fee80e0afa5b292b7`, ordinary affine KV4, 4 GiB RAM
+cache and fresh temporary SSD. The standard server benchmark uses the default
+batch capacity eight, with no `--batch 1`. Same `prefill-long-0` workload as the
+[previous comparison](#current-serial-versus-shared-execution-staggered-gemma-requests):
+192-token single-request decode samples, skipped context sweep, four aggregate
+requests staggered by 25 ms, target context 2,048. Actual aggregate prompt/cache
+counts remain 1,289/13, 1,281/12, 1,287/14 and 1,287/12; each emits 128 tokens.
+The prefill chunk size remains 2,048. Retained swap is 1,335.56 MiB and free memory
+89% before each arm. These are diagnostic runs with an exclusively allocated
+GPU, not quiet performance claims. No server requests fail.
+
+| Arm in run order | B1 decode tok/s | Cached TTFT ms | Aggregate tok/s | Aggregate wall ms | First request TTFT ms | Mean TTFT ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Merged baseline, tracing off | 26.108 | 175.589 | 20.250 | 25,284.02 | 9,010.70 | 15,869.64 |
+| Component tracing | 26.060 | 159.833 | 19.976 | 25,630.88 | 9,076.31 | 16,140.91 |
+| Component plus initial routing trace | 26.042 | 162.788 | 20.186 | 25,364.47 | 9,012.04 | 15,930.04 |
+| Active-before-preparation experiment, traced | 26.376 | 160.632 | 19.620 | 26,096.38 | 4,689.58 | 14,162.81 |
+| Final observer code, tracing off, original scheduler | 26.044 | 160.348 | 20.171 | 25,383.24 | 9,022.22 | 15,944.64 |
+
+All source hashes remain unchanged during each arm. The four observer/control
+arms retain all 15 request bodies, responses and usage records exactly. The
+final tracing-off comparison is −0.245% B1 decode and −0.391% aggregate
+throughput versus the baseline, with +0.128% first-request TTFT. This bounded
+screen finds no large observer-off cost; it is not a statistical proof of zero
+overhead. The initial cached-latency sample is higher than the subsequent arms;
+no cache speedup is attributed to instrumentation.
+
+The component trace identifies the first request's prefill cost: 5.16 ms of
+forward construction/dispatch, 4,386.72 ms waiting for cache evaluation,
+2.84 ms KV maintenance, 0.85 ms checkpoint capture, and 0.38 ms lookup/restore.
+Forward may include backend evaluation; these labels do not claim kernel-only
+GPU timestamps. The first generated token is available at 4,512.23 ms, but the
+first semantic write is at 9,075.96 ms. Another request's prefill evaluation
+occupies 4,428.30 ms of that gap. Request processing for the later clients also
+starts late because the owner thread is blocked; client submission times and
+server trace origins are both retained.
+
+The routing trace resolves the first-token ambiguity: Gemma emits token 100
+(`<|channel>`) at 4,507.24 ms, token 45,518 (`thought`) at 4,548.56 ms, then token
+107 (newline) at 9,011.62 ms. The first two are channel metadata; the newline is
+the first reasoning event. The stream parser spends less than 0.05 ms per
+observed initial token. It is not holding already-visible prose for seconds.
+
+The experimental scheduler advances active rows and yields before another
+preparation unit. Against the routing-traced control it reduces first-request
+TTFT by 47.96% and mean TTFT by 11.09%, but loses 2.805% aggregate throughput
+and increases aggregate time 2.886%. All four concurrent texts change as batch
+membership/positions change; single-request texts and request/usage counts
+remain unchanged. One pair does not establish a stable throughput effect or
+same-output quality equivalence. The experiment is **not adopted**. Its patch
+is preserved; final source retains the original scheduler.
+
+The retained change is observability: process-aligned spans, shared-work IDs,
+initial token routing, complete trace retention in standard benchmark reports,
+and the offline `scripts/bench/prefill-trace.ts` summary. M1 Max checks pass:
+2,262 model-free tests, 14 fixture skips, no failures; all three typechecks pass.
+Upstream algorithm comparison and the next mixed-iteration work are in
+[batching design](../design/batching.md#scheduling-reference-algorithms-and-request-observations).
+This screen does not close long-prefill dominance or mixed execution acceptance.
+
+Reproduce the measurement with the model artifact above:
+
+```sh
+MLX_BUN_P2R_TRACE=1 bun scripts/bench-serve.ts all \
+  --model-path /path/to/gemma-4-12B-it-OptiQ-4bit --arms mlx-bun \
+  --kv-quant 4 --prompt-cache 4 --tokens 192 --skip-context \
+  --aggregate-context 2048 --aggregate-stagger-ms 25 \
+  --workload-seed prefill-long-0 --diagnostic --out reports/prefill.md
+bun scripts/bench/prefill-trace.ts reports/prefill.md.json --out reports/prefill-breakdown.json
+```
+
+Raw evidence on both Macs: `reports/prefill-observation/`, including the five
+reports, `comparison.json`, component breakdown and `active-first.patch`.
+Per-arm source hashes, exact payloads, output hashes, timings and machine state
+are retained in the JSON reports. Tracing is off by default and traced benchmark
+runs are classified diagnostic automatically.
+
+### Mixed prefill and decode token work
+
+M4 Pro 24 GB, 2026-09-12 UTC. Same Gemma 4 12B artifact, Bun/native versions,
+KV4, RAM/SSD cache, default batch capacity eight, prompt counts, output budgets
+and `prefill-long-0` requests as the preceding observation screen. New code is
+based on `71f3463`; raw reports record the exact worktree source hashes. These
+are diagnostic HTTP runs. Retained swap remains recorded in each report rather
+than preventing the comparison.
+
+The scheduler reserves running decode tokens before assigning a bounded prompt
+chunk. Gemma packs feed-forward work across those real tokens; attention retains
+each group's original geometry and KV ownership. The unpacked arm keeps the same
+scheduler budget and disables only feed-forward packing. The larger-cohort
+experiment removes the old total-prompt admission limit while retaining the
+iteration token limit. It was reverted after the comparisons below.
+
+| Arm | B1 decode tok/s | Aggregate tok/s | Workload wall ms | First request TTFT ms | Mean TTFT ms | Largest output gap ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Previous observer-off control | 26.044 | 20.171 | 25,383.24 | 9,022.22 | 15,944.64 | 4,598.66 |
+| Packed, 256-token budget, traced | 26.132 | 20.015 | 25,580.35 | 5,465.48 | 13,155.55 | 1,802.16 |
+| Packed, 512-token budget, traced | 26.052 | 20.014 | 25,582.60 | 6,361.77 | 14,252.33 | 3,642.18 |
+| Unpacked, 256-token budget, traced | 26.340 | 19.471 | 26,295.51 | 5,496.34 | 13,517.57 | 1,889.96 |
+| Larger cohort, 256-token budget, traced, reverted | 26.331 | 19.746 | 25,929.76 | 5,487.48 | 15,499.28 | 955.07 |
+| Larger cohort, 1,024-token budget, traced, reverted | 26.050 | 19.851 | 25,792.54 | 8,094.81 | 15,961.84 | 3,718.52 |
+| Final default control, tracing off | 26.023 | 20.045 | 25,542.09 | 9,030.63 | 16,071.34 | 4,668.02 |
+| Final packed 256-token path, tracing off | 26.047 | 19.378 | 26,421.19 | 5,611.73 | 13,621.31 | 1,882.32 |
+| Final unpacked 256-token control, tracing off | 26.070 | 19.566 | 26,168.35 | 5,461.18 | 13,416.80 | 1,884.87 |
+
+The first packed 256-token screen reduces first-request TTFT by 39.42% and
+mean TTFT by 17.49% relative to the previous observer-off control. Aggregate
+throughput is 0.77% lower. Against the same-budget unpacked control, packing
+improves aggregate throughput by 2.80%. These ordered single samples establish
+a latency/throughput tradeoff, not a universal throughput gain. Enlarging the
+cohort reduces the worst streaming gap at budget 256, but delays later first
+outputs and loses aggregate throughput. The retained Lab path uses the existing
+cohort admission policy.
+
+The final tracing-off pair confirms lower latency with a throughput cost:
+first-request TTFT improves 37.86%, mean TTFT improves 15.24%, and the largest
+output gap falls from 4,668 to 1,882 ms. Aggregate throughput falls 3.33%; workload
+wall time grows 879 ms. B1 decode changes +0.095%. Output-gap p95 rises from
+56.67 to 111.68 ms because more visible output now interleaves with preparation.
+Peak RSS is 9,868.5 versus 10,009.3 MB. This is not a default promotion.
+
+The final same-source unpacked control reaches 19.566 tok/s, ahead of packed
+execution's 19.378 tok/s by 0.97%. This reverses the earlier traced packing
+screen. Packing has no repeatable throughput win in these HTTP measurements;
+the latency improvement is attributable to the mixed iteration scheduling.
+The interface and packed model implementation remain available for further
+kernel work, with the entire mixed path off by default.
+
+All measured request bodies and prompt/cache/output counts match the control;
+no server request fails. The eleven non-aggregate response texts remain exact.
+All four concurrent response texts change. The new packed matmul and scheduling
+geometries do not promise identical sampled output to the old geometry, even
+with a fixed seed. Streaming gaps above are intervals between semantic SSE
+output events, not GPU token timings.
+
+The packed native oracle passes on M4 for Gemma e4b, 12B and 26B, each with
+bf16 and uniform KV4, B1/B2 work, unequal decode/prefill row counts and subsequent
+cache continuation. It compares full hidden arrays against the pinned Python
+operators with matching packed feed-forward geometry. The uniform-KV comparison
+explicitly pins stock quantized SDPA on both sides. Unit tests cover packing,
+work budgets, cancellation, consumer failure, row retirement, grammar readiness,
+and preparation with immediate/delayed affine and TurboQuant state.
+
+Reproduce the native comparison:
+
+```sh
+MLX_BUN_TEST_MIXED_MODEL=/path/to/gemma-model \
+  bun test tests/parity/mixed-token-model.test.ts
+```
+
+Reproduce the HTTP screen with the command in the preceding section plus `MLX_BUN_MIXED_PREFILL=1` and
+`MLX_BUN_MIXED_TOKEN_BUDGET=256`; `MLX_BUN_MIXED_PACKED_MLP=0` selects the
+unpacked control. Runtime settings and their scope are documented in
+[server-config](server-config.md). Mixed execution remains off by default.
+Qwen/recurrent work and speculative provider work now use the same mixed port;
+the extension and its timing decision follow below.
+
+Raw reports are `reports/prefill-observation/mixed-*.md.json`; the comparison is
+`mixed-comparison.json` and the reverted admission experiment is
+`mixed-cohort.patch`. Per-arm `*-source.patch` files reproduce every changed
+early source file, verified against its recorded SHA-256. All three final arms
+match the retained source snapshot exactly. The standard benchmark retains
+payloads, usage, output, SSE event times, source hashes and machine state.
+
+
+#### Qwen and speculative-method extension
+
+M4 Pro 24 GB, September 12 UTC, Bun 1.4.2, native pack 0.4.0. The source extends
+mixed execution to Qwen's recurrent graph and grouped speculative methods.
+Methods report pending-plus-candidate token demand and capture their own hidden
+layers. Verification preserves its existing matmul geometry; it does not share
+a packed feed-forward matmul with the prefill group. The ordinary Gemma packing
+control remains unchanged.
+
+The pinned mixed oracle passes all 25 hidden-vector cases on the M4 Qwen3.8-27B
+OptiQ artifact and on M1 Gemma e4b, 12B and 26B. Cases include bf16/KV4,
+unequal row counts, four-position geometry-preserving verification, and cache
+continuation. The packed Qwen model passes M4 MTP mixed-work lifecycle and
+generated-cache checks with both uniform KV4 and TurboQuant K8V3. M1 Gemma
+prompt lookup passes the corresponding lifecycle and generated-cache checks.
+The complete model-free suite passes 2,284 tests, with 14 existing fixture
+skips; focused preparation checks pass after the allocator adjustment, and all
+three TypeScript checks pass.
+
+A scheduler fragment now evaluates state at each yield but clears the allocator
+pool at the method's planned maintenance boundary. A fixed Gemma KV4 comparison
+isolates this change to `src/backends/mlx/prefill-rows.ts`; every request,
+response and usage count matches:
+
+| Allocator clearing | B1 tok/s | Aggregate tok/s | Workload wall ms | First TTFT ms | Peak RSS MB |
+|---|---:|---:|---:|---:|---:|
+| Every fragment | 26.059 | 19.317 | 26,504.68 | 5,660.55 | 10,128.8 |
+| Planned maintenance boundary | 26.268 | 19.350 | 26,459.72 | 5,664.07 | 10,015.4 |
+
+Aggregate throughput changes +0.17%, effectively flat. This does not explain or
+resolve the mixed-work throughput regression. It retains allocator reuse within
+a planned chunk without changing precision/checkpoint boundaries or default
+non-mixed chunking. These are single ordered diagnostic samples, not proof of
+a speed win.
+
+The Qwen setting comparison uses the required packed interleave2 artifact and
+the folded rtn4-g64 MTP drafter from the Kanban profile, MTP depth three,
+TurboQuant K8V3, fused KV decode, a 256-token mixed budget, 4 GiB RAM cache plus
+SSD, and the same `prefill-long-0` workload/default batch capacity as above.
+Both arms have identical source snapshot `7c608346…`, request bodies and token
+counts: aggregate prompts 1,424/1,416/1,422/1,422, no prefix hits, and outputs
+124/128/128/128. The first response reaches EOS. Twelve of fifteen response texts
+are identical; three concurrent trajectories change.
+
+| Mixed work | B1 tok/s | Aggregate tok/s | Workload wall ms | First TTFT ms | Mean TTFT ms | Largest output gap ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Off | 18.718 | 7.580 | 67,020.77 | 11,014.71 | 28,143.25 | 11,543.87 |
+| On | 18.652 | 6.689 | 75,944.04 | 11,256.18 | 33,472.05 | 2,642.70 |
+
+Aggregate throughput falls 11.75%; first and mean TTFT worsen. The largest
+streaming pause shrinks, while output-gap p95 rises from 542.55 to 2,523.69 ms.
+Peak RSS is 15,146.9/15,187.2 MB. This is a latency/throughput tradeoff with no
+basis for enabling mixed work by default. Gemma's earlier first-output gain
+does not generalize to this MTP workload. Single-stream decode remains
+approximately unchanged because a lone request has no mixed prompt work.
+
+An earlier Qwen arm used the original bf16 MTP drafter instead of the folded
+Kanban drafter: B1 7.090 tok/s, aggregate 4.624 tok/s. It is preserved as a
+separate drafter-setting diagnostic, not an on/off source comparison or a
+regression from the established packed-model profile.
+
+Reproduce the method timing with the earlier HTTP command, replacing the target
+with the packed Qwen artifact, replacing `--kv-quant 4` with `--kv-quant turbo`,
+and adding `--draft-model /path/to/folded-rtn4-mtp --draft-kind mtp
+--num-draft-tokens 3`. Toggle only `MLX_BUN_MIXED_PREFILL=0|1`. Native lifecycle:
+
+```sh
+MLX_BUN_TEST_MIXED_METHOD=1 MLX_BUN_TEST_MTP_TARGET=/path/to/target \
+  MLX_BUN_TEST_MTP_DRAFT=/path/to/mtp MLX_BUN_TEST_MTP_TURBO=1 \
+  bun test tests/parity/mixed-method.test.ts
+```
+
+Omit the drafter for prompt lookup, or omit `MLX_BUN_TEST_MTP_TURBO` for KV4.
+Raw evidence: `reports/prefill-observation/mixed-maintenance-{before,after}.*`,
+`mixed-qwen-folded-{off,on}.*`, `mixed-qwen-mtp-off.*`, native `mixed-*-oracle*.log`
+and `mixed-*-kv4.log`/`mixed-*-tq.log`; `mixed-method-comparison.json` contains the
+combined metrics. No application default is promoted by these results.
+
+
+### Shared grammar proposal screen
+
+2026-09-12, Bun 1.4.2, MLX 0.32.2, native v0.4.0; source based on
+`5400554`, source-tree digest
+`4b802e730ba7c0a1e96d86993f86aaf25ef5032690ca042c2b02bfe8da7fdd54`.
+These are diagnostic composition measurements from `bench-matrix features`,
+not the standard h2h. Grammar jump remains **off by default**.
+
+Four concurrent compact product-schema requests use shared cap eight,
+temperature zero and grammar candidate depth three. MiniCPM5-1B OptiQ uses
+bf16 KV; packed Qwen3.8-27B uses TurboQuant K8/V3 without a learned drafter,
+with trellis async expansion off and fused TQ decode on. Qwen explicitly
+uses answer mode. Each arm has a fresh process; all rounds, including the
+first, are retained. M1 has two rounds, M4 three. Aggregate throughput below
+is total completion tokens divided by total round wall time, not best-of.
+
+| Machine / model | Ordinary aggregate tok/s | Grammar proposals tok/s | Change | TTFT p50 ordinary → proposals | TTFT p95 ordinary → proposals | Exact response text |
+|---|---:|---:|---:|---:|---:|---:|
+| M1 Max 32 GB / MiniCPM5-1B | 205.35 | 184.45 | −10.18% | 310 → 362 ms | 339 → 476 ms | 7/8 |
+| M4 Pro 24 GB / MiniCPM5-1B | 285.64 | 312.87 | +9.53% | 181 → 198 ms | 330 → 284 ms | 9/12 |
+| M4 Pro 24 GB / packed Qwen3.8-27B | 15.19 | 13.27 | −12.65% | 4720 → 4107 ms | 5603 → 8585 ms | 8/12 |
+
+Every response conforms to the schema. Accepted proposals are 100% in these
+cells; acceptance alone does not establish a speedup. MiniCPM completion
+counts differ by one token per arm; Qwen retains all 408 completion tokens.
+Qwen's best round rises from 15.67 to 15.87 tok/s, while total elapsed time
+increases from 26.87 to 30.76 seconds. That is a throughput loss for the full
+measurement. The mixed results do not support a default change.
+
+An additional M4 MiniCPM direct serial-jump control reaches 403.75 tok/s in
+its best round; shared verified proposals in the same process reach 356.70.
+That control has different algorithm and warmup ordering, so it does not
+establish shared dominance over direct jump. The fresh-process shared-only
+arm above is the ordinary/proposal comparison. An initial Qwen run without
+explicit answer mode fails the answer-content JSON check; it is retained
+as a benchmark-configuration failure and excluded from timing comparisons.
+
+Native checks pass on M1 MiniCPM bf16/affine4 and M4 packed-Qwen/TurboQuant:
+nonmutating proposals, concurrent schemas, B1, early stop, cancellation and
+logprob delivery. Fixed bf16 MiniCPM outputs match ordinary decoding; affine
+KV can change valid tokenization across verification widths. Repeated fixed
+quantized configurations match. Existing same-geometry verifier/KV oracles
+remain the numerical contract. The model-free suite passes 2,286 tests with
+14 fixture skips; all three TypeScript projects pass.
+
+Reproduce an arm with `MLX_BUN_GRAMMAR_JUMP=0` or `1` and:
+
+```sh
+bun scripts/bench-matrix.ts features --model "$MODEL" --batch 8 \
+  --concurrency 4 --maxtok 192 --repeats 3 --cells batch+grammar \
+  --compact-grammar true --kv-quant turbo --out reports/grammar.md
+```
+
+Omit `--kv-quant turbo` and use `--maxtok 160` for the MiniCPM cells. The
+script pins answer mode, writes all response texts/usage/timings to JSON,
+and saves each completed round before schema validation. Its named serial
+controls now explicitly request cap one, keeping their labels accurate after
+the default changed. Raw evidence and summary:
+`reports/prefill-observation/grammar-*`, including `grammar-comparison.json`.
+
+#### Zero-candidate rollback snapshots
+
+A shared verification step with no proposed tokens consumes only its pending
+input. It now keeps transaction ordering without retaining rollback snapshots.
+No proposed suffix exists to reject. Nonzero rounds and the explicit serial
+transaction retain their existing behavior.
+
+M1 Gemma12 affine4 across the real sliding window and M4 packed-Qwen/TurboQuant
+compare the previous explicit snapshot/commit against the new operation at
+identical B/S. Hidden values, every layer's state and the next continuation
+match exactly. The checks have 7,690 and 6,090 assertions respectively.
+MiniCPM grammar retirement/logprob checks and the model-free suite pass
+(2,287 tests, 14 skips), along with all three typechecks.
+
+M4 grammar throughput initially rises from 13.27 to 14.62 tok/s over all
+three rounds. Repeating the previous snapshot behavior yields 14.39 tok/s,
+with all 12 responses matching the candidate. The last two rounds are only
+0.14% apart; most of the apparent initial gain is first-round variation.
+No substantial speedup is claimed.
+
+The standard script then compares source-only changes with packed Qwen,
+TurboQuant K8/V3, prompt lookup depth three, a 4 GiB RAM cache plus SSD,
+192-token decode and staggered long-input concurrency four. Both arms retain
+default capacity eight, use diagnostic mode and skip the separate context sweep.
+Both source snapshots remain unchanged during measurement; the sole numerical
+source change is `src/backends/mlx/rollback.ts` relative to `ae04888`.
+
+| M4 Pro 24 GB metric | Previous snapshots | Zero-candidate snapshots removed |
+|---|---:|---:|
+| Median single-request decode | 11.523 tok/s | 11.484 tok/s |
+| Aggregate throughput | 6.149 tok/s | 6.134 tok/s |
+| Median cold TTFT | 5860 ms | 5934 ms |
+| Warm TTFT / cached tokens | 125.86 ms / 758 | 126.13 ms / 758 |
+| Peak RSS | 15060.5 MB | 15111.5 MB |
+
+All 15 requests, response texts and prompt/generated/cached token counts match;
+there are no failed phases. Throughput is effectively flat (−0.33% decode,
+−0.25% aggregate). This removes unnecessary snapshot work without establishing
+a serving speed or memory reduction. Source snapshots are
+`a2ef51986ac3646ed7d7c2d646960bd93f7bbb2b769b7d41e27f877c152590b1` and
+`70507562e4e043f8e03f83c2d2e0ce3b3021c8a356dd9023f1d8cca50a468af7`.
+Raw reports: `reports/prefill-observation/zero-snapshot-*` and
+`grammar-qwen-snapshot-control.md.json`.
+
+### Bound kernel configuration
+
+The kernel-policy cleanup uses the same M4 Pro 24 GB standard-script settings
+as the preceding prompt-lookup comparison. TurboQuant caches retain their
+fused-decoder policy through RAM copies, row extraction and delayed conversion;
+model and method code use the captured runtime configuration.
+
+| Metric | Before | Bound policy |
+|---|---:|---:|
+| Median single-request decode | 11.484 tok/s | 11.509 tok/s |
+| Aggregate throughput | 6.134 tok/s | 6.131 tok/s |
+| Median cold TTFT | 5934 ms | 5921 ms |
+| Warm TTFT / cached tokens | 126.13 ms / 758 | 126.12 ms / 758 |
+| Peak RSS | 15111.5 MB | 15097.2 MB |
+
+All 15 request hashes, response texts and prompt/generated/cached token counts
+match, with no failed phases. Performance is effectively unchanged. This is
+configuration isolation with a regression comparison, not a speedup claim.
+Both source snapshots are stable throughout their runs. The baseline snapshot
+is `70507562e4e043f8e03f83c2d2e0ce3b3021c8a356dd9023f1d8cca50a468af7`;
+the candidate is `79006c024cdebb18a60ba3b22b2b96289c975dacc9f0a72b6592c9872da20bd4`
+on `ba78658` plus the configuration patch. Both use diagnostic mode. Raw reports
+are `reports/prefill-observation/zero-snapshot-lookup-after.md.json` and
+`config-policy-lookup.md.json`. Focused policy/codec checks pass on both Macs;
+the local model-free suite has 2,289 passes and 14 fixture skips. All three
+TypeScript projects and documentation gates pass.
+
+### Fused normalized greedy selection
+
+September 12, 2026. The sampler retains native logsumexp, then selects the
+lowest token ID with the largest dtype-rounded normalized score in two tiled
+Metal reductions. It avoids writing the full normalized vocabulary array.
+Fixed-shape compilation caches the operation by input geometry. The same
+operation serves independent verification and ordinary greedy sampling after
+penalties and grammar masks. Metadata, stochastic and custom samplers keep
+their existing operations.
+
+At B16/V262144, the avoided normalized output is 8 MiB in bf16 or 16 MiB in
+f32; partial score/index storage is 32 KiB. These are operation buffer sizes,
+not a claim about total process memory. Native logsumexp still owns its work.
+
+The operation screen evaluates completed GPU work, with five warmups and 100
+calls per arm in each of four alternating blocks. Median per-call times:
+
+| Machine / dtype | Rows | Native composition | Fused selection |
+|---|---:|---:|---:|
+| M1 Max 32 GB / bf16 | 1 | 528.3 µs | 369.7 µs |
+| M1 Max 32 GB / bf16 | 4 | 578.5 µs | 410.4 µs |
+| M1 Max 32 GB / bf16 | 16 | 621.8 µs | 469.4 µs |
+| M4 Pro 24 GB / bf16 | 1 | 180.9 µs | 144.8 µs |
+| M4 Pro 24 GB / bf16 | 4 | 199.3 µs | 134.0 µs |
+| M4 Pro 24 GB / bf16 | 16 | 217.5 µs | 180.1 µs |
+
+F32 cells also improve, but the first M4 cell drifts across blocks and is not
+used for a headline gain. Compiling the original composition alone is flat on
+the M1 screen and is not adopted. A post-integration M4 probe accidentally
+compared the fused sampler to itself; `sampler-kernel-compiled-m4.json` is
+excluded. The corrected final probes explicitly construct the native reference.
+
+The standard HTTP script runs two pairs in A/B then B/A order. Both retain
+default batch capacity eight, the same `prefill-long-0` requests, 192-token
+single-request samples and four aggregate requests staggered 25 ms apart at
+requested context 2048; the separate context sweep is skipped. All reports
+use diagnostic mode, Bun 1.4.2 and MLX 0.32.2/native pack 0.4.0.
+M1 uses MiniCPM5-1B OptiQ with bf16 KV. M4 uses packed Qwen3.8-27B interleave2,
+folded RTN4 MTP depth three, TurboQuant K8/V3 with fused decoding enabled,
+a 4 GiB RAM cache and temporary SSD storage.
+
+| Machine / model / pair | B1 decode before → after | Aggregate before → after | Exact responses |
+|---|---:|---:|---:|
+| M1 / MiniCPM / A-B | 266.400 → 268.575 tok/s | 185.728 → 191.851 tok/s | 13/15 |
+| M1 / MiniCPM / B-A | 266.238 → 270.443 tok/s | 183.612 → 189.496 tok/s | 15/15 |
+| M4 / Qwen MTP3 / A-B | 18.715 → 18.682 tok/s | 7.688 → 7.601 tok/s | 15/15 |
+| M4 / Qwen MTP3 / B-A | 18.734 → 18.727 tok/s | 7.550 → 7.574 tok/s | 15/15 |
+
+MiniCPM improves about 1.2% in B1 decode and 3.3% in aggregate across the two
+pairs. Two concurrent responses change in its first pair; all single-request
+responses, every request hash and all prompt/generated/cached counts match.
+The reverse pair is exact. Same-input native MiniCPM and packed-Qwen tests
+compare the new and old selection on actual model logits at B1/B4 and match
+every token. Changed concurrent text is not treated as a same-output speed claim.
+Qwen is effectively flat, about −0.1% B1 and −0.4% aggregate across pairs,
+with every response and token count exact. No Qwen serving speedup or process
+memory saving is claimed. This retains a measured sampler improvement and a
+smaller-model serving gain; it changes no sampling distribution or user setting.
+
+Both-machine tests cover fp16/bf16/f32, nonfinite rows, rounding-created ties,
+partial tiles, noncontiguous vocabulary axes, changing row shapes and shapeless
+enclosing graphs. Actual-model selection and grammar/cancellation/logprob checks
+pass on both machines. The full local model-free suite has 2,294 passes and
+14 fixture skips; all three typechecks pass.
+
+Source is `059de1c` plus the sampler changes. Baseline snapshots include an
+unreferenced prototype module; their active sampler is unchanged. Each report's
+source snapshot is stable during measurement. Raw evidence lives under
+`reports/prefill-observation/`: `sampler-kernel-final-{m1,m4}.json`,
+`sampler-minicpm-before{,-repeat}.md.json`, `sampler-minicpm-after-v2.md.json`,
+`sampler-minicpm-after-repeat.md.json`, and `sampler-mtp-{before,after}{,-repeat}.md.json`.
+The earlier independent-only MiniCPM screen preserves every response but shows
+no aggregate gain; ordinary greedy integration is included in the final pairs.
+
 ## Historical results and section links
 
 Earlier measurements retain their original conditions and conclusions in the
@@ -918,3 +2547,992 @@ frozen ledger. These links preserve previous section URLs.
 
 <a id="shared-ordinary-continuation-composition-m4-pro-2026-09-11"></a>
 - [Shared ordinary continuation composition (M4 Pro, 2026-09-11)](../archive/investigations/benchmark-ledger-through-v0.4.0.md#shared-ordinary-continuation-composition-m4-pro-2026-09-11)
+
+## Native submission thresholds on MLX 0.32.2 (2026-09-13)
+
+The R16 `25/25` candidate changes MLX's native command-buffer submission
+thresholds, independently of request scheduling. The current-version screen
+uses `aaf6082`, Bun 1.4.2 and native pack 0.4.0 / MLX 0.32.2. Every request
+uses default shared serving; no `--batch 1` override. Both threshold variables
+are absent in controls and set to `25` in candidates. Runtime defaults remain
+unchanged. The benchmark now records these native environment overrides in its
+JSON alongside the existing engine settings.
+
+Each model runs four standard suites in default/candidate/candidate/default
+order, with bf16 KV, no draft, 1 GiB RAM cache, SSD restart, 192-token short
+requests and a 4,096-token context target. Actual rendered context is 2,721
+for Llama, 2,307 for MiniCPM and 2,448 for Gemma. Compiled decode and strict
+fill are off; early output remains on. Each percentage below compares adjacent
+opposite arms, preserving both orders. Cached completion includes the whole
+request, averaged over the two warm context requests by the suite review.
+
+| Machine and model | Short decode TPS change, A/B and B/A | Context decode TPS change | Cached completion time change | Four-request throughput change |
+|---|---:|---:|---:|---:|
+| M4 Pro 24 GB, Llama 3.2 1B 4-bit | +8.31% / +1.90% | +14.10% / +10.84% | −11.55% / −10.58% | +3.35% / +3.06% |
+| M4 Pro 24 GB, MiniCPM5 1B | +1.92% / +0.29% | +5.03% / +3.16% | −5.68% / −6.33% | +3.23% / +2.59%, changed text |
+| M4 Pro 24 GB, Gemma 4 e4b | +1.15% / −1.11% | +1.85% / +1.12% | −1.64% / −0.82% | +0.04% / +0.07% |
+| M4 Pro 24 GB, Gemma 4 12B | +0.08% / −0.39% | −0.25% / +0.01% | +0.20% / +0.05% | −0.64% / +0.52% |
+| M1 Max 32 GB, Llama 3.2 3B 4-bit, first screen | −5.32% / −7.36% | −8.01% / −9.04% | +9.02% / +12.48% | −6.90% / −1.88% |
+
+All 380 requests complete, with every SSD restart durable. All 190 paired
+inputs, complete usage objects, output counts and finish reasons match.
+All paired text matches except the eight MiniCPM concurrent responses across
+two pairs. Their throughput is recorded but does not establish an identical-work
+speedup. Full native logits and prefix/live/continuation cache-state hashes
+match all ten cases on M4 Llama 1B and all ten on M1 Llama 3B, at context
+positions 0/127/511/1023/4095 and append lengths 1/4. These native cases use B1;
+they do not establish a B4 numerical contract from HTTP text alone.
+
+A second M1 Llama 3B screen reverses the order to
+candidate/default/default/candidate. All 76 requests and all 38 paired
+responses/usage records match, with four durable SSD restarts. Short decode
+changes −5.22%/−4.46%, context decode −5.55%/−8.62%, cached completion
++6.15%/+5.72%, and aggregate throughput −2.01%/−1.54%. This reproduces the
+slowdown in the opposite order; activity remains recorded, so the conclusion
+is to retain native defaults on this measured configuration. Raw evidence:
+`llama3-submission-m1-r2-*`.
+
+The M4 Llama control rises from 278.01 to 295.30 short TPS between arms,
+while candidates are 301.11/300.92. Both orders are retained. M1 candidate arms
+coincide with more indexing/browser activity and some desktop GPU submissions;
+the first screen alone cannot isolate its observed slowdown. All screens are
+diagnostic. Activity sampling records last GPU submitters, not exclusive
+ownership or time spent by each process. M4 retained swap stays at 3,279 MB;
+M1 decreases from 3,532 to 3,412 MB. Cold prefill and peak RSS results are mixed.
+
+In upstream MLX 0.32.2, `Device` reads these overrides at construction and
+shares them across command encoders. Its public header exposes a getter, with
+no scoped setter for these fields. Changing an environment variable around a
+model call after initialization cannot implement a model-owned policy.
+This screen therefore does not introduce a per-request setting or a universal
+startup default. See the pinned [device implementation](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/device.cpp)
+and [device interface](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/device.h).
+
+The packed Qwen3.8 27B agent profile also completes four ABBA suites:
+interleaved k300 weights, folded RTN4 MTP2, KV4/group64, 4 GiB RAM cache,
+fixed 256-token prefill, Trellis v13 and synchronous expansion. Actual context
+is 10,399 tokens. All 76 responses, 38 paired inputs/text/full usage records
+and four durable SSD restarts match. Short decode changes −2.75%/+0.13%,
+context decode −3.60%/−0.81%, cached completion +4.15%/+1.08%, and aggregate
+throughput +0.44%/−0.80%. The 183 activity samples record Bun as last GPU
+submitter 172 times, Terminal seven times and the desktop Codex process four
+times. This supports retaining the current Qwen setting. Raw evidence:
+`qwen-submission-current-*`.
+
+Across the first screens and both follow-ups, all 532 requests complete;
+all 266 paired inputs and full usage records match, with only the eight
+MiniCPM concurrent text differences described above. This closes the current
+submission-threshold screen with no universal default change. The measured
+M4 Llama profile can use the existing startup overrides when desired:
+
+```sh
+MLX_MAX_OPS_PER_BUFFER=25 MLX_MAX_MB_PER_BUFFER=25 bun scripts/bench-serve.ts all --model-path /path/to/Llama-3.2-1B-Instruct-4bit --arms mlx-bun --no-serial --kv-quant off --prompt-cache 1 --context 4096 --tokens 192 --diagnostic
+```
+
+Raw reports, plans, activity samples and pair reviews are under
+`reports/prefill-observation/`: `llama-submission-current-*`,
+`submission-stock-current-*`, `llama3-submission-m1-*` and
+`submission-llama{1-native-m4,3-native-m1}-*`. Native environment capture was
+added after the M4 Llama HTTP screen; that screen's launch plan records the
+same overrides. The standard reports capture unchanged engine source before
+and after each suite. Older MLX 0.31.2 measurements remain separate evidence.
+
+## Shared Gemma media execution (2026-09-13)
+
+Gemma4 image/audio requests now use prepared embeddings followed by ordinary
+shared decode. Media downloads and container transcoding run outside the native
+execution lease. A held audio download no longer blocks text generation. The
+encoder and full media prefill remain indivisible work at execution boundaries.
+
+**M4 Pro 24 GB, diagnostic, source-controlled ABBA.** Control runtime source
+`48e234c`; candidate `97eb80e`; Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2.
+Both use the existing Gemma4-e4b OptiQ snapshot `fcdb12d…` with its complete
+912 MiB vision/audio sidecar, bf16 KV, default batch cap eight, no draft,
+compiled decode off and fill off. The ordinary RAM cache remains enabled;
+media bypasses token-only caching and no SSD cache is configured. Each fresh
+process warms audio, image and text once, then repeats six scenarios three
+times. Inputs are the existing speech-fox WAV/transcription request, a solid
+red 64×64 PNG, and a 128-token counting request. These are bounded media
+measurements, separate from the standard text-only h2h script.
+
+Median complete times per scenario, including all requests in a concurrent set:
+
+| Scenario | Control A → shared A, ms | Control B → shared B, ms | Paired change |
+|---|---:|---:|---:|
+| One audio request | 356.49 → 361.08 | 359.01 → 363.55 | +1.29% / +1.26% |
+| One image request | 608.93 → 615.98 | 606.89 → 617.48 | +1.16% / +1.75% |
+| Two audio requests | 717.98 → 574.82 | 720.70 → 580.56 | −19.94% / −19.45% |
+| Four audio requests | 1,433.86 → 963.54 | 1,435.50 → 931.34 | −32.80% / −35.12% |
+| Two image requests | 1,227.89 → 1,196.56 | 1,217.94 → 1,198.98 | −2.55% / −1.56% |
+| Text + audio + image | 3,242.79 → 3,208.42 | 3,251.49 → 3,208.60 | −1.06% / −1.32% |
+
+All 156 measured requests complete. All 78 paired responses and complete usage
+records excluding the intentionally changed `lane` field match. Audio returns
+11 tokens and images two; the text request returns 128. Controls send media
+through serial execution despite cap eight. Candidates send it through shared
+execution, with actual B2/B4 audio forwards and B2 image forwards observed.
+The very short image outputs do not reach B2 in every repetition.
+
+Aggregate completion improves at a cost to individual latency. With four audio
+requests, the first submitted request completes in 531.08 → 933.57 ms and
+528.46 → 930.99 ms. Its first visible output changes from 168.36 → 178.23 ms
+and 169.50 → 182.36 ms. Lone-audio first-output medians are 197.90 → 203.11 ms
+and 168.78 → 203.45 ms. Shared media is integrated; these results do not establish
+strict domination of explicit serial execution. The small lone-request cost and
+encoder scheduling remain optimization opportunities.
+
+Activity records contain 57 process/GPU/swap samples. The last GPU submitter is
+Bun in 53 samples; the four initial samples show Terminal or the desktop app.
+Retained swap remains 2,883.81 MiB throughout. Browser and desktop CPU activity
+is retained in the raw records. No competing inference/training process was
+observed. This is monitored diagnostic evidence, not a quiet-machine label.
+
+Both-machine prepared-input tests compare complete same-machine logits, live
+cache state and continuation for image/audio/mixed masks at lengths seven and
+17, using bf16 and delayed KV4. Queued native preparation preserves every
+captured active B1/B2 logit vector. Both-machine HTTP checks preserve the existing
+audio transcription golden, exercise actual B2 audio decode, transcode AAC,
+handle malformed input, and complete text while an audio download is held open.
+The model-free suite passes 2,353 tests with 14 existing fixture skips; all three
+TypeScript projects and hygiene pass.
+
+Raw source/input/native manifests, stream events, timing samples and activity:
+`reports/prefill-observation/shared-media-{control,candidate}-{a,b}.json` on both
+Macs. Derived comparisons: `shared-media-comparison-review.json`. The initial
+control attempted a text-only local snapshot; its explicit missing-audio-sidecar
+failure remains in `shared-media-control-a-missing-sidecar.*`. The completed
+runner source is retained in `completed-shared-media-tool-sources.json`.
+Qwen's request-specific mRoPE state and video acceptance follow below.
+Encoder-cache measurements remain separate work.
+
+
+## Shared Qwen image and video execution (2026-09-13)
+
+Qwen image/video decode now carries each request's mRoPE position delta through
+an input-state interface. The current row order and device-resident cache offsets
+determine positions after merging and retirement. The model receives positions
+explicitly; shared execution never changes the legacy serial mRoPE field.
+Image/video preprocessing stays outside the native execution lease. Encoder
+execution and the full media prefill remain atomic.
+
+**M4 Pro 24 GB, diagnostic, source-controlled ABBA.** Control runtime source
+`011a19c`; candidate `a24151b`; Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2.
+Both use the existing interleaved k300 packed Qwen3.8-27B artifact, KV4, batch cap
+eight, no draft, ordinary RAM caching, no SSD, compiled decode off and fill off.
+Each fresh process warms image/video/text once, then repeats six scenarios three
+times. Inputs are solid-color PNGs with different 64/96-pixel grids, a one-second
+red MP4 and a text request. Media generates 64 tokens; text generates 128.
+Temperature is zero, seed 42, thinking disabled. This bounded media comparison
+is separate from the standard text-only h2h script.
+
+Median complete time includes all requests in a concurrent set:
+
+| Scenario | Control A → shared A, ms | Control B → shared B, ms | Paired change |
+|---|---:|---:|---:|
+| One image | 6,302.69 → 6,302.58 | 6,296.41 → 6,304.66 | −0.00% / +0.13% |
+| One video | 6,873.32 → 6,848.58 | 6,846.71 → 6,859.52 | −0.36% / +0.19% |
+| Two images | 12,625.07 → 7,715.17 | 12,558.80 → 7,724.26 | −38.89% / −38.50% |
+| Four images | 25,195.82 → 10,935.59 | 25,140.36 → 11,044.71 | −56.60% / −56.07% |
+| Image + video | 13,189.18 → 8,624.31 | 13,150.96 → 8,637.60 | −34.61% / −34.32% |
+| Text + two images | 24,297.23 → 19,337.81 | 24,267.51 → 19,383.98 | −20.41% / −20.12% |
+
+All 156 measured requests complete. All 78 paired inputs and full usage records
+excluding the intended lane change match. Response text matches in 54/78 pairs:
+all lone-image, lone-video and mixed-text scenarios, plus some concurrent-image
+rows. The other 24 pairs change text when serial media becomes B2/B4 work.
+These differing batch geometries do not establish a same-B numerical failure,
+and this short color fixture does not establish unchanged general media quality.
+The first pair's probe wrapped only `forwardHidden`, missing the new position
+forward. Its recorded zero widths mean unobserved, not B0. The corrected probe
+in the second pair observes B2 for two images/image+video and B4 for four images
+in every repetition. No engine change separates the candidate arms.
+
+The first submitted image in the four-image set completes in
+6,304.57 → 10,697.33 ms and 6,297.85 → 10,802.06 ms; its first visible output
+changes from 815.21 → 823.53 ms and 809.46 → 843.48 ms. First image+video output
+changes from 812.34 → 899.53 ms and 809.51 → 838.27 ms. Concurrent total time
+improves while the first request can finish later. Explicit serial remains
+available; this is not strict latency domination.
+
+The 476 activity samples identify Bun as last GPU submitter in 470 cases;
+initial desktop processes and two Chrome samples account for the others.
+Retained swap ranges from 3,067.31 to 3,932.88 MiB across the four processes.
+Sampled peak Bun RSS is 12,610–12,633 MiB. Process/activity records are preserved,
+including desktop activity; this comparison is diagnostic, not quiet-qualified.
+
+Numerical acceptance uses the same machine and geometry. Frozen pre-change
+module-global and explicit-position forwards match all 40 complete logit/cache
+snapshots per Mac across eight B1/B2, length-seven/17, bf16/delayed-KV4 cases.
+This is a source comparison, not a new independent Python oracle. Shared
+B1/B2/B4 padded and retiring rows also match an independently constructed CPU
+position grid for bf16, delayed KV4 and delayed K8V3, nine cases per Mac. The M4
+uses the actual packed 27B artifact; the M1 source/group checks use Qwen0.8B.
+Real image HTTP checks on the packed 27B pass on both Macs, including logprobs,
+different image grids, correct red/blue responses, actual B2 and no mutation of
+legacy model position state. Tests: `qwen-media-state.test.ts` and
+`qwen-media-serve.test.ts` under `tests/parity/`.
+
+Raw manifests, complete stream events, timing/activity, source comparisons and
+native/HTTP logs are on both Macs under `reports/prefill-observation/qwen-media-*`.
+The derived review is `qwen-media-comparison-review.json`; completed one-off
+sources are retained in `completed-qwen-media-tool-sources.json`. Encoder feature
+caching, chunked media prefill and broader speculative/media compositions remain
+separate optimization work.
+
+
+## Qwen encoder reuse through shared RAM and SSD storage (2026-09-13)
+
+The exact-object cache retains Qwen encoder outputs under the existing RAM
+budget and SSD writer. Keys include preprocessed pixel bytes, grids, encoder
+schema and a one-time SHA-256 of the loaded encoder tensors. Requests still
+render their own positions and run media language-model prefill. This does not
+cache preprocessing or enable media KV-prefix reuse.
+
+**M4 Pro 24 GB, diagnostic, source-controlled ABBA.** Runtime control `64e4226`,
+candidate `dbd7bc3`; the same interleaved k300 packed Qwen3.8-27B artifact,
+Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2, KV4, default cap eight, no draft,
+compiled decode off, fill off and temperature zero/seed 42. Both use the normal
+RAM cache; these timing arms do not configure SSD. Each process first warms an
+image, video and text request, preserving those timings separately. It then
+runs six repetitions of each scenario. Images are 512×512 and 768×512 solid-color
+PNGs; video is the earlier one-second 64×64 red clip. Media emits 16 tokens.
+
+| Scenario | Control A → cached A, ms | Control B → cached B, ms | Complete-time change |
+|---|---:|---:|---:|
+| Repeated 512×512 image | 4,070.27 → 3,886.72 | 4,065.97 → 3,881.26 | −4.51% / −4.54% |
+| Repeated small video | 2,676.05 → 2,627.50 | 2,676.22 → 2,627.71 | −1.81% / −1.81% |
+| Two image requests | 8,058.20 → 7,586.82 | 8,052.03 → 7,584.61 | −5.85% / −5.81% |
+
+All 96 measured requests complete; all 48 paired responses and full usage
+records match. Both arms observe actual B2 in every two-image repetition.
+Every paired complete-time cell improves. The first two-image repetition
+includes the initially unseen blue image; its gains are smaller than later
+fully cached repetitions. Three encoder objects retain 7,208,960 additional
+bytes, or 6.875 MiB, in the same cache as the text checkpoint.
+
+Exact weight identity has a first-use cost. The first image after loading the
+model completes in 5,525.19 → 6,132.09 ms and 5,539.03 → 6,107.68 ms.
+The additional 568.65–606.90 ms is recovered after about four subsequent
+repetitions of this image. These two first-use samples are not a tail-latency
+estimate. The cache remains useful for repeated media; a one-shot image pays
+the initial cost. Disabling the RAM cache supplies no object port and avoids
+both hashing and feature retention.
+
+Activity contains 136 process/GPU/swap samples, with Bun the last GPU submitter
+in 130 and desktop/browser processes in six. Retained swap ranges from
+4,636.12 to 4,668.12 MiB. Sampled peak Bun RSS changes from
+12,663.06 → 12,696.30 MiB and 12,627.34 → 12,678.23 MiB. These monitored
+conditions remain diagnostic. All raw samples, including first-use costs and
+background activity, are preserved.
+
+The preceding small-media prototype preserves all 132 response/full-usage pairs
+across 264 requests. It reduces complete time by 0.18–2.59% across both arm orders,
+while avoiding 63 of 68 encoder calls per candidate process. It uses six
+repetitions of the earlier 64/96-pixel image and video fixtures. This prototype
+memoizes encoder results in the measurement runner; the table above measures
+the integrated shared-cache implementation with larger images.
+
+Correctness and persistence checks pass on both Macs. The object store shares
+its byte cap with prefix checkpoints, lends independent native views, retains
+unwritten victims until SSD completion, rejects stale restore publication after
+clear, and preserves newer resident publication during a competing restore.
+A real Qwen image request reuses the encoder once with identical output and
+logprobs. A new HTTP server restores it with a 16-byte RAM budget, makes no
+additional tower call, reproduces output/logprobs and flushes durably. The M4
+also passes two separate processes: the writer encodes once, the reader encodes
+zero times, exact encoder-weight fingerprints match, and every response,
+logprob and usage field matches after verified SSD restore. The retained
+small SSD artifact is in the report directory.
+
+The complete model-free run passes 2,358 tests with 14 fixture skips. Subsequent
+weight-identity/disabled-cache changes pass 57 focused tests; types, hygiene and
+CI pass. Native HTTP acceptance passes four cases and 31 assertions per Mac.
+Raw reports: `reports/prefill-observation/qwen-encoder-{control,candidate}-{a,b}.json`,
+`qwen-encoder-integrated-{control,candidate}-{a,b}.json`,
+`qwen-encoder-{prototype,integrated}-review.json`, and `encoder-process-*`.
+Completed runner sources are in `completed-encoder-cache-tool-sources.json`.
+Gemma encoder caching, media KV-prefix reuse and broader media compositions
+remain separate opportunities; these results do not require another unchanged
+text-only Kanban run.
+
+
+## Gemma encoder reuse through shared RAM and SSD storage (2026-09-13)
+
+Gemma image/audio preparation now retains encoder features through the same
+exact-object cache used by Qwen. Comparison source is `4289bce`; runtime and
+model configuration are unchanged. Each Mac supplies its own baseline.
+
+On M1 Max 32 GB and M4 Pro 24 GB, all six prepared prompts match the original
+in complete embeddings, token IDs, bidirectional mask and multimodal mask.
+The cases are image, audio and mixed input, each repeated with retained features.
+Both Macs pass all nine real-model HTTP checks with 49 assertions, including
+mixed image/audio reuse in RAM and from a new server's verified SSD cache.
+Outputs, all requested logprobs and full usage match; each encoder runs once,
+and neither runs after SSD restore. Existing transcription, actual B2 decode,
+download concurrency, transcode and malformed-request checks also pass.
+This proves retention identity for these fixtures; it does not extend the
+model's separately documented external-oracle tier.
+
+Reports: `reports/prefill-observation/gemma-encoder-{control,candidate}-{m1,m4}.json`
+and `gemma-encoder-http-{m1,m4}.log`.
+
+M4 Pro 24 GB ABBA compares runtime source `4289bce` with `4521024`, using
+Gemma e4b OptiQ snapshot `fcdb12d740cd813634064567fc7cb51159b34253`,
+Bun 1.4.2 / MLX 0.32.2, bf16 KV, default cap eight, no draft, an 8,000,000,000-byte
+RAM cache and no SSD during timing. Compiled decode uses its existing default.
+The runner's `MLX_BUN_COMPILED=0` is an unused environment name, not the
+`MLX_BUN_COMPILED_DECODE` option; both arms use identical runtime settings.
+Inputs are a 64×64 red PNG and the existing speech WAV, with temperature zero
+and seed 42. Six repetitions per scenario follow separately recorded audio,
+image and 128-token text warmups. Audio returns 11 tokens, image two, and the
+single mixed-media request 12, under unchanged 32/16-token budgets.
+
+All 168 paired measured responses retain complete content, reasoning and usage.
+Medians below are request completion times, not isolated decode throughput.
+
+| Workload | Control A → candidate A, ms | Change | Control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| One audio request | 354.57 → 326.65 | −7.87% | 357.16 → 327.08 | −8.42% |
+| One image request | 611.51 → 413.51 | −32.38% | 625.98 → 414.56 | −33.77% |
+| Two audio requests | 570.41 → 519.37 | −8.95% | 575.19 → 517.19 | −10.08% |
+| Four audio requests | 923.95 → 855.95 | −7.36% | 931.98 → 856.43 | −8.11% |
+| Two image requests | 1196.14 → 833.21 | −30.34% | 1229.68 → 834.23 | −32.16% |
+| Concurrent text, audio and image | 3147.68 → 2927.42 | −7.00% | 3182.60 → 2932.27 | −7.87% |
+| One request containing image and audio | 901.25 → 680.19 | −24.53% | 922.33 → 682.12 | −26.04% |
+
+Audio cohorts observe actual B2/B4 in every repetition. The image pair's overlap
+changes: the control observes B2, while the candidate's first request finishes
+much earlier, at 420.37/423.92 ms versus 1196.12/1229.67 ms. The runner's forward
+probe does not observe compiled B1 calls; zero in that raw field means unobserved.
+This is request-level acceptance, not a fixed-B2 kernel comparison.
+
+First-use audio costs 946.84 → 1222.28 ms and 899.07 → 1227.05 ms; image costs
+625.77 → 882.39 ms and 627.98 → 871.59 ms. Weight fingerprints and first cache
+publication add 275.44/327.98 ms for audio and 256.62/243.62 ms for images.
+At the repeated B1 savings above, that cost is recovered after roughly 10–11
+additional audio uses or two image uses. The two feature objects add exactly
+1,996,800 resident bytes, about 1.90 MiB, to the existing shared cache budget.
+
+These are diagnostic measurements. All 94 activity samples retain process,
+GPU-submitter and swap observations; Bun is the last GPU submitter in 87,
+with desktop applications in seven. Retained swap is 3996.12 MiB throughout.
+Sampled peak Bun RSS is 7628.20 → 7558.05 MiB and 7644.98 → 7398.94 MiB.
+Both comparison orders favor reuse despite the recorded background activity.
+
+A separate M4 process reloads the model and restores both features from verified
+SSD storage. Request, encoder fingerprints, output, every requested top-ten
+logprob and full usage match; encoder calls change from one per tower to zero.
+Both processes finish with durable persistence. Both-machine HTTP/native checks,
+all 2,360 model-free tests, typechecks and hygiene pass.
+
+Raw timing: `gemma-encoder-{control,candidate}-{a,b}.json`, reviewed in
+`gemma-encoder-comparison-review.json`. Fresh-process evidence:
+`gemma-encoder-process-{write,read}.json` and `gemma-encoder-process-review.json`.
+Completed runner sources: `completed-gemma-encoder-tool-sources.json`.
+Media KV-prefix reuse remains open.
+
+
+## Latency-aware MLP allocation screen (2026-09-13)
+
+The existing production `tq-trellis-kernel-bench.ts` measures actual packed
+Qwen3.8-27B matrices at k2/k3/k4, using layers 0/1/56 of the accepted interleaved
+artifact. Gate/up are one fused producer for M≤4; down projection is separate.
+M is the number of rows in an MLP call, not the scheduler's request count.
+Current variant 13 is used on Bun 1.4.2 / MLX 0.32.2, with 20 measured rounds
+and eight queued calls per evaluation. Forward/reverse sweep orders use the
+same matrix hashes. All 228 self-reference reader checks match; these are
+harness checks against the same implementation, not cross-bit or external
+oracle quality claims. No runtime source or artifact changes in this screen.
+
+Complete MLP medians below average the two sweep-order medians. The independent
+fused-gate/up and down timings supply the allocation cost model.
+
+| Machine / M | k2, ms | k3, ms | k4, ms |
+|---|---:|---:|---:|
+| M1 Max 32 GB / 1 | 1.182 | 1.113 | 1.141 |
+| M1 Max / 3 | 1.677 | 1.558 | 1.559 |
+| M1 Max / 4 | 2.034 | 1.974 | 1.938 |
+| M1 Max / 16 | 10.986 | 11.519 | 8.851 |
+| M4 Pro 24 GB / 1 | 0.985 | 0.985 | 0.926 |
+| M4 Pro / 3 | 1.164 | 1.171 | 1.135 |
+| M4 Pro / 4 | 1.294 | 1.284 | 1.245 |
+| M4 Pro / 16 | 5.381 | 5.419 | 5.357 |
+
+Bit count alone does not order execution cost. The k4 M1/M16 complete MLP is
+23.2% faster than k3 in both sweep orders, while k3 is faster at M1/M1. These
+are role/MLP diagnostics with repeated inputs, not full-model TPS measurements.
+Both Macs record background activity and retained swap: 2712.19 MiB on M1,
+3980.12 MiB on M4. No quiet classification is claimed. Source/native geometry
+and per-round samples remain in the reports; source commits differ only in
+unrelated Gemma/tests/docs changes, with identical kernel hashes.
+
+A multiple-choice knapsack then minimizes normalized sensitivity loss plus a
+weighted sum of measured producer times. Its 128 decisions tie each layer's
+gate/up and choose down independently. k is 2, 3 or 4, subject to the existing
+3.00 average MLP-bit budget and 6,423,969,792 packed MLP bytes. Attention, GDN,
+embedding and head remain unchanged. Eight latency weights, zero through eight,
+run against each machine/M profile. At zero latency weight, every profile
+reproduces the existing k300 allocation exactly.
+
+The sensitivity source is the previously saved EXL3 per-tensor table. It ranks
+an external codec's losses; neither its absolute divergence nor candidate loss
+changes establish Trellis quality. The following are proposal estimates only.
+
+| Profile, latency weight | Estimated summed MLP-role time change | External-codec loss proxy change | Changed tensors |
+|---|---:|---:|---:|
+| M1 / M1, weight 1 | −0.52% | +0.26% | 8 |
+| M4 / M1, weight 1 | −0.09% | +0.07% | 4 |
+| M4 / M4, weight 1 | −0.07% | +0.05% | 4 |
+| M1 / M16, weight 2 | −6.20% | +9.01% | 60 |
+| M4 / M1, weight 8 | −1.12% | +4.68% | 52 |
+
+Keep the current artifact. This MLP-only screen finds little estimated decode
+headroom at a fixed size and a larger M1-prefill tradeoff that needs real quality
+evaluation. No candidate has been quantized or promoted. The checked primary
+model directories contain quantized targets/references, but no complete original
+Qwen bf16 weight snapshot. Re-encoding the existing k300 weights cannot restore
+precision for promoted tensors. Teacher-based quantization and frozen
+KL/MMLU/tGSM/rawGSM acceptance remain open, as do non-MLP allocation and the
+other R19 calibration/rounding choices.
+
+Reports: `reports/prefill-observation/r19-cost/` contains all 48 kernel runs,
+`cost-review.json`, all 64 `allocation-proposals.json` cells and archived
+`completed-allocation-source.json`. The existing production script is retained;
+the completed one-off allocator is removed.
+
+
+## Gemma prepared-media KV reuse (2026-09-13)
+
+The experimental `MLX_BUN_MEDIA_PREFIX_CACHE=1` option combines the producer's
+media/token identity with the ordinary cache namespace. Generated conversation
+state uses the existing RAM residency and SSD persistence interfaces. Repeated
+media encoder caching remains enabled independently in both comparison arms.
+
+Both M1 Max 32 GB and M4 Pro 24 GB pass 23 native prepared-input tests with
+98 assertions, including complete logits/state and continuation after retained
+image, audio and mixed prefixes. New resumed cases use bf16, delayed affine KV4
+and delayed k8v3. Both Macs also pass 11 real-model HTTP tests with 188 assertions:
+bf16, start-zero KV4/k8v3 and delayed KV4/k8v3 through RAM and verified SSD
+restart, plus mixed/audio identity. Follow-ups reuse generated output tokens;
+different images and changed media sets miss correctly. The fixture's TurboQuant
+configuration quantizes full-attention layers while sliding layers remain bf16.
+
+The first delayed-precision test incorrectly expected a shorter repeated prompt
+to hit after conversion. Inspection records minimum reusable offset 280 on
+trimmable generated entries at offsets 282/301. The shorter request needs offset
+279, before conversion, so it correctly recomputes; growing conversation turns
+hit. The runtime was unchanged for that finding, and the tests now assert the
+boundary explicitly. The failed assumptions and inspection remain preserved.
+
+Reports: `reports/prefill-observation/media-prefix-native-{m1,m4}.log`,
+`media-prefix-http-{m1,m4}.log`, `media-prefix-trim-inspection.log` and
+`completed-media-prefix-inspection.json`. M4 same-source ABBA on `7ea35fb` uses the existing e4b OptiQ fixture, bf16 KV,
+default cap eight and compiled decode, six repetitions per workload, and the
+same encoded-feature cache in both arms. Only media prefix reuse is toggled.
+No SSD participates in these timings; the separate restart checks cover it.
+
+| Workload | Control A → candidate A, ms | Change | Control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| One audio request | 327.80 → 230.48 | −29.69% | 328.98 → 230.11 | −30.06% |
+| One image request | 413.04 → 73.55 | −82.19% | 414.24 → 72.74 | −82.44% |
+| Two audio requests | 517.89 → 296.59 | −42.73% | 521.07 → 294.76 | −43.43% |
+| Four audio requests | 858.40 → 407.62 | −52.51% | 862.02 → 405.85 | −52.92% |
+| Two image requests | 834.56 → 148.10 | −82.25% | 834.20 → 146.39 | −82.45% |
+| Concurrent text, audio and image | 2923.02 → 2329.57 | −20.30% | 2934.48 → 2339.33 | −20.28% |
+| One request containing image and audio | 681.82 → 287.71 | −57.80% | 683.60 → 285.89 | −58.18% |
+
+Of 168 paired measured requests, 158 retain identical content/reasoning and
+non-cache token usage. The ten changed mixed-media replies add a terminal
+period after “Red”, increasing completion count from 12 to 13; their transcription
+and color are unchanged. Prompt cached counts intentionally change. Audio
+reuses 82 tokens and image 279. The first mixed-media request is uncached;
+subsequent mixed-media requests reuse its state. This is same-workload request
+acceptance, not identical full-prefill geometry or a bit-identical token stream.
+The native retained-state checks above use matched geometry.
+
+All scenarios improve in both comparison orders. Concurrent occupancy changes
+as preparation gets shorter; the mixed text/audio/image case reaches B3 instead
+of B2. The runner's zero forward-probe field means unobserved compiled B1, not
+zero active rows. These are complete request times, not isolated decode TPS.
+
+First-use audio is 1170.63 → 1296.42 ms and 1319.00 → 1294.70 ms; first-use image
+is 876.81 → 879.04 ms and 878.60 → 907.45 ms. The extra prefix records retain
+93,757,440 bytes, about 89.41 MiB, in the same cache budget. The 74 activity
+samples name Bun as last GPU submitter in 70 and desktop applications in four;
+retained swap is 3964.12 MiB throughout. Sampled peak Bun RSS is
+7408.44 → 7114.09 MiB and 7183.34 → 7082.58 MiB. Diagnostic classification remains.
+
+Raw comparisons: `gemma-media-prefix-{control,candidate}-{a,b}.json`, with
+`gemma-media-prefix-review.json`. Together with the Qwen comparison below,
+these results select prepared media-prefix reuse by default. Encoder-only
+comparison remains available with `MLX_BUN_MEDIA_PREFIX_CACHE=0`.
+
+
+### Qwen prepared-media KV identity and continuation
+
+Qwen uses the same shared prefix-cache port. Its producer identity additionally
+includes prepared image/video hashes, rendered timestamps and mRoPE positions
+through the last media span. Recurrent layers keep their exact-prefix rule.
+The native binding resumes the new request's positioned text forward from the
+retained offset; no global model position state is changed.
+
+Both Macs pass all 12 request-owned media state tests with 78 assertions. New
+cases preserve complete logits, attention/recurrent state, donor immutability
+and continuation after bf16, delayed KV4 and delayed k8v3 prefixes. M1 uses the
+existing Qwen3.5 0.8B fixture and M4 the actual packed 27B artifact; each comparison
+uses its own model and machine. Both Macs then pass five actual packed 27B HTTP
+tests with 57 assertions: image follow-ups through KV4 and k8v3 in RAM and a
+new server's verified SSD cache, different-image isolation, and video-history
+reuse with timestamps/positions. The follow-ups reuse generated output tokens.
+
+Reports: `reports/prefill-observation/qwen-media-prefix-native-{m1,m4}.log` and
+`qwen-media-prefix-http-{m1,m4}.log`.
+
+
+### Qwen media-session KV reuse on M4 Pro (2026-09-13)
+
+A same-source ABBA comparison on `a382cad` replays a frozen corpus captured on
+the M4 Pro with the packed 27B artifact, KV4, default cap eight and compiled
+decode, no speculation, an 8,000,000,000-byte shared RAM budget and no SSD.
+Both arms reuse encoder features; only `MLX_BUN_MEDIA_PREFIX_CACHE` changes.
+The corpus has image, video and two concurrent image sessions. Each session
+contains an initial response capped at 16 tokens and a one-word follow-up
+capped at eight. Three repetitions per arm give 96 measured requests and
+48 matched pairs. Corpus/source hashes match and every source diff is empty.
+
+| Workload | Session control A → candidate A, ms | Change | Session control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| Image conversation | 6988.85 → 4636.54 | -33.66% | 6985.57 → 4633.27 | -33.67% |
+| Video conversation | 4471.45 → 3470.36 | -22.39% | 4484.69 → 3469.52 | -22.64% |
+| Two image conversations | 14638.65 → 9008.47 | -38.46% | 14664.64 → 9025.04 | -38.46% |
+
+All 48 paired responses, reasoning and non-cache token counts are identical.
+Every measured follow-up hits its session cache in each enabled arm, reusing
+306 image tokens, 122 video tokens or 307/434 tokens for the image pair.
+The initial requests still recompute because Qwen's recurrent state cannot
+rewind the longer completed conversation. Their median completion changes range
+from −0.08% to +0.36% across the pairs.
+
+| Follow-up | Control A → candidate A, ms | Change | Control B → candidate B, ms | Change |
+|---|---:|---:|---:|---:|
+| Image conversation | 3117.09 → 749.70 | -75.95% | 3107.98 → 750.40 | -75.86% |
+| Video conversation | 1847.86 → 833.79 | -54.88% | 1840.45 → 830.34 | -54.88% |
+| Two image conversations | 7049.63 → 1423.41 | -79.81% | 7065.98 → 1425.51 | -79.83% |
+
+The positioned-forward probe observes B2 on initial paired image decode and
+B1 on those short follow-ups in both arms. These are conversation and request
+times, not isolated decode throughput. Prefix records add 1,299,787,776 bytes
+of retained state to the three encoder objects, within the same cache budget.
+First-use red-image warmup is 6075.29 → 6145.35 ms and 6124.64 → 6125.24 ms.
+
+All 104 activity samples are retained: Bun is the last GPU submitter in 100,
+and desktop applications in four. Swap stays at 3956.12 MiB. Sampled peak Bun
+RSS is 12702.22 → 12655.58 MiB and 12686.38 → 12673.36 MiB. These monitored
+comparisons are diagnostic. Both orders support selecting media-prefix reuse
+by default; the explicit encoder-only switch remains available.
+
+Reports: `reports/prefill-observation/qwen-media-prefix-fixture.json`,
+`qwen-media-prefix-session-{control,candidate}-{a,b}.json`,
+`qwen-media-prefix-session-review.json` and
+`completed-qwen-media-prefix-tool-sources.json`.
+
+
+### Media KV restore in a fresh process
+
+On M1 Max, both actual e4b OptiQ and packed Qwen27B pass a separate-process
+restore comparison. The writer generates an image response, flushes its
+checkpoint to SSD and copies that durable directory before issuing a follow-up
+against warm RAM. A new process loads the copied directory and submits the
+identical follow-up. Complete response choices, top-ten log probabilities and
+full usage match the warm RAM result for each model.
+
+Gemma reuses 294 tokens with bf16 KV; Qwen reuses 45 with KV4. Each new process
+restores two SSD records: the encoder feature and generated conversation state.
+The initial durable directories contain 27,160,576 and 156,312,992 bytes,
+respectively. The recorded read stats precede persistence of the new follow-up;
+they are evidence of restored initial state, not a final follow-up flush.
+
+Source: `a382cad`. Reports and retained SSD directories are under
+`reports/prefill-observation/{gemma,qwen}-media-prefix-process-*`;
+`completed-media-prefix-process-tool-source.json` preserves the retired runner.
+
+
+### R24 activation quantization and resource bounds (2026-09-13)
+
+This is a feasibility screen, not a new model-quality or serving-speed claim.
+The pinned MLX 0.32.2 oracle runs five alternating paired blocks per cell,
+with three warmups and ten completed evaluations per arm. Synthetic seeded
+bf16 inputs use the Qwen MLP gate/up dimensions, K=5120 and N=17408. Both arms
+share the same pre-quantized weights. The control uses `quantized_matmul`;
+the candidate uses `qqmm`, adding activation quantization. No model is loaded.
+Each comparison is within one machine and format, not against packed Trellis.
+
+| Format | M | M1 control → candidate, ms | Change | M4 control → candidate, ms | Change |
+|---|---:|---:|---:|---:|---:|
+| nvfp4 | 1 | 0.760 → 0.792 | +4.18% | 0.360 → 0.360 | -0.21% |
+| nvfp4 | 4 | 0.814 → 0.829 | +1.75% | 0.402 → 0.396 | -1.62% |
+| nvfp4 | 16 | 1.438 → 1.652 | +14.84% | 1.112 → 1.166 | +4.83% |
+| nvfp4 | 256 | 8.658 → 21.093 | +143.62% | 7.014 → 15.388 | +119.39% |
+| mxfp8 | 1 | 0.502 → 0.512 | +1.89% | 0.510 → 0.509 | -0.22% |
+| mxfp8 | 4 | 0.677 → 0.680 | +0.49% | 0.639 → 0.642 | +0.39% |
+| mxfp8 | 16 | 1.467 → 1.868 | +27.35% | 1.139 → 1.714 | +50.51% |
+| mxfp8 | 256 | 8.866 → 25.453 | +187.08% | 7.160 → 24.139 | +237.16% |
+
+Numbers are medians of block medians. Small-M cells have mixed block-level
+noise; no small speed win is established. Every M=16/256 cell is slower in
+all five pairs on both machines. Relative squared output error versus the
+same quantized weights with bf16 activations is 0.0090–0.0095 for NVFP4 and
+0.00069–0.00072 for MXFP8. These are synthetic operation errors, not task scores.
+The capability smoke also records that INT8 input to ordinary QMM is cast back
+to the floating scale dtype. A constant NVFP4 example produces 136 where its
+unquantized dot product is 128; MXFP8 produces 128 for that example.
+
+The pinned [Metal implementation](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/quantized.cpp#L1865)
+quantizes/dequantizes activations before dispatching the weight kernel. Native
+`mlx_qqmm` is exported by the current pack, but it does not provide a packed
+Trellis W3A8 operation. Do not add a serving option for this measured loss.
+Reopen with an operation that consumes compressed activations directly and
+passes a whole-model quality comparison.
+
+These short diagnostic screens have three activity samples per machine. M1
+names Python as last GPU submitter in all three; M4 names Python twice and a
+desktop application once. Swap remains 2656.12 MiB on M1 and 3924.12 MiB on M4.
+Sources are `6fe0a7f` on both machines; each uses its pinned 0.32.2 oracle.
+Reports: `reports/prefill-observation/r24-activation-screen-{m1,m4}.json`,
+`r24-activation-screen-review.json`, `r24-activation-native-capability.json`,
+the adjacent native graph exports and `completed-r24-activation-tool-source.json`.
+
+The separate static resource screen reads the actual packed snapshot's
+configuration and safetensors headers, without allocating model tensors.
+Its 192 MLP matrices contain 17,112,760,320 parameters and occupy
+6,423,969,792 payload bytes, 49.27% of the 13,038,407,512-byte artifact.
+Those file fractions are not fractions of decode time: the artifact also
+contains media and MTP weights, and R19 shows bit count does not predict latency.
+
+| Candidate resource | Calculated bound and assumptions |
+|---|---|
+| MLP mean three → two bits | Save 2,139,095,040 raw code bytes before changed codebooks/metadata. This is 16.41% of artifact bytes, with unchanged other tensors; no latency or quality prediction. |
+| Sparse MLP correction | A flat uint32 index plus fp16 value costs about 97.92/489.60/979.20 MiB at 0.1%/0.5%/1% density, excluding row pointers/alignment. Overhead is 0.048/0.24/0.48 bits per original MLP weight. |
+| Low-rank MLP replacement | bf16 factors use `2*r*(5120+17408)` bytes per matrix. Rank 128/256/512 across all MLP projections uses 1056/2112/4224 MiB. Rank must be below about 742 to beat raw three-bit matrix bytes. Task quality at those ranks is unmeasured. |
+| One-matrix calibration | One f32 MLP matrix is 340 MiB. Full f32 input covariance is 100 MiB for gate/up and 1156 MiB for down; solver copies, activations and the resident model are additional. Layerwise fitting is a candidate; whole-model residency is unnecessary. |
+| Full 27B training | Approximate bf16 weights alone use 50.29 GiB. At 12 bytes/parameter for weights, gradients and Adam moments, state uses 301.75 GiB; a separate f32 master adds another 100.58 GiB. This full-resident form cannot fit either Mac. Offload is a different, unmeasured training design. |
+| Adapter-only recovery | Existing adapters use f32 parameters. Rank-eight adapters on all MLP matrices would have 34,603,008 parameters and 528 MiB for parameters, gradients and two moments, before activations/base weights. This is a proposed capacity bound: the packed model currently excludes Trellis MLPs from its adapter targets. |
+| B1 activation traffic | One MLP's three bf16 matrix inputs/outputs total 135,168 bytes before fusion/cache effects. Halving that saves at most 67,584 bytes against about 100,270,080 raw three-bit weight bytes, only 0.067%. Larger M is a separate compute/traffic regime. |
+
+Calculations: `reports/prefill-observation/r24-feasibility-bounds.json`.
+They establish neither absence of task-quality loss nor a maximum TPS gain.
+
+
+#### Actual-weight approximation and derivative screens
+
+The packed layer-one gate matrix is expanded through the existing Bun decoder
+to bf16, then converted losslessly to f32 for inspection. Its SHA-256 is
+`90a28e05d53aad2f4e920af988ad0ca2f81c98c38d3dc92fd4f7ee90659267f8`.
+This is the current k3 reconstruction, not unavailable original bf16 weights.
+M1 computes the complete singular spectrum with pinned MLX's CPU SVD.
+The spectrum's squared sum agrees with direct f64 matrix energy within
+3.8e-8 relative error.
+
+| Rank | bf16 factor bytes | Best unweighted squared reconstruction error |
+|---|---:|---:|
+| 128 | 5,767,168 | 84.59% |
+| 256 | 11,534,336 | 75.95% |
+| 512 | 23,068,672 | 63.11% |
+| 741 | 33,386,496 | 54.19% |
+| 1024 | 46,137,344 | 45.17% |
+| 2048 | 92,274,688 | 23.09% |
+| 4096 | 184,549,376 | 3.42% |
+
+These are ideal unweighted truncation errors before factor quantization.
+A rank that beats raw W3 bytes has large error on this matrix. Do not build a
+whole-model plain-SVD format from this result. Activation-aware factorization,
+other layers and actual task quality remain unmeasured.
+
+A second M1 screen takes 64 uniformly spaced rows of the same matrix, retaining
+all 5120 columns per row, and re-encodes them with the existing unweighted
+L12/k2/T256 tail-biting codec. Sparse corrections select the largest individual
+squared errors. The error bound assumes exact residual recovery while charging
+six bytes per entry; actual fp16 residual rounding, row indexes and sparse
+execution can only add costs/error relative to that bound.
+
+| Corrected density | Effective bits/weight | Remaining squared error relative to current k3 |
+|---|---:|---:|
+| 0% | 2.0031 | 7.3684% |
+| 0.1% | 2.0510 | 7.2675% |
+| 0.5% | 2.2431 | 6.9977% |
+| 1% | 2.4830 | 6.7328% |
+| 2% | 2.9630 | 6.2937% |
+
+The near-three-bit arm leaves substantial additional error for little size
+saving. It is not selected for a model conversion. This small unweighted
+sample does not settle activation-calibrated sparse methods, original-weight
+recovery, other matrices or whole-model quality. No sparse speedup is claimed.
+
+On M4, differentiating the actual packed matrix through its current forward
+fails at M=1/4/16 with the native missing `CustomKernel` VJP error. Differentiating
+the same frozen matrix after bf16 expansion succeeds with a gradient of shape
+`[1,5120]`. This identifies a missing packed backward operation, rather than
+an inability to train any adapter. The packed model also explicitly excludes
+Trellis MLPs from `loraTargets()`. Expanded backwards require the temporary
+memory already included in the resource screen; no training option is added.
+
+Sources remain `6fe0a7f`. Reports: `r24-mlp-layer1-gate.f32.json`,
+`r24-low-rank-spectrum.json`, `r24-mlp-sample.json`,
+`r24-sparse-residual-screen.json`, `r24-packed-gradient-m4.json` and
+`completed-r24-weight-screen-tool-sources.json`, all under
+`reports/prefill-observation/`. The raw matrix, sampled rows, full spectrum,
+failed runner-API attempt and native errors are preserved.
+
+## Shared echo verification on M4 Pro (2026-09-13)
+
+Shared fill now supplies copied-session proposals to the existing grouped target
+verifier. This is opt-in `MLX_BUN_FILL=echo`, compared with shared `strict` on
+identical source. It is not an MTP or default-serving TPS comparison.
+
+M4 Pro 24 GB, Bun 1.4.2, native pack 0.4.0 / MLX 0.32.2; packed
+`Qwen3.8-27B-q3-trellis-ldlq-k300-packed-interleave2-rd`, KV4/group64,
+fixed 256-token prefill, compiled decode off, no drafter, default batch cap
+eight, 1 GiB RAM cache and 4 GiB SSD budget. Requests use temperature zero,
+seed 42 and thinking disabled. Four fresh CLI servers run strict/echo/echo/strict.
+Each arm contains a first request, three repetitions of four saved tool
+fixtures, a seeded repeat, ordinary prose with tools, four concurrent requests
+and a new-process SSD restart. Tools are not executed. Full requests, SSE,
+source hashes and activity samples are retained.
+
+The repeated comparison contains **80 responses, 38 measured pairs plus two
+first-request pairs**. All 38 measured pairs preserve response text, parsed
+tool arguments, finish reason and complete usage apart from the intended fill
+counters. All first-request pairs also match. Every response uses the batched
+lane. All four final flushes are durable with zero missing, pending, dropped or
+failed writes; the four restarted servers successfully reuse stored state.
+
+Per-fixture medians over three repetitions, in milliseconds:
+
+| Fixture | Strict → echo, AB | Change | Strict → echo, BA | Change |
+|---|---:|---:|---:|---:|
+| Copy sentence | 3051.96 → 2672.91 | −12.42% | 3060.71 → 2690.29 | −12.10% |
+| Copy URL | 4884.43 → 2861.68 | −41.41% | 4879.74 → 2891.76 | −40.74% |
+| First saved suite call | 1583.26 → 1562.26 | −1.33% | 1572.13 → 1612.07 | +2.54% |
+| Following saved suite call | 1909.70 → 1889.51 | −1.06% | 1922.13 → 1882.03 | −2.09% |
+
+The sentence accepts nine echo tokens and the URL accepts thirty, each in one
+verification event with no rejected tokens. The two suite fixtures accept no
+echo tokens. Ordinary prose changes −1.04%/−1.33%. The final completion of the
+four concurrent requests changes 7104.49→5751.98 ms (−19.04%) and
+6967.29→5505.37 ms (−20.98%); these are request completion measurements, not
+proof of a fixed four-row GPU geometry. First copy requests change
+7726.29→7149.52 ms and 7481.18→7156.00 ms, including initial setup.
+
+All arms finish with six RAM entries/960,970,752 bytes, ten SSD
+entries/1,611,411,552 bytes and eleven restores. Sampled peak server RSS is
+13,195.67→13,279.28 MiB and 13,241.59→13,199.47 MiB. The 66 activity samples
+include substantial Codex-renderer CPU activity; one contains a remaining
+headless-browser/test process. Retained swap ranges 3493.00–4576.25 MiB.
+These remain diagnostics with recorded machine activity, not quiet standard
+suite numbers. The repeat supports a targeted copy-span benefit; fill remains
+off by default and general task benefit is unmeasured.
+
+The first identical-source ABBA is preserved separately: all 38 measured
+response/usage pairs also match, but sentence timing changes +22.71%/−20.80%,
+URL −12.98%/−46.70%, and the suite controls swing +51.32%/−13.88% and
++37.74%/−11.36%. Headless Chromium and Node/Vitest workloads appear in its
+71 activity samples; swap grows from 4237.44 to 6689.94 MiB and peaks at
+7653.12 MiB. This prompted the unchanged-source repeat after those workloads
+finished. It supplies correctness evidence, not a speed-selection result.
+Neither run changes production source during execution.
+
+### Shared echo state and template-boundary acceptance
+
+M1 Qwen0.8B/Gemma-e4b and M4 packed Qwen27B each pass 15 native cases across
+B1/B2/B4, bf16/KV4/k8v3 and delayed quantization. The audit compares samplers on
+the same logits and processor history; it covers rejected and mixed proposals
+and stopping inside a verified span. Published token keys match consumed
+state. B2 SSD reopening preserves all live state and two subsequent logit
+vectors against the retained RAM clone. Gemma sliding-window layers remain
+bf16 in the TurboQuant arm. The original 21-case strict-fill replay also passes
+on M1 without changing its assertions. New model-free verified-output cases
+cover EOS, length limits, consumer stop/failure and cancellation independently
+of sibling rows.
+
+Actual HTTP copy/seeded-concurrency/follow-up/restart tests pass six cases each
+on M1 Qwen0.8B/Gemma-e4b and M4 packed Qwen27B, covering RAM and SSD with all
+three cache formats. They exposed a separate template-boundary miss on
+Qwen0.8B: the initial 305-token prompt shares only 301 tokens with the next
+rendered tool turn, because the template omits its empty thinking primer.
+The previous 304-token recurrent snapshot could not match. Probing text and
+tool replies followed by a new user turn now retains the reusable 301-token
+boundary. Existing KV is never relabeled under different tokens. Packed Qwen's
+fixture already reused its generated history; both behaviors are retained in
+the evidence.
+
+An early wide-verification versus sequential-output comparison produced
+changed sampled tokens. It is preserved as an unmatched numerical-geometry
+experiment; echo does not promise identical samples to one-position decoding.
+All 2,367 model-free tests pass with 14 fixture skips, and typechecks and hygiene
+pass. Reports are under `reports/prefill-observation/`: `shared-echo-*`,
+`completed-echo-cache-inspection.json` and the completed echo tool-source
+archive. Sources are `cb408ec` plus the captured implementation diff; every
+production file hash is stored in each HTTP report.
+
+### Mixed echo cohorts and independent greedy sampling
+
+A source-controlled M4 Pro ABBA compares `d893afb` with ordinary rows joining
+verified echo spans and the existing independent greedy sampler enabled in
+that method. Both arms use echo and the settings above. Only `fill-group.ts`
+changes between arms; the candidate is restored afterward and the source audit
+finds no unexpected changes. All 80 responses complete, all 38 measured pairs
+and both first-request pairs preserve responses and full usage apart from fill
+counters, and all four SSD flush/restart checks pass with clean server exits.
+
+| Fixture | Control → candidate AB, ms | Change | Control → candidate BA, ms | Change |
+|---|---:|---:|---:|---:|
+| Copy sentence | 2657.24 → 2657.33 | +0.00% | 2659.77 → 2675.60 | +0.60% |
+| Copy URL | 2862.60 → 2878.90 | +0.57% | 2852.66 → 2859.32 | +0.23% |
+| First saved suite call | 1577.26 → 1553.15 | −1.53% | 1575.84 → 1555.43 | −1.30% |
+| Following saved suite call | 1887.28 → 1894.08 | +0.36% | 1895.86 → 1878.38 | −0.92% |
+| Four concurrent requests, last completion | 5619.97 → 5355.71 | −4.70% | 5461.38 → 5391.45 | −1.28% |
+
+Sequential copy performance is effectively unchanged. One concurrent suite
+request completes later in both orders: 3664.40→4262.67 ms and
+3482.71→4311.00 ms. This is a throughput/latency tradeoff, not domination of
+every row. Ordinary prose changes −0.04%/−0.14%; first-copy setup changes
+−1.31%/−1.07%. The candidate persists eleven entries instead of ten; all final
+flushes report zero missing, pending, dropped or failed writes. Retain mixed
+verification as part of opt-in echo, with no default change or additional
+Kanban speed claim.
+
+The 61 activity samples contain renderer CPU work in 57 top-CPU positions.
+Retained swap ranges 4163.44–4814.25 MiB. Sampled peak server RSS is
+13,283.00→13,208.25 MiB and 13,288.22→13,241.27 MiB. These are monitored
+serving diagnostics, not quiet standard-suite numbers.
+
+Native sampling/state checks pass all fifteen Qwen cases on both Macs, plus
+five Gemma B2 formats on M1. Mixed cases now require actual verification events.
+A final staggered-proposal check passes KV4 B2 and k8v3 B4 on each machine,
+including SSD state and subsequent logits. It covers a proposal discovered
+while another row publishes pending output; the method retains its remainder
+without exceeding declared scheduler work. Unit coverage also preserves newly
+discovered asserted spans. All 2,369 model-free tests pass with 14 fixture skips;
+typechecks and documentation checks pass. Reports: `shared-echo-mixed-*` and
+`shared-echo-staggered-*` under `reports/prefill-observation/`.
+
+### Qwen echo with MTP2 — M4 Pro 24 GB
+
+A same-source ABBA compares MTP2 with fill off against MTP2 plus opt-in echo.
+Both use the packed interleaved 27B artifact, folded RTN4 companion, KV4/g64,
+fixed 256-token prefill, shared cap eight, temperature zero and seed 42.
+RAM cache is 1 GiB and each arm starts with a fresh 4 GiB SSD cache. All eighty
+responses complete. The 38 measured pairs and two first-request pairs preserve
+response content and every usage field except the intended fill/speculation
+counters. All four SSD flush/restart checks complete with zero missing, pending,
+dropped or failed snapshots. Source hashes remain unchanged throughout.
+
+| Fixture | Control → echo AB, ms | Change | Control → echo BA, ms | Change |
+|---|---:|---:|---:|---:|
+| Copy sentence | 1766.58 → 1966.74 | +11.33% | 1738.50 → 1969.18 | +13.27% |
+| Copy URL | 2629.95 → 2209.76 | −15.98% | 2546.08 → 2241.72 | −11.95% |
+| First saved suite call | 1312.27 → 1299.75 | −0.95% | 1289.74 → 1321.01 | +2.42% |
+| Following saved suite call | 961.17 → 944.71 | −1.71% | 945.76 → 944.63 | −0.12% |
+
+Echo remains opt-in. A longer copied URL benefits; the short sentence loses.
+The initial implementation verified unproven 32-token proposals and paid for
+immediate rejection. That comparison is retained as a failed candidate. The
+final method first checks ordinary MTP output against the proposed prefix;
+a first-token rejection requires no extra target forward. This avoids the
+large rejected-span cost but does not make every short copy profitable.
+These are serving diagnostics with recorded background activity, not quiet
+standard-suite numbers or a full-task speed claim.
+
+Both Macs pass the companion's external-token operation against the pinned
+same-machine oracle. Shared native tests cover seeded sampling, independent
+rows, partial stops, first-token rejection, KV4/TurboQuant, delayed conversion,
+paired SSD state and subsequent logits. Final M1 KV4 B2 and M4 KV4 B2/B4 and
+TurboQuant B2 checks pass after the prefix policy change. Real HTTP checks
+cover bf16/KV4/TurboQuant and RAM/SSD, including fresh-process restoration.
+All 2,372 model-free tests pass with 14 fixture skips; typechecks and docs pass.
+Reports: `reports/prefill-observation/echo-mtp-*`. Each report captures source
+hashes over `c119661` plus the integration diff. The full Kanban comparison
+retains the prior MTP2/fixed-256 profile and adds echo.
+
+Completed benchmark SSD payloads were deleted during workspace cleanup after
+their measurements and restore checks. Cleanup manifests record each removed
+path and size; transcripts, measurements, source manifests and generated apps
+remain. Historical SSD cache directories require regeneration before reuse.
+
+### Full Kanban task with echo and MTP2 — M4 Pro 24 GB
+
+The requested fresh task runs on `7966b92` through Pi 0.85.1, Node 23.11.0,
+Bun 1.4.2 and the released native pack. Qwen chooses the tool calls; Pi executes
+them. The task starts in an empty directory with the same original prompt and
+initial request as the accepted fixed-prefill run. Both use the packed 27B
+artifact, folded RTN4 MTP companion, two draft tokens, KV4/g64, fixed 256-token
+prefill, default shared cap eight, seed 42, temperature 0.6, top-p 0.95,
+top-k 20, xhigh thinking, 131,072 context, 4 GiB RAM cache and 64 GiB SSD cache.
+The new run enables echo. Its integrated source also includes the changes since
+`721ac4c`; this is a whole-task observation, not a source-isolated echo A/B.
+
+| Measurement | Previous fixed-prefill task | Echo + MTP2 task |
+|---|---:|---:|
+| Task wall time | 69m52.768s | 82m55.067s |
+| Generated tokens | 67,816 | 76,089 |
+| Requests | 17 | 25 |
+| Observed streaming tokens/sec | 16.4908 | 16.4774 |
+| Sum of first-output waits | 75.877s | 316.757s |
+| First response tokens | 35,002 | 39,039 |
+| Follow-up session cache hits | 16/16 | 24/24 |
+| Inference failures / retries / compactions | 0 / 0 / 0 | 0 / 0 / 0 |
+| Failed model-chosen shell checks | 0 | 7 |
+| Untouched-app browser acceptance | 17/18 | 17/18 |
+
+Streaming rate uses total completion tokens divided by the sum of each
+request's stream wall time minus its first semantic-output wait, as in the
+previous report. First-output waits include more than prefill and must not be
+labeled pure prefill time. Tool arguments can remain buffered while generation
+continues. A one-second process sample during such a pause shows active native
+evaluation; the sample is retained with the activity log.
+
+The observed rate changes −0.08%, effectively flat. The task takes 18.66%
+longer and generates 12.20% more tokens. Responses diverge during the first
+reasoning turn despite identical initial inputs; later requests and work differ.
+This run establishes no task-speed win for echo, which remains opt-in.
+
+Echo records 19,147 matched tokens in 1,151 wide verification events, with
+27,415 rejected proposed tokens. Matched prefixes include tokens established
+by ordinary MTP sampling; they are not an additive count of avoided decodes.
+The first response alone records 6,047 matches. Learned-draft statistics stay
+separate. Total checkpoint bookkeeping is 1.144 seconds; this is not the full
+cost of verification or companion consumption.
+
+All 24 follow-ups reuse the session cache. Final flush is durable with zero
+missing, pending, dropped or failed snapshots. Fifty writes leave 38 resident
+SSD entries totaling 68,652,904,448 bytes under the explicit 64 GiB budget;
+the longest retained prefix is 82,800 tokens. Older SSD entries are removed
+under that budget. Final RAM residency is one 2,019,268,608-byte entry. Production
+source hashes remain unchanged for the complete task and settings checks pass.
+After the server exits, the runner removes disposable SSD payloads and retains
+a per-file cleanup manifest, cache metadata, full transcripts and the app.
+
+The seven failed shell checks belong to Qwen's generated test script: one
+relative module lookup from `/tmp`, one incorrect description-search assertion,
+two incorrect persisted-shape assertions, one invalid `window.localStorage`
+mock reset, and two missing `window.Kanban.state` mock setups. The description
+query matched both test cards; the script incorrectly expected only one.
+Persisted counts expected two where there were three. The model corrected its
+test script. These command failures are distinct from inference failures.
+
+Independent browser evaluation on M1, after generation ends, passes 17 of the
+same 18 categories and meets the requested 16/18 target. The new app passes
+filter reset, which failed previously. Keyboard-only card editing now fails:
+cards have no keyboard focus target and Enter does not open their editor.
+Keyboard creation and mouse editing work. Native column/card dragging, Done
+indication, full card fields, archive/restore, title/description search,
+combined filters, reload persistence and both themes pass. All ten generated
+source files remain byte-identical throughout evaluation. No repair prompt or
+manual app edit is supplied. Initial favicon 404 only; final browser console
+has no errors. Evaluator locator mistakes are recorded separately.
+
+Reports, full responses, source hashes, quality protocol and screenshots:
+`reports/kanban-echo-mtp-r1/`. Previous report:
+`reports/kanban-decode-fixed-prefill-r1/`. Both task trajectories, including the
+failed checks, remain available. Completed benchmark KV cleanup removes
+215.31 GiB on M4 and 63.76 GiB on M1; model artifacts, transcripts and apps stay.

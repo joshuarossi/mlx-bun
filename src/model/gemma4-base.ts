@@ -12,13 +12,13 @@ import type { ModelConfig } from "../config";
 import { quantFor } from "../config";
 import type { Weights } from "../weights";
 import { MlxArray } from "../mlx/array";
-import { Dtype } from "../mlx/ffi";
+import { Dtype, deviceArchitecture } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
 import { quantizedMatmulRows } from "../mlx/quantized-rows";
 import { expertOffloadArray } from "../expert-offload";
 import * as tq from "../mlx/turboquant-ops";
 import type { KvCodec } from "../backends/mlx/kv-codec";
-import { TurboQuantCodec, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
+import { TurboQuantCodec, turboQuantFusedDecode, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 export { disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 import { runtimeValue } from "../runtime-config";
 
@@ -297,7 +297,8 @@ export interface RotatedValueAttentionState {
  * again. It owns its tensor handles independently of later cache membership or
  * precision changes. Query/mask inputs are borrowed; outputs are owned. */
 export interface KvAttentionView {
-  attend(q: MlxArray, scale: number, mask: Mask): MlxArray;
+  /** Qualified committed spans retain the single-position reduction order. */
+  attend(q: MlxArray, scale: number, mask: Mask, independentPositions?: boolean): MlxArray;
   dispose(): void;
 }
 
@@ -325,6 +326,8 @@ export interface KvDonorAttention extends KvAttentionView {
 }
 
 export interface Cache {
+  /** Maximum committed positions before this state changes precision. */
+  maxAppendTokens?(): number;
   captureDonorRows?(): KvDonorRows;
   captureDonorAttention?(): KvDonorAttention;
   /** A preparation method commits each request's own precision boundary.
@@ -1671,8 +1674,9 @@ export class TurboQuantKVCache implements Cache {
   /** Experimental operation selection, captured once for this cache. */
   readonly #codec: KvCodec<TurboQuantTensor>;
 
-  constructor(readonly kBits: number, readonly vBits: number) {
-    this.#codec = new TurboQuantCodec(kBits, vBits, process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1");
+  constructor(readonly kBits: number, readonly vBits: number,
+    readonly fusedDecode = turboQuantFusedDecode()) {
+    this.#codec = new TurboQuantCodec(kBits, vBits, fusedDecode);
   }
 
   captureDonorRows(): KvDonorRows {
@@ -1940,8 +1944,23 @@ export function quantizedSdpaUnfused(
     vT = expand(vq);
   }
 
-  let scores = ops.quantizedMatmulQT(queries, kT, true, groupSize, bits);
+  // M4 Pro's native key matvec retains exact arithmetic when three GQA
+  // heads share a batch. Restore score geometry before softmax/value work.
+  const groupHeads = B <= 2 && H === 24 && KV === 4 && L === 3 && D === 256 &&
+    N >= 8192 && groupSize === 64 && bits === 4 &&
+    (q.dtype === Dtype.bfloat16 || q.dtype === Dtype.float32) &&
+    deviceArchitecture() === "applegpu_g16s";
+  let keyQueries = queries;
+  if (groupHeads) {
+    keyQueries = ops.reshape(queries, [B, KV, 2, 9, D]);
+    owned.push(keyQueries);
+  }
+  let scores = ops.quantizedMatmulQT(keyQueries, kT, true, groupSize, bits);
   owned.push(scores);
+  if (groupHeads) {
+    scores = ops.reshape(scores, [B, KV, nRep, L, N]);
+    owned.push(scores);
+  }
 
   let maskArr: MlxArray | null = null;
   let ownsMask = false;

@@ -13,6 +13,10 @@ import { KvScheme, resolveKvScheme } from "../../src/kv-scheme";
 import { configureRuntime } from "../../src/runtime-config";
 import { createTextInferenceEngine } from "../../src/backends/mlx/text-engine";
 import { bindMlxGateway, type MlxBatchGroup } from "../../src/backends/mlx/gateway-binding";
+import { PromptResponseTrace } from "../../src/serve/prompt-response-trace";
+import { FillSession } from "../../src/fill/fill-session";
+import { resolveExecution } from "../../src/engine/execution-plan";
+import type { MlxArray } from "../../src/mlx/array";
 
 // place() reads only makeCache() off the model (the capability gate) and never
 // the serialRun, so stubs are safe. The default stub models a
@@ -23,6 +27,85 @@ const stubModel = {
 } as unknown as RuntimeModel;
 const stubSerial = (async () => ({}) as never) as never;
 const gateway = (batch: number) => new GenerationGateway(stubModel, batch, stubSerial);
+
+for (const fail of [false, true]) test(`prepared media ownership reaches shared submission, failure=${fail}`, async () => {
+  let disposed = 0, bound = 0;
+  const vision = { embeddings: { dispose() { disposed++; } } as unknown as MlxArray };
+  const input = { forward(): MlxArray { throw new Error("fake group does not forward"); } };
+  const policy = { key: "uncached-media", create: () => [new KVCache()] };
+  const group: MlxBatchGroup = {
+    activeRows: 0, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: undefined,
+    kick() {}, async close() {},
+    async submit(request) {
+      expect(disposed).toBe(0);
+      expect(request.promptInput).toBe(input);
+      expect(request.statePolicy).toBe(policy);
+      expect(request.statePolicy?.promptCache).toBeUndefined();
+      if (fail) throw new Error("prepared submission failed");
+      await request.onToken(7);
+      return { promptTokens: 1, cachedTokens: 0, generatedTokens: 1,
+        finishReason: "length", prefillMs: 1, decodeMs: 1 };
+    },
+  };
+  const binding = { ...bindMlxGateway(stubModel),
+    mediaInput(value: typeof vision) { expect(value).toBe(vision); bound++; return input; },
+    plan: (shape: RequestShape) => resolveExecution(shape, { method: "autoregressive", continuous: true,
+      mediaBatch: true, quantizedBatch: true, grammarBatch: true, checkpoints: false }),
+    statePolicy: () => policy, createBatchGroup: () => group,
+  };
+  const g = new GenerationGateway(binding, 8, stubSerial);
+  const shape = { ...batchable, hasVision: true }, options = { maxTokens: 1 };
+  try {
+    expect(g.mediaBatchingEnabled).toBe(true);
+    const placement = g.place(shape, options);
+    const run = g.run([1], options, () => {}, vision, shape, placement);
+    if (fail) await expect(run).rejects.toThrow("prepared submission failed");
+    else expect((await run).generatedTokens).toBe(1);
+    expect(bound).toBe(1); expect(disposed).toBe(1);
+  } finally { await g.close(); }
+});
+
+test("native preparation uses the backend boundary queue without draining active rows", async () => {
+  let calls = 0, active = 2;
+  const abort = new AbortController();
+  const group: MlxBatchGroup = {
+    get activeRows() { return active; }, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: undefined,
+    kick() {}, async close() { active = 0; }, async submit() { throw new Error("unused"); },
+    async runPreparation(work, signal) { calls++; expect(signal).toBe(abort.signal); return work(); },
+  };
+  const g = new GenerationGateway({ ...bindMlxGateway(stubModel), createBatchGroup: () => group }, 8, stubSerial);
+  try {
+    expect(await g.runPreparation(async () => 13, abort.signal)).toBe(13);
+    abort.abort(new Error("cancelled"));
+    await expect(g.runPreparation(async () => 14, abort.signal)).rejects.toThrow("cancelled");
+    expect(calls).toBe(1);
+  } finally { await g.close(); }
+});
+
+test("the serving binding submits seeded strict fill as a shared method and retains its statistics", async () => {
+  const fill = new FillSession({ rows: [], echo: null, eos: [] }, [1]);
+  const group: MlxBatchGroup = {
+    activeRows: 0, pendingRows: 0, projectedKvBytes: 0, kvBudgetBytes: undefined,
+    kick() {}, async close() {},
+    async submit(request) {
+      expect(request.method?.key).toContain('"fill"');
+      expect(request.sample).toBeUndefined();
+      expect((request.method!.data as { fill: FillSession }).fill).toBe(fill);
+      await request.onToken(7);
+      return { promptTokens: 1, cachedTokens: 0, generatedTokens: 1,
+        finishReason: "length", prefillMs: 1, decodeMs: 1, fill: fill.stats };
+    },
+  };
+  const g = new GenerationGateway({ ...bindMlxGateway(stubModel), createBatchGroup: () => group }, 8, stubSerial);
+  const shape = { ...batchable, userSeed: true }, options = { fill, seed: 42, maxTokens: 1 };
+  const placement = g.place(shape, options);
+  expect(placement.execution).toMatchObject({ mechanism: "continuous", fill: true, compiledDecode: false });
+  const output: number[] = [];
+  try {
+    const result = await g.run([1], options, token => { output.push(token); }, undefined, shape, placement);
+    expect(output).toEqual([7]); expect(result.fill).toBe(fill.stats);
+  } finally { await g.close(); }
+});
 
 for (const reason of ["stop", "length"] as const) {
   test(`continuous statistics preserve ${reason} at the token budget`, async () => {
@@ -84,6 +167,58 @@ const batchable: RequestShape = {
   hasDraft: false,
 };
 
+for (const abortWaiting of [false, true]) {
+  test(`request-slot trace includes waiting before the execution lease: abort=${abortWaiting}`, async () => {
+    let releaseFirst!: () => void, enteredFirst!: () => void;
+    const held = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const entered = new Promise<void>(resolve => { enteredFirst = resolve; });
+    let now = 0, calls = 0, prefetchReleases = 0;
+    const g = new GenerationGateway(stubModel, 1, async () => {
+      if (calls++ === 0) { enteredFirst(); await held; }
+      return {} as never;
+    }, { promptCache: {
+      take: () => null, put() {},
+      async prefetch(ids) {
+        if (ids[0] === 2) now += 11;
+        return () => { prefetchReleases++; };
+      },
+    } });
+    const shape = { ...batchable }, placement = g.place(shape);
+    const first = g.run([1], {}, () => {}, undefined, shape, placement);
+    await entered;
+    now = 100;
+    const trace = new PromptResponseTrace({ traceId: "queued", requestId: "queued",
+      route: "/v1/chat/completions", clock: () => now, emit() {} });
+    const abort = new AbortController();
+    const second = g.run([2], {}, () => {}, undefined, shape, placement, abort.signal, trace);
+    const settled = second.then(() => "success", () => "abort");
+    try {
+      now = 175;
+      if (abortWaiting) abort.abort();
+      releaseFirst();
+      await first;
+      const outcome = await settled;
+      expect(outcome).toBe(abortWaiting ? "abort" : "success");
+      const record = trace.finish(outcome as "success" | "abort")!;
+      expect(record.events.find(e => e.phase === "engine.request_wait"))
+        .toMatchObject({ startMs: 0, durationMs: 75, attributes: { capacity: 1 } });
+      const prefetch = record.events.find(e => e.phase === "cache.prefetch");
+      const admission = record.events.find(e => e.phase === "engine.admission_wait");
+      if (abortWaiting) {
+        expect(prefetch).toBeUndefined();
+        expect(admission).toBeUndefined();
+        expect(calls).toBe(1);
+        expect(prefetchReleases).toBe(1);
+      } else {
+        expect(prefetch).toMatchObject({ startMs: 75, durationMs: 11 });
+        expect(admission).toMatchObject({ startMs: 86, durationMs: 0 });
+        expect(calls).toBe(2);
+        expect(prefetchReleases).toBe(2);
+      }
+    } finally { releaseFirst(); await settled; await g.close(); }
+  });
+}
+
 describe("GenerationGateway.place", () => {
   test("a binding keeps its runtime snapshot while later bindings see new flags", () => {
     const restoreInitial = configureRuntime({ MLX_BUN_GRAMMAR_BATCH: "1" });
@@ -114,7 +249,8 @@ describe("GenerationGateway.place", () => {
   test("compiled and grammar policy use the host snapshot across later configuration changes", () => {
     const restore = configureRuntime({ MLX_BUN_COMPILED_DECODE: "1", MLX_BUN_GRAMMAR_JUMP: "1" });
     try {
-      const model = { ...stubModel, config: { ...stubModel.config, modelType: "gemma4" } } as RuntimeModel;
+      const model = { ...stubModel, config: { ...stubModel.config, modelType: "gemma4" },
+        logitsFromHidden() { throw new Error("placement does not execute logits"); } } as unknown as RuntimeModel;
       const first = new GenerationGateway(model, 1, stubSerial);
       const changed = configureRuntime({ MLX_BUN_COMPILED_DECODE: "0", MLX_BUN_GRAMMAR_JUMP: "0" });
       try {

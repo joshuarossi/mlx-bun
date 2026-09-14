@@ -1,6 +1,7 @@
 /** Request facts only. Native resources remain with the preparation owner. */
 export interface ExecutionRequirements {
   readonly hasVision: boolean;
+  readonly hasPreparedPrefixIdentity?: boolean;
   readonly hasAdapters: boolean;
   readonly hasRepetitionPenalty: boolean;
   readonly userSeed: boolean;
@@ -18,6 +19,9 @@ export interface ExecutionCapabilities {
   readonly quantizedBatch: boolean;
   readonly grammarBatch: boolean;
   readonly adapterBatch?: boolean;
+  /** Prepared media can enter the ordinary shared execution group. */
+  readonly mediaBatch?: boolean;
+  readonly mediaPrefixCache?: boolean;
   readonly pagedBatch?: boolean;
   readonly checkpoints: boolean;
   /** Bound ordinary driver can restore/capture this request configuration. */
@@ -31,6 +35,12 @@ export interface ExecutionCapabilities {
   readonly sharedSpeculativeAdapters?: boolean;
   /** Methods supplied by the model's shared execution binding. */
   readonly groupedMethods?: readonly string[];
+  /** A shared method accepts request-owned grammar continuation proposals. */
+  readonly sharedGrammarProposals?: boolean;
+  /** A grouped method can consume this request's strict known continuations. */
+  readonly sharedFill?: boolean;
+  /** A mounted provider can consume verified external continuations. */
+  readonly sharedSpeculativeEcho?: boolean;
   /** A graph-owned compiled step exists; cache geometry can still decline it. */
   readonly compiledDecode?: boolean;
 }

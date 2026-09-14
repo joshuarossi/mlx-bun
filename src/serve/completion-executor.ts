@@ -280,9 +280,17 @@ export class CompletionExecutor {
       control.signal?.throwIfAborted();
       planned.transferOwnership();
 
+      // Bounded diagnostic of hidden markers versus visible events. No token
+      // readbacks are added: these IDs already crossed the sampling interface.
+      let traceTokens = control.trace ? 8 : 0;
       const consumeToken: OnToken = (token, tokenLogprobs) => {
         logprobs?.push(token, tokenLogprobs);
-        const pushed = sink.push(token);
+        const route = traceTokens ? { token, index: 8 - traceTokens, events: 0 } : undefined;
+        const closeRoute = route ? control.trace!.begin("response.token_route", route) : undefined;
+        let pushed: ReturnType<CompletionSink["push"]>;
+        try { pushed = sink.push(token); if (route) route.events = pushed.events.length; }
+        finally { closeRoute?.(); }
+        if (traceTokens) traceTokens = pushed.events.length ? 0 : traceTokens - 1;
         const observed = pushed.events.length
           ? control.onEvents?.(pushed.events)
           : undefined;

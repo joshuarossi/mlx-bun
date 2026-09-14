@@ -54,6 +54,7 @@
 // composition order. Left at tier-a for now (good enough — grounded, exact ids,
 // greedy prefix); revisit to drive the encoder to 0% by aligning the op order.
 
+import { tensorFingerprint } from "../model/fingerprint";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "../mlx/array";
 import { C, Dtype } from "../mlx/ffi";
@@ -189,6 +190,13 @@ export async function preprocessSiglip(
 
 export class SiglipVisionTower {
   #weights = new Map<string, MlxArray>();
+  #cacheIdentity?: string;
+  /** Immutable encoder weights and computation settings, hashed once on use. */
+  get cacheIdentity(): string {
+    return this.#cacheIdentity ??= new Bun.CryptoHasher("sha256")
+      .update("gemma-siglip-v1").update(JSON.stringify([this.cfg, this.embedScale]))
+      .update(tensorFingerprint(this.#weights)).digest("hex");
+  }
   readonly cfg: SiglipVisionConfig;
   readonly embedScale: number;
   #wdtype: Dtype = Dtype.bfloat16;

@@ -79,6 +79,13 @@ const maxTokens = Number(process.env.MLX_BUN_TEST_FILL_TOKENS ?? "160");
 if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 512)
   throw new Error("MLX_BUN_TEST_FILL_TOKENS must be 1..512");
 const reportPath = process.env.MLX_BUN_TEST_FILL_REPORT;
+const kvBits = process.env.MLX_BUN_TEST_FILL_KV_BITS === undefined ? undefined
+  : Number(process.env.MLX_BUN_TEST_FILL_KV_BITS);
+const kvDelay = process.env.MLX_BUN_TEST_FILL_KV_DELAY === undefined ? undefined
+  : Number(process.env.MLX_BUN_TEST_FILL_KV_DELAY);
+const turboQuant = process.env.MLX_BUN_TEST_FILL_TURBO_QUANT === "1" ? { kBits: 8, vBits: 3 } : undefined;
+if (kvBits !== undefined && kvBits !== 4 && kvBits !== 8)
+  throw new Error("MLX_BUN_TEST_FILL_KV_BITS must be 4 or 8");
 const blocks = Number(process.env.MLX_BUN_TEST_FILL_BLOCKS ?? "6");
 if (!Number.isInteger(blocks) || blocks < 1 || blocks > 12)
   throw new Error("MLX_BUN_TEST_FILL_BLOCKS must be 1..12");
@@ -155,6 +162,8 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
   const { generate } = await import("../../src/generate");
   const ops = await import("../../src/mlx/ops");
   const { activeMemory, clearCache } = await import("../../src/mlx/ffi");
+  const { leaseCacheState, leaseCacheStates } = await import("../../src/backends/mlx/state-views");
+  const { withResource } = await import("../../src/engine/resources");
 
   const config = await loadModelConfig(modelPath);
   const weights = await Weights.open(modelPath);
@@ -174,8 +183,8 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
   });
 
   // Compare live state, excluding unused capacity in the growing KV buffers.
-  const snapshot = (cache: ReturnType<typeof model.makeCache>) => cache.map(c => ({
-    offset: c.offset, signature: c.signature(), arrays: c.state().map(a => {
+  const snapshot = (cache: ReturnType<typeof model.makeCache>) => cache.map(c => withResource(leaseCacheState(c), arrays => ({
+    offset: c.offset, signature: c.signature(), minimumReusableOffset: "minimumReusableOffset" in c ? c.minimumReusableOffset ?? 0 : 0, arrays: arrays.map(a => {
       const shape = a.shape;
       const live = c.signature() !== "ssm" && shape.length === 4 && c.offset < shape[2]!
         ? a.slice([0, 0, 0, 0], [shape[0]!, shape[1]!, c.offset, shape[3]!]) : null;
@@ -185,7 +194,7 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
           sha256: createHash("sha256").update(value.rawBytesView()).digest("hex") };
       } finally { value.dispose(); live?.dispose(); }
     }),
-  }));
+  })));
 
   const run = async (fill: boolean, limit = maxTokens, inspectState = false) => {
     const start = performance.now();
@@ -204,6 +213,7 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
         : undefined;
       const gen = generate(model, promptIds, {
         temperature: 0, seed: 42, maxTokens: limit, cache,
+        kvBits, turboQuant, kvGroupSize: 64, quantizedKvStart: kvDelay === undefined ? 0 : promptIds.length + kvDelay,
         ...(session ? { fill: session } : {}),
       });
       const tokens: number[] = [];
@@ -221,7 +231,7 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
         for (const token of [911, 912, 913, 914]) {
           const logits = model.forward([token], cache);
           try {
-            ops.evalAll([logits, ...cache.flatMap(c => c.state())]);
+            withResource(leaseCacheStates(cache), arrays => ops.evalAll([logits, ...arrays]));
             probes.push({ token, logits: createHash("sha256").update(logits.rawBytesView()).digest("hex"),
               state: snapshot(cache) });
           } finally { logits.dispose(); }
@@ -276,7 +286,8 @@ describe.skipIf(!haveWeights)("filled vs unfilled greedy generation (weights)", 
       const report = { kind: "native-strict-fill-diagnostic", httpMeasurement: false,
         host: hostname(), chip: command(["sysctl", "-n", "machdep.cpu.brand_string"]),
         ramBytes: Number(command(["sysctl", "-n", "hw.memsize"])),
-        artifact: resolve(modelPath), variant: process.env.MLX_BUN_TRELLIS_VARIANT ?? "6",
+        artifact: resolve(modelPath), variant: process.env.MLX_BUN_TRELLIS_VARIANT ?? "13",
+        kvBits, turboQuant, kvGroupSize: 64, quantizedKvStart: kvDelay === undefined ? 0 : promptIds.length + kvDelay,
         configSha256: sha(await Bun.file(`${modelPath}/config.json`).bytes()),
         sourceCommit: command(["git", "rev-parse", "HEAD"]),
         sourceDiffSha256: sha(new TextEncoder().encode(command(["git", "diff", "HEAD", "--", "src"]))),

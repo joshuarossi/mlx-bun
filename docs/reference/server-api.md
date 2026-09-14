@@ -407,18 +407,37 @@ using its qualified append chunk size, then resumes sampling
 (design: [speculative-decoding.md](../design/speculative-decoding.md) §"Token
 fast-forwarding"). Injected tokens are billed in `completion_tokens` like any
 other generated token; `decodeSteps` counts ordinary sampling steps, so
-`injected / (injected + decodeSteps)` is the share appended without sampling.
+`injected / (injected + decodeSteps)` is the share emitted through fill.
+Strict spans bypass sampling; echo spans still undergo sampled verification.
 Injected positions still run through the model layers. The field is absent when the feature is off or the
-request's shape refuses it (fixed `seed`, `logprobs`, structured output,
-media, a mounted draft model, quantized KV).
+request's shape excludes it, including `logprobs`, structured output or media.
+Strict shared fill supports bf16, affine KV and
+TurboQuant layouts and retains absolute sampling positions for explicit seeds.
+Its `usage.fill` statistics use the same fields as explicit serial execution.
+Known tokens still advance model state. All-known steps skip intermediate
+vocabulary heads and use the model-qualified append geometry, including the
+specialized Qwen B1 append. Wider Qwen rows retain one-position arithmetic. Compiled
+replay, paging and interruption checkpoints remain outside this shared method.
+Explicit serial fill still excludes user-fixed seeds.
 
 Under `MLX_BUN_FILL=echo` a second, weaker source joins: spans copied from
 earlier in the same session, carried under policy `verify`. Those ride the same
-single forward, are checked against the argmax already in its logits, and have
+single forward, are checked by the request's sampler on its logits, and have
 their rejected tail rewound — so `verifyAccepted + verifyRejected` is what the
 echo index proposed and `injected` is what survived. `wastedSamples` counts
 only ASSERT fills (a verify fill consumes the in-flight sample as its first
 position's check instead of discarding it).
+
+Qwen MTP can alternate learned draft rounds with verified echo rounds. The
+provider consumes accepted copied tokens and target context before drafting
+again. Its asserted template spans remain ordinary sampled output. Learned
+draft counts, acceptance histograms and `speculation.rounds` exclude echo;
+`targetCalls`, `tokensPerForward` and `forwardsSaved` cover both round types.
+Echo activity remains in `usage.fill`, including matching prefixes established
+by ordinary MTP samples, so it is not additive with learned-draft counts.
+A request fully served by echoes can
+have zero learned drafts. Other mounted providers do not yet support this
+combination.
 
 An explicit `seed` controls a request-local random stream and can use
 continuous execution. Repeating a request reproduces sampling at the same
@@ -864,11 +883,11 @@ vision/audio, adapters, and training are not emulated by the serving port.
 ```jsonc
 {
   "server": { "owner": "serve" | "pi-session" | "embedded", "model": "...", "started_at": 0 },
-  "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0 },
+  "prompt_cache": { "entries": 0, "bytes": 0, "max_bytes": 0, "hits": 0, "misses": 0, "object_hits": 0, "object_misses": 0, "object_restores": 0 },
   "response_store": { "entries": 0, "bytes": 0, "max_bytes": 33554432, "ttl_ms": 3600000 },
   "kv_quant": { "mode": "bf16" | "uniform-kv8" | "turbo k8v3" | "mixed (kv_config.json)",
                  "layers": { "kv4": 8, "bf16": 40 },     // turbo: { "turbo-k8v3": 8, "bf16": 40 }
-                 "attention": { "global": 10, "sliding_window": 38 } },
+                 "attention": { "global": 10, "sliding_window": 38 }, "recurrent_layers": 0 },
   // present only when --ssd-cache is on:
   "ssd_cache": { "dir": "...", "entries": 0, "bytes": 0, "max_bytes": 0,
                  "restores": 0, "spills": 0, "restore_ms_last": 0, "demotions": 0,
@@ -926,6 +945,12 @@ with; the default is `bf16` (no KV quantization). `mixed (kv_config.json)`
 appears only when `--kv-quant config` was passed explicitly and the
 checkpoint ships a per-layer `kv_config.json` — per-layer KV quantization
 is never selected automatically.
+
+`kv_quant.layers` counts configured attention KV codecs; `attention` separates
+full and sliding attention. `recurrent_layers` counts linear/recurrent layers
+whose convolution and recurrent state retain their own precision. They do not
+count as bf16 or quantized attention KV. These are model/policy counts, not
+live allocation measurements or a per-request conversion-progress report.
 
 `pending_snapshots` counts prompt-cache entries scheduled for persistence but
 not yet confirmed by the atomic SSD store. `longest_durable_prefix_tokens` is
@@ -1057,6 +1082,15 @@ the A/B control described in server-config.md.
 state prepared from SSD before execution. A session miss counts execution
 lookups with session metadata that need ordinary candidate search. Prefix scans
 count ordinary execution searches, not tokenization or preparation probes.
+
+
+Qwen image/video encoder reuse reports `prompt_cache.object_hits`,
+`object_misses` and `object_restores`. A hit borrows an exact RAM tensor object;
+a miss may restore from SSD or recompute. Object entries and bytes are included
+in the existing cache totals and share its RAM budget and persistence queue.
+These counters do not count language-model KV prefix hits. Media prompt KV
+reuse remains disabled because token IDs alone do not identify media contents.
+
 
 ## POST /admin/cache/session/close
 

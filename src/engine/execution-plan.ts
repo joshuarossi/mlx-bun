@@ -8,7 +8,7 @@ export function resolveExecution(
   const reasons: string[] = [];
   const sharedRequestExclusions = [
     [!capabilities.continuous, "continuous-unavailable"],
-    [request.hasVision, "media-requires-serial"],
+    [request.hasVision && !capabilities.mediaBatch, "media-requires-serial"],
     [request.hasAdapters && !capabilities.adapterBatch, "adapters-require-serial"],
     [request.kvQuant && !capabilities.quantizedBatch, "kv-scheme-requires-serial"],
     [request.turboQuant && !capabilities.turboQuantBatch, "turbo-kv-requires-serial"],
@@ -18,10 +18,16 @@ export function resolveExecution(
   const sharedAdapterMethod = capabilities.sharedSpeculativeAdapters === true &&
     !sharedRequestExclusions.some(([excluded]) => excluded) &&
     capabilities.groupedMethods?.includes("speculative") === true;
-  const speculative = capabilities.method === "autoregressive" && request.hasDraft &&
+  const grammarProposals = features.grammarJump === true && request.hasGrammar && !request.hasDraft && !request.hasVision &&
+    (!request.wantsLogprobs || capabilities.speculativeLogprobs === true) && !features.pagedKv && capabilities.method === "autoregressive" &&
+    capabilities.sharedGrammarProposals === true && capabilities.groupedMethods?.includes("speculative") === true &&
+    (!request.hasAdapters || sharedAdapterMethod) && (!request.kvQuant || capabilities.speculativeKvQuant === true) &&
+    (!request.turboQuant || capabilities.speculativeTurboQuant === true) &&
+    !sharedRequestExclusions.some(([excluded]) => excluded);
+  const speculative = grammarProposals || (capabilities.method === "autoregressive" && request.hasDraft &&
     !request.hasVision && (!request.hasAdapters || sharedAdapterMethod) && (!request.wantsLogprobs || capabilities.speculativeLogprobs === true) &&
     (!request.kvQuant || capabilities.speculativeKvQuant === true) &&
-    (!request.turboQuant || capabilities.speculativeTurboQuant === true) && !features.pagedKv;
+    (!request.turboQuant || capabilities.speculativeTurboQuant === true) && !features.pagedKv);
   const method = speculative ? "speculative" : capabilities.method;
   const continuousExclusions = [sharedRequestExclusions[0],
     [!(capabilities.groupedMethods ?? ["autoregressive"]).includes(method), "method-requires-serial"],
@@ -32,19 +38,24 @@ export function resolveExecution(
   if (request.hasDraft && !speculative) reasons.push("draft-incompatible-with-request");
   const pagedKv = features.pagedKv && !request.hasVision && !request.hasAdapters;
   if (features.pagedKv && !pagedKv) reasons.push("paged-kv-bypassed-for-media-or-adapters");
-  const promptCache = method !== "speculative" && !request.hasVision;
-  const fill = features.fill && method === "autoregressive" && mechanism === "serial" &&
-    !request.hasDraft && !request.hasVision && !request.userSeed && !request.hasGrammar &&
-    !request.wantsLogprobs && !request.kvQuant && !request.turboQuant;
+  const promptCache = method !== "speculative" && (!request.hasVision ||
+    (mechanism === "continuous" && request.hasPreparedPrefixIdentity === true && capabilities.mediaPrefixCache === true));
+  const sharedFill = mechanism === "continuous" && capabilities.sharedFill === true && !pagedKv;
+  const speculativeEcho = method === "speculative" && mechanism === "continuous" &&
+    capabilities.sharedSpeculativeEcho === true;
+  const fill = features.fill && !request.hasVision && !request.hasGrammar && !request.wantsLogprobs &&
+    (speculativeEcho || (method === "autoregressive" && (mechanism === "serial" || sharedFill) &&
+      !request.hasDraft && (!request.userSeed || sharedFill)));
+  // Cache-format eligibility belongs to the method's append binding.
   if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
-  const checkpoint = capabilities.checkpoints && method === "autoregressive" &&
+  const checkpoint = capabilities.checkpoints && method === "autoregressive" && !request.hasVision &&
     (mechanism === "serial" || capabilities.sharedCheckpoints === true) && promptCache && !pagedKv && !request.hasGrammar &&
     !features.fill && !request.wantsLogprobs;
   const compiledDecode = features.compiledDecode === true && capabilities.compiledDecode === true &&
-    method === "autoregressive" && !request.hasAdapters && !pagedKv;
+    method === "autoregressive" && !request.hasAdapters && !pagedKv && !(sharedFill && fill);
   if (features.compiledDecode && !compiledDecode) reasons.push("compiled-decode-unavailable-for-request");
-  const grammarJump = features.grammarJump === true && request.hasGrammar &&
-    method === "autoregressive" && mechanism === "serial" && !request.wantsLogprobs;
+  const grammarJump = grammarProposals || (features.grammarJump === true && request.hasGrammar &&
+    method === "autoregressive" && mechanism === "serial" && !request.wantsLogprobs);
   if (features.grammarJump && request.hasGrammar && !grammarJump)
     reasons.push("grammar-jump-incompatible-with-request");
   return Object.freeze({ method, mechanism, pagedKv, promptCache, checkpoint, fill,

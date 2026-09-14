@@ -5,7 +5,7 @@
 // tool-call stream router. Resolved ONCE per server (createRequestPrep) and
 // captured by the route handlers. Extracted from src/server.ts (repo-taming
 // Phase 4).
-import type { ToolDefinition } from "../chat-template";
+import type { ChatMessage, ToolDefinition } from "../chat-template";
 import {
   fillEchoConfig,
   fillMaxSpan,
@@ -227,17 +227,25 @@ export function createRequestPrep(input: {
       const canonical = ctx.tokenizer.encode(ctx.template.render(normalizeMessages(req.messages), opts));
       const current = canonical[0] === canonical[1] && canonical[0] === ctx.tokenizer.bosTokenId
         ? canonical.slice(1) : canonical;
-      const probe = ctx.tokenizer.encode(
-        ctx.template.render(
-          [...normalizeMessages(req.messages), { role: "assistant", content: "x" }],
-          opts,
-        ),
-      );
-      const probeTrimmed =
-        probe[0] === probe[1] && probe[0] === ctx.tokenizer.bosTokenId ? probe.slice(1) : probe;
-      let i = 0;
-      const n = Math.min(current.length, probeTrimmed.length);
-      while (i < n && current[i] === probeTrimmed[i]) i++;
+      const replies: ChatMessage[] = [{ role: "assistant", content: "x" }];
+      // Some templates retain an empty think primer for text replies but
+      // omit it before a tool call. Both reply forms must preserve the
+      // boundary retained by an untrimmable recurrent cache.
+      if (tools?.length) replies.push({ role: "assistant", content: null, tool_calls: [{
+        id: "cache-boundary-probe", type: "function",
+        function: { name: tools[0]!.function.name, arguments: {} },
+      }] });
+      let i = current.length;
+      for (const reply of replies) {
+        const probe = ctx.tokenizer.encode(ctx.template.render([
+          ...normalizeMessages(req.messages), reply, { role: "user", content: "x" },
+        ], opts));
+        const probeTrimmed = probe[0] === probe[1] && probe[0] === ctx.tokenizer.bosTokenId ? probe.slice(1) : probe;
+        let common = 0;
+        const n = Math.min(i, probeTrimmed.length);
+        while (common < n && current[common] === probeTrimmed[common]) common++;
+        i = common;
+      }
       // Generated-history provenance may use a different BPE segmentation
       // inside old turns. Measure the primer canonically, then subtract it
       // from the actual request IDs that inference will receive.
@@ -282,10 +290,10 @@ export function createRequestPrep(input: {
    *  when the feature is off or the request's shape refuses it.
    *
    *  Refusals owned here (body-level); the ones only ChatStage can see —
-   *  a compiled grammar, media prompts, a mounted draft model, a quantized KV
-   *  scheme — are applied there. Continuous (batch) placement needs no
-   *  refusal: generate() is the only fill site, so a batched request simply
-   *  does not fill.
+   *  a compiled grammar, media prompts and a mounted draft model — are applied
+   *  there. The execution binding owns cache-format and method support. Strict
+   *  shared execution keeps the sampler's absolute token positions, including
+   *  known tokens; an explicit seed therefore remains replayable.
    *
    *  MLX_BUN_FILL=echo additionally arms the echo index (K3c, Lab tier): the
    *  strict rows keep policy "assert", and copied spans ride the same
@@ -298,9 +306,7 @@ export function createRequestPrep(input: {
     const mode = resolveFillMode();
     if (mode === "off") return null;
     if (!tools?.length) return null;
-    // A user-fixed seed means reproducibility: the sampler's step index would
-    // skip the injected positions, so an identical request could not replay.
-    if (req.seed !== undefined) return null;
+    // Seed support is selected by the execution binding after placement.
     // Injected tokens are never sampled — they have no logprob row.
     if (req.logprobs === true) return null;
     if (typeof req.top_logprobs === "number" && req.top_logprobs > 0) return null;

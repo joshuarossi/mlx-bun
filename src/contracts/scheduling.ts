@@ -9,6 +9,10 @@ export interface ExecutionContext {
 /** A backend execution group exposes bounded work units and readiness. Queue
  * payloads, tensors, cache merging and sampling remain inside its adapter. */
 export interface ExecutionGroup {
+  /** Native preparation may borrow the execution lease between work units.
+   * Payloads and task failures belong to the backend's queue. */
+  readonly pendingTasks?: number;
+  advanceTask?(): Promise<void>;
   readonly active: number;
   readonly queued: number;
   readonly preparing: boolean;
@@ -30,6 +34,11 @@ export interface ExecutionGroup {
   admitNext(): boolean;
   /** Read-only budget check used to preserve admission before decode. */
   canBurst(): boolean;
+  /** Method-owned token demand for a compatible mixed iteration. Absent when
+   * the backend has no packed implementation for the current work. */
+  readonly mixedPreparation?: { readonly runningTokens: number; readonly minimumPreparationTokens: number };
+  readonly maxIterationTokens?: number;
+  advanceMixed?(tokenBudget: number): Promise<void>;
   advancePreparation(): Promise<void>;
   advance(): Promise<void>;
   failActive(error: unknown): void;

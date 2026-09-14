@@ -6,6 +6,7 @@
 //   bun scripts/bench-matrix.ts features --model <snapshot-dir> \
 //       [--draft <snapshot-dir>] [--batch 4] [--concurrency 4] \
 //       [--maxtok 128] [--repeats 3] [--cells all|serial,batch,spec,...]
+//       [--compact-grammar true] [--kv-quant off|config|4|8|turbo] [--out reports/features.md]
 //
 // Cells:
 //   serial          batch=1, plain            — the baseline lane
@@ -22,9 +23,9 @@
 // correctness gate wearing a benchmark costume).
 //
 // Denominator discipline: read each feature cell against the SAME model+lane
-// baseline from the SAME run. Loaded-machine numbers are GARBAGE for quoting
-// (dirty-machine rule); quotable rows go to benchmarks/RESULTS.md
-// "composition" only from a clean-machine run. For stack-vs-stack (oMLX /
+// baseline from the SAME run. Loaded-machine results are diagnostic
+//; accepted comparisons go to docs/reference/benchmarks.md
+// with their machine conditions. For stack-vs-stack (oMLX /
 // mlx-lm) comparisons use the client-only scripts/bench-serving-load.ts
 // against servers you start yourself.
 
@@ -43,6 +44,9 @@ const BATCH = Number(args.batch ?? 4);
 const CONC = Number(args.concurrency ?? 4);
 const MAXTOK = Number(args.maxtok ?? 128);
 const REPEATS = Number(args.repeats ?? 3);
+const kv = args["kv-quant"];
+const storage: Pick<import("../../src/server").ServerOptions, "kvQuant" | "turboQuant"> = kv === "turbo" ? { turboQuant: { kBits: 8, vBits: 3 } }
+  : kv === undefined ? {} : { kvQuant: kv === "off" || kv === "config" ? kv : Number(kv) };
 const CELLS = (args.cells ?? "all").split(",");
 
 if (!MODEL || !existsSync(`${MODEL}/config.json`)) {
@@ -63,7 +67,7 @@ const SCHEMA = {
   required: ["name", "category", "price"],
 };
 const GRAMMAR_BODY = {
-  response_format: { type: "json_schema", json_schema: { name: "product", schema: SCHEMA } },
+  response_format: { type: "json_schema", json_schema: { name: "product", schema: SCHEMA, ...(args["compact-grammar"] === "true" ? { any_whitespace: false } : {}) } },
 };
 const PLAIN_PROMPT = "Write a short paragraph about mountain weather.";
 const GRAMMAR_PROMPT = "Invent a product and describe it.";
@@ -87,6 +91,7 @@ async function oneRequest(
     body: JSON.stringify({
       // unique suffix defeats prompt-cache hits inflating repeat TTFT
       messages: [{ role: "user", content: `${prompt} (case ${seq})` }],
+      chat_template_kwargs: { enable_thinking: false },
       max_tokens: MAXTOK,
       temperature: 0,
       stream: true,
@@ -142,6 +147,8 @@ interface CellRow {
   acceptance: string;
 }
 
+const rounds: Array<{ cell: string; round: number; wallMs: number; results: ReqResult[] }> = [];
+
 async function runCell(port: number, name: string, grammar: boolean): Promise<CellRow> {
   const ttfts: number[] = [];
   let bestAgg = 0;
@@ -155,6 +162,8 @@ async function runCell(port: number, name: string, grammar: boolean): Promise<Ce
       ),
     );
     const wall = performance.now() - t0;
+    rounds.push({ cell: name, round: r, wallMs: wall, results });
+    if (args.out) await Bun.write(`${args.out}.rounds.json`, JSON.stringify(rounds, null, 2) + "\n");
     const toks = results.reduce((a, x) => a + x.tokens, 0);
     bestAgg = Math.max(bestAgg, (toks / wall) * 1000);
     for (const x of results) {
@@ -204,7 +213,7 @@ const rows: CellRow[] = [];
 
 // group 1: serial lane (batch=1, no draft)
 if (want("serial") || want("serial+grammar")) {
-  const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1" });
+  const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1", ...storage, batch: 1 });
   if (want("serial")) rows.push(await runCell(server.port!, "serial", false));
   if (want("serial+grammar")) rows.push(await runCell(server.port!, "serial+grammar", true));
   server.stop(true);
@@ -212,7 +221,7 @@ if (want("serial") || want("serial+grammar")) {
 
 // group 2: batch lane (batch=N, no draft)
 if (want("batch") || want("batch+grammar")) {
-  const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1", batch: BATCH });
+  const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1", ...storage, batch: BATCH });
   if (want("batch")) rows.push(await runCell(server.port!, `batch${BATCH}`, false));
   if (want("batch+grammar")) rows.push(await runCell(server.port!, `batch${BATCH}+grammar`, true));
   server.stop(true);
@@ -223,7 +232,7 @@ if (DRAFT && (want("spec") || want("spec+grammar"))) {
   console.log(`loading draft ${DRAFT} ...`);
   const provider = await loadDraftProvider(DRAFT, ctx.model.config.text.vocabSize);
   ctx.draft = { provider, numDraftTokens: Number(args["num-draft-tokens"] ?? 3) };
-  const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1" });
+  const server = createServer(ctx, 0, { owner: "embedded", hostname: "127.0.0.1", ...storage, batch: 1 });
   if (want("spec")) rows.push(await runCell(server.port!, "spec", false));
   if (want("spec+grammar")) rows.push(await runCell(server.port!, "spec+grammar", true));
   server.stop(true);
@@ -241,7 +250,7 @@ const lines = [
   ``,
   `Model: ${MODEL}${DRAFT ? `  ·  draft: ${DRAFT}` : ""}`,
   `Concurrency ${CONC} × ${MAXTOK} tok · best-of-${REPEATS} rounds · NOT preflight-gated —`,
-  `loaded-machine numbers are garbage for quoting; clean-machine protocol before RESULTS.md.`,
+  `Diagnostic composition measurement; machine conditions and individual rounds must accompany comparisons.`,
   ``,
   `| cell | agg tok/s | TTFT p50 | TTFT p95 | conform | acceptance |`,
   `| --- | --- | --- | --- | --- | --- |`,
@@ -251,6 +260,10 @@ const lines = [
 ];
 const out = lines.join("\n");
 console.log(`\n${out}\n`);
-await Bun.write(`benchmarks-feature-matrix-${date}.md`, out + "\n");
-console.log(`wrote benchmarks-feature-matrix-${date}.md`);
+const output = args.out ?? `reports/benchmarks-feature-matrix-${date}.md`;
+await Bun.write(output, out + "\n");
+await Bun.write(`${output}.json`, JSON.stringify({ host, date, model: MODEL, args, bun: Bun.version,
+  runtime: Object.fromEntries(Object.entries(Bun.env).filter(([key]) => key.startsWith("MLX_BUN_"))),
+  rows, rounds }, null, 2) + "\n");
+console.log(`wrote ${output} and ${output}.json`);
 process.exit(0);

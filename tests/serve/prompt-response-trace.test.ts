@@ -44,6 +44,7 @@ describe("PromptResponseTrace", () => {
       route: "/v1/completions",
       clock: "monotonic-ms",
       outcome: "success",
+      startedAtMs: 100,
       totalMs: 15,
       events: [
         {

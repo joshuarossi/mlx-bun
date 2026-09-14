@@ -158,9 +158,11 @@ describe("benchmark measurement contract", () => {
 
   test("token usage, not SSE chunk count, controls throughput; wall time includes stream completion", async () => {
     let body: Record<string, unknown> = {};
+    let headers = new Headers();
     const enc = new TextEncoder();
     const mockFetch = Object.assign(async (...[_url, init]: Parameters<typeof fetch>) => {
       body = JSON.parse(String(init?.body));
+      headers = new Headers(init?.headers);
       return new Response(new ReadableStream({ async start(controller) {
         const send = (data: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(data)}\n\n`));
         send({ choices: [{ delta: { reasoning: "think ", content: "a" } }] });
@@ -175,7 +177,8 @@ describe("benchmark measurement contract", () => {
     }, { preconnect: fetch.preconnect });
     const fetchMock = spyOn(globalThis, "fetch").mockImplementation(mockFetch);
     try {
-      const result = await measureChatRequest("http://mock", "prompt", 100);
+      const result = await measureChatRequest("http://mock", "prompt", 100, { traceId: "load-2-4" });
+      expect(headers.get("x-mlx-bun-trace-id")).toBe("load-2-4");
       expect(result).toMatchObject({ text: "athink b", genTokens: 100, contentChunks: 2, finishReason: "length" });
       expect(result.usage).toEqual({ prompt_tokens: 20, completion_tokens: 100,
         lane: "batched", speculation: { drafted: 120, accepted: 80, rounds: 30 } });

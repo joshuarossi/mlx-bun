@@ -65,7 +65,7 @@ export class FullPrefillRow implements Cache {
         { packed: planes[3]!, scales: planes[4]!, biases: planes[5]! }, offset);
       return result;
     }
-    const result = new TurboQuantKVCache(source.kBits, source.vBits);
+    const result = new TurboQuantKVCache(source.kBits, source.vBits, source.fusedDecode);
     if (planes.length) result.restoreState({ kIdx: planes[0]!, kScales: planes[1]!, kZeros: planes[2]!,
       vPacked: planes[3]!, vScales: planes[4]! }, offset, source.headDim!);
     return result;

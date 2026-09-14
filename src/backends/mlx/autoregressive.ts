@@ -5,6 +5,9 @@ import type { RuntimeModel } from "../../model/factory";
 import { CompiledDecode } from "../../model/compiled-decode";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime-config";
 import { bindMlxGraph } from "./graph";
+import type { PrefillPolicy } from "../../inference/prefill";
+import { resolveMlxPrefillPolicy } from "./prefill-policy";
+import type { KvSchemeOptions } from "../../kv-scheme";
 
 /** One declaration shared by planning and both native execution lanes. */
 export function legacyCompiledDecodeAvailable(model: RuntimeModel): boolean {
@@ -33,8 +36,24 @@ export interface MlxDecodeStep {
 /** Model-owned execution for committed tokens. Recheck the chunk limit after
  * each forward: native arithmetic can change at a cache-length boundary. */
 export interface MlxTokenAppend {
-  maxChunkSize(state: readonly Cache[]): number;
+  /** Affine formats whose committed append retains one-token arithmetic. */
+  readonly affineKvBits?: readonly number[];
+  readonly turboQuantFormats?: readonly { readonly kBits: number; readonly vBits: number }[];
+  /** Maximum positions per row at this cohort size; omitted rows means B=1. */
+  maxChunkSize(state: readonly Cache[], rows?: number): number;
   forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
+}
+
+/** The model declares which codecs retain its committed-span arithmetic. */
+export function supportsCommittedAppendCache(
+  append: Pick<MlxTokenAppend, "affineKvBits" | "turboQuantFormats"> | null | undefined,
+  options: Pick<KvSchemeOptions, "kvBits" | "kvConfig" | "turboQuant">,
+): boolean {
+  if (options.turboQuant) return !!append?.turboQuantFormats?.some(format =>
+    format.kBits === options.turboQuant!.kBits && format.vBits === options.turboQuant!.vBits);
+  return options.kvConfig?.length
+    ? options.kvConfig.every(layer => append?.affineKvBits?.includes(layer.bits))
+    : !options.kvBits || !!append?.affineKvBits?.includes(options.kvBits);
 }
 
 /** One replaceable binding owns all graph-specific operations used by the AR
@@ -43,6 +62,7 @@ export interface MlxTokenAppend {
  * by the run. Caller-provided caches and media remain borrowed. */
 export interface MlxAutoregressiveBinding {
   readonly runtime?: RuntimeConfig;
+  readonly prefillPolicy?: PrefillPolicy;
   readonly graph: AutoregressiveGraph<MlxArray, Cache[], MlxArray>;
   readonly eosTokenIds: readonly number[];
   readonly memory: MlxModelMemory;
@@ -63,6 +83,7 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
   const runtime = runtimeConfig();
   return {
     runtime,
+    prefillPolicy: resolveMlxPrefillPolicy(model.config, runtime),
     graph: bindMlxGraph<Cache[]>(model, {
       id: `legacy:${model.config.modelType}`, artifact: "legacy-resident-model",
       stateAbi: "legacy-cache-array-v1", // not a persistence identity

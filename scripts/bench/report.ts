@@ -3,6 +3,8 @@
 // (decode-speed-program §7.10). Renders ONE self-contained file from:
 //   - bench-serve schema-4 raw JSON (`<report>.md.json`), and
 //   - scripts/bench/native.ts schema-1 `native-inference-diagnostic` JSON.
+//   - saved `fresh-pi-kanban-task` results with optional sibling quality.json.
+//   - portable `model-quality-ledger` exports from quality-report.ts.
 // Rendering needs no weights, server, GPU, Python or network. Every metric
 // carries a status (measured | recovered | failed | not-measured | unsupported)
 // so a failed or skipped cell is never blank and never a number. Ratios are
@@ -20,6 +22,8 @@ import {
   type Arm, type BenchmarkModel, type CellResult, type PhaseFailure, type RawRequest, type RestartDurability,
 } from "../bench-serve";
 import type { NativeBenchReport, NativeBenchSample } from "./native";
+import { loadTaskQuality, taskRow, validateTaskRaw, type LoadedTaskReport, type TaskRow } from "./task-report";
+import { validateQualityReport, type LoadedQualityReport } from "./quality-report";
 
 // ---- raw shapes -------------------------------------------------------------
 
@@ -57,7 +61,8 @@ export type NativeRawReport = NativeBenchReport;
 
 export type LoadedReport =
   | { kind: "serve"; path: string; sha256: string; bytes: number; report: ServeRawReport }
-  | { kind: "native"; path: string; sha256: string; bytes: number; report: NativeRawReport };
+  | { kind: "native"; path: string; sha256: string; bytes: number; report: NativeRawReport }
+  | LoadedTaskReport | LoadedQualityReport;
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -124,11 +129,17 @@ export function loadRawReport(path: string): LoadedReport {
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   let json: unknown;
   try { json = JSON.parse(bytes.toString("utf8")); } catch (e) { fail(path, `not valid JSON (${(e as Error).message})`); }
+  if (isObject(json) && json.kind === "model-quality-ledger")
+    return { kind: "quality", path, sha256, bytes: bytes.byteLength, report: validateQualityReport(json,path) };
+  if (isObject(json) && json.kind === "fresh-pi-kanban-task") {
+    const report = validateTaskRaw(json, path);
+    return { kind: "task", path, sha256, bytes: bytes.byteLength, report, quality: loadTaskQuality(report, full) };
+  }
   if (isObject(json) && json.kind === "native-inference-diagnostic")
     return { kind: "native", path, sha256, bytes: bytes.byteLength, report: validateNativeRaw(json, path) };
   if (isObject(json) && json.schemaVersion === 4 && Array.isArray(json.results))
     return { kind: "serve", path, sha256, bytes: bytes.byteLength, report: validateServeRaw(json, path) };
-  return fail(path, "unrecognized input: expected bench-serve schemaVersion 4 with results[] or kind \"native-inference-diagnostic\"");
+  return fail(path, "unrecognized input: expected bench-serve schemaVersion 4, native-inference-diagnostic or fresh-pi-kanban-task");
 }
 
 // ---- machine identity -------------------------------------------------------
@@ -613,6 +624,7 @@ export interface ReportModel {
   title: string; generatedAt: string;
   inputs: LoadedReport[];
   serveRows: ServeRow[]; nativeRows: NativeRow[];
+  taskRows: TaskRow[];
   baselineArms: Arm[]; defaultBaseline: Arm | null; baselineEnv?: BaselineEnvironment;
   pairsByBaseline: Record<string, PairedRow[]>;
   machines: MachineIdentity[];
@@ -622,6 +634,7 @@ export interface ReportModel {
 export function buildReportModel(inputs: LoadedReport[], opts: { baseline?: Arm | null; title?: string; baselineEnv?: BaselineEnvironment } = {}): ReportModel {
   const serve = inputs.filter((i): i is Extract<LoadedReport, { kind: "serve" }> => i.kind === "serve");
   const native = inputs.filter((i): i is Extract<LoadedReport, { kind: "native" }> => i.kind === "native");
+  const tasks = inputs.filter((i): i is LoadedTaskReport => i.kind === "task").map(taskRow);
   const rows = serve.flatMap((s) => serveRows(s));
   if (opts.baselineEnv) for (const row of rows)
     row.configured.push(`${opts.baselineEnv.key}=${row.runtimeEnvironment[opts.baselineEnv.key] ?? "(unset)"}`);
@@ -631,7 +644,7 @@ export function buildReportModel(inputs: LoadedReport[], opts: { baseline?: Arm 
   const pairsByBaseline = Object.fromEntries([...baselineArms, "none"].map((arm) => [arm, pairRows(rows, arm === "none" ? null : arm as Arm, opts.baselineEnv)]));
   const machines = [...new Map([...rows.map((r) => r.machine), ...native.map((n) => machineKey(n.report))].map((m) => [m.key, m])).values()];
   return { title: opts.title ?? "mlx-bun benchmark comparison", generatedAt: new Date().toISOString(), inputs,
-    serveRows: rows, nativeRows: nativeRows(native), baselineArms, defaultBaseline: dflt, baselineEnv: opts.baselineEnv, pairsByBaseline, machines,
+    serveRows: rows, nativeRows: nativeRows(native), taskRows: tasks, baselineArms, defaultBaseline: dflt, baselineEnv: opts.baselineEnv, pairsByBaseline, machines,
     blockSummaries: summarizeBlocks(inputs, pairsByBaseline[dflt ?? "none"] ?? []) };
 }
 
@@ -687,6 +700,13 @@ const rowId = (r: ServeRow): string => createHash("sha256").update([r.sourceSha2
 
 function provenancePanel(input: LoadedReport): string {
   const li = (k: string, v: unknown) => `<tr><th>${esc(k)}</th><td>${esc(v == null || v === "" ? "not recorded" : v)}</td></tr>`;
+  if (input.kind === "quality")
+    return `<details class="prov"><summary>${esc(basename(input.path))} · model quality ledger</summary><table class="kv">${li("file",input.path)}${li("file sha256",input.sha256)}${li("source database",input.report.sourceDatabase)}${li("exported",input.report.exportedAt)}${li("rows",input.report.rows.length)}</table></details>`;
+  if (input.kind === "task") {
+    const r = input.report, q = input.quality;
+    const sourceHash = r.sourceStart ? createHash("sha256").update(JSON.stringify(Object.entries(r.sourceStart).sort())).digest("hex") : null;
+    return `<details class="prov"><summary>${esc(r.arm)} · agent task · host ${esc(r.host)}</summary><table class="kv">${li("file", input.path)}${li("file sha256", input.sha256)}${li("file bytes", input.bytes)}${li("host", r.host)}${li("target path", r.target)}${li("draft path", r.draft)}${li("native library sha256", r.librarySha256)}${li("Bun / Pi", `${r.bunVersion ?? "not recorded"} / ${r.piVersion ?? "not recorded"}`)}${li("original prompt sha256", r.promptSha256)}${li("source manifest sha256", sourceHash)}${li("source unchanged", r.sourceFixed)}${li("context", r.contextWindow)}${li("seed / temperature / reasoning", `${r.seed ?? "not recorded"} / ${r.temperature ?? "not recorded"} / ${r.reasoningEffort ?? "not recorded"}`)}${li("prefill chunk override", r.prefillChunkTokens)}${li("captured engine settings", r.engineEnvironment ? JSON.stringify(r.engineEnvironment) : null)}${li("recorded qualification", r.qualification)}${li("notes", r.notes?.join("\n"))}${li("quality source", q?.path)}${li("quality sha256", q?.sha256)}${li("app source unchanged (reported)", q?.sourceUnchanged)}${li("final cache flush", r.cacheFlush ? JSON.stringify(r.cacheFlush) : null)}</table></details>`;
+  }
   if (input.kind === "serve") {
     const r = input.report, mk = machineKey(r);
     const cmds = r.commands.map((c) => `<li><code>${esc(c.model)}/${esc(c.arm)}</code>: ${c.command ? `<code>${esc(c.command.join(" "))}</code>` : `<span class="st st-unsupported">unsupported</span> ${esc(unsupportedBenchmarkArm(r.models.find((m) => m.id === c.model) ?? { path: "", label: c.model }, c.arm) ?? "required KV config or oracle executable missing")}`}</li>`).join("");
@@ -700,6 +720,45 @@ function provenancePanel(input: LoadedReport): string {
 }
 
 const STATUS_LEGEND = `<p class="legend"><span class="st st-measured">measured</span> <span class="st st-recovered">recovered</span> phase failed once and succeeded on retry · <span class="st st-failed">failed</span> phase failed after retry · <span class="st st-not-measured">not-measured</span> leg not run · <span class="st st-unsupported">unsupported</span> no same-artifact loader/oracle. Ratios: ×&gt;1 means this row beat the baseline (direction inverted for ms/MB). "decode" is the visible SSE interval, not GPU time; "actual output / wall" is completion tokens ÷ request wall time. RSS is the server process RSS from <code>ps</code>, never native peak allocation.</p>`;
+
+function renderQuality(inputs: LoadedQualityReport[]): string {
+  const rows = inputs.flatMap(input => input.report.rows.map(row => ({input,row})));
+  if (!rows.length) return `<p><span class="st st-not-measured">not measured</span> — no model quality ledger rows loaded. App acceptance is separate from model quality/weight size.</p>`;
+  const machine = (raw: string | null | undefined): string => {
+    try { const m = JSON.parse(raw ?? "{}"); return `${m.host ?? "host unknown"} · ${m.chip ?? "chip unknown"} · ${m.ram_gb ?? "?"} GiB`; }
+    catch { return "machine record unreadable"; }
+  };
+  const groups = new Map<string, typeof rows>();
+  for (const item of rows) {
+    const r = item.row;
+    if (!(r.disk_gb != null && r.disk_gb > 0 && r.pct != null && r.pct >= 0 && r.pct <= 100 && r.n_samples > 0)) continue;
+    const key = `${r.task} · ${machine(r.machine_state)}`;
+    const group = groups.get(key) ?? []; group.push(item); groups.set(key,group);
+  }
+  const plots = [...groups].map(([label,group]) => {
+    const maxSize = Math.max(...group.map(x=>x.row.disk_gb!)) * 1.05;
+    const points = group.map(({row:r,input}) => `<circle cx="${(52+r.disk_gb!/maxSize*485).toFixed(2)}" cy="${(230-r.pct!*2).toFixed(2)}" r="4" fill="#376fad" fill-opacity="0.7"><title>${esc(`${basename(input.path)} #${r.id}: ${r.model_path} · ${r.disk_gb} GiB · ${r.pct}% · n=${r.n_samples}`)}</title></circle>`).join("");
+    return `<figure><figcaption>${esc(label)}</figcaption><svg viewBox="0 0 580 275" width="580" role="img" aria-label="${esc(label)} recorded accuracy versus artifact size"><path d="M52 25V230H545" fill="none" stroke="#888"/><text x="4" y="35">100%</text><text x="20" y="232">0%</text><text x="52" y="250">0</text><text x="465" y="250">${maxSize.toFixed(2)} GiB</text><text x="175" y="270">recorded safetensors size</text>${points}</svg></figure>`;
+  }).join("");
+  const table = rows.map(({row:r,input}) => `<tr><td>${esc(basename(input.path))} #${r.id}<div class="note">${esc(new Date(r.ts).toString())}</div></td><td>${esc(r.model_path)}<div class="note">${esc(machine(r.machine_state))}</div></td><td>${esc(r.task)}</td><td>${r.n_samples}</td><td>${fmt(r.pct,2)}</td><td>${fmt(r.kl_mean,5)} / ${fmt(r.kl_median,5)} / ${fmt(r.kl_p95,5)}<div class="note">ref: ${esc(r.kl_ref ?? "not recorded")}</div></td><td>${r.disk_gb != null && r.disk_gb > 0 ? fmt(r.disk_gb,3) : "not recorded"}</td><td><details><summary>recorded settings and evidence</summary><p>commit: ${esc(r.commit_sha ?? "not recorded")}</p><pre>${esc(r.config_json)}</pre><pre>${esc(r.machine_state ?? "machine not recorded")}</pre><pre>${esc(r.notes ?? "notes not recorded")}</pre><p>aggregate capability score (as recorded): ${fmt(r.capability_score,4)}</p></details></td></tr>`).join("");
+  return `<p>Recorded evaluation history, separate from app acceptance and timing. Each plot groups one task and recorded machine; points are not paired comparisons. Dataset revision, sample selection and artifact content hashes are not guaranteed by this legacy ledger. Inspect settings, sample counts and notes before comparing rows. No quality deltas or engine-speed ratios are inferred. Size is the recorded safetensors total in GiB; zero or missing size is unknown. KL rows without size remain in the table.</p><div class="scroll">${plots || "No rows have both measured accuracy and artifact size."}</div><div class="scroll"><table class="quality-results"><thead><tr><th>source / row / time</th><th>artifact / machine</th><th>task</th><th>samples</th><th>accuracy %</th><th>KL mean / median / p95</th><th>size GiB</th><th>provenance</th></tr></thead><tbody>${table}</tbody></table></div>`;
+}
+
+function renderTasks(tasks: TaskRow[]): string {
+  if (!tasks.length) return "";
+  const summary = tasks.map(t => {
+    const r = t.input.report, q = t.input.quality;
+    const quality = q?.total ? `${q.passed}/${q.total} · ${q.failed} failed · ${q.blocked} blocked` : "not recorded";
+    return `<tr><td>${esc(r.arm)}<div class="note">${esc(r.host)}<br>${esc(basename(r.target))}<br>${esc(r.startedAt ?? "start not recorded")}</div></td><td class="${t.status === "complete" ? "good" : "bad"}">${esc(t.status)}<div class="note">${t.completedRequests}/${t.totalRequests} requests complete</div></td><td>${esc(quality)}${q ? `<div class="note">app source unchanged: ${q.sourceUnchanged == null ? "not recorded" : q.sourceUnchanged ? "reported yes" : "no"}</div>` : ""}</td><td>${fmt(t.taskWallMs == null ? null : t.taskWallMs / 60000, 2)}</td><td>${fmt(t.outputTokens, 0)}</td><td>${fmt(t.postFirstOutputTps, 3)}</td><td>${fmt(t.sumTtftMs == null ? null : t.sumTtftMs / 1000, 3)}</td><td>${t.cachedFollowups == null ? "not recorded" : `${t.cachedFollowups}/${t.completedFollowups}`}</td><td>${t.durable == null ? "not recorded" : t.durable ? "reported durable" : "not durable"}</td><td>${fmt(r.piOutcome?.toolErrors, 0)} / ${fmt(r.piOutcome?.retries, 0)} / ${fmt(r.piOutcome?.compactions, 0)}</td></tr>`;
+  }).join("");
+  const details = tasks.map(t => {
+    const r = t.input.report, q = t.input.quality;
+    const checks = q?.checks.length ? `<table><thead><tr><th>check</th><th>result</th><th>recorded evidence</th></tr></thead><tbody>${q.checks.map(c => `<tr><td>${esc(c.id)}<div class="note">${esc(c.expectation)}</div></td><td class="${c.passed === true ? "good" : "bad"}">${c.passed === true ? "pass" : c.passed === false ? "fail" : "blocked / not established"}</td><td>${esc(c.evidence)}</td></tr>`).join("")}</tbody></table>` : `<p>App acceptance not recorded.</p>`;
+    const requests = `<table><thead><tr><th>turn</th><th>status</th><th>input SHA</th><th>rendered SHA</th><th>prompt</th><th>cached</th><th>output</th><th>TTFT ms</th><th>wall ms</th><th>finish / error</th></tr></thead><tbody>${r.requests.map(x => `<tr><td>${x.index}</td><td>${x.complete ? "complete" : "incomplete"}</td><td><code>${esc(x.sha256 ?? "not recorded")}</code></td><td><code>${esc(x.renderedSha256 ?? "not recorded")}</code></td><td>${fmt(x.usage?.prompt_tokens, 0)}</td><td>${fmt(x.usage?.prompt_tokens_details?.cached_tokens, 0)}</td><td>${fmt(x.usage?.completion_tokens, 0)}</td><td>${fmt(x.ttftMs, 0)}</td><td>${fmt(x.wallMs, 0)}</td><td>${esc(x.error ?? x.finishReason ?? "not recorded")}</td></tr>`).join("")}</tbody></table>`;
+    return `<details class="prov"><summary>${esc(r.arm)} · acceptance and turn records</summary>${t.warnings.length ? `<ul>${t.warnings.map(w => `<li class="bad">${esc(w)}</li>`).join("")}</ul>` : ""}<div class="scroll">${checks}</div><h3>Turns</h3><div class="scroll">${requests}</div></details>`;
+  }).join("");
+  return `<h2>Agent task results</h2><p>Task time and app acceptance are separate measurements. These rows do not produce engine-speed ratios: changed prompts, tool results, settings and output lengths change the work. Token counts come from completed request usage; throughput requires a completed task with every request timing recorded. It is output tokens divided by the sum of post-first-output request intervals, including buffered tool-call time, not GPU time. Acceptance is imported from the recorded checks; missing quality is not a pass.</p><div class="scroll"><table class="task-results"><thead><tr><th>task / host / artifact</th><th>execution</th><th>app acceptance</th><th>task min</th><th>completed output tokens</th><th>post-first-output tok/s</th><th>sum TTFT s</th><th>cached completed follow-ups</th><th>final SSD flush</th><th>tool errors / retries / compactions</th></tr></thead><tbody>${summary}</tbody></table></div>${details}`;
+}
 
 export function renderHtml(model: ReportModel): string {
   const { serveRows: rows, nativeRows: natives } = model;
@@ -765,6 +824,12 @@ export function renderHtml(model: ReportModel): string {
   // failures
   const failureItems: string[] = [];
   for (const input of model.inputs) {
+    if (input.kind === "quality") continue;
+    if (input.kind === "task") {
+      const row = model.taskRows.find(t => t.input === input)!;
+      if (row.status !== "complete") failureItems.push(`<li>${esc(input.report.arm)}: ${esc(row.status)} · ${esc(input.report.error ?? "see task request records")}</li>`);
+      continue;
+    }
     if (input.kind !== "serve") { if (input.report.complete === false) failureItems.push(`<li><b>${esc(basename(input.path))}</b> native ${esc(input.report.stack)}: incomplete — ${esc(input.report.error ?? "no error text")}${input.report.workerStderr ? `<pre>${esc(String(input.report.workerStderr).slice(-2000))}</pre>` : ""}</li>`); continue; }
     for (const f of input.report.failures)
       failureItems.push(`<li><b>${esc(basename(input.path))}</b> ${esc(f.cell)}: ${esc(f.error)}${f.stderrTail?.length ? `<pre>${esc(f.stderrTail.join("\n"))}</pre>` : ""}</li>`);
@@ -834,9 +899,9 @@ footer{margin-top:28px;color:var(--muted);font-size:11px}
 <h1>${esc(model.title)}</h1>
 <p class="legend">Generated ${esc(model.generatedAt)} by <code>scripts/bench/report.ts</code> from ${model.inputs.length} saved input(s); no model, server, GPU, Python or network was used to render. Every summary below derives from the raw JSON listed in Provenance. Saved model output is escaped text, never executed.</p>
 
-<h2>Provenance</h2>
-${model.inputs.map(provenancePanel).join("\n")}
+${renderTasks(model.taskRows)}
 
+<div${model.inputs.some(i=>i.kind === "serve") ? "" : " hidden"}>
 <h2>Serving matrix (bench-serve schema 4)</h2>
 ${STATUS_LEGEND}
 <div class="filters">
@@ -862,12 +927,15 @@ ${intervalTable}
 <h2>Memory versus speed</h2>
 <p class="legend">Peak server-process RSS (ps) against median decode SSE tok/s. Python arms' KV never shows in RSS; mlx-bun --ssd-cache arms read high on the ctx/restart legs because hashing makes live KV pages visible. Native active-memory peaks are in the native table, never mixed into RSS.</p>
 ${scatterSvg(rows)}
+</div>
 
+<div${model.inputs.some(i=>i.kind === "native") ? "" : " hidden"}>
 <h2>Native generation (scripts/bench/native.ts schema 1)</h2>
 ${nativeTable}
+</div>
 
 <h2>Quality versus size</h2>
-<p><span class="st st-not-measured">not measured</span> — the loaded companions carry no quality results or artifact byte totals. Packed trellis and other quantizations need a separate quality/size input; a carrier artifact cannot be a same-artifact speed denominator.</p>
+${renderQuality(model.inputs.filter((i): i is LoadedQualityReport => i.kind === "quality"))}
 
 <h2>Failures, phase failures, request errors and stderr tails</h2>
 ${failures}
@@ -875,6 +943,9 @@ ${failures}
 <h2>Raw requests (paired by phase / attempt / index / request sha256)</h2>
 <p class="legend">A cold request and its warm repeat share a request hash; phase/attempt/index tell them apart. Prompt text is recorded as data only.</p>
 ${requestTables}
+
+<h2>Provenance</h2>
+${model.inputs.map(provenancePanel).join("\n")}
 
 <footer>Inputs: ${model.inputs.map((i) => `<code>${esc(basename(i.path))}</code> sha256 <code>${esc(i.sha256)}</code>`).join(" · ")}</footer>
 <script>
@@ -948,13 +1019,14 @@ export function parseReportArgs(argv: string[]): ReportCliOptions {
   return { inputs, out, baseline, title, ...(baselineEnv ? { baselineEnv } : {}) };
 }
 
-export async function main(argv: string[]): Promise<{ out: string; inputs: number; serveRows: number; nativeRows: number }> {
+export async function main(argv: string[]): Promise<{ out: string; inputs: number; serveRows: number; nativeRows: number; taskRows: number; qualityRows: number }> {
   const options = parseReportArgs(argv);
   const loaded = options.inputs.map(loadRawReport);
   const model = buildReportModel(loaded, { baseline: options.baseline, title: options.title, baselineEnv: options.baselineEnv });
   mkdirSync(dirname(resolve(options.out)), { recursive: true });
   await Bun.write(options.out, renderHtml(model));
-  return { out: options.out, inputs: loaded.length, serveRows: model.serveRows.length, nativeRows: model.nativeRows.length };
+  return { out: options.out, inputs: loaded.length, serveRows: model.serveRows.length, nativeRows: model.nativeRows.length, taskRows: model.taskRows.length,
+    qualityRows: loaded.reduce((n,i)=>n+(i.kind === "quality" ? i.report.rows.length : 0),0) };
 }
 
 if (import.meta.main) {

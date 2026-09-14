@@ -18,6 +18,27 @@ test("logprobs compose with continuous ordinary decoding", () => {
   expect(plan.reasons).not.toContain("logprobs-require-serial");
 });
 
+test("prepared media uses ordinary shared decode without token-only reuse or speculative proposals", () => {
+  const supported = { ...capabilities, mediaBatch: true, sharedGrammarProposals: true,
+    sharedFill: true, sharedCheckpoints: true, groupedMethods: ["autoregressive", "speculative"] };
+  for (const options of [{}, { hasDraft: true }, { hasGrammar: true }, { wantsLogprobs: true }]) {
+    const plan = resolveExecution({ ...request, hasVision: true, ...options }, supported,
+      { pagedKv: false, fill: true, grammarJump: true });
+    expect(plan).toMatchObject({ mechanism: "continuous", method: "autoregressive",
+      promptCache: false, checkpoint: false, fill: false, grammarJump: false });
+  }
+  expect(resolveExecution({ ...request, hasVision: true }, capabilities).mechanism).toBe("serial");
+});
+
+test("prepared-prefix identity enables qualified shared reuse independently of media decode", () => {
+  const media = { ...request, hasVision: true, hasPreparedPrefixIdentity: true };
+  const supported = { ...capabilities, mediaBatch: true, mediaPrefixCache: true, sharedCheckpoints: true };
+  expect(resolveExecution(media, supported)).toMatchObject({ mechanism: "continuous", promptCache: true, checkpoint: false });
+  expect(resolveExecution({ ...media, hasPreparedPrefixIdentity: false }, supported).promptCache).toBe(false);
+  expect(resolveExecution(media, { ...supported, mediaPrefixCache: false }).promptCache).toBe(false);
+  expect(resolveExecution(media, { ...supported, continuous: false })).toMatchObject({ mechanism: "serial", promptCache: false });
+});
+
 test("an explicit seed composes with ordinary logprobs and grammar in continuous execution", () => {
   const plan = resolveExecution({ ...request, userSeed: true, wantsLogprobs: true, hasGrammar: true }, capabilities);
   expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
@@ -64,16 +85,35 @@ test("paged placement keeps prefix reuse separate from interruption checkpoints"
     .toMatchObject({ pagedKv: false, promptCache: false, checkpoint: false });
 });
 
-test("fill cannot run in another method, continuous group, or resumable checkpoint", () => {
+test("fill requires a qualified shared binding and cannot run in another method or resumable checkpoint", () => {
   const features = { pagedKv: false, fill: true };
   expect(resolveExecution(request, capabilities, features).fill).toBe(false);
   expect(resolveExecution(request, { ...capabilities, continuous: false }, features))
     .toMatchObject({ fill: true, checkpoint: false });
+  // The selected method's append binding decides cache-format support.
+  expect(resolveExecution({ ...request, kvQuant: true }, { ...capabilities, continuous: false }, features).fill).toBe(true);
+  expect(resolveExecution({ ...request, turboQuant: true }, { ...capabilities, continuous: false }, features).fill).toBe(true);
   expect(resolveExecution({ ...request, hasDraft: true }, capabilities, features).fill).toBe(false);
   const denoising = resolveExecution(request, { ...capabilities, method: "denoising" }, features);
   expect(denoising).toMatchObject({ method: "denoising", mechanism: "serial", fill: false, checkpoint: false });
   expect(Object.isFrozen(denoising)).toBe(true);
   expect(Object.isFrozen(denoising.reasons)).toBe(true);
+});
+
+test("qualified shared fill retains seeded sampling and excludes paging, grammar and metadata", () => {
+  const supported = { ...capabilities, sharedFill: true, turboQuantBatch: true, compiledDecode: true };
+  const features = { pagedKv: false, fill: true, compiledDecode: true };
+  for (const shape of [request, { ...request, userSeed: true }, { ...request, kvQuant: true },
+    { ...request, turboQuant: true }]) {
+    expect(resolveExecution(shape, supported, features)).toMatchObject({
+      method: "autoregressive", mechanism: "continuous", fill: true,
+      promptCache: true, checkpoint: false, compiledDecode: false,
+    });
+  }
+  for (const extra of [{ hasGrammar: true }, { wantsLogprobs: true }, { hasDraft: true }])
+    expect(resolveExecution({ ...request, ...extra }, supported, features).fill).toBe(false);
+  expect(resolveExecution(request, { ...supported, pagedBatch: true }, { ...features, pagedKv: true }).fill).toBe(false);
+  expect(resolveExecution({ ...request, userSeed: true }, { ...supported, continuous: false }, features).fill).toBe(false);
 });
 
 test("compiled replay permission is fixed by graph capability and request composition", () => {
@@ -154,4 +194,39 @@ test("bound ordinary checkpoint capability qualifies shared requests without cha
   expect(resolveExecution({ ...request, hasDraft: true }, { ...supported,
     speculativeLogprobs: true, groupedMethods: ["autoregressive", "speculative"] }).checkpoint).toBe(false);
   expect(resolveExecution(request, supported, { pagedKv: false, fill: true }).checkpoint).toBe(false);
+});
+
+test("grammar proposals select the shared verifier only when its request combination is supported", () => {
+  const grammar = { ...request, hasGrammar: true };
+  const features = { pagedKv: false, fill: false, grammarJump: true };
+  const supported = { ...capabilities, sharedGrammarProposals: true,
+    groupedMethods: ["autoregressive", "speculative"] };
+  expect(resolveExecution(grammar, supported, features)).toMatchObject({
+    method: "speculative", mechanism: "continuous", grammarJump: true,
+  });
+  expect(resolveExecution({ ...grammar, wantsLogprobs: true }, { ...supported, speculativeLogprobs: true }, features))
+    .toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: true });
+  expect(resolveExecution(grammar, supported).method).toBe("autoregressive");
+  for (const option of [{ wantsLogprobs: true }, { kvQuant: true }, { turboQuant: true }, { hasAdapters: true }])
+    expect(resolveExecution({ ...grammar, ...option }, supported, features).method).toBe("autoregressive");
+  expect(resolveExecution({ ...grammar, kvQuant: true }, { ...supported, speculativeKvQuant: true }, features).grammarJump).toBe(true);
+  expect(resolveExecution({ ...grammar, turboQuant: true }, { ...supported,
+    turboQuantBatch: true, speculativeTurboQuant: true }, features).grammarJump).toBe(true);
+  expect(resolveExecution(grammar, { ...supported, groupedMethods: ["autoregressive"] }, features).method).toBe("autoregressive");
+  expect(resolveExecution({ ...grammar, hasDraft: true }, supported, features)).toMatchObject({
+    method: "speculative", grammarJump: false,
+  });
+});
+
+test("a provider consuming external tokens composes echo with shared speculation", () => {
+  const shape = { ...request, hasDraft: true, userSeed: true, kvQuant: true };
+  const supported = { ...capabilities, groupedMethods: ["autoregressive", "speculative"],
+    speculativeKvQuant: true, sharedSpeculativeEcho: true };
+  const features = { fill: true, pagedKv: false };
+  expect(resolveExecution(shape, supported, features)).toMatchObject({
+    method: "speculative", mechanism: "continuous", fill: true });
+  for (const disabled of [{ sharedSpeculativeEcho: false }, { continuous: false }])
+    expect(resolveExecution(shape, { ...supported, ...disabled }, features).fill).toBe(false);
+  for (const extra of [{ hasVision: true }, { hasGrammar: true }, { wantsLogprobs: true }])
+    expect(resolveExecution({ ...shape, ...extra }, supported, features).fill).toBe(false);
 });

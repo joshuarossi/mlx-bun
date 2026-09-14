@@ -30,18 +30,11 @@ export interface MropeRequestState {
 }
 
 export interface MropeForwardState {
-  /** Effective positions [3, 1, L] int32 for the CURRENT forward window. */
+  /** Effective positions [3, B, L] int32 for the current forward window. */
   posIds: MlxArray;
   /** Borrowed model-owned f32 inv_freq (mropeInvFreq) — not disposed here. */
   invFreq: MlxArray;
   rotaryDims: number;
-}
-
-/** Active per-forward mRoPE cos/sin, read by Qwen3Attention.forward. Null on
- *  the text-only path (serial lane only — vision requests never batch). */
-export let activeMrope: MropeForwardState | null = null;
-export function setActiveMrope(s: MropeForwardState | null): void {
-  activeMrope = s;
 }
 
 const MROPE_SECTION = [11, 11, 10] as const;
@@ -85,6 +78,11 @@ export function buildMropePositions(
   state: MropeRequestState, offset: number, L: number,
   invFreq: MlxArray, rotaryDims: number,
 ): MropeForwardState {
+  return { posIds: mropePositionIds(state, offset, L), invFreq, rotaryDims };
+}
+
+/** Request-owned prompt positions; the returned native array belongs to the caller. */
+export function mropePositionIds(state: MropeRequestState, offset: number, L: number): MlxArray {
   const P = state.positions;
   const promptLen = P[0].length;
   const joint = new Int32Array(3 * L);
@@ -94,7 +92,7 @@ export function buildMropePositions(
       joint[axis * L + l] = idx < promptLen ? P[axis]![idx]! : idx + state.delta;
     }
   }
-  return { posIds: MlxArray.fromInt32(joint, [3, 1, L]), invFreq, rotaryDims };
+  return MlxArray.fromInt32(joint, [3, 1, L]);
 }
 
 // The reference language-side apply is a CUSTOM METAL KERNEL (rope_utils

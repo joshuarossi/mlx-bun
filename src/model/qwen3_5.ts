@@ -10,8 +10,11 @@
 // shared maybeQuantizeKv path).
 
 import type { ModelConfig } from "../config";
+import { quantizedAppendAttention } from "./quantized-append-attention";
 import { gatedDeltaState } from "./qwen3-delta-state";
 import type { Weights } from "../weights";
+import { runtimeFlag } from "../runtime-config";
+import { mapTokenGroups, type TokenGroup } from "./token-groups";
 import { MlxArray } from "../mlx/array";
 import { Dtype, deviceArchitecture } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -36,8 +39,8 @@ import { materializeCopy } from "../mlx/materialize";
 import { gatedDeltaUpdate, SSMCache } from "./qwen3-delta";
 import type { QwenConvolution } from "./qwen-conv";
 import {
-  activeMrope, applyInterleavedRope, buildMropePositions, mropeInvFreq,
-  setActiveMrope, type MropeRequestState,
+  applyInterleavedRope, buildMropePositions, mropeInvFreq,
+  type MropeRequestState, type MropeForwardState,
 } from "./qwen3-mrope";
 
 const PREFIX = "language_model";
@@ -406,7 +409,8 @@ export class Qwen3Attention {
     this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
   }
 
-  forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false): MlxArray {
+  forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false,
+    mrope: MropeForwardState | null = null): MlxArray {
     const [B, L] = x.shape as [number, number, number];
 
     // q_proj emits 2× head_dim per head → split into queries + gate.
@@ -433,11 +437,10 @@ export class Qwen3Attention {
     // position as ropeOffsetArr (rows have different prompt lengths); the
     // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
     // form (tests/unit/compile.test.ts). Serial lane: scalar offset, unchanged.
-    // Vision requests (serial lane only) install activeMrope for the current
-    // forward: 3D interleaved positions via the manual apply — the reference
+    // Media forwards supply their own 3D interleaved positions. The reference
     // never uses the fused fast-rope kernel when position_ids are supplied,
     // so this IS the oracle's own arithmetic. Text-only stays on ops.rope.
-    const mr = activeMrope;
+    const mr = mrope;
     const offArr = (cache as { ropeOffsetArr?: MlxArray }).ropeOffsetArr;
     if (mr) {
       q = disposing(q, applyInterleavedRope(q, mr));
@@ -456,12 +459,14 @@ export class Qwen3Attention {
     if (cache.attentionState) {
       const view = cache.attentionState.appendAndFetch(k, v);
       k.dispose(); v.dispose();
-      try { attn = view.attend(q, this.scale, mask); } finally { view.dispose(); }
+      try { attn = view.attend(q, this.scale, mask, independentRows); } finally { view.dispose(); }
     } else if (quantized) {
       const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
       v.dispose();
-      attn = quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
+      attn = independentRows && L > 1
+        ? quantizedAppendAttention(q, keys, values, this.scale, quantized.groupSize, quantized.bits)
+        : quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
       disposeTriple(keys);
       disposeTriple(values);
     } else {
@@ -559,23 +564,27 @@ export class Qwen3Layer {
     this.postAttnNorm = new RMSNorm(weights.tensor(`${prefix}.post_attention_layernorm.weight`), config.text.rmsNormEps);
   }
 
-  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null): MlxArray {
-    const xn = this.inputNorm.forward(x);
-    const r = this.isLinear
+  forward(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null,
+    mrope: MropeForwardState | null = null): MlxArray {
+    using h = this.forwardAttn(x, faMask, cache, independentRows, ssmMask, mrope);
+    return this.forwardMlp(h, independentRows);
+  }
+
+  forwardAttn(x: MlxArray, faMask: Mask, cache: Cache, independentRows = false, ssmMask?: MlxArray | null,
+    mrope: MropeForwardState | null = null): MlxArray {
+    using xn = this.inputNorm.forward(x);
+    using r = this.isLinear
       ? this.linearAttn!.forward(xn, cache as SSMCache, independentRows, ssmMask)
-      : this.selfAttn!.forward(xn, faMask, cache, independentRows);
-    xn.dispose();
-    const h = ops.add(x, r);
-    r.dispose();
-    const hn = this.postAttnNorm.forward(h);
+      : this.selfAttn!.forward(xn, faMask, cache, independentRows, mrope);
+    return ops.add(x, r);
+  }
+
+  forwardMlp(h: MlxArray, independentRows = false): MlxArray {
+    using hn = this.postAttnNorm.forward(h);
     // RMSNorm allocates an aligned row-contiguous output. Pass that layout
     // proof so Trellis can match native small-prefill matmul without an eval.
-    const m = this.mlp.forward(hn, true, independentRows);
-    hn.dispose();
-    const out = ops.add(h, m);
-    h.dispose();
-    m.dispose();
-    return out;
+    using m = this.mlp.forward(hn, true, independentRows);
+    return ops.add(h, m);
   }
 }
 
@@ -669,10 +678,16 @@ export class Qwen35Model {
         return null;
     }
     return {
-      maxChunkSize: (state: readonly Cache[]) => qwenAppendChunkSize(state[0]!.offset),
+      affineKvBits: [4, 8],
+      turboQuantFormats: [{ kBits: 8, vBits: 3 }],
+      maxChunkSize: (state: readonly Cache[], rows = 1) => rows === 1 ? qwenAppendChunkSize(state[0]!.offset) : 1,
       forwardHidden: (ids: MlxArray, cache: Cache[]): MlxArray => {
+        // Wider cohorts retain their ordinary one-position numerical graph.
+        // The specialized multi-position append remains qualified at B=1.
+        if (ids.shape.length === 2 && ids.shape[0]! > 1 && ids.shape[1] === 1)
+          return this.forwardHidden(ids, cache);
         if (ids.shape.length !== 2 || ids.shape[0] !== 1 || ids.shape[1]! > 4)
-          throw new Error("Qwen committed-token append supports one row and at most four positions");
+          throw new Error("Qwen committed-token append supports one position per shared row or up to four positions at B=1");
         const hidden = this.embed.encode(ids);
         return this.forwardLayers(hidden, cache, true);
       },
@@ -684,10 +699,61 @@ export class Qwen35Model {
     return this.forwardLayers(h, cache);
   }
 
+  /** Borrowed request positions, including different positions for each row. */
+  forwardHiddenAtPositions(ids: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {
+    return this.forwardLayers(this.embed.encode(ids), cache, false, positions);
+  }
+
+  forwardEmbeddingsAtPositions(embeds: MlxArray, cache: Cache[], positions: MlxArray): MlxArray {
+    return this.forwardLayers(ops.contiguous(embeds), cache, false, positions);
+  }
+
+  /** Attention and DeltaNet retain disjoint row state. Only tokenwise MLP
+   * work is eligible for packing; verification can preserve its geometry. */
+  forwardHiddenMixed(work: readonly TokenGroup[]): MlxArray[] {
+    if (work.length === 1 && !work[0]!.captureLayer) return [this.forwardHidden(work[0]!.ids, work[0]!.cache)];
+    const groups: Array<{ h: MlxArray; mask?: Mask; ssmMask?: MlxArray | null }> = [];
+    const results: MlxArray[] = [];
+    const pack = runtimeFlag("MLX_BUN_MIXED_PACKED_MLP", true);
+    const bounded = work.some(group => group.ids.shape[1]! > TRELLIS_MATVEC_MAX_M);
+    try {
+      for (const { ids, cache } of work) {
+        const group: typeof groups[number] = { h: this.embed.encode(ids) }; groups.push(group);
+        group.mask = cache[this.faIdx]!.makeMask(ids.shape[1]!, null);
+        group.ssmMask = (cache[0] as SSMCache).prefillPadding?.makeMask(ids.shape[1]!);
+      }
+      for (const [i, layer] of this.layers.entries()) {
+        const mids: MlxArray[] = [];
+        try {
+          for (const [row, group] of groups.entries())
+            mids.push(layer.forwardAttn(group.h, group.mask!, work[row]!.cache[i]!, false, group.ssmMask));
+          const outputs = mapTokenGroups(work, mids, hidden => layer.forwardMlp(hidden), pack);
+          for (const [row, group] of groups.entries()) { group.h.dispose(); group.h = outputs[row]!; }
+          // Materialize every layer's recurrent tail as well as the residual.
+          // It is not a dependency of h and otherwise pins prefill buffers.
+          if (bounded) {
+            const caches = work.map(group => group.cache[i]!);
+            const state = caches.map(cache => cache.state());
+            try { ops.evalAll([...groups.map(group => group.h), ...state.flat()]); }
+            finally { for (const [row, cache] of caches.entries())
+              if (cache.stateNeedsDispose) for (const value of state[row]!) value.dispose(); }
+          }
+          for (const [row, group] of groups.entries()) work[row]!.captureLayer?.(i, group.h);
+        } finally { for (const mid of mids) mid.dispose(); }
+      }
+      for (const [row, group] of groups.entries()) {
+        const hidden = this.finalNorm.forward(group.h); results.push(hidden);
+        work[row]!.captureLayer?.(this.layers.length, hidden);
+      }
+      return results;
+    } catch (error) { for (const result of results) result.dispose(); throw error; }
+    finally { for (const group of groups) { group.h.dispose(); group.mask?.arr?.dispose(); group.ssmMask?.dispose(); } }
+  }
+
   /** Active vision mRoPE request state (serial lane; set by the generation
    *  gateway around a vision request's run, null for text-only — which keeps
-   *  the bit-exact fast-rope path). While set, forwardLayers installs the
-   *  per-forward interleaved cos/sin consumed by every full-attn layer. */
+   *  the bit-exact fast-rope path). The explicit serial executor scopes this value.
+   *  Shared media forwards pass request-owned positions directly. */
   mrope: MropeRequestState | null = null;
   #mropeInvFreq: MlxArray | null = null;
 
@@ -722,7 +788,8 @@ export class Qwen35Model {
     tap.captured.set(i, copy);
   }
 
-  protected forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false): MlxArray {
+  protected forwardLayers(h0: MlxArray, cache: Cache[], independentRows = false,
+    positions?: MlxArray): MlxArray {
     const L = h0.shape[1]!;
     // One full-attention mask shared by all full layers (same offset); linear
     // layers see no ssm mask at B=1.
@@ -731,15 +798,13 @@ export class Qwen35Model {
     // Vision requests: one interleaved-mRoPE cos/sin table per forward,
     // shared by all 12 full-attention layers (positions are layer-invariant).
     let mropeFwd: ReturnType<typeof buildMropePositions> | null = null;
-    if (this.mrope) {
+    if (positions || this.mrope) {
       const t = this.config.text;
       const ropeDims = Math.trunc(t.headDim * t.partialRotaryFactor);
       const base = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
       this.#mropeInvFreq ??= mropeInvFreq(ropeDims, base);
-      mropeFwd = buildMropePositions(
-        this.mrope, cache[this.faIdx]!.offset, L, this.#mropeInvFreq, ropeDims,
-      );
-      setActiveMrope(mropeFwd);
+      mropeFwd = positions ? { posIds: positions, invFreq: this.#mropeInvFreq, rotaryDims: ropeDims }
+        : buildMropePositions(this.mrope!, cache[this.faIdx]!.offset, L, this.#mropeInvFreq, ropeDims);
     }
     let h: MlxArray | null = h0;
     const prof = (globalThis as Record<string, unknown>).__deltaProf as
@@ -748,7 +813,7 @@ export class Qwen35Model {
     try {
       for (let i = 0; i < this.layers.length; i++) {
         const tl = prof ? performance.now() : 0;
-        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows, ssmMask);
+        const next = this.layers[i]!.forward(h, faMask, cache[i]!, independentRows, ssmMask, mropeFwd);
         h.dispose();
         h = next;
         if (L > TRELLIS_MATVEC_MAX_M) {
@@ -772,10 +837,7 @@ export class Qwen35Model {
       h = null; // consumed — the finally must not double-free
       return out;
     } finally {
-      if (mropeFwd) {
-        setActiveMrope(null);
-        mropeFwd.posIds.dispose();
-      }
+      if (mropeFwd && !positions) mropeFwd.posIds.dispose();
       // A mid-loop layer throw must not strand the mask array or the
       // in-flight [1,L,H] residual (2026-08-18 review).
       faMask.arr?.dispose();

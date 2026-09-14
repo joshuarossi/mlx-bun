@@ -2,6 +2,7 @@ import type { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import type { Cache, KvAttentionView, KvDonorAttention } from "./gemma4-base";
 import { quantizedSdpa, disposeTriple } from "./gemma4-base";
+import { quantizedAppendAttention } from "./quantized-append-attention";
 
 export function captureKvDonorAttention(cache: Cache): KvDonorAttention {
   if (cache.captureDonorAttention) return cache.captureDonorAttention();
@@ -31,7 +32,9 @@ export function captureKvAttention(cache: Cache, k: MlxArray, v: MlxArray): KvAt
       const { groupSize, bits } = quantized;
       const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       return {
-        attend: (q, scale, mask) => quantizedSdpa(q, keys, values, scale, mask, groupSize, bits),
+        attend: (q, scale, mask, independentPositions) => independentPositions && q.shape[2]! > 1
+          ? quantizedAppendAttention(q, keys, values, scale, groupSize, bits)
+          : quantizedSdpa(q, keys, values, scale, mask, groupSize, bits),
         dispose() { disposeTriple(keys); disposeTriple(values); },
       };
     }

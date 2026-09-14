@@ -38,11 +38,11 @@
 // speculation is structurally never worse than plain decode by more than the
 // JS scan (~µs against 30k-token histories).
 
-import { flagOn } from "../runtime-config";
+import { runtimeFlag } from "../runtime-config";
 import type { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import type { CheckpointAttachment } from "../backends/mlx/checkpoint-state";
-import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, GroupedDraftProvider } from "./source";
+import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, GroupedDraftProvider, DraftRowConstraints } from "./source";
 import { applyStateChanges } from "../engine/resources";
 
 /** The matching policy is independent of the executor's feed convention. */
@@ -78,7 +78,8 @@ class NgramRows implements DraftRowGroup, DraftPrefillGroup {
   readonly namespace: string;
   #histories: number[][] = [];
   #drafts: number[][] = [];
-  constructor(readonly max: number, readonly min: number, checkpoints: readonly (DraftRowCheckpoint | null)[]) {
+  constructor(readonly max: number, readonly min: number, checkpoints: readonly (DraftRowCheckpoint | null)[],
+    readonly constraints?: DraftRowConstraints) {
     this.namespace = namespace(max, min);
     this.append(checkpoints);
   }
@@ -95,7 +96,12 @@ class NgramRows implements DraftRowGroup, DraftPrefillGroup {
     for (let row = 0; row < this.rowCount; row++) this.#histories[row]!.push(...ids.slice(row * length, (row + 1) * length));
   }
   materialize(): void {}
-  draft(pending: readonly number[], depth: number): number[][] {
+  draft(pending: readonly number[], depth: number): number[][] | Promise<number[][]> {
+    if (this.constraints) {
+      for (const [row, history] of this.#histories.entries()) history.push(pending[row]!);
+      return Promise.all(this.#histories.map((_, row) => this.constraints!.propose(row, depth)))
+        .then(proposals => this.#drafts = proposals);
+    }
     this.#drafts = this.#histories.map((history, row) => {
       history.push(pending[row]!);
       return proposeNgram(history, this.max, this.min, depth);
@@ -151,7 +157,7 @@ class NgramSource implements DraftSource {
   readonly weightsBytes = 0;
   #hist: number[] = [];
   #lastDrafts: number[] = [];
-  readonly #tailSplit = flagOn("MLX_BUN_PREFILL_TAIL_SPLIT", true);
+  readonly #tailSplit = runtimeFlag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
   readonly checkpoint: NonNullable<DraftSource["checkpoint"]>;
 
   constructor(
@@ -202,4 +208,19 @@ class NgramSource implements DraftSource {
   }
 
   dispose(): void {}
+}
+
+/** Constraint candidates share committed-history ownership with prompt lookup.
+ * They have no serial draft implementation and never perform ngram lookup. */
+export function constraintDraftProvider(): { id: string; grouped: GroupedDraftProvider } {
+  return {
+    id: "grammar",
+    grouped: {
+      checkpointNamespace: () => namespace(3, 1),
+      supportsTargetAdapters: true,
+      openPrefill: options => new NgramRows(3, 1, options.checkpoints),
+      open: options => new NgramRows(3, 1, options.checkpoints,
+        options.constraints ?? { propose: async () => [] }),
+    },
+  };
 }

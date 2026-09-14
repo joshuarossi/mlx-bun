@@ -1,5 +1,5 @@
 import { namespacedCache } from "../../engine/namespaced-cache";
-import { runtimeFlag } from "../../runtime-config";
+import { runtimeConfig, runtimeFlag, withRuntimeConfig, type RuntimeConfig } from "../../runtime-config";
 import type { GenerateOptions } from "../../generate";
 import type { RuntimeModel } from "../../model/factory";
 import { KVCache, type Cache } from "../../model/gemma4-base";
@@ -32,19 +32,23 @@ export function maybePageKv(
   }
 }
 
-export function pagedPrefixNamespace(options: GenerateOptions, base: string): string {
+export function pagedPrefixNamespace(options: GenerateOptions, base: string,
+  direct = runtimeFlag("MLX_BUN_PAGED_ATTN", false)): string {
   return JSON.stringify(["paged-v1", options.pagedKv?.blockSize ?? PagedKVCache.DEFAULT_BLOCK_SIZE,
-    options.kvBits ?? 0, options.kvGroupSize ?? 64, runtimeFlag("MLX_BUN_PAGED_ATTN", false), base]);
+    options.kvBits ?? 0, options.kvGroupSize ?? 64, direct, base]);
 }
 
 export function bindPagedRequestState(model: RuntimeModel, options: GenerateOptions,
-  capacityTokens: number, cache?: RowPromptCache): MlxRequestStatePolicy | undefined {
+  capacityTokens: number, cache?: RowPromptCache, runtime: RuntimeConfig = runtimeConfig()): MlxRequestStatePolicy | undefined {
   if (!options.pagedKv) return undefined;
   const blockSize = options.pagedKv.blockSize ?? PagedKVCache.DEFAULT_BLOCK_SIZE;
-  return { key: pagedPrefixNamespace(options, ""),
-    promptCache: cache ? namespacedCache(cache, base => pagedPrefixNamespace(options, base)) : undefined, create() {
+  const stateOptions = { pagedKv: { blockSize }, kvBits: options.kvBits, kvGroupSize: options.kvGroupSize };
+  const direct = runtime.flag("MLX_BUN_PAGED_ATTN", false);
+  const namespace = (base: string) => pagedPrefixNamespace(stateOptions, base, direct);
+  return { key: namespace(""),
+    promptCache: cache ? namespacedCache(cache, namespace) : undefined, create: () => withRuntimeConfig(runtime, () => {
     const caches = model.makeCache();
-    try { maybePageKv(caches, { ...options, pagedKv: { blockSize } }, capacityTokens); return caches; }
+    try { maybePageKv(caches, stateOptions, capacityTokens); return caches; }
     catch (error) { disposeResources(caches); throw error; }
-  } };
+  }) };
 }

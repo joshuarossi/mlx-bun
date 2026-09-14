@@ -23,6 +23,34 @@ const config = {
 } as unknown as ModelConfig;
 
 describe("batch KV budget projection", () => {
+  test("storage summary excludes recurrent state from every attention codec", () => {
+    const hybrid = { ...config, text: { ...config.text, numHiddenLayers: 64,
+      layerTypes: Array.from({ length: 64 }, (_, i) => i % 4 === 3 ? "full_attention" : "linear_attention") } };
+    for (const [scheme, layers] of [
+      [resolveKvScheme({}), { bf16: 16 }],
+      [resolveKvScheme({ override: 4 }), { kv4: 16 }],
+      [resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } }), { "turbo-k8v3": 16 }],
+      [resolveKvScheme({ override: "config", config: Array.from({ length: 64 }, (_, layerIdx) =>
+        ({ layerIdx, bits: 8, groupSize: 64 })) }), { kv8: 16 }],
+    ] as const) {
+      expect(scheme.describe(hybrid)).toEqual({ mode: scheme.label, layers,
+        attention: { global: 16, sliding_window: 0 }, recurrent_layers: 48 });
+    }
+  });
+
+  test("storage summary keeps sliding affine layers and unconfigured bf16 attention", () => {
+    expect(resolveKvScheme({ override: 4 }).describe(config).layers).toEqual({ kv4: 4 });
+    expect(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } }).describe(config)).toEqual({
+      mode: "turbo k8v3", layers: { bf16: 2, "turbo-k8v3": 2 },
+      attention: { global: 2, sliding_window: 2 }, recurrent_layers: 0,
+    });
+    expect(resolveKvScheme({ override: "config", config: [
+      { layerIdx: 0, bits: 4, groupSize: 64 }, { layerIdx: 3, bits: 8, groupSize: 64 },
+    ] }).describe(config).layers).toEqual({ kv4: 1, bf16: 2, kv8: 1 });
+    expect(resolveKvScheme({}).describe({ ...config, text: { ...config.text, layerTypes: [] } })
+      .attention).toEqual({ global: 4, sliding_window: 0 });
+  });
+
   const promptTokens = 80;
   const maxTokens = 48;
   const totalTokens = promptTokens + maxTokens;

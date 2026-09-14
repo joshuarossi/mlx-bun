@@ -1,3 +1,5 @@
+import { turboQuantFusedDecode } from "../../model/turboquant-codec";
+import { runtimeConfig, withRuntimeConfig } from "../../runtime-config";
 import type { KvSchemeOptions } from "../../kv-scheme";
 import { KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache, TurboQuantKVCache, type Cache } from "../../model/gemma4-base";
 import type { KvQuantSpec, TurboQuantScheme } from "../../config";
@@ -10,6 +12,8 @@ import { DelayedTurboQuantKVCache } from "../../model/delayed-turboquant-kv";
 
 export interface KvMaintenance {
   (cache: Cache[]): void;
+  /** Limit committed work at a pending precision transition. */
+  maxAppendTokens?(cache: readonly Cache[]): number;
   /** Bind state requiring row-local maintenance before shared decode. */
   prepareBatch?(cache: Cache[]): void;
   /** Bind all precision policies before a prefill cohort owns row boundaries. */
@@ -43,12 +47,24 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
   if (turboQuant) {
     const start = options.quantizedKvStart ?? 0;
     const scheme = { ...turboQuant };
-    const maintain: KvMaintenance = (cache) => maybeTurboQuantizeKv(cache, scheme, start);
+    const runtime = runtimeConfig();
+    const fusedDecode = turboQuantFusedDecode(runtime);
+    const maintain: KvMaintenance = (cache) => withRuntimeConfig(runtime, () => maybeTurboQuantizeKv(cache, scheme, start));
+    if (start > 0) maintain.maxAppendTokens = (cache) => {
+      let remaining = Number.POSITIVE_INFINITY;
+      for (const c of cache) {
+        remaining = Math.min(remaining, c.maxAppendTokens?.() ?? Infinity);
+        const conversion = c.turboConversion ?? (c instanceof KVCache ? c : undefined);
+        if (conversion && conversion.offset < start)
+          remaining = Math.min(remaining, start - conversion.offset);
+      }
+      return remaining;
+    };
     maintain.preparePrefill = (cache) => {
       for (let layer = 0; layer < cache.length; layer++) {
         const row = cache[layer]!;
         if (row instanceof KVCache || row instanceof TurboQuantKVCache)
-          cache[layer] = new DelayedTurboQuantKVCache(scheme.kBits, scheme.vBits, start, maintain, row);
+          cache[layer] = new DelayedTurboQuantKVCache(scheme.kBits, scheme.vBits, start, maintain, row, fusedDecode);
       }
     };
     if (start > 0) maintain.prepareBatch = maintain.preparePrefill;
@@ -82,6 +98,18 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
       ops.evalAll(cache[i]!.state());
       clearCache();
     }
+  };
+  if (start > 0) maintain.maxAppendTokens = (cache) => {
+    let remaining = Number.POSITIVE_INFINITY;
+    for (let layer = 0; layer < cache.length; layer++) {
+      if (byLayer && !byLayer.has(layer)) continue;
+      const c = cache[layer]!;
+      remaining = Math.min(remaining, c.maxAppendTokens?.() ?? Infinity);
+      const conversion = c.affineConversion ?? (c instanceof KVCache || c instanceof RotatingKVCache ? c : undefined);
+      if (conversion && conversion.offset < start)
+        remaining = Math.min(remaining, start - conversion.offset);
+    }
+    return remaining;
   };
   maintain.preparePrefill = (cache) => {
     for (let layer = 0; layer < cache.length; layer++) {

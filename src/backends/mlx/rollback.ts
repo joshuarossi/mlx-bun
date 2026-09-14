@@ -3,7 +3,7 @@ import type { Cache } from "../../model/gemma4-base";
 
 interface TransactionLayer<Acceptance> {
   fits(drafts: number): boolean;
-  begin(): void;
+  begin(drafts: number): void;
   resolve(accepted: Acceptance, drafts: number): void;
 }
 
@@ -20,8 +20,11 @@ export function bindRowCacheRollback(
 ): SpeculativeTransaction<readonly number[]> {
   return bindTransaction(caches.map(cache => ({
     fits: () => true,
-    begin: () => cache.specRoundBegin(),
+    // A zero-candidate round consumes only the committed pending token.
+    // It cannot reject any input, so retaining rollback state is unnecessary.
+    begin: drafts => { if (drafts > 0) cache.specRoundBegin(); },
     resolve(accepted: readonly number[], drafts: number) {
+      if (drafts === 0) return;
       if (accepted.every(count => count === drafts)) cache.specRoundCommit();
       else cache.specRoundRollback(accepted.every(count => count === accepted[0])
         ? accepted[0]! + 1 : accepted.map(count => count + 1));
@@ -75,7 +78,7 @@ function bindTransaction<Acceptance>(
       if (active !== undefined || !layers.every((layer) => layer.fits(drafts)))
         throw new Error("speculative state cannot begin this round");
       active = drafts;
-      try { for (const layer of layers) layer.begin(); }
+      try { for (const layer of layers) layer.begin(drafts); }
       catch (error) { invalid = true; throw error; }
     },
     resolve(accepted) {

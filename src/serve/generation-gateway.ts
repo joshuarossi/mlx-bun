@@ -94,11 +94,12 @@ class AsyncMutex {
   }
 }
 
-/** Embeddings-prefill payload for media prompts (vision and/or audio — the
- *  name predates audio). Any request carrying one routes to the serial lane
- *  (shape.hasVision) and prefills through generate()'s promptEmbeddings
- *  path, bypassing the prompt cache. */
+/** Prepared embeddings for vision/audio prompts. Qualified models consume
+ * this through shared preparation and decode; other bindings retain serial
+ * execution. Token-only prefix caching remains disabled for media. */
 export type Vision = {
+  /** Producer identity includes all media and preceding rendered tokens. */
+  prefixIdentity?: string;
   embeddings: MlxArray;
   /** bool [L] image-token mask for the bidirectional attention overlay.
    *  Absent when the prompt carries ANY audio — audio(-containing) prompts
@@ -109,7 +110,7 @@ export type Vision = {
    *  where zeroing falls back to imageMask. */
   multimodalMask?: MlxArray;
   /** Qwen3.5/3.8 vision: the request's mRoPE positions + decode delta,
-   *  installed on the model for exactly this serial run (server-side). */
+   *  owned by shared forward input, or scoped to the explicit serial run. */
   mrope?: import("../model/qwen3-mrope").MropeRequestState;
 };
 
@@ -318,6 +319,19 @@ export class GenerationGateway {
     try { return await fn(); } finally { lease.dispose(); }
   }
 
+  /** Preparation reads model weights without replacing active model state.
+   * A compatible backend can perform it between existing decode iterations. */
+  runPreparation<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (this.#closed) return Promise.reject(new Error("generation gateway is closed"));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    const group = this.batchingEnabled ? this.#ensureScheduler() : undefined;
+    return group?.runPreparation
+      ? group.runPreparation(work, signal)
+      : this.runExclusive(work, undefined, signal);
+  }
+
+  get mediaBatchingEnabled(): boolean { return this.batchingEnabled && !!this.#binding.mediaInput; }
+
   /** Run one generation on the appropriate lane. onToken is invoked per emitted
    *  token (its `false` halts); resolves with stats when the generation ends. */
   async run(
@@ -331,20 +345,32 @@ export class GenerationGateway {
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
     let reservation;
+    const closeRequestWait = trace?.begin("engine.request_wait", { capacity: this.#batch });
     try { reservation = await acquireReservation(this.#requests, signal); }
     catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options, vision)); }
+    finally { closeRequestWait?.(); }
     let releasePrefix: (() => void) | undefined;
     try {
       try {
         const adapters = options.adapters?.length
           ? this.opts.adapterNamespace?.(options.adapters) ?? JSON.stringify(options.adapters) : "";
-        const namespace = this.#binding.prefixNamespace?.(placement.execution, options, adapters) ??
+        const baseNamespace = this.#binding.prefixNamespace?.(placement.execution, options, adapters) ??
           (placement.execution?.method === "speculative" ? null : adapters);
-        if (!vision && namespace !== null)
-          releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId);
-      } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options, vision)); }
+        const namespace = baseNamespace !== null && vision?.prefixIdentity
+          ? JSON.stringify(["prepared-prefix-v1", vision.prefixIdentity, baseNamespace]) : baseNamespace;
+        if ((!vision || placement.execution?.promptCache) && namespace !== null) {
+          const closePrefetch = this.opts.promptCache?.prefetch ? trace?.begin("cache.prefetch") : undefined;
+          try { releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId); }
+          finally { closePrefetch?.(); }
+        }
+      } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options,
+        placement.mechanism === "continuous" ? undefined : vision)); }
       return await this.#run(promptIds, options, onToken, vision, shape, placement, signal, trace);
-    } finally { try { releasePrefix?.(); } finally { reservation.dispose(); } }
+    } finally {
+      disposeResources([{ dispose: () => releasePrefix?.() }, reservation,
+        ...(placement.mechanism === "continuous" && vision
+          ? [vision.embeddings, vision.imageMask, vision.multimodalMask].filter(value => value != null) : [])]);
+    }
   }
 
   async #run(
@@ -357,7 +383,8 @@ export class GenerationGateway {
     signal?: AbortSignal,
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
-    const disposeUnstarted = () => disposeUnstartedRequest(options, vision);
+    const disposeUnstarted = () => disposeUnstartedRequest(options,
+      placement.mechanism === "continuous" ? undefined : vision);
     if (placement.shape !== shape) {
       disposeUnstarted();
       throw new Error("generation placement does not belong to this request shape");
@@ -420,8 +447,10 @@ export class GenerationGateway {
 
     const adapters = options.adapters?.length ? [...options.adapters] : undefined;
     const adapterKey = adapters ? JSON.stringify(adapters) : "";
-    const cacheNamespace = adapters
-      ? () => this.opts.adapterNamespace?.(adapters) ?? adapterKey : "";
+    const adapterNamespace = () => adapters ? this.opts.adapterNamespace?.(adapters) ?? adapterKey : "";
+    const cacheNamespace = vision?.prefixIdentity
+      ? () => JSON.stringify(["prepared-prefix-v1", vision.prefixIdentity, adapterNamespace()])
+      : adapters ? adapterNamespace : "";
     const context = adapters
       ? this.#binding.bindAdapterContext?.(adapters, `adapters:${adapterKey}`) : undefined;
 
@@ -444,6 +473,7 @@ export class GenerationGateway {
     try {
       st = await this.#ensureScheduler().submit({
         promptIds, context, cacheNamespace, cacheSessionId: options.cacheSessionId, prefillChunkSize: options.prefillChunkSize,
+        ...(vision ? { promptInput: this.#binding.mediaInput!(vision) } : {}),
         continuation: continuation?.continuation,
         statePolicy: this.#binding.statePolicy?.(placement.execution, options, promptIds.length + (options.maxTokens ?? 512)),
         compiledDecode: placement.execution?.compiledDecode,
@@ -480,6 +510,7 @@ export class GenerationGateway {
       decodeTps: st.decodeMs > 0 && st.generatedTokens > 1 ? ((st.generatedTokens - 1) / st.decodeMs) * 1000 : 0,
       cacheTokens: [],
       ...(st.spec ? { spec: st.spec } : {}),
+      ...(st.fill ? { fill: st.fill } : {}),
     };
   }
 

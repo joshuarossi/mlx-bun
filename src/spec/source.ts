@@ -145,6 +145,12 @@ export interface DraftRowSampling {
   sample(logprobs: MlxArray, steps: readonly number[]): MlxArray;
 }
 
+/** Request-owned constraints can propose known continuations without changing
+ * their committed state. The target verifier still decides every output. */
+export interface DraftRowConstraints {
+  propose(row: number, maxTokens: number): Promise<number[]>;
+}
+
 export interface DraftRowCheckpoint {
   readonly processedTokens: number;
   readonly attachment: CheckpointAttachment;
@@ -155,6 +161,10 @@ export interface DraftRowCheckpoint {
  * Membership changes and capture occur only between committed rounds.
  * The caller retains the provider's residency lease for the group's lifetime. */
 export interface DraftRowGroup extends MlxDraftRows {
+  /** Consume externally chosen target inputs at a committed round boundary.
+   * Context and tokens are borrowed rectangular windows; lengths retain each
+   * row's consumed prefix, excluding right padding and the pending output. */
+  consume?(tokens: MlxArray, context: MlxArray, lengths: readonly number[]): void | Promise<void>;
   readonly namespace: string;
   readonly tapLayers: readonly number[];
   readonly rowCount: number;
@@ -187,6 +197,7 @@ export interface DraftPrefillGroup {
 }
 
 export interface GroupedDraftProvider {
+  readonly supportsExternalTokens?: boolean;
   /** Resolve persistence identity without allocating a draft row. */
   checkpointNamespace?(): string;
   /** Draft state remains valid when target forwards run under a mounted
@@ -194,7 +205,7 @@ export interface GroupedDraftProvider {
   readonly supportsTargetAdapters?: boolean;
   openPrefill(options: { target: TargetView;
     checkpoints: readonly (DraftRowCheckpoint | null)[] }): DraftPrefillGroup;
-  open(options: { target: TargetView; sampling: DraftRowSampling;
+  open(options: { target: TargetView; sampling: DraftRowSampling; constraints?: DraftRowConstraints;
     checkpoints: readonly DraftRowCheckpoint[] }): DraftRowGroup;
 }
 

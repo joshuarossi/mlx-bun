@@ -1,3 +1,4 @@
+import { configureRuntime } from "../../src/runtime-config";
 import { expect, test } from "bun:test";
 import * as ops from "../../src/mlx/ops";
 import { Dtype } from "../../src/mlx/ffi";
@@ -33,8 +34,7 @@ function stateEqual(a: Cache, b: Cache) {
   finally { for (const array of [...av, ...bv]) array.dispose(); }
 }
 for (const fused of ["0", "1"]) test(`delayed TQ preserves exact row boundaries, values and retirement (fused=${fused})`, () => {
-  const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-  process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused;
+  const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
   const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 });
   let reference = [plain(3), plain(6)];
   const copies = cloneKvCaches(reference);
@@ -112,14 +112,12 @@ for (const fused of ["0", "1"]) test(`delayed TQ preserves exact row boundaries,
     expect(sawMixed).toBe(true); expect(sawPacked).toBe(true);
   } finally {
     group.dispose(); reference.forEach(c => c.dispose());
-    if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+    restore();
   }
 });
 
 for (const fused of ["0", "1"]) test(`speculative delayed TQ converts committed history and rolls back unequal rows (fused=${fused})`, () => {
-  const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-  process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused;
+  const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused });
   const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 5 });
   let reference = [plain(3), plain(6)];
   let group = new DelayedTurboQuantKVCache(8, 3, 5, maintain);
@@ -159,7 +157,6 @@ for (const fused of ["0", "1"]) test(`speculative delayed TQ converts committed 
     }
   } finally {
     group.dispose(); reference.forEach(row => row.dispose());
-    if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+    restore();
   }
 });

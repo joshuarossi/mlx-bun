@@ -1830,7 +1830,9 @@ for (const dsa of [false, true]) test(`native GLM MTP composes B4, late admissio
       }
     } finally { probe.mockRestore(); await group.close(); cache.clear(); }
   } finally { provider.dispose(); model.dispose(); }
-});
+// This fixture runs repeated B4/late-join generation plus a disk round trip.
+// The CI DSA arm exceeded the implicit five-second unit-test deadline.
+}, 15_000);
 
 for (const topk of [1, 4, 64]) for (const width of [3, 9])
   test(`DSA verify preserves all requests and shared-layer selections (topk=${topk}, T=${width})`, async () => {

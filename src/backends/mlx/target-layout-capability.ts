@@ -27,7 +27,7 @@ export function targetRowLayoutFactory(cache: Cache): (() => TargetRowLayout) | 
   if (cache instanceof DelayedTurboQuantKVCache || cache instanceof DelayedQuantizedKVCache ||
       cache instanceof BatchedTurboQuantKVCache || cache instanceof BatchedKVCache ||
       cache instanceof BatchedQuantizedKVCache || cache instanceof BatchedSSMCache) return () => cache.makeEmptyBatch();
-  if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits);
+  if (cache instanceof TurboQuantKVCache) return () => new BatchedTurboQuantKVCache(cache.kBits, cache.vBits, cache.fusedDecode);
   if (cache instanceof SSMCache) return () => new BatchedSSMCache();
   if (cache instanceof QuantizedKVCache) return () => new BatchedQuantizedKVCache(cache.groupSize, cache.bits);
   if (cache instanceof KVCache) return () => new BatchedKVCache();

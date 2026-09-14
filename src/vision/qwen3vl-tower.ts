@@ -18,6 +18,7 @@
 
 import { ptr, read } from "bun:ffi";
 import { existsSync, readFileSync } from "node:fs";
+import { tensorFingerprint } from "../model/fingerprint";
 import { MlxArray, cpuStream } from "../mlx/array";
 import { C, Dtype } from "../mlx/ffi";
 import * as ops from "../mlx/ops";
@@ -55,6 +56,15 @@ interface Block {
 }
 
 export class Qwen3VLVisionTower {
+  #identity: string | undefined;
+  readonly #identityWeights: Array<[string, MlxArray]>;
+
+  /** Computed once, under native preparation. Exact weight content prevents
+   * cross-artifact SSD reuse even when model aliases and shapes are identical. */
+  get cacheIdentity(): string {
+    if (this.#identity) return this.#identity;
+    return this.#identity = tensorFingerprint(this.#identityWeights);
+  }
   #patchW: MlxArray; // [1536, 1152] — flattened conv, already transposed
   #patchB: MlxArray;
   #posEmbed: MlxArray; // [2304, 1152]
@@ -64,6 +74,7 @@ export class Qwen3VLVisionTower {
   #mergerFc2W: MlxArray; #mergerFc2B: MlxArray;
 
   private constructor(w: Map<string, MlxArray>) {
+    this.#identityWeights = [...w];
     const t = (n: string): MlxArray => {
       const a = w.get(`vision_tower.${n}`);
       if (!a) throw new Error(`vision sidecar missing tensor vision_tower.${n}`);

@@ -3,7 +3,7 @@ import type { MlxArray } from "../mlx/array";
 import { KvTensorRows, type KvTensorRowView } from "../backends/mlx/kv-tensor-rows";
 import { disposeResources } from "../engine/resources";
 import { TurboQuantKVCache, type BatchableCache, type Cache, type Mask, type RotatedValueAttentionState, type PaddedPrefillCache, type PrefillPadding } from "./gemma4-base";
-import { TurboQuantCodec, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
+import { TurboQuantCodec, turboQuantFusedDecode, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 
 const fields = ["kIdx", "kScales", "kZeros", "vPacked", "vScales"] as const;
 function encoded(planes: readonly MlxArray[]): TurboQuantTensor {
@@ -17,8 +17,9 @@ export class BatchedTurboQuantKVCache implements BatchableCache, PaddedPrefillCa
   readonly #codec: TurboQuantCodec;
   #reuseOffsets: number[] = [];
   #headDim: number | null = null;
-  constructor(readonly kBits: number, readonly vBits: number) {
-    this.#codec = new TurboQuantCodec(kBits, vBits, process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === "1");
+  constructor(readonly kBits: number, readonly vBits: number,
+    readonly fusedDecode = turboQuantFusedDecode()) {
+    this.#codec = new TurboQuantCodec(kBits, vBits, fusedDecode);
   }
   restorePrefillEnds(ends: readonly number[] | undefined): void { this.#storage.restorePrefillEnds(ends); }
   preparePrefill(padding: PrefillPadding): void {
@@ -43,7 +44,7 @@ export class BatchedTurboQuantKVCache implements BatchableCache, PaddedPrefillCa
   get batchSize(): number | null { return this.#storage.batchSize; }
   get offset(): number { return this.#storage.offset; }
   get ropeOffsetArr(): MlxArray | undefined { return this.#storage.ropeOffsetArr; }
-  makeEmptyBatch(): BatchedTurboQuantKVCache { return new BatchedTurboQuantKVCache(this.kBits, this.vBits); }
+  makeEmptyBatch(): BatchedTurboQuantKVCache { return new BatchedTurboQuantKVCache(this.kBits, this.vBits, this.fusedDecode); }
   bytesPerToken(): number { return this.#storage.bytesPerToken(); }
   projectedBytes(tokens: number): number { return this.bytesPerToken() * tokens; }
   makeMask(tokens: number, window: number | null): Mask { return this.#storage.makeMask(tokens, window); }
@@ -84,7 +85,7 @@ export class BatchedTurboQuantKVCache implements BatchableCache, PaddedPrefillCa
   }
   state(): MlxArray[] { return this.#storage.planes; }
   extractRow(row: number): TurboQuantKVCache {
-    const result = new TurboQuantKVCache(this.kBits, this.vBits), count = this.rowOffsets[row]!;
+    const result = new TurboQuantKVCache(this.kBits, this.vBits, this.fusedDecode), count = this.rowOffsets[row]!;
     if (count) result.restoreState(encoded(this.#storage.extractRow(row)), count, this.#headDim!);
     result.minimumReusableOffset = this.#reuseOffsets[row] ?? 0;
     return result;

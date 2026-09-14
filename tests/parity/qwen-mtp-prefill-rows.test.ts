@@ -53,7 +53,8 @@ for f in frames:
   k=a.rope(k,offset=offsets[0] if len(set(offsets))==1 else mx.array(offsets,dtype=mx.int32))
   mx.eval(k,v)
   for i,c in enumerate(rows):
-   if pair.get('keep',[True]*B)[i]:c.update_and_fetch(k[i:i+1],v[i:i+1])
+   keep=pair.get('lengths',[N]*B)[i] if pair.get('keep',[True]*B)[i] else 0
+   if keep:c.update_and_fetch(k[i:i+1,:,:keep,:],v[i:i+1,:,:keep,:])
  hidden=[features([[t]],31) for t in f['tail']]
  states=[]
  for c,h in zip(rows,hidden):
@@ -82,6 +83,13 @@ const frames = [
   { keep: [], append: [null], tokens: [Array.from({ length: 2051 }, (_, i) => i + 1)], pairs: [
     { ids: [Array.from({ length: 2048 }, (_, i) => i + 2)], hidden: [Array.from({ length: 2048 }, (_, i) => i + 1)] },
     { ids: [[2050, 2051]], hidden: [[2049, 2050]] }], tail: [2051] },
+  { keep: [], append: [null, null], tokens: [[1, 2, 3], [11, 12, 13]],
+    pairs: [{ ids: [[2, 3], [12, 13]], hidden: [[1, 2], [11, 12]] }], tail: [3, 13] },
+  { tokens: [[4, 5, 6], [14, 15, 16]], lengths: [3, 1], pairs: [
+    { ids: [[4], [14]], hidden: [[3], [13]] },
+    { ids: [[5, 6], [15, 16]], hidden: [[4, 5], [14, 15]], lengths: [2, 0] },
+  ], tail: [6, 14] },
+  { tokens: [[7], [15]], pairs: [{ ids: [[7], [15]], hidden: [[6], [14]] }], tail: [7, 15] },
 ];
 
 test.skipIf(!draft)("MTP prefill KV and full decoder continuation match pinned same-B operations through cold joins and restored prefixes", async () => {
@@ -127,7 +135,8 @@ test.skipIf(!draft)("MTP prefill KV and full decoder continuation match pinned s
       if (frame.append) rows.append(frame.append.map(value => value === null ? null : donor!));
       using ids = ops.fromInt32(frame.tokens.flat(), [frame.tokens.length, frame.tokens[0]!.length]);
       using context = features(frame.tokens, 31);
-      rows.prefill(ids, context);
+      if ("lengths" in frame) rows.consume(ids, context, frame.lengths!);
+      else rows.prefill(ids, context);
       const states = Array.from({ length: rows.rowCount }, (_, row) => rows.extractRow(row));
       try {
         for (const [row, state] of states.entries()) {

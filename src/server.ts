@@ -324,8 +324,7 @@ export function createServer(
   // The scheduler chooses its B=1 fast path or B=N step from active rows.
   // Both full-attention (CPM) and
   // sliding-window (Gemma) models batch — the scheduler assembles each layer's
-  // cache by attention type. Non-batchable requests (vision / adapters /
-  // unsupported explicit kv-quant) drain to the serial executor
+  // cache by attention type. Unsupported model/method combinations drain to the serial executor
   // (see GenerationGateway.place). No inference setting is rewritten.
   // DEFAULT 8 (flipped 2026-07-05, Josh's call, after GATE-B1-SPEED): a
   // lone request through the batch lane IS the serial engine (adopted
@@ -477,6 +476,11 @@ export function createServer(
         findExact: (tokens: number[], ns: string) => {
           const hit = ssdStore!.findExact(tokens, ns);
           return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null;
+        },
+        restoreObjectAsync: async (handle: unknown) => {
+          const loaded = await ssdStore!.restoreAsync(handle as import("./ssd-cache").SsdIndexEntry,
+            { makeCache: () => [] });
+          return loaded ? { ...loaded, retain: () => {} } : null;
         },
         restore: (handle: unknown) => {
           const loaded = serving.restore(ssdStore!, handle as import("./ssd-cache").SsdIndexEntry);
@@ -658,7 +662,8 @@ export function createServer(
   // chatStage with their own wire formats.)
   const prep = createRequestPrep({ ctx, serverOptions, kvScheme, defaultGeneratedTokens, tokenHistory });
   const { templateOptionsFor } = prep;
-  const preparation = createPreparationExecutor((work, signal) => gateway.runExclusive(work, undefined, signal), batch);
+  const preparation = createPreparationExecutor((work, signal) => gateway.runPreparation(work, signal),
+    batch, gateway.mediaBatchingEnabled ? batch : 1);
   const chatStage = new ChatStage(
     ctx, prep, promptCache, contextLimit, serverOptions.defaultAdapter,
     preparation, serving.buildPrompt);
@@ -876,30 +881,6 @@ export function createServer(
       }
 
       if (url.pathname === "/stats" && request.method === "GET") {
-        // Active KV scheme across ALL layers. Since Phase 9 rotating
-        // (sliding-window) caches quantize too, so every layer the
-        // scheme names counts — the old display filtered to
-        // full_attention and silently undercounted (e.g. 26B showed
-        // 5/30 quantized when its kv_config.json covers all 30).
-        const layerTypes = ctx.model.config.text.layerTypes;
-        const kvLayers: Record<string, number> = {};
-        let kvMode = "bf16";
-        if (kvScheme.turboQuant) {
-          // v1: full-attention layers only (sliding-window stays bf16 —
-          // docs/design/turboquant.md non-goal).
-          const fullAttn = layerTypes.filter((l) => l !== "sliding_attention").length;
-          kvMode = `turbo k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`;
-          kvLayers[`turbo-k${kvScheme.turboQuant.kBits}v${kvScheme.turboQuant.vBits}`] = fullAttn;
-        } else if (kvScheme.kvBits) {
-          kvMode = `uniform-kv${kvScheme.kvBits}`;
-          kvLayers[`kv${kvScheme.kvBits}`] = layerTypes.length;
-        } else if (kvScheme.kvConfig) {
-          kvMode = "mixed (kv_config.json)";
-          for (const e of kvScheme.kvConfig)
-            kvLayers[`kv${e.bits}`] = (kvLayers[`kv${e.bits}`] ?? 0) + 1;
-        }
-        const bf16Layers = layerTypes.length - Object.values(kvLayers).reduce((a, b) => a + b, 0);
-        const slidingLayers = layerTypes.filter((l) => l === "sliding_attention").length;
         return Response.json({
           server: {
             owner: serverOptions.owner ?? "embedded",
@@ -915,6 +896,9 @@ export function createServer(
             session_hits: promptCache.sessionHits,
             session_misses: promptCache.sessionMisses,
             prefix_scans: promptCache.prefixScans,
+            object_hits: promptCache.objectHits,
+            object_misses: promptCache.objectMisses,
+            object_restores: promptCache.objectRestores,
           },
           ...(ssdStore ? {
             ssd_cache: {
@@ -940,14 +924,7 @@ export function createServer(
             max_bytes: responseStore.maxBytes,
             ttl_ms: responseStore.ttlMs,
           },
-          kv_quant: {
-            mode: kvMode,
-            layers: { ...kvLayers, ...(bf16Layers > 0 ? { bf16: bf16Layers } : {}) },
-            attention: {
-              global: layerTypes.length - slidingLayers,
-              sliding_window: slidingLayers,
-            },
-          },
+          kv_quant: resolvedKvScheme.describe(ctx.model.config),
           admission: {
             max_safe_context: admission.maxSafeContext,
             enforced_context_tokens: contextLimit,

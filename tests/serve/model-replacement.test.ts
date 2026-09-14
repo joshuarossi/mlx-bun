@@ -108,6 +108,8 @@ test("one model binding supplies multiple methods to the unchanged HTTP/session 
     })).status).toBe(400);
     const stats = await (await fetch(`${base}/stats`)).json() as any;
     expect(stats.custom_model).toEqual({ method_count: 2 });
+    expect(stats.kv_quant).toEqual({ mode: "bf16", layers: { bf16: 1 },
+      attention: { global: 1, sliding_window: 0 }, recurrent_layers: 0 });
 
     // Persistent state survives a matching backend restart, but another
     // numerical implementation must start without that prefix. Its scan

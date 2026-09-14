@@ -1,3 +1,4 @@
+import { configureRuntime } from "../../src/runtime-config";
 import { expect, test } from "bun:test";
 import { Dtype } from "../../src/mlx/ffi";
 import type { MlxArray } from "../../src/mlx/array";
@@ -29,8 +30,7 @@ function equalState(actual: TurboQuantKVCache, expected: TurboQuantKVCache) {
 
 for (const fused of [false, true]) for (const [kb, vb] of [[8, 3], [4, 2], [5, 5]] as const)
   test(`TurboQuant ${kb}/${vb}, fused=${fused}: unequal rows retain encoded state across rollback and re-admission`, () => {
-    const previous = process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-    process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = fused ? "1" : "0";
+    const restore = configureRuntime({ MLX_BUN_TURBOQUANT_FUSED_DECODE: fused ? "1" : "0" });
     const group = new BatchedTurboQuantKVCache(kb, vb);
     const references = [new TurboQuantKVCache(kb, vb), new TurboQuantKVCache(kb, vb)];
     try {
@@ -84,7 +84,6 @@ for (const fused of [false, true]) for (const [kb, vb] of [[8, 3], [4, 2], [5, 5
       verify();
     } finally {
       group.dispose(); disposeResources(references);
-      if (previous === undefined) delete process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE;
-      else process.env.MLX_BUN_TURBOQUANT_FUSED_DECODE = previous;
+      restore();
     }
   });

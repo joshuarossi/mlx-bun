@@ -620,6 +620,15 @@ The template's primer length is measured canonically and applied to the actual
 history-preserving token sequence. This can change input token counts, and
 therefore continuation logits, relative to re-encoding all generated text.
 Logit parity remains a contract for the same input IDs and execution shape.
+The stable-boundary probe includes both text and tool replies followed by a
+new user turn. Qwen can omit an empty thinking primer when rendering a prior
+tool turn; a text-only probe retained three extra tokens in the small-model
+HTTP fixture and prevented recurrent-cache reuse. The corrected probe keeps
+the last shared prefix. It never rewrites existing KV under the changed text.
+Republishing an identical token sequence refreshes its existing provenance
+entry without decoding the whole conversation again. Equality covers every ID;
+equal text from different IDs still replaces provenance. This avoids repeated
+text conversion during request completion and preserves the retention limit.
 
 Cache pressure maintenance uses 85% of the smaller of the recommended device
 working set and an explicit allocator limit as a residency target. It includes
@@ -797,6 +806,90 @@ and a durable final flush; independent app acceptance retains two defects.
 [Measurements](../reference/benchmarks.md#session-checkpoint-index-c6) preserve
 both the benefits and the limits. Existing idle-demotion settings remain in
 effect; session preference changes budget/pressure victim selection.
+
+
+### 5.13 Exact tensor objects in the shared cache
+
+`ObjectCache<Value>` exposes exact-key lookup and ownership transfer separately
+from `PrefixCache` matching. `PromptCache.objects` uses the same resident records,
+byte accounting, retention policy, pressure callback and SSD durability queue.
+An object has an empty conversation history, no target KV layers and a private
+namespace containing its full key. Its versioned tensor attachment owns the
+payload. It never supplies a language-model prefix. No synthetic language token
+IDs or second RAM budget are introduced.
+
+RAM reads lend immutable native views. Evicting the resident entry cannot
+invalidate a request's borrowed tensors. A cold read uses the existing async
+serializer with an empty target-layer schema, outside the execution queue;
+publication joins the same RAM policy. Cache clear invalidates pending restore
+publication. A newer resident publication wins over an older in-flight restore.
+The durability coordinator includes attachment-only objects; RAM eviction waits
+for the shared writer to finish as it does for conversation checkpoints.
+
+The Qwen encoder adapter hashes exact preprocessed pixel bytes, grid dimensions
+and its schema revision. A SHA-256 of the actual loaded encoder tensors supplies weight identity,
+computed once under native preparation. The containing SSD store also supplies
+configuration, tokenizer and native numerical identity. Different image bytes or grids miss;
+repeated media can reuse the tensor across request histories. Prompt rendering,
+video timestamps, mRoPE positions, sampling and scheduling remain independent.
+The producer retains its own result while storage takes a separate native view.
+The object lookup finishes before the prompt builder enters the native queue.
+Preprocessing and video extraction are not cached by this change.
+
+Gemma's encoder-free and SigLIP vision towers and its audio tower use the same
+`EncoderCache` adapter. Each tower hashes its immutable weight names, shapes,
+dtypes, bytes and computation settings once. Image/WAV content hashes and a
+producer revision identify individual objects. Vision retains its existing
+pre-divided features; audio retains raw float32 features, then each prompt casts
+them to its embedding dtype before dividing by the embedding scale. That order
+is unchanged. CPU image preprocessing and audio mel extraction precede the
+native execution lease, as do RAM/SSD lookups. The producer never caches chat
+tokens, bidirectional masks or positions. Custom vision encoders without an
+immutable `cacheIdentity` continue to encode normally.
+
+[vLLM's encoder cache](https://docs.vllm.ai/en/v0.18.0/api/vllm/v1/core/encoder_cache_manager/)
+also identifies individual media items by hash and retains encoder outputs
+across requests. Here the existing cache owns both RAM residency and queued
+SSD persistence on unified memory. The bounded Qwen screen and integrated
+acceptance pass on M4; both-machine native/HTTP checks and fresh-process SSD
+reuse preserve their recorded outputs. [Measurements](../reference/benchmarks.md#qwen-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13)
+include the one-time weight-fingerprint cost. Gemma prepared inputs and mixed
+RAM/SSD HTTP reuse pass both-machine identity checks. Its M4 ABBA preserves all
+168 paired responses/usage and improves every measured workload; first-use
+cost and changed image overlap are recorded in the
+[Gemma measurements](../reference/benchmarks.md#gemma-encoder-reuse-through-shared-ram-and-ssd-storage-2026-09-13).
+Prepared media conversation state uses the same cache, as described below.
+
+
+### 5.14 Prepared media prefix identity
+
+The Gemma producer can supply a versioned `prefixIdentity` containing every
+media item's exact input/encoder identity, its causal policy, and the rendered
+token prefix through the last media span. The ordinary cache namespace combines
+this identity with the adapter namespace. Consequently, matching histories
+include identical media and preceding tokens; a changed media set or a change
+from image-only bidirectional attention to mixed causal input cannot collide.
+Appending later text leaves the identity stable.
+
+By default, the shared Gemma binding uses ordinary
+RAM/SSD lookup, generated snapshots, prefetch and persistence. The prepared-input
+interface receives the cache's starting position. An uncached input performs
+its atomic media prefill; a restored prefix resumes text after all media through
+the model's ordinary forward method. Scheduling and sampling are unchanged.
+Qwen supplies the same opaque identity with prepared image/video hashes,
+rendered timestamps and all mRoPE positions through its final media span. Its
+resumed text forward uses the current request positions and preserves the
+recurrent state. Recurrent layers still require an exact retained prefix;
+explicit serial prefix reuse remains unqualified. `MLX_BUN_MEDIA_PREFIX_CACHE=0`
+selects encoder-only reuse for comparisons.
+
+The existing minimum reusable offset still identifies a precision transition.
+If delayed quantization occurs after an atomic media prefill, its cached state
+can serve a later conversation turn but cannot rewind before that conversion.
+A shorter request recomputes normally. Start-zero affine/TurboQuant and bf16
+retain their applicable prefix-trimming behavior. This is cache selection,
+not request admission or a memory refusal.
+
 
 ## 6. Optional paged KV
 

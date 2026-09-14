@@ -231,6 +231,6 @@ describe("TrellisLinear kernels", () => {
         for (const t of [x, fused, g, u, ref]) t.dispose();
       }
       for (const t of [a.rec, a.codes, a.scales, b.rec, b.codes, b.scales]) t.dispose();
-    });
+    }, 15_000); // Cold native compilation exceeded 5 seconds on the CI runner.
   }
 });

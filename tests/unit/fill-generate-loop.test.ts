@@ -10,7 +10,7 @@
 // cache and PromptCache.put's key. `model.forwards` records every id sequence
 // the loop pushed through the model, so the test can see it directly.
 import { describe, expect, test } from "bun:test";
-import { generate, type GenerateOptions, type GenerateStats } from "../../src/generate";
+import { generate, shouldUseFill, type GenerateOptions, type GenerateStats } from "../../src/generate";
 import {
   FillSession, type FillRow, type Proposal, type ProposalSource,
 } from "../../src/fill/fill-session";
@@ -18,7 +18,7 @@ import { KVCache, type Cache } from "../../src/model/gemma4";
 import type { RuntimeModel } from "../../src/model/factory";
 import type { MlxTokenAppend } from "../../src/backends/mlx/autoregressive";
 import { MlxArray } from "../../src/mlx/array";
-import { configureRuntime } from "../../src/runtime-config";
+import { configureRuntime, runtimeConfig } from "../../src/runtime-config";
 import { cloneKvCaches } from "../../src/kv-store";
 import { specServeRun } from "../../src/spec/serve-loop";
 import type { DraftProvider, DraftSource } from "../../src/spec/source";
@@ -98,6 +98,26 @@ const session = (rows: FillRow[], maxSpan?: number, appendChunkSize?: number) =>
     PROMPT,
     { maxSpan, appendChunkSize },
   );
+
+test("the append binding owns affine fill format support", () => {
+  const restore = configureRuntime({ MLX_BUN_FILL: "strict" });
+  try {
+    const options = { fill: session([row([TRIGGER], SPAN)]), kvBits: 4 };
+    const supported = { affineKvBits: [4, 8] };
+    expect(shouldUseFill(options, runtimeConfig())).toBe(false);
+    expect(shouldUseFill(options, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvBits: 8 }, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvConfig: [{ layerIdx: 3, bits: 4, groupSize: 64 },
+      { layerIdx: 7, bits: 8, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvBits: 2 }, runtimeConfig(), supported)).toBe(false);
+    expect(shouldUseFill({ ...options, kvBits: 2, kvConfig: [{ layerIdx: 3, bits: 4, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvConfig: [{ layerIdx: 3, bits: 2, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(false);
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 8, vBits: 3 } }, runtimeConfig(), supported)).toBe(false);
+    const rotated = { turboQuantFormats: [{ kBits: 8, vBits: 3 }] };
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 8, vBits: 3 } }, runtimeConfig(), rotated)).toBe(true);
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 4, vBits: 3 } }, runtimeConfig(), rotated)).toBe(false);
+  } finally { restore(); }
+});
 
 async function run(
   options: GenerateOptions,
