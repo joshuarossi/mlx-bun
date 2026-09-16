@@ -24,18 +24,10 @@ Notes: [release-notes-v0.5.0.md](docs/archive/planning/release-notes-v0.5.0.md).
 
 ## Released: mlx-bun v0.4.0 (2026-09-11)
 
-PR #48 is merged and published through `scripts/publish-release.sh` to GitHub,
-npm and the Homebrew tap. The release includes shared batched methods and
-sampling, affine/TurboQuant row state, generated RAM/SSD reuse, queued
-persistence, ordinary/adapter resume and GLM native MTP state. Default serving
-remains cap eight with B1 execution for a lone eligible request; explicit serial
-remains available. Final GLM artifact testing and remaining program work stay open.
-
-Built from `a54f819` with Bun 1.4.2 and native pack 0.4.0 / MLX 0.32.2.
-Apple notarization **Accepted**, submission
-`92840689-ebc3-4ba8-bfa6-8d5923aabe39`. Signed arm64 archive SHA-256:
-`dd362be989c96964cbfe1c149c47a330c814ddf4d8412b21b8d75747aae21ede`.
-Notes: [release-notes-v0.4.0.md](docs/archive/planning/release-notes-v0.4.0.md); results in [benchmarks.md](docs/reference/benchmarks.md).
+Shared batched methods and sampling, affine/TurboQuant row state, generated
+RAM/SSD reuse, queued persistence, resume and GLM native MTP (PR #48); built
+from `a54f819`, native pack 0.4.0, notarization Accepted (`92840689-…`), archive
+SHA-256 `dd362be9…`. Notes: [release-notes-v0.4.0.md](docs/archive/planning/release-notes-v0.4.0.md); results in [benchmarks.md](docs/reference/benchmarks.md).
 
 The post-release M4 standard matrix and packed-Qwen KV4/TQ follow-up are
 complete. Both quantized packed-model profiles pass context and SSD restart;
