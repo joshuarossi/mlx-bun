@@ -49,7 +49,6 @@ Living product/vision docs (USING side).
 - [ResearchTopics.md](../docs/planning/ResearchTopics.md) — Research Topics
 - [public-readiness-handoff.md](../docs/planning/public-readiness-handoff.md) — Public readiness — handoff (2026-09-11)
 - [public-readiness.md](../docs/planning/public-readiness.md) — Preparing mlx-bun for the MLX community
-- [release-notes-v0.5.0.md](../docs/planning/release-notes-v0.5.0.md) — mlx-bun v0.5.0
 - [video-series.md](../docs/planning/video-series.md) — mlx-bun video series
 
 ## docs/archive/
@@ -103,5 +102,6 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 - [planning/release-notes-v0.2.0.md](../docs/archive/planning/release-notes-v0.2.0.md) — mlx-bun v0.2.0
 - [planning/release-notes-v0.3.0.md](../docs/archive/planning/release-notes-v0.3.0.md) — mlx-bun v0.3.0
 - [planning/release-notes-v0.4.0.md](../docs/archive/planning/release-notes-v0.4.0.md) — mlx-bun v0.4.0
+- [planning/release-notes-v0.5.0.md](../docs/archive/planning/release-notes-v0.5.0.md) — mlx-bun v0.5.0
 - [planning/web-ui-pass-plan.md](../docs/archive/planning/web-ui-pass-plan.md) — Web UI pass — ranked fix list (2026-07-01 audit)
 - [planning/website-readme-pass-plan.md](../docs/archive/planning/website-readme-pass-plan.md) — Website + README pass — audit findings and fix plan (2026-07-01)

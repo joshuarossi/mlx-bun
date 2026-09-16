@@ -11,6 +11,17 @@ Numerical contracts and measured results live in
 combinations live in [models.md](docs/reference/models.md) and
 [server-config.md](docs/reference/server-config.md).
 
+## Released: mlx-bun v0.5.0 (2026-09-16)
+
+Whisper speech-to-text (transcription routes, streaming sessions, Silero VAD,
+`transcribe`/`dictate`, web hold-to-talk) built from `475c443`; native pack
+0.5.0 adds `mlx-bun-mic-capture`. Notarization **Accepted**, submission
+`3c804807-3d16-4205-aa75-8127c21c1e9f`; arm64 archive SHA-256
+`2bf4d2150a35747618d6b7d397ef9a3ca29dfed48d2c979af18518d2fae195b7`, matching the
+GitHub asset and the Homebrew formula. **npm publish is pending** (`npm whoami`
+was 401 on the release machine; finish with `npm login` + `bun run publish:npm`).
+Notes: [release-notes-v0.5.0.md](docs/archive/planning/release-notes-v0.5.0.md).
+
 ## Released: mlx-bun v0.4.0 (2026-09-11)
 
 PR #48 is merged and published through `scripts/publish-release.sh` to GitHub,
@@ -24,10 +35,7 @@ Built from `a54f819` with Bun 1.4.2 and native pack 0.4.0 / MLX 0.32.2.
 Apple notarization **Accepted**, submission
 `92840689-ebc3-4ba8-bfa6-8d5923aabe39`. Signed arm64 archive SHA-256:
 `dd362be989c96964cbfe1c149c47a330c814ddf4d8412b21b8d75747aae21ede`.
-The downloaded release matches the GitHub asset and Homebrew formula hashes;
-npm reports 0.4.0. Notes: [release-notes-v0.4.0.md](docs/archive/planning/release-notes-v0.4.0.md).
-Measured results and limits: [benchmarks.md](docs/reference/benchmarks.md).
-There is no matched successful original/final Kanban task-time comparison.
+Notes: [release-notes-v0.4.0.md](docs/archive/planning/release-notes-v0.4.0.md); results in [benchmarks.md](docs/reference/benchmarks.md).
 
 The post-release M4 standard matrix and packed-Qwen KV4/TQ follow-up are
 complete. Both quantized packed-model profiles pass context and SSD restart;
