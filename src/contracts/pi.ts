@@ -160,7 +160,9 @@ export type ServerMessage =
   // provider declaration — clients use it instead of probing for a 400.
   // `thinking`: whether the model has a switchable reasoning channel (drives
   // the UI's thinking on/off toggle; false hides it).
-  | { type: "ready"; model: string; vision: boolean; audio: boolean; thinking: boolean; genDefaults: ReadyGenDefaults }
+  // transcription: a Whisper checkpoint is configured or resolvable for
+  // /v1/audio/sessions — drives the composer's hold-to-talk mic button.
+  | { type: "ready"; model: string; vision: boolean; audio: boolean; thinking: boolean; genDefaults: ReadyGenDefaults; transcription?: boolean }
   | { type: "turn_start" }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }

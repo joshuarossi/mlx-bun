@@ -61,6 +61,13 @@ export function isDiffusionGemmaConfig(config: ModelConfig): boolean {
   return config.modelType === "diffusion_gemma";
 }
 
+/** Whisper (model_type `whisper`, mlx-whisper ModelDimensions config):
+ *  encoder-decoder speech recognition — audio in, text out. Routed through
+ *  the transcription engine (src/audio/whisper-*.ts), never the chat loop. */
+export function isWhisperConfig(config: ModelConfig): boolean {
+  return config.modelType === "whisper" && typeof config.raw.n_audio_ctx === "number";
+}
+
 /** Support tier for a registry record (docs/design/generic-model-support.md):
  *  "targeted" = dedicated/generated forward + L2/L3 paths;
  *  "generic"  = the Tier-0 universal module (L1 monolith only);
@@ -74,6 +81,7 @@ export function supportTier(modelType: string, repoId = ""): "targeted" | "gener
   if (modelType === "qwen3") return "targeted"; // plain Qwen3 (embedding backbone)
   if (modelType === "qwen3_moe") return "targeted"; // Qwen3-MoE (sparse experts)
   if (modelType === "glm_moe_dsa") return "targeted"; // dedicated GLM-5.2 MLA/DSA port
+  if (modelType === "whisper") return "targeted"; // speech-to-text (transcription engine)
   if (modelType === "llama" && repoId.toLowerCase().includes("minicpm5-1b-optiq-4bit"))
     return "targeted";
   // Tier-0 generic fallback: the universal-dense descriptor table.

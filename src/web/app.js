@@ -1209,6 +1209,7 @@ function readText(file) {
 class ComposerState {
   attachments = [];
   visionCapable = false;
+  transcriptionCapable = false;
   thinkingCapable = false;
   thinkingOn = true;
   attachSeq = 0;
@@ -1321,6 +1322,9 @@ function updateAttachHint(state) {
   const btn = $("chat-attach-btn");
   if (btn)
     btn.title = state.visionCapable ? "Attach files or images" : "Attach files (this model can't see images)";
+  const mic = $("chat-mic-btn");
+  if (mic)
+    mic.style.display = state.transcriptionCapable ? "" : "none";
 }
 function escHtml2(s) {
   return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
@@ -1981,6 +1985,160 @@ function renderQueue(q) {
     parts.push('<span class="qtag">queued: <b>' + escHtml2(String(f).slice(0, 60)) + "</b></span>");
   bar.innerHTML = parts.join("");
   bar.style.display = parts.length ? "flex" : "none";
+}
+
+// src/web/src/voice.ts
+var SAMPLE_RATE = 16000;
+var CHUNK_SECONDS = 0.25;
+var take = null;
+var starting = false;
+async function postChunk(id, pcm) {
+  const r = await fetch(`/v1/audio/sessions/${id}/audio`, {
+    method: "POST",
+    headers: { "content-type": "audio/pcm;rate=16000" },
+    body: new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength))
+  });
+  if (!r.ok)
+    throw new Error(`audio chunk rejected (${r.status})`);
+}
+function flush(t) {
+  if (t.pendingLen === 0)
+    return;
+  const buf = new Float32Array(t.pendingLen);
+  let o = 0;
+  for (const p of t.pending) {
+    buf.set(p, o);
+    o += p.length;
+  }
+  t.pending = [];
+  t.pendingLen = 0;
+  t.sending = t.sending.then(() => postChunk(t.id, buf)).catch((e) => {
+    t.failed = e.message;
+  });
+}
+async function begin(btn) {
+  if (take || starting)
+    return;
+  starting = true;
+  btn.classList.add("busy");
+  try {
+    const r = await fetch("/v1/audio/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ vad: true, vad_min_speech_ms: 120, temperature: 0 })
+    });
+    if (!r.ok)
+      throw new Error(r.status === 503 ? "no Whisper model on this server" : `session failed (${r.status})`);
+    const { id } = await r.json();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    const src = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    const t = { id, ctx, stream, node, pending: [], pendingLen: 0, sending: Promise.resolve(), failed: null };
+    node.onaudioprocess = (e) => {
+      if (take !== t)
+        return;
+      const data = e.inputBuffer.getChannelData(0);
+      t.pending.push(new Float32Array(data));
+      t.pendingLen += data.length;
+      if (t.pendingLen >= SAMPLE_RATE * CHUNK_SECONDS)
+        flush(t);
+    };
+    src.connect(node);
+    node.connect(ctx.destination);
+    take = t;
+    btn.classList.add("recording");
+  } catch (e) {
+    toast(`Voice input failed: ${e.message}`, "err");
+  } finally {
+    starting = false;
+    btn.classList.remove("busy");
+  }
+}
+async function end(btn, box) {
+  const t = take;
+  if (!t)
+    return;
+  take = null;
+  btn.classList.remove("recording");
+  btn.classList.add("busy");
+  try {
+    t.node.disconnect();
+    for (const track of t.stream.getTracks())
+      track.stop();
+    t.ctx.close();
+    flush(t);
+    await t.sending;
+    if (t.failed)
+      throw new Error(t.failed);
+    const r = await fetch(`/v1/audio/sessions/${t.id}/finish`, { method: "POST" });
+    if (!r.ok)
+      throw new Error(`transcription failed (${r.status})`);
+    const body = await r.json();
+    const text = (body.text || "").trim();
+    if (!text) {
+      toast(body.mlx_bun?.vad?.speech === false ? "No speech detected" : "Nothing transcribed", "");
+      return;
+    }
+    insertAtCaret(box, text);
+  } catch (e) {
+    toast(`Voice input failed: ${e.message}`, "err");
+  } finally {
+    btn.classList.remove("busy");
+  }
+}
+function insertAtCaret(box, text) {
+  const start = box.selectionStart ?? box.value.length;
+  const endPos = box.selectionEnd ?? start;
+  const before = box.value.slice(0, start);
+  const after = box.value.slice(endPos);
+  const lead = before.length && !/\s$/.test(before) ? " " : "";
+  const trail = after.length && !/^\s/.test(after) ? " " : "";
+  box.value = before + lead + text + trail + after;
+  const caret = (before + lead + text + trail).length;
+  box.setSelectionRange(caret, caret);
+  box.dispatchEvent(new Event("input", { bubbles: true }));
+  box.focus();
+}
+function initVoiceInput(btn, box) {
+  if (!btn)
+    return;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    btn.title = "Microphone capture needs a secure context (https or localhost)";
+  }
+  btn.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    btn.setPointerCapture(e.pointerId);
+    begin(btn);
+  });
+  const release = () => {
+    end(btn, box);
+  };
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointercancel", release);
+  btn.addEventListener("lostpointercapture", release);
+  let keyHeld = false;
+  btn.addEventListener("keydown", (e) => {
+    if ((e.key === " " || e.key === "Enter") && !keyHeld) {
+      e.preventDefault();
+      keyHeld = true;
+      begin(btn);
+    }
+  });
+  btn.addEventListener("keyup", (e) => {
+    if ((e.key === " " || e.key === "Enter") && keyHeld) {
+      e.preventDefault();
+      keyHeld = false;
+      release();
+    }
+  });
+  btn.addEventListener("blur", () => {
+    if (keyHeld) {
+      keyHeld = false;
+      release();
+    }
+  });
+  $.voice = { begin: () => begin(btn), end: () => end(btn, box) };
 }
 
 // src/web/src/sessions.ts
@@ -3809,6 +3967,7 @@ function createChatController() {
       case "ready":
         $("nav-model").textContent = m.model || $("nav-model").textContent || "no model";
         composer.visionCapable = !!m.vision;
+        composer.transcriptionCapable = !!m.transcription;
         updateAttachHint(composer);
         composer.thinkingCapable = !!m.thinking;
         updateThinkingToggle(composer);
@@ -4026,6 +4185,7 @@ function createChatController() {
       });
       initMemoryPanel();
       $("chat-attach-btn").onclick = () => $("chat-file-input").click();
+      initVoiceInput($("chat-mic-btn"), box);
       $("chat-file-input").addEventListener("change", (e) => {
         addFiles(composer, [...e.target.files || []]);
         e.target.value = "";

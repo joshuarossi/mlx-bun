@@ -56,6 +56,7 @@ dir), ~80 MB compressed; `mlx.metallib` is the bulk of the installed size.
 | `libmlx.dylib`, `libjaccl.dylib`, `mlx.metallib` | MLX core, its distributed-comm dependency, the Metal kernels (libmlx loads the metallib from its own directory) | `/opt/homebrew/opt/mlx/lib` (override `MLX_LIB_DIR`) |
 | `libmlx_bun_expert_io.dylib` | bounded streamed-expert I/O for GLM-5.2 MoE serving | [scripts/build-expert-io.sh](../../scripts/build-expert-io.sh) |
 | `mlx-bun-frame-extract` | AVFoundation frame-extraction helper for video input (a Mach-O *executable*, not a dylib) | [scripts/build-frame-extract.sh](../../scripts/build-frame-extract.sh) → `swiftc -O src/native/frame_extract.swift` |
+| `mlx-bun-mic-capture` | AVAudioEngine microphone capture + CGEvent hold-key helper for `mlx-bun dictate` (Mach-O executable; the only native piece of the Whisper work — the web composer uses the browser mic) | [scripts/build-mic-capture.sh](../../scripts/build-mic-capture.sh) → `swiftc -O src/native/mic_capture.swift` |
 | `photon_rs_bg.wasm` | pi's image codec, resolved next to the executable by the web chat's `read`-on-image path (best-effort; pi degrades to a text note without it) | `node_modules/@silvia-odwyer/photon-node` (override `PHOTON_WASM`) |
 | `theme/*.json`, `assets/*.png`, `export-html/`, `package.json`, `CHANGELOG.md`, `native/darwin/prebuilds/<arch>/darwin-modifiers.node` | assets the embedded pi **terminal** (`mlx-bun pi`) resolves by path: themes, startup art, `/export` template, version banner + changelog, native modifier-key helper (degrades if absent) | `node_modules/@earendil-works/pi-coding-agent/dist`, `pi-tui` |
 
@@ -157,7 +158,7 @@ does, in order. Steps 1–3 are yours; the rest is the scripts.
    (`BUILD_DIR` overrides `dist`). Release builds are arm64-only; the script
    exits on any other host arch.
 5. **Sign nested code first** — every `*.dylib`, `*.node`, and the
-   `mlx-bun-frame-extract` helper, matched by name under the build dir, gets
+   `mlx-bun-frame-extract` / `mlx-bun-mic-capture` helpers, matched by name under the build dir, get
    `codesign --force --timestamp --options runtime -s "<identity>"`.
    Nested-before-container is required. The metallib, wasm, JSON, and PNG
    assets are data, not code, and are skipped.

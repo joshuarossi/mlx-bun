@@ -1118,6 +1118,13 @@
   #chat-attach-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
     border:1px solid var(--hairline);color:var(--ink);font-size:23px;line-height:1;cursor:pointer;transition:background .15s,border-color .15s}
   #chat-attach-btn:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
+  /* hold-to-talk mic (voice.ts) */
+  #chat-mic-btn{flex:0 0 auto;width:50px;height:50px;border-radius:14px;background:var(--card);
+    border:1px solid var(--hairline);color:var(--ink);font-size:20px;line-height:1;cursor:pointer;user-select:none;-webkit-user-select:none;transition:background .15s,border-color .15s}
+  #chat-mic-btn:hover{background:var(--card-hover);border-color:rgba(10,132,255,.5)}
+  #chat-mic-btn.recording{background:rgba(255,69,58,.18);border-color:rgba(255,69,58,.7);animation:micpulse 1s ease-in-out infinite}
+  #chat-mic-btn.busy{opacity:.6;cursor:progress}
+  @keyframes micpulse{0%,100%{box-shadow:0 0 0 0 rgba(255,69,58,.35)}50%{box-shadow:0 0 0 8px rgba(255,69,58,0)}}
   .attach-row{display:none;flex-wrap:wrap;gap:8px;max-width:840px;width:100%;margin:0 auto 8px}
   .attach-chip{display:flex;align-items:center;gap:7px;background:var(--card);border:1px solid var(--hairline);
     border-radius:10px;padding:5px 9px;font-size:12px;max-width:240px}
@@ -1496,6 +1503,11 @@
         <div class="inputrow">
           <button id="chat-attach-btn" class="iconbtn" title="Attach files or images" aria-label="Attach files">＋</button>
           <input type="file" id="chat-file-input" multiple style="display:none">
+          <!-- Hold-to-talk dictation (voice.ts): shown only when the `ready`
+               frame carries transcription=true (a Whisper checkpoint serves
+               /v1/audio/sessions). Press and hold (mouse/touch, or Space/Enter
+               while focused); release to transcribe into the box. -->
+          <button id="chat-mic-btn" class="iconbtn" title="Hold to talk (Whisper)" aria-label="Hold to talk" style="display:none">🎙</button>
           <div id="chat-box-wrap">
             <!-- Keep the placeholder SHORT: the Enter/Shift+Enter AND "#"
                  hints live in the chat-hint status line below (and the Cmd+/

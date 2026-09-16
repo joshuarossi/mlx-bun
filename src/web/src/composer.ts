@@ -55,6 +55,7 @@ function readText(file: File): Promise<string> {
 export class ComposerState {
   attachments: Attachment[] = [];
   visionCapable = false;  // from the `ready` frame; gates image attachments
+  transcriptionCapable = false;  // from the `ready` frame; shows the hold-to-talk mic
   thinkingCapable = false; // from `ready`; gates the reasoning toggle
   // default on: with tools (read/web_search) the reasoning step gives the
   // small model far better tool judgment (answers math/writing itself,
@@ -179,6 +180,8 @@ export function buildMessageText(state: ComposerState, userText: string): BuiltM
 export function updateAttachHint(state: ComposerState): void {
   const btn = $("chat-attach-btn");
   if (btn) btn.title = state.visionCapable ? "Attach files or images" : "Attach files (this model can't see images)";
+  const mic = $("chat-mic-btn");
+  if (mic) mic.style.display = state.transcriptionCapable ? "" : "none";
 }
 
 /* ────────────────────────────────────────────────────────────────────

@@ -127,6 +127,7 @@ failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing pas
 | Interface-based engine refactor | R1–R9 and R10 code migration merged in `673b43f`, PR #46. Model-owned execution, shared prefill/sessions, policy capture and state ownership landed. Current checkpoint: typechecks and model-free suite pass. The earlier M4 delta-golden discrepancy was reproduced in the pinned oracle and explicitly regenerated on unchanged inputs. | Share target and quiet M4 Pro acceptance with Phase 6 R0. Upstream loaded-machine repeats establish no 27B speed win. See engine architecture §12.13 and decode-speed-program §7.1. | main |
 | Memory / the Dreaming | write path + nightly synthesis built; ingest is NOT wired into the nightly run; `memory synthesize --since/--model` parsed but unapplied | wire ingest into `runPipeline`; decide the embeddings-as-instruments question; promote wiki-full to a real vault | main |
 | Audio input (Gemma-4) | A0–A4 served | A5 bench cells + 12B sidecar coverage | main |
+| Whisper speech-to-text | P0–P4 landed (P4: Silero VAD gate + streaming sessions + AudioToolbox decode; ANE encoder measured 3.3× slower than the GPU and shelved): bit-exact mlx-whisper parity (mel/encoder/logits), greedy/beam/prompt decoding, word timestamps, `mlx-bun transcribe`, `/v1/audio/transcriptions` companion + transcription-only server with idle page-out; fast path 8 % faster than mlx-whisper greedy and 11–15 % faster than whisper.cpp beam-5 on the M1 Max with identical transcripts (benchmarks.md). | Josh tests `mlx-bun dictate` (push-to-talk prototype: mic sidecar → sessions → print/copy/type); then the sotto backend PR and TUI/web voice input. | main |
 
 ## Known limitations and measurement conditions
 
@@ -145,5 +146,4 @@ failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing pas
   decode@ctx and restart-restore size instead.
 - `WIRE_THRESHOLD` (generate.ts) is a host-relative fraction; the 12B sits
   near the boundary on a 24 GB machine.
-- Two dev machines (M1 Max 32 GB, M4 Pro 24 GB); neither is canonical — every
-  number carries host/chip/RAM ([environment.md](docs/reference/environment.md)).
+- Two dev machines, neither canonical; every number carries host/chip/RAM ([environment.md](docs/reference/environment.md)).

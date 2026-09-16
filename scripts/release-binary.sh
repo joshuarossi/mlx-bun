@@ -49,7 +49,7 @@ echo "==> signing nested code (dylibs, .node)"
 # Every nested Mach-O needs Developer ID + hardened runtime + timestamp or
 # notarization returns Invalid (v0.2.0 first attempt: the ad-hoc-signed
 # mlx-bun-frame-extract helper). Match helper executables by name here.
-find "$BUILD_DIR" -type f \( -name '*.dylib' -o -name '*.node' -o -name 'mlx-bun-frame-extract' \) -print0 \
+find "$BUILD_DIR" -type f \( -name '*.dylib' -o -name '*.node' -o -name 'mlx-bun-frame-extract' -o -name 'mlx-bun-mic-capture' \) -print0 \
   | xargs -0 codesign --force --timestamp --options runtime -s "$IDENTITY"
 
 echo "==> signing executable (with JIT entitlements)"
@@ -92,7 +92,7 @@ TARBALL="mlx-bun-v${VERSION}-${ARCH}.tar.gz"
 echo "==> packaging $TARBALL"
 FILES=""
 for f in mlx-bun libmlx.dylib libmlxc.dylib libjaccl.dylib \
-         libmlx_bun_expert_io.dylib mlx-bun-frame-extract mlx.metallib \
+         libmlx_bun_expert_io.dylib mlx-bun-frame-extract mlx-bun-mic-capture mlx.metallib \
          photon_rs_bg.wasm theme assets export-html native \
          package.json CHANGELOG.md; do
   [ -e "$BUILD_DIR/$f" ] && FILES="$FILES $f"

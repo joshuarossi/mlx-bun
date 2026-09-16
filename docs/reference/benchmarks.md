@@ -509,6 +509,55 @@ excluded from this same-artifact h2h. Its [KV4/TQ measurements](#released-v040-p
 Raw command manifest, report and comparison live in
 `reports/release-v0.4.0-standard/default-batched-h2h-{manifest.json,m4.md.json,review.json}`.
 
+### Whisper speech-to-text head-to-head — M1 Max 32 GB (2026-09-15)
+
+`bun scripts/bench/whisper.ts --reps 5` (min of 5 warm in-process runs per
+cell; every engine decodes the same 16 kHz clips; `mlx-community/
+whisper-large-v3-turbo` fp16 for the MLX arms, `ggml-large-v3-turbo.bin`
+for whisper.cpp v1.9.3 Metal through sotto's helper at beam 5 / temperature
+0 / its Silero gate). Machine: MacBookPro18,2, M1 Max 32 GB, MLX 0.32.2,
+sotto's dev server idle in the background. Transcripts were identical
+across arms except whisper.cpp's leading-space and casing conventions.
+
+| clip (audio) | mlx-bun fast greedy | mlx-bun faithful greedy | mlx-whisper 0.4.3 greedy | mlx-bun fast beam-5 | mlx-bun faithful beam-5 | whisper.cpp beam-5 |
+| --- | --- | --- | --- | --- | --- | --- |
+| fox (2.7 s) | **323 ms** | 340 | 337 | **366 ms** | 405 | 408 |
+| jfk (11.0 s) | **340 ms** (32× rt) | 378 | 371 | **424 ms** (26× rt) | 447 | 499 |
+| long (33.0 s, 2 windows) | **759 ms** (44× rt) | 825 | 826 | **1027 ms** (32× rt) | 1091 | 1157 |
+
+Reading: the faithful (oracle-graph) path already matches mlx-whisper;
+the fast path (fused attention, fused cross-K/V, compiled decoder step,
+device-side filters, pipelined greedy) is 8 % faster than mlx-whisper on
+greedy and 11–15 % faster than whisper.cpp at beam 5. Where the time
+goes on the 11 s clip (fast path, warm): mel 1 ms · encoder 285 ms ·
+cross-K/V 5 ms · prefill 4 ms · 28 decode steps ≈ 45 ms (1.5 ms/token).
+The encoder is bound by its fp16 gemms (~7–8 TFLOPS on this GPU); the
+measured dead ends are recorded in generic-model-support.md §6.7.
+**Neural Engine (Core ML) encoder, same machine, 2026-09-16:** the encoder
+converted with coremltools 9 to an fp16 mlprogram (plain linear/attention
+graph, `/tmp/coreml/convert_encoder.py`, 14 s to convert) and timed from
+Swift (`MLModel.prediction`, best of 5 warm): `cpuAndNeuralEngine` **940 ms**,
+`cpuAndGPU` 288 ms, `all` 288 ms (Core ML picks the GPU). The naive graph
+is 3.3× slower on the ANE than on the GPU and its fp16 outputs differ from
+the GPU's; whisper.cpp's ANE gains come from an ANE-shaped graph (4-D
+1×1 convs, split softmax) and matter on chips whose GPU is weak relative
+to the ANE. Not pursued for the M1 Max; the MLX GPU path already ties Core
+ML's GPU path.
+
+**Silero VAD (Silero v6.2 port, `src/audio/silero-vad.ts`):** 24 ms for
+11 s of audio warm, 433 ms for 180 s (the host-side LSTM recurrence
+dominates: 2.4 ms per second of audio); a silent take costs the VAD only.
+**AudioToolbox decode:** 11 s mp3 in 3.7 ms warm vs 72 ms through the
+`afconvert` subprocess; WAV bit-identical to the PCM parser.
+**Streaming sessions:** a 62 s take (three windows) transcribed batch in
+1165 ms; fed in 1 s chunks it finished 327 ms after the last chunk with
+identical text (888 ms of window work happened during capture).
+
+Lab `audio_ctx` (whisper.cpp `-ac`) halves the encoder at 768 positions
+but hallucinates repeats on the JFK clip at ≤ 768 and appends "Thank you."
+at 1024 — not a default. Page-in after idle unload: 37–45 ms (weights
+from the OS file cache), first request then pays the compile traces.
+
 ## Running the benchmark
 
 Install the repository dependencies and the matching native runtime. Configure

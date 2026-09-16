@@ -1014,6 +1014,7 @@ class PiWebSession {
     private readonly opts: {
       port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean;
       vision: boolean; audio: boolean; thinking: boolean; genDefaults: ReadyGenDefaults;
+      transcription: () => Promise<boolean>;
     },
   ) {}
 
@@ -1046,9 +1047,11 @@ class PiWebSession {
     await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
     if (this.disposed) return;
 
+    let transcription = false;
+    try { transcription = await this.opts.transcription(); } catch { /* no whisper → no mic button */ }
     this.send({
       type: "ready", model: this.opts.modelId, vision: this.opts.vision, audio: this.opts.audio,
-      thinking: this.opts.thinking, genDefaults: this.opts.genDefaults,
+      thinking: this.opts.thinking, genDefaults: this.opts.genDefaults, transcription,
     });
     this.sendCodingToolsState();
     this.sendToolApprovals();
@@ -1854,6 +1857,10 @@ export function makePiWsHandler(opts: {
    *  overrides), sent once on the `ready` frame. Default: all-null (the
    *  sampling popover falls back to its own hardcoded shape). */
   genDefaults?: ReadyGenDefaults;
+  /** Whether /v1/audio/sessions can serve this browser (a Whisper checkpoint
+   *  is configured or resolvable). Async: the default checkpoint resolves
+   *  lazily through the registry. */
+  transcription?: () => Promise<boolean>;
 }): WebSocketHandler<PiWsData> {
   const resolved = {
     port: opts.port,
@@ -1864,6 +1871,7 @@ export function makePiWsHandler(opts: {
     audio: opts.audio ?? false,
     thinking: opts.thinking ?? false,
     genDefaults: opts.genDefaults ?? { temperature: null, topP: null, topK: null },
+    transcription: opts.transcription ?? (async () => false),
   };
 
   return {

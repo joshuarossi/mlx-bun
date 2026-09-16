@@ -30,6 +30,7 @@ import {
   renderAttachments, renderContext, renderLane, renderQueue, updateAttachHint,
   updateThinkingToggle, type ContextFrame,
 } from "./composer";
+import { initVoiceInput } from "./voice";
 import {
   addMsgActions, newSiblingInfo, newSidebarState, renderSessions, renderSiblingToggle,
   switchSiblingTarget, applySessSearch, type SidebarState, type SiblingInfo,
@@ -764,7 +765,7 @@ export function createChatController() {
     switch (m.type) {
       case "ready":
         $("nav-model").textContent = m.model || ($("nav-model").textContent as string) || "no model";
-        composer.visionCapable = !!m.vision; updateAttachHint(composer);
+        composer.visionCapable = !!m.vision; composer.transcriptionCapable = !!m.transcription; updateAttachHint(composer);
         composer.thinkingCapable = !!m.thinking; updateThinkingToggle(composer);
         // Per-model recommended sampling (generation_config.json, server-CLI
         // overrides applied) — replaces the old hardcoded SAMP_REC shape.
@@ -979,6 +980,8 @@ export function createChatController() {
       initMemoryPanel();
       // Attachments: + button, file picker, clipboard paste, drag-and-drop.
       ($("chat-attach-btn") as HTMLButtonElement).onclick = () => ($("chat-file-input") as HTMLInputElement).click();
+      // Hold-to-talk mic → /v1/audio/sessions → text into the composer (voice.ts).
+      initVoiceInput($("chat-mic-btn") as HTMLButtonElement, box as HTMLTextAreaElement);
       $("chat-file-input").addEventListener("change", (e) => { addFiles(composer, [...(e.target as HTMLInputElement).files || []]); (e.target as HTMLInputElement).value = ""; });
       box.addEventListener("paste", (e) => {
         const items = e.clipboardData && e.clipboardData.items;

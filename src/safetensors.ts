@@ -127,8 +127,15 @@ export class ShardedSafetensors {
         self.tensorToFile.set(tensor, sf);
       }
     } else {
-      const sf = SafetensorsFile.open(`${modelDir}/model.safetensors`);
-      self.files.set("model.safetensors", sf);
+      // Single-file artifacts: HF's model.safetensors, or mlx-whisper's
+      // weights.safetensors (mlx-community/whisper-*).
+      const file = (await Bun.file(`${modelDir}/model.safetensors`).exists())
+        ? "model.safetensors"
+        : (await Bun.file(`${modelDir}/weights.safetensors`).exists())
+          ? "weights.safetensors"
+          : "model.safetensors";
+      const sf = SafetensorsFile.open(`${modelDir}/${file}`);
+      self.files.set(file, sf);
       for (const name of sf.tensors.keys()) self.tensorToFile.set(name, sf);
     }
     return self;

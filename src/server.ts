@@ -1,5 +1,7 @@
 import { ContinuationPersistence } from "./backends/mlx/continuation-persistence";
 import { modelServingBinding } from "./backends/mlx/model-serving";
+import { handleAudioRoute } from "./serve/audio-routes";
+import { TranscriptionService, defaultWhisperRecord } from "./serve/transcription-service";
 import type { ServingContext } from "./serve/model-host";
 export { generationCheckpointKey } from "./serve/checkpoint-identity";
 // OpenAI-compatible HTTP server: /v1/chat/completions (+ SSE streaming)
@@ -165,6 +167,16 @@ export interface ServerOptions {
   defaultTemperature?: number;
   defaultTopP?: number;
   defaultTopK?: number;
+  /** Whisper checkpoint directory for /v1/audio/* (`--whisper-model`).
+   *  Unset ⇒ the first downloaded `whisper` checkpoint is used on demand. */
+  whisperModelDir?: string;
+  /** Display id for the Whisper checkpoint. */
+  whisperModelId?: string;
+  /** Seconds idle before the Whisper weights are disposed
+   *  (`--whisper-idle-unload`, default 300; 0 keeps them resident). */
+  whisperIdleUnloadSec?: number;
+  /** Keep the Whisper weights resident (`--whisper-resident`). */
+  whisperResident?: boolean;
   /** Completion cap when the request omits max_tokens (`--max-tokens`).
    *  mlx_lm.server's flag; its default there is 512 — ours stays 65,536 so
    *  thinking traces never truncate. `--max-tokens 512` = mlx-lm behavior. */
@@ -630,7 +642,33 @@ export function createServer(
 
   // /library response cache (30 s) — registry + config reads only.
   const startedAt = Date.now();
-  const discoveryRoutes = createDiscoveryRoutes(ctx, gateway, startedAt);
+  // Speech-to-text companion (docs/reference/server-api.md "Audio
+  // transcription"): a Whisper checkpoint served beside the chat model,
+  // loaded on the first /v1/audio request and paged out after
+  // --whisper-idle-unload seconds. Explicit --whisper-model wins; otherwise
+  // the first downloaded `whisper` checkpoint is resolved lazily.
+  let transcription: TranscriptionService | null = null;
+  let transcriptionResolved = false;
+  const transcriptionService = async (): Promise<TranscriptionService | null> => {
+    if (transcription || transcriptionResolved) return transcription;
+    transcriptionResolved = true;
+    const rec = serverOptions.whisperModelDir
+      ? { path: serverOptions.whisperModelDir, repoId: serverOptions.whisperModelId ?? serverOptions.whisperModelDir }
+      : await defaultWhisperRecord();
+    if (!rec) return null;
+    transcription = new TranscriptionService({
+      modelDir: rec.path, modelId: rec.repoId,
+      idleUnloadSec: serverOptions.whisperIdleUnloadSec,
+      resident: serverOptions.whisperResident,
+      exclusive: (fn, signal) => gateway.runExclusive(fn, undefined, signal),
+    });
+    return transcription;
+  };
+  const transcriptionInfo = async () => {
+    const svc = await transcriptionService();
+    return svc ? { id: svc.modelId, resident: svc.resident } : null;
+  };
+  const discoveryRoutes = createDiscoveryRoutes(ctx, gateway, startedAt, transcriptionInfo);
 
   // Captured so the WebSocket handler can resolve the bound (possibly
   // ephemeral) port lazily for the loopback pi provider.
@@ -718,6 +756,7 @@ export function createServer(
       // capability flags — true if a tower is loaded or loadable (lazy)
       vision: !!(ctx.vision || ctx.loadVision),
       audio: !!(ctx.audio || ctx.loadAudio),
+      transcription: async () => (await transcriptionService()) !== null,
       thinking: ctx.template.supportsThinking,
       // Model-author sampling defaults (generation_config.json, server-CLI
       // overrides applied) for the sampling popover's per-model recommended
@@ -770,6 +809,9 @@ export function createServer(
 
       const modelAdminResponse = await handleModelAdminRoute(url, request, ctx, gateway);
       if (modelAdminResponse) return modelAdminResponse;
+
+      const audioResponse = await handleAudioRoute(url, request, { service: transcriptionService });
+      if (audioResponse) return audioResponse;
 
       if (url.pathname === "/fit" && request.method === "GET") {
         // Fit assessment for the status page: this-machine report at the
