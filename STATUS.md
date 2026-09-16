@@ -18,8 +18,9 @@ Whisper speech-to-text (transcription routes, streaming sessions, Silero VAD,
 0.5.0 adds `mlx-bun-mic-capture`. Notarization **Accepted**, submission
 `3c804807-3d16-4205-aa75-8127c21c1e9f`; arm64 archive SHA-256
 `2bf4d2150a35747618d6b7d397ef9a3ca29dfed48d2c979af18518d2fae195b7`, matching the
-GitHub asset and the Homebrew formula; npm reports 0.5.0 (published as
-`joshua.rossi` — the package's owner account, not `josh.rossi`). Notes: [release-notes-v0.5.0.md](docs/archive/planning/release-notes-v0.5.0.md).
+GitHub asset and the Homebrew formula. **npm: verify** — the registry still served
+0.4.0 after the publish attempt; the package is owned by `joshua.rossi`, so publish from
+that account and confirm with `npm view mlx-bun version`. Notes: [release-notes-v0.5.0.md](docs/archive/planning/release-notes-v0.5.0.md).
 
 ## Released: mlx-bun v0.4.0 (2026-09-11)
 
