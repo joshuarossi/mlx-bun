@@ -31,10 +31,10 @@ export const NATIVE_PACK_FILES = [
 // 404s until the GitHub release exists; dev trees resolve via homebrew/env
 // and never hit this path).
 const SHA256: Record<string, string> = {
-  arm64: "f2b0857658aa0826aee14b94a6b83d4c86c08f2c07d716991de6afd038f5ca5d",
+  arm64: "6ff825499ca48bd4e9adebeefac78108cc4328971011c233210d65a0aa78b427",
 };
 const SIZE: Record<string, number> = {
-  arm64: 41931583,
+  arm64: 41945454,
 };
 
 export function nativePackName(arch = process.arch): string {
