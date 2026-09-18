@@ -1436,8 +1436,19 @@ export function benchmarkSourceSnapshot(cwd = process.cwd()): {
 } {
   const listed = Bun.spawnSync(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
     "--", "src", "native", "scripts", "package.json", "bun.lock"], { cwd });
-  if (listed.exitCode !== 0) throw new Error("cannot identify benchmark source files");
-  const files = [...new Set(listed.stdout.toString().split("\0").filter(Boolean))].sort()
+  // Apple's system git refuses every command until the host-wide Xcode
+  // license is accepted. Diagnostic benches still need a reproducible source
+  // snapshot on those machines, so enumerate the same bounded source roots.
+  const roots = ["src", "native", "scripts"].filter((path) => existsSync(join(cwd, path)));
+  const fallback = listed.exitCode === 0 ? null : Bun.spawnSync([
+    "find", ...roots, "-type", "f", "-print",
+  ], { cwd });
+  if (listed.exitCode !== 0 && fallback?.exitCode !== 0)
+    throw new Error("cannot identify benchmark source files");
+  const discovered = listed.exitCode === 0
+    ? listed.stdout.toString().split("\0")
+    : [...fallback!.stdout.toString().split("\n"), "package.json", "bun.lock"];
+  const files = [...new Set(discovered.filter(Boolean))].sort()
     .filter((path) => existsSync(join(cwd, path)) && statSync(join(cwd, path)).isFile())
     .map((path) => ({ path, sha256: createHash("sha256").update(readFileSync(join(cwd, path))).digest("hex") }));
   return { sha256: createHash("sha256").update(JSON.stringify(files)).digest("hex"), files };

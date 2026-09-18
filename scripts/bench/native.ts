@@ -56,6 +56,9 @@ export function validatePromptIds(value: unknown, vocabSize: number): number[] {
 
 export interface NativeBenchSample {
   wallMs: number; firstTokenMs: number | null; tokens: number[];
+  /** Wall-clock boundaries align external GPU/VM samples with timed work. */
+  startedAt?: string; firstTokenAt?: string | null; completedAt?: string;
+  engineTiming?: { prefillMs: number; decodeMs: number; cachedTokens: number; generatedTokens: number };
   finishReason: "stop" | "length"; peakBytes: number;
   memoryBefore?: { activeBytes: number; cacheBytes: number };
   memoryAfter?: { activeBytes: number; cacheBytes: number };
@@ -158,15 +161,21 @@ async function main(options: NativeBenchOptions): Promise<void> {
         report.warmups = warmups; report.samples = samples;
         const run = async (): Promise<NativeBenchSample> => {
           const memoryBefore = { activeBytes: activeMemory(), cacheBytes: cacheMemory() };
-          resetPeakMemory(); const start = performance.now();
+          resetPeakMemory(); const startedAt = new Date().toISOString(); const start = performance.now();
           if (options.clearBeforeRequest) clearCache();
-          const tokens: number[] = []; let firstTokenMs: number | null = null;
+          const tokens: number[] = []; let firstTokenMs: number | null = null; let firstTokenAt: string | null = null;
           const gen = generate(model, ids, { maxTokens: options.tokens, temperature: 0,
             prefillChunkSize: options.prefillChunk, eosTokenIds: config.eosTokenIds });
-          for await (const t of gen) { firstTokenMs ??= performance.now() - start; tokens.push(t.token); }
+          for await (const t of gen) {
+            if (firstTokenMs === null) { firstTokenMs = performance.now() - start; firstTokenAt = new Date().toISOString(); }
+            tokens.push(t.token);
+          }
           synchronize(gpuStream);
           const wallMs = performance.now() - start;
-          return { wallMs, firstTokenMs, tokens,
+          const stats = gen.stats;
+          return { wallMs, firstTokenMs, tokens, startedAt, firstTokenAt, completedAt: new Date().toISOString(),
+            engineTiming: stats ? { prefillMs: stats.prefillMs, decodeMs: stats.decodeMs,
+              cachedTokens: stats.cachedTokens, generatedTokens: stats.generatedTokens } : undefined,
             finishReason: tokens.length < options.tokens ? "stop" : "length", peakBytes: peakMemory(),
             memoryBefore, memoryAfter: { activeBytes: activeMemory(), cacheBytes: cacheMemory() } };
         };

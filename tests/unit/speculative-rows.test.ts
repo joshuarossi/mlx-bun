@@ -56,7 +56,7 @@ test("B=1 grammar termination ends acceptance before the next target sample", as
   const sampling = makeStepSampler({ temperature: 0 }, {
     tokenRepresentation: "number", grammarWait: "before-sample", historyUpdate: "after-sample",
   });
-  Object.assign(sampling, { independent: undefined });
+  Object.assign(sampling, { independent: undefined, positional: undefined });
   const sample = sampling.sample.bind(sampling);
   sampling.sample = async (scores, step) => { sampled++; grammarDone = true; return sample(scores, step); };
   try {
@@ -82,7 +82,7 @@ test("failed sampling or state retention releases the verify window without anot
       tokenRepresentation: "number", grammarWait: "before-sample", historyUpdate: "after-sample",
     });
     if (phase === "sample") {
-      Object.assign(sampling, { independent: undefined });
+      Object.assign(sampling, { independent: undefined, positional: undefined });
       sampling.sample = async () => { throw failure; };
     }
     const owned = (name: string) => {
@@ -204,7 +204,7 @@ test("unequal proposals never sample or retain another row's padded suffix", asy
   }));
   const sampled: number[][] = [[], [], []], emitted: number[][] = [[], [], []];
   for (const [row, sampler] of samplers.entries()) {
-    Object.assign(sampler, { independent: undefined });
+    Object.assign(sampler, { independent: undefined, positional: undefined });
     const sample = sampler.sample.bind(sampler);
     sampler.sample = async (scores, step) => { sampled[row]!.push(step); return sample(scores, step); };
   }
@@ -237,4 +237,86 @@ test("unequal proposals never sample or retain another row's padded suffix", asy
       { kind: "stop", generated: 2, accepted: 2 },
     ]);
   } finally { for (const sampler of samplers) sampler.dispose(); }
+});
+
+test("stateless sampled rows verify the whole window in one readback and match sequential draws", async () => {
+  const proposals = [[2, 3, 4], [5, 6, 7]];
+  const width = 4, V = 16;
+  // Row 0 favors its drafts at positions 0..1 then diverges; row 1 favors all
+  // three drafts and a bonus. Modest margins keep sampling genuinely stochastic.
+  const favored = [[2, 3, 9, 1], [5, 6, 7, 8]];
+  const logitsFor = () => MlxArray.fromFloat32(Float32Array.from({ length: 2 * width * V }, (_, i) => {
+    const row = Math.floor(i / (width * V)), position = Math.floor(i / V) % width, token = i % V;
+    return (favored[row]![position] === token ? 2.5 : 0) + ((token * 7 + position * 3) % 5) * 0.2;
+  }), [2, width, V]);
+  const run = async (sequentialOnly: boolean) => {
+    const samplers = [0, 1].map(() => makeStepSampler({ temperature: 0.9, topP: 0.95, topK: 6, seed: 19 }, {
+      tokenRepresentation: "number", grammarWait: "before-sample", historyUpdate: "after-sample",
+    }));
+    let sequentialCalls = 0;
+    for (const sampling of samplers) {
+      expect(sampling.independent).toBeUndefined();
+      expect(sampling.positional).toBeDefined();
+      if (sequentialOnly) Object.assign(sampling, { positional: undefined });
+      const sample = sampling.sample.bind(sampling);
+      sampling.sample = async (scores, step) => { sequentialCalls++; return sample(scores, step); };
+    }
+    try {
+      const result = await advanceSpeculativeRows(samplers.map((sampling, row) => ({
+        pending: row + 1, step: row * 10 + 3, remaining: 20, eosTokenIds: [], sampling,
+      })), 3, {
+        draft: () => proposals, commit() {},
+      }, {
+        transaction: { canBegin: () => true, begin() {}, resolve() {} },
+        async forward() { return { logits: logitsFor(), context: ops.zeros([2, width, 2], Dtype.float32) }; },
+      });
+      return {
+        sequentialCalls,
+        emitted: result.map(row => row.acceptance.emitted),
+        accepted: result.map(row => row.acceptance.accepted),
+        correction: result.map(row => row.acceptance.correction),
+      };
+    } finally { for (const sampler of samplers) sampler.dispose(); }
+  };
+  const positional = await run(false);
+  const sequential = await run(true);
+  expect(positional.sequentialCalls).toBe(0);
+  expect(sequential.sequentialCalls).toBeGreaterThan(0);
+  expect(positional.emitted).toEqual(sequential.emitted);
+  expect(positional.accepted).toEqual(sequential.accepted);
+  expect(positional.correction).toEqual(sequential.correction);
+  // The favored tokens dominate: row 1 should usually accept its full draft.
+  expect(sequential.emitted.every(tokens => tokens.length >= 1)).toBe(true);
+});
+
+test("phase timing is absent by default and attributes draft/verify/sample/commit under the diagnostic flag", async () => {
+  const { createRuntimeConfig, withRuntimeConfig } = await import("../../src/runtime-config");
+  const run = (config: Record<string, string>) => withRuntimeConfig(createRuntimeConfig(config), async () => {
+    const sampling = makeStepSampler({ temperature: 0 }, {
+      tokenRepresentation: "number", grammarWait: "before-sample", historyUpdate: "after-sample",
+    });
+    let committed = 0;
+    try {
+      return await advanceSpeculativeOutputs([{ pending: 1, step: 0, remaining: 10, eosTokenIds: [], sampling,
+        output: { commit: async () => {} } }], 2, {
+        draft: () => [[2, 3]], commit() { committed++; },
+      }, {
+        transaction: { canBegin: () => true, begin() {}, resolve() {} },
+        async forward() { return { logits: MlxArray.fromFloat32(Float32Array.from({ length: 3 * 8 }, (_, i) =>
+          [2, 3, 4][Math.floor(i / 8)] === i % 8 ? 5 : 0), [1, 3, 8]), context: ops.zeros([1, 3, 2], Dtype.float32) }; },
+      }).then(result => ({ result, committed }));
+    } finally { sampling.dispose(); }
+  });
+  const plain = await run({});
+  expect(plain.result.phaseMs).toBeUndefined();
+  expect(plain.result.rounds[0]!.acceptance.accepted).toBe(2);
+  const timed = await run({ MLX_BUN_SPEC_PHASE_TIMING: "1" });
+  expect(timed.committed).toBe(1);
+  const phase = timed.result.phaseMs!;
+  expect(phase.rounds).toBe(1);
+  for (const key of ["draft", "verify", "sample", "commit"] as const) {
+    expect(Number.isFinite(phase[key])).toBe(true);
+    expect(phase[key]).toBeGreaterThanOrEqual(0);
+  }
+  expect(timed.result.rounds[0]!.acceptance.accepted).toBe(2);
 });

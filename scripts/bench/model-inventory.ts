@@ -38,13 +38,29 @@ export function matrixInventory(
   tensors: Map<string, TensorInfo>,
   quantization: ReturnType<typeof parseQuantization>,
 ): MatrixInventory | null {
-  if (!weight.name.endsWith(".weight") || weight.shape.length !== 2) return null;
+  if (!weight.name.endsWith(".weight")) return null;
   const module = weight.name.slice(0, -7);
   const scales = tensors.get(`${module}.scales`);
   const biases = tensors.get(`${module}.biases`);
   const spec = scales ? quantFor(quantization, module) : null;
-  const logicalShape = [...weight.shape];
-  if (scales) {
+  let logicalShape = [...weight.shape];
+  if (weight.shape.length !== 2) {
+    // Only this rank-3 layout represents a single matrix. Match the metadata
+    // contract in trellisGeometry without importing its native/GPU module.
+    // Ordinary rank-3 convolutions and stacked expert weights are not matrices
+    // in this census; their physical dimensions cannot use this conversion.
+    if (!scales || spec?.mode !== "trellis") return null;
+    const [groups, rows, words] = weight.shape;
+    const tr = spec.trellis;
+    if (weight.shape.length !== 3 || weight.dtype !== "U32" ||
+        spec.bits !== 3 || spec.groupSize !== 256 || tr?.axis !== 0 ||
+        tr.L !== 12 || tr.code !== "1mad" || words !== 48 ||
+        !Number.isSafeInteger(groups) || groups! < 1 || !Number.isSafeInteger(rows) || rows! < 1 ||
+        scales.shape.length !== 1 || scales.shape[0] !== rows)
+      throw new Error(`${weight.name}: unsupported interleaved trellis matrix layout`);
+    // Two 256-symbol blocks per group; rows are input features for axis 0.
+    logicalShape = [groups! * 512, rows!];
+  } else if (scales) {
     if (!spec || !["affine", "trellis", "mxfp4", "nvfp4", "mxfp8"].includes(spec.mode) ||
         !["U32", "U8"].includes(weight.dtype) || !(spec.bits > 0))
       throw new Error(`${weight.name}: cannot infer packed matrix layout`);
@@ -123,7 +139,7 @@ export function inventoryModel(modelDir: string) {
     payloadBytes: [...tensors.values()].reduce((n, t) => n + t.end - t.begin, 0),
     matrixParameters, matrixPayloadBytes,
     matrixEffectiveBpw: matrixParameters ? matrixPayloadBytes * 8 / matrixParameters : null,
-    bpwNote: "Rank-2 .weight matrices plus their .scales/.biases; excludes norms, convolutions and sidecars. This is not whole-model bpw or resident memory.",
+    bpwNote: "Rank-2 and supported interleaved trellis .weight matrices plus their .scales/.biases; excludes norms, convolutions, stacked experts and sidecars. This is not whole-model bpw or resident memory.",
     roles, projectionGroups: [...groups.values()], matrices,
   };
 }

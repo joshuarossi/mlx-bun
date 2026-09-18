@@ -8,6 +8,7 @@ import { totalmem } from "node:os";
 import { Weights } from "../weights";
 import { Gemma4Model } from "./gemma4";
 import { configFingerprint } from "./fingerprint";
+import { Qwen38TrellisTQ, qwen38TrellisTqAccepts } from "./qwen38-27b-trellis-tq";
 import { GENERATED } from "./generated";
 import { MiniCPM5Model } from "./minicpm5";
 import { Qwen35Model } from "./qwen3_5";
@@ -56,7 +57,10 @@ function residentImplementation(
 export const MLX_MODEL_IMPLEMENTATIONS = new ModelImplementationRegistry<Weights, RuntimeModel>([
   residentImplementation("diffusion-gemma", "diffusion-gemma", (weights, config) => new DiffusionGemmaModel(weights, config)),
   residentImplementation("minicpm5", "minicpm5", (weights, config) => new MiniCPM5Model(weights, config)),
-  residentImplementation("qwen3.5", "qwen3.5", (weights, config) => new Qwen35Model(weights, config)),
+  // Our published Trellis quant loads its own purpose-built graph; every other
+  // Qwen3.5-family artifact keeps the generic model.
+  residentImplementation("qwen3.5", "qwen3.5", (weights, config) =>
+    qwen38TrellisTqAccepts(config) ? new Qwen38TrellisTQ(weights, config) : new Qwen35Model(weights, config)),
   residentImplementation("qwen3-moe", "qwen3-moe", (weights, config) => new Qwen3MoeModel(weights, config)),
   residentImplementation("qwen3", "qwen3", (weights, config) => new Qwen3Model(weights, config)),
   residentImplementation("gemma4", "gemma4", (weights, config) => new Gemma4Model(weights, config)),

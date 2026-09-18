@@ -44,6 +44,122 @@ their recorded scores and timings, expandable acceptance/turn records, and
 no blocking script errors. Model-free tests cover missing records, failed
 execution, contradictory summaries, escaping and CLI import.
 
+## Common HTTP evaluation runner
+
+`scripts/bench/evaluate-http.py` records a frozen JSONL workload through an
+OpenAI-compatible chat endpoint. Each item has `id`, `suite`, and `messages`;
+GSM8K items also have `answer`. A JSON config supplies `baseUrl`, `request`,
+`timeoutSeconds`, and the engine, model, template and runtime identities.
+
+```sh
+python3 scripts/bench/evaluate-http.py --config config.json --items items.jsonl --out reports/evaluation --pid SERVER_PID
+```
+
+The runner preserves raw requests, SSE bytes, timestamped events, reasoning,
+answers, usage, finish reasons and sampled process-tree memory. Chunk arrival
+times are not per-token timings. RSS and physical footprint remain separate;
+power is unknown unless a validated collector supplies it. GSM8K requires the
+declared `#### number` final-answer format. Coding and IFEval need separate
+versioned scorers; generation completion is not a passing quality score.
+
+Resume requires unchanged config, workload bytes and runner source. A saved
+`runner.py` reproduces that version. An OS lock prevents concurrent writers.
+`--retry-errors` permits one recovery attempt and retains the first attempt's
+artifacts under `attempts/`; interrupted raw streams are retained as well.
+Completed answers, including wrong or truncated ones, are never regenerated.
+Report recovery time and failed attempts alongside clean execution time.
+
+Validate the stream and recovery behavior with
+`python3 scripts/bench/test-evaluate-http.py` before a scored campaign.
+
+`scripts/bench/score-http.py --items items.jsonl --run reports/evaluation
+--out reports/evaluation-scores` applies the installed EvalPlus base/extended
+coding tests and lm-eval IFEval strict/loose checks. Run it in the pinned
+evaluation environment with an OS sandbox for generated code. Download NLTK
+and benchmark data before entering that sandbox. The scoring manifest records
+generation hashes, scorer source, evaluator source and package versions;
+changed identities require a new output directory. Missing generations prevent
+scoring. Unscored development fixtures have no accuracy value. Summary task
+rates use generation elapsed time, excluding separate scoring time, and retain
+failed/truncated items in the denominator. These raw summaries do not establish
+quiet-machine performance or replace the standard serving benchmark gates.
+Per-item scoring durations and invocation records under `invocations/` account
+for evaluator work separately. Invocation timing includes ground-truth preparation
+but starts after imports and manifest validation. A failed invocation remains
+marked running with unknown total duration; do not treat missing time as zero.
+The scorer fixes langdetect's seed to zero and resets Python's random seed to
+zero for each item. This makes checker defaults independent of resume position;
+the seed policy is part of the scoring manifest.
+
+For a separately declared generated-answer MMLU protocol, `suite: "mmlu"`
+items supply an `answer` letter and `subject`. The final nonempty content line
+must be `####` followed by A, B, C or D, with optional spaces or tabs after the
+marker and letter. Reasoning text is never an answer source; errors, truncation
+and malformed answers count incorrect. The scorer reports item-weighted and
+subject-macro accuracy. This is separate from the direct-logit MMLU evaluator;
+publish exact subset IDs and prompts. Validate extraction with
+`python3 scripts/bench/test-score-http-mmlu.py`. Escape Unicode line separators
+when serializing JSONL so record readers preserve each complete question.
+
+For serial multi-model runs, `scripts/bench/run-http-campaign.py --plan plan.json
+--out reports/campaign` consumes a `jobs` array. Each job supplies `id`,
+`command`, `environment`, `healthUrl`, `config`, and an absolute `items` path.
+Optional `artifacts` records contain `path`, `bytes`, and `mtimeNs` from prior
+content-hash verification. The supervisor locks the GPU queue, checks port
+ownership and artifact metadata, starts one server process group, and preserves
+startup/shutdown and retry records. It stops after a failed recovery and skips
+completed jobs on resume. Validate this lifecycle with
+`python3 scripts/bench/test-run-http-campaign.py`. The lock coordinates these
+campaigns only; check for unrelated GPU work before starting one.
+
+Nested suites can reuse disjoint stages with
+`python3 scripts/bench/assemble-http-results.py --items core.jsonl --runs
+reports/screen/generations reports/core-extra/generations --out reports/core`.
+The assembler requires identical configuration and runner source, checks each
+recorded request against the requested item, and rejects overlap or missing
+items. Its manifest links each copied result to its original raw evidence.
+Score the assembled directory normally. Keep separate cold starts and recovery
+boundaries in timing reports; assembly does not make one continuous run.
+Validate these checks with `python3 scripts/bench/test-assemble-http-results.py`.
+
+`scripts/bench/select-http-finalists.py` selects from completed, hash-verified
+common-core results. Supply the screen `--plan`, core `--items`, `--core-root`,
+`--score-root`, `--out` and predeclared `--mandatory` candidate IDs. It retains
+mandatory candidates, tied per-suite accuracy leaders, the fastest total core
+generation run and candidates not dominated in accuracy, time, artifact size and
+physical footprint. Missing footprint prevents exclusion by dominance. Freeze
+this rule before viewing core results. Selection is descriptive and does not
+establish statistical superiority. Its test is
+`python3 scripts/bench/test-select-http-finalists.py`.
+
+`scripts/bench/report-http-results.py --spec spec.json --out reports/comparison`
+creates a Markdown table and JSON metrics from a `candidates` array containing
+`name`, `run` and `scores` directories. All candidates must have the same scored
+dataset. It verifies generation hashes, rejects missing/duplicate scores and
+keeps failures in the denominator. Accuracy intervals are marginal 95% Wilson
+intervals, not a test of superiority or equivalence. TTFT is first output chunk,
+including reasoning; first answer latency is separate. Rates exclude startup,
+recovery and scoring. Backend prefill/decode metrics retain their backend label;
+missing power and token counts stay unavailable. Check metric accounting with
+`python3 scripts/bench/test-report-http-results.py`.
+For a disclosed development-item companion view, the spec may include
+`excludeItemIds`. The reporter verifies every source result before filtering,
+rejects unknown IDs or removal of an entire suite, and records the exclusions.
+Generate the standard full report separately. Server lifetime and evaluator
+totals still cover the full source runs; subset request metrics cover retained
+items only.
+The report also totals recorded server lifetimes, including startup, recovery
+launches and shutdown. Original stage boundaries remain separate. Endpoint
+readiness is not proof that a lazy-loaded model is resident. Failed-request time
+is a component of server lifetime, not an extra amount to add again; stage gaps
+and offline evaluator time are excluded.
+Paired accuracy comparisons use `reference` from the spec, defaulting to its first
+candidate. They retain matched item IDs, discordant counts, pointwise 95% paired
+bootstrap intervals with 2,000 samples and seed 42, and exact two-sided McNemar
+p-values. These exploratory comparisons have no multiplicity adjustment. Zero
+observed discordance is not proof of equivalence. Choose the reference before
+reading results.
+
 ## 1. Parity (porting correctness) — bit-exact vs the oracle
 
 These recorded results compare logits under matching model, cache, execution
@@ -76,6 +192,557 @@ records the model, native wheel and oracle provenance.
 The latest standard comparison is shown first, with machine conditions and
 losses retained. These diagnostic results are observations of this workload,
 not a universal speed ranking.
+
+### Sampler history and n-gram index diagnostic, M4 Pro 24 GB (2026-09-14 UTC)
+
+Machine: `Joshs-MBP-2025.local`, M4 Pro 20 GPU cores, 24 GiB, Bun 1.4.2,
+native pack 0.4.0 / MLX 0.32.2. Source baseline `dfa46c9b`; candidate changes
+only sampler history retention and exact n-gram lookup. These are active-desktop
+diagnostics, not quiet `bench-serve.ts all` results. Recorded swap use exceeds
+the canonical preflight limit; do not quote these as serving speed improvements.
+
+The sampler retains the largest enabled finite penalty window, and no token
+history for bias alone. Explicit zero context still means unlimited history.
+The component screen uses a 4,096-token vocabulary, 64 committed steps,
+4,096/32,768/100,000-token seeds and six balanced pairs per profile. All emitted
+tokens match. At the 100,000-token seed the retained history ends at
+100,063 tokens in the control versus 0/20/128 in the candidate. Median peak
+MLX active allocations in bytes are:
+
+| Processor profile | Control | Candidate |
+| --- | ---: | ---: |
+| Bias only | 557,364 | 147,520 |
+| Finite 20 | 2,196,428 | 181,588 |
+| Finite 128 | 2,215,136 | 202,456 |
+
+These are component allocator peaks, not whole-model RSS. Component time
+changes range roughly from -2.5% to +2.6%, with no retained timing claim.
+Byte-level processor tests cover f32/bf16, mixed windows, unlimited windows,
+large commits, device commits and reseeding.
+
+The n-gram replay includes lazy index construction and 512 proposal/update
+rounds in each of eight balanced pairs. Longest suffix and earliest matching
+position remain exact. Times below are median total CPU milliseconds:
+
+| History | Maximum suffix | Scan | Index |
+| --- | ---: | ---: | ---: |
+| Actual 4,096-token prompt prefix | 3 | 0.075 | 0.137 |
+| Actual 4,096-token prompt prefix | 8 | 0.200 | 0.088 |
+| Synthetic random 32,768 | 3 | 47.503 | 1.578 |
+| Synthetic random 32,768 | 8 | 123.575 | 1.604 |
+| Synthetic random 100,000 | 3 | 177.281 | 4.869 |
+| Synthetic random 100,000 | 8 | 473.796 | 5.197 |
+| Repeating 100,000 | 3 | 0.417 | 0.567 |
+| Repeating 100,000 | 8 | 3.039 | 1.123 |
+
+The random-history benefit is a lookup result, not measured model throughput.
+Short/easy matches can lose because index construction adds work. The index
+stores one position per token plus map/array overhead. Heap-growth samples
+without a post-GC baseline do not establish its exact memory cost. Checkpoint
+payloads remain token histories; restored rows rebuild the derived index.
+
+Packed Qwen native comparisons preserve 32 emitted tokens for each of bias,
+finite-20, mixed-128/20 and explicitly unlimited penalty profiles. The n-gram
+comparison also preserves tokens and exercises 25 drafted tokens, 14 accepted
+and 11 rejected. Shared-fill B1/B2 replay passes. Model-free validation passes
+2,381 tests with 10 skips; the unavailable Qwen 0.8B fixture is a skip, not
+additional model evidence. Both generated tool-turn RAM/SSD restart tests pass
+with n-gram depth three and bf16 KV, thinking disabled/enabled. They compare
+continuation choices, log probabilities, usage and speculation records after
+a confirmed SSD restore. The continuations reuse 306/356 cached tokens;
+this establishes restore correctness, not long-session speed or memory.
+
+Bounded shared HTTP servers run control/candidate/candidate/control with
+three measured 32-token requests per server plus a warmup. Responses, log
+probabilities and usage are identical across all 16 responses. Bias, finite-20
+and finite-128 paired complete-request changes range from -0.33% to +0.37%.
+The serving result is effectively flat. Cache is disabled for this comparison;
+all four servers exit cleanly. The equivalent serial ABBA comparison also
+preserves all 16 responses and exits cleanly. Its two paired changes are
++0.34%/-0.34% for bias, -0.61%/-0.73% for finite-20, and +0.11%/-2.88%
+for finite-128. Two pairs and the active desktop do not establish a serial
+speed improvement. Source-loader hashes confirm the same candidate in every
+serial and shared run. Raw reports, exact control/candidate sources,
+loader hashes, profiles and machine checks live under
+`reports/inference-optimization-audit/{sampler-history,ngram-index}/`.
+
+### Residual norm fusion diagnostic, M4 Pro 24 GB (2026-09-14 UTC)
+
+Same M4 Pro, packed Qwen artifact and active-desktop limits as the sampler
+record above. The candidate fuses residual addition and RMSNorm while retaining
+bf16 intermediate rounding, the pinned native reduction order and precise
+reciprocal square root. A fixed-shape compiled wrapper removes repeated host
+construction. Sixteen captured layer-1 input/attention-output pairs form the
+changing-input corpus. M3/M4 group ordinary captured vectors; they are not
+captured speculative verification states.
+
+All 96 component/dependent-stage byte comparisons pass. Each timing cell uses
+eight balanced pairs of 64 completed evaluations; compilation and warmup are
+excluded and trace counters show no timed retracing. The dependent stage
+includes residual/norm, gate/up, down projection and final residual addition.
+
+| M | Isolated norm paired change | Dependent stage paired change | Stage control/candidate ms |
+| --- | ---: | ---: | ---: |
+| 1 | -6.59% | -0.24% | 1.2133 / 1.2115 |
+| 3 | +7.03% | -0.36% | 1.3646 / 1.3626 |
+| 4 | +3.79% | -0.05% | 1.4633 / 1.4612 |
+
+Stage times are medians of arm means; changes are medians of paired ratios.
+There is no useful dependent-stage win, so this candidate is not integrated
+or advanced to full-model/HTTP gates. This does not close other fusion or
+compile-region designs. Source, captures, exactness results and raw timings
+are in `reports/inference-optimization-audit/residual-norm/`.
+
+### Direct packed-prefill diagnostic, M4 Pro 24 GB (2026-09-14 UTC)
+
+The current interleave2 artifact is tested on `Joshs-MBP-2025.local`, M4 Pro
+20-core GPU, 24 GiB, native pack 0.4.0 / MLX 0.32.2 and Bun 1.4.2. The
+inference baseline is `dfa46c9`; prefill inference source is unchanged.
+Two real layer-one normalized inputs are captured from consecutive
+512-token chunks of the frozen 4096-token prompt, including live recurrent
+and attention state evaluation. Capture is excluded from component timing.
+The bounded component processes load that layer's actual k3 gate/up/down.
+
+A temporary kernel extends the existing matrix-tile reader with interleave2
+addressing and larger tiles. It preserves the precise expansion decoder and
+bf16 weight rounding. The screen covers M16/32/128/256/512 and BM/BN/BK
+32/64/16, 64/64/32, 64/128/32 and 128/64/32. Every cell checks two captured
+inputs for finite, byte-identical outputs before timing. Gate, down and
+complete dependent MLP are separate cells; timing includes construction and
+completed evaluation, with no pipeline of independent unevaluated outputs.
+Each accepted cell has six alternating AB/BA pairs, four evaluations per arm,
+after warmup. Candidate calls are counted inside each block.
+
+There are 120 component comparisons. All 32 M16/M32 down and complete-MLP
+comparisons fail exactness against the selected split-K path and are not timed.
+The remaining 88 pass, including every large-prefill cell. All large-prefill
+complete-MLP tile choices lose. BM128/BN64/BK32 is the best tested complete-MLP
+tile at each large M and receives a fresh-process repeat.
+
+| M | First control / candidate MLP | First paired change | Repeat control / candidate MLP | Repeat paired change |
+| ---: | ---: | ---: | ---: | ---: |
+| 128 | 13.695 / 22.560 ms | +64.30% | 13.759 / 22.286 ms | +62.02% |
+| 256 | 23.617 / 43.768 ms | +85.78% | 22.920 / 42.818 ms | +86.26% |
+| 512 | 41.461 / 74.211 ms | +79.63% | 41.041 / 73.479 ms | +79.19% |
+
+Control/candidate times are medians of block means; paired change is the
+median of per-pair ratios. The repeat passes all six additional byte checks.
+Peak MLX active-allocation readings in that repeat fall from 294.02 to
+124.02 MiB at M128, 312.27 to 142.27 MiB at M256 and 513.77 to 178.77 MiB
+at M512. These are component allocator readings, not whole-model RSS or
+physical-memory savings. The first M128 screen has a higher control peak,
+retained in raw output. Lower scratch does not compensate for the timing loss.
+
+Retain expansion plus native matmul. No full-model or HTTP promotion gate was
+run for this slower candidate. This is an active-desktop diagnostic, with
+failed quiet preflight, not a serving result. No shader counters or measured
+DRAM traffic are available. Source, input bytes/hashes, artifact inventory,
+runtime hash, failed cells and all samples are in
+`reports/inference-optimization-audit/prefill-direct/`.
+
+### Mixed-work geometry and evaluation diagnostic, M4 Pro 24 GB (2026-09-14 UTC)
+
+Machine, runtime and packed artifact match the direct-prefill diagnostic.
+The MLP packing check combines captured ordinary M1/M3/M4 vectors with
+captured prefill M16/M32/M128/M256 inputs through the actual `mapTokenGroups`.
+The control preserves the decode group's token geometry; the candidate removes
+that guard. Every candidate reaches one combined operation with M equal to
+the sum of the two groups. All twelve decode-output comparisons differ;
+three prefill comparisons differ when M32 crosses to M33/M35/M36. Maximum
+absolute differences are 0.000732422 on decode and 0.000122070 on prefill.
+These are numerical rejection results, not performance or quality scores.
+No timing follows a failed exactness gate. The input values are captured
+model activations, but the combined rows are constructed component workloads.
+
+A separate full-model diagnostic preserves the guard and changes only the
+mixed-work evaluation interval. It uses M3 verification plus M128 prefill,
+independent bf16 KV/recurrent state cloned from a 512-token prefix, and the
+same layer operations. All intervening layers' recurrent state is evaluated
+at the next boundary. The original function and its interval-one source copy
+match, as do intervals two, four and eight, for hidden outputs, live state,
+one-token continuation logits and continuation state. Every timed forward
+records the expected two MLP calls per layer at the original M3/M128 shapes.
+There is no joint projection reuse in this timing experiment.
+
+The first six alternating blocks compare intervals 1/2/4/8. Median paired
+changes are -1.12%, -1.03% and +0.25% for 2/4/8 relative to the original
+one-layer boundary. Interval eight includes +17.22% and +45.59% outliers,
+which remain in the report. A fresh-process repeat runs ten alternating
+blocks at intervals 1/2/4, preserving the full correctness checks.
+
+| Interval | Repeat median native forward | Median paired change | Faster pairs |
+| ---: | ---: | ---: | ---: |
+| Original, every layer | 1587.44 ms | control | n/a |
+| Every two layers | 1583.88 ms | -0.48% | 6/10 |
+| Every four layers | 1569.16 ms | -0.83% | 10/10 |
+
+Cache cloning/materialization, warmup and hashing are outside timing. Timed
+work includes graph construction, final hidden outputs and live state
+completion. The desktop remains active; this is not a serving measurement.
+The small interval-four observation needs same-arm variation, broader shapes,
+context/pressure and HTTP evidence before adoption. No model source or
+inference setting changes. Raw sources, per-layer shapes, state hashes,
+allocation readings and every timing sample are retained in
+`reports/inference-optimization-audit/mixed-barrier/`; the packing gate is
+`reports/inference-optimization-audit/prefill-direct/mixed-geometry.json`.
+
+### Down-projection threadgroup diagnostic, M4 Pro 24 GB (2026-09-14 UTC)
+
+Retain the incumbent 128 threads. The 256-thread candidate is exact but
+slower in the component screen and fresh-process repeat. A 64-thread arm
+loses at M3/M4; 160 threads establishes no repeatable complete-MLP benefit.
+This is a bounded native diagnostic, not a quiet-machine serving benchmark.
+
+Host `Joshs-MBP-2025.local`, M4 Pro 20-core GPU, 24 GiB, Bun 1.4.2,
+native pack 0.4.0 / MLX 0.32.2 and source `dfa46c9` match the baseline
+below. The artifact is `Qwen3.8-27B-q3-trellis-ldlq-k300-packed-interleave2-rd`.
+Production inference source is unchanged. Exact drivers, source bodies/hashes,
+native-library hash, artifact inventory, inputs and observations are retained
+in `reports/inference-optimization-audit/down-geometry/`.
+
+The wrapper changes only the registered down projection's grid, threadgroup
+and `SG_TG` specialization. Both arms call the original kernel receiver.
+SPLITS128, k3/L12/BT256, interleave2 addressing, decoder, partial tensor,
+MLX sum and bf16 cast remain identical. CODEBOOK is zero at M1 and one at
+M3/M4, matching the model-owned production policy. The 256-thread geometry
+reduces groups from 640 to 384, saving 256 table initializations at M3/M4.
+These are source-derived counts, not measured bandwidth or occupancy.
+
+Each process tests down plus its sum/cast, and the dependent fused gate/up,
+activation and down operation for layer one. Sixteen hash-verified real M1
+inputs come from the preceding ordinary-decode capture. M3/M4 concatenate
+these changing vectors; they exercise production small-M geometry but are
+not captured MTP proposals. Down-only inputs are evaluated producer outputs;
+complete MLP reconstructs and evaluates the dependent producer each time.
+Every output is evaluated before the next call. Each of ten alternating AB/BA
+pairs visits all inputs four times, with 64 verified eligible calls per arm.
+Compilation, input preparation, warmup, finite checks and hashing are outside
+these graph-construction plus completed-evaluation timers. There is no
+isolated shader timing or hardware dispatch/counter capture in this run.
+
+Median paired time change below is candidate/control minus one. Positive
+values are slower. Repeats use fresh sequential processes; rows are separate
+experiments, not cross-process absolute-time comparisons.
+
+| Threads | M | Down change, first / repeat | Complete MLP change, first / repeat |
+| --- | ---: | ---: | ---: |
+| 256 | 1 | +6.54% / +6.94% | +3.05% / +2.38% |
+| 256 | 3 | +10.20% / +9.29% | +2.74% / +2.48% |
+| 256 | 4 | +6.43% / +5.45% | +2.12% / +2.47% |
+| 64 | 1 | +0.50% / unmeasured | -0.03% / unmeasured |
+| 64 | 3 | +11.06% / unmeasured | +3.81% / unmeasured |
+| 64 | 4 | +9.14% / unmeasured | +3.58% / unmeasured |
+| 160 | 1 | +1.59% / +0.68% | +0.28% / +0.35% |
+| 160 | 3 | -0.81% / -0.57% | -0.27% / +0.34% |
+| 160 | 4 | +2.45% / +0.74% | +0.57% / +1.09% |
+
+The 256-thread down operation loses all 20 pairs per M across the two
+processes. Complete MLP loses 19/20, 20/20 and 19/20 pairs at M1/M3/M4.
+The 64-thread M3/M4 down and MLP cells lose all ten pairs. The 160-thread
+M3 down observation does not survive the complete-MLP repeat. A separate
+128-versus-128 run gives complete-MLP median differences of +0.24%, +0.08%
+and -0.10%; individual paired differences span -1.56% to +1.08%. This limits
+interpretation of the small 160-thread observations.
+
+All component finite/byte comparisons pass for each geometry. The separate
+256-thread full-model gate compares M1/M3/M4 logits and live KV/recurrent
+state from cloned 512-token prefixes, then a one-token continuation and its
+state. Every comparison passes, the original prefix remains unchanged, and
+all 50 eligible down projections execute once per tested forward and
+continuation. This is incumbent parity on the packed artifact, not a new
+stock MLX-LM oracle comparison. Full-model gates for 64/160, sustained native
+throughput, HTTP, MTP proposals and lifecycle/SSD acceptance were not run;
+no component candidate earned promotion to those timing gates.
+
+The desktop is active and preflight fails, including retained swap and
+intermittent background CPU activity. The first component process starts and
+ends with 787.62 MiB swap in use. No process-window paging trace or GPU
+occupancy/register measurement was collected. Keep the observations as
+workload-specific diagnostics. Reduced table setup does not guarantee a
+faster complete operation; these results do not identify register pressure
+as the cause or rule out other scatter scheduling designs.
+
+### Spill-word sharing diagnostic, M4 Pro 24 GB (2026-09-14 UTC)
+
+The first candidate from the [implementation review](../design/decode-speed-program.md#first-controlled-packed-mlp-experiment-spill-word-sharing)
+replaces the fourth packed-word load with a SIMD shuffle in eligible fused
+gate/up kernels. It preserves arithmetic and launch geometry. Source-level
+packed-word loads fall from four to three per code plane and run, with an
+added shuffle. This is not a measured DRAM traffic reduction.
+
+The machine, packed artifact and runtime match the fresh baseline below:
+`Joshs-MBP-2025.local`, M4 Pro 20-core GPU, 24 GiB, macOS 27.0, Bun 1.4.2,
+native pack 0.4.0 / MLX 0.32.2, source `dfa46c9`. Production inference source
+is unchanged. A frozen temporary preload selects the candidate only for
+registered k3 gate/up pairs, M1 bf16, BT256/L12, C5120/R17408 and variant 13.
+Full control/candidate shader sources, wrapper, driver, library hashes and
+raw observations are in `reports/inference-optimization-audit/spill-shuffle/`.
+
+Sixteen distinct layer-one activations are captured during ordinary decode
+after the fixed 512-token prompt. Finite-value checks and all 38 byte
+comparisons pass, including fused output, complete MLP, full-model logits
+and continuation. Active KV/recurrent state hashes also match. Full-model
+M1 reaches every eligible pair; M3 reaches zero candidate calls, and both
+continuations reach all 45 pairs. The component M3 input groups captured
+ordinary vectors and is only a dispatch control, not an MTP workload.
+A separate capture inspection confirms three actual dispatches of the named
+candidate shader with grid 128×4352×1. The capture serialized 13.068 GB of
+resident resources; its identity extraction and file inventory are retained,
+and the bulky capture was deleted. No timing or bandwidth comes from it.
+
+Component timing uses six alternating AB/BA pairs, each traversing the same
+16 changing inputs, with one output evaluated at a time. Warmup, capture,
+finite checks and hashing are outside timing. Complete MLP includes the
+dependent unchanged down projection. These are graph-construction plus
+completed-evaluation times, not isolated GPU durations.
+
+| Component | Median control block mean | Median candidate block mean | Median paired time change | Candidate faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Fused gate/up | 0.8283 ms | 0.8319 ms | +0.45% | 2/6 |
+| Complete layer-one MLP | 1.2285 ms | 1.2371 ms | +0.75% | 1/6 |
+
+Ordinary native generation then runs control/candidate/candidate/control in
+four sequential processes, each with one warmup and one measured request.
+The frozen prompt has 512 tokens; output is 192 tokens, temperature zero,
+chunk size 256, bf16 attention, f32 recurrent state and speculation off.
+Both arms use identical interception/counter bookkeeping. Counter snapshots
+are outside the request timer; per-call bookkeeping remains inside. The
+copied native driver adds no evaluation boundary. This is a wrapper-instrumented
+diagnostic, not a canonical quiet-machine HTTP benchmark.
+
+| Native pair | Control request | Candidate request | Request time change | Decode time change |
+| --- | ---: | ---: | ---: | ---: |
+| Control then candidate | 20.9434 s | 21.0185 s | +0.36% | +0.42% |
+| Candidate then control | 20.9494 s | 21.0766 s | +0.61% | +0.39% |
+
+Every token and finish reason matches across all eight warmup/measured
+requests and the earlier uninstrumented control. Each measured request
+executes exactly 8,640 eligible calls, 192 per pair across 45 pairs, entirely
+through its selected arm. Work/shape histograms match. The count includes
+the final one-token prefill tail: current chunking is 256+255+1, followed by
+191 ordinary decode forwards. Therefore first-output work is also eligible.
+Internal decode time includes generation work after prefill; it is not a GPU
+kernel sum. A separate fresh uninstrumented control gives 21.1245 s and
+11.417 post-first tokens/s, with identical tokens. Its difference from these
+later controls is not a paired estimate of wrapper overhead.
+
+The desktop remains active. Retained swap is 1,163.62 MiB throughout the
+four-process screen, so preflight does not qualify it for canonical numbers.
+No process-window Swapouts occur; Swapins increase by 8, 20, 44 and 2,339
+pages respectively, including setup and warmup. These observations and the
+small sample count limit sub-percent conclusions. The result establishes
+no useful gain and does not justify promotion. It does not prove that SIMD
+load sharing or fusion generally fails. Keep the incumbent. The subsequent down-projection geometry diagnostic is
+recorded above.
+
+### Fresh packed-Qwen baseline and method audit, M4 Pro 24 GB (2026-09-14 UTC)
+
+Josh requested a new baseline and an implementation review of the previous
+optimization attempts. The [review and ranked experiments](../design/decode-speed-program.md#715-implementation-and-measurement-review)
+distinguish an unsuccessful implementation from an unsuccessful idea.
+These are native diagnostics, not replacement HTTP h2h numbers. Only ordinary
+B1 text generation is timed here; shared scheduling, MTP, quantized KV, media
+and the other model families remain separate runtime cells.
+
+Host `Joshs-MBP-2025.local` has an M4 Pro with 20 GPU cores, 14 CPU cores and
+24 GiB unified memory. Runtime is macOS 27.0 build 26A428, Bun 1.4.2 and the
+released native v0.4.0 pack with MLX 0.32.2. Source is `dfa46c9`; inference
+source has no local diff. The benchmark adds wall-clock phase boundaries and
+engine timing fields. Reports preserve the source, worker and library hashes.
+The model is the local `Qwen3.8-27B-q3-trellis-ldlq-k300-packed-interleave2-rd`:
+seven safetensors files totaling 13,038,407,512 bytes, or 12.143 GiB. Payloads
+were not hashed during timing; config, index and tensor-layout hashes are saved.
+A separate post-measurement pass hashes all 22 safetensors files across both
+artifacts, with stable size and modification time during that pass. It does not
+prove a file lock existed during the earlier timing.
+
+All runs explicitly select Trellis variant 13, temperature zero, fixed prefill
+chunks of 256, bf16 attention and f32 recurrent state, with speculation off.
+The two frozen prompt-ID files contain 512 and 4,096 tokens. Each request owns
+a fresh cache and emits 192 tokens. Each process has one separately retained
+warmup. The allocator is not cleared between requests. Model processes run
+sequentially; no training, reference server or second inference engine runs
+alongside them. The normal desktop remains active.
+
+| Uninstrumented prompt | Warmed samples | First output, median | Complete request, median | Post-first output, median and range | Maximum MLX peak allocation |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 512 tokens | 3 | 4.373 s | 21.095 s | 11.453 tok/s, 11.412–11.494 | 11.641 GiB |
+| 4,096 tokens | 2 | 35.700 s | 52.781 s | 11.184 tok/s, 11.052–11.315 | 11.853 GiB |
+
+Post-first throughput is `(output_count - 1) / (wall_time - first_output_time)`.
+Its interval includes final cleanup and GPU completion; it is not a sum of
+kernel timings. First output includes prompt processing, the output head,
+sampling and readback. MLX peak allocation is not whole-process RSS or all
+system memory. Preflight and postflight pass for both uninstrumented processes.
+Swap starts at zero and ends at 0.50 MiB after the longer run. Sample counts are
+small, especially for long prompts; they do not establish sub-percent changes.
+
+Separate monitored runs retain two warmed samples per prompt. Median post-first
+throughput is 11.393 tok/s at 512 and 11.217 tok/s at 4,096. Every measured
+192-token sequence agrees exactly across all five short and four long samples,
+within its prompt group. Recorder overhead is not isolated by this later run;
+ordering, clock and thermal changes can also affect the difference.
+
+The monitor combines mactop 2.1.5, a bounded read-only PMP/IOReport sampler,
+process snapshots, VM counters and GPU-driver observations. Phase samples
+exclude one second at each edge and PMP intervals straddling a boundary.
+The following ranges are medians from individual requests, not confidence
+intervals or exclusive per-process hardware counters.
+
+| Phase | Device GPU active fraction | GPU clock | System AMCC histogram rate proxy | GPU AGX histogram |
+| --- | ---: | ---: | ---: | --- |
+| Prompt-to-first-output | 98.64–99.71% | 1,517–1,577 MHz | 59.97–64.46 decimal GB/s | Unsaturated |
+| Post-first decode | 100% | 1,545–1,577 MHz | 138.37–140.67 decimal GB/s | Top rate bin for every retained sample |
+
+The short prompt has only one or two retained samples per sensor, so its phase
+estimate is coarse. Decode has 12–13 mactop and 13–14 PMP samples per request;
+the long prompt has 27–28 and 32 respectively. Thermal state is nominal during
+the short run and reaches moderate during the long run. Across the entire
+monitored window, swap remains 0.50 MiB and VM Swapins/Swapouts do not increase.
+Compression and file paging still occur, so this does not mean all memory
+activity is absent.
+
+GPU active fraction measures device busy time, not ALU occupancy. The AMCC
+value weights private firmware rate-histogram labels; it is a system-wide
+estimate, not a measured DRAM byte delta. AGX's top bin saturates during decode
+and cannot supply GPU bandwidth. Apple's [M4 Pro specification](https://support.apple.com/en-la/121554)
+lists 273 GB/s, but subtracting these proxies from that peak would not measure
+recoverable headroom. Real named read/write counters and a sustainable local
+bandwidth control are still required before making that claim.
+
+The separate live Metal System Trace adds Thread State Trace and a requested
+Performance Limiters/Shader Timeline profile. The latter reports
+`Selected counter profile is not supported on target device`; counter and
+shader exports are empty. GPU encoder intervals and thread states are usable.
+
+| Timed trace phase | Wall-clock window | Target GPU interval union | Target GPU coverage | Time without target GPU execution |
+| --- | ---: | ---: | ---: | ---: |
+| Before first token | 4.421 s | 4.202927 s | 95.067% | 218.073 ms |
+| After first token | 16.689 s | 16.657654 s | 99.812% | 31.346 ms |
+
+These are target encoder scopes, mostly generically labelled, not individual
+shader costs. All depths are merged and unidentified-process rows excluded.
+Millisecond benchmark boundaries align to the trace's recorded epoch; shifting
+each boundary independently by two milliseconds gives decode coverage of
+99.800–99.832%. This is alignment sensitivity, not a clock-calibration claim.
+The first-output boundary includes sampling/readback and asynchronous overlap.
+
+Decode contains only three GPU gaps longer than one millisecond. Its main
+thread is blocked for 14.618 s, but only 24.005 ms of that blocking overlaps
+GPU gaps. Most CPU waiting therefore accompanies useful GPU execution.
+Eliminating every observed decode gap could remove about 0.19% of this
+instrumented interval. That bounds removal of these gaps alone; compilation,
+fusion or batching may instead change the GPU work. Before first output,
+131.102 ms of main-thread running overlaps GPU gaps, making prompt construction
+and submission boundaries a separate investigation. Correlation does not
+identify the responsible calls. There are no target compiler intervals in
+the timed sample. The trace is diagnostic, with retained swap and desktop GPU
+activity; it does not replace the uninstrumented baseline.
+
+A second profiling route uses a small GPU capture and `gpudebug` replay. The
+first one-operation capture contains no encoder dispatches, so its empty
+counter output is invalid evidence about hardware support. Extending the
+capture to four evaluations records three real `trellis_reduce` dispatches
+for a layer-one k3 gate projection. These use actual weights and a synthetic
+bf16 input, not a full-model activation stream. Replay with `--exec overlapping`
+reports successful acquisition and writes raw APS/timeline/counter records,
+but loaded counter, shader and command-cost tables remain empty. Its saved
+GPU state is medium despite requesting default. This is an unresolved
+postprocessing/export limitation, not a measured zero or a hardware-support
+verdict. No kernel bandwidth or cost is inferred from raw record sizes. The
+earlier full-model two-output capture exceeded its 240-second bound and was
+terminated; its unusable partial payload was removed after recording failure
+metadata. Capture sources and the replay audit remain with the reports.
+
+Two further native probes test whether added evaluation boundaries can provide
+useful stage attribution. Each runs a 32-output warmup followed by
+control/profile/control requests of 64 outputs. Controls synchronize at output
+16 and completion; the profile also materializes selected inputs and outputs.
+Only work after output 16 is attributed. Each profile observes 47 target
+forwards, reflecting generation lookahead, rather than assuming one forward
+per yielded token. All control/profile tokens match each other and the first
+64 tokens of the original baseline.
+
+| Probe | Mean control window | Profile window | Added window time | After/before control-window change |
+| --- | ---: | ---: | ---: | ---: |
+| Fine projection/block/state boundaries | 4.116 s | 10.306 s | +150.42% | +0.23% |
+| Coarse whole-MLP and model/head boundaries | 4.127 s | 5.468 s | +32.49% | -0.16% |
+
+The fine probe distorts execution too much to use its normalized stage costs.
+The coarse probe removes leaf/norm/cache-state-specific barriers. It records
+3,008 complete MLP regions with 3.524 s of additive host-wall time, including
+fused gate/up, activation, down projection and evaluation overhead. Separately
+materializing their pending inputs costs 1.573 s. That pending work includes
+the preceding attention/GDN block, norms, residuals and possibly deferred state;
+it cannot isolate recurrence or attention. The head region costs 0.145 s over
+47 calls. Nested timer sums reconcile exactly, and executed shapes/counts are
+retained. The MLP is the largest region in this coarse instrumented run, but
+the remaining perturbation prevents calling its share a natural GPU percentage
+or an Amdahl bound. Both probes are diagnostics with retained swap and desktop
+activity. A brief CPU-only figure build overlaps the fine probe's final control;
+the coarse follow-up has no concurrent plotting, test or replay process.
+
+Header and source inspection gives a useful, separate traffic model. One
+ordinary target pass plus the untied head addresses 11,215,685,440 bytes of
+unique stored weights, including one embedding row. Vision, inactive inline
+MTP and the unused embedding rows are excluded. Packed MLP projections account
+for 57.28% of active core/head bytes, affine GDN projections 27.89%, affine full
+attention 8.41%, and the head 6.38%. At 11.45 tokens/s the unique-weight rate is
+128.42 decimal GB/s. This is logical weight throughput, not measured DRAM
+bandwidth or a strict off-chip minimum. Caches, rereads, state, activations and
+temporary buffers prevent subtracting it from the AMCC estimate.
+
+At M=256, the packed prefill route expands an aggregate 17,112,760,320 MLP
+weights into 34,225,520,640 bytes of bf16 buffers across the full layer stack.
+They are not all live simultaneously. A direct consumer could remove some
+expansion traffic, but must beat the native matmul and preserve the required
+arithmetic. The header audit also found that inventory matrix summaries omitted
+50 rank-three interleaved down projections, 1,672,908,800 bytes. Role totals
+were correct. The inventory now recognizes the exact supported interleaved
+layout, with fixture tests; the original and corrected reports are retained.
+
+#### Same-artifact MLX-LM control
+
+Stock MLX-LM cannot execute the packed Trellis artifact. The separate comparison
+uses the identical local `Qwen3.8-27B-rtn4-g64-storage-control-rd` in both engines,
+the pinned MLX 0.32.2 oracle environment, the same 512 input IDs, 128 output
+tokens, fixed chunks of 256, fresh bf16 caches and greedy sampling. Four fresh
+processes run in Bun / MLX-LM / MLX-LM / Bun order, each with one warmup and two
+timed requests. All eight output-ID sequences match exactly. This verifies
+tokens for these requests, not full logit parity.
+
+| Process order | Stack | Complete request, median | Post-first output, median | Maximum MLX peak allocation |
+| ---: | --- | ---: | ---: | ---: |
+| 1 | mlx-bun | 12.421 s | 15.235 tok/s | 14.331 GiB |
+| 2 | MLX-LM | 12.412 s | 15.332 tok/s | 14.867 GiB |
+| 3 | MLX-LM | 12.770 s | 15.093 tok/s | 14.867 GiB |
+| 4 | mlx-bun | 13.395 s | 14.379 tok/s | 14.331 GiB |
+
+This sequence is inconclusive for engine speed. The first process ends with a
+low-free-memory warning; subsequent checks record roughly 1.2–1.4 GB of swap,
+and the final process also has elevated CPU load. The final Bun control's
+median request time is 7.84% longer than its first control. These effects are
+larger than the early between-engine difference. No engine winner, transferable
+packed-model ratio or quality-equivalent quantization ranking follows.
+llama.cpp tools are installed but no compatible local GGUF was found in the
+checked model directories. No large model download or vLLM environment was
+started; those comparisons remain unmeasured.
+
+Raw data, frozen inputs, monitors, separate traces, source identities and the
+method ledger are in `reports/inference-optimization-audit/`. Run the existing
+native worker with the same frozen prompt file and change only the named arm:
+
+```sh
+MLX_BUN_TRELLIS_VARIANT=13 bun scripts/bench/native.ts \
+  --model-path /Users/joshrossi/models/Qwen3.8-27B-q3-trellis-ldlq-k300-packed-interleave2-rd \
+  --prompt-ids reports/inference-optimization-audit/prompt-512.json \
+  --json reports/inference-optimization-audit/repeat-512.json \
+  --tokens 192 --samples 3 --warmup 1 --prefill-chunk 256
+```
+
+Use the affine artifact and `--stack mlx-lm` only for its matching control.
+`--diagnostic` explicitly permits a nonquiet run and preserves that status; it
+does not qualify its numbers as a quiet h2h result.
 
 ### Lossless weight interleaving with RAM/SSD caching — M4 Pro 24 GB (2026-09-13)
 
@@ -3228,8 +3895,9 @@ Each comparison is within one machine and format, not against packed Trellis.
 | mxfp8 | 256 | 8.866 → 25.453 | +187.08% | 7.160 → 24.139 | +237.16% |
 
 Numbers are medians of block medians. Small-M cells have mixed block-level
-noise; no small speed win is established. Every M=16/256 cell is slower in
-all five pairs on both machines. Relative squared output error versus the
+noise; no small speed win is established. Every M=16/256 cell has a slower candidate median on both machines.
+M1 NVFP4 M=16 loses four of five pairs; its first pair improves 8.99%,
+while its five-pair median worsens 14.84%. Relative squared output error versus the
 same quantized weights with bf16 activations is 0.0090–0.0095 for NVFP4 and
 0.00069–0.00072 for MXFP8. These are synthetic operation errors, not task scores.
 The capability smoke also records that INT8 input to ordinary QMM is cast back
@@ -3585,3 +4253,97 @@ Reports, full responses, source hashes, quality protocol and screenshots:
 `reports/kanban-decode-fixed-prefill-r1/`. Both task trajectories, including the
 failed checks, remain available. Completed benchmark KV cleanup removes
 215.31 GiB on M4 and 63.76 GiB on M1; model artifacts, transcripts and apps stay.
+
+### DeepSeek Harness Kanban setup trial, M4 Pro 24 GB
+
+The September 15 UTC trial uses installed DeepSeek Harness 0.1.2-alpha.2
+(`0a53fb55`), Node 24.20.0 and its stock headless profile. The 4,204-byte
+Kanban prompt is byte-identical to the pinned upstream prompt and saved Pi
+request, SHA-256 `c40b3c8e0e4d37b316179281aafef187839df7bb0e945f5c1d0f6c5b79fbb521`.
+The packed Qwen server retains the preceding KV4/MTP2/echo/fixed-256/cache
+profile, on the current `dfa46c9` worktree with local changes recorded.
+This is not a source-isolated comparison with the historical Pi run.
+
+DeepSeek's shipped `llm-pi-ai` adapter supports reasoning levels natively.
+The captured client request already sends enabled thinking and `xhigh`.
+A loopback relay pins the remaining Pi request parameters, including seed 42
+and thinking preservation, and records original/effective requests separately.
+All six captured effective requests match the saved model-setting fields.
+Prompts, tools, compaction and timeouts retain the harness defaults.
+
+| Opening response | Reasoning tokens, re-tokenized with the target tokenizer |
+|---|---:|
+| Saved Pi fixed-prefill | 34,933 |
+| Saved Pi echo | 38,969 |
+| Initial DeepSeek trial, unpinned request settings | 2,015 |
+| DeepSeek with matched request settings | 12,416 |
+
+The matched opening reports 12,520 total generated tokens. Re-tokenized
+reasoning counts can differ from original generated IDs. Its usage confirms
+batched execution, two draft positions and echo. Hermes concurrently uses the
+same server; three samples show two active rows and zero pending rows. Its
+main turn completes, while background title generation times out. Four blank
+server 500 logs cannot be attributed conclusively. Memory pressure and shared
+traffic prevent an isolated task-time comparison.
+
+The Kanban task remains incomplete. After writing `index.html`, DeepSeek twice
+hits its default 300,000 ms stream-idle timeout during the stylesheet call.
+The retries send identical requests; SSE keep-alives do not reset the
+model-event watchdog. The operator stops after the second timeout, before the
+five-retry policy is exhausted. No timeout adjustment or repair prompt is
+applied. The HTML references nine missing CSS/JS files, so browser acceptance
+is not scored. DeepSeek exposes `streamIdleTimeoutMs` as a native provider
+setting; a longer-timeout follow-up has not been run.
+
+Requests, responses, retry events, native provider configuration, partial app
+and report: `reports/kanban-deepseek-pi-settings-r1/`. The initial trial is
+preserved separately in `reports/kanban-deepseek-r1/`. Qwen remains running
+for the user's local clients; the recording relay is stopped.
+
+## Qwen3.8-27B q4b decode round, M4 Pro 24 GB (2026-09-18)
+
+Program measurement, not a `bench-serve` quotable: the frozen 64-item screen of the
+Qwen3.8 publication program, run through its own campaign runner and sandboxed scorer
+against the served batched lane. Artifact `qwen38-trellis-global-exit5-h39-q4b-v2`
+(11,988,368,494 bytes, packed Trellis k2/k3/k4 MLPs, variant 13), folded RTN4 MTP
+companion at depth two, KV4 from token zero, reasoning xhigh, 32,768 output tokens,
+temperature 0.6, top-p 0.95, top-k 20, seed 42, one request at a time. Bun 1.4.2,
+MLX 0.32.2, native pack 0.4.0. Decode tok/s is total decode tokens over total decode
+seconds across the 64 items. Seeded runs are byte-reproducible: two baseline runs
+agree on 64 of 64 outputs and differ by 0.03% in speed.
+
+| Run | Score | Decode tok/s | ms per round | Tokens per round | Outputs identical to baseline | GPU active / power |
+|---|---:|---:|---:|---:|---:|---|
+| Baseline, generic graph, host-first round, full draft vocabulary | 61/64 | 18.915 | 124.65 | 2.359 | 64/64 (repeat) | 97.5% / 22.8 W |
+| Device-first round + 64k draft vocabulary | 61/64 | 20.240 | 116.91 | 2.368 | 46/64 | 99.5% / 25.4 W |
+
+Both runs fail the same three items (`HumanEval/141`, `gsm8k/1042`, `ifeval/2549`); no
+item truncates, swap does not grow, peak process RSS is 11.85 GB. On the 46
+byte-identical items the gain is 19.513 -> 20.963 tok/s (+7.4%). The 18 re-rolled items
+generated 10.9% more decode tokens at longer context, which lowers the 64-item figure
+to +7.0%. A draft-side change re-rolls some seeded trajectories even though it cannot
+change the output distribution: a token's bf16 logits depend on which row of the
+verify window computed it, and a different draft changes the acceptance pattern.
+
+Where a served MTP2 round goes (`MLX_BUN_SPEC_PHASE_TIMING=1`, forced evaluation, so
+attribution rather than a production round time), baseline: verify forward at width
+three 109.0 ms, two draft steps 10.1 ms, sampling three positions 2.1 ms, commit
+0.7 ms. A width-one forward is 86.2 ms, width two 100.1 ms, width four 124.3 ms.
+
+| Change | Outputs | Measured effect per round |
+|---|---|---:|
+| Device-first round: drafts stay on the GPU, verify graph (about 2,560 nodes) is built while the GPU drafts, one readback | byte-identical, 6 of 6 | 123.78 -> 119.10 ms |
+| Row-batched top-p/top-k over the verify window | bit-identical per row at V=248,320 | about -0.5 ms (inside the row above) |
+| 64k frequency-ranked draft vocabulary (projection 3.02 -> 0.93 ms per draft step) | re-rolls some items | draft phase 10.1 -> 5.2 ms, acceptance unchanged |
+| 32k list instead of 64k | re-rolls some items | draft phase 4.3 ms, acceptance 0.660 vs 0.667: not adopted |
+| Mixed-width gate/up kernel with MLX's bf16 SwiGLU tail (10 of 64 layers) | bit-identical: 0 differing of 6,963,200 outputs, M=1..4 | -1.23 ms per width-three forward |
+| Same kernel with the float32-sigmoid tail | last bits differ, every item re-rolls | same speed: kept as `MLX_BUN_QWEN38_TQ_MIXED_GATEUP=fused` |
+
+Measured and not adopted: greedy drafts and a separate draft temperature (no gain on
+identical items; greedy lowers acceptance because draft and target draw by inverse
+CDF from the same per-step key), unfiltered drafts (+0.3%), same-input projection
+fusion (0.7 ms per forward), folding the Trellis decode's two multiplies (-0.9% to
++1.0%), removing per-round host readbacks alone (0 ms: the GPU was the critical path).
+
+Raw evidence: `reports/qwen38-trellis-publication/` (`TPS20-LOOP.md`,
+`runtime-arms/*-summary.json`, `screen-scores/`, `VERIFY-FORWARD-PROFILE.md`).

@@ -279,10 +279,34 @@ export interface GenerateStats {
     draftedByPos?: number[]; acceptedByPos?: number[];
     rejected?: number; rounds?: number; acceptanceLengths?: number[];
     tokensPerForward?: number; forwardsSaved?: number;
+    /** Round phase wall time, summed over the request's rounds. Present only
+     *  under `MLX_BUN_SPEC_PHASE_TIMING=1`, which forces an evaluation at each
+     *  phase boundary (diagnostic: it removes the overlap production decode
+     *  relies on, so the sum is not production round time). */
+    phaseMs?: SpecPhaseMs;
   };
   /** Token fast-forwarding telemetry (serial lane, MLX_BUN_FILL=strict).
    *  Present only when a fill table was actually armed for this generation. */
   fill?: FillStats;
+}
+
+/** Wall milliseconds per speculative round phase (see GenerateStats.spec). */
+export interface SpecPhaseMs {
+  /** draft(): the drafter's chain including its proposal readback. */
+  draft: number;
+  /** Target verify forward, forced to completion before sampling. */
+  verify: number;
+  /** Window sampling and its readback, plus the host accept walk. */
+  sample: number;
+  /** Target transaction resolve plus draft commit. */
+  commit: number;
+  rounds: number;
+  /** Target-forward component wall ms (`MLX_BUN_SPEC_LAYER_PROFILE=1`): per-op
+   *  evaluation barriers inside the verify forward, so `verify` grows while set. */
+  layers?: Record<string, number>;
+  /** Graph nodes built per op name (`MLX_BUN_SPEC_OP_INVENTORY=1`), summed over rounds. */
+  verifyOps?: Record<string, number>;
+  draftOps?: Record<string, number>;
 }
 
 export interface GenerateDiagnostics {

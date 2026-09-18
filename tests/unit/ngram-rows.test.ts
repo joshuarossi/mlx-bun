@@ -119,3 +119,39 @@ test("constraint proposals commit only verified tokens and follow current row me
     finally { disposeAttachments([last.attachment]); }
   } finally { group.dispose(); }
 });
+
+
+test("indexed lookup preserves longest-suffix and first-occurrence proposals across append and reseed", async () => {
+  const oracle = (history: number[], max: number, min: number, depth: number): number[] => {
+    for (let k = Math.min(max, history.length - 1); k >= min; k--) {
+      const suffix = history.slice(-k);
+      for (let i = 0; i + k < history.length; i++) {
+        if (suffix.every((token, j) => token === history[i + j]))
+          return history.slice(i + k, i + k + depth);
+      }
+    }
+    return [];
+  };
+  let seed = 9843;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
+  for (const max of [1, 3, 8]) for (const min of [1, max]) {
+    const provider = new NgramProvider({ max, min });
+    const source = provider.open({ sampler: null as never, target: null as never });
+    try {
+      for (const vocab of [1, 7, 1000]) {
+        let history = Array.from({ length: 257 }, () => random() % vocab);
+        source.prefill(history, undefined, history.length);
+        for (let step = 0; step < 60; step++) {
+          const feed = Array.from({ length: 1 + step % 2 }, () => random() % vocab);
+          history.push(...feed);
+          const expected = oracle(history, max, min, 10);
+          const actual = await source.draft(feed, 10, step);
+          expect(actual).toEqual(expected);
+          const accepted = random() % (expected.length + 1);
+          source.commit(expected.length, accepted);
+          history.push(...expected.slice(0, Math.max(0, Math.min(accepted, expected.length - 1))));
+        }
+      }
+    } finally { source.dispose(); provider.dispose(); }
+  }
+});

@@ -48,6 +48,7 @@ const DRAFT_PREFILL_CHUNK = 2048;
 export class QwenMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
     supportsExternalTokens: true,
+    artifactDir: undefined as string | undefined,
     checkpointNamespace: () => this.#checkpointNamespace,
     open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
     openPrefill: options => this.#openRows(options.target, null, options.checkpoints),
@@ -82,10 +83,12 @@ export class QwenMtpProvider implements DraftProvider {
     // companions. Hash once at provider load, outside inference execution.
     const identity = await artifactIdentity(configFingerprint(config),
       [...weights.shards.files].map(([name, shard]) => ({ name, path: shard.path })));
-    return new QwenMtpProvider(
+    const provider = new QwenMtpProvider(
       dir.split("/").filter(Boolean).at(-1) ?? "qwen-mtp",
       config, weightsBytes, module, resources.move(), `qwen-mtp-v1:${identity}`,
     );
+    (provider.grouped as { artifactDir?: string }).artifactDir = dir;
+    return provider;
   }
 
   open(opts: Parameters<DraftProvider["open"]>[0]): DraftSource {
@@ -133,7 +136,7 @@ export class QwenMtpProvider implements DraftProvider {
       get rowCount() { return rows.rowCount; },
       append, prepareAppend, prefill: (tokens, context) => rows.prefill(tokens, context!), materialize: rows.materialize.bind(rows),
       filterRows: rows.filterRows.bind(rows),
-      draft: rows.draft.bind(rows), commit: rows.commit.bind(rows),
+      draft: rows.draft.bind(rows), draftDevice: rows.draftDevice.bind(rows), commit: rows.commit.bind(rows),
       consume: rows.consume.bind(rows),
       capture(row) {
         const state = rows.extractRow(row);
@@ -153,6 +156,7 @@ export class QwenMtpProvider implements DraftProvider {
 }
 
 export class QwenMtpSource implements DraftSource {
+  readonly adaptiveDraftDepth = true;
   // Full-prompt target prefill (the bonus token exists before round 1, and
   // the tap covers every prompt position — mlx-vlm's flow).
   readonly prefillMode = "full" as const;
@@ -263,8 +267,13 @@ export class QwenMtpSource implements DraftSource {
     if (!Number.isSafeInteger(pending) || pending! < 0)
       throw new Error("qwen MTP requires a non-empty token feed");
 
-    const drafts: number[] = [];
+    // The whole chain stays on device: each sampled draft feeds the next head
+    // step as an array, and the round reads its proposal IDs back ONCE (the
+    // grouped rows path already works this way). Per-draft host readbacks
+    // serialized the chain against the GPU for no numerical benefit.
+    const drafts: MlxArray[] = [];
     let chained: MlxArray | null = null;
+    let packed: MlxArray | null = null;
     const startOffset = this.#cache.offset;
     try {
       // Build the pending token's row from the TRUE target hidden at the
@@ -278,13 +287,15 @@ export class QwenMtpSource implements DraftSource {
       chained = out;
       drafts.push(this.#sample(out, stepBase));
       while (drafts.length < n) {
-        const out = this.#stepOne(drafts.at(-1)!, chained!);
+        using ids = ops.reshape(drafts.at(-1)!, [1, 1]);
+        const out = this.#stepIds(ids, chained!);
         chained!.dispose();
         chained = out;
         this.#roundAppended++;
         drafts.push(this.#sample(out, stepBase + drafts.length));
       }
-      return drafts;
+      if (drafts.length > 1) packed = ops.concatAxis(drafts, 0);
+      return (packed ?? drafts[0]!).toIntTokens();
     } catch (error) {
       const appended = this.#cache.offset - startOffset;
       if (appended > 0) this.#cache.trim(appended);
@@ -292,6 +303,8 @@ export class QwenMtpSource implements DraftSource {
       throw error;
     } finally {
       chained?.dispose();
+      packed?.dispose();
+      for (const draft of drafts) draft.dispose();
     }
   }
 
@@ -356,14 +369,19 @@ export class QwenMtpSource implements DraftSource {
   /** One module forward for (token, hidden) — appends one KV row. */
   #stepOne(token: number, hidden: MlxArray): MlxArray {
     using ids = ops.fromInt32([token], [1, 1]);
+    return this.#stepIds(ids, hidden);
+  }
+
+  /** One module forward for (borrowed [1,1] token ids, hidden). */
+  #stepIds(ids: MlxArray, hidden: MlxArray): MlxArray {
     using embed = this.#target.embed(ids);
-    ids.dispose();
     return this.#module.forward(embed, hidden, this.#cache);
   }
 
   /** Sample a draft token from the module output via the TARGET's lm head
-   *  and the request sampler (per-step RNG stream discipline). */
-  #sample(moduleOut: MlxArray, step: number): number {
+   *  and the request sampler (per-step RNG stream discipline). Returns the
+   *  owned device token ([1]); the round reads all drafts back together. */
+  #sample(moduleOut: MlxArray, step: number): MlxArray {
     using logits = this.#target.logitsFromHidden(moduleOut);
     // Sampler contract is [1, V] (the main decode loop's shape). moduleOut
     // is [1, 1, H] → logits [1, 1, V]; without this reshape any sampler
@@ -375,9 +393,7 @@ export class QwenMtpSource implements DraftSource {
     logits.dispose();
     using logprobs = toLogprobs(flat);
     flat.dispose();
-    using tok = this.#sampler(logprobs, step);
-    logprobs.dispose();
-    return ops.itemUint32(tok);
+    return this.#sampler(logprobs, step);
   }
 
   #checkOpen(): void {

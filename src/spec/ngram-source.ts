@@ -36,7 +36,7 @@
 // A round with no match returns [] — the serve loop's d=0 semantics degrade
 // it to one plain target step (bit-equivalent to non-spec decode), so ngram
 // speculation is structurally never worse than plain decode by more than the
-// JS scan (~µs against 30k-token histories).
+// host lookup and verification overhead.
 
 import { runtimeFlag } from "../runtime-config";
 import type { MlxArray } from "../mlx/array";
@@ -45,12 +45,28 @@ import type { CheckpointAttachment } from "../backends/mlx/checkpoint-state";
 import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, GroupedDraftProvider, DraftRowConstraints } from "./source";
 import { applyStateChanges } from "../engine/resources";
 
-/** The matching policy is independent of the executor's feed convention. */
+// Histories are append-only between prefill/restore replacements. Weak keys
+// release derived indexes with retired rows; checkpoints still contain tokens
+// only. Ordered positions preserve the original first-occurrence policy.
+const ngramPositions = new WeakMap<readonly number[], { length: number; positions: Map<number, number[]> }>();
 function proposeNgram(h: readonly number[], max: number, min: number, n: number): number[] {
+  let index = ngramPositions.get(h);
+  if (!index || h.length < index.length) {
+    index = { length: 0, positions: new Map() };
+    ngramPositions.set(h, index);
+  }
+  for (let i = index.length; i < h.length; i++) {
+    const token = h[i]!;
+    const positions = index.positions.get(token);
+    if (positions) positions.push(i); else index.positions.set(token, [i]);
+  }
+  index.length = h.length;
   const L = h.length;
   for (let k = Math.min(max, L - 1); k >= min; k--) {
     const tailAt = L - k;
-    search: for (let i = 0; i + k < L; i++) {
+    const positions = index.positions.get(h[tailAt]!) ?? [];
+    search: for (const i of positions) {
+      if (i + k >= L) break;
       for (let j = 0; j < k; j++) if (h[i + j] !== h[tailAt + j]) continue search;
       return h.slice(i + k, i + k + n);
     }

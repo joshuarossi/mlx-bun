@@ -1,10 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { MlxArray } from "../../src/mlx/array";
 import * as ops from "../../src/mlx/ops";
+import { Dtype } from "../../src/mlx/ffi";
 import {
   disposeStepExtras,
   isPlainGreedy,
   makeStepSampler,
+  makeLogitsProcessors,
+  toLogprobs,
   type StepSamplerOptions,
 } from "../../src/sampler";
 
@@ -131,5 +134,86 @@ describe("StepSampler lane contract", () => {
     })).toBe(false);
     expect(isPlainGreedy({ temperature: 0, logitBias: { 2: 1 } })).toBe(false);
     expect(isPlainGreedy({ temperature: 0, grammar: new ScriptedGrammar() })).toBe(false);
+  });
+});
+
+
+describe("processor history retention", () => {
+  test("finite and unlimited windows match full-history processor scores after commits and reseeding", async () => {
+    const cases: StepSamplerOptions[] = [
+      { logitBias: { 2: 0.3 } },
+      { repetitionPenalty: 1.2 },
+      { presencePenalty: 0.4, presenceContextSize: 1 },
+      { frequencyPenalty: 0.07, frequencyContextSize: 128 },
+      { repetitionPenalty: 1.1, repetitionContextSize: 20,
+        presencePenalty: 0.2, presenceContextSize: 128,
+        frequencyPenalty: 0.03, frequencyContextSize: 7, logitBias: { 0: -0.2 } },
+      { repetitionPenalty: 1.1, repetitionContextSize: 0, presencePenalty: 0.2 },
+      { presencePenalty: 0.2, presenceContextSize: 0, frequencyPenalty: 0.03 },
+      { frequencyPenalty: 0.03, frequencyContextSize: 0, repetitionPenalty: 1.1 },
+      { frequencyPenalty: 0, frequencyContextSize: 0, repetitionPenalty: 1.1 },
+    ];
+    for (const options of cases) for (const dtype of [Dtype.float32, Dtype.bfloat16]) {
+      let observed: Buffer | null = null;
+      let history = Array.from({ length: 301 }, (_, i) => (i * 7) % 17);
+      const sampler = makeStepSampler(options, {
+        tokenRepresentation: "device", grammarWait: "external", historyUpdate: "manual",
+        initialHistory: history,
+        sampler: scores => { observed = Buffer.from(scores.rawBytesView()); return ops.fromInt32([3], [1]); },
+      });
+      const processors = makeLogitsProcessors(options);
+      try {
+        for (let step = 0; step < 8; step++) {
+          if (step === 5) { history = []; sampler.seedHistory(history); }
+          if (step === 7) { history = [1, 1, 8]; sampler.seedHistory(history); }
+          using input = MlxArray.fromFloat32(Float32Array.from({ length: 17 }, (_, i) =>
+            Math.sin(i + step) * 2), [1, 17]);
+          using logits = input.astype(dtype);
+          using fullHistory = history.length ? ops.fromInt32(history, [history.length]) : null;
+          let scores = logits;
+          try {
+            for (const processor of processors) {
+              const next = processor(fullHistory, scores);
+              if (scores !== logits && next !== scores) scores.dispose();
+              scores = next;
+            }
+            using expected = toLogprobs(scores);
+            const result = sampler.sample(logits, step);
+            result.token.dispose();
+            expect(observed!.equals(Buffer.from(expected.rawBytesView()))).toBe(true);
+          } finally { if (scores !== logits) scores.dispose(); }
+          if (step % 2 === 0) {
+            const committed = step === 2 ? Array.from({ length: 257 }, (_, i) => i % 17) : [2, 2, 9];
+            sampler.commitNumbers(committed); history.push(...committed);
+          } else {
+            using token = ops.fromInt32([step % 17], [1]);
+            sampler.commitDevice(token); history.push(step % 17);
+            sampler.commitNumbers([]);
+          }
+        }
+      } finally { sampler.dispose(); }
+    }
+  });
+
+  test("finite windows bound seeded and committed history, and bias-only sampling needs none", () => {
+    const allocate = spyOn(ops, "fromInt32");
+    const config = { tokenRepresentation: "device", grammarWait: "external", historyUpdate: "manual" } as const;
+    const tokens = Array.from({ length: 100_000 }, (_, i) => i % 17);
+    try {
+      const bounded = makeStepSampler({ repetitionPenalty: 1.1, frequencyPenalty: 0.03,
+        frequencyContextSize: 128 }, { ...config, initialHistory: tokens });
+      try {
+        bounded.commitNumbers(tokens);
+        expect(bounded.needsHistory).toBe(true);
+        expect(allocate.mock.calls.map(call => call[1])).toEqual([[128], [128]]);
+      } finally { bounded.dispose(); }
+      allocate.mockClear();
+      const bias = makeStepSampler({ logitBias: { 1: 0.2 } }, { ...config, initialHistory: tokens });
+      try {
+        bias.seedHistory(tokens); bias.commitNumbers(tokens);
+        expect(bias.needsHistory).toBe(false);
+        expect(allocate).not.toHaveBeenCalled();
+      } finally { bias.dispose(); }
+    } finally { allocate.mockRestore(); }
   });
 });

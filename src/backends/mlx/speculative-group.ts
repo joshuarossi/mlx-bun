@@ -4,6 +4,8 @@ import type { GenerateOptions } from "../../generate";
 import type { FillSession, Proposal } from "../../fill/fill-session";
 import type { DraftProvider, DraftRowGroup, DraftPrefillGroup, DraftRowCheckpoint } from "../../spec/source";
 import { makeSampler, makeStepSampler, readStepExtras, type NumberStepSampler, type Sampler } from "../../sampler";
+import { draftSamplerOptions, greedyDraftPolicy } from "../../spec/draft-policy";
+import { configuredDraftVocabulary, makeSubsetDraftSampler, type DraftVocabularyHead, type SubsetDraftSampler } from "../../spec/draft-vocab";
 import { MlxArray } from "../../mlx/array";
 import * as ops from "../../mlx/ops";
 import { clearCache } from "../../mlx/ffi";
@@ -27,6 +29,8 @@ interface RequestState {
   proposal?: { value: Proposal; emitted: number };
   sampling: NumberStepSampler;
   draftSampling: Sampler;
+  /** Coupled draw over a draft vocabulary; null when not reproducible there. */
+  draftSubset: SubsetDraftSampler | null;
   retain?: () => void;
   namespace: string;
   prefixLength: number;
@@ -116,8 +120,13 @@ class SpeculativeGroup implements MlxGroupedMethod {
         const options = row.req.method!.data as GenerateOptions;
         row.spec = { drafted: 0, accepted: 0, targetCalls: 0, rejected: 0, rounds: 0,
           acceptanceLengths: [], tokensPerForward: 0, forwardsSaved: 0, draftedByPos: [], acceptedByPos: [] };
-        const sampler = makeSampler(options);
-        const request: RequestState = { draftSampling: sampler, namespace: "", prefixLength: 0,
+        // Draft policy: the request sampler (mlx-lm parity) or, opt-in, argmax.
+        // The verifier accepts a draft only when the TARGET's own sample equals
+        // it, so the output distribution never depends on how drafts are chosen;
+        // the argmax of the head's estimate maximizes the expected match.
+        const sampler = makeSampler(draftSamplerOptions(options));
+        const request: RequestState = { draftSampling: sampler, draftSubset: makeSubsetDraftSampler(draftSamplerOptions(options)),
+          namespace: "", prefixLength: 0,
           fill: method.provider.grouped?.supportsExternalTokens ? options.fill : undefined,
           processed: method.host.promptCache ? [] : undefined,
           sampling: makeStepSampler(options, { tokenRepresentation: "number", grammarWait: "before-sample",
@@ -244,7 +253,8 @@ class SpeculativeGroup implements MlxGroupedMethod {
               maintain.prepareBatch?.(state.caches);
               this.#target ??= new MlxStateRows(state.caches.map(targetCacheLayout));
               this.#draft ??= this.provider.grouped!.open({ target: bindLegacyDraftTarget(this.model, this.#target.caches),
-                checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps) },
+                checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps), greedy: greedyDraftPolicy(),
+                  vocabulary: this.#draftVocabulary() },
                 constraints: { propose: async (row, maxTokens) => this.host.rows[row]!.req.grammar?.proposeTokens(maxTokens) ?? [] } });
               applyStateChanges([() => this.#target!.prepareAppend(state.caches),
                 () => this.#draft!.prepareAppend([state.draft]), () => ({ commit: () => {
@@ -266,6 +276,25 @@ class SpeculativeGroup implements MlxGroupedMethod {
     };
     try { target.admit(first); return preparation; }
     catch (error) { return cleanupFailure(error, () => preparation.dispose()); }
+  }
+
+  /** Frequency-ranked draft vocabulary for this model, when configured. */
+  #draftVocabulary() {
+    const vocabSize = (this.model as { config?: { text?: { vocabSize?: number } } }).config?.text?.vocabSize;
+    const ids = vocabSize && !greedyDraftPolicy() ? configuredDraftVocabulary(vocabSize, this.provider.grouped?.artifactDir) : null;
+    if (!ids) return undefined;
+    return { ids, sample: (logits: MlxArray, head: DraftVocabularyHead, steps: readonly number[]): MlxArray | null => {
+      const rows = this.host.rows.map(row => this.#requests.get(row)!);
+      if (rows.some(request => !request.draftSubset)) return null;
+      const tokens: MlxArray[] = [];
+      try {
+        for (let row = 0; row < rows.length; row++) {
+          using scores = logits.slice([row, 0], [row + 1, logits.shape[1]!]);
+          tokens.push(rows[row]!.draftSubset!(scores, head, steps[row]!));
+        }
+        return tokens.length === 1 ? tokens.pop()! : ops.concatAxis(tokens, 0);
+      } finally { disposeResources(tokens); }
+    } };
   }
 
   #sampleDraftRows(logprobs: MlxArray, steps: readonly number[]): MlxArray {
@@ -377,6 +406,24 @@ class SpeculativeGroup implements MlxGroupedMethod {
         const forwards = stats.targetCalls - 1;
         stats.tokensPerForward = row.generated / forwards;
         stats.forwardsSaved = Math.max(0, row.generated - 1 - forwards);
+        if (completed.phaseMs) {
+          // Diagnostic phase attribution, summed per request. A shared round
+          // costs every row the same wall time; it is not divided by B.
+          const phase = stats.phaseMs ??= { draft: 0, verify: 0, sample: 0, commit: 0, rounds: 0 };
+          phase.draft += completed.phaseMs.draft; phase.verify += completed.phaseMs.verify;
+          phase.sample += completed.phaseMs.sample; phase.commit += completed.phaseMs.commit;
+          phase.rounds += completed.phaseMs.rounds;
+          for (const field of ["verifyOps", "draftOps"] as const) {
+            const counts = completed.phaseMs[field];
+            if (!counts) continue;
+            const total = phase[field] ??= {};
+            for (const [name, n] of Object.entries(counts)) total[name] = (total[name] ?? 0) + n;
+          }
+          if (completed.phaseMs.layers) {
+            const layers = phase.layers ??= {};
+            for (const [name, ms] of Object.entries(completed.phaseMs.layers)) layers[name] = (layers[name] ?? 0) + ms;
+          }
+        }
         if (output.kind === "continue") { row.current = output.pending; keep.push(index); }
         else if (output.kind === "failed") row.reject(output.error);
         else if (output.kind === "cancelled") row.reject(row.req.signal?.reason ?? new Error(output.reason));
