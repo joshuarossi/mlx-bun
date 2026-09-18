@@ -13,7 +13,7 @@
 //       [--L 12] [--k 3] [--block 256] [--batch 16384] [--no-tail-biting]
 //       [--no-trellis] [--no-rotate] [--layers N] [--dry-run]
 //       [--ldlq <hdir>] [--k-map <trellis-kmap.json> [--k-budget 3.00]]
-//       [--down-axis out|in] [--reuse <packed-dir>]
+//       [--down-axis out|in] [--reuse <packed-dir[,packed-dir...]>]
 //       [--interleave-codes]
 //
 // --down-axis: which dim of down_proj the trellis runs along. `out` (default,
@@ -21,9 +21,10 @@
 // decode matvec a column gather (src/model/trellis-linear.ts scatter). `in`
 // codes the un-rotated intermediate dim so down decodes with the same plain
 // reduce kernel as gate/up — the speed/KL trade this flag exists to measure.
-// --reuse: copy every trellis tensor whose geometry is unchanged (gate/up when
-// only --down-axis differs) from an existing packed artifact instead of
-// re-running its Viterbi (~1.5 h instead of ~4.3 h at 27B).
+// --reuse: copy every trellis tensor whose geometry is unchanged from the
+// first matching packed artifact. A comma-separated list forms a variant bank
+// (for example, the current mixed artifact plus a uniform-k2 artifact), so a
+// new allocation only encodes tensor/k pairs absent from every source.
 // --interleave-codes: reorder eligible k3/T256/L12 axis0 codes into two-block
 // groups for the measured scatter layout. Other tensors keep their layout.
 
@@ -77,7 +78,7 @@ const maxLayers = Number(opt("layers", "-1"));
 const ldlqDir = opt("ldlq", "");
 const kMapPath = opt("k-map", "");
 const downAxis: 0 | 1 = opt("down-axis", "out") === "in" ? 1 : 0;
-const reuseDir = opt("reuse", "");
+const reuseDirs = opt("reuse", "").split(",").filter(Boolean);
 const interleaveCodes = flag("interleave-codes");
 const kBudget = opt("k-budget", "3.00");
 
@@ -101,11 +102,13 @@ type Treatment =
 
 /** Per-tensor k from the allocation file, keyed by OUR base names
  *  (model.language_model.layers.N.mlp.X); null = uniform --k. */
+let selectedBudget: { kmap?: Record<string, number>; affine_map?: Record<string, number> } | null = null;
 const kMap: Map<string, number> | null = (() => {
   if (!kMapPath) return null;
   const doc = JSON.parse(readFileSync(kMapPath, "utf8")) as Record<string, unknown>;
-  const budgets = doc.budgets as Record<string, { kmap?: Record<string, number> }> | undefined;
-  const km = budgets?.[kBudget]?.kmap;
+  const budgets = doc.budgets as Record<string, { kmap?: Record<string, number>; affine_map?: Record<string, number> }> | undefined;
+  selectedBudget = budgets?.[kBudget] ?? null;
+  const km = selectedBudget?.kmap;
   if (!km) throw new Error(`--k-map: no budgets["${kBudget}"].kmap in ${kMapPath} (have ${Object.keys(budgets ?? {}).join(", ")})`);
   const out = new Map<string, number>();
   for (const [name, k] of Object.entries(km)) {
@@ -114,6 +117,11 @@ const kMap: Map<string, number> | null = (() => {
   }
   return out;
 })();
+const affineBitsMap = new Map<string, number>(
+  Object.entries(selectedBudget?.affine_map ?? {}).map(([name, bits]) => [
+    name.replace(/^model\.layers\./, `${LM}layers.`), bits,
+  ]),
+);
 const kOf = (base: string): number => {
   if (!kMap) return TRELLIS_K;
   const k = kMap.get(base);
@@ -136,6 +144,8 @@ function treat(base: string): Treatment {
       return useTrellis && inScope ? { kind: "trellis", axis: 1, k: kOf(base) } : { kind: "affine", bits: BASE_BITS };
     if (mod === "mlp.down_proj")
       return useTrellis && inScope ? { kind: "trellis", axis: downAxis, k: kOf(base) } : { kind: "affine", bits: BASE_BITS };
+    const mappedBits = affineBitsMap.get(base);
+    if (mappedBits !== undefined) return { kind: "affine", bits: mappedBits };
     return { kind: "affine", bits: PROT_BITS };
   }
   if (base === "lm_head" || base === `${LM}embed_tokens`) return { kind: "affine", bits: PROT_BITS };
@@ -598,18 +608,21 @@ if (dryRun) {
 // not `2 << 30` — JS bitwise shifts truncate to int32 (`3 << 30` is NEGATIVE,
 // and safetensors-writer.ts's own `DEFAULT_SHARD_BYTES = 5 << 30` is really
 // 1 GiB, not 5 — latent repo bug, harmless there, fatal here).
-const reuse = reuseDir ? await Weights.open(reuseDir) : null;
-const reuseCfg = reuseDir
-  ? (JSON.parse(readFileSync(join(reuseDir, "config.json"), "utf8")) as { quantization: Record<string, unknown> }).quantization
-  : null;
+const reuseSources = await Promise.all(reuseDirs.map(async (dir) => ({
+  dir,
+  weights: await Weights.open(dir),
+  config: (JSON.parse(readFileSync(join(dir, "config.json"), "utf8")) as { quantization: Record<string, unknown> }).quantization,
+})));
 let reused = 0;
+const reusedBySource = new Map<string, number>();
 let interleavedTensors = 0;
-/** Reuse when the module is a trellis entry in the source artifact with the SAME k and axis. */
-function reusable(base: string, k: number, axis: 0 | 1): boolean {
-  if (!reuse || !reuseCfg) return false;
-  const e = reuseCfg[base] as { mode?: string; bits?: number; trellis?: { axis?: number } } | undefined;
-  return !!e && e.mode === "trellis" && e.bits === k && e.trellis?.axis === axis &&
-    reuse.has(`${base}.weight`) && reuse.has(`${base}.scales`);
+/** Find a trellis entry with the same k and axis in the ordered source bank. */
+function reusable(base: string, k: number, axis: 0 | 1) {
+  return reuseSources.find(({ weights, config }) => {
+    const e = config[base] as { mode?: string; bits?: number; trellis?: { axis?: number } } | undefined;
+    return !!e && e.mode === "trellis" && e.bits === k && e.trellis?.axis === axis &&
+      weights.has(`${base}.weight`) && weights.has(`${base}.scales`);
+  });
 }
 const writer = new ShardedWriter(outDir!, { shardBytes: 2 * 1024 ** 3 });
 const t0 = performance.now();
@@ -646,14 +659,16 @@ try {
       } else if (t.kind === "trellis") {
         const tt = performance.now();
         let rec: Packed;
-        if (reusable(base!, t.k, t.axis)) {
+        const source = reusable(base!, t.k, t.axis);
+        if (source) {
           rec = {
-            codes: ops.copyOf(reuse!.tensor(`${base}.weight`), gpuStream),
-            scales: ops.copyOf(reuse!.tensor(`${base}.scales`), gpuStream),
+            codes: ops.copyOf(source.weights.tensor(`${base}.weight`), gpuStream),
+            scales: ops.copyOf(source.weights.tensor(`${base}.scales`), gpuStream),
           };
           ops.evalAll([rec.codes, rec.scales]);
-          reuse!.release(`${base}.weight`); reuse!.release(`${base}.scales`);
+          source.weights.release(`${base}.weight`); source.weights.release(`${base}.scales`);
           reused++;
+          reusedBySource.set(source.dir, (reusedBySource.get(source.dir) ?? 0) + 1);
           ldlqApplied++;   // the reused codes carry the source artifact's LDLQ
         } else if (ldlqDir) {
           const rest = base!.slice(`${LM}layers.`.length);
@@ -729,7 +744,7 @@ try {
     `on-disk ${(res.totalSize / 2 ** 30).toFixed(3)} GiB (packed) · ` +
     `${((performance.now() - t0) / 60000).toFixed(1)} min total, ` +
     `${(trellisSeconds / 60).toFixed(1)} min in the trellis encoder` +
-    (reuse ? ` · ${reused} trellis tensors reused from ${reuseDir}` : "") +
+    (reuseSources.length ? ` · ${reused} trellis tensors reused from ${reuseSources.length} source(s)` : "") +
     ` · down_proj coded along ${downAxis === 1 ? "INPUT" : "output"} dim`,
   );
   for (const [k, v] of [...byBits].sort())
@@ -780,7 +795,10 @@ try {
         : null,
       scale: "per coded row, fp16 (QTIP uses one per-tensor Wscale after TWO-sided IP)",
       down_axis: downAxis === 1 ? "input (un-rotated intermediate dim; plain reduce kernel)" : "output (rotated dim; scatter kernel)",
-      reused_from: reuse ? { dir: reuseDir, tensors: reused } : null,
+      reused_from: reuseSources.length ? {
+        tensors: reused,
+        sources: Object.fromEntries(reusedBySource),
+      } : null,
       interleaved_modules: interleavedTensors,
       packaging: "packed: uint32 bit-stream (reversed-time symbols, tail-biting window) + fp16 row scales; " +
         "config mode \"trellis\" (src/quantize/trellis.ts, src/model/trellis-linear.ts); mlx-lm cannot load it",
@@ -818,7 +836,7 @@ try {
   ctx.dispose();
   one.dispose();
   disposeCodecs();
-  reuse?.dispose();
+  for (const source of reuseSources) source.weights.dispose();
   weights.dispose();
   clearCache();
 }

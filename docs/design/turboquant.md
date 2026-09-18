@@ -1406,6 +1406,47 @@ vs 0.1553 streamed (+1%, identity confirmed). All task columns for trellis
 arms are measured on the carrier. NOT a shipping format — the real footprint
 needs Q2b (packed trellis + Metal decode kernel).
 
+## Packed Qwen publication preparation
+
+The publication candidate is the existing `k300-packed-interleave2-rd` artifact.
+The publisher namespace is https://huggingface.co/mlx-bun, created through
+Josh's `mjriii` account on 2026-09-15 UTC as a Community organization.
+Model repositories and release uploads remain pending.
+Position it as an experimental custom-format Apple Silicon quant. Recipe task
+scores above were measured through an evaluation carrier; repeat task evaluations
+on the exact release files and shipping engine before claiming release quality.
+Preserve the distinction between weight compression, optional TurboQuant KV,
+MTP and engine batching. Correctness gates do not establish task accuracy.
+
+Working deliverables are `reports/qwen38-trellis-publication/CHECKLIST.md`,
+`MODEL_CARD.md` and `artifact-inventory.json` in that same directory. They are
+local publication work products, not a replacement for canonical references.
+The working `COMPARISON_PROGRAM.md` adds the popular near-size GGUF/MLX shortlist
+and same-machine mlx-bun/mlx-lm/llama.cpp/vLLM-Metal matrix. It separates
+engine-plus-quant experience from optional same-artifact controls. The primary
+result is each pair's benchmark score and performance measured during that same
+run on M4 Pro 24 GB. Unsupported/OOM pairs deliver zero completed work; no
+other-machine substitute belongs in the comparison. The former flagship is an archived optional control. `GPU_SCHEDULE.md` and
+`campaign-queue.json` define sequential GPU ownership, CPU preparation, fixed
+pilot/screen/core/finalist stages, item-level resume and measured ETA updates.
+The queue is prepared, not automatically running.
+The checklist defines paired quality controls, coding/instruction evaluations,
+context/KV/MTP/concurrency measurements and clean-download acceptance. Curated
+new numbers belong in benchmarks.md; the eventual Hub card should link public
+evidence instead of machine-local reports.
+
+Open provenance fields include the immutable upstream source revision, license
+and notices, calibration inputs/settings, quantizer revision and release hashes.
+Local metadata establishes the recipe but refers to machine-local source paths.
+The artifact's inherited upstream README still claims generic runtime support
+and contains upstream benchmark tables; replace it in the publication package.
+Validate the minimum public engine release and companion compatibility using
+fresh downloads. Do not infer compatibility from the current working checkout.
+
+Publication preparation performs read-only metadata inspection and drafting.
+Run GPU evaluations sequentially after the active Kanban trial. Complete the
+package and evidence before the separate public upload action.
+
 ## Packed kernel experiments (2026-09-05, M4 Pro 24 GB)
 
 Experimental `MLX_BUN_TRELLIS_VARIANT=7` reuses each decoded gate/up weight

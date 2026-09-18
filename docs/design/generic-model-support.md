@@ -479,6 +479,58 @@ or a reason to change repetition defaults.
 - PLAN anchors: Phase 14 (bring-up, 14g MTP, 14v vision, 14w video, 14y
   YaRN open, 14z TurboQuant weights).
 
+#### Qwen3.8-Flash-Next: QwFNfer source comparison
+
+Source inspected: [QwFNfer @ 887dacd](https://github.com/Apolog1ze-Dev/QwFNfer/tree/887dacd13b1f4478184b991383da7be422cd1ecc).
+This is a source review, not a port or a measured mlx-bun optimization.
+Flash-Next needs its own graph; the existing dense Qwen3.8-27B port does not
+implement it. Total checkpoint size is not a resident-memory requirement.
+
+Our GLM runtime already supplies bounded expert residency, asynchronous
+whole-expert reads, resident-compute/read overlap, batch-union reuse, PILOT
+and COUPLE prefetch, usage-based pinning and memory-pressure feedback (§6.4).
+Those mechanisms are the starting point, not missing prerequisites.
+
+The useful QwFNfer differences to evaluate are:
+
+- **Block-assisted prediction.** `qwfn_engine.cpp:eval_batch` can run the
+  successor's attention/DeltaNet block before its router, using a partial
+  residual that includes available expert results. Our
+  `glm52-pilot.ts:#predictRows` normalizes the supplied residual and applies
+  the successor router. Compare added compute with saved foreground read
+  stalls. Preserve exact execution independently of prediction; specifically
+  audit recurrent writes and temporary attention-cache overwrites.
+- **Prefill read reuse beyond a compute chunk.** `eval_prefill_big` completes
+  one layer across a larger token batch, then reuses its staged experts across
+  smaller compute chunks. `prefill_enter/leave` borrows expert-tier memory for
+  prompt buffers and invalidates graphs if tier addresses change. Our batch
+  union already deduplicates within an execution call. Test whether retaining
+  experts across more prefill chunks saves reads within the same total memory
+  budget, including decode-cache rewarming and shared-request latency.
+- **Device-side resident dispatch.** Their replayed graph looks up expert
+  slot IDs and residency masks on the device. Our stock streamed executor
+  dispatches resident jobs from the host while reads run. A stable slot-table
+  graph could reduce host scheduling; preserve slot-generation fences and
+  oracle accumulation order.
+- **Incremental sparse-index pooling.** `qwfn_graph.cpp:sparse_attn_decode`
+  updates the current pooled block, scores cached pooled keys, selects blocks,
+  and gathers their KV for attention. Bucketed shapes enable graph reuse.
+  The selected attention work is bounded, but index scoring still grows with
+  the block count. This is a Flash-Next implementation reference, not an
+  exact replacement for dense attention in other models.
+- **Embedding placement.** The serving engine maps token and n-gram embedding
+  tensors and gathers rows on the host. `qwfn_ple.cpp` also contains a separate
+  asynchronous sorted/deduplicated row-cache implementation; it is not the
+  serving gather path traced here. Evaluate mmap versus explicit batched reads
+  with bounded residency, physical read amplification and pending-slot safety.
+
+`CMakeLists.txt` links ggml for quantized math; the reviewed core contains
+graph construction rather than a standalone custom CUDA kernel collection.
+Its short-token expert-sum and residual-mean matmul rewrites explicitly
+change reduction order. Borrow the launch-reduction objective, but do not
+assume those rewrites satisfy our numerical contract. No speed claim or
+default change follows from this review.
+
 ### 6.4 GLM-5.2 (`glm_moe_dsa`) — the Colibri hierarchy, `src/model/glm52*.ts`
 
 Summary of docs/archive/investigations/colibri-glm52-port.md (frozen);

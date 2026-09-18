@@ -256,6 +256,47 @@ describe("benchmark measurement contract", () => {
 });
 
 describe("header-only matrix inventory", () => {
+  function interleavedFixture(shape = [2, 3, 48], axis = 0, scaleRows = 3): string {
+    const spec = { mode: "trellis", bits: 3, group_size: 256,
+      trellis: { L: 12, code: "1mad", axis } };
+    const dir = fixture({ quantization: { bits: 3, group_size: 64,
+      [moduleName]: spec, [`language_model.${moduleName}`]: spec } });
+    const weightBytes = shape.reduce((a, b) => a * b, 1) * 4;
+    const scaleEnd = weightBytes + scaleRows * 2;
+    const header = Buffer.from(JSON.stringify({
+      [`${moduleName}.weight`]: { dtype: "U32", shape, data_offsets: [0, weightBytes] },
+      [`${moduleName}.scales`]: { dtype: "F16", shape: [scaleRows], data_offsets: [weightBytes, scaleEnd] },
+      "model.layers.0.linear_attn.conv1d.weight": { dtype: "BF16", shape: [3, 1, 4], data_offsets: [scaleEnd, scaleEnd + 24] },
+    }));
+    const len = Buffer.alloc(8); len.writeBigUInt64LE(BigInt(header.length));
+    writeFileSync(join(dir, "model.safetensors"), Buffer.concat([len, header, Buffer.alloc(scaleEnd + 24)]));
+    return dir;
+  }
+
+  test("counts interleaved trellis as one logical matrix while excluding rank-3 convolution", () => {
+    const report = inventoryModel(interleavedFixture());
+    expect(report.tensorCount).toBe(3);
+    expect(report.payloadBytes).toBe(1182);
+    expect(report.matrices).toHaveLength(1);
+    expect(report.matrices[0]).toMatchObject({
+      storedShape: [2, 3, 48], logicalShape: [1024, 3], parameters: 3072,
+      payloadBytes: 1158, mode: "trellis", bits: 3, groupSize: 256, axis: 0,
+    });
+    expect(report.matrixParameters).toBe(3072);
+    expect(report.matrixPayloadBytes).toBe(1158);
+    expect(report.matrixEffectiveBpw).toBe(3.015625);
+    expect(report.projectionGroups).toEqual([expect.objectContaining({
+      role: "mlp.down_proj", logicalShape: [1024, 3], count: 1, parameters: 3072, payloadBytes: 1158,
+    })]);
+    expect(report.roles["linear_attn.conv1d"]!.payloadBytes).toBe(24);
+  });
+
+  test("rejects unrecognized interleaving metadata instead of guessing rank-3 dimensions", () => {
+    for (const dir of [interleavedFixture([2, 3, 47]), interleavedFixture([2, 3, 48], 1),
+      interleavedFixture([2, 3, 48], 0, 2)])
+      expect(() => inventoryModel(dir)).toThrow("unsupported interleaved trellis matrix layout");
+  });
+
   test("reconstructs axis-0 3-bit shape and includes scales without alias duplication", () => {
     const report = inventoryModel(packedFixture());
     expect(report.tensorCount).toBe(3);
