@@ -10,6 +10,8 @@
 
 import { Dtype } from "./mlx/ffi";
 import { normalizedArgmax } from "./mlx/normalized-argmax";
+import { runtimeFlag } from "./runtime-config";
+import { applyTopKRows, applyTopPRows } from "./sampler-window";
 import { MlxArray } from "./mlx/array";
 import * as ops from "./mlx/ops";
 import type { TokenLogprobs } from "./contracts/generation";
@@ -166,7 +168,7 @@ export type NumberStepSampler = SamplingSession<MlxArray, MlxArray, Promise<Step
 
 const GOLDEN = 0x9e3779b97f4a7c15n;
 
-function stepKey(seed: number, step: number): MlxArray {
+export function stepKey(seed: number, step: number): MlxArray {
   const mixed = (BigInt(seed) ^ ((BigInt(step) + 1n) * GOLDEN)) & 0xffffffffffffffffn;
   return ops.randomKey(mixed);
 }
@@ -663,6 +665,23 @@ function windowStart(n: number, contextSize: number): number {
   return contextSize === 0 ? 0 : Math.max(0, n - contextSize);
 }
 
+/** Retain only tokens an enabled processor can inspect. Bias uses no history.
+ * Zero-sized windows mean unlimited history, matching Python's [-0:]. */
+function logitsHistoryLimit(options: LogitsProcessorOptions): number {
+  let limit = 0;
+  for (const [penalty, context = 20] of [
+    [options.repetitionPenalty, options.repetitionContextSize],
+    [options.presencePenalty, options.presenceContextSize],
+    [options.frequencyPenalty, options.frequencyContextSize],
+  ]) {
+    if (penalty === undefined || penalty === 0) continue;
+    // Preserve existing processor behavior for unusual programmatic values.
+    if (!Number.isSafeInteger(context) || context <= 0) return Infinity;
+    limit = Math.max(limit, context);
+  }
+  return limit;
+}
+
 export function makeLogitsProcessors(opts: LogitsProcessorOptions = {}): LogitsProcessor[] {
   const out: LogitsProcessor[] = [];
   const {
@@ -828,46 +847,53 @@ export function makeStepSampler(
   const captureTop = Math.max(0, config.captureTopLogprobs ?? 0);
   const capture = captureSelected || captureTop > 0;
   const greedyWithoutMetadata = (options.temperature ?? 0) === 0 && !options.curve && !capture && !config.sampler;
+  const historyLimit = logitsHistoryLimit(options);
   let history: MlxArray | null = null;
 
   const seedHistory = (tokens: readonly number[]): void => {
-    if (processors.length === 0) return;
-    const next = ops.fromInt32([...tokens], [tokens.length]);
+    if (historyLimit === 0) return;
+    if (tokens.length === 0) {
+      history?.dispose();
+      history = null;
+      return;
+    }
+    const recent = tokens.slice(Math.max(0, tokens.length - historyLimit));
+    const next = ops.fromInt32(recent, [recent.length]);
     const previous = history;
     history = next;
     previous?.dispose();
   };
 
-  const commitDevice = (token: MlxArray): void => {
-    if (processors.length === 0) return;
-    const one = ops.reshape(token, [1]);
-    if (!history) {
-      history = one;
+  // Takes ownership of next. Trim before concatenation so the appended array
+  // never exceeds the largest active finite window.
+  const appendHistory = (next: MlxArray): void => {
+    const previous = history;
+    if (!previous || next.size >= historyLimit) {
+      history = next;
+      previous?.dispose();
       return;
     }
-    const previous = history;
+    const keep = Math.min(previous.size, historyLimit - next.size);
+    let tail: MlxArray | null = null;
     try {
-      history = ops.concatAxis([previous, one], 0);
+      if (keep < previous.size) tail = previous.slice([previous.size - keep], [previous.size]);
+      history = ops.concatAxis([tail ?? previous, next], 0);
       previous.dispose();
     } finally {
-      one.dispose();
+      tail?.dispose();
+      next.dispose();
     }
   };
 
+  const commitDevice = (token: MlxArray): void => {
+    if (historyLimit === 0) return;
+    appendHistory(ops.reshape(token, [1]));
+  };
+
   const commitNumbers = (tokens: readonly number[]): void => {
-    if (tokens.length === 0 || processors.length === 0) return;
-    const next = ops.fromInt32([...tokens], [tokens.length]);
-    if (!history) {
-      history = next;
-      return;
-    }
-    const previous = history;
-    try {
-      history = ops.concatAxis([previous, next], 0);
-      previous.dispose();
-    } finally {
-      next.dispose();
-    }
+    if (tokens.length === 0 || historyLimit === 0) return;
+    const recent = tokens.slice(Math.max(0, tokens.length - historyLimit));
+    appendHistory(ops.fromInt32(recent, [recent.length]));
   };
 
   const sampleDevice = (input: MlxArray, step: number): StepSample<MlxArray> => {
@@ -943,12 +969,73 @@ export function makeStepSampler(
 
   if (config.initialHistory) seedHistory(config.initialHistory);
 
+  // Per-position sampling for a verify window: with no processors, grammar or
+  // capture, position p's draw depends only on its scores and its step key, so
+  // every position of the window can sit in ONE device graph and read back
+  // together. Row p reproduces sample(scores[p], steps[p]) exactly.
+  // The plain filter chain (top-p -> top-k -> temperature -> categorical) can run
+  // its filters once over the whole window. Other samplers keep per-row calls.
+  const windowFilters = !config.sampler && !options.curve && options.hlg?.enabled !== true &&
+    (options.minP ?? 0) === 0 && (options.xtcProbability ?? 0) === 0 && (options.temperature ?? 0) > 0 &&
+    runtimeFlag("MLX_BUN_SAMPLER_WINDOW_FILTERS", true)
+    ? { temperature: options.temperature!, topP: options.topP ?? 0, topK: options.topK ?? 0, seed: options.seed ?? 0 }
+    : null;
+  const positional = processors.length === 0 && !grammar && !capture
+    ? {
+      sample(scores: MlxArray, steps: readonly number[]): MlxArray {
+        if (scores.shape.length !== 2 || scores.shape[0] !== steps.length)
+          throw new Error(`positional sampling expects [${steps.length}, V] scores, got [${scores.shape.join(", ")}]`);
+        const vocab = scores.shape[1]!;
+        const tokens: MlxArray[] = [];
+        let packed: MlxArray | null = null;
+        try {
+          if (windowFilters && steps.length > 1) {
+            // One filter chain over [W, V] (bit-identical per row to the [1, V]
+            // chain, tests/unit/sampler-window.test.ts), then each row's own
+            // keyed draw on its [1, V] slice: that shape keeps MLX's inverse-CDF
+            // categorical, which the draft's coupled draw relies on.
+            using logprobs = toLogprobs(scores);
+            let current = logprobs, owned: MlxArray | null = null;
+            try {
+              if (windowFilters.topP > 0 && windowFilters.topP < 1) { owned = applyTopPRows(current, windowFilters.topP); current = owned; }
+              if (windowFilters.topK > 0) {
+                const next = applyTopKRows(current, windowFilters.topK);
+                owned?.dispose(); owned = next; current = next;
+              }
+              for (const [position, step] of steps.entries()) {
+                using row = current.slice([position, 0], [position + 1, vocab]);
+                using scaled = ops.mulScalar(row, 1 / windowFilters.temperature);
+                using key = stepKey(windowFilters.seed, step);
+                tokens.push(ops.randomCategorical(scaled, key));
+              }
+            } finally { owned?.dispose(); }
+          } else
+          for (const [position, step] of steps.entries()) {
+            using row = scores.slice([position, 0], [position + 1, vocab]);
+            if (greedyWithoutMetadata) { tokens.push(normalizedArgmax(row)); continue; }
+            using logprobs = toLogprobs(row);
+            tokens.push(sampler(logprobs, step));
+          }
+          if (tokens.length === 1) return tokens.pop()!;
+          packed = ops.concatAxis(tokens, 0);
+          const result = packed;
+          packed = null;
+          return result;
+        } finally {
+          packed?.dispose();
+          for (const token of tokens) token.dispose();
+        }
+      },
+    }
+    : undefined;
+
   const common = {
     independent: isPlainGreedy(options, processors.length > 0) && !capture && !config.sampler
       ? independentGreedySampling : undefined,
+    positional,
     isPlainGreedy: isPlainGreedy(options, processors.length > 0),
     capturesLogprobs: capture,
-    needsHistory: processors.length > 0,
+    needsHistory: historyLimit > 0,
     seedHistory,
     commitDevice,
     commitNumbers,

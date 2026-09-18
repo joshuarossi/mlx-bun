@@ -51,6 +51,13 @@ export interface QwenMtpTarget {
   readonly layerCount: number;
   embed(ids: MlxArray): MlxArray;
   logitsFromHidden(hidden: MlxArray): MlxArray;
+  /** The untied quantized vocabulary projection, when the drafter may project
+   *  onto a row subset of it (frequency-ranked draft vocabulary). Borrowed. */
+  readonly vocabularyHead?: {
+    readonly w: MlxArray; readonly scales: MlxArray; readonly biases: MlxArray | null;
+    readonly spec: { bits: number; groupSize: number; mode: string };
+    readonly vocabSize: number;
+  };
 }
 
 /** Graph-declared extensions over the target's live state. Sources request
@@ -82,6 +89,9 @@ export interface DraftSource {
   /** Request one fixed target kernel family across the speculative verify
    * batch. Native GLM MTP uses the direct-Colibri SPEC_PIN contract. */
   readonly pinTargetKernelFamily?: boolean;
+  /** This source can vary its requested draft depth between rounds without
+   * changing sampling semantics. Used by Qwen MTP for context-aware depth. */
+  readonly adaptiveDraftDepth?: boolean;
 
   /** Multi-layer target tap the source needs captured on the target's prefill
    *  AND every verify forward (DSpark's H_ctx; e4b {20,31,41,42}). When set,
@@ -143,6 +153,18 @@ export interface DraftSource {
 export interface DraftRowSampling {
   /** Borrow [B,V] log-probabilities; return owned [B] IDs on device. */
   sample(logprobs: MlxArray, steps: readonly number[]): MlxArray;
+  /** Frequency-ranked draft vocabulary (`MLX_BUN_SPEC_DRAFT_VOCAB`): ascending
+   *  token ids the draft may propose, and each row's coupled draw over logits
+   *  [B, N] restricted to them. Returns FULL-vocabulary ids [B]. Null when a
+   *  current row's sampler cannot be reproduced on a subset. */
+  readonly vocabulary?: {
+    readonly ids: readonly number[];
+    sample(logits: MlxArray, head: import("./draft-vocab").DraftVocabularyHead, steps: readonly number[]): MlxArray | null;
+  };
+  /** Every row drafts by argmax (`MLX_BUN_SPEC_GREEDY_DRAFT=1`). Rows may then
+   *  skip logprob normalization and select with the fused normalized argmax
+   *  instead of calling sample(); the selected IDs are identical. */
+  readonly greedy?: boolean;
 }
 
 /** Request-owned constraints can propose known continuations without changing
@@ -198,6 +220,9 @@ export interface DraftPrefillGroup {
 
 export interface GroupedDraftProvider {
   readonly supportsExternalTokens?: boolean;
+  /** Directory of the loaded draft artifact; optional files shipped beside its
+   *  weights (the frequency-ranked draft vocabulary) are discovered there. */
+  readonly artifactDir?: string;
   /** Resolve persistence identity without allocating a draft row. */
   checkpointNamespace?(): string;
   /** Draft state remains valid when target forwards run under a mounted

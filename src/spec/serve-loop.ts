@@ -51,6 +51,7 @@ import type { Cache } from "../model/gemma4";
 import { withModelUsageFlush, withModelWiredLimit, type GenerateOptions, type GenerateStats } from "../generate";
 import { createKvMaintenance } from "../backends/mlx/kv-maintenance";
 import { runtimeConfig, withRuntimeConfig } from "../runtime-config";
+import { draftSamplerOptions } from "./draft-policy";
 import { makeSampler, makeStepSampler } from "../sampler";
 import type { OnToken } from "../serve/generation-gateway";
 import type { DraftProvider } from "./source";
@@ -133,6 +134,10 @@ async function specRunInner(
     sampler,
   });
   const gamma = Math.max(1, numDraftTokens);
+  const adaptiveMtpThreshold = runtimeConfig().number(
+    "MLX_BUN_MTP_ADAPTIVE_DEPTH_THRESHOLD",
+    0,
+  );
   const trace = runtimeConfig().value("MLX_BUN_SPEC_TRACE") === "1";
   const prefillChunk = options.prefillChunkSize ??
     binding.prefillPolicy?.chunkSize(promptIds.length) ??
@@ -208,7 +213,10 @@ async function specRunInner(
         (options.kvBits && ((options.kvBits !== 4 && options.kvBits !== 8) || options.quantizedKvStart !== 0)))
       throw new Error("speculative KV requires uniform KV4/KV8 or TurboQuant start=0");
     caches = binding.makeCache();
-    const src = binding.openDraft(sampler, caches);
+    // Draft policy (see src/spec/draft-policy.ts): the target's stepSampler
+    // above is untouched; only the drafter's selection changes under the flag.
+    const draftOptions = draftSamplerOptions(options);
+    const src = binding.openDraft(draftOptions === options ? sampler : makeSampler(draftOptions), caches);
     source = src;
     tapLayers = src.tapLayers;
     const checkpoint = src.prefillMode === "full" ? src.checkpoint : undefined;
@@ -414,7 +422,18 @@ async function specRunInner(
         continue;
       }
 
-      const n = Math.min(gamma, Math.max(1, maxTokens - stats.generatedTokens));
+      // Qwen MTP's measured optimum depends on the logical context length:
+      // depth 2 wins for short contexts while depth 3 amortizes its extra
+      // draft step once the target attention window is long enough. This is
+      // lossless speculative scheduling: target verification still chooses
+      // every emitted token. An unset threshold preserves the fixed-depth
+      // behavior for published/default configurations.
+      const logicalContext = promptIds.length + stats.generatedTokens;
+      const roundGamma = src.adaptiveDraftDepth && gamma >= 3 &&
+          adaptiveMtpThreshold > 0 && logicalContext < adaptiveMtpThreshold
+        ? 2
+        : gamma;
+      const n = Math.min(roundGamma, Math.max(1, maxTokens - stats.generatedTokens));
 
       // Ring-wrap gate, BEFORE the round writes anything: a rejected-draft
       // rollback needs trim(), and a RotatingKVCache stops being trimmable

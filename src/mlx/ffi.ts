@@ -381,6 +381,9 @@ export const NULL_HANDLE = 0n;
 
 /** Run an op that writes its result through an mlx_array* out-param. */
 export function outArray(op: string, call: (slotPtr: number) => number): MlxHandle {
+  // Diagnostic op inventory (MLX_BUN_SPEC_OP_INVENTORY): graph nodes by op name.
+  const inventory = (globalThis as Record<string, unknown>).__opCount as Record<string, number> | undefined;
+  if (inventory) inventory[op] = (inventory[op] ?? 0) + 1;
   const slot = new BigUint64Array([C.mlx_array_new()]);
   const slotPtr = ptr(slot);
   const status = call(slotPtr);

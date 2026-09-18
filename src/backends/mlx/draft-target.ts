@@ -27,6 +27,8 @@ export function bindLegacyDraftTarget(model: RuntimeModel, caches: Cache[]): Tar
   if (model instanceof Qwen35Model) return Object.freeze({ identity: model, qwenMtp: Object.freeze({
     hiddenSize: model.config.text.hiddenSize, layerCount: model.config.text.numHiddenLayers,
     embed: model.embed.encode.bind(model.embed), logitsFromHidden: model.logitsFromHidden.bind(model),
+    vocabularyHead: model.lmHead ? Object.freeze({ w: model.lmHead.w, scales: model.lmHead.scales,
+      biases: model.lmHead.biases, spec: model.lmHead.spec, vocabSize: model.config.text.vocabSize }) : undefined,
   }) });
   return Object.freeze({ identity: model });
 }

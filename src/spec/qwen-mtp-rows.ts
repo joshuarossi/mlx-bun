@@ -2,6 +2,8 @@ import type { MlxArray } from "../mlx/array";
 import * as ops from "../mlx/ops";
 import { materializeCopy } from "../mlx/materialize";
 import { toLogprobs } from "../sampler";
+import { normalizedArgmax } from "../mlx/normalized-argmax";
+import { DraftVocabularyHead } from "./draft-vocab";
 import { BatchedKVCache } from "../model/batched-kv";
 import { KVCache } from "../model/gemma4-base";
 import type { DraftRowSampling, QwenMtpTarget } from "./source";
@@ -29,6 +31,8 @@ export class QwenMtpRows {
   #prefilled: boolean[] = [];
   #drafts: number[][] = [];
   #depth = 0;
+  /** Row subset of the target's vocabulary projection; built on first use. */
+  #vocabulary: DraftVocabularyHead | null = null;
 
   constructor(
     readonly target: QwenMtpTarget,
@@ -147,6 +151,33 @@ export class QwenMtpRows {
   /** Nonnegative depth, with every request's first pending token already known.
    * Build the complete device dependency chain before reading proposal IDs. */
   draft(pending: readonly number[], depth: number, steps: readonly number[]): number[][] {
+    if (depth === 0) return this.#chain(pending, depth, steps) as number[][];
+    using packed = this.#chain(pending, depth, steps) as MlxArray;
+    return this.#resolve(packed.toIntTokens(), pending.length, depth, true);
+  }
+
+  /** The same chain with the proposal IDs left on the device ([B, depth]), so the
+   *  caller can build its verify graph before anything is read back. `resolve`
+   *  takes the row-major host copy of `tokens`. Null at depth 0. */
+  draftDevice(pending: readonly number[], depth: number, steps: readonly number[]):
+    { tokens: MlxArray; resolve(read: readonly number[]): number[][] } | null {
+    if (depth === 0) return null;
+    const B = pending.length;
+    using packed = this.#chain(pending, depth, steps) as MlxArray; // [depth * B], position-major
+    using grid = ops.reshape(packed, [depth, B]);
+    using rows = ops.transposeAxes(grid, [1, 0]);
+    return { tokens: ops.contiguous(rows), resolve: read => this.#resolve(read, B, depth, false) };
+  }
+
+  #resolve(read: readonly number[], B: number, depth: number, positionMajor: boolean): number[][] {
+    this.#drafts = Array.from({ length: B }, (_, row) =>
+      Array.from({ length: depth }, (_, position) => read[positionMajor ? position * B + row : row * depth + position]!));
+    return this.#drafts;
+  }
+
+  /** Build the draft chain. Returns the packed device tokens [depth * B]
+   *  (position-major), or the empty proposals at depth 0. */
+  #chain(pending: readonly number[], depth: number, steps: readonly number[]): MlxArray | number[][] {
     const B = pending.length;
     const tokens: MlxArray[] = [];
     let ids: MlxArray | null = ops.fromInt32([...pending], [B, 1]);
@@ -167,20 +198,38 @@ export class QwenMtpRows {
         using embeds = this.target.embed(ids!);
         const output = this.module.forward(embeds, chained ?? this.#hidden!, this.#cache);
         chained?.dispose(); chained = output;
+        // Frequency-ranked draft vocabulary: project onto the listed rows only.
+        // The target still verifies over the full vocabulary.
+        const listed = this.sampling!.vocabulary, fullHead = this.target.vocabularyHead;
+        if (listed && fullHead) {
+          this.#vocabulary ??= new DraftVocabularyHead(fullHead, listed.ids);
+          using subsetLogits = this.#vocabulary.project(output);
+          using subsetFlat = ops.reshape(subsetLogits, [B, this.#vocabulary.size]);
+          const drafted = listed.sample(subsetFlat, this.#vocabulary, steps.map(step => step + position));
+          if (drafted) {
+            tokens.push(drafted);
+            ids!.dispose(); ids = ops.reshape(drafted, [B, 1]);
+            continue;
+          }
+        }
         using logits = this.target.logitsFromHidden(output);
         using flat = ops.reshape(logits, [B, logits.shape.at(-1)!]);
-        using logprobs = toLogprobs(flat);
-        const token = this.sampling!.sample(logprobs, steps.map(step => step + position));
+        let token: MlxArray;
+        if (this.sampling!.greedy) {
+          // Greedy drafting: one fused normalized-argmax over [B,V]; no
+          // logsumexp pass, no per-row top-p/top-k sort, no categorical draw.
+          token = normalizedArgmax(flat);
+        } else {
+          using logprobs = toLogprobs(flat);
+          token = this.sampling!.sample(logprobs, steps.map(step => step + position));
+        }
         tokens.push(token);
         ids!.dispose(); ids = ops.reshape(token, [B, 1]);
       }
-      using packed = ops.concatAxis(tokens, 0);
-      const read = packed.toIntTokens();
-      this.#drafts = Array.from({ length: B }, (_, row) =>
-        Array.from({ length: depth }, (_, position) => read[position * B + row]!));
+      const packed = ops.concatAxis(tokens, 0);
       this.#depth = depth;
       this.#hidden!.dispose(); this.#hidden = null;
-      return this.#drafts;
+      return packed;
     } finally {
       ids?.dispose(); chained?.dispose();
       for (const token of tokens) token.dispose();
@@ -224,6 +273,7 @@ export class QwenMtpRows {
   }
 
   dispose(): void {
+    this.#vocabulary?.dispose(); this.#vocabulary = null;
     this.#cache.dispose(); this.#hidden?.dispose(); this.#hidden = null;
     this.#drafts = []; this.#depth = 0; this.#prefilled = [];
   }

@@ -84,6 +84,97 @@ from the oracle venv). Per round:
    distribution-level rejection sampling); the first mismatch emits the
    target's correction, an all-accept round emits the bonus. EOS is never
    emitted as content, even when it arrives as an accepted draft.
+   **Readback discipline** (`sampleSpeculativeRows`): plain greedy rows
+   sample the whole window in one graph (`independent`); rows whose
+   selection at each position depends only on that position's scores and
+   step key — temperature/top-p/top-k/min-p with no processor history,
+   grammar or logprob capture — also sample every position at once and read
+   back ONCE (`positional`, `src/sampler.ts`). Seeded draws key by
+   `(seed, step)` rather than a shared stream, so the walk still stops at the
+   first rejection with draws identical to sequential sampling, and unused
+   suffix positions consume nothing. Only history/grammar/capture rows pay
+   one host readback per position. The Qwen MTP draft chain (both the
+   grouped rows and the serial source) likewise stays on device and reads
+   its proposals back once per round, so a production MTP2 round costs two
+   host syncs (drafts, verify) instead of four.
+   **Draft policy** (`src/spec/draft-policy.ts`, `MLX_BUN_SPEC_GREEDY_DRAFT`,
+   default off): because acceptance is exact token match against the
+   target's own per-step sample, the draft choice never changes the emitted
+   distribution, only P(accept). Under a sampled request the default draws
+   the draft from the head's q (mlx-lm's convention: P(accept) = Σ q·p);
+   the flag drafts argmax q (P(accept) = p(argmax q)), and the grouped Qwen
+   MTP rows then replace logsumexp + top-p sort + top-k + categorical per
+   draft step with one fused normalized argmax. **Measured and rejected
+   (2026-09-18, q4b artifact, frozen screen policy): greedy drafts LOWER
+   acceptance.** MLX 0.32.2 draws a `[1, V]` categorical by inverse CDF in
+   token-id order from one uniform (`random.cpp`, `categorical_inverse_cdf`),
+   and draft and target both key that uniform by `(seed, step)`. The two
+   draws are therefore coupled: the same uniform lands on the same token
+   whenever q and p put their mass in the same place, which is why a sampled
+   request at temperature 0.6 accepts about two drafts in three. An argmax
+   draft throws the coupling away. A draft temperature other than the
+   request's (`MLX_BUN_SPEC_DRAFT_TEMPERATURE`) and unfiltered drafts
+   (`MLX_BUN_SPEC_DRAFT_FILTER=0`) showed no gain on byte-identical items
+   either. All three stay default-off flags. Any draft-side sampler must keep
+   the step key and draw with `randomCategorical` over ascending token ids,
+   or acceptance collapses. Two-model L1 parity with mlx-lm holds only with
+   the flags off.
+   A draft-side change is NOT output-neutral in practice even though it is
+   distribution-neutral: a token's bf16 logits depend on which row of the
+   verify window computed it, so a different acceptance pattern re-rolls some
+   seeded trajectories (2 of 6 items in the first screen). Compare such
+   arms by ms per round at matched context and tokens per round; compare
+   tok/s only on byte-identical items.
+   **Device-first round** (`prepareDeviceRound`, `MLX_BUN_SPEC_DEVICE_ROUND`,
+   default on): a 27B verify forward is about 2,560 graph nodes built from
+   JavaScript. The host-first round read the draft tokens back and only then
+   built that graph, so the GPU idled about 3 ms per round (97.5% active).
+   When the source offers `draftDevice()` and every row samples
+   `independent` or `positional`, the round leaves the drafts on the device,
+   assembles the verify ids there, starts the GPU on the draft chain with
+   `asyncEvalAll`, builds the verify graph meanwhile, and reads drafts plus
+   window samples back once. Same arithmetic, same draws, same decisions
+   (`tests/unit/speculative-device-round.test.ts`); served outputs were
+   byte-identical on 6 of 6 items at 123.8 -> 119.1 ms per round (GPU 99.6%
+   active). Rows whose sampling depends on history keep the host-first order.
+   **Draft vocabulary** (FR-Spec; `src/spec/draft-vocab.ts`,
+   `MLX_BUN_SPEC_DRAFT_VOCAB=<json list>`): the MTP head shares the target's
+   248,320-row lm_head, and that projection was 3.0 of each 5 ms draft step.
+   With a frequency-ranked id list the head gathers those rows once at load
+   (`DraftVocabularyHead`, quantized rows, no dequantize) and drafts over
+   them: 0.93 ms at 65,536 rows. Ids stay ascending, so the inverse-CDF draw
+   over the subset equals a full-vocabulary draw with zero mass outside the
+   list and stays coupled to the target. Served: draft phase 10.1 -> 5.2 ms
+   per round, acceptance unchanged (0.667 vs 0.639 on re-rolled
+   trajectories). 64k is kept over 32k: 32k saves 0.9 ms more but its 3.4%
+   uncovered tokens cost the same in acceptance. The list is built from a
+   corpus that excludes every screen item
+   (`reports/qwen38-trellis-publication/build-draft-vocab.ts`). Curve, HLG
+   and XTC requests keep the full vocabulary. A list shipped beside the
+   draft companion as `draft_vocab.json` loads with no flag
+   (`GroupedDraftProvider.artifactDir`); the env path overrides it and
+   `0`/`off` disables it. The list belongs to the tokenizer, not the quant.
+   Its limit: an unlisted token can never be drafted, so text far from the
+   list's corpus drafts worse than the full head would.
+   Frozen-64 qualification on the q4b artifact (device-first round plus the
+   64k list, nothing that touches target arithmetic): 61/64 held with the
+   same three failures, 18.915 -> 20.240 weighted decode tok/s, 46 of 64
+   outputs byte-identical to the baseline run
+   ([benchmarks](../reference/benchmarks.md#qwen38-27b-q4b-decode-round-m4-pro-24-gb-2026-09-18)).
+   **Round decomposition** (`MLX_BUN_SPEC_PHASE_TIMING=1`, diagnostic): the
+   shared round evaluates the verify logits before sampling and reports
+   `usage.speculation.phaseMs = {draft, verify, sample, commit, rounds}`
+   summed per request. This is the instrument for the open question of how
+   the ~30% round overhead on the packed 27B (11.45 ordinary forwards/s ×
+   2.36 tokens/forward = 27 tok/s ceiling vs 18.9 measured) splits between
+   the draft chain, the M=3/M=4 verify and sampling/readback. The forced
+   evaluation removes draft/verify overlap, so the phases are attribution,
+   not a production round time. Answer on the q4b artifact at MTP2: verify
+   109.0 ms, draft 10.1, sample 2.1, commit 0.7; the width-3 verify costs
+   1.26x a width-1 forward (86.2 ms). The overhead is the verify width and
+   the draft head's vocabulary projection, not host work.
+   `MLX_BUN_SPEC_LAYER_PROFILE=1` splits the verify forward by component
+   inside the same round; `MLX_BUN_SPEC_OP_INVENTORY=1` counts graph nodes.
 4. **Emit** the round's tokens through `onToken` one at a time, in order
    (bursts of ≤ d+1), so stop-sequence matching and detokenization see the
    stream `generate()` would produce.
