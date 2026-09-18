@@ -49,6 +49,7 @@ Living product/vision docs (USING side).
 - [ResearchTopics.md](../docs/planning/ResearchTopics.md) — Research Topics
 - [public-readiness-handoff.md](../docs/planning/public-readiness-handoff.md) — Public readiness — handoff (2026-09-11)
 - [public-readiness.md](../docs/planning/public-readiness.md) — Preparing mlx-bun for the MLX community
+- [release-notes-v0.6.0.md](../docs/planning/release-notes-v0.6.0.md) — mlx-bun v0.6.0
 - [video-series.md](../docs/planning/video-series.md) — mlx-bun video series
 
 ## docs/archive/
