@@ -30,10 +30,16 @@ export interface DiscoveryRoutes {
   invalidateLibrary(): void;
 }
 
+export interface TranscriptionInfo {
+  id: string;
+  resident: boolean;
+}
+
 export function createDiscoveryRoutes(
   ctx: ServingContext,
   gateway: Pick<GenerationGateway, "batchMode">,
   startedAt: number,
+  transcription: () => Promise<TranscriptionInfo | null> = async () => null,
 ): DiscoveryRoutes {
   let libraryCache: { at: number; rows: unknown[] } | null = null;
 
@@ -106,6 +112,8 @@ export function createDiscoveryRoutes(
               "POST /v1/messages",
               "POST /v1/responses",
               "POST /v1/embeddings",
+              "POST /v1/audio/transcriptions",
+              "POST /v1/audio/translations",
               "GET /v1/models",
               "GET/POST/DELETE /v1/adapters",
               "GET /health",
@@ -132,6 +140,7 @@ export function createDiscoveryRoutes(
             top_k: ctx.genDefaults.topK ?? null,
           };
           const capabilities = modelServingBinding(ctx).discovery;
+          const stt = await transcription();
           const data: Array<Record<string, unknown>> = [{
             id: ctx.modelId,
             object: "model",
@@ -165,9 +174,16 @@ export function createDiscoveryRoutes(
               audio: !!(ctx.audio || ctx.loadAudio),
               adapters: capabilities.adapters,
               training: capabilities.training,
+              transcription: stt !== null,
             },
             gen_defaults: genDefaults,
           }];
+          if (stt)
+            data.push({
+              id: stt.id, object: "model", created, owned_by: "mlx-bun",
+              transcription: true, resident: stt.resident,
+              capabilities: { transcription: true, translation: true, chat_completions: false },
+            });
           try {
             const { Registry, visionCapable } = await import("../registry");
             const { supportTier } = await import("../model/support");
@@ -175,7 +191,7 @@ export function createDiscoveryRoutes(
             try {
               if (registry.list().length === 0) await registry.scan();
               for (const model of registry.listCanonical()) {
-                if (model.repoId === ctx.modelId) continue;
+                if (model.repoId === ctx.modelId || model.repoId === stt?.id) continue;
                 const tier = supportTier(model.modelType, model.repoId);
                 if (tier === null) continue;
                 data.push({

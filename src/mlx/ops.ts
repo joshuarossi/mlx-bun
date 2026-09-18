@@ -1027,3 +1027,90 @@ export function leftShift(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray 
 export function rightShift(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
   return new MlxArray(outArray("right_shift", (o) => C.mlx_right_shift(o, a.handle, b.handle, s)));
 }
+
+// --- Whisper additions (fft / strided framing / pad / reductions) ----------
+
+/** mx.fft.rfft(a, n, axis) with numpy "backward" normalization. Real input
+ *  → complex64 output of length n/2+1 along `axis`. */
+export function rfft(a: MlxArray, n: number, axis = -1, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("fft_rfft", (o) => C.mlx_fft_rfft(o, a.handle, n, axis, 0, s)));
+}
+
+/** mx.as_strided(a, shape, strides, offset) — element strides. */
+export function asStrided(
+  a: MlxArray, shape: number[], strides: number[], offset = 0, s: S = gpuStream,
+): MlxArray {
+  const shp = new Int32Array(shape);
+  const str = new BigInt64Array(strides.map((v) => BigInt(v)));
+  return new MlxArray(
+    outArray("as_strided", (o) =>
+      C.mlx_as_strided(o, a.handle, ptr(shp), BigInt(shape.length), ptr(str), BigInt(strides.length), BigInt(offset), s),
+    ),
+  );
+}
+
+/** mx.pad(a, [(lo, hi), …]) with constant zero fill (all axes given). */
+export function pad(a: MlxArray, widths: [number, number][], s: S = gpuStream): MlxArray {
+  const axes = new Int32Array(widths.map((_, i) => i));
+  const lo = new Int32Array(widths.map((w) => w[0]));
+  const hi = new Int32Array(widths.map((w) => w[1]));
+  const zero = scalarLike(0, a);
+  try {
+    return new MlxArray(
+      outArray("pad", (o) =>
+        C.mlx_pad(
+          o, a.handle, ptr(axes), BigInt(widths.length), ptr(lo), BigInt(widths.length),
+          ptr(hi), BigInt(widths.length), zero.handle, ptr(cstr("constant")), s,
+        ),
+      ),
+    );
+  } finally {
+    zero.dispose();
+  }
+}
+
+export function log10(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("log10", (o) => C.mlx_log10(o, a.handle, s)));
+}
+
+/** Reduce-max over all elements → 0-d array (keepdims=false). */
+export function maxAll(a: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("max", (o) => C.mlx_max(o, a.handle, false, s)));
+}
+
+export function broadcastTo(a: MlxArray, shape: number[], s: S = gpuStream): MlxArray {
+  const buf = new Int32Array(shape);
+  return new MlxArray(
+    outArray("broadcast_to", (o) => C.mlx_broadcast_to(o, a.handle, ptr(buf), BigInt(shape.length), s)),
+  );
+}
+
+/** mx.topk(a, k, axis) — the k largest values along axis (unsorted). */
+export function topkAxis(a: MlxArray, k: number, axis: number, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("topk_axis", (o) => C.mlx_topk_axis(o, a.handle, k, axis, s)));
+}
+
+export function varAxis(a: MlxArray, axis: number, keepdims: boolean, ddof = 0, s: S = gpuStream): MlxArray {
+  return new MlxArray(
+    outArray("var_axis", (o) => C.mlx_var_axis(o, a.handle, axis, keepdims, ddof, s)),
+  );
+}
+
+export function stackAxis(arrays: MlxArray[], axis: number, s: S = gpuStream): MlxArray {
+  const handles = new BigUint64Array(arrays.map((a) => a.handle));
+  const vec = C.mlx_vector_array_new_data(ptr(handles), BigInt(arrays.length));
+  try {
+    return new MlxArray(outArray("stack_axis", (o) => C.mlx_stack_axis(o, vec, axis, s)));
+  } finally {
+    C.mlx_vector_array_free(vec);
+  }
+}
+
+export function minimum(a: MlxArray, b: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("minimum", (o) => C.mlx_minimum(o, a.handle, b.handle, s)));
+}
+
+/** Flat mx.take(a, indices) — gathers from the flattened array. */
+export function takeFlat(a: MlxArray, indices: MlxArray, s: S = gpuStream): MlxArray {
+  return new MlxArray(outArray("take", (o) => C.mlx_take(o, a.handle, indices.handle, s)));
+}

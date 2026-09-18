@@ -157,6 +157,30 @@ bumped from 0.2.4 to 0.2.15 on 2026-07-06 and the mixed-KV goldens stayed
 byte-identical across the bump. The venv directory holds no project source —
 just the venv and `serve.sh`.
 
+**Whisper oracle.** mlx-whisper 0.4.3 lives in its own venv,
+`~/Code/mlx-whisper-oracle/.venv` (Python 3.12 via uv; `mlx==0.32.2` to match
+`MLX_CORE_VERSION`, plus torch and numba, which must never enter the pinned
+mlx-lm venv). Override with `MLX_BUN_WHISPER_ORACLE_VENV`. Regenerate with
+`bun scripts/regen.ts whisper`; the parity test compares against
+`goldens/whisper.json` and its untracked blobs. The mlx-community Whisper
+checkpoint ships no tokenizer: `openai/whisper-large-v3-turbo`'s
+`tokenizer.json` + `tokenizer_config.json` must be in the HF cache
+(`hf_hub_download` of those two files; ~2.5 MB). whisper.cpp comparisons use
+sotto's vendored v1.9.3 helper (`~/Code/sotto/build/server/helpers/sotto-engine`)
+with `ggml-large-v3-turbo.bin` — same weights, different runtime.
+
+Silero VAD parity uses the `silero-vad` 6.2.1 pip package (torch JIT model)
+in the same venv (`scripts/oracle/gen-silero-golden.py` → tracked
+`goldens/silero-vad.json`); the engine's weights are `ggml-org/whisper-vad`'s
+`ggml-silero-v6.2.0.bin` in the HF cache (byte-identical to sotto's copy,
+SHA-256 `2aa269b7…`). `coremltools` is installed there too for the Core ML
+encoder experiment (benchmarks.md).
+
+The repo's untracked `.env` may pin `MLX_BUN_ORACLE_VENV` to a directory that
+no longer exists (it pointed at `~/Code/mlx-lm-example/.venv` on the M1 Max
+on 2026-09-15); every parity test importing `tests/support/paths.ts` then
+throws at import. Fix the path or run with `bun --env-file=/dev/null test …`.
+
 The Qwen MTP compatibility test accepts explicit local artifact paths through
 `MLX_BUN_TEST_MTP_TARGET` and `MLX_BUN_TEST_MTP_DRAFT`, alongside
 `MLX_BUN_TEST_QWEN38_MTP=1`. It compares speculative and ordinary greedy

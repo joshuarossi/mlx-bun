@@ -30,6 +30,7 @@ cp -f "$BREW_MLX_DIR/libjaccl.dylib" "$STAGE/libjaccl.dylib"
 cp -f "$BREW_MLX_DIR/mlx.metallib" "$STAGE/mlx.metallib"
 sh "$ROOT/scripts/build-expert-io.sh" "$STAGE/libmlx_bun_expert_io.dylib"
 sh "$ROOT/scripts/build-frame-extract.sh" "$STAGE/mlx-bun-frame-extract"
+sh "$ROOT/scripts/build-mic-capture.sh" "$STAGE/mlx-bun-mic-capture"
 
 # Same load-command rewrites as build-binary.sh: resolve siblings via
 # @loader_path so the extracted directory is self-contained.
@@ -38,7 +39,7 @@ install_name_tool -change "$BREW_MLX_DIR/libmlx.dylib" \
 install_name_tool -add_rpath "@loader_path" "$STAGE/libmlx.dylib" 2>/dev/null || true
 codesign -f -s - "$STAGE/libmlxc.dylib" "$STAGE/libmlx.dylib" \
   "$STAGE/libjaccl.dylib" "$STAGE/libmlx_bun_expert_io.dylib" \
-  "$STAGE/mlx-bun-frame-extract" >/dev/null 2>&1
+  "$STAGE/mlx-bun-frame-extract" "$STAGE/mlx-bun-mic-capture" >/dev/null 2>&1
 
 NAME="mlx-bun-native-v${VER}-${ARCH}.tar.gz"
 tar -czf "$OUT/$NAME" -C "$STAGE" .

@@ -11,23 +11,22 @@ Numerical contracts and measured results live in
 combinations live in [models.md](docs/reference/models.md) and
 [server-config.md](docs/reference/server-config.md).
 
+## Released: mlx-bun v0.5.0 (2026-09-16)
+
+Whisper speech-to-text (transcription routes, streaming sessions, Silero VAD,
+`transcribe`/`dictate`, web hold-to-talk) built from `475c443`; native pack
+0.5.0 adds `mlx-bun-mic-capture`. Notarization **Accepted**, submission
+`3c804807-3d16-4205-aa75-8127c21c1e9f`; arm64 archive SHA-256
+`2bf4d2150a35747618d6b7d397ef9a3ca29dfed48d2c979af18518d2fae195b7`, matching the
+GitHub asset and the Homebrew formula; npm `latest` is 0.5.0 (published from the
+package's owner account `joshua.rossi`; `josh.rossi` is a different account). Notes: [release-notes-v0.5.0.md](docs/archive/planning/release-notes-v0.5.0.md).
+
 ## Released: mlx-bun v0.4.0 (2026-09-11)
 
-PR #48 is merged and published through `scripts/publish-release.sh` to GitHub,
-npm and the Homebrew tap. The release includes shared batched methods and
-sampling, affine/TurboQuant row state, generated RAM/SSD reuse, queued
-persistence, ordinary/adapter resume and GLM native MTP state. Default serving
-remains cap eight with B1 execution for a lone eligible request; explicit serial
-remains available. Final GLM artifact testing and remaining program work stay open.
-
-Built from `a54f819` with Bun 1.4.2 and native pack 0.4.0 / MLX 0.32.2.
-Apple notarization **Accepted**, submission
-`92840689-ebc3-4ba8-bfa6-8d5923aabe39`. Signed arm64 archive SHA-256:
-`dd362be989c96964cbfe1c149c47a330c814ddf4d8412b21b8d75747aae21ede`.
-The downloaded release matches the GitHub asset and Homebrew formula hashes;
-npm reports 0.4.0. Notes: [release-notes-v0.4.0.md](docs/archive/planning/release-notes-v0.4.0.md).
-Measured results and limits: [benchmarks.md](docs/reference/benchmarks.md).
-There is no matched successful original/final Kanban task-time comparison.
+Shared batched methods and sampling, affine/TurboQuant row state, generated
+RAM/SSD reuse, queued persistence, resume and GLM native MTP (PR #48); built
+from `a54f819`, native pack 0.4.0, notarization Accepted (`92840689-…`), archive
+SHA-256 `dd362be9…`. Notes: [release-notes-v0.4.0.md](docs/archive/planning/release-notes-v0.4.0.md); results in [benchmarks.md](docs/reference/benchmarks.md).
 
 The post-release M4 standard matrix and packed-Qwen KV4/TQ follow-up are
 complete. Both quantized packed-model profiles pass context and SSD restart;
@@ -127,6 +126,7 @@ failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing pas
 | Interface-based engine refactor | R1–R9 and R10 code migration merged in `673b43f`, PR #46. Model-owned execution, shared prefill/sessions, policy capture and state ownership landed. Current checkpoint: typechecks and model-free suite pass. The earlier M4 delta-golden discrepancy was reproduced in the pinned oracle and explicitly regenerated on unchanged inputs. | Share target and quiet M4 Pro acceptance with Phase 6 R0. Upstream loaded-machine repeats establish no 27B speed win. See engine architecture §12.13 and decode-speed-program §7.1. | main |
 | Memory / the Dreaming | write path + nightly synthesis built; ingest is NOT wired into the nightly run; `memory synthesize --since/--model` parsed but unapplied | wire ingest into `runPipeline`; decide the embeddings-as-instruments question; promote wiki-full to a real vault | main |
 | Audio input (Gemma-4) | A0–A4 served | A5 bench cells + 12B sidecar coverage | main |
+| Whisper speech-to-text | P0–P4 landed (P4: Silero VAD gate + streaming sessions + AudioToolbox decode; ANE encoder measured 3.3× slower than the GPU and shelved): bit-exact mlx-whisper parity (mel/encoder/logits), greedy/beam/prompt decoding, word timestamps, `mlx-bun transcribe`, `/v1/audio/transcriptions` companion + transcription-only server with idle page-out; fast path 8 % faster than mlx-whisper greedy and 11–15 % faster than whisper.cpp beam-5 on the M1 Max with identical transcripts (benchmarks.md). | Josh tests `mlx-bun dictate` (push-to-talk prototype: mic sidecar → sessions → print/copy/type); then the sotto backend PR and TUI/web voice input. | main |
 
 ## Known limitations and measurement conditions
 
@@ -145,5 +145,4 @@ failure and SSD restart. TQ/MTP3 and KV4/MTP2 pass; automatic prefill sizing pas
   decode@ctx and restart-restore size instead.
 - `WIRE_THRESHOLD` (generate.ts) is a host-relative fraction; the 12B sits
   near the boundary on a 24 GB machine.
-- Two dev machines (M1 Max 32 GB, M4 Pro 24 GB); neither is canonical — every
-  number carries host/chip/RAM ([environment.md](docs/reference/environment.md)).
+- Two dev machines, neither canonical; every number carries host/chip/RAM ([environment.md](docs/reference/environment.md)).

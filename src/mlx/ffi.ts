@@ -183,6 +183,23 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, input, weight, stride, padding, dilation, groups, stream) — depthwise
   // causal conv1d for Qwen3.5 gated-DeltaNet (groups == channels, padding 0).
   mlx_conv1d: { args: [P, u64, u64, i32, i32, i32, i32, u64], returns: i32 },
+  // --- Whisper (src/model/whisper.ts, src/audio/whisper-mel.ts) -----------
+  // (res, a, n, axis, norm, stream) — mlx_fft_norm enum: 0 backward (numpy default).
+  mlx_fft_rfft: { args: [P, u64, i32, i32, i32, u64], returns: i32 },
+  // (res, a, shape*, shape_num, strides*(int64), strides_num, offset, stream)
+  mlx_as_strided: { args: [P, u64, P, u64, P, u64, u64, u64], returns: i32 },
+  // (res, a, axes*, n, low*, n, high*, n, pad_value, mode, stream)
+  mlx_pad: { args: [P, u64, P, u64, P, u64, P, u64, u64, cstring, u64], returns: i32 },
+  mlx_log10: { args: [P, u64, u64], returns: i32 },
+  // full reduce: (res, a, keepdims, stream)
+  mlx_max: { args: [P, u64, FFIType.bool, u64], returns: i32 },
+  mlx_broadcast_to: { args: [P, u64, P, u64, u64], returns: i32 },
+  mlx_topk_axis: { args: [P, u64, i32, i32, u64], returns: i32 },
+  mlx_var_axis: { args: [P, u64, i32, FFIType.bool, i32, u64], returns: i32 },
+  mlx_stack_axis: { args: [P, u64, i32, u64], returns: i32 },
+  mlx_minimum: { args: [P, u64, u64, u64], returns: i32 },
+  // flat take: (res, a, indices, stream)
+  mlx_take: { args: [P, u64, u64, u64], returns: i32 },
   // Natural mlx-c signatures. Bun 1.4 fixed the macOS arm64 stack packing
   // bug recorded in lab/repro/bun-ffi-stack-args, so these must match the
   // header exactly. mlx-bun now requires Bun 1.4 or newer.

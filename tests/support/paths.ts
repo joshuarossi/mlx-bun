@@ -157,3 +157,16 @@ export const SNAPSHOT_QWEN3_EMBED = hfSnapshot("models--mlx-community--Qwen3-Emb
 export async function snapshotQwen3EmbedAvailable(): Promise<boolean> {
   return Bun.file(`${SNAPSHOT_QWEN3_EMBED}/config.json`).exists();
 }
+
+// Whisper large-v3-turbo (mlx-community fp16 conversion): the speech-to-text
+// target. Oracle is mlx-whisper in its OWN venv (torch/numba deps must not
+// enter the pinned mlx-lm venv); mlx is pinned to MLX_CORE_VERSION there too.
+export const SNAPSHOT_WHISPER = hfSnapshot("models--mlx-community--whisper-large-v3-turbo");
+
+export async function snapshotWhisperAvailable(): Promise<boolean> {
+  return Bun.file(`${SNAPSHOT_WHISPER}/config.json`).exists();
+}
+
+export const WHISPER_ORACLE_VENV = process.env.MLX_BUN_WHISPER_ORACLE_VENV ||
+  `${process.env.HOME}/Code/mlx-whisper-oracle/.venv`;
+export const WHISPER_ORACLE_PYTHON = `${WHISPER_ORACLE_VENV}/bin/python`;

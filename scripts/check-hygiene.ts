@@ -325,7 +325,7 @@ function checkArchiveMdOnly(): string[] {
 
 const SCRIPTS_ROOT_ALLOWLIST = new Set([
   // build + distribution
-  "build-binary.sh", "build-native-pack.sh", "build-frame-extract.sh",
+  "build-binary.sh", "build-native-pack.sh", "build-frame-extract.sh", "build-mic-capture.sh",
   "build-expert-io.sh", "build-web.ts", "release-binary.sh",
   "publish-release.sh", "verify-binary-pi.ts", "verify-colibri-g0-artifact.ts",
   // gates + hygiene

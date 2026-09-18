@@ -74,6 +74,8 @@ Commands:
   generate   One-shot raw text generation from a local model (no server)
   benchmark  Measure decode/prefill speed of OUR stack on this machine
   embed      Text embeddings from a local embedding model (Qwen3-Embedding)
+  transcribe Speech-to-text from an audio file with a local Whisper model
+  dictate    Push-to-talk: stream your microphone into Whisper, print/copy/type the text
   evals      Show recent benchmark runs (all stacks)
   help       Show help for a command (also: mlx-bun <command> --help)
 
@@ -164,6 +166,19 @@ Model & quality:
                             request's \`adapter\` field, incl. "none", wins).
                             --adapter-path is accepted as the mlx_lm.server
                             alias. Hot-swap via POST /v1/adapters unchanged.
+  --whisper-model <p|query> Whisper checkpoint for /v1/audio/transcriptions
+                            [default: the first downloaded whisper model,
+                            resolved on the first request]. Serving a whisper
+                            model ALONE starts a transcription-only server.
+  --preload                 Transcription-only server: load the Whisper
+                            weights before listening instead of on the first
+                            request.
+  --whisper-idle-unload <s> Keep the Whisper weights for this many idle seconds
+                            after a take before disposing them. [default: 0 —
+                            released right after every take, so the chat model
+                            has the memory back before it prefills; a cold
+                            take costs ~150 ms more than a warm one]
+  --whisper-resident        Never dispose the Whisper weights (sotto-style).
   --draft-model <query>     Speculative decoding: a drafter proposes tokens
                             the main model verifies (exact results, faster
                             decode when drafts land). The artifact's kind is
@@ -268,6 +283,74 @@ Kill switches (bit-exact A/B levers — each selects a slower same-parity path):
                             bit-exact with the resident path`;
 
 const HELP: Record<string, string> = {
+  dictate: `mlx-bun dictate — push-to-talk dictation from your microphone
+
+Usage: mlx-bun dictate [query] [options]
+
+Captures the mic through the AVAudioEngine sidecar (16 kHz mono; macOS asks
+for Microphone permission on first use) and streams it into a Whisper
+transcription session while you speak — every finished 30 s window is
+transcribed during capture, so the result lands about one window after you
+stop. Silence never runs Whisper (Silero VAD).
+
+Modes:
+  (default)              Press Enter to start a take, Enter again to stop;
+                         q + Enter or Ctrl-C quits
+  --hotkey [keycode]     Hold a key instead (default 61 = Right Option, like
+                         sotto); needs Input Monitoring for your terminal
+Backend:
+  [query] / --model <p>  Whisper model for in-process transcription (default:
+                         the first downloaded whisper checkpoint)
+  --server <url>         Use a running mlx-bun server's /v1/audio/sessions
+                         instead of loading the model here
+  --idle-unload <s>      Release the weights after this many idle seconds
+                         (0 = right after each take; default 30); --resident
+                         keeps them loaded
+Decoding:
+  --language <code>      default en; "auto" detects
+  --beam-size <n>        beam search (default greedy)
+  --prompt "…"           initial prompt / --vocabulary "a,b,c" hint terms
+  --no-vad               skip the Silero gate
+Output (any combination; default prints):
+  --copy                 copy the transcript to the clipboard (pbcopy)
+  --type                 type it into the frontmost app via System Events
+                         keystrokes (needs Accessibility for your terminal);
+                         --type-delay <s> waits first so you can Cmd-Tab
+                         (default 1 in Enter mode, 0 with --hotkey)`,
+  transcribe: `mlx-bun transcribe — speech-to-text with a local Whisper model (no server)
+
+Usage: mlx-bun transcribe <audio-file> [query] [options]
+
+Loads a Whisper checkpoint (mlx-community/whisper-*) and prints the
+transcript. WAV is decoded natively; any other container CoreAudio reads
+(mp3/m4a/flac/ogg/aiff/…) is transcoded with afconvert first.
+
+Model:
+  [query] / --model <p>  Whisper model; omitted = the first downloaded
+                         \`whisper\` checkpoint (errors with an mlx-bun get
+                         suggestion when none)
+Decoding:
+  --language <code>      ISO code or name ("en", "japanese"); "auto" or omitted
+                         detects the language from the first 30 s
+  --task translate       Translate to English instead of transcribing
+  --beam-size <n>        Beam search width (default: greedy)
+  --temperature <t>      Sampling temperature; the default runs the
+                         (0, 0.2, …, 1.0) fallback ladder like mlx-whisper
+  --no-fallback          Temperature 0 only, no retry ladder
+  --prompt "…"           Initial prompt (vocabulary hints / style)
+  --no-timestamps        Decode text only (<|notimestamps|>)
+  --no-condition         Do not condition each window on the previous text
+  --vad                  Silero VAD gate: skip Whisper when no speech is
+                         detected (weights: ggml-org/whisper-vad in the HF cache
+                         or --vad-model <path>); --vad-trim crops to speech
+  --word-timestamps      Word-level timestamps (verbose_json / verbose output)
+  --faithful             Run the oracle-parity graph instead of the fast path
+  --audio-ctx <n>        Lab: encode only n of the 1500 encoder positions
+                         (whisper.cpp -ac); cheaper for short clips, degrades
+                         below ~1024 — off by default
+Output:
+  --format <f>           text (default) · json · verbose_json · srt · vtt
+  --verbose              Print each segment with its time range as it decodes`,
   pi: `mlx-bun pi — drop into a coding-agent session on a local model
 
 Usage: mlx-bun pi [options] [message...]
@@ -1023,6 +1106,17 @@ function serverRuntimeFlags(): { port: number; serverOptions: import("./server")
   // `mlx-bun pi` attach both go through localhost, so loopback-only is
   // transparent to them.
   serverOptions.hostname = opt("host", "127.0.0.1")!;
+  // Speech-to-text companion: explicit checkpoint + residency policy.
+  const whisperIdleRaw = opt("whisper-idle-unload");
+  if (whisperIdleRaw !== null) {
+    const n = Number(whisperIdleRaw);
+    if (!Number.isFinite(n) || n < 0) {
+      console.error(`--whisper-idle-unload expects seconds >= 0 (got "${whisperIdleRaw}")`);
+      process.exit(1);
+    }
+    serverOptions.whisperIdleUnloadSec = n;
+  }
+  if (flag("whisper-resident")) serverOptions.whisperResident = true;
   // Server-wide default for the chat template's enable_thinking variable
   // (CPM/MiniCPM5 and other hybrid-reasoning models). Unset ⇒ the model's
   // own default (false for MiniCPM5). onOff accepts true|false|on|off|1|0.
@@ -1637,6 +1731,40 @@ switch (cmd) {
     // straight from that path; anything else resolves like the positional
     // fuzzy query. Precedence: --model > positional > --query > auto-pick.
     const { m, picked } = await resolveModelAuto(opt("model") ?? positional(0) ?? opt("query"));
+    if (m.modelType === "whisper") {
+      // Transcription-only server: no chat model, weights paged in on demand.
+      const sNative0 = step("native runtime");
+      await ensureNative(sNative0);
+      sNative0.done("native runtime ready");
+      const { createTranscriptionServer } = await import("./serve/transcription-server");
+      const { server, service } = await createTranscriptionServer({
+        modelDir: m.path, modelId: m.repoId, port: rt.port,
+        ...(rt.serverOptions.hostname ? { hostname: rt.serverOptions.hostname } : {}),
+        ...(rt.serverOptions.unixSocket ? { unixSocket: rt.serverOptions.unixSocket } : {}),
+        idleUnloadSec: rt.serverOptions.whisperIdleUnloadSec,
+        resident: rt.serverOptions.whisperResident,
+        preload: flag("preload"),
+      });
+      const where = rt.serverOptions.unixSocket ?? `http://${rt.serverOptions.hostname === "0.0.0.0" ? "localhost" : rt.serverOptions.hostname}:${server.port}`;
+      box([
+        `${style.bold(m.repoId)} ${style.dim("· transcription-only server")}`,
+        `POST ${where}/v1/audio/transcriptions ${style.dim(`· ${service.stats.idle_unload_sec === null ? "always resident" : service.idleUnloadSec === 0 ? "released after every take" : `idle unload ${service.idleUnloadSec}s`}${service.resident ? " · loaded" : " · loads on first request"}`)}`,
+      ]);
+      const stop = () => { service.dispose(); server.stop(true); process.exit(0); };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      break;
+    }
+    const whisperQuery = opt("whisper-model");
+    if (whisperQuery !== null) {
+      const { m: wm } = await resolveModelAuto(whisperQuery);
+      if (wm.modelType !== "whisper") {
+        console.error(`--whisper-model ${whisperQuery} resolved to ${wm.repoId} (model_type ${wm.modelType}), not a Whisper checkpoint`);
+        process.exit(1);
+      }
+      rt.serverOptions.whisperModelDir = wm.path;
+      rt.serverOptions.whisperModelId = wm.repoId;
+    }
     const sFit = step("assessing fit");
     const config = await loadModelConfig(m.path);
     const report = fit(config, m.sizeBytes, 8192, undefined, undefined, m.expertsBytes);
@@ -1879,6 +2007,200 @@ switch (cmd) {
       }) + "\n");
     } else {
       for (const r of results) process.stdout.write(JSON.stringify(Array.from(r.vector)) + "\n");
+    }
+    break;
+  }
+
+  case "transcribe": {
+    // Speech-to-text, one-shot, no server: audio file → Whisper → text.
+    const { openWhisperModel } = await import("./model/factory");
+    const { loadWhisperTokenizer } = await import("./audio/whisper-tokenizer");
+    const { WhisperTranscriber } = await import("./audio/whisper-transcribe");
+    const { formatTranscription, TRANSCRIPTION_FORMATS } = await import("./audio/whisper-format");
+    const { TranscriptionService } = await import("./serve/transcription-service");
+    const { formatTimestamp } = await import("./audio/whisper-format");
+
+    const audioPath = positional(0);
+    if (!audioPath) {
+      console.error("usage: mlx-bun transcribe <audio-file> [query] [--language en] [--format text|json|verbose_json|srt|vtt]");
+      process.exit(1);
+    }
+    const format = (opt("format") ?? "text") as import("./audio/whisper-format").TranscriptionFormat;
+    if (!TRANSCRIPTION_FORMATS.includes(format)) {
+      console.error(`--format must be one of ${TRANSCRIPTION_FORMATS.join(", ")}`);
+      process.exit(1);
+    }
+    const bytes = new Uint8Array(await Bun.file(audioPath).arrayBuffer());
+    const samples = await TranscriptionService.decodeAudio(bytes);
+    const durationSeconds = samples.length / 16_000;
+
+    const modelQuery = opt("model") ?? positional(1) ?? opt("query");
+    let modelDir: string;
+    if (modelQuery && existsSync(join(modelQuery, "config.json"))) modelDir = modelQuery;
+    else if (modelQuery) modelDir = (await resolveModelAuto(modelQuery)).m.path;
+    else {
+      const reg = new Registry();
+      if (reg.list().length === 0) await reg.scan();
+      const w = reg.list().find((r) => r.modelType === "whisper");
+      if (!w) {
+        console.error("no Whisper model downloaded — try: mlx-bun get mlx-community/whisper-large-v3-turbo");
+        process.exit(1);
+      }
+      modelDir = w.path;
+    }
+    let vadGate: { segments: { start: number; end: number }[] } | null = null;
+    if (flag("vad")) {
+      const { SileroVad } = await import("./audio/silero-vad");
+      const tv = performance.now();
+      const vad = SileroVad.load(opt("vad-model"));
+      const { segments } = vad.detect(samples, { threshold: Number(opt("vad-threshold") ?? 0.5) });
+      vadGate = { segments };
+      if (flag("verbose")) console.error(`vad: ${segments.length} speech segment(s) in ${(performance.now() - tv).toFixed(0)} ms`);
+      if (segments.length === 0) { process.stdout.write(format === "text" ? "\n" : JSON.stringify({ text: "", vad: { speech: false, segments: [] } }) + "\n"); break; }
+    }
+    const { model } = await openWhisperModel(modelDir);
+    const tok = await loadWhisperTokenizer(modelDir, model.dims.nVocab);
+    const transcriber = new WhisperTranscriber(model, tok);
+    void vadGate;
+    const langOpt = opt("language");
+    const task = opt("task") === "translate" ? "translate" as const : "transcribe" as const;
+    const beam = opt("beam-size");
+    const temperature = opt("temperature");
+    const verbose = flag("verbose");
+    const t0 = performance.now();
+    const result = await transcriber.transcribe(samples, {
+      language: !langOpt || langOpt === "auto" ? null : langOpt,
+      task,
+      beamSize: beam ? Number(beam) : null,
+      ...(temperature ? { temperature: Number(temperature) } : flag("no-fallback") ? { temperature: 0 } : {}),
+      initialPrompt: opt("prompt"),
+      withoutTimestamps: flag("no-timestamps"),
+      conditionOnPreviousText: !flag("no-condition"),
+      fast: !flag("faithful"),
+      wordTimestamps: flag("word-timestamps"),
+      audioCtx: opt("audio-ctx") ? Number(opt("audio-ctx")) : null,
+      onSegment: verbose
+        ? (s) => console.error(`[${formatTimestamp(s.start, ".")} --> ${formatTimestamp(s.end, ".")}] ${s.text.trim()}`)
+        : undefined,
+    });
+    const elapsed = (performance.now() - t0) / 1000;
+    if (verbose)
+      console.error(`${durationSeconds.toFixed(2)} s audio in ${elapsed.toFixed(3)} s (${(durationSeconds / elapsed).toFixed(1)}× realtime), language ${result.language}`);
+    process.stdout.write(formatTranscription(result, format, durationSeconds, task));
+    transcriber.dispose();
+    model.dispose();
+    break;
+  }
+
+  case "dictate": {
+    const { startMicCapture } = await import("./audio/mic-capture");
+    const { TranscriptionService, defaultWhisperRecord } = await import("./serve/transcription-service");
+    const { style } = await import("./tui");
+    const serverUrl = opt("server");
+    const hotkeyFlag = argv.includes("--hotkey");
+    const hotkey = hotkeyFlag ? Number(opt("hotkey") ?? 61) || 61 : null;
+    const language = opt("language") ?? "en";
+    const beam = opt("beam-size");
+    const vocabulary = opt("vocabulary")?.split(",").map((s) => s.trim()).filter(Boolean);
+    const params = {
+      language: language === "auto" ? null : language,
+      beamSize: beam ? Number(beam) : null,
+      temperature: 0,
+      prompt: opt("prompt"),
+      vocabulary,
+      vad: flag("no-vad") ? null : { threshold: 0.5, minSpeechMs: 120 },
+    };
+    const typeDelay = Number(opt("type-delay") ?? (hotkey ? 0 : 1));
+
+    // backend: in-process service or a running server's sessions
+    let service: InstanceType<typeof TranscriptionService> | null = null;
+    if (!serverUrl) {
+      const q = opt("model") ?? positional(0) ?? opt("query");
+      let modelDir: string; let modelId: string;
+      if (q && existsSync(join(q, "config.json"))) { modelDir = q; modelId = q; }
+      else if (q) { const { m } = await resolveModelAuto(q); modelDir = m.path; modelId = m.repoId; }
+      else {
+        const rec = await defaultWhisperRecord();
+        if (!rec) { console.error("no Whisper model downloaded — try: mlx-bun get mlx-community/whisper-large-v3-turbo"); process.exit(1); }
+        modelDir = rec.path; modelId = rec.repoId;
+      }
+      const idle = opt("idle-unload");
+      service = new TranscriptionService({ modelDir, modelId, idleUnloadSec: idle !== null ? Number(idle) : 30, resident: flag("resident"), log: () => {} });
+      process.stderr.write(style.dim("loading whisper… "));
+      await service.ensureLoaded();
+      service.vad();
+      process.stderr.write(style.dim("ready\n"));
+    }
+    const base = serverUrl?.replace(/\/$/, "");
+    interface Take { feed(pcm: Float32Array): Promise<void>; finish(): Promise<{ text: string; ms: number }>; }
+    const startTake = async (): Promise<Take> => {
+      if (service) {
+        const session = await service.createSession(params);
+        return {
+          feed: async (pcm) => { await session.append(pcm); },
+          finish: async () => { const t0 = performance.now(); const o = await session.finish(); return { text: o.result.text.trim(), ms: performance.now() - t0 }; },
+        };
+      }
+      const r = await fetch(`${base}/v1/audio/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ language: params.language, beam_size: params.beamSize, temperature: 0, prompt: params.prompt, vocabulary, vad: !!params.vad, vad_min_speech_ms: 120 }) });
+      if (!r.ok) throw new Error(`session create failed: ${r.status} ${await r.text()}`);
+      const { id } = await r.json() as { id: string };
+      return {
+        feed: async (pcm) => { await fetch(`${base}/v1/audio/sessions/${id}/audio`, { method: "POST", headers: { "content-type": "audio/pcm;rate=16000" }, body: new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer) }); },
+        finish: async () => { const t0 = performance.now(); const f = await fetch(`${base}/v1/audio/sessions/${id}/finish`, { method: "POST" }); const b = await f.json() as { text: string }; return { text: (b.text ?? "").trim(), ms: performance.now() - t0 }; },
+      };
+    };
+
+    const deliver = async (text: string) => {
+      if (!text) { console.log(style.dim("(no speech)")); return; }
+      console.log(text);
+      if (flag("copy")) { const p = Bun.spawn(["pbcopy"], { stdin: "pipe" }); p.stdin.write(text); p.stdin.end(); await p.exited; }
+      if (flag("type")) {
+        if (typeDelay > 0) await Bun.sleep(typeDelay * 1000);
+        const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+        const r = Bun.spawnSync(["osascript", "-e", `tell application "System Events" to keystroke "${escaped}"`], { stderr: "pipe" });
+        if (r.exitCode !== 0) console.error(style.dim(`typing failed (grant Accessibility to your terminal): ${r.stderr.toString().trim()}`));
+      }
+    };
+
+    const mic = await startMicCapture({ hotkey });
+    let take: Take | null = null;
+    let pending: Float32Array[] = []; let pendingLen = 0;
+    let feeding: Promise<void> = Promise.resolve();
+    const flush = () => {
+      if (!take || pendingLen === 0) return;
+      const buf = new Float32Array(pendingLen); let o = 0; for (const p of pending) { buf.set(p, o); o += p.length; }
+      pending = []; pendingLen = 0;
+      const t = take;
+      feeding = feeding.then(() => t.feed(buf)).catch((e) => console.error(style.dim(`feed failed: ${(e as Error).message}`)));
+    };
+    const begin = async () => { if (take) return; take = await startTake(); pending = []; pendingLen = 0; process.stderr.write(style.bold("● recording") + style.dim(hotkey ? " (release to stop)\n" : " (Enter to stop)\n")); };
+    const end = async () => {
+      if (!take) return;
+      flush();
+      await feeding;
+      const t = take; take = null;
+      process.stderr.write(style.dim("transcribing… "));
+      try { const { text, ms } = await t.finish(); process.stderr.write(style.dim(`${ms.toFixed(0)} ms\n`)); await deliver(text); }
+      catch (e) { console.error(`transcription failed: ${(e as Error).message}`); }
+    };
+    if (!hotkey) {
+      console.error(style.dim("Enter: start/stop a take · q: quit"));
+      (async () => {
+        for await (const line of console) {
+          if (line.trim() === "q") { mic.stop(); process.exit(0); }
+          if (take) await end(); else await begin();
+        }
+      })();
+    }
+    process.once("SIGINT", () => { mic.stop(); process.exit(0); });
+    for await (const ev of mic.events) {
+      if (ev.kind === "ready") { if (hotkey) console.error(style.dim(`hold key ${hotkey} to talk · Ctrl-C quits · mic ${ev.info}`)); }
+      else if (ev.kind === "error") { console.error(ev.message); mic.stop(); process.exit(1); }
+      else if (ev.kind === "hotkey") { if (ev.down) await begin(); else await end(); }
+      else if (ev.kind === "pcm" && take) {
+        pending.push(ev.samples); pendingLen += ev.samples.length;
+        if (pendingLen >= 16_000 / 4) flush(); // every 250 ms of audio
+      }
     }
     break;
   }

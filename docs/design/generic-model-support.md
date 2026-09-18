@@ -705,6 +705,122 @@ non-goals.
 
 ---
 
+### 6.7 Whisper (speech-to-text) — `src/model/whisper.ts`, `src/audio/whisper-*.ts`, `src/serve/transcription-*.ts`
+
+Audio in → text out, the first encoder-decoder family. Target artifact:
+`mlx-community/whisper-large-v3-turbo` (fp16, 32 encoder / 4 decoder layers,
+128 mel bins, 51 866 vocab). Plan/evidence anchor: PLAN.md "Phase: Whisper
+speech-to-text". Served surface: [server-api.md](../reference/server-api.md#post-v1audiotranscriptions--post-v1audiotranslations-speech-to-text),
+[cli.md `transcribe`](../reference/cli.md#transcribe--speech-to-text).
+
+- **Oracle**: mlx-whisper 0.4.3 (`ml-explore/mlx-examples/whisper`) in its
+  own venv (`~/Code/mlx-whisper-oracle/.venv`, mlx pinned to
+  `MLX_CORE_VERSION`; it drags torch + numba, which must not enter the
+  pinned mlx-lm venv). The profile declares `{ l1, mlx-whisper, bit-exact }`
+  — no mlx-lm arm exists. Generator `scripts/oracle/gen-whisper-golden.py`
+  (`bun scripts/regen.ts whisper`) → `goldens/whisper.json` + untracked
+  blobs; gate `tests/parity/whisper.test.ts`: mel (f32), decode-window
+  encoder output (f16 raw) and every per-step PRE-filter logit vector (f32)
+  bit-exact; text / segment tokens / timestamps identical. Clips: the
+  tracked `speech-fox.wav`, whisper.cpp's public-domain `jfk.wav` (sotto's
+  vendored checkout, optional), and a synthesized 33 s concatenation that
+  crosses a 30 s window.
+- **Front end** (`whisper-mel.ts`): op-for-op `log_mel_spectrogram` on the
+  GPU — host reflect pad, `as_strided` frames, periodic Hann, `rfft` 400,
+  `|·|²`, slaney filter bank (librosa's float64 → float32 rounding order
+  reproduced, bit-exact vs the shipped `mel_filters.npz`), `log10`, 8-decade
+  clamp, `(x+4)/4`. 1.5 ms warm for a 41 s padded clip (M1 Max).
+- **Model** (`whisper.ts`): faithful path = the oracle's graph, including
+  its quirks that change bits: `nn.gelu` is `mx.compile`d in mlx, and the
+  FUSED kernel rounds differently from four separate ops (2 % of conv1
+  outputs differ by an ulp) — so the same graph is compiled here
+  (`CompiledFunction`, shapeless); attention scales q and k by
+  `(D/H)^-0.25` each with fp16 `q@kᵀ`, additive `-inf` fp16 causal mask,
+  precise softmax; self-attention K/V are cached un-split `[B, T, D]` and
+  concatenated per step; cross-attention K/V are projected once per window
+  and kept `[1, 1500, D]` — beam rows attend to them by broadcasting, never
+  by copying.
+- **Decoding** (`whisper-decode.ts`): DecodingTask port — sot sequence,
+  prompt/prefix budgets (`n_ctx/2 − 1 = 223` prompt tokens), suppress-blank,
+  non-speech suppression, timestamp rules, language detection, greedy /
+  sampled, MaximumLikelihoodRanker. **Two deliberate divergences from
+  mlx-whisper**, both documented in code: (1) the monotonic-timestamp rule
+  follows openai-whisper (mlx-whisper's port collects sequence indices and
+  slices an empty range, so its rule never fires) — pre-filter logits stay
+  bit-exact, `avg_logprob` moves ~1e-4; (2) `compression_ratio` uses Bun's
+  zlib, which emits one byte more than CPython's 1.2.12 for the same
+  level-6 stream — the 2.4 fallback threshold decision is asserted equal,
+  the value within 5 %. Beam search is ours (mlx-whisper raises
+  NotImplemented): openai-whisper's BeamSearchDecoder over cache rows, top-k
+  on device (`argpartition` on negated log-probs; the `[B, k]` slice is
+  materialized before host readback — reading a strided view linearly was a
+  real bug), finished sequences collected per audio, patience honoured.
+  Checked against whisper.cpp v1.9.3 beam-5 transcripts (identical on the
+  JFK clip with and without vocabulary hints).
+- **Transcribe loop** (`whisper-transcribe.ts`): transcribe.py's seek loop —
+  30 s windows over the zero-padded mel, temperature fallback ladder gated by
+  compression ratio / avg log-prob / no-speech probability, timestamp-driven
+  seeking, previous-text conditioning, `clip_timestamps`. Async only to
+  yield between windows (streaming, cancellation). Word timestamps (DTW on
+  the checkpoint's `alignment_heads`) are not ported yet.
+- **Serving** (`transcription-service.ts`, `audio-routes.ts`,
+  `transcription-server.ts`): residency-managed service (load on first
+  request, dispose after `--whisper-idle-unload` seconds, FIFO queue, runs
+  under the gateway's exclusive lock beside chat), OpenAI multipart/JSON
+  routes with `json/verbose_json/text/srt/vtt` and SSE streaming, sotto's
+  vocabulary-hint fitting with included/omitted reporting, and a
+  transcription-only server for `serve <whisper checkpoint>`. Page-in after
+  an explicit unload: 37–45 ms on the M1 Max (weights are mmap'd; the OS
+  file cache still holds them).
+- **Tokenizer**: the mlx-community repos ship no tokenizer; ids are identical
+  to HF's `openai/whisper-large-v3-turbo` tokenizer.json (checked against
+  tiktoken), which the loader resolves from the HF cache by `n_vocab`.
+- **Fast path** (`whisper-fast.ts`, default; `faithful`/`--faithful` selects
+  the oracle graph): fused SDPA everywhere (whisper.cpp flash-attn); one
+  fused q/k/v gemm per encoder layer; cross-K/V for all four decoder layers
+  from ONE matmul pair per window, head-split once (whisper.cpp `kv_cross`,
+  vLLM encoder-prefill cross KV); the single-token decoder step — embed, 4
+  layers, ln, logits, every logit filter, argmax (greedy) or top-k (beam) —
+  is one shapeless `mx.compile`d closure with per-step state as int32 arrays
+  (the LLM compiled-decode pattern); greedy runs device-resident with the
+  token array flowing into the next step and a one-step-lag host read
+  (mlx-whisper's async_eval); beam reorders caches with `take`. Gate:
+  `tests/parity/whisper-fast.test.ts` — at most two differing tokens per
+  clip vs the oracle/faithful path (one near-tie flips "dog"→"dog." plus
+  its timestamp on the 33 s no-conditioning clip). Word timestamps
+  (`whisper-timing.ts`, timing.py port: alignment-head cross-attention →
+  median filter → DTW in JS → punctuation merge and duration heuristics)
+  ride the faithful decoder once per window.
+- **Silero VAD** (`silero-vad.ts`): the v6.2 TorchScript graph ported
+  exactly (64-sample inter-chunk context, right reflect pad, STFT-as-conv,
+  4 conv blocks, LSTMCell, sigmoid) — whisper.cpp's port drops the context
+  and pads both sides — plus `get_speech_timestamps`; STFT/convs/input
+  gates batched over all chunks in one MLX graph, the recurrence on the
+  host; streaming state carried across chunks (streaming == batch within
+  1e-6). Gate: `tests/parity/silero-vad.test.ts` vs the pip reference
+  (probabilities within 5e-3 because the ggml weights are fp16; segments
+  identical). Used as the service's gate (`vad`) and inside sessions.
+- **Streaming run** (`WhisperStreamingRun`): the seek loop as a resumable
+  object; `feed()` transcribes each window with 30 s of audio past the seek
+  point, `finish()` drains. Batch = one feed + finish, so parity covers it.
+  Sessions (`/v1/audio/sessions`) wrap it with the VAD stream and the
+  exclusive lock.
+- **Voice input**: `mlx-bun dictate` (AVAudioEngine sidecar
+  `src/native/mic_capture.swift`, hold a keycode or Enter-toggle, print /
+  clipboard / System Events keystrokes) and the web composer's hold-to-talk
+  mic (`src/web/src/voice.ts`: 16 kHz AudioContext → session chunks → caret
+  insert; shown when the `ready` frame carries `transcription`). Both are
+  the streaming session over the same server code.
+- **Decode input**: AudioToolbox `ExtAudioFile` over `bun:ffi`
+  (`audiotoolbox.ts`) for every non-WAV container — CoreAudio's decoder and
+  resampler in-process; WAV keeps the exact PCM parser.
+- **What the measurements say (M1 Max 32 GB, 2026-09-15, benchmarks.md):**
+  the encoder is ~85 % of a short clip's time and is bound by its fp16
+  gemms at ~7–8 TFLOPS (padding rows to 1536 for tile alignment, fused
+  vs unfused GELU, batching two windows: all 0–5 %); decode is ~1.5 ms per
+  token. Whisper.cpp's `audio_ctx` truncation is the only lever left on
+  the encoder and it is a quality trade (`audio_ctx`, Lab, off).
+
 ## 7. Top design decisions
 
 1. **Explicit descriptor table keyed by model_type (+ vendored

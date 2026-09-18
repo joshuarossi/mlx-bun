@@ -7,6 +7,7 @@ import {
   isQwen35Config,
   isQwen3Config,
   isQwen3MoeConfig,
+  isWhisperConfig,
 } from "./support";
 import { GENERATED } from "./generated";
 import { GENERIC_MODEL_TYPES, genericArgsFor, remapModelType } from "./universal/archs";
@@ -16,6 +17,7 @@ export const ENGINE_CAPABILITIES = Object.freeze([
   "colibri-container",
   "diffusion",
   "diffusion-gemma-graph",
+  "encoder-decoder",
   "gemma4-graph",
   "generated-graph",
   "glm5.2-graph",
@@ -30,6 +32,7 @@ export const ENGINE_CAPABILITIES = Object.freeze([
   "streamed-experts",
   "universal-dense-graph",
   "vision-sidecar",
+  "whisper-graph",
 ] as const);
 
 export type EngineCapability = typeof ENGINE_CAPABILITIES[number];
@@ -37,6 +40,7 @@ export type FidelityTier = "l1" | "l2" | "l3";
 
 export type FidelityTarget =
   | Readonly<{ tier: "l1"; oracle: "mlx-lm"; claim: "bit-exact" }>
+  | Readonly<{ tier: "l1"; oracle: "mlx-whisper"; claim: "bit-exact" }>
   | Readonly<{ tier: "l2"; oracle: "mlx-optiq"; claim: "bit-exact" }>
   | Readonly<{ tier: "l3"; oracle: null; claim: "measured" }>;
 
@@ -49,8 +53,9 @@ export type ModelGraph =
   | "qwen3-moe"
   | "diffusion-gemma"
   | "glm5.2"
-  | "universal-dense";
-export type GenerationLoop = "autoregressive" | "diffusion";
+  | "universal-dense"
+  | "whisper";
+export type GenerationLoop = "autoregressive" | "diffusion" | "encoder-decoder";
 export type ModelSpecialization = "artifact" | "dedicated" | "generated" | "generic";
 
 export interface ModelExecutionComposition {
@@ -104,6 +109,11 @@ export interface ResolveModelProfileOptions {
 
 const L1: FidelityTarget = Object.freeze({
   tier: "l1", oracle: "mlx-lm", claim: "bit-exact",
+});
+/** L1 for speech: the capability's own reference implementation (mlx-whisper)
+ * plays the mlx-lm role — no mlx-lm arm exists for Whisper. */
+const L1_WHISPER: FidelityTarget = Object.freeze({
+  tier: "l1", oracle: "mlx-whisper", claim: "bit-exact",
 });
 const L2: FidelityTarget = Object.freeze({
   tier: "l2", oracle: "mlx-optiq", claim: "bit-exact",
@@ -231,6 +241,14 @@ const FAMILY_PROFILES = {
       loader: "colibri", graph: "glm5.2", loop: "autoregressive", specialization: "dedicated",
     },
   }),
+  whisper: freezeProfile({
+    id: "whisper-dedicated",
+    fidelity: L1_WHISPER,
+    requiredCapabilities: ["safetensors", "encoder-decoder", "whisper-graph"],
+    execution: {
+      loader: "safetensors", graph: "whisper", loop: "encoder-decoder", specialization: "dedicated",
+    },
+  }),
   universal: freezeProfile({
     id: "universal-dense",
     fidelity: L1,
@@ -263,6 +281,7 @@ function familyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
   if (isQwen35Config(config)) return FAMILY_PROFILES.qwen35;
   if (isQwen3MoeConfig(config)) return FAMILY_PROFILES.qwen3Moe;
   if (isQwen3Config(config)) return FAMILY_PROFILES.qwen3;
+  if (isWhisperConfig(config)) return FAMILY_PROFILES.whisper;
   if (config.modelType.startsWith("gemma4"))
     return GENERATED.has(fingerprint) ? FAMILY_PROFILES.gemma4Generated : FAMILY_PROFILES.gemma4;
   if (genericArgsFor(config)) return FAMILY_PROFILES.universal;
@@ -271,7 +290,7 @@ function familyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
   throw new Error(
     `unsupported model_type "${config.modelType}"` +
     (arch !== config.modelType ? ` (mlx-lm remaps it to "${arch}")` : "") +
-    ` — targeted: gemma4*, diffusion_gemma, glm_moe_dsa, qwen3_5, qwen3, qwen3_moe, MiniCPM5;` +
+    ` — targeted: gemma4*, diffusion_gemma, glm_moe_dsa, qwen3_5, qwen3, qwen3_moe, whisper, MiniCPM5;` +
     ` generic (Tier-0): ${[...GENERIC_MODEL_TYPES].sort().join(", ")}`,
   );
 }
@@ -301,6 +320,7 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
     accepts: isGlm52Config,
     capabilities: ["glm5.2-graph", "streamed-experts"],
   },
+  "whisper": { accepts: isWhisperConfig, capabilities: ["whisper-graph"] },
   "universal-dense": {
     accepts: (config) => {
       try { return genericArgsFor(config) !== null; } catch { return false; }
@@ -318,6 +338,7 @@ function executionCapabilities(profile: ModelProfile): EngineCapability[] {
     ? "colibri-container"
     : "safetensors"];
   if (profile.execution.loop === "diffusion") required.push("diffusion");
+  else if (profile.execution.loop === "encoder-decoder") required.push("encoder-decoder");
   else required.push("autoregressive");
   required.push(...GRAPH_METADATA[profile.execution.graph].capabilities);
   if (profile.execution.specialization === "generated") required.push("generated-graph");
@@ -337,6 +358,8 @@ function validateProfile(profile: ModelProfile): void {
   const fidelityOk =
     (profile.fidelity.tier === "l1" && profile.fidelity.oracle === "mlx-lm" &&
       profile.fidelity.claim === "bit-exact") ||
+    (profile.fidelity.tier === "l1" && profile.fidelity.oracle === "mlx-whisper" &&
+      profile.fidelity.claim === "bit-exact" && profile.execution.graph === "whisper") ||
     (profile.fidelity.tier === "l2" && profile.fidelity.oracle === "mlx-optiq" &&
       profile.fidelity.claim === "bit-exact") ||
     (profile.fidelity.tier === "l3" && profile.fidelity.oracle === null &&
@@ -345,7 +368,9 @@ function validateProfile(profile: ModelProfile): void {
   const expectedLoader = profile.execution.graph === "glm5.2" ? "colibri" : "safetensors";
   const expectedLoop = profile.execution.graph === "diffusion-gemma"
     ? "diffusion"
-    : "autoregressive";
+    : profile.execution.graph === "whisper"
+      ? "encoder-decoder"
+      : "autoregressive";
   if (profile.execution.loader !== expectedLoader || profile.execution.loop !== expectedLoop)
     throw new Error(
       `model profile ${profile.id} has an invalid execution composition for ` +

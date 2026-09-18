@@ -1,0 +1,788 @@
+{
+ "oracle": {
+  "mlx": "0.32.2",
+  "mlx_whisper": "0.4.3",
+  "model_dir": "/Users/joshrossi/.cache/huggingface/hub/models--mlx-community--whisper-large-v3-turbo/snapshots/a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb",
+  "weights_sha256": "951ed3fc1203e6a6"
+ },
+ "dims": {
+  "n_mels": 128,
+  "n_audio_ctx": 1500,
+  "n_audio_state": 1280,
+  "n_audio_head": 20,
+  "n_audio_layer": 32,
+  "n_vocab": 51866,
+  "n_text_ctx": 448,
+  "n_text_state": 1280,
+  "n_text_head": 20,
+  "n_text_layer": 4
+ },
+ "clips": {
+  "fox": {
+   "num_samples": 42732,
+   "recipe": [
+    {
+     "file": "fixtures/audio/speech-fox.wav"
+    }
+   ],
+   "mel_shape": [
+    3267,
+    128
+   ]
+  },
+  "jfk": {
+   "num_samples": 176000,
+   "recipe": [
+    {
+     "file": "vendor/whisper.cpp/samples/jfk.wav"
+    }
+   ],
+   "mel_shape": [
+    4100,
+    128
+   ]
+  },
+  "long": {
+   "num_samples": 528196,
+   "recipe": [
+    {
+     "file": "fixtures/audio/speech-fox.wav"
+    },
+    {
+     "silence": 2.0
+    },
+    {
+     "file": "vendor/whisper.cpp/samples/jfk.wav"
+    },
+    {
+     "silence": 1.0
+    },
+    {
+     "file": "fixtures/audio/speech-fox.wav"
+    },
+    {
+     "file": "vendor/whisper.cpp/samples/jfk.wav"
+    },
+    {
+     "file": "fixtures/audio/speech-fox.wav"
+    }
+   ],
+   "mel_shape": [
+    6301,
+    128
+   ]
+  }
+ },
+ "cases": [
+  {
+   "clip": "fox",
+   "name": "greedy-en",
+   "options": {
+    "language": "en"
+   },
+   "language": "en",
+   "text": " the quick brown fox jumps over the lazy dog.",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 2.44,
+     "text": " the quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      50365,
+      264,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13,
+      50487
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.1417985696059007,
+     "compression_ratio": 0.8627450980392157,
+     "no_speech_prob": 4.4823262397748753e-13
+    }
+   ],
+   "windows": 1,
+   "decode_window": 1,
+   "window0_steps": 14
+  },
+  {
+   "clip": "fox",
+   "name": "prompt-en",
+   "options": {
+    "language": "en",
+    "initial_prompt": "Sotto, SwiftUI, Metal, quick brown fox"
+   },
+   "language": "en",
+   "text": " the quick brown fox jumps over the lazy dog",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 2.0,
+     "text": " the quick brown fox jumps over the lazy dog",
+     "tokens": [
+      50365,
+      264,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      50465
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.3209638198216756,
+     "compression_ratio": 0.86,
+     "no_speech_prob": 8.470517690040147e-12
+    }
+   ],
+   "windows": 1,
+   "decode_window": 1,
+   "window0_steps": 13
+  },
+  {
+   "clip": "fox",
+   "name": "notimestamps-en",
+   "options": {
+    "language": "en",
+    "without_timestamps": true
+   },
+   "language": "en",
+   "text": " the quick brown fox jumps over the lazy dog.",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 2.67,
+     "text": " the quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      264,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.1088418960571289,
+     "compression_ratio": 0.8627450980392157,
+     "no_speech_prob": 4.4823262397748753e-13
+    }
+   ],
+   "windows": 1,
+   "decode_window": 1,
+   "window0_steps": 12
+  },
+  {
+   "clip": "jfk",
+   "name": "greedy-auto",
+   "options": {
+    "language": null
+   },
+   "language": "en",
+   "text": " And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 10.38,
+     "text": " And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+     "tokens": [
+      50365,
+      400,
+      370,
+      11,
+      452,
+      7177,
+      6280,
+      11,
+      1029,
+      406,
+      437,
+      428,
+      1941,
+      393,
+      360,
+      337,
+      291,
+      11,
+      1029,
+      437,
+      291,
+      393,
+      360,
+      337,
+      428,
+      1941,
+      13,
+      50884
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.08370691332323797,
+     "compression_ratio": 1.35,
+     "no_speech_prob": 7.704985260925667e-11
+    }
+   ],
+   "windows": 2,
+   "decode_window": 2,
+   "window0_steps": 30
+  },
+  {
+   "clip": "jfk",
+   "name": "translate-en",
+   "options": {
+    "language": "en",
+    "task": "translate"
+   },
+   "language": "en",
+   "text": " And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 10.38,
+     "text": " And so, my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+     "tokens": [
+      50365,
+      400,
+      370,
+      11,
+      452,
+      7177,
+      6280,
+      11,
+      1029,
+      406,
+      437,
+      428,
+      1941,
+      393,
+      360,
+      337,
+      291,
+      11,
+      1029,
+      437,
+      291,
+      393,
+      360,
+      337,
+      428,
+      1941,
+      13,
+      50884
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.21257265682878165,
+     "compression_ratio": 1.35,
+     "no_speech_prob": 7.704985260925667e-11
+    }
+   ],
+   "windows": 1,
+   "decode_window": 1,
+   "window0_steps": 30
+  },
+  {
+   "clip": "long",
+   "name": "greedy-en",
+   "options": {
+    "language": "en"
+   },
+   "language": "en",
+   "text": " The quick brown fox jumps over the lazy dog. And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. The quick brown fox jumps over the lazy dog. And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. The quick brown fox jumps over the lazy dog.",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 2.44,
+     "text": " The quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      50365,
+      440,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13,
+      50487
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 1,
+     "seek": 0,
+     "start": 4.5200000000000005,
+     "end": 15.08,
+     "text": " And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+     "tokens": [
+      50591,
+      400,
+      370,
+      452,
+      7177,
+      6280,
+      11,
+      1029,
+      406,
+      437,
+      428,
+      1941,
+      393,
+      360,
+      337,
+      291,
+      11,
+      1029,
+      437,
+      291,
+      393,
+      360,
+      337,
+      428,
+      1941,
+      13,
+      51119
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 2,
+     "seek": 0,
+     "start": 16.1,
+     "end": 19.12,
+     "text": " The quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      51170,
+      440,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13,
+      51321
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 3,
+     "seek": 0,
+     "start": 19.72,
+     "end": 29.72,
+     "text": " And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+     "tokens": [
+      51351,
+      400,
+      370,
+      452,
+      7177,
+      6280,
+      11,
+      1029,
+      406,
+      437,
+      428,
+      1941,
+      393,
+      360,
+      337,
+      291,
+      11,
+      1029,
+      437,
+      291,
+      393,
+      360,
+      337,
+      428,
+      1941,
+      13,
+      51851
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 4,
+     "seek": 3000,
+     "start": 30.0,
+     "end": 32.78,
+     "text": " The quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      50365,
+      440,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13,
+      50504
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.10431524423452523,
+     "compression_ratio": 0.8627450980392157,
+     "no_speech_prob": 1.3559393408427156e-12
+    }
+   ],
+   "windows": 2,
+   "decode_window": 1,
+   "window0_steps": 80
+  },
+  {
+   "clip": "long",
+   "name": "noprev-en",
+   "options": {
+    "language": "en",
+    "condition_on_previous_text": false
+   },
+   "language": "en",
+   "text": " The quick brown fox jumps over the lazy dog. And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. The quick brown fox jumps over the lazy dog. And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country. The quick brown fox jumps over the lazy dog",
+   "segments": [
+    {
+     "id": 0,
+     "seek": 0,
+     "start": 0.0,
+     "end": 2.44,
+     "text": " The quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      50365,
+      440,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13,
+      50487
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 1,
+     "seek": 0,
+     "start": 4.5200000000000005,
+     "end": 15.08,
+     "text": " And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+     "tokens": [
+      50591,
+      400,
+      370,
+      452,
+      7177,
+      6280,
+      11,
+      1029,
+      406,
+      437,
+      428,
+      1941,
+      393,
+      360,
+      337,
+      291,
+      11,
+      1029,
+      437,
+      291,
+      393,
+      360,
+      337,
+      428,
+      1941,
+      13,
+      51119
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 2,
+     "seek": 0,
+     "start": 16.1,
+     "end": 19.12,
+     "text": " The quick brown fox jumps over the lazy dog.",
+     "tokens": [
+      51170,
+      440,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      13,
+      51321
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 3,
+     "seek": 0,
+     "start": 19.72,
+     "end": 29.72,
+     "text": " And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.",
+     "tokens": [
+      51351,
+      400,
+      370,
+      452,
+      7177,
+      6280,
+      11,
+      1029,
+      406,
+      437,
+      428,
+      1941,
+      393,
+      360,
+      337,
+      291,
+      11,
+      1029,
+      437,
+      291,
+      393,
+      360,
+      337,
+      428,
+      1941,
+      13,
+      51851
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.16514980943897103,
+     "compression_ratio": 2.606837606837607,
+     "no_speech_prob": 1.33008925054523e-12
+    },
+    {
+     "id": 4,
+     "seek": 3000,
+     "start": 30.0,
+     "end": 32.8,
+     "text": " The quick brown fox jumps over the lazy dog",
+     "tokens": [
+      50365,
+      440,
+      1702,
+      6292,
+      21026,
+      16704,
+      670,
+      264,
+      14847,
+      3000,
+      50505
+     ],
+     "temperature": 0.0,
+     "avg_logprob": -0.32784608999888104,
+     "compression_ratio": 0.86,
+     "no_speech_prob": 4.031371048617005e-13
+    }
+   ],
+   "windows": 2,
+   "decode_window": 1,
+   "window0_steps": 80
+  }
+ ],
+ "blobs": {
+  "whisper-fox-mel.bin": {
+   "sha256": "17878cd66baed00390af05b3f99f76db7c180b01a6be7d82845fef0f2e0e598d",
+   "dtype": "float32",
+   "shape": [
+    3267,
+    128
+   ]
+  },
+  "whisper-jfk-mel.bin": {
+   "sha256": "c7b8b1e5cbd14b4c174b6f35b1de2b328f729badd91c619d7fc72ae3a19944b7",
+   "dtype": "float32",
+   "shape": [
+    4100,
+    128
+   ]
+  },
+  "whisper-long-mel.bin": {
+   "sha256": "094b0870a9a154a0d69f389a7872eeb2f06bad9fc7ccc8eb064fb87668dde134",
+   "dtype": "float32",
+   "shape": [
+    6301,
+    128
+   ]
+  },
+  "whisper-fox-greedy-en-enc.bin": {
+   "sha256": "7d01f4781b808a15b1dab17b27c4ac5d919ea88f32155511cc8d70897f10e7e7",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-fox-greedy-en-logits.bin": {
+   "sha256": "dbd879591513e1230655a7a3a42e80969e1e949a27fe347a1e83c2242a1e836c",
+   "dtype": "float32",
+   "shape": [
+    14,
+    51866
+   ]
+  },
+  "whisper-fox-prompt-en-enc.bin": {
+   "sha256": "7d01f4781b808a15b1dab17b27c4ac5d919ea88f32155511cc8d70897f10e7e7",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-fox-prompt-en-logits.bin": {
+   "sha256": "d442dc083a19aa16309cad98dbc108fea4776e32c2fb3c5552739a071d05d3c5",
+   "dtype": "float32",
+   "shape": [
+    13,
+    51866
+   ]
+  },
+  "whisper-fox-notimestamps-en-enc.bin": {
+   "sha256": "7d01f4781b808a15b1dab17b27c4ac5d919ea88f32155511cc8d70897f10e7e7",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-fox-notimestamps-en-logits.bin": {
+   "sha256": "5342095e4120f6149b964d8e1ea3669669efaea17c097537b2e1b6ad560e7bf2",
+   "dtype": "float32",
+   "shape": [
+    12,
+    51866
+   ]
+  },
+  "whisper-jfk-greedy-auto-enc.bin": {
+   "sha256": "e7f0c7679a8e9aa2853f69eb4acd55bfa671c78e21c922c5e7774e30c0468af7",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-jfk-greedy-auto-logits.bin": {
+   "sha256": "f63125876993e5d0a9247812e098d47a9fe6ee2b7a0c84d7527b65c000528d0e",
+   "dtype": "float32",
+   "shape": [
+    30,
+    51866
+   ]
+  },
+  "whisper-jfk-translate-en-enc.bin": {
+   "sha256": "e7f0c7679a8e9aa2853f69eb4acd55bfa671c78e21c922c5e7774e30c0468af7",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-jfk-translate-en-logits.bin": {
+   "sha256": "6d21cacfb5de63f8a1bb72d58531ebe46c0b4d68a065c5962984a6e2c100d6bb",
+   "dtype": "float32",
+   "shape": [
+    30,
+    51866
+   ]
+  },
+  "whisper-long-greedy-en-enc.bin": {
+   "sha256": "f84303e7d62308371728d099b21d9d5126d0629bfcc4075cc59423811d37e914",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-long-greedy-en-logits.bin": {
+   "sha256": "cbc7ad244e40baaf7ac70085dc6a3315c593e026d2bd350483efceffc4b10d79",
+   "dtype": "float32",
+   "shape": [
+    80,
+    51866
+   ]
+  },
+  "whisper-long-noprev-en-enc.bin": {
+   "sha256": "f84303e7d62308371728d099b21d9d5126d0629bfcc4075cc59423811d37e914",
+   "dtype": "float16",
+   "shape": [
+    1,
+    1500,
+    1280
+   ]
+  },
+  "whisper-long-noprev-en-logits.bin": {
+   "sha256": "cbc7ad244e40baaf7ac70085dc6a3315c593e026d2bd350483efceffc4b10d79",
+   "dtype": "float32",
+   "shape": [
+    80,
+    51866
+   ]
+  }
+ }
+}

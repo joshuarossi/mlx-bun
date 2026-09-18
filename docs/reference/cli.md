@@ -29,6 +29,8 @@ each verb).
 | `harness pi` | connect your own pi install to the local server | — |
 | `generate` (`gen`) | one-shot generation, no server | `mlx_lm.generate` |
 | `embed` | text embeddings, no server | — |
+| `transcribe` | speech-to-text from an audio file, no server | — (`mlx_whisper` CLI is the nearest) |
+| `dictate` | push-to-talk microphone dictation → print / clipboard / typed keystrokes | — |
 | `get` | download a model (resumable, verified) | `mlx_lm.manage` (partial) |
 | `scan` | re-index the Hugging Face cache | `mlx_lm.manage --scan` |
 | `ls` | list downloaded models | `mlx_lm.manage --scan` |
@@ -213,6 +215,65 @@ mlx-bun embed --instruct "Retrieve passages that answer the question" --text "wh
 | `[query]` / `--query <q>` | embedding model; omitted = the first downloaded embedding model (errors with a `get` suggestion when none) |
 | `--text "…"` | text to embed (omit to read one text per stdin line) |
 | `--instruct "…"` | Qwen3-Embedding query instruction; omit for plain document embeddings |
+
+### `transcribe` — speech-to-text
+
+Whisper transcription of one audio file with a local `mlx-community/whisper-*`
+checkpoint, no server. WAV decodes natively; other containers CoreAudio can
+read (mp3/m4a/aac/flac/ogg/aiff, mp4/mov audio…) decode in-process through
+AudioToolbox. Model support
+and the oracle contract: [models.md](models.md#supported-models).
+
+```sh
+mlx-bun transcribe meeting.m4a                       # first downloaded Whisper, language auto-detected
+mlx-bun transcribe talk.wav --language en --format srt > talk.srt
+mlx-bun transcribe note.wav --beam-size 5 --prompt "Sotto, SwiftUI, Metal" --verbose
+```
+
+| Flag | Meaning |
+|---|---|
+| `<audio-file>` | required positional |
+| `[query]` / `--model <path\|query>` | Whisper model; omitted = the first downloaded `whisper` checkpoint (errors with a `get` suggestion when none) |
+| `--language <code\|name>` | `en`, `japanese`, …; `auto` or omitted detects from the first 30 s |
+| `--task translate` | translate to English |
+| `--beam-size <n>` | beam search (default greedy) |
+| `--temperature <t>` | one temperature; default is mlx-whisper's `(0, 0.2, …, 1.0)` fallback ladder gated by compression-ratio / log-prob thresholds |
+| `--no-fallback` | temperature 0 only |
+| `--prompt "…"` | initial prompt (vocabulary hints, up to 223 tokens are kept) |
+| `--no-timestamps` | text-only decoding |
+| `--no-condition` | do not feed the previous window's text as the next prompt |
+| `--vad`, `--vad-threshold <t>`, `--vad-model <path>` | Silero VAD gate: no detected speech → empty output, Whisper never runs. Weights: `ggml-org/whisper-vad` in the HF cache (885 KB) or an explicit ggml path |
+| `--word-timestamps` | word-level timing in `verbose_json` (`words` per segment) |
+| `--faithful` | oracle-parity graph instead of the fast path (fused attention, compiled decoder step) |
+| `--audio-ctx <n>` | Lab: encode only n of the 1500 encoder positions (whisper.cpp `-ac`); degrades below ~1024 |
+| `--format <f>` | `text` (default) · `json` · `verbose_json` · `srt` · `vtt` |
+| `--verbose` | per-segment time ranges and a realtime-factor summary on stderr |
+
+### `dictate` — push-to-talk from the microphone
+
+Streams the mic (AVAudioEngine sidecar `mlx-bun-mic-capture`, built from
+`src/native/mic_capture.swift` on first use with swiftc, or shipped beside
+the binary) into a transcription session while you speak, so every
+finished 30 s window is transcribed during capture and the result lands
+about one window after you stop. Silence never runs Whisper (Silero VAD).
+macOS prompts for Microphone permission; `--hotkey` needs Input Monitoring
+and `--type` needs Accessibility for your terminal app.
+
+```sh
+mlx-bun dictate                              # Enter starts/stops a take; prints the text
+mlx-bun dictate --hotkey --copy              # hold Right Option, transcript → clipboard
+mlx-bun dictate --hotkey --type              # …typed into the frontmost app
+mlx-bun dictate --server http://localhost:8090 --vocabulary "Sotto,SwiftUI,Metal"
+```
+
+| Flag | Meaning |
+|---|---|
+| `[query]` / `--model <path\|query>` | Whisper model for in-process transcription (default: first downloaded `whisper` checkpoint) |
+| `--server <url>` | use a running server's `/v1/audio/sessions` instead |
+| `--hotkey [keycode]` | hold-to-talk on a macOS virtual keycode (default 61, Right Option) instead of Enter toggling |
+| `--language`, `--beam-size`, `--prompt`, `--vocabulary "a,b"`, `--no-vad` | decoding, as for `transcribe` |
+| `--idle-unload <s>` / `--resident` | release the weights after idle seconds (0 = after every take; default 30) or keep them loaded |
+| `--copy` / `--type` / `--type-delay <s>` | clipboard / System Events keystrokes into the frontmost app (delay defaults to 1 s in Enter mode so you can Cmd-Tab, 0 with `--hotkey`) |
 | `--json` | one OpenAI-style `{object:"list",data:[…]}` object instead of bare arrays |
 
 Server equivalent: `mlx-bun serve <embedding-model>` then

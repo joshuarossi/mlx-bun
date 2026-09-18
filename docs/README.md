@@ -102,5 +102,6 @@ Frozen history — read-only, never extended in place; recover raw data via git 
 - [planning/release-notes-v0.2.0.md](../docs/archive/planning/release-notes-v0.2.0.md) — mlx-bun v0.2.0
 - [planning/release-notes-v0.3.0.md](../docs/archive/planning/release-notes-v0.3.0.md) — mlx-bun v0.3.0
 - [planning/release-notes-v0.4.0.md](../docs/archive/planning/release-notes-v0.4.0.md) — mlx-bun v0.4.0
+- [planning/release-notes-v0.5.0.md](../docs/archive/planning/release-notes-v0.5.0.md) — mlx-bun v0.5.0
 - [planning/web-ui-pass-plan.md](../docs/archive/planning/web-ui-pass-plan.md) — Web UI pass — ranked fix list (2026-07-01 audit)
 - [planning/website-readme-pass-plan.md](../docs/archive/planning/website-readme-pass-plan.md) — Website + README pass — audit findings and fix plan (2026-07-01)

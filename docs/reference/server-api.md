@@ -30,6 +30,10 @@ every other path is unique. Unmatched paths return
 | POST | `/v1/messages` | [Anthropic Messages](#post-v1messages-anthropic-messages-api) |
 | POST | `/v1/responses` | [OpenAI Responses](#post-v1responses-openai-responses-api) |
 | POST | `/v1/embeddings` | [Embeddings](#post-v1embeddings-openai-embeddings-api) |
+| POST | `/v1/audio/transcriptions`, `/v1/audio/translations` | [Audio transcription](#post-v1audiotranscriptions--post-v1audiotranslations-speech-to-text) |
+| POST | `/v1/audio/sessions`, `/v1/audio/sessions/<id>/audio`, `/v1/audio/sessions/<id>/finish` | [Streaming sessions](#streaming-transcription-sessions-v1audiosessions) |
+| DELETE | `/v1/audio/sessions/<id>` | [Streaming sessions](#streaming-transcription-sessions-v1audiosessions) |
+| POST | `/admin/transcription/unload` | [Audio transcription](#post-v1audiotranscriptions--post-v1audiotranslations-speech-to-text) |
 | GET | `/v1` | [API index](#get-v1) |
 | GET | `/v1/models`, `/v1/models/<id>` | [Models](#get-v1models) |
 | GET / POST | `/v1/adapters` | [Adapters](#adapters-lora-hot-swap) |
@@ -784,6 +788,97 @@ curl localhost:8080/v1/embeddings -H 'content-type: application/json' \
   -d '{"input": ["the cat sat on the mat", "a kitten by the window"]}'
 ```
 
+## POST /v1/audio/transcriptions · POST /v1/audio/translations (speech-to-text)
+
+OpenAI-compatible Whisper transcription (`translations` = the same route with
+task `translate`, English output). Served by every `mlx-bun serve` beside the
+chat model — the Whisper checkpoint (`--whisper-model`, default: the first
+downloaded `whisper` model) loads for each take and is released right after
+it unless `--whisper-idle-unload`/`--whisper-resident` say otherwise — and by the transcription-only server that
+`serve <whisper checkpoint>` starts ([server-config.md](server-config.md)).
+Model support and the parity contract: [models.md](models.md#supported-models);
+CLI equivalent: [`mlx-bun transcribe`](cli.md#transcribe--speech-to-text).
+
+**Request** — `multipart/form-data` (OpenAI's shape) or JSON:
+
+| Field | Meaning |
+| --- | --- |
+| `file` | audio upload (multipart) or base64 / `data:` URL string (JSON; `input_audio.data` and `audio` are accepted aliases). WAV decodes through the exact PCM parser; any other CoreAudio-readable container (mp3/m4a/aac/flac/ogg/aiff/caf, mp4/mov audio tracks…) decodes in-process through AudioToolbox (`src/audio/audiotoolbox.ts`, 3.7 ms for an 11 s mp3). Undecodable bytes are a `400`. |
+| `model` | ignored — the configured Whisper checkpoint is used |
+| `language` | ISO code or name; omitted / `auto` detects from the first 30 s |
+| `prompt` | initial prompt (vocabulary, style); the last 223 tokens are kept |
+| `response_format` | `json` (default) · `verbose_json` · `text` · `srt` · `vtt` |
+| `temperature` | one temperature in [0, 1]; omitted = mlx-whisper's `(0, 0.2, …, 1.0)` fallback ladder |
+| `stream` | `true` → server-sent events (below) |
+| `timestamp_granularities[]` | `segment` (default); `word` adds `words` (`word, start, end, probability`) to `verbose_json` segments via cross-attention DTW on the checkpoint's alignment heads — one extra decoder pass per window |
+| `beam_size` | **non-standard**: beam search width (default greedy); requires temperature 0 |
+| `vocabulary` | **non-standard**: array (JSON) or comma-separated (multipart) recognition hints, fitted whole-term into the 223-token prompt budget after `prompt`; usage is reported |
+| `condition_on_previous_text` | **non-standard**, default `true` |
+| `no_speech_threshold`, `without_timestamps` | **non-standard** mlx-whisper decode options |
+| `vad`, `vad_threshold`, `vad_min_speech_ms`, `vad_trim` | **non-standard**: Silero VAD gate (v6.2, `ggml-org/whisper-vad` weights in the HF cache). No detected speech → `{"text": ""}` with `mlx_bun.vad.speech = false` and Whisper never runs (≈25 ms for 11 s). `vad_trim` crops to the speech span ± 0.5 s first; timestamps stay clip-relative. Segments are reported in `mlx_bun.vad.segments` (seconds). Defaults: threshold 0.5, min speech 250 ms |
+| `faithful` | **non-standard**: `true` runs the oracle-parity graph instead of the fast path (fused attention, compiled decoder step); same tokens up to documented near-ties, slower |
+| `audio_ctx` | **non-standard, Lab**: encode only the first n of 1500 encoder positions (whisper.cpp `-ac`). Cheaper for short clips; measured hallucinated repeats below ~1024 on the fixture clips — off unless set |
+
+**Response** — `json`: `{ "text": "…", "mlx_bun": { "model", "language",
+"duration", "timings": { "load_ms", "transcribe_ms", "total_ms" },
+"vocabulary"?: { "included", "omitted", "token_count", "token_budget" } } }`.
+`verbose_json` adds `task`, `language`, `duration` and openai-whisper's
+`segments` (`id, seek, start, end, text, tokens, temperature, avg_logprob,
+compression_ratio, no_speech_prob`). `text`/`srt`/`vtt` return the bare body
+(`text/plain`, `application/x-subrip`, `text/vtt`) with `x-mlx-bun-language`
+and `x-mlx-bun-timings` headers. `load_ms` is non-zero exactly when the
+request paged the weights in.
+
+**Streaming** (`stream=true`): `text/event-stream` with `transcript.text.delta`
+`{ "delta": "<segment text>", "segment": { "id", "start", "end" } }` per
+finalized segment, `transcript.progress` `{ "done", "total" }` (mel frames),
+and a final `transcript.text.done` carrying the non-streaming body.
+
+**Errors**: `400 invalid_request_error` (fields, undecodable audio, clips
+shorter than 0.1 s), `415` (content type), `499` on client cancel, and
+`503 model_unavailable` when no Whisper checkpoint is on disk (the message
+carries the `mlx-bun get` command).
+
+`POST /admin/transcription/unload` pages the weights out now and returns
+`{ "unloaded": bool, "resident", "loads", "unloads", "requests",
+"last_load_ms", "idle_unload_sec" }` — the same block `/health` and
+`/stats` report as `transcription` on the transcription-only server.
+Transcriptions run one at a time and never overlap chat generation on the
+GPU (the generation gateway's exclusive lock).
+
+```sh
+curl localhost:8080/v1/audio/transcriptions -F file=@meeting.m4a -F language=en -F response_format=srt
+curl localhost:8080/v1/audio/transcriptions -H 'content-type: application/json' \
+  -d '{"file":"<base64 wav>","beam_size":5,"vocabulary":["Sotto","SwiftUI","Metal"]}'
+```
+
+## Streaming transcription sessions (`/v1/audio/sessions`)
+
+For audio that is being recorded while it is sent (dictation). Every
+completed 30 s window is transcribed as soon as it exists, under the same
+exclusive lock as everything else, so `finish` costs one window regardless
+of take length (measured: a 62 s take that needs 1165 ms in batch returns
+327 ms after its last chunk, identical text — M1 Max). With `vad: true` the
+Silero gate runs on the stream: nothing is transcribed until speech has
+been seen, and a take with no speech finishes as `{"text": ""}` without
+ever running Whisper. The one-shot parameters (`language`, `prompt`,
+`vocabulary`, `beam_size`, `temperature`, `vad*`, `timestamp_granularities`,
+`faithful`) apply; `response_format` is `json` or `verbose_json`.
+
+| Route | Body / response |
+| --- | --- |
+| `POST /v1/audio/sessions` | JSON params → `{ "id", "model", "vocabulary" }` (the weights load here if they were paged out) |
+| `POST /v1/audio/sessions/<id>/audio` | one chunk: `content-type: audio/pcm;rate=16000` raw little-endian float32 mono (sotto's format, no decode), or any CoreAudio container. → `{ "samples", "duration", "speech", "segments": [...] }` with every segment finalized so far |
+| `POST /v1/audio/sessions/<id>/finish` | → the one-shot response body (`json`/`verbose_json` with `mlx_bun`), closes the session |
+| `DELETE /v1/audio/sessions/<id>` | discard, `204` |
+
+Chunk order is the caller's responsibility (send sequentially and await
+each receipt). Unknown ids are `404`; a finished session is `409`; at most
+64 sessions are open at once (`429`). Windows fed early are normalized
+against the audio received so far (the log-mel clamp is relative to the
+clip maximum), which can differ from a batch transcription in near-silent
+mel bins — the fixture takes decode identically.
+
 ## GET /v1
 
 API index for discovery tooling:
@@ -791,7 +886,8 @@ API index for discovery tooling:
 ```jsonc
 { "name": "mlx-bun", "version": "<package version>", "model": "<served model id>",
   "endpoints": ["POST /v1/chat/completions", "POST /v1/completions", "POST /v1/messages",
-                "POST /v1/responses", "POST /v1/embeddings", "GET /v1/models",
+                "POST /v1/responses", "POST /v1/embeddings", "POST /v1/audio/transcriptions",
+                "POST /v1/audio/translations", "GET /v1/models",
                 "GET/POST/DELETE /v1/adapters", "GET /health", "GET /stats", "GET /fit",
                 "GET /library", "GET /downloads"] }
 ```
@@ -1723,7 +1819,11 @@ repetition_context_size?, presence_penalty?, frequency_penalty?, seed?}`
 `delete_session {path}`, `regenerate`, `edit_resend {text}`,
 `switch_sibling {entryId}`, `context {context}` (app-aware assistant, below).
 
-Server → client: `ready {model, vision, audio, thinking, genDefaults}`,
+Server → client: `ready {model, vision, audio, thinking, genDefaults, transcription}`
+(`transcription` is true when a Whisper checkpoint serves [`/v1/audio/sessions`](#streaming-transcription-sessions-v1audiosessions);
+the web composer then shows a hold-to-talk mic that streams 16 kHz float32
+into a session and inserts the transcript into the message box — voice
+input for any chat model),
 `turn_start`, `text_delta {delta}`, `thinking_delta {delta}`, `tool_start
 {callId, tool, args}`, `tool_approval_request {callId, tool, args}`,
 `tool_update {callId, chunk}`, `tool_end {callId, ok, result}`, `turn_end

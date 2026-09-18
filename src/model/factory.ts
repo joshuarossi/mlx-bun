@@ -24,6 +24,7 @@ import {
   type Glm52MemoryPlan,
 } from "./glm52-memory";
 import { UniversalDenseModel } from "./universal/dense";
+import { WhisperModel } from "./whisper";
 import { genericArgsFor } from "./universal/archs";
 import {
   ModelImplementationRegistry,
@@ -138,6 +139,26 @@ export async function openGlm52RuntimeModel(
   return { model, plan };
 }
 
+/** Open a Whisper checkpoint (encoder-decoder speech model) through the same
+ * profile resolution as text models. Whisper never enters the chat loop, so
+ * it is not a RuntimeModel: the transcription engine (src/audio/whisper-*)
+ * owns it. */
+export async function openWhisperModel(
+  modelDir: string, options: { readonly profiles?: ResolveModelProfileOptions } = {},
+): Promise<{ model: WhisperModel; profile: ResolvedModelProfile; config: ModelConfig }> {
+  const config = await loadModelConfig(modelDir);
+  const profile = resolveModelProfile(config, options.profiles);
+  if (profile.profile.execution.graph !== "whisper")
+    throw new Error(`${modelDir} is not a Whisper checkpoint (profile ${profile.profile.id})`);
+  const weights = await Weights.open(modelDir);
+  try {
+    return { model: new WhisperModel(weights, config), profile, config };
+  } catch (error) {
+    weights.dispose();
+    throw error;
+  }
+}
+
 /**
  * Artifact-aware construction. GLM-5.2's Colibri snapshot has no ordinary
  * model.safetensors.index.json, so it must bypass Weights.open and use its
@@ -159,6 +180,11 @@ export async function openModel<Model>(
       throw new Error("custom Colibri implementations require a streamed loader binding; refusing to fall back");
     return (await openGlm52RuntimeModel(modelDir, options)).model;
   }
+  if (profile.profile.execution.loop === "encoder-decoder")
+    throw new Error(
+      `${modelDir} is a speech model (${profile.profile.id}); open it with openWhisperModel ` +
+      "or serve it as a transcription model — it has no chat/completion loop",
+    );
   // Resolve before opening weights; missing or incompatible code allocates nothing.
   const implementation = (options.implementations ?? MLX_MODEL_IMPLEMENTATIONS).select(config, profile);
   const weights = await Weights.open(modelDir);
