@@ -68,6 +68,14 @@ function bf16Bytes(value: number): Uint8Array {
  *  a bf16/f32 constant directly, so `scalar * bf16_array` is a single multiply.
  *  Going through an f32 leaf + GPU `.astype(bf16)` (the old path) emits a
  *  separate Copy kernel (`v_copy…`) that the reference never dispatches. */
+/** `[length]` bf16 vector filled with `value`, built host-side with the same
+ *  rounding as `scalarLike` so `w * x` equals `mulScalar(x, value)` bit for bit. */
+export function filledBf16(value: number, length: number): MlxArray {
+  const one = bf16Bytes(value), bytes = new Uint8Array(2 * length);
+  for (let i = 0; i < length; i++) bytes.set(one, 2 * i);
+  return MlxArray.fromBytesCopy(bytes, [length], Dtype.bfloat16);
+}
+
 export function scalarLike(value: number, like: MlxArray): MlxArray {
   if (like.dtype === Dtype.float32)
     return MlxArray.fromFloat32(new Float32Array([value]), []);

@@ -3,12 +3,16 @@ status: active
 axis: ON
 canonical-for: decode-speed-levers
 plan-anchor: "Phase 6 — Speed: change what gets computed `[~]`"
-last-verified: 2026-09-08
+last-verified: 2026-09-18
 ---
 
 # Inference performance program
 
 This is the canonical performance research plan. The current priority is the
+implementation and measurement review in section 7.15, beginning with a fresh
+packed-Qwen baseline. Earlier experiment outcomes apply to their specific
+implementations and workloads; they do not rule out the underlying ideas.
+The broader scope remains the
 Qwen3.8-27B program in section 7, covering quants, the complete execution graph,
 custom kernels, deterministic token replay, prefill, decode, and serving.
 Sections 1–6 retain the earlier cross-model research and the
@@ -2333,8 +2337,10 @@ milestone. Remaining experiments do not reopen those completed gates.
 
 #### Closed candidates
 
-Do not re-open without new evidence of the kind named in the row's reopen
-condition.
+These are historical closure decisions for the listed implementations.
+Josh reopened the experiment history for an implementation and measurement
+audit. Section 7.15 defines that review; the old verdict alone is not a reason
+to exclude a redesigned experiment. Preserve the original evidence.
 
 - Device f32 code LUT for variant-6 decode: slower at M=1 for every bit width (`lut6-*.json`).
 - Constant-address-space int16 codebook table: 0.802 vs 0.331 ms reduce; nearly 2x complete MLP on MLX 0.32.2 (`trellis-codebook*`, `trellis-constant-*`).
@@ -2402,3 +2408,425 @@ variants. Differentiation confirms the need for a custom packed backward
 operation; expanded frozen weights already differentiate. Further work needs
 activation-calibrated candidates or that backward binding. No new deployment default,
 model-quality claim or training run follows from the paper results alone.
+
+### 7.15 Implementation and measurement review
+
+Josh requested a new review of all inference graphs and the experiment history,
+then a fresh baseline of the approximately 12 GB Qwen artifact. The question is
+whether an attempt implemented and measured its intended mechanism correctly.
+A slow prototype does not establish that compilation, packing, paging, fusion,
+or lookup-based decoding cannot help. Repeating that prototype alone may repeat
+the same mistake.
+
+The source checkpoint is `dfa46c9bcb9f48b97f3a62195216ca2d6fc20546`.
+The primary workload is the local interleave2 packed Qwen3.8-27B artifact;
+machine/runtime facts remain in [environment](../reference/environment.md),
+and fresh measured results belong in [benchmarks](../reference/benchmarks.md).
+Raw inventory, observations, implementation reviews and source identities are
+under `reports/inference-optimization-audit/`. No inference default is changed
+by this review.
+
+#### Coverage and what remains unmeasured
+
+The current-source AST census over 441 graph-indexed source files finds 44
+`MetalKernel` construction sites and 12 `CompiledFunction` construction sites.
+It also finds 376 direct `C.*` calls into 169 distinct names. These are source
+sites, not executed GPU kernels; the totals include training/backward and
+allocation/configuration operations. Runtime specialization depends on shape,
+dtype, strides, quantization, cache layout, method and GPU. The static index's
+generic `forward` and `dispose` edges are not proof of runtime dispatch.
+
+| Graph family | Source and work reviewed | Required runtime cells |
+| --- | --- | --- |
+| Packed Qwen dense hybrid | `Qwen35Model`, `Qwen3Layer`, `GatedDeltaNet`, `Qwen3Attention`, `TrellisLinear`; projections, recurrence, convolution, attention, packed expansion, MLP, head | Ordinary decode; MTP verification; fixed/automatic prefill; B1/B2/B4/B8; bf16/KV4/TQ; short/long context |
+| Affine dense models | MiniCPM5, Qwen3, universal dense/Llama and Gemma dedicated/generated graphs; native QMV/QMM, SDPA and compiled activations | Same-artifact MLX-LM comparisons at matching geometry; compiled and fallback activation counters |
+| Resident MoE | Gemma and Qwen `SwitchGLU`, `QuantizedSwitchLinear`; routing, sorting, gather-QMM, activation and expert reduction | Real expert occupancy and selected-token distributions; sorting/gather crossover; whole-step compilation |
+| Sparse/streamed GLM | MLA/DSA selection, absorbed/reconstructed attention, streamed expert slots and native MTP | Tiny correctness exists; final Colibri artifact and real storage/serving remain a separate availability gate |
+| Generation and serving | Ordinary/speculative methods, sampler/grammar/fill, prefill cohorts, scheduler, cache, row ownership and pending-token overlap | Fixed work first, then natural arrival, cancellation, retirement, RAM/SSD and long sessions |
+| Media encoders | Qwen image/video, Gemma SigLIP/audio, merger and prepared media reuse | Uncached media and repeated geometry separately from already-cached content; encoding versus decoder TTFT |
+| DiffusionGemma | Encoder prefill, repeated canvas decoder, reveal/confidence scans and self-conditioning | Separate library algorithm; ordinary autoregressive results do not cover it |
+| Training/backward kernels | Flash-CCE and attention backward are included in the census | Outside this inference baseline; do not present their site counts as inference coverage |
+
+This is a source review plus bounded target profiling, not a claim that every
+runtime branch or artifact has been benchmarked. The coverage bundle must mark
+each unexecuted branch explicitly.
+
+#### Concrete reasons to revisit earlier verdicts
+
+| Attempt | What the implementation or report actually establishes | Better test |
+| --- | --- | --- |
+| Whole-Qwen graph compilation | `qwen-fixed-hidden-regions-preload.ts` replaces capacity-backed KV writes with concatenation of the active cache and new rows, then returns/replaces full growing caches. Its first driver also uses fixed native-then-compiled order. It changes cache traffic as well as graph reuse. | Keep capacity-backed append and existing evaluation boundaries identical. Compile a region that returns new KV rows or uses the same update contract; measure host replay, actual copies, retraces and complete requests separately. |
+| Qwen MTP mixed prefill/decode | The measured patch sets `preserveTokenGeometry: true`; `mapTokenGroups` excludes these decode rows from packed MLP work. `forwardHiddenMixed` also evaluates residual/state at every layer when a long prefill group is present. The recorded MTP loss does not test shared decode/prefill MLP weight reads. | Count offered versus actually packed tokens, matmul shapes and barriers. Compare identical scheduled groups before a natural-arrival test. A joint operation must preserve the required arithmetic or be a separately declared Lab arm. |
+| Direct paged attention | The measured source uses fixed PART64, a second merge pass, independent query-head KV reads and per-row dispatch. N>8/array-mask paths fall back to gather. The component's nominal B4 repeats the same query/view four times; the model's per-row decode intervals include other rows' prefill. | Distinct rows and explicit shared-prefix controls; count direct/fallback dispatches; separate view setup, append, fixed-B decode and serving latency. Test partition/GQA/multirow designs instead of assigning one prototype's result to paging. |
+| Affine gate/up fusion | The full-model arm is M1 affine4 RTN4-g64, not the packed target or MTP M3. Small favorable full-forward observations were judged too small to retain. The original implementation/driver source is not present alongside the recorded hashes. | Recover exact source or label a reconstruction. Assert timed candidate call counts and compare on the intended packed/affine roles. Treat sensitivity and acceptance policy separately from whether the kernel saves work. |
+| Convolution and GDN fusion | The retained convolution microbench runs independent fixed-input copies; the model probe clones a short prefix and evaluates/clears between calls. That is different from sustained dependent decode. Some GDN summaries describe small favorable results as insufficient, not a measured loss. | Chain changing state through the kernel, retain normal overlap, and measure the complete targeted stage. Test one channel owner computing convolution plus all tail values against the existing multi-row launch. |
+| Large-prefill tiles and codebook lookup | The tile screen covers one k3 artifact and a bounded geometry set, not all layouts or decoders. Some LUT screens have fixed order; another has no cross-source output comparison. Missing original source limits reproducibility. | Actual interleave2 k2/k3/k4 role mix, changing saved activations, complete expansion/MLP cost and balanced order. Verify reconstruction bytes across source arms before interpreting speed. |
+| GPU counter availability | One old trace disables counters, but the later labelled-v8 trace enables Performance Limiters/Shader Timeline and records an unsupported-profile error. The public Metal API separately reports timestamp/stage sampling only. | Test current toolchain/profile support and inspect nonempty data. Preserve the real historical profile failure; neither disabled tables nor a failure of one profile proves every profiling route is unavailable. Record unavailable counters as unavailable, not zero utilization. |
+
+The detailed reviews retain report paths, hash checks and uncertainty. These
+findings do not invalidate all earlier correctness results or prove that a
+redesign will win. They do prevent using a broad historical label as the
+engineering decision.
+
+#### Candidate queue
+
+The order is provisional and favors useful evidence per unit of work.
+Impact describes an eligible workload, not a promised percentage. Likelihood
+is confidence in a useful complete-request result; no independent gains are
+added together. Small, medium and large describe implementation effort.
+Rows 1–12 lead the packed-Qwen investigation; the remaining rows cover the
+other graphs and longer departures.
+
+The fresh [live trace](../reference/benchmarks.md#fresh-packed-qwen-baseline-and-method-audit-m4-pro-24-gb-2026-09-14-utc)
+shows nearly continuous device execution after the first output. For this B1
+path, prioritize less GPU work and more efficient kernels over removal of host
+submission gaps alone. Compilation can still alter device graphs, prefill
+boundaries and other workloads. Its earlier KV-copy confound must be removed
+before testing those effects. No per-shader ranking is inferred from the
+trace's generic encoder labels.
+
+| Order | Candidate and local owner | Potential impact / likelihood / effort | First decisive experiment |
+| --- | --- | --- | --- |
+| 1 | Packed decode geometry, register lifetime and lossless layout, `TrellisLinear` | High if decoder/occupancy limited; medium; medium | Actual gate/up/down activations, k2/k3/k4, M1/3/4; count decoded bytes, grid and dispatches. Sweep threadgroups/splits, then dependent MLP and full-layer timing. |
+| 2 | Prefill expansion lifetime and direct tiled consumption, `trellis-{wide,tiled,splitk}-prefill` | High TTFT potential; medium; medium/large | M16/32/128/256/512; include expansion, scratch, cache/state evaluation and final synchronization. Compare fixed chunks before changing chunk policy. |
+| 3 | Actual mixed projection reuse and less frequent bounded evaluation, `forwardHiddenMixed`/`mapTokenGroups` | High concurrent potential; medium; large | Fixed decode/prefill groups; prove tokens share a matrix operation. Sweep evaluation every 1/2/4/8 layers under a measured memory bound, then fixed arrivals. |
+| 4 | GDN, residual/norm, gate/up and attention output-gate fusion | Small individually, possibly useful together; medium; medium | Preserve bf16/f32 intermediate rounding; compare dependent stage, full layer and complete request. Record eliminated launches and any added work. |
+| 5 | Procedural versus lookup decoder redesign, packed state-index representation | Conditional packed decode benefit; low/medium; medium | Same reconstructed weights and accumulator order; include table construction/traffic/residency. Test device/threadgroup/procedural forms at M1 and M3 with changing inputs. |
+| 6 | Compile regions with unchanged cache writes and bounded barriers, `CompiledFunction`/Qwen model | Conditional device-graph benefit; medium; medium/large | Matched state storage, changing inputs, timed activation/retrace counters and normal overlap. Compare region sizes without replacing native kernels. |
+| 7 | Context/GQA-aware dense or compressed attention and paged redesign | High long-context potential; medium; large | Q24/KV4/D256 at 1K/8K/32K, query M1/3; include decode/rotation, metadata and scratch. Short single-pass, grouped KV reads and multirow dispatch are separate arms. |
+| 8 | Bounded sampler history, reusable bias tensors and frequency counts, `makeStepSampler`/`makeLogitsProcessors` | Medium on long processed histories; high; small/medium | Bias-only and finite 20/128-token windows should not rebuild unlimited history. Compare exact processor logits and allocation; preserve explicitly unlimited windows and processor order. |
+| 9 | Exact incremental n-gram index, `proposeNgram` | Medium on long lookup-enabled sessions; high; small/medium | CPU replay saved histories; preserve longest suffix and first earlier match. Include index construction, updates and memory before HTTP. |
+| 10 | Cost-aware MTP depth and verified-fill selection, `SpeculativeGroup`/providers | Medium/high on favorable sessions; medium; medium | Fixed 0/1/2/3 versus batch/context/acceptance-aware depth. Optimize complete time per committed token, include companion state, EOS, rollback and memory. |
+| 11 | Device sampling for independent stochastic verification, `sampleSpeculativeRows` | Medium for temperature>0 verification; medium; medium | Same logits, per-row PRNG positions and seeds; avoid one host wait per position without consuming rejected-token keys. This is distinct from the old greedy-readback test. |
+| 12 | Fused vocabulary projection plus normalized greedy selection | Conditional on head share; low/medium; large | Exact projection reduction and normalization-induced ties, then metadata-free greedy requests. Do not substitute raw argmax or restrict target vocabulary. |
+| 13 | Admission by cache-resolved suffix work, prefill cohort/cache ports | Medium/high warm concurrent latency; medium/high; small/medium | Count full-prompt budget exclusions when only a short uncached suffix remains. Hold cohort geometry fixed for attribution, then test changed admissions. |
+| 14 | Share in-flight cold prefixes and retain useful hybrid anchors | High when repeated prefill is common; medium; medium | Replay current session-cache histories first. Count incremental avoided tokens, exact SSM/companion checkpoint bytes and leader cancellation costs. |
+| 15 | Shared physical page arenas and per-block copy-on-write | High fork-memory potential; medium; large | Measure physical bytes copied by clone-then-append at B1/4/8. Storage-only exactness first; direct attention remains a separate experiment. |
+| 16 | Cost-aware SSD donor selection, write coalescing and bounded prefetch | Medium workload-dependent TTFT/storage benefit; medium; medium | Shorter RAM versus longer SSD donor; include hashing, calls, bytes, cold reads, durable writes and contention. Revisit LRU/cost-size policy on current branching traces. |
+| 17 | Shared row masks/positions and grammar next-step overlap | Small/medium host benefit; medium; medium | Unequal-length B>1 and mixed grammar cohorts; count duplicate graphs and CPU waits. Preserve stop, cancellation, sample keys and row retirement. |
+| 18 | Current affine QMV/gather dispatch and MoE routing occupancy | Medium on affine/MoE roles; medium; medium/large | Role-specific qmv/qmv_wide/gather calls, inverse-sort scatter and occupancy crossover. Include router/sort/gather/unsort, not matmul alone. No dense-Qwen MoE gain implied. |
+| 19 | Pretrained DFlash2 using upstream MLX implementation | High speculative upside; medium; large | Check architecture/taps/tokenizer and residency before loading. One upstream-equivalent drafter round, then ordinary/MTP2/DFlash2 total draft+verify cost at short block lengths. |
+| 20 | Qwen video segment-batched SDPA and bounded encoder geometry/constants | Medium uncached-media TTFT; medium/high; small/medium | Distinct equal-size temporal segments, whole block including slice/concat, full encoder outputs and memory. Already-cached content is a separate control. |
+| 21 | Parallel GDN prefill and scan formulation | Limited by measured recurrent share; low/medium; large | Reproduce stage share without injected waits, then one full-state layer and continuation. Changed arithmetic requires its own Lab quality gate. |
+| 22 | Calibrated per-role quantization, structured pruning, low-rank/residual recovery | High possible bytes/work reduction; low/medium; large | One calibrated matrix/block at equal total bytes, actual decoder latency and held-out quality. Simple unweighted failures do not close activation-aware methods. |
+| 23 | Batched absorbed MLA and streamed-expert overlap | Conditional GLM throughput/capacity; medium; large | Available real Colibri artifact, distinct row positions/selections and slot/I/O lifetime. Tiny model or resident-slot screens cannot establish serving speed. |
+| 24 | Diffusion scan/geometry reuse and exact audio attention optimization | Conditional secondary-graph benefit; low/medium; medium/large | Profile each graph first. Audio includes relative-position scores and tanh softcap; plain SDPA is not equivalent. Changing diffusion reveal/step policy is a quality experiment. |
+
+#### What to take from other engines
+
+| Primary implementation | Concrete comparison |
+| --- | --- |
+| [MLX 0.32.2 quantized dispatch](https://github.com/ml-explore/mlx/blob/v0.32.2/mlx/backend/metal/quantized.cpp) and [compilation](https://ml-explore.github.io/mlx/build/html/usage/compile.html) | Dense `qmv_wide` already exists; gather has its own dispatch. Gemma MoE is already eligible for whole-step compilation, so the old missing-`output_shapes` proposal is stale. Measure current native selection before replacing it. |
+| [vLLM scheduling](https://github.com/vllm-project/vllm/blob/dff76bc3e8d702901e6dda5971f9506a6c1bc00f/vllm/v1/core/sched/scheduler.py) and [dynamic speculation](https://raw.githubusercontent.com/vllm-project/vllm/main/docs/features/speculative_decoding/dynamic_speculative_decoding.md) | Token-work budgets and draft-depth economics supply experiments, not Mac thresholds. CUDA graph replay and memory-transfer assumptions are not MLX compilation or unified-memory behavior. |
+| [llama.cpp expert tile change](https://github.com/ggml-org/llama.cpp/pull/28301), [attention tiling](https://github.com/ggml-org/llama.cpp/pull/28439) and [speculation](https://github.com/ggml-org/llama.cpp/blob/master/docs/speculative.md) | Inspect unused expert rows, context/GQA-specific reuse and indexed lookup. The attention proposal's M4 and M5 results differ; port the mechanism and tune locally. |
+| [vLLM-Metal kernels](https://github.com/vllm-project/vllm-metal/blob/main/vllm_metal/metal/README.md) and [FLA gated delta](https://github.com/fla-org/flash-linear-attention/blob/main/fla/ops/gated_delta_rule/chunk.py) | Compare convolution/state ownership, recurrent layouts, variable-length attention and chunk formulations. Preserve local equations and rounding; M5-specific acceleration is not an M4 capability. |
+| [SGLang scheduling](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/managers/schedule_policy.py) and [HiCache](https://docs.sglang.io/docs/advanced_features/hicache_design) | Shared pending prefixes, uncached-length estimation, timeout/best-effort prefetch and transfer organization. Test current local workloads and shared-memory contention. |
+| [MLX-LM sampling](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/sample_utils.py) and [XGrammar integration](https://github.com/mlc-ai/xgrammar/blob/main/docs/using_xgrammar/engine_integration.md) | Hoist immutable bias data and overlap mask generation with backbone work. Existing overlap must be counted before claiming it is missing. |
+| [DFlash](https://github.com/z-lab/dflash) | Current upstream has an MLX Qwen3.8-27B DFlash2 route. Its architecture and low-bit block-length advice warrant a pretrained-port screen; a public checkpoint is distinct from an in-repo trained checkpoint. |
+
+Pin moving upstream sources to commits and save their hashes before a port.
+For full-engine comparisons, use the same artifact, tokenizer, inputs, runtime
+where applicable, cache policy, sampling and work geometry. Stock MLX-LM cannot
+load our packed Trellis artifact. Compare the available affine Qwen artifact in
+both engines; do not assign its engine ratio to the packed model. llama.cpp
+needs a compatible GGUF artifact, and vLLM-Metal needs its own supported model
+and environment. Unlike artifacts can inform quality/size/latency tradeoffs,
+but not an engine-only speed ratio.
+
+#### Acceptance for the redesigned experiments
+
+1. State the mechanism and predicted observable change before implementing it.
+   Examples are fewer weight reads, fewer actual launches, fewer copies, less
+   padding or shorter host gaps. Name the affected workload and its current
+   critical-path share. Amdahl bounds use measured exclusive time, not summed
+   overlapping spans.
+2. Preserve the exact control and candidate source, effective settings, native
+   libraries, input IDs, artifact identities, seeds and raw outcomes. Missing
+   historical source means a reconstruction, not an exact reproduction.
+3. Prove the candidate is reached during the timed interval. Count actual
+   shapes, direct/fallback calls, target/draft work, retraces and cache hits.
+   Correctness calls after timing must not inflate activation evidence.
+4. Measure operator, complete stage, fixed-work model and serving separately.
+   Include setup, casts, materialization, scratch, state maintenance and cleanup
+   in the appropriate total. Chain changing inputs/state; test independent work
+   separately and detect graph deduplication or cached expansion.
+5. Keep captures and modified-library traces separate from uninstrumented
+   timing. Calibrate recorder overhead and inspect counter configuration.
+   GPU busy percentage is not ALU occupancy or DRAM bandwidth. Firmware rate
+   histograms and logical bytes/time are estimates, not byte counters.
+6. Warm each arm, use balanced fresh-process blocks with identical workloads,
+   retain all failures/outliers, monitor competing CPU/GPU work and paging, and
+   report the paired distribution. Include a same-arm repeat to establish the
+   detectable effect; do not reject a small candidate below the noise floor.
+7. Preserve logits and live state at the actual geometry, then continuation,
+   rollback, cancellation, row lifecycle and RAM/SSD restoration. A deliberate
+   arithmetic/algorithm change needs the declared Lab quality gate. Smaller
+   output or higher acceptance is not automatically faster inference.
+8. Record one of: mechanism not exercised; implementation adds offsetting cost;
+   correctness failure; measurement inconclusive; specific implementation win;
+   specific implementation loss. Never convert the last outcome into a claim
+   that the entire optimization class does not work.
+
+#### Experiment-by-experiment classification
+
+The full method audit in
+`reports/inference-optimization-audit/method-audit-ledger.md` maps every R0–R24 and C1–C6 hypothesis to its implementation, source provenance,
+measurement limits and next validation. The table below summarizes that review;
+it does not replace the raw outcomes in §7.13 or repeat accepted correctness
+gates. A source audit found concrete limitations in some attempts. Other rows
+received only a documentary review and must not be described as independently
+verified. Missing source means unavailable at the searched paths, not proven
+irrecoverable.
+
+“Adequate” below applies only to the named implementation and tested workload.
+“Limited” leaves other shapes, execution paths or algorithms open. A small
+effect with insufficient measurement precision is inconclusive, even when its
+median has a positive or negative sign.
+
+| ID | Review classification | Scope or next required check |
+| --- | --- | --- |
+| R0 | Exact controls supported; attribution inconclusive | Current ordinary native worker was inspected. Historical control sources were not fully re-audited; preserve native/serving and timing-phase distinctions. |
+| R1 | Selected small-M implementations supported; large-prefill coverage limited, source missing | Recover the large-tile implementation and test current artifact/layout plus complete expansion/MLP cost. |
+| R2 | Guarded policy supported within pressure cases; documentary review | A new barrier or lifetime policy needs branch counts and measured live allocation under the saved pressure workload. |
+| R3 | Selected k3 scatter supported; geometry limited, documentary review | k2/k4 and different interleaving remain new implementation cells. |
+| R4 | M2–4 sharing supported; M1 sweep incomplete, documentary review | Test actual M1 candidate activation and dependent MLP cost; unavailable counters are not a failed sweep. |
+| R5 | Specific table losses supported; activation and parity limits, source missing | Some cells never call the table; one later screen lacks cross-source output comparison. Qualify the concrete representation. |
+| R6 | Lossless k3 interleaving supported; documentary review | Additional bit widths and layouts require their own inversion, reader and continuation checks. |
+| R7 | Specific crossover fails exactness; geometry limited, documentary review | Numerical rejection does not establish a speed loss; approximate dispatch needs a separate quality contract. |
+| R8 | Early workload/materialization confounds; later source incomplete | Compare dependent recurrent execution with equal state ownership and normal generation lifetimes. |
+| R9 | Small-M evidence limited; source missing for fused norm | Separate small favorable observations from insufficient serving value; prefill and other recurrence layouts remain open. |
+| R10 | Scoped attribution supported; parallel rewrite unimplemented | Check observer perturbation before using stage share as a bound. |
+| R11 | Format/runtime coverage limited; serving value inconclusive | Recover affine fusion source and compare current native dispatch with counters inside the timer. |
+| R12 | Candidate coverage limited; documentary review | QKV/output-gate and other unimplemented fusions are not rejected by narrower operation screens. |
+| R13 | Specific TQ results supported; attention/storage coverage limited | Keep encoded values, reduction, append storage and direct paging separate; C5 has a source audit. |
+| R14 | Invalid early comparator superseded; operation qualified, serving evidence mixed | Current tests and historical top-p source were inspected. Exact head fusion is unimplemented; small top-p/grammar effects need adequate precision. |
+| R15 | Guarded strict-fill implementation supported; trigger coverage limited | Tests check injected spans, state and continuation. Custom held-out prompts must report actual injection, not only passing identity. |
+| R16 | Whole-graph storage confound; narrow SSM/early-output evidence supported | Use unchanged capacity-backed append or an explicit storage/compilation ablation. |
+| R17 | Generated-cache acceptance supported; task attribution limited | Documentary and cache-source review; assess new checkpoints against current session reuse rather than older misses. |
+| R18 | Mixed-work mechanism not exercised in Qwen MTP arm | Count actual joint MLP operations and separate barrier, packing and arrival-policy effects. |
+| R19 | Bit-cost factors confounded; quality proxy and geometry limited | Different layers/layouts supply k2/k3/k4 costs. Validate common-layer alternatives and an actual allocated artifact. |
+| R20 | Corrected historical MTP comparison supported; current hook bypassed | Old adaptive preload patches `provider.open`; shared execution uses `provider.grouped.open`. Prove depth changes in the current path. |
+| R21 | Historical greedy activation supported; source missing, learned performance unmeasured | Greedy readback, stochastic sampling, lookup matching and trained DFlash2 are separate experiments. |
+| R22 | Process-cold measurement limited; mmap source missing | OS file pages remained cached. Separate process setup, page-cache state and physical residency. |
+| R23 | Media-cache acceptance supported; task-time attribution inconclusive | Graph/source and documentary review; uncached encoders need separate tests, and divergent tasks provide no engine-only ratio. |
+| R24 | Specific feasibility screens supported; broader algorithms untested | QQMM expands quantized activations; plain SVD/sparse screens use limited reconstructed weights. Calibrated methods and packed backward remain open. |
+| C1 | Storage accounting supported; workload limited | Documentary/cache review; driver not fully audited. Test actual checkpoint branches and hash/write coalescing separately. |
+| C2 | Event-loop availability supported; throughput evidence limited | Warm-page transport overlap does not cover every restore/reconstruction path or cold restart. |
+| C3 | Metadata replay supported; cost/workload model limited | Replay current session/branch histories with actual state sizes and restore costs. |
+| C4 | Contiguous packing accounting supported; stride/service scope limited | Keep storage format fixed when measuring segmentation; test actual ownership and copied bytes. |
+| C5 | Concrete B4 workload and attribution confounds; kernel design limited | Source matches the measured manifest. Use distinct rows, direct/fallback counts and warmed fixed-B timing before serving tests. |
+| C6 | Lookup/restore mechanism supported; physical-memory and timing scope limited | Stub/index and accounted-residency tests are not physical RAM or decode-speed measurements. |
+
+The detailed report distinguishes direct source inspection from raw-report,
+documentary and independently delegated review. R14/R15/R19–24 and the current
+ordinary native worker received direct checks in this pass. Kernel and cache
+forensics supply the cited R1/R5/R8/R9/R11/R16/R18/C5 findings. The remaining
+source checks stay open; this table is coverage accounting, not a claim that
+every historical experiment has now been reproduced.
+
+#### First controlled packed-MLP experiment: spill-word sharing
+
+The first candidate targets the production fused gate/up path on the
+interleave2 packed Qwen artifact: variant 13, bf16, M1, k3, BT256/L12 and
+the 5120-to-17408 projection. It obtains each run's spill word from another
+SIMD lane instead of loading that word again. Accumulators, reduction order
+and activation casts are preserved. This changes logical load requests;
+it does not establish a reduction in DRAM traffic.
+
+An exhaustive CPU address check covers the eligible geometry. Registered
+weight identities, counters inside measured work and an inspected Metal
+capture establish execution of the intended shader. Changing captured decode
+inputs produce finite, byte-identical fused and complete-MLP outputs.
+Full-model logits, active KV/recurrent state and continuation also agree,
+with every eligible layer reached. M3 remains an unchanged dispatch control.
+The final M1 prefill tail is eligible too; the whole-request activation
+expectation must include it.
+
+The local and ordinary-generation screens establish no useful gain. Ordinary
+generation uses an identical wrapper and unchanged evaluation schedule in
+both arms. Results and machine limitations are recorded in the
+[measurement report](../reference/benchmarks.md#spill-word-sharing-diagnostic-m4-pro-24-gb-2026-09-14-utc).
+No inference default is changed. This decision concerns the tested shuffle
+implementation, shapes and runtime; other load-sharing and fusion designs
+remain separate candidates. Raw inputs, exact sources and observations live
+under `reports/inference-optimization-audit/spill-shuffle/`.
+
+
+#### Down-projection threadgroup geometry
+
+The follow-up tests the production interleave2 k3 down projection with its
+model-owned codebook policy. A temporary wrapper calls the same kernel with
+changed grid, threadgroup size and `SG_TG`. It preserves split boundaries,
+per-output accumulation order, partial reduction and casts. CPU enumeration
+checks complete output-block coverage and table initialization, including
+the partially inactive last group. The codebook barrier stays before the
+bounds return.
+
+The proposed larger group builds fewer copies of the decoder table. It also
+changes scheduling and per-group resource demand. The bounded component
+screen and fresh-process repeat reject this specific larger-group candidate;
+the smaller-group control loses at shared-row geometry. A group size that
+divides the output-block count shows no repeatable complete-MLP benefit.
+Keep the incumbent. Exact tested geometries, timings, same-arm variation,
+full-model identity coverage and limitations are in the
+[diagnostic record](../reference/benchmarks.md#down-projection-threadgroup-diagnostic-m4-pro-24-gb-2026-09-14-utc).
+
+The full-model candidate preserves logits, live state and continuation with
+all eligible down projections reached. Component multirow inputs group
+captured ordinary-decode vectors; they do not represent captured speculative
+proposals. There is no shader occupancy evidence, so lower occupancy remains
+a possible explanation rather than an established cause. No inference
+source or default changes. Raw evidence and frozen temporary sources live in
+`reports/inference-optimization-audit/down-geometry/`; executable one-offs are
+removed after recording the result.
+
+This closes the bounded launch-geometry investigation. Reopen with a distinct
+work-assignment or resource-lifetime change, preserving arithmetic order and
+measuring the complete dependent MLP. Changing splits is a separate numerical
+experiment because it changes reduction partitions. Other bit widths,
+shapes, chips and serving workloads remain outside this result.
+
+
+#### Current-artifact prefill and mixed-work follow-up
+
+The direct-prefill reconstruction extends the existing matrix-tile reader to
+interleave2 and tests larger tiles on captured prompt activations. It retains
+the precise expansion decoder and bf16 weight rounding. Large-prefill cells
+pass the component byte gate, but complete MLP timing loses in both the
+screen and the best-tile repeat. Smaller down-projection cells fail the
+incumbent split-K numerical contract. Those failures are not timing verdicts.
+Retain expansion plus native matmul. This result concerns the tested tile
+reader and tile choices, not every direct-consumption design. See the
+[prefill diagnostic](../reference/benchmarks.md#direct-packed-prefill-diagnostic-m4-pro-24-gb-2026-09-14-utc).
+
+The mixed-work follow-up separately tests packing and evaluation placement.
+Removing `preserveTokenGeometry` reaches a joint MLP operation but changes
+packed decode outputs on every tested input combination. It can also cross
+a prefill dispatch boundary. Keep the geometry guard. An exact future shared
+reader must retain each consumer's decoder, rounding and accumulation rules;
+concatenating all inputs through one existing dispatch does not do that.
+
+Moving only mixed-work evaluation boundaries preserves outputs, live state
+and continuation in the bounded native screen. Pending recurrent state from
+every intervening layer is included at each boundary. A source copy that
+matches the incumbent interval serves as a correctness control. The shorter
+interval candidates show small native timing differences; the largest
+interval has unstable samples. Broader context, memory pressure, same-arm
+variation and HTTP gates remain before any integration. Details and raw
+source provenance are in the [mixed-work diagnostic](../reference/benchmarks.md#mixed-work-geometry-and-evaluation-diagnostic-m4-pro-24-gb-2026-09-14-utc).
+
+
+#### Bounded history and indexed n-gram lookup
+
+`makeStepSampler` now retains only the largest active finite penalty window.
+Bias-only processing requires no history tensor. Zero context retains the
+existing unlimited-history behavior, and unusual programmatic context values
+keep the conservative original retention. Trimming happens before concatenation
+or host upload. Processor order and sampling policy are unchanged.
+
+`proposeNgram` now maintains ordered positions by token for each append-only
+history. Each proposed match still compares every suffix token, choosing the
+longest suffix and first earlier occurrence. Row replacement or checkpoint
+restore creates a fresh derived index; filtering rows keeps their own indexes.
+Weak keys release indexes when retired histories become unreachable. The
+checkpoint format remains unchanged. Construction and linear extra storage
+are real costs, and easy short matches can take longer.
+
+The retained benefits are bounded sampler allocation and lower CPU lookup cost
+on long difficult histories. Native, serial and shared serving identity pass; short
+HTTP comparisons establish no serving speed gain. See the
+[history/index diagnostic](../reference/benchmarks.md#sampler-history-and-n-gram-index-diagnostic-m4-pro-24-gb-2026-09-14-utc).
+Reusable bias tensors and frequency-count reuse remain separate open work.
+
+#### Residual norm fusion and cache admission follow-up
+
+A residual-add/RMSNorm candidate preserves the native reduction and bf16
+rounding, including inside a fixed-shape compiled region. Component outputs
+and the dependent layer tail match exactly on captured inputs. Its isolated
+M1 gain disappears after the MLP and final residual are included. Retain the
+incumbent, with the measured scope recorded in the
+[residual norm diagnostic](../reference/benchmarks.md#residual-norm-fusion-diagnostic-m4-pro-24-gb-2026-09-14-utc).
+Other fusion and larger compile regions remain open.
+
+Cache-resolved admission remains an implementation experiment. The scheduler
+currently compares the admitted cohort's uncached token weight with the next
+row's full prompt length. A warm row can therefore miss the burst budget even
+when its remaining suffix would fit. A direct subtraction using
+`PromptCache.peekPrefixLen` is not an accepted fix: admission resolves dynamic
+namespaces, enters execution context, and can restore a continuation before
+the prefill cohort takes a cache donor. The read-only RAM lookup does not own
+that donor and does not represent every continuation or SSD path. A candidate
+must resolve and own preparation work once, account for cancellation and
+release, preserve FIFO, and separate fixed-cohort attribution from the changed
+cohort numerical gate. No scheduler or cache policy changed in this pass.
+
+### 7.16 Purpose-built graph for the published q4b quant and the 20 tok/s round (2026-09-18)
+
+Target: the 11.99 GB packed-Trellis artifact `qwen38-trellis-global-exit5-h39-q4b-v2`
+must decode above 20 tok/s on the M4 Pro 24 GB at its frozen-64 score of 61 or better,
+without changing the artifact. Result: **61/64 at 20.240 weighted decode tok/s**, against
+61/64 at 18.915 for the same artifact before this pass. Numbers, method and the full
+lever table live in
+[benchmarks](../reference/benchmarks.md#qwen38-27b-q4b-decode-round-m4-pro-24-gb-2026-09-18);
+this section records the design.
+
+**One graph per published quant.** `src/model/qwen38-27b-trellis-tq.ts` is a
+hand-written subclass of `Qwen35Model`, selected at load by a graph fingerprint: a hash of
+the architecture and the COMPLETE per-tensor quantization table (twelve projection roles
+on 64 layers, head and embedding). Only fingerprints listed in the file select it; any
+other artifact, including a sibling quant of the same model, keeps the generic model.
+The file owns what is a property of the weights: the layer sequence as pre-resolved
+closures and the MLP strategy of each layer, fixed at load from the quant map (54
+same-width fused gate/up, 10 mixed-width fused, 0 split). What is a property of the
+request stays a runtime dimension: batch rows, verify-window width, KV scheme. The
+scheduler and sampler seams are unchanged, so with its levers off the graph is
+byte-identical to the generic model through the batched lane. Startup logs
+`[graph] qwen3.8-27b-trellis-tq <fingerprint> mlp fused=.. mixedFused=.. split=.. options=..`.
+
+**Where the round went.** A served MTP2 round is a width-three verify forward (109.0 ms,
+1.26x a width-one forward), two draft steps (10.1 ms), sampling (2.1 ms) and commit
+(0.7 ms). Inside the verify forward the packed MLP is about 70%, DeltaNet projections
+15%, attention 7% at short context. The GPU was 97.5% active at 22.8 W with its clock
+pinned: never waiting on the host for long, and neither bandwidth- nor
+compute-saturated. Queue row 11 (device sampling for stochastic verification) is
+closed by the positional sampler; it removed host waits and bought no time, because
+the waits were on GPU work that had to finish anyway.
+
+**What moved it, in order of risk.**
+
+1. *Device-first round* (scheduling only, byte-identical): the 2,560-node verify graph
+   is built while the GPU runs the draft chain, instead of after a draft readback.
+   GPU active 97.5% -> 99.6%, 123.8 -> 119.1 ms per round. Design in
+   [speculative-decoding §2](speculative-decoding.md).
+2. *Bit-identical kernel substitutions in the graph*: the mixed-width gate/up kernel
+   with MLX's own bf16 SwiGLU tail (0 differing of 6,963,200 outputs; 1.23 ms per
+   forward), and DeltaNet's q/k scale carried as the weight of the norm before it (MLX's
+   rms_norm writes `w * T(x * inv)`; 96 fewer kernels per forward). Method for both: read
+   the MLX kernel source, reproduce its expressions in the same type, prove zero
+   differing bits on the real tensors, then adopt.
+3. *Frequency-ranked draft vocabulary* (FR-Spec, draft side only): the MTP head
+   projects onto 65,536 of 248,320 head rows. Draft phase 10.1 -> 5.2 ms at unchanged
+   acceptance. It cannot change the output distribution, but it re-rolled 18 of 64 seeded
+   trajectories, so it needed the full screen: same score, same three failures.
+
+**What did not.** Greedy or re-tempered drafts (they break the coupled inverse-CDF
+draw that gives sampled MTP its acceptance), unfiltered drafts, same-input projection
+fusion, MLP tail fusion, folding the Trellis decode's two multiplies, a fused KV4
+attention kernel (MLX's quantized products on the cache already run at the Trellis
+kernels' rate). Each is a default-off flag or a recorded probe, not a deletion.
+
+**Measurement rule this pass added.** Seeded output is byte-reproducible, but any change
+to acceptance patterns or target arithmetic re-rolls trajectories, and tok/s then mixes
+speed with which trajectory was sampled. Compare arithmetic-changing levers by ms per
+round at matched context plus tokens per round; compare tok/s only on byte-identical
+items; treat the 64-item score of a re-rolled run as a fresh sample near a 61 floor.
+Prefer levers whose outputs are identical by construction: they carry no score exposure
+and can be judged on any subset.
+
+**Open, in expected value order.** (a) Acceptance: adapt the MTP head to the quantized
+target on a self-distilled corpus; every +0.1 tokens per round is about +4%. (b) The
+packed MLP kernels remain 70% of the forward; the down projection (0.53 ms per layer at
+width three) is the least efficient piece. (c) Window-placement-invariant target
+arithmetic would make every draft-side change byte-identical and remove the re-roll
+exposure altogether. (d) A guard for text far from the draft list's corpus.
+

@@ -119,6 +119,10 @@ export class GatedDeltaNet {
    * implementation advances speculative rollback prefixes. Borrowed inputs,
    * owned activation and independent state tail; no global runtime mutation. */
   convolution: QwenConvolution | null = null;
+  /** Per-model seam; null retains the oracle graph (weightless rms_norm, then a
+   *  scalar multiply). When set, the scale rides in as the norm's weight: MLX's
+   *  kernel writes `w * T(x * inv)`, the same bf16 product, in one kernel. bf16 only. */
+  qkScale: { readonly q: MlxArray; readonly k: MlxArray } | null = null;
   readonly inProjQkv: QuantizedLinear;
   readonly inProjZ: QuantizedLinear;
   readonly inProjB: QuantizedLinear;
@@ -256,10 +260,11 @@ export class GatedDeltaNet {
 
     // inv_scale = head_k_dim ** -0.5; q *= inv_scale², k *= inv_scale.
     const invScale = Math.pow(this.headKDim, -0.5);
-    q = disposing(q, ops.rmsNorm(q, null, 1e-6));
-    q = disposing(q, ops.mulScalar(q, invScale * invScale));
-    k = disposing(k, ops.rmsNorm(k, null, 1e-6));
-    k = disposing(k, ops.mulScalar(k, invScale));
+    const folded = this.qkScale && q.dtype === Dtype.bfloat16 ? this.qkScale : null;
+    q = disposing(q, ops.rmsNorm(q, folded?.q ?? null, 1e-6));
+    if (!folded) q = disposing(q, ops.mulScalar(q, invScale * invScale));
+    k = disposing(k, ops.rmsNorm(k, folded?.k ?? null, 1e-6));
+    if (!folded) k = disposing(k, ops.mulScalar(k, invScale));
     if (prof) { ops.evalAll([q, k]); prof.norms = (prof.norms ?? 0) + performance.now() - tn; }
     const tk = prof ? performance.now() : 0;
 
@@ -333,12 +338,13 @@ export class GatedDeltaNet {
     kFlat.dispose();
     const v = disposing(vFlat, ops.reshape(vFlat, [B, count, this.numVHeads, this.headVDim]));
     const invScale = Math.pow(this.headKDim, -0.5);
+    const folded = this.qkScale && k.dtype === Dtype.bfloat16 ? this.qkScale : null;
     if (q) {
-      q = disposing(q, ops.rmsNorm(q, null, 1e-6));
-      q = disposing(q, ops.mulScalar(q, invScale * invScale));
+      q = disposing(q, ops.rmsNorm(q, folded?.q ?? null, 1e-6));
+      if (!folded) q = disposing(q, ops.mulScalar(q, invScale * invScale));
     }
-    k = disposing(k, ops.rmsNorm(k, null, 1e-6));
-    k = disposing(k, ops.mulScalar(k, invScale));
+    k = disposing(k, ops.rmsNorm(k, folded?.k ?? null, 1e-6));
+    if (!folded) k = disposing(k, ops.mulScalar(k, invScale));
 
     const aPfxView = r.a.slice([0, 0, 0], [B, count, this.numVHeads]);
     const aPfx = ops.contiguous(aPfxView);
@@ -412,6 +418,17 @@ export class Qwen3Attention {
   forward(x: MlxArray, mask: Mask, cache: Cache, independentRows = false,
     mrope: MropeForwardState | null = null): MlxArray {
     const [B, L] = x.shape as [number, number, number];
+    // Diagnostic sub-phase timing (same switch as GatedDeltaNet): projections
+    // and RoPE, cache append, attention, gated output. Barriers only when set.
+    const prof = (globalThis as Record<string, unknown>).__deltaProf as Record<string, number> | undefined;
+    let tp = prof ? performance.now() : 0;
+    const lap = (key: string, arrays: MlxArray[]) => {
+      if (!prof) return;
+      ops.evalAll(arrays);
+      const now = performance.now();
+      prof[key] = (prof[key] ?? 0) + now - tp;
+      tp = now;
+    };
 
     // q_proj emits 2× head_dim per head → split into queries + gate.
     const qp = this.qProj.forward(x, independentRows);
@@ -454,6 +471,7 @@ export class Qwen3Attention {
         : ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
     }
 
+    lap("attnProj", [q, k, v, gate]);
     let attn: MlxArray;
     const quantized = cache.quantizedAttention;
     if (cache.attentionState) {
@@ -464,6 +482,7 @@ export class Qwen3Attention {
       const [keys, values] = quantized.updateAndFetchQuantized(k, v);
       k.dispose();
       v.dispose();
+      lap("attnCache", [keys.packed, keys.scales, keys.biases, values.packed, values.scales, values.biases]);
       attn = independentRows && L > 1
         ? quantizedAppendAttention(q, keys, values, this.scale, quantized.groupSize, quantized.bits)
         : quantizedSdpa(q, keys, values, this.scale, mask, quantized.groupSize, quantized.bits);
@@ -478,6 +497,7 @@ export class Qwen3Attention {
       values.dispose();
     }
     q.dispose();
+    lap("attnSdpa", [attn]);
 
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
@@ -492,6 +512,7 @@ export class Qwen3Attention {
     sig.dispose();
     const out = this.oProj.forward(gated, independentRows);
     gated.dispose();
+    lap("attnOut", [out]);
     return out;
   }
 }
@@ -581,9 +602,15 @@ export class Qwen3Layer {
 
   forwardMlp(h: MlxArray, independentRows = false): MlxArray {
     using hn = this.postAttnNorm.forward(h);
+    // Diagnostic (same switch as the attention/DeltaNet sub-phases): settle the
+    // pending attention block first so the MLP is timed alone.
+    const prof = (globalThis as Record<string, unknown>).__deltaProf as Record<string, number> | undefined;
+    let t0 = 0;
+    if (prof) { ops.evalAll([hn]); t0 = performance.now(); }
     // RMSNorm allocates an aligned row-contiguous output. Pass that layout
     // proof so Trellis can match native small-prefill matmul without an eval.
     using m = this.mlp.forward(hn, true, independentRows);
+    if (prof) { ops.evalAll([m]); prof.mlp = (prof.mlp ?? 0) + performance.now() - t0; }
     return ops.add(h, m);
   }
 }

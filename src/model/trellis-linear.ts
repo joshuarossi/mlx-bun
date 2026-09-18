@@ -46,6 +46,7 @@ import { lut1mad, wordsPerBlock } from "../quantize/trellis";
 import { QuantizedLinear } from "./gemma4-base";
 import { REDUCE_SHARED_M_SOURCE, GATEUP_SHARED_M_SOURCE } from "./trellis-shared-m";
 import { BALANCED_SCATTER_SOURCE } from "./trellis-balanced-scatter";
+import { MIXED_GATEUP_SOURCE } from "./trellis-mixed-gateup";
 import { SCATTER_SHARED_M_SOURCE, BALANCED_SCATTER_SHARED_M_SOURCE } from "./trellis-shared-scatter";
 import { tiledTrellisPrefill, tiledTrellisPrefillEligible } from "./trellis-tiled-prefill";
 import { splitKTrellisPrefill, splitKTrellisPrefillEligible } from "./trellis-splitk-prefill";
@@ -357,6 +358,14 @@ function balancedScatterKernel() {
     outputNames: ["partial"], source: BALANCED_SCATTER_SOURCE, header: HEADER, ensureRowContiguous: true,
   });
 }
+let mixedGateUp: MetalKernel | null = null;
+function mixedGateUpKernel(): MetalKernel {
+  return mixedGateUp ??= new MetalKernel({
+    name: "mlx_bun_trellis_gateup_mixed_k",
+    inputNames: ["x", "gcodes", "gscales", "ucodes", "uscales", "lut"],
+    outputNames: ["mid"], source: MIXED_GATEUP_SOURCE, header: HEADER, ensureRowContiguous: true,
+  });
+}
 function sharedKernelSet() {
   return sharedKernels ??= {
     reduce: new MetalKernel({
@@ -506,6 +515,44 @@ export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisLinear, up: TrellisL
     threadGroup: [THREADS, 1, 1],
     templateDtypes: { T: x.dtype },
     templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT: decoderVariant(selected) },
+  });
+  x2.dispose();
+  const out = ops.reshape(mid!, [...lead, g.rows]);
+  mid!.dispose();
+  return out;
+}
+
+/** Gate and up share their axis-1 geometry but NOT their bit width: the case a
+ *  per-tensor bit allocation creates and the same-k fused kernel refuses.
+ *  Geometry only; whether to use it is the owning graph's decision. */
+export function mixedGateUpEligible(gate: TrellisLinear, up: TrellisLinear): boolean {
+  const a = gate.geometry, b = up.geometry;
+  return !gate.fallback && !up.fallback && a.axis === 1 && b.axis === 1 && a.k !== b.k &&
+    a.rows === b.rows && a.cols === b.cols && a.T === b.T && a.L === b.L;
+}
+
+/** Which SwiGLU arithmetic the mixed kernel reproduces: `"split"` is MLX's compiled
+ *  swiglu over the two bf16 projections (bit-identical to gate.forward + up.forward +
+ *  compiledSwiglu); `"fused"` is fusedGateUpSwiglu's float32 sigmoid. */
+export type MixedGateUpTail = "split" | "fused";
+
+/** silu(gate(x)) * up(x) for M <= 4 rows in one kernel when gate and up are coded
+ *  at different k. Same lanes, accumulation order and bf16 SwiGLU boundaries as
+ *  fusedGateUpSwiglu; each projection keeps its own word layout. */
+export function fusedGateUpSwigluMixed(x: MlxArray, gate: TrellisLinear, up: TrellisLinear,
+  tail: MixedGateUpTail = "fused"): MlxArray {
+  const g = gate.geometry, u = up.geometry;
+  const lead = x.shape.slice(0, -1);
+  const M = lead.reduce((a, b) => a * b, 1);
+  if (M > MATVEC_MAX_M) throw new Error(`fusedGateUpSwigluMixed: M=${M} > ${MATVEC_MAX_M}`);
+  const x2 = ops.reshape(x, [M, g.inFeatures]);
+  const [mid] = mixedGateUpKernel().apply([x2, gate.codes, gate.scales, up.codes, up.scales, lutFor(g.L)], {
+    outputs: [{ shape: [M, g.rows], dtype: x.dtype }],
+    grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), 1],
+    threadGroup: [THREADS, 1, 1],
+    templateDtypes: { T: x.dtype },
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, KG: g.k, KU: u.k, L: g.L, ROWS_TG: SG_PER_TG,
+      VARIANT: decoderVariant(variant()), TAIL: tail === "split" ? 1 : 0 },
   });
   x2.dispose();
   const out = ops.reshape(mid!, [...lead, g.rows]);
