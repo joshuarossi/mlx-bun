@@ -692,4 +692,3 @@ export function manualSdpa(q: MlxArray, k: MlxArray, v: MlxArray, scale: number,
   out5.dispose();
   return out;
 }
-

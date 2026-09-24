@@ -108,7 +108,10 @@ try {
 The direct graph imports currently include `models/gemma4`,
 `models/gemma4/generated`, `models/minicpm5`, `models/qwen3`, `models/qwen3-moe`,
 `models/qwen3_5`, `models/qwen38-27b-trellis-tq`, and `models/universal`.
-These retain the existing dedicated and specialized implementations.
+`models/glm52`, `models/diffusion-gemma`, and `models/whisper` provide the other
+existing graph families. These retain the dedicated and specialized implementations.
+`@mlx-bun/inference/models` exposes the existing profile/implementation registry
+and model construction helpers. Direct graph constructors remain available.
 
 For explicit state and tensor operations, use `graph.makeCache()`,
 `graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
@@ -119,6 +122,19 @@ an explicit graph descriptor and logits selection contract without owning weight
 Shared dense/quantized layers, activations, normalization, and RoPE live under
 `layers/`; architecture assembly lives under `models/<family>/`. DeltaNet
 kernels remain independently importable through `kernels/delta`.
+
+## Native expert I/O
+
+GLM's expert I/O support is built from `native/expert-io.c` with
+`bun run --filter @mlx-bun/inference build:native`. The resulting dylib lives in
+`dist/native/` and is included in the package archive. `prepack` rejects missing
+artifacts. An existing build can be staged with `bun run stage:native <directory>`
+inside this package. Loading uses the bundled library, or the caller's explicit
+`libraryPath` / `MLX_BUN_EXPERT_IO_DYLIB` override.
+
+`execution/experts` owns native I/O bindings, residency, and usage accounting;
+`artifacts/glm52` owns direct-container and quantized-weight loading. Numeric
+streamed expert kernels are independently available through `kernels/glm52`.
 
 ## State and attention
 
@@ -166,5 +182,5 @@ The wide-prefill native comparison runs only on supported hardware.
 
 Native libraries belong to `@mlx-bun/mlx`; this package depends on it. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`
-from the repository root. The remaining graph families and generation methods are being migrated
+from the repository root. Generation methods and the remaining higher-level APIs are being migrated
 incrementally.
