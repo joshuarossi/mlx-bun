@@ -1,6 +1,6 @@
 // Concrete model graph for Qwen3-MoE (model_type `qwen3_moe`,
 // Qwen3MoeForCausalLM). A STRAIGHT op-for-op transcription of the oracle
-// (`/Users/joshrossi/Code/mlx-lm/.venv/.../mlx_lm/models/qwen3_moe.py` +
+// (`mlx_lm/models/qwen3_moe.py` +
 // switch_layers.py SwitchGLU + activations.py swiglu). Each op below carries
 // the exact oracle line it copies — no abstraction, no reorder, no
 // "optimization". The ONLY intentional deviation from a naive transcription is

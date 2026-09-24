@@ -1,8 +1,36 @@
 # @mlx-bun/inference
 
 Composable inference components built on [`@mlx-bun/mlx`](../mlx/README.md).
-The migrated components are the existing Trellis expansion, matvec, fused gate/up,
-and prefill kernels. Their Metal source stays inline in the owning TypeScript file.
+Callers choose artifacts and graphs, own state, and invoke inference directly.
+The package includes the existing specialized kernels and graph implementations,
+input processing, sampling, generation, embeddings, transcription, and optional execution.
+
+## Direct library use
+
+```ts
+import { loadModelConfig, Weights, loadTokenizer, generate } from "@mlx-bun/inference";
+import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
+
+const directory = "/path/to/your/qwen3-checkpoint";
+const config = await loadModelConfig(directory);
+const weights = await Weights.open(directory);
+try {
+  const graph = new Qwen3Model(weights, config);
+  const tokenizer = await loadTokenizer(directory);
+  const output: number[] = [];
+  for await (const { token } of generate(graph, tokenizer.encode("Hello"), {
+    maxTokens: 32, temperature: 0,
+  })) output.push(token);
+  console.log(tokenizer.decode(output));
+} finally {
+  weights.dispose();
+}
+```
+
+Use the graph matching your checkpoint, or compose your own operations and supply
+an explicit binding. The root export contains common loading and generation
+helpers; the subpaths below expose individual components. These workspace packages
+are version `0.0.0` during the refactor and have not been published to npm.
 
 ## Trellis weight expansion
 
@@ -180,10 +208,10 @@ Tests in `tests/kernels/` cover the host decoding reference, variant equivalence
 activation tails, packing, strides, and existing prefill comparisons against MLX.
 The wide-prefill native comparison runs only on supported hardware.
 
-Native libraries belong to `@mlx-bun/mlx`; this package depends on it. Set up
+The MLX runtime libraries belong to `@mlx-bun/mlx`; this package bundles its
+expert I/O and video helpers. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`
-from the repository root. Generation methods and the remaining higher-level APIs are being migrated
-incrementally.
+from the repository root.
 
 ## Sampling, embeddings, and adapters
 
@@ -286,3 +314,12 @@ when a consumer needs sessions. `MlxBatchExecutionGroup` owns batched rows;
 helpers retain the existing sampler, pending-token, adapter, and cache identities
 when saving or restoring a generation. Applications choose their own storage paths,
 capacity, scheduler settings, and shutdown lifecycle.
+
+## Scoring
+
+`scoring` exposes `forwardSequence` / `forwardSequenceHidden` for full-sequence
+logits and hidden states, including the existing padded-batch masks. The original
+`trainForward` names remain aliases for compatibility. `evalPpl` computes
+perplexity over caller-provided token rows; `klPerToken` compares supplied logits.
+Neither requires an evaluation dataset registry or runner. Tool-call parsing is
+available from `input`; template/schema fill compilation lives in `generation/fill`.

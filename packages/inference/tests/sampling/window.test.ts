@@ -3,7 +3,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { applyTopK, applyTopP, toLogprobs } from "../../src/sampling/index";
-import { applyTopKRows, applyTopPRows } from "../../src/sampling/history";
+import { applyTopKRows, applyTopPRows } from "../../src/sampling/window-filters";
 
 const V = 248320; // the served vocabulary: kernel selection depends on size
 function bytes(a: MlxArray): Uint8Array { ops.evalAll([a]); return new Uint8Array(a.rawBytesView()); }

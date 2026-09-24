@@ -13,7 +13,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { runtimeFlag } from "../execution/config";
 import { normalizedArgmax } from "../kernels/sampling/normalized-argmax";
 import { disposeStepExtras } from './extras';
-import { applyTopKRows,applyTopPRows } from "./history";
+import { applyTopKRows,applyTopPRows } from "./window-filters";
 import { logitsHistoryLimit,makeLogitsProcessors } from './processors';
 import { makeSampler,stepKey,toLogprobs } from './sampler';
 import { DeviceStepSampler,DeviceStepSamplerConfig,NumberStepSampler,NumberStepSamplerConfig,StepExtras,StepSample,StepSamplerOptions } from './types';

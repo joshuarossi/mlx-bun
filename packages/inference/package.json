@@ -8,6 +8,7 @@
     "bun": ">=1.4.2"
   },
   "exports": {
+    ".": "./src/index.ts",
     "./kernels/trellis": "./src/kernels/trellis/index.ts",
     "./artifacts": "./src/artifacts/index.ts",
     "./input": "./src/input/index.ts",
@@ -47,7 +48,7 @@
     "./embeddings": "./src/embeddings/index.ts",
     "./generation": "./src/generation/index.ts",
     "./generation/diffusion": "./src/generation/diffusion.ts",
-    "./generation/fill": "./src/generation/fill/session.ts",
+    "./generation/fill": "./src/generation/fill/index.ts",
     "./execution/autoregressive": "./src/execution/autoregressive.ts",
     "./execution/denoising": "./src/execution/denoising.ts",
     "./input/audio": "./src/input/audio/index.ts",
@@ -71,7 +72,8 @@
     "./models/speculative/dspark": "./src/models/speculative/dspark.ts",
     "./models/speculative/dflash": "./src/models/speculative/dflash.ts",
     "./models/speculative/deepspec": "./src/models/speculative/deepspec.ts",
-    "./execution": "./src/execution/index.ts"
+    "./execution": "./src/execution/index.ts",
+    "./kernels/quantization": "./src/kernels/quantization/affine-rows.ts"
   },
   "files": [
     "src",
@@ -92,5 +94,11 @@
     "@huggingface/jinja": "^0.5.9",
     "fast-png": "^8.0.0",
     "@mlc-ai/web-xgrammar": "^0.1.27"
-  }
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
 }

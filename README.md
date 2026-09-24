@@ -5,7 +5,8 @@ applications people can run and libraries developers can embed in their own apps
 
 The current target is Apple Silicon Macs. This branch is rebuilding mlx-bun
 as a Bun workspace. The migrated library includes the MLX bindings, inference kernels, model graphs,
-artifact/input readers, and state management.
+artifact/input readers, state, sampling, generation, embeddings, transcription,
+and optional in-process execution.
 
 ## Repository layout
 
@@ -34,7 +35,7 @@ bun install
 ```
 
 Follow the [MLX package setup](packages/mlx/README.md#development) to build or
-stage its native libraries. Build the inference package's expert I/O support with
+stage its native libraries. Build the inference package's native expert I/O and video helper with
 `bun run --filter @mlx-bun/inference build:native`. Then run `bun run typecheck`
 and `bun run test`.
 Component source, tests, and build configuration live together.

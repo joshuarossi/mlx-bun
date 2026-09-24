@@ -3,10 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Dtype, MlxArray, ops } from "@mlx-bun/mlx";
-import { loadModelConfig, Weights } from "@mlx-bun/inference/artifacts";
+import { loadModelConfig, Weights } from "@mlx-bun/inference";
 import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
 import { generateSpeculative, TwoModelProvider } from "@mlx-bun/inference/generation/speculative";
-import { generate } from "@mlx-bun/inference/generation";
+import { forwardSequence, klPerToken, evalPpl } from "@mlx-bun/inference/scoring";
+import { createInferenceEngine, createAutoregressiveMethod } from "@mlx-bun/inference/execution";
+import { bindLegacyAutoregressiveModel } from "@mlx-bun/inference/execution/autoregressive";
+import { generate } from "@mlx-bun/inference";
 import { bindMlxGraph } from "@mlx-bun/inference/models/graph";
 
 /** A tiny checkpoint generated in memory; no model download or stored fixture. */
@@ -57,6 +60,12 @@ test("a caller loads a graph, owns its state, selects logits and generates direc
         using all = graph.projectLogits(hidden, { type: "all" });
         using last = graph.projectLogits(hidden, { type: "last" });
         expect(all.shape).toEqual([1, 3, 64]);
+        using scored = forwardSequence(model, ids);
+        expect(Buffer.from(scored.rawBytes())).toEqual(Buffer.from(all.rawBytes()));
+        expect(Array.from(klPerToken(scored, all))).toEqual([0, 0, 0]);
+        const ppl = evalPpl(model, [new Int32Array([1, 2, 3, 4])], 1);
+        expect(ppl.tokens).toBe(3);
+        expect(Number.isFinite(ppl.ppl)).toBe(true);
         using selected = hidden.slice([0, 2, 0], [1, 3, 64]);
         using expected = model.logitsFromHidden(selected);
         expect(last.shape).toEqual([1, 1, 64]);
@@ -80,6 +89,17 @@ test("a caller loads a graph, owns its state, selects logits and generates direc
           expect(stats.generatedTokens).toBe(4);
           expect(stats.spec?.accepted).toBeGreaterThan(0);
         } finally { draft.dispose(); }
+        const engine = createInferenceEngine({ async plan(prompt: number[]) {
+          return { id: "caller-plan", outputTokenLimit: 4,
+            method: createAutoregressiveMethod(bindLegacyAutoregressiveModel(model), prompt,
+              { temperature: 0, maxTokens: 4, eosTokenIds: [] }) };
+        } }, { timer: { after(ms, callback) { const id = setTimeout(callback, ms); return () => clearTimeout(id); } } });
+        try {
+          const session = await engine.open([1, 2, 3], { output: "collect" });
+          const result = await session.result;
+          expect(result.status).toBe("completed");
+          if (result.status === "completed") expect(Array.from(result.output!)).toEqual(tokens);
+        } finally { await engine.close(); }
       } finally { for (const cache of state) cache.dispose(); }
     } finally { weights.dispose(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }
