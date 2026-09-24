@@ -15,6 +15,7 @@ and optional in-process execution.
 
 [`@mlx-bun/mlx`](packages/mlx/README.md) owns the native MLX bindings.
 [`@mlx-bun/inference`](packages/inference/README.md) owns inference graphs, kernels, layers, input processing, and state.
+[`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry, Hugging Face downloads, and memory fit.
 `apps/` will be created with its first application.
 See [the library architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.
 Remaining migration work is in [PLAN.md](PLAN.md).
