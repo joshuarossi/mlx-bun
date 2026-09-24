@@ -270,3 +270,19 @@ Existing sampling, rejection, rollback, and specialized kernel behavior is prese
 
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,
 and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.
+
+## Optional execution and persistence
+
+`execution` exposes `createInferenceEngine`, method adapters, cancellation,
+admission, and continuous batching. Supply an execution planner and its graph
+bindings; the engine manages in-process session lifetimes and bounded output.
+It opens no network listener. `createAutoregressiveMethod`,
+`createSpeculativeMethod`, and `createDenoisingMethod` adapt the direct methods
+when a consumer needs sessions. `MlxBatchExecutionGroup` owns batched rows;
+`ExecutionCoordinator` and `driveExecutionGroup` coordinate its work.
+
+`state` exposes `SsdCacheStore`, `TieredPromptCache`, and
+`SsdDurabilityCoordinator` for caller-configured persistence. Execution continuation
+helpers retain the existing sampler, pending-token, adapter, and cache identities
+when saving or restoring a generation. Applications choose their own storage paths,
+capacity, scheduler settings, and shutdown lifecycle.

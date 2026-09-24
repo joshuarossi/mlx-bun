@@ -90,4 +90,3 @@ export class AdaptiveDraftGate {
     return bestDepth;
   }
 }
-

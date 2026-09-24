@@ -1,0 +1,176 @@
+import { speculativePrefixNamespace, captureSpeculativeOptions } from "../generation/speculative/cache-identity";
+import { createOrdinaryContinuationRequest } from "./continuation-request";
+import type { MlxSerialServices } from "./serial-executor";
+import { bindPagedRequestState, pagedPrefixNamespace, type MlxRequestStatePolicy } from "../state/request-policy";
+import type { ExecutionContext } from "../contracts/scheduling";
+import type { ModelConfig } from "../artifacts/config";
+import type { KvScheme } from "../state/kv-scheme";
+import type { RuntimeModel } from "../models/factory";
+import { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
+import { UniversalDenseModel } from "../models/universal/dense";
+import { KVCache } from "../state/kv";
+import { RotatingKVCache } from "../state/rotating-kv";
+import { isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state/capabilities";
+import { SSMCache } from "../state/ssm";
+import { Gemma4Model } from "../models/gemma4/model";
+import { Qwen35Model } from "../models/qwen/qwen3_5";
+import { runtimeConfig, type RuntimeConfig } from "./config";
+import { disposeResources } from "./resources";
+import { legacyCompiledDecodeAvailable } from "./autoregressive";
+import { MlxBatchExecutionGroup, type MlxBatchExecutionGroupOptions, type MlxGroupMethodRequest } from "./batch-group";
+import type { DraftProvider } from "../generation/speculative/source";
+import { constraintDraftProvider } from "../generation/speculative/sources/ngram-source";
+import { targetRowLayoutFactory } from "../state/target-layout";
+import { bindSpeculativeGroupRequests } from "./speculative-group";
+import { bindFillGroupRequests } from "./fill-group";
+import type { GenerateOptions } from "../generation/index";
+import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
+import { resolveExecution } from "./plan";
+import { bindEmbeddingsInput, type MlxPromptInput } from "./prompt-input";
+import { bindQwenMediaInput } from "./qwen-prompt-input";
+import type { Vision } from "../contracts/execution-input";
+
+export interface MlxBatchGroup extends Pick<MlxBatchExecutionGroup,
+  "activeRows" | "pendingRows" | "projectedKvBytes" | "kvBudgetBytes" | "submit" | "kick" | "close"> {
+  runPreparation?<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T>;
+}
+
+/** A model implementation owns capability checks and the execution group.
+ * Scheduling never inspects concrete model/cache classes. */
+export interface MlxGatewayBinding {
+  mediaInput?(input: Vision): MlxPromptInput;
+  configureContinuation?(services: MlxSerialServices): void;
+  continuationRequest?(execution: ResolvedExecution | undefined, options: GenerateOptions, prompt: number[],
+    onToken: Parameters<typeof createOrdinaryContinuationRequest>[0]["onToken"]): ReturnType<typeof createOrdinaryContinuationRequest> | undefined;
+  readonly config: ModelConfig;
+  readonly runtime: RuntimeConfig;
+  plan(request: ExecutionRequirements, options: GenerateOptions,
+    scheduling: { continuous: boolean; quantizedBatch: boolean; checkpoints: boolean }): ResolvedExecution;
+  bindAdapterContext?(adapters: string[], key: string): ExecutionContext;
+  cachesBatchable(): boolean;
+  kvBatchable(scheme: KvScheme): boolean;
+  statePolicy?(execution: ResolvedExecution | undefined, options: GenerateOptions, capacityTokens: number): MlxRequestStatePolicy | undefined;
+  prefixNamespace?(execution: ResolvedExecution | undefined, options: GenerateOptions, adapters: string): string | null;
+  methodRequest?(execution: ResolvedExecution | undefined, options: GenerateOptions): MlxGroupMethodRequest | undefined;
+  createBatchGroup(options: MlxBatchExecutionGroupOptions): MlxBatchGroup;
+}
+
+export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
+  const runtime = runtimeConfig();
+  let continuationServices: MlxSerialServices | undefined;
+  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model };
+  const cachesBatchable = () => {
+    if (model instanceof UniversalDenseModel)
+      return !model.args.maskArray && !model.args.layerTypes?.includes("sliding_attention");
+    const caches = model.makeCache();
+    try {
+      const ssm = runtime.value("MLX_BUN_BATCH_SSM") !== "0";
+      return caches.every((cache) => cache instanceof KVCache || cache instanceof RotatingKVCache ||
+        isBatchableCache(cache) || (ssm && cache instanceof SSMCache));
+    } finally { disposeResources(caches); }
+  };
+  const supportsTargetRows = () => {
+    const caches = model.makeCache();
+    try { return caches.every(cache => targetRowLayoutFactory(cache) !== undefined); }
+    finally { disposeResources(caches); }
+  };
+  const speculative = draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
+    ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
+  const grammarProvider = runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
+    ? constraintDraftProvider() : undefined;
+  const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
+    Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
+  const adapterState = "loraState" in model ? model.loraState : undefined;
+  const fillRequests = supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
+  const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
+    bindEmbeddingsInput((ids, caches, start) => start > 0 ? model.forwardHidden(ids, caches)
+      : model.forwardEmbeddings(input.embeddings,
+      caches, input.imageMask ?? null, ids, input.multimodalMask ?? null))
+    : model instanceof Qwen35Model ? (input: Vision) => bindQwenMediaInput(model, input.embeddings, input.mrope!)
+    : undefined;
+  return {
+    mediaInput,
+    config: model.config, runtime,
+    configureContinuation: services => { continuationServices = services; },
+    continuationRequest(execution, options, prompt, onToken) {
+      if (!execution?.checkpoint || execution.mechanism !== "continuous") return undefined;
+      const services = continuationServices;
+      if (!services?.checkpoints || !services.checkpointPersistence)
+        throw new Error("qualified continuation requires bound persistence services");
+      return createOrdinaryContinuationRequest({ options, prompt, onToken, execution,
+        store: services.checkpoints, persistence: services.checkpointPersistence,
+        restore: entry => services.checkpoints!.restore(entry, model),
+        interval: services.checkpointEveryTokens!, identity: services.identity });
+    },
+    statePolicy: (execution, options, capacity) => {
+      // Media token IDs alone do not identify the prepared embeddings.
+      // Preserve the existing uncached media policy through the state port.
+      if (execution?.method === "autoregressive" && !execution.promptCache)
+        return { key: "uncached-prepared-input", create: () => model.makeCache() };
+      return execution?.pagedKv ? bindPagedRequestState(model, options, capacity, continuationServices?.promptCache, runtime) : undefined;
+    },
+    prefixNamespace: (execution, options, adapters) => {
+      if (execution?.pagedKv) return pagedPrefixNamespace(options, adapters, runtime.flag("MLX_BUN_PAGED_ATTN", false));
+      if (execution?.method !== "speculative") return adapters;
+      const namespace = (execution.grammarJump ? grammarProvider : draft?.provider)?.grouped?.checkpointNamespace?.();
+      return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));
+    },
+    methodRequest: (execution, options) => execution?.method === "speculative"
+      ? (execution.grammarJump ? grammarProposals : speculative)?.(
+        options.fill && !execution.fill ? { ...options, fill: undefined } : options)
+      : execution?.fill ? fillRequests?.(options) : undefined,
+    ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
+      const selected = [...adapters];
+      return { key, enter() {
+        const previous = adapterState.active;
+        adapterState.active = selected;
+        return () => { adapterState.active = previous; };
+      } };
+    } } : {}),
+    plan(request, options, scheduling) {
+      const sharedMethod = request.hasDraft ? speculative : grammarProposals;
+      const provider = request.hasDraft ? draft?.provider : grammarProvider;
+      return resolveExecution(request, {
+        ...scheduling,
+        sharedCheckpoints: !!continuationServices?.checkpointPersistence &&
+          !request.hasDraft && !request.hasVision && !request.hasGrammar &&
+          !request.wantsLogprobs && !options.fill && !options.pagedKv,
+        adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
+        mediaBatch: !!mediaInput,
+        mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
+        groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
+        sharedGrammarProposals: !!grammarProposals,
+        sharedFill: !!fillRequests && !!options.fill,
+        sharedSpeculativeEcho: !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
+        speculativeLogprobs: scheduling.continuous && !!sharedMethod,
+        sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
+          provider?.grouped?.supportsTargetAdapters === true,
+        turboQuantBatch: scheduling.quantizedBatch,
+        speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
+        method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
+        compiledDecode: legacyCompiledDecodeAvailable(model),
+        grammarBatch: runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
+        speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
+          (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
+          (!options.kvConfig?.length && model instanceof Qwen35Model &&
+            (options.kvBits === 4 || (scheduling.continuous && !!sharedMethod && options.kvBits === 8)) &&
+            (options.quantizedKvStart === 0 || (scheduling.continuous && !!sharedMethod)))
+        ),
+      }, {
+        pagedKv: !!options.pagedKv, fill: !!options.fill,
+        compiledDecode: runtime.flag("MLX_BUN_COMPILED_DECODE", true),
+        grammarJump: runtime.flag("MLX_BUN_GRAMMAR_JUMP", false),
+      });
+    },
+    cachesBatchable,
+    kvBatchable(scheme) {
+      const caches = model.makeCache();
+      try {
+        return scheme.batchable(model.config,
+          (layer) => isPlainKvCache(caches[layer]) || isRotatingPlainCache(caches[layer]), caches.length,
+          kvBatchCapabilities);
+      } finally { disposeResources(caches); }
+    },
+    createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options, kvBatchCapabilities }),
+  };
+}

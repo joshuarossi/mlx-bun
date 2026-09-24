@@ -1,0 +1,209 @@
+import { cloneAttachments } from "./checkpoint";
+import { cleanupFailure, disposeResources } from "../execution/resources";
+import type { Cache } from "../contracts/cache";
+import type { PromptCacheEntry } from "./prefix-cache";
+import type { SpillItem, SpillQueue } from "./persistence";
+
+export interface DurabilityPromptCache {
+  findExact(tokens: number[], ns?: string): PromptCacheEntry | null;
+}
+
+export interface DurabilitySnapshotStats {
+  pendingSnapshots: number;
+  pendingSpills: number;
+  pendingSpillBytes: number;
+  droppedSpills: number;
+  failedSpills: number;
+}
+
+export interface DurabilityFlushResult extends DurabilitySnapshotStats {
+  durable: boolean;
+  flushedSnapshots: number;
+  missingSnapshots: number;
+  elapsedMs: number;
+}
+
+interface DirtySnapshot {
+  key: string;
+  tokens: number[];
+  ns: string;
+}
+
+type StoreOutcome = "stored" | "missing" | "failed";
+
+/**
+ * Turns debounced prompt-cache puts into a durability boundary.
+ *
+ * A dirty record stays present until SpillQueue reports that its atomic store
+ * completed. Queue drops and write failures therefore remain retryable during
+ * an explicit flush or graceful shutdown.
+ */
+export class SsdDurabilityCoordinator {
+  readonly #dirty = new Map<string, DirtySnapshot>();
+  readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
+  readonly #attempts = new Map<string, Promise<StoreOutcome>>();
+  #flush: Promise<DurabilityFlushResult> | null = null;
+
+  constructor(
+    readonly promptCache: DurabilityPromptCache,
+    readonly spillQueue: SpillQueue,
+    readonly cloneCaches: (caches: Cache[]) => Cache[],
+    readonly isAlreadyDurable: (tokens: number[], ns: string) => boolean = () => false,
+    readonly debounceMs = 0,
+    readonly retryMs = 5_000,
+    readonly onStored: () => void = () => {},
+  ) {}
+
+  schedule(tokens: number[], ns = "", replace = true): void {
+    // Exact tensor objects use an empty history and still need persistence.
+    if (tokens.length === 0 && !this.promptCache.findExact(tokens, ns)?.attachments?.length) return;
+    // PromptCache can hold unrelated entries with the same namespace and
+    // length. Include the tokens so one conversation cannot cancel another
+    // conversation's pending durability record.
+    const key = `${ns.length}:${ns}:${tokens.join(",")}`;
+    if (!replace && this.#dirty.has(key)) return;
+    const rec: DirtySnapshot = { key, tokens: [...tokens], ns };
+    this.#dirty.set(key, rec);
+    this.#arm(key, this.debounceMs);
+  }
+
+  get stats(): DurabilitySnapshotStats {
+    return {
+      pendingSnapshots: this.#dirty.size,
+      pendingSpills: this.spillQueue.pendingCount,
+      pendingSpillBytes: this.spillQueue.pendingBytes,
+      droppedSpills: this.spillQueue.droppedCount,
+      failedSpills: this.spillQueue.failedCount,
+    };
+  }
+
+  /** Force every dirty RAM snapshot through the queue and wait for storage. */
+  flush(): Promise<DurabilityFlushResult> {
+    if (this.#flush) return this.#flush;
+    const started = performance.now();
+    this.#flush = this.#flushInner(started).finally(() => { this.#flush = null; });
+    return this.#flush;
+  }
+
+  #arm(key: string, delayMs: number): void {
+    const old = this.#timers.get(key);
+    if (old) clearTimeout(old);
+    const timer = setTimeout(() => {
+      this.#timers.delete(key);
+      void this.#attempt(key, false);
+    }, delayMs);
+    timer.unref?.();
+    this.#timers.set(key, timer);
+  }
+
+  async #attempt(key: string, force: boolean): Promise<StoreOutcome> {
+    const running = this.#attempts.get(key);
+    if (running) {
+      const outcome = await running;
+      if (!force || !this.#dirty.has(key)) return outcome;
+    }
+
+    const rec = this.#dirty.get(key);
+    if (!rec) return "stored";
+
+    const task = this.#store(rec);
+    this.#attempts.set(key, task);
+    try {
+      const outcome = await task;
+      if (outcome === "stored" && this.#dirty.get(key) === rec)
+        this.#dirty.delete(key);
+      if (outcome !== "stored" && !force && this.#dirty.get(key) === rec)
+        this.#arm(key, this.retryMs);
+      return outcome;
+    } finally {
+      if (this.#attempts.get(key) === task) this.#attempts.delete(key);
+    }
+  }
+
+  async #store(rec: DirtySnapshot): Promise<StoreOutcome> {
+    let snap: SpillItem | null = null;
+    try {
+      snap = (() => {
+        if (this.isAlreadyDurable(rec.tokens, rec.ns)) return null;
+        const entry = this.promptCache.findExact(rec.tokens, rec.ns);
+        if (!entry) return null;
+        const caches = this.cloneCaches(entry.caches);
+        try {
+          return { tokens: [...entry.tokens], caches, ns: rec.ns,
+            attachments: cloneAttachments(entry.attachments) };
+        } catch (error) {
+          return cleanupFailure(error, () => disposeResources(caches));
+        }
+      })();
+    } catch {
+      return "failed";
+    }
+    if (!snap)
+      return this.isAlreadyDurable(rec.tokens, rec.ns) ? "stored" : "missing";
+    const stored = await this.spillQueue.enqueue(snap);
+    // The queue releases its views before this continuation runs. Residency
+    // policy now sees memory without the completed writer's ownership.
+    if (stored) this.onStored();
+    return stored ? "stored" : "failed";
+  }
+
+  async #flushInner(started: number): Promise<DurabilityFlushResult> {
+    for (const timer of this.#timers.values()) clearTimeout(timer);
+    this.#timers.clear();
+
+    let flushedSnapshots = 0;
+    const missing = new Map<string, DirtySnapshot>();
+    const droppedBefore = this.spillQueue.droppedCount;
+    const failedBefore = this.spillQueue.failedCount;
+
+    if (this.#attempts.size > 0) {
+      const results = await Promise.allSettled([...this.#attempts.values()]);
+      flushedSnapshots += results.filter(result => result.status === "fulfilled" && result.value === "stored").length;
+    }
+    await this.spillQueue.drain();
+
+    // Flush dirty entries serially without a second queue of snapshots.
+    // Attempt each record version once. Missing state stays dirty, so a
+    // second flush cannot report success without a real durable snapshot.
+    const attempted = new Set<DirtySnapshot>();
+    while (this.#dirty.size > 0) {
+      const records = [...this.#dirty.entries()].filter(([, rec]) => !attempted.has(rec));
+      if (records.length === 0) break;
+      for (const [key, rec] of records) {
+        if (this.#dirty.get(key) !== rec) continue;
+        attempted.add(rec);
+        const outcome = await this.#attempt(key, true);
+        await this.spillQueue.drain();
+        if (outcome === "stored") {
+          flushedSnapshots++;
+        } else if (outcome === "missing") {
+          missing.set(key, rec);
+        }
+      }
+    }
+
+    // A later trimmable snapshot may now cover a superseded RAM ancestor.
+    // Reconcile against committed SSD coverage after all writes settle;
+    // never clear a missing prefix merely because another write succeeded.
+    for (const [key, rec] of missing) {
+      if (!this.isAlreadyDurable(rec.tokens, rec.ns)) continue;
+      if (this.#dirty.get(key) === rec) this.#dirty.delete(key);
+      missing.delete(key);
+      flushedSnapshots++;
+    }
+
+    const stats = this.stats;
+    return {
+      ...stats,
+      durable:
+        stats.pendingSnapshots === 0 &&
+        stats.pendingSpills === 0 &&
+        stats.droppedSpills === droppedBefore &&
+        stats.failedSpills === failedBefore &&
+        missing.size === 0,
+      flushedSnapshots,
+      missingSnapshots: missing.size,
+      elapsedMs: performance.now() - started,
+    };
+  }
+}

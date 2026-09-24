@@ -28,3 +28,7 @@ export * from "./prefix-cache";
 export * from "./retention-policy";
 export * from "./rows";
 export * from "./attachment";
+export * from "./ssd-cache";
+export * from "./tiered-prefix-cache";
+export * from "./durability";
+export * from "./continuation-identity";

@@ -70,7 +70,8 @@
     "./models/glm52/mtp": "./src/models/glm52/mtp.ts",
     "./models/speculative/dspark": "./src/models/speculative/dspark.ts",
     "./models/speculative/dflash": "./src/models/speculative/dflash.ts",
-    "./models/speculative/deepspec": "./src/models/speculative/deepspec.ts"
+    "./models/speculative/deepspec": "./src/models/speculative/deepspec.ts",
+    "./execution": "./src/execution/index.ts"
   },
   "files": [
     "src",
