@@ -23,3 +23,4 @@ export * from "./delayed-rotating-quantized-kv";
 export * from "./batched-ssm";
 export * from "./speculative-rotating-kv";
 export * from "./rollback";
+export * from "./encoder-cache";

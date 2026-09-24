@@ -9,3 +9,5 @@ export * from "./execution";
 export * from "./generation";
 export * from "./denoising";
 export * from "./prefill";
+export * from "./object-cache";
+export * from "./prompt";

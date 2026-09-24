@@ -38,7 +38,7 @@
     "./models/diffusion-gemma": "./src/models/diffusion-gemma/model.ts",
     "./models/whisper": "./src/models/whisper/model.ts",
     "./artifacts/glm52": "./src/artifacts/glm52/index.ts",
-    "./input/vision": "./src/input/vision/preprocess.ts",
+    "./input/vision": "./src/input/vision/index.ts",
     "./kernels/glm52": "./src/kernels/glm52/streamed-experts.ts",
     "./sampling": "./src/sampling/index.ts",
     "./sampling/grammar": "./src/sampling/grammar.ts",
@@ -49,7 +49,17 @@
     "./generation/diffusion": "./src/generation/diffusion.ts",
     "./generation/fill": "./src/generation/fill/session.ts",
     "./execution/autoregressive": "./src/execution/autoregressive.ts",
-    "./execution/denoising": "./src/execution/denoising.ts"
+    "./execution/denoising": "./src/execution/denoising.ts",
+    "./input/audio": "./src/input/audio/index.ts",
+    "./input/vision/qwen3vl": "./src/input/vision/qwen3vl-preprocess.ts",
+    "./input/vision/qwen3vl-prompt": "./src/input/vision/qwen3vl-prompt.ts",
+    "./input/media-fetch": "./src/input/media-fetch.ts",
+    "./models/audio/conformer": "./src/models/audio/conformer.ts",
+    "./models/audio/silero-vad": "./src/models/audio/silero-vad.ts",
+    "./models/vision/qwen3vl": "./src/models/vision/qwen3vl.ts",
+    "./models/vision/siglip": "./src/models/vision/siglip.ts",
+    "./embeddings/vision": "./src/embeddings/vision.ts",
+    "./transcription": "./src/transcription/index.ts"
   },
   "files": [
     "src",

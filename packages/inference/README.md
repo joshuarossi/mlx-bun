@@ -231,3 +231,25 @@ async iterator and final stats. `execution/generation-scopes.ts` owns adapter,
 wired-memory, and expert-usage lifetimes. Existing cancellation and early-return
 cleanup behavior is preserved. `generation/fill` exposes the existing optional
 fill session and proposal interfaces.
+
+## Speech and vision
+
+- `input/audio`: WAV parsing, AudioToolbox decoding, transcoding, mel features,
+  and the existing Whisper tokenizer. `loadWhisperTokenizer` reads local HF
+  artifacts; it does not download them.
+- `transcription`: Whisper decoding, long-form and streaming transcription,
+  word timing, and text/SRT/VTT formatting. Callers supply the Whisper graph,
+  tokenizer, and audio samples.
+- `models/audio/conformer` and `models/audio/silero-vad`: existing audio encoder
+  and voice-activity graphs.
+- `input/vision`: image decoding/preprocessing, multimodal prompt assembly,
+  and video frames. Qwen preprocessing and prompt assembly have separate
+  `input/vision/qwen3vl` and `input/vision/qwen3vl-prompt` imports.
+- `models/vision/siglip`, `models/vision/qwen3vl`, and `embeddings/vision`:
+  concrete vision encoders and embedding components.
+
+The AVFoundation frame extractor is built by `build:native` and bundled beside
+expert I/O in `dist/native`. It needs no runtime download or compilation.
+`MLX_BUN_FRAME_EXTRACT` remains an explicit override. AudioToolbox and `afconvert`
+use macOS system facilities. Optional encoder caching lives in `state/encoder-cache`;
+media fetching keeps the existing destination, size, and timeout controls.

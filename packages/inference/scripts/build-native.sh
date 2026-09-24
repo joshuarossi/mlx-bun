@@ -12,3 +12,7 @@ cc -std=c11 -O2 -Wall -Wextra -Werror -dynamiclib \
   "-mmacosx-version-min=$DEPLOYMENT_TARGET" \
   "$ROOT/native/expert-io.c" -o "$OUT"
 echo "$OUT"
+FRAME_OUT="$ROOT/dist/native/mlx-bun-frame-extract"
+swiftc -O -target "$(uname -m)-apple-macosx$DEPLOYMENT_TARGET" \
+  "$ROOT/native/frame-extract.swift" -o "$FRAME_OUT"
+echo "$FRAME_OUT"
