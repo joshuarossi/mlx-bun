@@ -10,18 +10,16 @@ loads and specializes on. Inference never quantizes; this package never serves.
 | `sensitivity` | Exact per-layer KL sensitivity on calibration text |
 | `calibration` | Calibration sample loading and tokenization |
 | `rotate`, `weight-transform` | Rotation and fold plans for Llama and Qwen families before quantization |
-| `trellis` | Trellis codebooks, state packing, interleaving, and the host decoder that defines the packed format |
+| `trellis` | Trellis state packing, interleaving, and the host decoder. The 1MAD codebook and word geometry are imported from the inference kernels, which own the packed format |
 | `config-writer`, `atomic-output` | Quantization metadata and atomic directory publication |
 
 Sharded safetensors writing lives in `@mlx-bun/inference/artifacts` and is
 re-exported here for convenience.
 
-```ts
-import { quantizeModelDir } from "@mlx-bun/quantize";
-
-await quantizeModelDir("/path/to/bf16-checkpoint", "/path/to/output", {
-  bits: 4, groupSize: 64,
-});
-```
+Executed usage lives in the package tests: [weight-transform-plan](tests/weight-transform-plan.test.ts)
+plans a fold, [weight-transform-numerics](tests/weight-transform-numerics.test.ts) applies one, and
+[trellis-roundtrip](tests/trellis-roundtrip.test.ts) packs states here and expands them with the
+inference kernels. `quantizeModelDir(sourceDirectory, outputDirectory, { bits, groupSize })`
+is the entry point for a whole checkpoint; it needs a real one.
 
 Job orchestration and the CLI verb belong to the app.

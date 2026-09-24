@@ -8,3 +8,4 @@ export { fusedGateUpSwigluMixed, type MixedGateUpTail } from "./mixed-gate-up";
 export { tiledTrellisPrefill, tiledTrellisPrefillEligible } from "./tiled-prefill";
 export { splitKTrellisPrefill, splitKTrellisPrefillEligible } from "./splitk-prefill";
 export { wideTrellisPrefill, wideTrellisPrefillEligible, nativeTrellisWidePrefill } from "./wide-prefill";
+export { lut1mad, wordsPerBlock } from "./codebook";

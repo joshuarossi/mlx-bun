@@ -31,6 +31,9 @@
 import { MlxArray as Arr, gpuStream, type MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype, clearCache, activeMemory, cacheMemory, peakMemory } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
+import { lut1mad, wordsPerBlock } from "@mlx-bun/inference/kernels/trellis";
+// The 1MAD codebook and packed-word geometry have one owner: the inference kernels.
+export { lut1mad, wordsPerBlock };
 
 const S = gpuStream;
 
@@ -40,19 +43,6 @@ const S = gpuStream;
  *  x = (x·34038481 + 76625530) mod 2^32; y = Σ bytes(x) − 510; y / 147.800537109375.
  *  (510 = 2·255 = E[Σ of 4 uniform bytes]; 147.8005… ≈ √(4·(2^16−1)/12) is the
  *  std of that sum, so the code is unit-variance by construction.) */
-export function lut1mad(L: number): Float32Array {
-  const n = 1 << L;
-  const out = new Float32Array(n);
-  const M = (1n << 32n) - 1n;
-  for (let i = 0; i < n; i++) {
-    let x = BigInt(i) & M;
-    x = (x * 34038481n + 76625530n) & M;
-    const y =
-      Number((x & 255n) + ((x >> 8n) & 255n) + ((x >> 16n) & 255n) + ((x >> 24n) & 255n)) - 510;
-    out[i] = y / 147.800537109375;
-  }
-  return out;
-}
 
 /** QTIP `decode_3inst`: two bf16-shaped 16-bit lanes masked out of one
  *  multiply-add, xor'd with an exponent mask, read as fp16 and summed. */
@@ -520,10 +510,6 @@ export const TRELLIS_L = 12;
 export const TRELLIS_T = 256;
 
 /** Words per T-block for k bits/weight (T·k must be a multiple of 32). */
-export function wordsPerBlock(T: number, k: number): number {
-  if ((T * k) % 32 !== 0) throw new Error(`T·k = ${T * k} not a multiple of 32`);
-  return (T * k) / 32;
-}
 
 /** Reorder k3/T256 codes into [two-block groups, rows, 48 words].
  *  The caller selects an axis0/1MAD/L12 tensor; no code values change. */
