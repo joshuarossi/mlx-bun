@@ -21,8 +21,7 @@ behavior or packaging. [PLAN](PLAN.md) holds open refactor work; history is Git.
 Architecture owns dependency direction and documentation policy. Package
 READMEs own local setup; the root README owns workspace verification commands.
 Keep the executable boundary gate authoritative for mechanical import rules.
-Use codebase-memory-mcp for discovery when available; fall back to source search
-when its coverage is insufficient. Read the implementation before changing it.
+Read the implementation before changing it.
 
 Do not add status ledgers, session summaries, or memory files. Report progress
 in the conversation and PR; remove completed work from PLAN.

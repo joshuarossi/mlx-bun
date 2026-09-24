@@ -44,7 +44,8 @@ than dismissing them as framework differences. Use the architecture's
 
 ## Commits and review
 
-Use focused commits and a PR title describing the resulting behavior. Explain
+Use focused commits with `<type>: <description>` titles, such as `fix:`, `test:`,
+`refactor:`, or `docs:`. Give the PR a title describing the resulting behavior. Explain
 the problem, ownership changes, verification, and remaining limits in the PR.
 Include documentation changes with the behavior or decision they explain;
 remove completed PLAN entries. Keep raw logs, temporary checkpoints, and
