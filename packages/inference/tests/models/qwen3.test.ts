@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Dtype, MlxArray, ops } from "@mlx-bun/mlx";
 import { loadModelConfig, Weights } from "@mlx-bun/inference/artifacts";
 import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
+import { generate } from "@mlx-bun/inference/generation";
 import { bindMlxGraph } from "@mlx-bun/inference/models/graph";
 
 /** A tiny checkpoint generated in memory; no model download or stored fixture. */
@@ -64,6 +65,11 @@ test("a caller loads a graph, owns its state, selects logits and generates direc
         expect(tokens).toHaveLength(4);
         expect(tokens.every(token => token >= 0 && token < 64)).toBe(true);
         expect(model.generate([1, 2, 3], 4)).toEqual(tokens);
+        const generation = generate(model, [1, 2, 3], { temperature: 0, maxTokens: 4, eosTokenIds: [] });
+        const streamed: number[] = [];
+        for await (const value of generation) streamed.push(value.token);
+        expect(streamed).toEqual(tokens);
+        expect(generation.stats).toMatchObject({ promptTokens: 3, generatedTokens: 4 });
       } finally { for (const cache of state) cache.dispose(); }
     } finally { weights.dispose(); }
   } finally { rmSync(dir, { recursive: true, force: true }); }

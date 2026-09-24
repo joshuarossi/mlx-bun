@@ -7,3 +7,5 @@ export * from "./rollback";
 export * from "./sampling";
 export * from "./execution";
 export * from "./generation";
+export * from "./denoising";
+export * from "./prefill";

@@ -44,7 +44,12 @@
     "./sampling/grammar": "./src/sampling/grammar.ts",
     "./kernels/sampling": "./src/kernels/sampling/index.ts",
     "./adapters": "./src/adapters/index.ts",
-    "./embeddings": "./src/embeddings/index.ts"
+    "./embeddings": "./src/embeddings/index.ts",
+    "./generation": "./src/generation/index.ts",
+    "./generation/diffusion": "./src/generation/diffusion.ts",
+    "./generation/fill": "./src/generation/fill/session.ts",
+    "./execution/autoregressive": "./src/execution/autoregressive.ts",
+    "./execution/denoising": "./src/execution/denoising.ts"
   },
   "files": [
     "src",

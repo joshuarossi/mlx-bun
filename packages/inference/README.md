@@ -203,3 +203,31 @@ argmax and token-bitmask kernels are exposed through `kernels/sampling`.
 and `withInstruction`. Supply the graph and tokenizer explicitly. `adapters`
 provides `AdapterManager` for loading and applying existing mlx-lm and PEFT LoRA
 artifacts to a caller-owned graph; adapter weight/state types are also exported.
+
+## Generation
+
+```ts
+import { generate } from "@mlx-bun/inference/generation";
+
+const generation = generate(graph, promptTokenIds, {
+  maxTokens: 128,
+  temperature: 0,
+});
+for await (const { token } of generation) {
+  // Feed the token to your own decoder or application.
+}
+console.log(generation.stats);
+```
+
+`generate` uses the graph supplied by the caller. `generateAutoregressive` accepts
+an explicit `MlxAutoregressiveBinding` from `execution/autoregressive`, including
+caller-defined graph operations, state construction, and optional compiled decode.
+`generateDenoising` accepts a denoising binding; `generation/diffusion` also exposes
+`denoiseSync` and `denoiseAsync` directly. No service or model selection is involved.
+
+`generation/autoregressive.ts` owns prefill and token iteration;
+`generation/diffusion.ts` owns canvas denoising; `generation/result.ts` owns the
+async iterator and final stats. `execution/generation-scopes.ts` owns adapter,
+wired-memory, and expert-usage lifetimes. Existing cancellation and early-return
+cleanup behavior is preserved. `generation/fill` exposes the existing optional
+fill session and proposal interfaces.
