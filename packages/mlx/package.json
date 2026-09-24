@@ -1,0 +1,42 @@
+{
+  "name": "@mlx-bun/mlx",
+  "version": "0.0.0",
+  "description": "Bun bindings for MLX on Apple Silicon",
+  "type": "module",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./array": "./src/array.ts",
+    "./ops": "./src/ops.ts",
+    "./ffi": "./src/ffi.ts",
+    "./compile": "./src/compile.ts",
+    "./metal-kernel": "./src/metal-kernel.ts",
+    "./autograd": "./src/autograd.ts",
+    "./custom-vjp": "./src/custom-vjp.ts",
+    "./checkpoint": "./src/checkpoint.ts",
+    "./materialize": "./src/materialize.ts",
+    "./host-buffer": "./src/host-buffer.ts"
+  },
+  "files": [
+    "src",
+    "dist/native",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "build:native": "sh scripts/build-native.sh",
+    "stage:native": "bun scripts/stage-native.ts",
+    "prepack": "bun scripts/stage-native.ts"
+  }
+}

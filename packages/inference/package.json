@@ -1,0 +1,24 @@
+{
+  "name": "@mlx-bun/inference",
+  "version": "0.0.0",
+  "description": "Composable inference kernels and graphs for MLX in Bun",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    "./kernels/trellis": "./src/kernels/trellis/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/mlx": "workspace:*"
+  }
+}

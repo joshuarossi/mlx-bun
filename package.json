@@ -1,0 +1,19 @@
+{
+  "name": "mlx-bun-workspace",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "bun@1.4.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "bun run --filter '@mlx-bun/*' typecheck",
+    "test": "bun run --filter '@mlx-bun/*' test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "6.0.3"
+  }
+}
