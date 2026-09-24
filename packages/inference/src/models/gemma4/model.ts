@@ -22,7 +22,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
-import { isExpertTracing,recordRouting } from "../../execution/expert-trace";
+import { isExpertTracing,recordRouting } from "../../runtime/expert-trace";
 
 // The shared, config-independent machinery lives in gemma4-base.ts
 // (Phase B extraction); this file keeps the architecture-specific
@@ -30,23 +30,24 @@ import { isExpertTracing,recordRouting } from "../../execution/expert-trace";
 // existing importers keep one entry point.
 
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
-import { LoraState,type LoraWeights } from "../../adapters/state";
-import { type Cache,type Mask,type SharedKv } from "../../contracts/cache";
-import { isCompiledTrace } from "../../execution/compiled-trace";
-import { runtimeFlag } from "../../execution/config";
-import { mapPackedTokens,type TokenGroup } from "../../input/token-groups";
+import { LoraState,type LoraWeights } from "../../layers/lora";
+import { type Cache,type Mask,type SharedKv } from "../../contracts/mlx/cache";
+import { isCompiledTrace } from "../../runtime/compiled-trace";
+import { runtimeFlag } from "../../runtime/config";
+import { mapPackedTokens } from "../../input/token-groups";
+import { type TokenGroup } from "../../contracts/mlx/token-work";
 import { flashAttention,flashSupported,getTrainingAttn } from "../../kernels/attention/flash";
 import { unrotateValues as tqUnrotateValues } from "../../kernels/turboquant/ops";
 import { compiledGeglu,compiledGegluActive } from "../../layers/geglu";
 import { disposing } from "../../layers/helpers";
-import { bidirMask } from "../../layers/masks";
+import { bidirMask } from "../../kernels/attention/masks";
 import { RMSNorm } from "../../layers/normalization";
 import { quantizedSdpa } from "../../layers/quantized-attention";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
-import { argmaxLastPosition,logitSoftcap } from "../../scoring/logits";
-import { compiledLogitSoftcap } from "../../scoring/softcap";
+import { argmaxLastPosition,logitSoftcap } from "../../kernels/logits";
+import { compiledLogitSoftcap } from "../../kernels/softcap";
 import { captureRopeOffsets } from "../../state/capabilities";
 import { KVCache } from "../../state/kv";
 import { RotatingKVCache } from "../../state/rotating-kv";

@@ -9,8 +9,8 @@
 // and the XTC-off path is unchanged.)
 
 import { MlxArray } from "@mlx-bun/mlx/array";
-import type { TokenLogprobs } from "../contracts/generation";
-import { StepExtras } from './types';
+import type { TokenLogprobs } from "../contracts/portable/generation";
+import { StepExtras } from "./types";
 
 export function stepExtrasArrays(extras: StepExtras | null): MlxArray[] {
   return extras

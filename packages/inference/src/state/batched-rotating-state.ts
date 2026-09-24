@@ -1,4 +1,4 @@
-import type { PrefillPadding } from "../contracts/cache";
+import type { PrefillPadding } from "../contracts/mlx/cache";
 
 export interface RotatingPositionSnapshot {
   readonly maxSize: number;

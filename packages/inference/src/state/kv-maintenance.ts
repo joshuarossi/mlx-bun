@@ -1,12 +1,12 @@
 import { turboQuantFusedDecode } from "./turboquant-codec";
-import { runtimeConfig, withRuntimeConfig } from "../execution/config";
+import { runtimeConfig, withRuntimeConfig } from "../runtime/config";
 import type { KvSchemeOptions } from "./kv-scheme";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { TurboQuantKVCache } from "./turboquant-kv";
-import { type Cache } from "../contracts/cache";
+import { type Cache } from "../contracts/mlx/cache";
 import type { KvQuantSpec, TurboQuantScheme } from "../artifacts/config";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";

@@ -1,7 +1,8 @@
-import { SpillQueue, type SpillItem } from "../state/persistence";
+import { SpillQueue } from "../state/persistence";
+import { type SpillItem } from "../state/persistence-types";
 import { cacheBytes } from "../state/prefix-cache";
-import { disposeResources } from "./resources";
-import type { ContinuationStore, OrdinaryContinuationState } from "./continuation";
+import { disposeResources } from "../runtime/resources";
+import type { ContinuationStore, OrdinaryContinuationState } from "./continuation-types";
 
 type Metadata = Parameters<ContinuationStore["storeGenerationCheckpoint"]>[2];
 interface Attempt { key: string; completed: boolean; pending: number; failed: boolean; version: number; retired: boolean }

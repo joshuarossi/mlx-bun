@@ -2,27 +2,29 @@ import {captureSpeculativeOptions, speculativePrefixNamespace} from "../generati
 import type { RuntimeModel } from "../models/factory";
 import type { GenerateOptions } from "../generation/index";
 import type { FillSession, Proposal } from "../generation/fill/session";
-import type { DraftProvider, DraftRowGroup, DraftPrefillGroup, DraftRowCheckpoint } from "../generation/speculative/source";
+import type { DraftProvider, DraftRowGroup, DraftPrefillGroup } from "../generation/speculative/source";
+import type { DraftRowCheckpoint } from "../contracts/mlx/draft-checkpoint";
 import { makeSampler, makeStepSampler, readStepExtras, type NumberStepSampler, type Sampler } from "../sampling/index";
 import { draftSamplerOptions, greedyDraftPolicy } from "../generation/speculative/draft-policy";
 import { configuredDraftVocabulary, makeSubsetDraftSampler, type DraftVocabularyHead, type SubsetDraftSampler } from "../generation/speculative/draft-vocab";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";
-import { applyStateChanges, cleanupFailure, disposeResources } from "./resources";
+import { applyStateChanges, cleanupFailure, disposeResources } from "../runtime/resources";
 import { cloneKvCaches } from "../state/persistence";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import { targetCacheLayout } from "../state/layout";
 import { MlxStateRows } from "../state/rows";
-import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "./speculative/binding";
-import { bindLegacyDraftTarget } from "./speculative/draft-target";
+import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "../generation/speculative/bindings/binding";
+import { bindLegacyDraftTarget } from "../generation/speculative/bindings/draft-target";
 import { bindRowCacheRollback } from "../state/rollback";
 import { createKvMaintenance } from "../state/kv-maintenance";
-import { disposeAttachments, type CheckpointAttachment } from "../state/checkpoint";
+import { disposeAttachments } from "../state/checkpoint";
+import { type CheckpointAttachment } from "../contracts/mlx/checkpoint";
 import { advanceSpeculativeOutputs } from "../generation/speculative/round";
 import { MlxPrefillRows, type MlxPrefillState } from "./prefill-rows";
-import type { MlxForwardWork } from "./mixed-iteration";
-import type { MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, MlxGroupedMethod, Row } from "./batch-group";
+import type { MlxForwardWork } from "../contracts/mlx/forward-work";
+import type { MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, MlxGroupedMethod, Row } from "./batch-types";
 
 interface RequestState {
   fill?: FillSession;

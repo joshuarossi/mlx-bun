@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { nextPrefillStep, type PrefillPosition, type PrefillStep } from "../../src/contracts/prefill";
+import { nextPrefillStep, type PrefillPosition, type PrefillStep } from "../../src/contracts/portable/prefill";
 
 function steps(input: PrefillPosition): PrefillStep[] {
   const result: PrefillStep[] = [];

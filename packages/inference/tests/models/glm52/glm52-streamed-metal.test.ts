@@ -2,12 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import {
-  Glm52CanonicalQ4MetalExecutor,
-  Glm52CanonicalQ8MetalExecutor,
-  type Glm52CanonicalQ4MetalLayout,
-  type Glm52CanonicalQ8MetalLayout,
-} from "../../../src/kernels/glm52/streamed-experts";
+import { Glm52CanonicalQ4MetalExecutor, Glm52CanonicalQ8MetalExecutor } from "../../../src/kernels/glm52/streamed-experts";
+import { type Glm52CanonicalQ4MetalLayout, type Glm52CanonicalQ8MetalLayout } from "../../../src/kernels/glm52/layout";
 
 const HIDDEN = 32;
 const INTERMEDIATE = 32;

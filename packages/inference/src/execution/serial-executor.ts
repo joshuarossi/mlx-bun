@@ -1,17 +1,18 @@
 import { pagedPrefixNamespace } from "../state/request-policy";
 import type { SpecRunServices } from "../generation/speculative/run";
-import { cleanupFailure, disposeResources, ownResource } from "./resources";
+import { cleanupFailure, disposeResources, ownResource } from "../runtime/resources";
 import { bindGeneration } from "../generation/index";
 import type { RuntimeModel } from "../models/factory";
 import { Qwen35Model } from "../models/qwen/qwen3_5";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import type { MlxPrefixCache } from "../state/checkpoint";
 import type { SsdCacheStore } from "../state/ssd-cache";
 import type { DraftProvider } from "../generation/speculative/source";
-import type { SerialRun, Vision } from "../contracts/execution-input";
+import type { SerialRun } from "./input";
+import type { Vision } from "../contracts/mlx/media";
 import { bindContinuationPolicy } from "./continuation";
-import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "./config";
-import { bindLegacySpeculativeModel } from "./speculative/binding";
+import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../runtime/config";
+import { bindLegacySpeculativeModel } from "../generation/speculative/bindings/binding";
 
 /** Native serial execution depends on this bound port, never a model union.
  * Weights remain borrowed. The gateway supplies the exclusive runtime lease. */

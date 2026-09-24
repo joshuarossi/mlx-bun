@@ -1,4 +1,4 @@
-import type { PrefixCache } from "../contracts/prefix-cache";
+import type { PrefixCache } from "../contracts/portable/prefix-cache";
 
 /** Compose numerical identity with a cache without exposing its storage tiers. */
 export function namespacedCache<State, Attachment>(cache: PrefixCache<State, Attachment>,

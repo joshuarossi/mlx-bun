@@ -18,5 +18,7 @@ export * from "./prefill-rows";
 export * from "./continuation";
 export * from "./continuation-request";
 export * from "./continuation-persistence";
-export * from "./resources";
-export * from "./config";
+export * from "../runtime/resources";
+export * from "../runtime/config";
+
+export type { SerialRun } from "./input";

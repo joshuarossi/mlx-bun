@@ -13,33 +13,32 @@ import type { ModelConfig } from "../../artifacts/config";
 import { quantizedAppendAttention } from "../../layers/quantized-append-attention";
 import { gatedDeltaState } from "../../kernels/delta/state";
 import type { Weights } from "../../artifacts/weights";
-import { runtimeFlag } from "../../execution/config";
-import { mapTokenGroups, type TokenGroup } from "../../input/token-groups";
+import { runtimeFlag } from "../../runtime/config";
+import { mapTokenGroups } from "../../input/token-groups";
+import { type TokenGroup } from "../../contracts/mlx/token-work";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype, deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { qwenAppendChunkSize } from "../../layers/qwen-append";
 import { TrellisLinear, fusedGateUpEligible, fusedGateUpSwiglu, TRELLIS_MATVEC_MAX_M } from "../../layers/trellis-linear";
-import { argmaxLastPosition } from "../../scoring/logits";
+import { argmaxLastPosition } from "../../kernels/logits";
 import { disposeTriple } from "../../state/quantized-tensor";
 import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
-import { LoraState } from "../../adapters/state";
+import { LoraState } from "../../layers/lora";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { quantizedSdpa } from "../../layers/quantized-attention";
 import { RMSNorm } from "../../layers/normalization";
-import { type Cache, type Mask } from "../../contracts/cache";
+import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { qwen35WeightsView } from "./checkpoint";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { gatedDeltaUpdate } from "../../kernels/delta/gated";
 import { SSMCache } from "../../state/ssm";
 import type { QwenConvolution } from "../../layers/qwen-conv";
-import {
-  applyInterleavedRope, buildMropePositions, mropeInvFreq,
-  type MropeRequestState, type MropeForwardState,
-} from "../../layers/qwen-mrope";
+import { applyInterleavedRope, buildMropePositions, mropeInvFreq } from "../../layers/qwen-mrope";
+import { type MropeRequestState, type MropeForwardState } from "../../contracts/mlx/positions";
 
 const PREFIX = "language_model";
 

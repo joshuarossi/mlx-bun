@@ -1,4 +1,4 @@
-import type { CacheCodec } from "../persistence";
+import type { CacheCodec } from "../persistence-types";
 import { BlockPool, PagedKVCache } from "./cache";
 
 /** Page layout owns its persistence codec, independently of SSD transport. */

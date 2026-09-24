@@ -1,4 +1,4 @@
-import type { AutoregressiveGraph, GraphDescriptor, LogitSelection } from "../contracts/graph";
+import type { AutoregressiveGraph, GraphDescriptor, LogitSelection } from "../contracts/portable/graph";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 
 /** Structural input: generated and hand-written graphs need no union membership. */

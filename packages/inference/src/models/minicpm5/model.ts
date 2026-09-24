@@ -3,19 +3,19 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { LoraState } from "../../adapters/state";
+import { LoraState } from "../../layers/lora";
 import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
-import { type Cache,type Mask } from "../../contracts/cache";
-import { isCompiledTrace } from "../../execution/compiled-trace";
-import { runtimeValue } from "../../execution/config";
+import { type Cache,type Mask } from "../../contracts/mlx/cache";
+import { isCompiledTrace } from "../../runtime/compiled-trace";
+import { runtimeValue } from "../../runtime/config";
 import { unrotateValues as tqUnrotateValues } from "../../kernels/turboquant/ops";
 import { disposing } from "../../layers/helpers";
 import { RMSNorm } from "../../layers/normalization";
 import { quantizedSdpa } from "../../layers/quantized-attention";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
-import { argmaxLastPosition } from "../../scoring/logits";
+import { argmaxLastPosition } from "../../kernels/logits";
 import { KVCache } from "../../state/kv";
 import { disposeTriple } from "../../state/quantized-tensor";
 

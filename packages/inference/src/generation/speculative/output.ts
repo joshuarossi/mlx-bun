@@ -1,4 +1,4 @@
-import type { Cancellation, CancelReason, GenerationOutput, TokenLogprobs } from "../../contracts/generation";
+import type { Cancellation, CancelReason, GenerationOutput, TokenLogprobs } from "../../contracts/portable/generation";
 import type { DraftAcceptance } from "./acceptance";
 
 export interface DraftOutputRow {

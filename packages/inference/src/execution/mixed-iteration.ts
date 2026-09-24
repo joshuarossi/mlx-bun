@@ -1,13 +1,5 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import type { Cache } from "../contracts/cache";
-import type { TokenGroup, TokenWorkOptions } from "../input/token-groups";
-
-export type MlxForwardWork = (ids: MlxArray, cache: Cache[], options?: TokenWorkOptions) => Promise<MlxArray>;
-export interface MlxPreparationWork {
-  /** Real prompt tokens across all rows, not a padded sequence width. */
-  readonly maxTokens?: number;
-  readonly forward?: MlxForwardWork;
-}
+import type { TokenGroup } from "../contracts/mlx/token-work";
 
 /** Join two method-owned work producers at their forward boundary. Decode
  * finishes sampling/publication/retirement before preparation can join rows.
@@ -60,3 +52,6 @@ export async function runMixedTokenIteration(options: {
     throw error;
   }
 }
+
+import { MlxForwardWork } from "../contracts/mlx/forward-work";
+export { type MlxForwardWork,type MlxPreparationWork } from "../contracts/mlx/forward-work";

@@ -18,7 +18,7 @@ import { KVCache } from "../../../state/kv";
 import { QuantizedKVCache } from "../../../state/quantized-kv";
 import { RotatingKVCache } from "../../../state/rotating-kv";
 import { RotatingQuantizedKVCache } from "../../../state/rotating-quantized-kv";
-import { type Cache, type Mask, type SharedKv } from "../../../contracts/cache";
+import { type Cache, type Mask, type SharedKv } from "../../../contracts/mlx/cache";
 import { Gemma4Model, type DecoderLayer } from "../model";
 
 export const FINGERPRINT = "9f812d2eb461fcbe";

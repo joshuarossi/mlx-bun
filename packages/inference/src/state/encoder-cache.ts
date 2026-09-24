@@ -1,5 +1,6 @@
-import type { ObjectCache } from "../contracts/object-cache";
-import { cloneAttachments, disposeAttachments, type CheckpointAttachment } from "./checkpoint";
+import type { ObjectCache } from "../contracts/portable/object-cache";
+import { cloneAttachments, disposeAttachments } from "./checkpoint";
+import { type CheckpointAttachment } from "../contracts/mlx/checkpoint";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 
 /** Encoder-owned tensor schema over the cache's exact-object interface. */

@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { generateAutoregressive } from "../../src/generation/index";
-import type { MlxAutoregressiveBinding } from "../../src/execution/autoregressive";
+import type { MlxAutoregressiveBinding } from "../../src/generation/bindings/autoregressive";
 import { bindMlxGraph } from "../../src/models/graph";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/execution/config";
+import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime/config";
 
 function fixture() {
   const seen = { forwards: 0, steps: 0, allocations: 0, disposals: 0 };

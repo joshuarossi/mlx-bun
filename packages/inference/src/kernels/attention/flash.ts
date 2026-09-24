@@ -16,8 +16,8 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import { CustomVjp } from "@mlx-bun/mlx/custom-vjp";
-import { createCausalMask } from "../../layers/masks";
-import { type Mask } from "../../contracts/cache";
+import { createCausalMask } from "./masks";
+import { type Mask } from "../../contracts/mlx/cache";
 
 export const SUPPORTED_HEAD_DIMS = new Set([64, 96, 128, 256, 512]);
 

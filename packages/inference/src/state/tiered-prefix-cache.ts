@@ -1,7 +1,7 @@
 import { PromptCache, cacheBytes, type ColdTier } from "./prefix-cache";
 import { cloneKvCaches, SpillQueue } from "./persistence";
 import { SsdDurabilityCoordinator } from "./durability";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 import type { SsdCacheStore } from "./ssd-cache";
 
 /** One cache with RAM and SSD storage. Inference sees the same put/take

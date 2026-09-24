@@ -1,6 +1,6 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache, KvAttentionView, KvDonorAttention } from "../contracts/cache";
+import type { Cache, KvAttentionView, KvDonorAttention } from "../contracts/mlx/cache";
 import { quantizedSdpa } from "../layers/quantized-attention";
 import { disposeTriple } from "./quantized-tensor";
 import { quantizedAppendAttention } from "../layers/quantized-append-attention";

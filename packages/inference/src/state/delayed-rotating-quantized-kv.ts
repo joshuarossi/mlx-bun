@@ -1,7 +1,7 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { SpeculativeTransitioningKvRows } from "./transitioning-kv-rows";
 import { AlignedRotatingCache, alignRotatingRows, RotatingAffineLayout, SpeculativeRotatingAffineLayout, RotatingKvPositions } from "./rotating-kv-layout";
 import { BatchedRotatingQuantCache } from "./batched-rotating-quant";
@@ -20,9 +20,9 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
       rollbackRow: (row, before, keep, preserve) => (row as AlignedRotatingCache).rollback(before, keep, preserve) }, row, new RotatingKvPositions(maxSize));
   }
   get attentionState(): KvAttentionState { return this; }
-  captureDonorAttention(): import("../contracts/cache").KvDonorAttention {
+  captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
     if (this.packed) return this.packed.captureDonorAttention();
-    const views: import("../contracts/cache").KvDonorAttention[] = [];
+    const views: import("../contracts/mlx/cache").KvDonorAttention[] = [];
     try {
       for (const row of this.rows) views.push((row as AlignedRotatingCache).captureDonorAttention());
       return combineKvDonorAttention(views);

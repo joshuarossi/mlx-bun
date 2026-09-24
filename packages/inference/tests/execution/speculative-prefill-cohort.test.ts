@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import { bindSpeculativeGroupRequests } from "../../src/execution/speculative-group";
-import type { MlxGroupMethodHost, MlxGroupPreparation, Row } from "../../src/execution/batch-group";
+import type { MlxGroupMethodHost, MlxGroupPreparation, Row } from "../../src/execution/batch-types";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import type { RuntimeModel } from "../../src/models/factory";
 import { captureKvAttention } from "../../src/state/kv-attention-view";
 import { NgramProvider } from "../../src/generation/speculative/sources/ngram-source";
 import { PromptCache } from "../../src/state/prefix-cache";
-import { runtimeConfig } from "../../src/execution/config";
+import { runtimeConfig } from "../../src/runtime/config";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 

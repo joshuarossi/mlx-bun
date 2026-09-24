@@ -1,9 +1,9 @@
 import { captureKvDonorAttention, combineKvDonorAttention } from "./kv-attention-view";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache, KvDonorRows } from "../contracts/cache";
+import type { Cache, KvDonorRows } from "../contracts/mlx/cache";
 import { fullRowInner, fullRowPadding } from "./full-prefill-row";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 
 /** Read full-attention rows in their existing physical columns. Valid token
  * coverage excludes prefill padding; no append, conversion or compaction. */
@@ -31,8 +31,8 @@ export function captureFullKvDonorRows(rows: readonly Cache[], leftPad: readonly
 
 /** Capture full rows in global columns while each encoded view retains its
  * own physical width and numerical attention operation. */
-export function captureFullKvDonorAttention(rows: readonly Cache[], leftPad: readonly number[], width: number): import("../contracts/cache").KvDonorAttention {
-  const captured: import("../contracts/cache").KvDonorAttention[] = [];
+export function captureFullKvDonorAttention(rows: readonly Cache[], leftPad: readonly number[], width: number): import("../contracts/mlx/cache").KvDonorAttention {
+  const captured: import("../contracts/mlx/cache").KvDonorAttention[] = [];
   try {
     for (const [index, row] of rows.entries()) {
       const view = captureKvDonorAttention(fullRowInner(row));

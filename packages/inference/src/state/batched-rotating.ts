@@ -23,7 +23,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
 import {
   appendRotatingStorage,

@@ -14,10 +14,10 @@
 // only RNG consumers then are the canvas draws.
 
 import type { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
-import type { DenoisingGraph } from "../contracts/denoising";
-import { assertMlxDenoisingGraph, bindLegacyDenoisingModel } from "../execution/denoising";
-import { cleanupFailure, disposeResources, ownResource } from "../execution/resources";
-import type { DisposableResource, ResourceOwner } from "../contracts/resources";
+import type { DenoisingGraph } from "../contracts/portable/denoising";
+import { assertMlxDenoisingGraph, bindLegacyDenoisingModel } from "./bindings/denoising";
+import { cleanupFailure, disposeResources, ownResource } from "../runtime/resources";
+import type { DisposableResource, ResourceOwner } from "../contracts/portable/resources";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";

@@ -2,7 +2,7 @@ import { TurboQuantKVCache } from "./turboquant-kv";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { isBatchableCache } from "./capabilities";
-import { type BatchableCache, type Cache } from "../contracts/cache";
+import { type BatchableCache, type Cache } from "../contracts/mlx/cache";
 import { DelayedRotatingQuantizedKVCache } from "./delayed-rotating-quantized-kv";
 import { RotatingAffineLayout } from "./rotating-kv-layout";
 import { BatchedTurboQuantKVCache } from "./batched-turboquant-kv";

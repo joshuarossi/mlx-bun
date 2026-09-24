@@ -1,16 +1,16 @@
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import type { RuntimeModel } from "../models/factory";
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import { nextPrefillStep } from "../contracts/prefill";
-import type { CacheCodecProvider } from "../state/persistence";
-import { disposeResources, cleanupFailure } from "./resources";
-import type { Row, RowPromptCache } from "./batch-group";
+import { nextPrefillStep } from "../contracts/portable/prefill";
+import type { CacheCodecProvider } from "../state/persistence-types";
+import { disposeResources, cleanupFailure } from "../runtime/resources";
+import type { Row, RowPromptCache } from "./batch-types";
 import type { KvMaintenance } from "../state/kv-maintenance";
 import { MlxPrefillRows, type MlxPrefillState } from "./prefill-rows";
 
 export interface PrefillState extends MlxPrefillState {
   snapAt: number | null;
-  continuation?: import("./continuation").OrdinaryContinuationState;
+  continuation?: import("./continuation-types").OrdinaryContinuationState;
   closePrefill?: () => void;
 }
 

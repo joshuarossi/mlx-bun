@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { SSMCache } from "../../src/state/ssm";
 import { BatchedKVCache } from "../../src/state/batched-kv";
 import { BatchedSSMCache } from "../../src/state/batched-ssm";

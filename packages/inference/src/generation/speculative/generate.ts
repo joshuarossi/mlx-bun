@@ -20,7 +20,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Gemma4Model } from "../../models/gemma4/model";
-import { type Cache } from "../../contracts/cache";
+import { type Cache } from "../../contracts/mlx/cache";
 import type { GemmaAssistantDrafter } from "../../models/gemma4/assistant";
 
 export interface SpecOptions {

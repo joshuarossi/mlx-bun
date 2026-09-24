@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { bindContinuationPolicy, type ContinuationStore } from "../../src/execution/continuation";
-import type { Cache } from "../../src/contracts/cache";
-import type { ResolvedExecution } from "../../src/contracts/execution";
+import { bindContinuationPolicy } from "../../src/execution/continuation";
+import { type ContinuationStore } from "../../src/execution/continuation-types";
+import type { Cache } from "../../src/contracts/mlx/cache";
+import type { ResolvedExecution } from "../../src/contracts/portable/execution";
 
 const execution = { method: "autoregressive", mechanism: "continuous", pagedKv: false,
   promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false,

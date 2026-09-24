@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { MmapFile } from "./mmap";
 import { MlxArray, SAFETENSORS_TO_MLX } from "@mlx-bun/mlx/array";
 import type { SafetensorsDtype } from "./safetensors";
-import { runtimeValue } from "../execution/config";
+import { runtimeValue } from "../runtime/config";
 
 export interface OffloadEntry {
   name: string;

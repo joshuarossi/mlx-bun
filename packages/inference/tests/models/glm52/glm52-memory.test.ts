@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { planExpertResidency } from "../../../src/execution/experts/residency";
+import { planExpertResidency } from "../../../src/artifacts/experts/residency";
 import {
   GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES,
   planGlm52Memory,
   type Glm52MemoryGeometry,
-} from "../../../src/execution/glm52-memory";
+} from "../../../src/artifacts/glm52/memory";
 
 const productionGeometry: Glm52MemoryGeometry = {
   residentWeightBytes: 10_877_286_144,

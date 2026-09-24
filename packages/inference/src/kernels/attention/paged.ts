@@ -2,9 +2,22 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { KvAttentionView, Mask } from "../../contracts/cache";
-import { disposeResources } from "../../execution/resources";
-import type { BlockPool } from "../../state/paged/cache";
+import type { KvAttentionView, Mask } from "../../contracts/mlx/cache";
+import { disposeResources } from "../../runtime/resources";
+/** Borrowed numerical storage. Allocation, appends, and eviction belong to state. */
+export interface PagedAttentionStorage {
+  readonly keys: MlxArray;
+  readonly values: MlxArray;
+  readonly blockSize: number;
+  readonly headDim: number;
+  readonly vHeadDim: number;
+  readonly dtype: Dtype;
+  readonly quantization?: { bits: number; groupSize: number } | null;
+  readonly keyScales?: MlxArray | null;
+  readonly keyBiases?: MlxArray | null;
+  readonly valueScales?: MlxArray | null;
+  readonly valueBiases?: MlxArray | null;
+}
 
 // Each SIMD group reduces one query/head over a bounded sequence partition.
 // Only partial output vectors and normalizers materialize, never gathered KV.
@@ -69,7 +82,7 @@ const merge = new MetalKernel({ name: "paged_attention_merge", inputNames: ["par
 ` });
 
 /** Independent immutable view: later appends or row retirement cannot alter it. */
-export function pagedAttentionView(pool: BlockPool, blockTable: number[], length: number,
+export function pagedAttentionView(pool: PagedAttentionStorage, blockTable: number[], length: number,
   direct: boolean): KvAttentionView {
   const keys = ops.contiguous(pool.keys), values = ops.contiguous(pool.values);
   const table = MlxArray.fromInt32(Int32Array.from(blockTable), [blockTable.length]);

@@ -1,6 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { LoraState,loraInputDropout,type LoraWeights } from "../adapters/state";
+import { LoraState,loraInputDropout,type LoraWeights } from "./lora";
 import { quantFor,type ModelConfig } from "../artifacts/config";
 import type { Weights } from "../artifacts/weights";
 import { quantizedMatmulRows } from "../kernels/quantization/affine-rows";

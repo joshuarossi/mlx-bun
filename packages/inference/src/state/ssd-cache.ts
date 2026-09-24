@@ -1,4 +1,4 @@
-import type { CheckpointAttachment } from "./checkpoint";
+import type { CheckpointAttachment } from "../contracts/mlx/checkpoint";
 // SSD cold tier for the prompt/KV cache (docs/design/kv-cache.md).
 //
 // Files ARE the database: no sidecar index. Layout
@@ -22,12 +22,9 @@ import { kvWriter, type KvWriteRequest } from "./persistence-worker";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { commonPrefixLength } from "./prefix-cache";
-import {
-  saveKvCache, saveKvCacheAsync, loadKvCache, loadKvCacheAsync, readKvHeader,
-  cacheHeadersTrimmable, cacheHeadersMinimumReusableOffset, legacyCacheCodecs, type CacheCodecProvider,
-  type KvSaveMeta, type KvLoadExpect, type LoadedKvCache,
-} from "./persistence";
-import type { Cache } from "../contracts/cache";
+import { saveKvCache, saveKvCacheAsync, loadKvCache, loadKvCacheAsync, readKvHeader, cacheHeadersTrimmable, cacheHeadersMinimumReusableOffset, legacyCacheCodecs } from "./persistence";
+import { type CacheCodecProvider, type KvSaveMeta, type KvLoadExpect, type LoadedKvCache } from "./persistence-types";
+import type { Cache } from "../contracts/mlx/cache";
 import { minimumReusableOffset } from "./views";
 
 export interface SsdIndexEntry {

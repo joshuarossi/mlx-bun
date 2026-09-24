@@ -1,8 +1,8 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { PrefillPadding } from "../contracts/cache";
+import type { PrefillPadding } from "../contracts/mlx/cache";
 import { rowRollIndices } from "./batched-row-storage";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 
 interface Positions { rowOffsets: number[]; leftPad: number[] }
 

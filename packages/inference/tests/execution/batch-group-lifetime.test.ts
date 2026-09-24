@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { MlxBatchExecutionGroup, type BatchRequest } from "../../src/execution/batch-group";
+import { MlxBatchExecutionGroup } from "../../src/execution/batch-group";
+import { type BatchRequest } from "../../src/execution/batch-types";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { KVCache } from "../../src/state/kv";
 import type { RuntimeModel } from "../../src/models/factory";
-import type { PromptResponseTrace } from "../../src/execution/trace";
-import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/execution/config";
+import type { PromptResponseTrace } from "../../src/runtime/trace";
+import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime/config";
 
 function fixture() {
   const calls = { allocations: 0, disposals: 0, retains: 0 };
@@ -130,10 +131,10 @@ test("backend context and cache identity bind under the lease and release on adm
 });
 
 function methodFixture(f: ReturnType<typeof fixture>, key: string, events: string[]) {
-  return { key, data: null, open(host: import("../../src/execution/batch-group").MlxGroupMethodHost) {
+  return { key, data: null, open(host: import("../../src/execution/batch-types").MlxGroupMethodHost) {
     events.push(`open:${key}`);
     return {
-      prepare(row: import("../../src/execution/batch-group").Row) {
+      prepare(row: import("../../src/execution/batch-types").Row) {
         events.push(`prepare:${key}:${row.req.promptIds[0]}`);
         return { rows: [row], dispose() { events.push(`release:${row.req.promptIds[0]}`); },
           async advance() {
@@ -401,8 +402,8 @@ test("a nearly completed prefill keeps its admission weight until it retires", a
 test.each(["finish", "cancel", "consumer", "grammar"])("mixed work preserves row ownership and completion through %s", async mode => {
   const f = fixture();
   const { captureKvAttention } = await import("../../src/state/kv-attention-view");
-  const { PromptResponseTrace } = await import("../../src/execution/trace");
-  type TokenGroup = import("../../src/input/token-groups").TokenGroup;
+  const { PromptResponseTrace } = await import("../../src/runtime/trace");
+  type TokenGroup = import("../../src/contracts/mlx/token-work").TokenGroup;
   const shapes: number[][][] = [], outputs: number[][] = [[], [], []];
   const failures: unknown[] = [], siblings: Promise<unknown>[] = [];
   const controller = new AbortController();

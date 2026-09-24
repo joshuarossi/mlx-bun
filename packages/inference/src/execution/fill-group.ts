@@ -1,26 +1,25 @@
 import type { GenerateOptions } from "../generation/index";
 import type { RuntimeModel } from "../models/factory";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";
 import { makeStepSampler, type DeviceStepSampler, type NumberStepSampler } from "../sampling/index";
 import type { FillSession, Proposal } from "../generation/fill/session";
-import { disposeResources, cleanupFailure, withResource } from "./resources";
+import { disposeResources, cleanupFailure, withResource } from "../runtime/resources";
 import { snapshotGenerationPolicy } from "./request-policy";
 import { MlxPrefillCohort } from "./prefill-cohort";
 import { MlxStateRows } from "../state/rows";
 import { targetCacheLayout } from "../state/layout";
-import { leaseCacheStates } from "../state/views";
+import { leaseCacheStates } from "../state/leases";
 import { createKvMaintenance, type KvMaintenance } from "../state/kv-maintenance";
-import { bindLegacyAutoregressiveModel, supportsCommittedAppendCache, type MlxAutoregressiveBinding, type MlxTokenAppend } from "./autoregressive";
-import { appendHiddenRows } from "./fill-append";
+import { bindLegacyAutoregressiveModel, supportsCommittedAppendCache, type MlxAutoregressiveBinding, type MlxTokenAppend } from "../generation/bindings/autoregressive";
+import { appendHiddenRows } from "../generation/fill-append";
 import { advanceSpeculativeOutputs } from "../generation/speculative/round";
 import { bindRowCacheRollback } from "../state/rollback";
-import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "./speculative/binding";
-import type { MlxForwardWork } from "./mixed-iteration";
-import type { MlxGroupedMethod, MlxGroupMethodHost, MlxGroupMethodRequest,
-  MlxGroupPreparation, Row } from "./batch-group";
+import { bindSpeculativeTargetModel, type MlxSpeculativeTargetBinding } from "../generation/speculative/bindings/binding";
+import type { MlxForwardWork } from "../contracts/mlx/forward-work";
+import type { MlxGroupedMethod, MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, Row } from "./batch-types";
 
 interface RequestState {
   sampling: DeviceStepSampler;

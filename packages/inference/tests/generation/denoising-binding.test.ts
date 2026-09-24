@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { denoiseAsync, denoiseSync, type DiffusionGenOptions } from "../../src/generation/diffusion";
-import type { DenoisingGraph } from "../../src/contracts/denoising";
+import type { DenoisingGraph } from "../../src/contracts/portable/denoising";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";

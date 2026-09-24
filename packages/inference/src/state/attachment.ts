@@ -1,10 +1,10 @@
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { legacyCacheCodecs, type CacheCodecProvider, type CacheHeaderEntry,
-  type SnapshotContext } from "./persistence";
-import { disposeResources } from "../execution/resources";
-import type { CheckpointAttachment } from "./checkpoint";
+import { legacyCacheCodecs } from "./persistence";
+import { type CacheCodecProvider, type CacheHeaderEntry, type SnapshotContext } from "./persistence-types";
+import { disposeResources } from "../runtime/resources";
+import type { CheckpointAttachment } from "../contracts/mlx/checkpoint";
 type TensorSlot = SnapshotContext["slots"][number];
 
 /** Reuse the backend cache codecs for method-owned companion state. Tensor

@@ -1,18 +1,8 @@
-import type { Cache } from "../contracts/cache";
-import * as ops from "@mlx-bun/mlx/ops";
-import { leaseCacheStates } from "./views";
-import { withResource } from "../execution/resources";
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import { disposeResources, cleanupFailure } from "../execution/resources";
-
-/** Generation-method state accompanying the target cache. The method owns
- * its schema and alignment; storage owns these immutable tensor snapshots.
- * Attachments require an exact prefix boundary and are never trimmed. */
-export interface CheckpointAttachment {
-  schema: string;
-  metadata: Record<string, string | number | boolean>;
-  tensors: MlxArray[];
-}
+import * as ops from "@mlx-bun/mlx/ops";
+import type { Cache } from "../contracts/mlx/cache";
+import { cleanupFailure,disposeResources,withResource } from "../runtime/resources";
+import { leaseCacheStates } from "./leases";
 
 export function attachmentBytes(attachments: readonly CheckpointAttachment[] = []): number {
   return attachments.reduce((sum, entry) =>
@@ -38,8 +28,8 @@ export function cloneAttachments(attachments: readonly CheckpointAttachment[] = 
 }
 
 /** Shared cache port for MLX execution methods and their companion state. */
-export type MlxPrefixCache = import("../contracts/prefix-cache").PrefixCache<
-  import("../contracts/cache").Cache[], CheckpointAttachment[]
+export type MlxPrefixCache = import("../contracts/portable/prefix-cache").PrefixCache<
+  import("../contracts/mlx/cache").Cache[], CheckpointAttachment[]
 >;
 
 /** Resolve snapshot copies before storage retains them. A deferred compact
@@ -51,3 +41,6 @@ export function materializeCheckpoint(caches: Cache[], attachments: readonly Che
     if (tensors.length) ops.evalAll(tensors);
   });
 }
+
+import { CheckpointAttachment } from "../contracts/mlx/checkpoint";
+export { type CheckpointAttachment } from "../contracts/mlx/checkpoint";

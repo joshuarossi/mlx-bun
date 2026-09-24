@@ -14,10 +14,12 @@ import { toLogprobs } from "../../../sampling/index";
 import { Glm52DecoderLayer, Glm52Model } from "../../../models/glm52/model";
 import { MLACache } from "../../../state/glm52-cache";
 import { Glm52MtpGraph } from "../../../models/glm52/mtp";
-import type { DraftProvider, DraftSource, GroupedDraftProvider, TargetView, DraftRowSampling, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup } from "../source";
-import { Glm52MtpRows, type Glm52MtpRowState } from "../../../execution/speculative/glm52-mtp-rows";
+import type { DraftProvider, DraftSource, GroupedDraftProvider, TargetView, DraftRowSampling, DraftRowGroup, DraftPrefillGroup } from "../source";
+import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
+import { Glm52MtpRows } from "../bindings/glm52-mtp-rows";
+import { type Glm52MtpRowState } from "../../../state/speculative/glm52-mtp-state";
 import { captureGlm52MtpState, restoreGlm52MtpState } from "../../../state/speculative/glm52-mtp-state";
-import { applyStateChanges, disposeResources } from "../../../execution/resources";
+import { applyStateChanges, disposeResources } from "../../../runtime/resources";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 

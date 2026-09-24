@@ -1,11 +1,11 @@
-import { configureRuntime } from "../../src/execution/config";
+import { configureRuntime } from "../../src/runtime/config";
 import { expect, test } from "bun:test";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { TurboQuantKVCache } from "../../src/state/turboquant-kv";
 import { BatchedTurboQuantKVCache } from "../../src/state/batched-turboquant-kv";
-import { disposeResources } from "../../src/execution/resources";
+import { disposeResources } from "../../src/runtime/resources";
 
 function inputs(B: number, N: number, seed: number): [MlxArray, MlxArray] {
   using key = ops.randomKey(BigInt(seed));

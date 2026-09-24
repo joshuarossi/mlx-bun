@@ -6,7 +6,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { unrotateValues } from "../kernels/turboquant/ops";
-import { type Cache, type RotatedValueAttentionState } from "../contracts/cache";
+import { type Cache, type RotatedValueAttentionState } from "../contracts/mlx/cache";
 import { TurboQuantKVCache } from "./turboquant-kv";
 import { BatchedTurboQuantKVCache } from "./batched-turboquant-kv";
 import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
@@ -22,10 +22,10 @@ export class DelayedTurboQuantKVCache extends FullTransitioningKvRows<BatchedTur
       converted: row => row instanceof TurboQuantKVCache,
       makeLayout: () => new BatchedTurboQuantKVCache(kBits, vBits, fusedDecode) }, row);
   }
-  captureDonorRows(): import("../contracts/cache").KvDonorRows {
+  captureDonorRows(): import("../contracts/mlx/cache").KvDonorRows {
     return this.packed?.captureDonorRows() ?? captureFullKvDonorRows(this.rows, this.leftPad, this.offset);
   }
-  captureDonorAttention(): import("../contracts/cache").KvDonorAttention {
+  captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
     return decodedKvDonorAttention(this.captureDonorRows());
   }
   get rotatedValueAttention(): RotatedValueAttentionState { return this; }

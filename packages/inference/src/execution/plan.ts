@@ -1,4 +1,4 @@
-import type { ExecutionCapabilities, ExecutionFeatures, ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
+import type { ExecutionCapabilities, ExecutionFeatures, ExecutionRequirements, ResolvedExecution } from "../contracts/portable/execution";
 
 /** Select the request method, then place it using executor capabilities. */
 export function resolveExecution(

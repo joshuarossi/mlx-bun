@@ -9,7 +9,7 @@
 // and the XTC-off path is unchanged.)
 
 import { MlxArray } from "@mlx-bun/mlx/array";
-import type { SampledToken,SamplingSession } from "../contracts/sampling";
+import type { SampledToken,SamplingSession } from "../contracts/portable/sampling";
 import { type CurveParams } from "./curve";
 
 /** Resolved HLG sampling config (the user-facing knobs). The mid gain is NOT

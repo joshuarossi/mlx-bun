@@ -1,13 +1,13 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cancellation, GenerationOutput, TokenLogprobs } from "../../contracts/generation";
-import type { DisposableResource } from "../../contracts/resources";
-import { cleanupFailure, disposeResources } from "../../execution/resources";
-import type { SpeculativeTransaction } from "../../contracts/rollback";
+import type { Cancellation, GenerationOutput, TokenLogprobs } from "../../contracts/portable/generation";
+import type { DisposableResource } from "../../contracts/portable/resources";
+import { cleanupFailure, disposeResources } from "../../runtime/resources";
+import type { SpeculativeTransaction } from "../../contracts/portable/rollback";
 import { DraftAcceptance } from "./acceptance";
 import { deliverDraftOutputs, type DraftOutputResult } from "./output";
 import { readStepExtras, type NumberStepSampler } from "../../sampling/index";
-import { runtimeFlag } from "../../execution/config";
+import { runtimeFlag } from "../../runtime/config";
 import type { SpecPhaseMs } from "../index";
 
 /** Diagnostic phase timing: evaluates the verify logits before sampling so

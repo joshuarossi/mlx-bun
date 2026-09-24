@@ -22,7 +22,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,Mask } from "../contracts/cache";
+import type { Cache,Mask } from "../contracts/mlx/cache";
 import type { SsmPrefillPadding } from "./ssm-prefill-padding";
 
 /** Recurrent cache for a gated-DeltaNet layer — port of mlx-lm

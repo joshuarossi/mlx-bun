@@ -1,9 +1,9 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { TokenLogprobs } from "../contracts/generation";
+import type { TokenLogprobs } from "../contracts/portable/generation";
 import { readStepExtras, stepExtrasArrays, disposeStepExtras,
   type DeviceStepSampler, type StepExtras } from "../sampling/index";
-import { disposeResources, cleanupFailure } from "./resources";
+import { disposeResources, cleanupFailure } from "../runtime/resources";
 
 type TokenSink = (token: number, logprobs?: TokenLogprobs) => void | boolean | Promise<void | boolean>;
 

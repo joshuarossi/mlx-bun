@@ -4,7 +4,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { KVCache } from "./kv";
 import { isPlainKvCache } from "./capabilities";
-import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { FullPrefillPadding } from "./full-prefill-padding";
 
 /** Full-attention storage with independently advancing row positions.
@@ -32,7 +32,7 @@ export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
     this.#positionsChanged();
   }
 
-  captureDonorRows(): import("../contracts/cache").KvDonorRows {
+  captureDonorRows(): import("../contracts/mlx/cache").KvDonorRows {
     const B = this.rowOffsets.length, width = this.offset;
     const keys = this.keys!.slice([0,0,0,0], [B,this.keys!.shape[1]!,width,this.keys!.shape[3]!]);
     let values: MlxArray;

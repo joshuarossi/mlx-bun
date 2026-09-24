@@ -9,14 +9,14 @@
 
 import {
 bindLegacyAutoregressiveModel
-} from "../execution/autoregressive";
-import { bindLegacyDenoisingModel } from "../execution/denoising";
+} from "./bindings/autoregressive";
+import { bindLegacyDenoisingModel } from "./bindings/denoising";
 import { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
 import type { RuntimeModel } from "../models/factory";
-import { generateAutoregressive } from './autoregressive';
-import { generateDenoising } from './denoising';
-import { Generation } from './result';
-import { GenerateDiagnostics,GenerateOptions } from './types';
+import { generateAutoregressive } from "./autoregressive";
+import { generateDenoising } from "./denoising";
+import { Generation } from "./result";
+import { GenerateDiagnostics,GenerateOptions } from "./types";
 
 export function generate(
   model: RuntimeModel,

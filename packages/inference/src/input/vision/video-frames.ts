@@ -4,8 +4,8 @@ import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runtimeValue } from "../../execution/config";
-import { FRAME_EXTRACT_BINARY } from "../../native";
+import { runtimeValue } from "../../runtime/config";
+import { FRAME_EXTRACT_BINARY } from "../../runtime/native";
 import { decodeImage,type RGBImage } from "./preprocess";
 
 export const VIDEO_SAMPLE_FPS = 2;

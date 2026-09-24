@@ -17,18 +17,18 @@
 //     multimodal soft tokens (image | audio) — multimodalMask, decoupled
 //     from the bidirectional mask.
 
-import type { EncoderCache } from "../../state/encoder-cache";
-import type { PromptNativeWork } from "../../contracts/prompt";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Gemma4Model } from "../../models/gemma4/model";
-import type { ChatTemplate, ChatMessage, ToolDefinition } from "../chat-template";
+import type { AudioEncoder,TextEmbeddingModel } from "../../contracts/mlx/media";
+import type { PromptNativeWork } from "../../contracts/portable/prompt";
+import type { EncoderCache } from "../../state/encoder-cache";
+import type { ChatMessage,ChatTemplate,ToolDefinition } from "../chat-template";
 import type { LoadedTokenizer } from "../tokenizer";
-import type { AudioTower } from "../../models/audio/conformer";
-import { audioSoftTokenCount, decodeAudio } from "../audio/decode";
+
+import { audioSoftTokenCount,decodeAudio } from "../audio/decode";
 import { extractMelFeatures } from "../audio/features";
-import { fetchMediaBytes, videoMediaFetchPolicy } from "../media-fetch";
+import { fetchMediaBytes,videoMediaFetchPolicy } from "../media-fetch";
 
 /** Common contract for both vision towers (encoder-free gemma4_unified in
  *  ./embedder.ts and the SigLIP encoder in ./siglip.ts): preprocess image
@@ -83,7 +83,7 @@ export interface AudioTokenIds {
  *  (vision-only and audio-only fall out as special cases). */
 export interface MultimodalTowers<P extends { softTokens: number }> {
   vision?: { tower: VisionEncoder<P>; tokenIds: VisionTokenIds; cache?: EncoderCache };
-  audio?: { tower: AudioTower; tokenIds: AudioTokenIds; cache?: EncoderCache };
+  audio?: { tower: AudioEncoder; tokenIds: AudioTokenIds; cache?: EncoderCache };
 }
 
 /** Extract image bytes from OpenAI-style content parts, rewriting the
@@ -221,7 +221,7 @@ interface PreparedAudio {
 }
 
 export async function buildMultimodalPrompt<P extends { softTokens: number }>(
-  model: Gemma4Model,
+  model: TextEmbeddingModel,
   towers: MultimodalTowers<P>,
   tokenizer: LoadedTokenizer,
   template: ChatTemplate,
@@ -386,7 +386,7 @@ export async function buildMultimodalPrompt<P extends { softTokens: number }>(
  *  zeroing mask, which forwardEmbeddings derives from `bidir` when no
  *  separate multimodal mask is passed). */
 export async function buildVisionPrompt<P extends { softTokens: number }>(
-  model: Gemma4Model,
+  model: TextEmbeddingModel,
   tower: VisionEncoder<P>,
   tokenizer: LoadedTokenizer,
   template: ChatTemplate,

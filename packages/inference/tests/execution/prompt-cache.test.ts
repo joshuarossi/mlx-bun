@@ -6,7 +6,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { PromptCache as MlxPromptCache } from "../../src/state/prefix-cache";
 import type { PromptCacheEntry } from "../../src/state/prefix-cache";
-import type { Cache } from "../../src/contracts/cache";
+import type { Cache } from "../../src/contracts/mlx/cache";
 
 // LRU policy fixtures have no native arrays; native ownership is tested with
 // the concrete cache in checkpoint-state.test.ts.

@@ -5,7 +5,7 @@ import {
   runtimeValue,
   runtimeConfig,
   withRuntimeConfig,
-} from "../../src/execution/config";
+} from "../../src/runtime/config";
 
 describe("runtime config", () => {
   test("concurrent executions and nested scopes retain their snapshot across awaits", async () => {

@@ -10,16 +10,28 @@
 //   (`y + (scale·z).astype(x.dtype)`), not mount.py's uncast f32 add —
 //   the cast form is what the adapters were trained behind.
 
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { createHash } from "node:crypto";
-import { ptr, read } from "bun:ffi";
-import { MlxArray, cpuStream } from "@mlx-bun/mlx/array";
+import { MlxArray,cpuStream } from "@mlx-bun/mlx/array";
 import { C } from "@mlx-bun/mlx/ffi";
 import { transposeAxes } from "@mlx-bun/mlx/ops";
+import { ptr,read } from "bun:ffi";
+import { createHash } from "node:crypto";
+import { existsSync,readdirSync,statSync } from "node:fs";
+import { resolve } from "node:path";
 import { SafetensorsFile } from "../artifacts/safetensors";
-import type { LoraWeights } from "./state";
-import type { RuntimeModel } from "../models/factory";
+import type { LoraState,LoraWeights } from "../layers/lora";
+
+/** The adapter manager needs named mount points, not a concrete model family. */
+export interface LoraTarget {
+  readonly inFeatures: number;
+  readonly outFeatures: number;
+  adapters?: Map<string, LoraWeights> | null;
+  loraState?: LoraState | null;
+}
+export interface AdapterTarget {
+  readonly prefixBase: string;
+  readonly loraState: LoraState;
+  loraTargets(): ReadonlyMap<string, LoraTarget>;
+}
 
 const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 
@@ -195,13 +207,13 @@ export function parseAdapterSpec(spec: string): string[] {
 }
 
 export class AdapterManager {
-  readonly #model: RuntimeModel;
+  readonly #model: AdapterTarget;
   readonly #mounted = new Map<string, AdapterInfo>();
   /** Owned adapter arrays per id (disposed on unmount). */
   readonly #arrays = new Map<string, MlxArray[]>();
   readonly #revisions = new Map<string, string>();
 
-  constructor(model: RuntimeModel) {
+  constructor(model: AdapterTarget) {
     this.#model = model;
   }
 
@@ -265,7 +277,7 @@ export class AdapterManager {
 
     // Validate every pair against the base linear's dims before mounting
     // anything (all-or-nothing: a bad adapter must not half-mount).
-    const validated: { linear: import("../layers/quantized-linear").QuantizedLinear; lw: LoraWeights }[] = [];
+    const validated: { linear: LoraTarget; lw: LoraWeights }[] = [];
     const dispose = () => {
       for (const { a, b } of pairs.values()) { a?.dispose(); b?.dispose(); }
     };

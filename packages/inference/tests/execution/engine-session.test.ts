@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ExecutionPlanner, GenerationEvent, InferenceMethod, Timer } from "../../src/contracts/generation";
+import type { ExecutionPlanner, GenerationEvent, InferenceMethod, Timer } from "../../src/contracts/portable/generation";
 import { createInferenceEngine, type EngineOptions } from "../../src/execution/engine";
 import { CancellationSource, throwIfCancelled } from "../../src/execution/cancellation";
 

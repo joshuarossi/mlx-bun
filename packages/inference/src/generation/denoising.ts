@@ -7,12 +7,12 @@
 // - opt-in early token-zero yield reduces latency before that pipeline starts
 // - sampling stays on-device; only the chosen token id crosses to JS
 
-import { runtimeConfig } from "../execution/config";
-import { type MlxDenoisingBinding } from "../execution/denoising";
-import { adapterScoped,modelNeedsWiredLimit,usageScoped,wiredScoped } from '../execution/generation-scopes';
+import { runtimeConfig } from "../runtime/config";
+import { type MlxDenoisingBinding } from "./bindings/denoising";
+import { adapterScoped,modelNeedsWiredLimit,usageScoped,wiredScoped } from "./scopes";
 import { denoiseAsync } from "./diffusion";
-import { Generation } from './result';
-import { GenerateOptions,GenerateStats,GeneratedToken } from './types';
+import { Generation } from "./result";
+import { GenerateOptions,GenerateStats,GeneratedToken } from "./types";
 
 /** Denoising bindings use their own state and feedback graph. Callers hold
  * the native runtime's exclusive generation lease, including its global RNG. */

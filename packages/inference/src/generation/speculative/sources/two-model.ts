@@ -16,13 +16,13 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";
-import { runtimeFlag } from "../../../execution/config";
+import { runtimeFlag } from "../../../runtime/config";
 import { loadModelConfig } from "../../../artifacts/config";
 import { Weights } from "../../../artifacts/weights";
 import { createModel, type RuntimeModel } from "../../../models/factory";
 import type { DraftProvider, DraftSource, GroupedDraftProvider } from "../source";
-import { standaloneDraftGroups, openStandaloneDraftRows } from "../../../execution/speculative/two-model-rows";
-import { bindLegacyAutoregressiveModel } from "../../../execution/autoregressive";
+import { standaloneDraftGroups, openStandaloneDraftRows } from "../bindings/two-model-rows";
+import { bindLegacyAutoregressiveModel } from "../../bindings/autoregressive";
 import { artifactIdentity } from "../../../artifacts/identity";
 import { configFingerprint } from "../../../artifacts/fingerprint";
 

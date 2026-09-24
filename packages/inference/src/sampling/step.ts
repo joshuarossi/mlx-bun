@@ -10,13 +10,13 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { runtimeFlag } from "../execution/config";
+import { runtimeFlag } from "../runtime/config";
 import { normalizedArgmax } from "../kernels/sampling/normalized-argmax";
-import { disposeStepExtras } from './extras';
+import { disposeStepExtras } from "./extras";
 import { applyTopKRows,applyTopPRows } from "./window-filters";
-import { logitsHistoryLimit,makeLogitsProcessors } from './processors';
-import { makeSampler,stepKey,toLogprobs } from './sampler';
-import { DeviceStepSampler,DeviceStepSamplerConfig,NumberStepSampler,NumberStepSamplerConfig,StepExtras,StepSample,StepSamplerOptions } from './types';
+import { logitsHistoryLimit,makeLogitsProcessors } from "./processors";
+import { makeSampler,stepKey,toLogprobs } from "./sampler";
+import { DeviceStepSampler,DeviceStepSamplerConfig,NumberStepSampler,NumberStepSamplerConfig,StepExtras,StepSample,StepSamplerOptions } from "./types";
 
 /** Whether scores can use stateless greedy sampling across independent rows. */
 export function isPlainGreedy(

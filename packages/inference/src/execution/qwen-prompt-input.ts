@@ -1,7 +1,8 @@
 import type { Qwen35Model } from "../models/qwen/qwen3_5";
-import { mropePositionIds, type MropeRequestState } from "../layers/qwen-mrope";
+import { mropePositionIds } from "../layers/qwen-mrope";
+import { type MropeRequestState } from "../contracts/mlx/positions";
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { bindEmbeddingsInput, type MlxDecodeState, type MlxPromptInput } from "./prompt-input";

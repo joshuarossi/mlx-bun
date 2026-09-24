@@ -1,9 +1,8 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { MLACache } from "../glm52-cache";
 import { cloneAttachments } from "../checkpoint";
-import { disposeResources } from "../../execution/resources";
-import type { DraftRowCheckpoint } from "../../generation/speculative/source";
-import type { Glm52MtpRowState } from "../../execution/speculative/glm52-mtp-rows";
+import { disposeResources } from "../../runtime/resources";
+import type { DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
 
 export function captureGlm52MtpState(state: Glm52MtpRowState): DraftRowCheckpoint {
   const held: MlxArray[] = [];
@@ -30,4 +29,10 @@ export function restoreGlm52MtpState(checkpoint: DraftRowCheckpoint, makeCache: 
     if (offset) { cache.restoreCompressedState(held[0]!, held[1]!, null, offset); held.splice(0, 2); }
     const state = { cache, hidden: held.pop()!, processedTokens }; cache = null; return state;
   } finally { disposeResources([...held, ...(cache ? [cache] : [])]); }
+}
+
+export interface Glm52MtpRowState {
+  readonly cache: MLACache;
+  readonly hidden: MlxArray;
+  readonly processedTokens: number;
 }

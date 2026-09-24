@@ -15,11 +15,11 @@ import {
   FillSession, type FillRow, type Proposal, type ProposalSource,
 } from "../../src/generation/fill/session";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import type { RuntimeModel } from "../../src/models/factory";
-import type { MlxTokenAppend } from "../../src/execution/autoregressive";
+import type { MlxTokenAppend } from "../../src/generation/bindings/autoregressive";
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { configureRuntime, runtimeConfig } from "../../src/execution/config";
+import { configureRuntime, runtimeConfig } from "../../src/runtime/config";
 import { cloneKvCaches } from "../../src/state/persistence";
 import { specServeRun } from "../../src/generation/speculative/run";
 import type { DraftProvider, DraftSource } from "../../src/generation/speculative/source";

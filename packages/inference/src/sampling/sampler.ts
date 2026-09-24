@@ -11,9 +11,9 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { applyCurve } from "./curve";
-import { applyMinP,applyTopK,applyTopP,applyXtc } from './filters';
-import { HlgParams,applyHlg,applyHlgEotf,applyHlgOetf,applyHlgPipeline,applyHlgShaper,hlgGammaForLw } from './hlg';
-import { Sampler,SamplerOptions } from './types';
+import { applyMinP,applyTopK,applyTopP,applyXtc } from "./filters";
+import { HlgParams,applyHlg,applyHlgEotf,applyHlgOetf,applyHlgPipeline,applyHlgShaper,hlgGammaForLw } from "./hlg";
+import { Sampler,SamplerOptions } from "./types";
 
 const GOLDEN = 0x9e3779b97f4a7c15n;
 

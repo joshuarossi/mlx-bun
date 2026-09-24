@@ -6,7 +6,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { makeSampler, toLogprobs } from "../../src/sampling/index";
-import { createRuntimeConfig, withRuntimeConfig } from "../../src/execution/config";
+import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 import { configuredDraftVocabulary, DraftVocabularyHead, makeSubsetDraftSampler } from "../../src/generation/speculative/draft-vocab";
 
 const V = 4096;

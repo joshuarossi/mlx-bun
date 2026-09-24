@@ -12,7 +12,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { WhisperKvCache, type WhisperModel } from "../../models/whisper/model";
 import { WHISPER_HOP, WHISPER_SAMPLE_RATE, WHISPER_TOKENS_PER_SECOND } from "../../input/audio/whisper-mel";
 import type { WhisperTokenizer } from "../../input/audio/whisper-tokenizer";
-import type { WhisperSegment, WhisperWord } from "./transcribe";
+import type { WhisperSegment, WhisperWord } from "./types";
 
 export interface WordTiming {
   word: string;

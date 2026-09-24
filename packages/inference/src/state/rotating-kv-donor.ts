@@ -1,4 +1,4 @@
-import type { KvDonorAttention } from "../contracts/cache";
+import type { KvDonorAttention } from "../contracts/mlx/cache";
 import { BatchedRotatingState } from "./batched-rotating-state";
 import { BatchedRotatingQuantCache } from "./batched-rotating-quant";
 import { plainRowStorage, quantizedRowStorage, temporalStorageView } from "./batched-row-storage";

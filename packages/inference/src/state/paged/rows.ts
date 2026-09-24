@@ -1,9 +1,9 @@
-import type { BatchableCache, Cache, Mask, KvAttentionView } from "../../contracts/cache";
+import type { BatchableCache, Cache, Mask, KvAttentionView } from "../../contracts/mlx/cache";
 import { buildBatchedDecodeMask, mergeKVRows } from "../batched-mask";
 import * as ops from "@mlx-bun/mlx/ops";
-import { runtimeFlag } from "../../execution/config";
+import { runtimeFlag } from "../../runtime/config";
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { disposeResources } from "../../execution/resources";
+import { disposeResources } from "../../runtime/resources";
 import { PagedKVCache, poolBlocksFor, type PagedQuantization } from "./cache";
 
 /** Block storage owns row membership; attention consumes the same gathered

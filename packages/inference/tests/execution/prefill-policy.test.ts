@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import type { ModelConfig } from "../../src/artifacts/config";
-import { createRuntimeConfig } from "../../src/execution/config";
+import { createRuntimeConfig } from "../../src/runtime/config";
 import { sdpaFallbackBytes } from "../../src/state/kv-scheme";
-import { resolveMlxPrefillPolicy } from "../../src/execution/prefill-policy";
+import { resolveMlxPrefillPolicy } from "../../src/generation/bindings/prefill-policy";
 
 const qwen = () => ({ text: { numHiddenLayers: 64, numAttentionHeads: 24,
   globalHeadDim: 256, headDim: 256, slidingWindow: 0,

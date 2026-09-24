@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { CancelReason, TokenLogprobs } from "../../src/contracts/generation";
+import type { CancelReason, TokenLogprobs } from "../../src/contracts/portable/generation";
 import { DraftAcceptance } from "../../src/generation/speculative/acceptance";
 import { deliverDraftOutputs } from "../../src/generation/speculative/output";
 

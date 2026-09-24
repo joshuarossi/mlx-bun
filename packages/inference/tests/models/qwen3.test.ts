@@ -8,7 +8,7 @@ import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
 import { generateSpeculative, TwoModelProvider } from "@mlx-bun/inference/generation/speculative";
 import { forwardSequence, klPerToken, evalPpl } from "@mlx-bun/inference/scoring";
 import { createInferenceEngine, createAutoregressiveMethod } from "@mlx-bun/inference/execution";
-import { bindLegacyAutoregressiveModel } from "@mlx-bun/inference/execution/autoregressive";
+import { bindLegacyAutoregressiveModel } from "@mlx-bun/inference/generation/bindings/autoregressive";
 import { generate } from "@mlx-bun/inference";
 import { bindMlxGraph } from "@mlx-bun/inference/models/graph";
 

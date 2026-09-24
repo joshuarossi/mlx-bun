@@ -4,7 +4,7 @@
 // The offline model mirrors Colibri's raw coactivation voting, but never
 // feeds a prediction back into residency or execution.
 
-import type { ExpertUsageRoute } from "../../execution/experts/usage";
+import type { ExpertUsageRoute } from "../../artifacts/experts/usage";
 
 export interface Glm52RouteTraceRecord {
   readonly segment: string;

@@ -6,7 +6,7 @@ import {
   _pollExpertReadUntilReady,
   ExpertIOSlabStore,
   selectExpertLruVictim,
-} from "@mlx-bun/inference/execution/experts";
+} from "@mlx-bun/inference/artifacts/experts";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, activeMemory, cacheMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";

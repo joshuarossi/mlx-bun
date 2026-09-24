@@ -4,7 +4,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { makeStepSampler } from "../../src/sampling/index";
 import { advanceSpeculativeRows } from "../../src/generation/speculative/round";
-import { createRuntimeConfig, withRuntimeConfig } from "../../src/execution/config";
+import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 
 // Two rows, depth 2, a 16-token vocabulary. Logits favor `choices` with a clear
 // margin but sampling stays stochastic; both orders must make the same draws.

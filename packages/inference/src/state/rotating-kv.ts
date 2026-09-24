@@ -1,7 +1,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,DecodeStepPlan,KvDonorRows,Mask } from "../contracts/cache";
-import { createCausalMask } from "../layers/masks";
+import type { Cache,DecodeStepPlan,KvDonorRows,Mask } from "../contracts/mlx/cache";
+import { createCausalMask } from "../kernels/attention/masks";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 
 

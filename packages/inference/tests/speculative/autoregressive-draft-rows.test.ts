@@ -7,7 +7,7 @@ import { SSMCache } from "../../src/state/ssm";
 import { BatchedKVCache } from "../../src/state/batched-kv";
 import { BatchedSSMCache } from "../../src/state/batched-ssm";
 import { MlxStateRows } from "../../src/state/rows";
-import { MlxAutoregressiveDraftRows } from "../../src/execution/speculative/autoregressive-rows";
+import { MlxAutoregressiveDraftRows } from "../../src/generation/speculative/bindings/autoregressive-rows";
 
 test("batched draft graph retains independent attention and recurrent boundaries", async () => {
   const state = new MlxStateRows([new BatchedKVCache(), new BatchedSSMCache()]);

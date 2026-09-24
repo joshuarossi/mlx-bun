@@ -11,7 +11,7 @@ import {
   isBlockedAddress,
   type MediaFetchPolicy,
 } from "../../src/input/media-fetch";
-import { configureRuntime } from "../../src/execution/config";
+import { configureRuntime } from "../../src/runtime/config";
 
 const DEFAULT: MediaFetchPolicy = {
   allowPrivate: false,

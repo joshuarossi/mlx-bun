@@ -4,12 +4,12 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { KVCache } from "../../src/state/kv";
 import { TurboQuantKVCache } from "../../src/state/turboquant-kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { SSMCache } from "../../src/state/ssm";
 import { captureCacheAttachment, restoreCacheAttachment } from "../../src/state/attachment";
 import { disposeAttachments } from "../../src/state/checkpoint";
-import { leaseCacheStates } from "../../src/state/views";
-import { withResource, disposeResources } from "../../src/execution/resources";
+import { leaseCacheStates } from "../../src/state/leases";
+import { withResource, disposeResources } from "../../src/runtime/resources";
 import { cloneKvCaches } from "../../src/state/persistence";
 
 const ones = (shape: number[]) => MlxArray.fromFloat32(new Float32Array(shape.reduce((a, b) => a * b, 1)).fill(1), shape);

@@ -13,14 +13,14 @@ import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { argmaxLastPosition } from "../../scoring/logits";
+import { argmaxLastPosition } from "../../kernels/logits";
 import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
-import { LoraState } from "../../adapters/state";
+import { LoraState } from "../../layers/lora";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
-import { type Cache, type Mask } from "../../contracts/cache";
+import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { compiledSwiglu } from "../../layers/swiglu";
 
 export class Qwen3Attention {

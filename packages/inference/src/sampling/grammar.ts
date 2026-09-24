@@ -34,7 +34,7 @@ import { readFileSync } from "node:fs";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { applyTokenBitmask } from "../kernels/sampling/token-bitmask";
-import { runtimeValue } from "../execution/config";
+import { runtimeValue } from "../runtime/config";
 import type { LoadedTokenizer } from "../input/tokenizer";
 
 /** The request shape — the union of every structured-output field name across

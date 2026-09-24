@@ -21,26 +21,14 @@
 // two-model). See [[dspark-seam-kv-borrowing]].
 
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import type { Dtype } from "@mlx-bun/mlx/ffi";
-import type { Cache } from "../../contracts/cache";
-import type { CheckpointAttachment } from "../../state/checkpoint";
+import type { PreparedStateChange } from "../../contracts/portable/resources";
 import type { MlxDraftRows } from "./round";
-import type { PreparedStateChange } from "../../contracts/resources";
-
-/** Numerical ports are backend-specific; returned arrays are caller-owned. */
-export interface DraftProjection {
-  readonly embed: {
-    encode(ids: MlxArray): MlxArray;
-    readonly scales: { readonly dtype: Dtype };
-  };
-  logitsFromHidden(hidden: MlxArray): MlxArray;
-}
 
 /** Read-only target state and embedding, independent of draft scheduling. */
 export interface AssistantRowsTarget {
   readonly hiddenSize: number;
   embed(ids: MlxArray): MlxArray;
-  readDonors(): import("../../models/gemma4/assistant").AssistantDonors & {
+  readDonors(): import("../../contracts/mlx/attention").AssistantDonors & {
     readonly positions: readonly number[];
     dispose(): void;
   };
@@ -79,8 +67,8 @@ export interface DraftSource {
    * the source retains the views it needs before returning. */
   readonly checkpoint?: {
     readonly namespace: string;
-    capture(processedTokens: number): import("../../state/checkpoint").CheckpointAttachment;
-    restore(processedTokens: number, attachment: import("../../state/checkpoint").CheckpointAttachment): void;
+    capture(processedTokens: number): import("../../contracts/mlx/checkpoint").CheckpointAttachment;
+    restore(processedTokens: number, attachment: import("../../contracts/mlx/checkpoint").CheckpointAttachment): void;
   };
   /** Target prefill shape required by this source's oracle. Most mlx-lm
    *  sources leave the final prompt token pending; native Colibri MTP starts
@@ -173,11 +161,6 @@ export interface DraftRowConstraints {
   propose(row: number, maxTokens: number): Promise<number[]>;
 }
 
-export interface DraftRowCheckpoint {
-  readonly processedTokens: number;
-  readonly attachment: CheckpointAttachment;
-}
-
 /** Method-owned state membership, independent of scheduling and cache tiers.
  * Open/append borrow checkpoints; capture returns owned immutable state.
  * Membership changes and capture occur only between committed rounds.
@@ -251,3 +234,9 @@ export interface DraftProvider {
   }): DraftSource;
   dispose(): void;
 }
+
+import { DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
+export { type DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
+export { type DraftProjection } from "../../contracts/mlx/draft-projection";
+
+import { DraftProjection } from "../../contracts/mlx/draft-projection";

@@ -2,7 +2,7 @@ import type {
   Cancellation, CancelReason, ExecutionPlan, GenerationEvent, GenerationOutcome,
   GenerationOutput, GenerationSession, MethodResult, MethodRun, RunControl,
   SessionState, Timer, TokenLogprobs,
-} from "../contracts/generation";
+} from "../contracts/portable/generation";
 import { CancellationSource, throwIfCancelled } from "./cancellation";
 
 export interface SessionResources {

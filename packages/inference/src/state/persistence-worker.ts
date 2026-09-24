@@ -1,6 +1,6 @@
 import { Worker } from "node:worker_threads";
 import workerSource from "./persistence.worker.js" with { type: "text" };
-import type { KvFileHeader } from "./persistence";
+import type { KvFileHeader } from "./persistence-types";
 
 /** Immutable, evaluated host-visible storage. The owner retains the native
  * buffers until write() settles. No MLX handles cross the worker boundary. */

@@ -1,5 +1,5 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 
 /** Prepared native input with an indivisible prefill. The preparation owner
  * retains its tensors; the model binding returns an owned final hidden row.

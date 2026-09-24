@@ -5,7 +5,7 @@ export * from "./trellis-linear";
 export * from "./quantized-switch-linear";
 export * from "./quantized-attention";
 export * from "./quantized-append-attention";
-export * from "./masks";
+export * from "../kernels/attention/masks";
 export * from "./helpers";
 export * from "./dense-linear";
 export * from "./dense-embedding";

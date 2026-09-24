@@ -1,4 +1,4 @@
-import type { CancelReason, Cancellation } from "../contracts/generation";
+import type { CancelReason, Cancellation } from "../contracts/portable/generation";
 
 export class GenerationCancelled extends Error {
   constructor(readonly reason: CancelReason) {

@@ -23,7 +23,7 @@
 // in-round concat (per-row RMSNorm/RoPE; argued in projectContextKV's doc).
 
 import { artifactIdentity } from "../../../artifacts/identity";
-import { deepspecGroups, bindDeepspecTarget } from "../../../execution/speculative/deepspec-rows";
+import { deepspecGroups, bindDeepspecTarget } from "../bindings/deepspec-rows";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";

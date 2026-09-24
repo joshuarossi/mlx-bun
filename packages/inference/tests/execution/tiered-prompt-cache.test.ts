@@ -8,7 +8,7 @@ import { KVCache } from "../../src/state/kv";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { cloneKvCaches } from "../../src/state/persistence";
 import { cacheBytes, type ColdTier } from "../../src/state/prefix-cache";
-import { disposeResources } from "../../src/execution/resources";
+import { disposeResources } from "../../src/runtime/resources";
 
 function state(value: number): KVCache[] {
   const cache = new KVCache();

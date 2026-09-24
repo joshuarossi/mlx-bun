@@ -19,15 +19,16 @@
 // standalone dflashGenerate for the measure script.
 
 import { artifactIdentity } from "../../../artifacts/identity";
-import { projectedDraftGroups } from "../../../execution/speculative/projected-draft-rows";
+import { projectedDraftGroups } from "../bindings/projected-draft-rows";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { DflashDrafter } from "../../../models/speculative/dflash";
 import { loadDsparkDrafter } from "../dspark/loader";
-import type { DraftProvider, DraftSource, TargetView, DraftProjection } from "../source";
-import { runtimeValue } from "../../../execution/config";
+import type { DraftProvider, DraftSource, TargetView } from "../source";
+import type { DraftProjection } from "../../../contracts/mlx/draft-projection";
+import { runtimeValue } from "../../../runtime/config";
 
 function safetensorsBytes(dir: string): number {
   let total = 0;

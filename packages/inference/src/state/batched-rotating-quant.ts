@@ -31,7 +31,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
-import { type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { buildBatchedRotatingMask } from "./batched-rotating";
 import type { QuantRow } from "./batched-quant";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";

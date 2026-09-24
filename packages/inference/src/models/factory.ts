@@ -22,7 +22,7 @@ import {
   GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES,
   planGlm52MemoryForArtifact,
   type Glm52MemoryPlan,
-} from "../execution/glm52-memory";
+} from "../artifacts/glm52/memory";
 import { UniversalDenseModel } from "./universal/dense";
 import { WhisperModel } from "./whisper/model";
 import { genericArgsFor } from "./universal/archs";

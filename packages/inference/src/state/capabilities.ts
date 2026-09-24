@@ -1,6 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { BatchableCache,Cache,RowBatchCache } from "../contracts/cache";
+import type { BatchableCache,Cache,RowBatchCache } from "../contracts/mlx/cache";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { RotatingKVCache } from "./rotating-kv";

@@ -31,7 +31,17 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { WhisperModel } from "./model";
+import type { WhisperDims } from "./contracts";
+
+/** Numerical operations needed by the fused path; model loading stays outside. */
+export interface WhisperFastModel {
+  readonly dims: WhisperDims;
+  readonly dtype: Dtype;
+  weight(name: string): MlxArray;
+  weightT(name: string): MlxArray;
+  layerNorm(input: MlxArray, prefix: string): MlxArray;
+  linear(input: MlxArray, prefix: string, bias?: boolean): MlxArray;
+}
 
 export interface FastFilterConfig {
   nVocab: number;
@@ -81,7 +91,7 @@ const dispose = (old: MlxArray, next: MlxArray): MlxArray => {
 };
 
 export class WhisperFastPath {
-  readonly model: WhisperModel;
+  readonly model: WhisperFastModel;
   readonly #H: number;
   readonly #hd: number;
   readonly #L: number;
@@ -94,7 +104,7 @@ export class WhisperFastPath {
   readonly #steps = new Map<string, CompiledFunction>();
   #negInf: MlxArray | null = null;
 
-  constructor(model: WhisperModel) {
+  constructor(model: WhisperFastModel) {
     this.model = model;
     this.#H = model.dims.nTextHead;
     this.#hd = model.dims.nTextState / model.dims.nTextHead;

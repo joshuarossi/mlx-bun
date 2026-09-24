@@ -1,5 +1,5 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import type { Glm52WeightSource } from "../../models/glm52/model";
+import type { Glm52WeightSource } from "../../contracts/mlx/glm52-weights";
 import { ColibriGlm52Container } from "./container";
 import { ColibriGlm52Weights } from "./weights";
 

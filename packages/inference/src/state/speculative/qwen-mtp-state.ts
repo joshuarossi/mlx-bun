@@ -1,9 +1,8 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { KVCache } from "../kv";
 import { cloneAttachments } from "../checkpoint";
-import { disposeResources } from "../../execution/resources";
-import type { MtpRowState } from "../../execution/speculative/qwen-mtp-rows";
-import type { DraftRowCheckpoint } from "../../generation/speculative/source";
+import { disposeResources } from "../../runtime/resources";
+import type { DraftRowCheckpoint } from "../../contracts/mlx/draft-checkpoint";
 
 /** The existing Qwen companion attachment is also the state interchange
  * between prepared requests and a group. Storage-tier policy stays outside. */
@@ -27,4 +26,9 @@ export function captureQwenMtpState(state: MtpRowState): DraftRowCheckpoint {
     return { processedTokens: state.cache.offset + 1,
       attachment: { schema: "qwen-mtp-v1", metadata: { draftOffset: state.cache.offset }, tensors: held.splice(0) } };
   } finally { disposeResources(held); }
+}
+
+export interface MtpRowState {
+  readonly cache: KVCache;
+  readonly hidden: MlxArray;
 }

@@ -1,10 +1,10 @@
-import { ExpertIOSlabStore } from "../../execution/experts/io";
+import { ExpertIOSlabStore } from "../../artifacts/experts/io";
 import {
   ExpertResidencyManager,
   summarizeExpertLatencies,
   type ExpertLatencySummary,
   type ExpertResidencyLeaseEntry,
-} from "../../execution/experts/residency";
+} from "../../artifacts/experts/residency";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -16,14 +16,8 @@ import type {
   Glm52MoeBatchPlan,
   Glm52MoeExpertJob,
 } from "./moe";
-import {
-  Glm52CanonicalQ4MetalExecutor,
-  Glm52CanonicalQ8MetalExecutor,
-  glm52CanonicalQ4MetalLayout,
-  glm52CanonicalQ4SlotView,
-  glm52CanonicalQ8MetalLayout,
-  glm52CanonicalQ8SlotView,
-} from "../../kernels/glm52/streamed-experts";
+import { Glm52CanonicalQ4MetalExecutor, Glm52CanonicalQ8MetalExecutor, glm52CanonicalQ4SlotView, glm52CanonicalQ8SlotView } from "../../kernels/glm52/streamed-experts";
+import { glm52CanonicalQ4MetalLayout, glm52CanonicalQ8MetalLayout } from "../../artifacts/glm52/kernel-layout";
 
 export interface Glm52ExpertExecutionArgs {
   readonly layer: number;

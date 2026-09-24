@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KvWriter, type StoredTensorView } from "../../src/state/persistence-worker";
-import type { KvFileHeader } from "../../src/state/persistence";
+import type { KvFileHeader } from "../../src/state/persistence-types";
 
 function header(shape: number[], bytes: number): KvFileHeader {
   return { formatVersion: 3, createdAt: 0, tokens: [1], caches: [{ kind: "ssm", offset: 1,

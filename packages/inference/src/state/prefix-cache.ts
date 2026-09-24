@@ -1,6 +1,8 @@
-import { type CheckpointAttachment, materializeCheckpoint, attachmentBytes, cloneAttachments, disposeAttachments } from "./checkpoint";
-import { leaseCacheState, minimumReusableOffset } from "./views";
-import { withResource, cleanupFailure, disposeResources, ownResource } from "../execution/resources";
+import { type CheckpointAttachment } from "../contracts/mlx/checkpoint";
+import { materializeCheckpoint, attachmentBytes, cloneAttachments, disposeAttachments } from "./checkpoint";
+import { leaseCacheState } from "./leases";
+import { minimumReusableOffset } from "./views";
+import { withResource, cleanupFailure, disposeResources, ownResource } from "../runtime/resources";
 // Byte-capped LRU prompt cache — the RAM tier of the Layer-0 KV store.
 //
 // The mlx-lm lesson (PLAN.md): a count-capped cache of multi-GB KV
@@ -24,8 +26,8 @@ import { withResource, cleanupFailure, disposeResources, ownResource } from "../
 // entries demote to it when policy permits. TieredPromptCache owns queued
 // persistence and promotes restored prefixes into RAM.
 
-import type { Cache } from "../contracts/cache";
-import type { PrefixCache, PrefixCacheHit } from "../contracts/prefix-cache";
+import type { Cache } from "../contracts/mlx/cache";
+import type { PrefixCache, PrefixCacheHit } from "../contracts/portable/prefix-cache";
 import { LruRetention, type RetentionPolicy, type RetentionCandidate } from "./retention-policy";
 import { cloneKvCaches } from "./persistence";
 
@@ -141,12 +143,12 @@ export class PromptCache implements PrefixCache<Cache[], CheckpointAttachment[]>
   /** Exact tensor objects share this store's byte budget, eviction and writer.
    * Empty token history denotes no conversation; the private namespace is the
    * complete object identity. No fabricated language tokens enter the index. */
-  readonly #objects: import("../contracts/object-cache").ObjectCache<CheckpointAttachment[]> = {
+  readonly #objects: import("../contracts/portable/object-cache").ObjectCache<CheckpointAttachment[]> = {
     take: key => this.#takeObject(`object:${key}`),
     put: (key, value) => this.put([], [], `object:${key}`, undefined, value),
   };
 
-  get objects(): import("../contracts/object-cache").ObjectCache<CheckpointAttachment[]> | undefined {
+  get objects(): import("../contracts/portable/object-cache").ObjectCache<CheckpointAttachment[]> | undefined {
     return this.maxBytes > 0 || this.#cold ? this.#objects : undefined;
   }
 

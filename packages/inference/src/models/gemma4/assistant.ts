@@ -23,19 +23,11 @@
 // The drafter's numeric details only influence acceptance RATE, never
 // output correctness (the target's verify decides every token).
 
-import type { ModelConfig } from "../../artifacts/config";
-import { Weights } from "../../artifacts/weights";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { disposeResources } from "../../execution/resources";
-import type { SharedKv } from "../../contracts/cache";
-
-/** The graph borrows donor attention; storage owns validity and encoding. */
-export interface AssistantAttention {
-  attend(query: MlxArray, scale: number, window: number | null): MlxArray;
-}
-export interface AssistantDonors { sliding: AssistantAttention; full: AssistantAttention; }
+import { Weights } from "../../artifacts/weights";
+import { disposeResources } from "../../runtime/resources";
 
 /** Legacy plain donor adapter. The common graph never reads cache geometry. */
 export function plainAssistantDonors(shared: { sliding: [MlxArray, MlxArray]; full: [MlxArray, MlxArray] },
@@ -302,3 +294,6 @@ function disposing(old: MlxArray, next: MlxArray): MlxArray {
   old.dispose();
   return next;
 }
+
+import { AssistantAttention,AssistantDonors } from "../../contracts/mlx/attention";
+export { type AssistantAttention,type AssistantDonors } from "../../contracts/mlx/attention";

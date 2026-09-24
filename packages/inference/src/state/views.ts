@@ -1,31 +1,8 @@
-import type { StateView } from "../contracts/resources";
-import { disposeResources, ownResource } from "../execution/resources";
-import type { MlxArray } from "@mlx-bun/mlx/array";
+import { type Cache } from "../contracts/mlx/cache";
+import { disposeResources } from "../runtime/resources";
 import { isBatchableCache } from "./capabilities";
-import { type Cache } from "../contracts/cache";
-import { cloneKvCaches, type CacheCodecProvider } from "./persistence";
-
-/** Compatibility boundary for legacy state(). Numerical code consumes a lease,
- * never the legacy ownership marker. No copy, evaluation or fence is added. */
-export function leaseCacheState(cache: Cache): StateView<MlxArray> {
-  return ownResource<readonly MlxArray[]>(cache.state(), cache.stateNeedsDispose ? disposeResources : () => {});
-}
-
-/** Preserve the existing prefill evaluation order: temporary views first,
- * borrowed state second. Partial acquisition releases every acquired view. */
-export function leaseCacheStates(caches: readonly Cache[]): StateView<MlxArray> {
-  const leases: StateView<MlxArray>[] = [];
-  const close = () => disposeResources(leases.map((lease) => ({ dispose: () => lease.close() })));
-  try {
-    for (const owned of [true, false]) {
-      for (const cache of caches) if (!!cache.stateNeedsDispose === owned) leases.push(leaseCacheState(cache));
-    }
-    return ownResource(leases.flatMap((lease) => [...lease.borrow()]), close);
-  } catch (error) {
-    try { close(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "state view acquisition failed"); }
-    throw error;
-  }
-}
+import { cloneKvCaches } from "./persistence";
+import { type CacheCodecProvider } from "./persistence-types";
 
 /** Precision/storage transitions constrain reuse independently of scheduling. */
 export function minimumReusableOffset(caches: readonly Pick<Cache, "minimumReusableOffset">[]): number {
@@ -45,3 +22,5 @@ export function cloneSingleRowState(caches: readonly Cache[], codecs?: CacheCode
     throw error;
   }
 }
+
+export { leaseCacheState,leaseCacheStates } from "./leases";

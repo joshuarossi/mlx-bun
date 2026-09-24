@@ -18,9 +18,9 @@
 import { cacheSignature } from "./capabilities";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { createCausalMask } from "../layers/masks";
+import { createCausalMask } from "../kernels/attention/masks";
 import { KVCache } from "./kv";
-import { type Cache, type Mask } from "../contracts/cache";
+import { type Cache, type Mask } from "../contracts/mlx/cache";
 
 /** Padding-aware key-validity mask for batched DECODE with left-padded rows.
  *

@@ -14,7 +14,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Gemma4Model } from "../../../models/gemma4/model";
 import type { DflashDrafter } from "../../../models/speculative/dflash";
-import { KeyStream, processLogits, probsOf, probAtToken, sampleToken, sampleResidual, type DSparkSampleConfig } from "./sample";
+import { KeyStream, processLogits, probsOf, probAtToken, sampleToken, sampleResidual, type DSparkSampleConfig } from "../../../sampling/draft";
 import type { ConfSample } from "./calibration";
 
 export interface DflashGenOptions {
@@ -41,7 +41,7 @@ export interface DflashResult { tokens: number[]; stats: DflashStats }
 /** Tapped forward: run the target over `ids`, returning the final post-norm
  *  hidden [1,L,H] AND the m-layer context [1,L,m*H] (tapLayers concatenated on
  *  the feature axis). */
-function forwardTapped(model: Gemma4Model, ids: MlxArray, caches: import("../../../contracts/cache").Cache[], tapLayers: number[]): { finalH: MlxArray; ctxML: MlxArray } {
+function forwardTapped(model: Gemma4Model, ids: MlxArray, caches: import("../../../contracts/mlx/cache").Cache[], tapLayers: number[]): { finalH: MlxArray; ctxML: MlxArray } {
   const cap = new Map<number, MlxArray>();
   model.hiddenTap = { layers: new Set(tapLayers), captured: cap };
   let finalH: MlxArray | null = null;

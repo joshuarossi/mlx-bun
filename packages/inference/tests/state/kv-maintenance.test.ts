@@ -5,7 +5,7 @@ import { RotatingKVCache } from "../../src/state/rotating-kv";
 import { QuantizedKVCache } from "../../src/state/quantized-kv";
 import { RotatingQuantizedKVCache } from "../../src/state/rotating-quantized-kv";
 import { TurboQuantKVCache } from "../../src/state/turboquant-kv";
-import { type Cache, type BatchableCache } from "../../src/contracts/cache";
+import { type Cache, type BatchableCache } from "../../src/contracts/mlx/cache";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { resolveExecution } from "../../src/execution/plan";
-import type { ExecutionCapabilities, ExecutionRequirements } from "../../src/contracts/execution";
+import type { ExecutionCapabilities, ExecutionRequirements } from "../../src/contracts/portable/execution";
 
 const request: ExecutionRequirements = {
   hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false,

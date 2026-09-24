@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { cloneSingleRowState } from "../../src/state/views";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { legacyCacheCodecs } from "../../src/state/persistence";
 
 function rowLayout(extract: (row: number) => Cache) {

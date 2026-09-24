@@ -5,6 +5,21 @@ Callers choose artifacts and graphs, own state, and invoke inference directly.
 The package includes the existing specialized kernels and graph implementations,
 input processing, sampling, generation, embeddings, transcription, and optional execution.
 
+## Contracts and composition
+
+The root API composes the lower layers for loading and generation. Component
+subpaths remain available for direct use and custom graphs. See the
+[architecture](../../ARCHITECTURE.md) for dependency direction and ownership.
+
+`contracts/portable` preserves main's platform-free interfaces and can be consumed
+without Bun or MLX types. `contracts/mlx` describes tensor and state interactions
+using MLX types. `contracts` exports both. Use the portable entry when sharing
+request, output, or scheduling types with application and browser code.
+
+Paged attention accepts numerical storage; adapter mounting accepts named LoRA
+targets; prompt preparation accepts encoder interfaces. Callers can supply their
+own implementations without subclassing a concrete model or cache.
+
 ## Direct library use
 
 ```ts
@@ -106,8 +121,8 @@ contracts are unchanged; they are not universal dispatch rules for every shape.
 - `@mlx-bun/inference/layers`: quantized linear and embedding layers, RMSNorm,
   and `TrellisLinear`, which composes the standalone Trellis kernels and retains
   the existing dispatch and expansion fallback.
-- `@mlx-bun/inference/adapters/state`: inference-time LoRA state and weights.
-- `@mlx-bun/inference/execution/config`: immutable execution settings and scoped
+- `@mlx-bun/inference/layers/lora`: inference-time LoRA state and weights.
+- `@mlx-bun/inference/runtime/config`: immutable execution settings and scoped
   overrides. The existing `MLX_BUN_*` defaults are preserved during migration.
 
 These modules do not download models or start services. Tensor handles returned
@@ -160,7 +175,7 @@ artifacts. An existing build can be staged with `bun run stage:native <directory
 inside this package. Loading uses the bundled library, or the caller's explicit
 `libraryPath` / `MLX_BUN_EXPERT_IO_DYLIB` override.
 
-`execution/experts` owns native I/O bindings, residency, and usage accounting;
+`artifacts/experts` owns native I/O bindings, residency, and usage accounting;
 `artifacts/glm52` owns direct-container and quantized-weight loading. Numeric
 streamed expert kernels are independently available through `kernels/glm52`.
 
@@ -248,14 +263,14 @@ console.log(generation.stats);
 ```
 
 `generate` uses the graph supplied by the caller. `generateAutoregressive` accepts
-an explicit `MlxAutoregressiveBinding` from `execution/autoregressive`, including
+an explicit `MlxAutoregressiveBinding` from `generation/bindings/autoregressive`, including
 caller-defined graph operations, state construction, and optional compiled decode.
 `generateDenoising` accepts a denoising binding; `generation/diffusion` also exposes
 `denoiseSync` and `denoiseAsync` directly. No service or model selection is involved.
 
 `generation/autoregressive.ts` owns prefill and token iteration;
 `generation/diffusion.ts` owns canvas denoising; `generation/result.ts` owns the
-async iterator and final stats. `execution/generation-scopes.ts` owns adapter,
+async iterator and final stats. `generation/scopes.ts` owns adapter,
 wired-memory, and expert-usage lifetimes. Existing cancellation and early-return
 cleanup behavior is preserved. `generation/fill` exposes the existing optional
 fill session and proposal interfaces.
@@ -287,13 +302,13 @@ media fetching keeps the existing destination, size, and timeout controls.
 `generation/speculative` exposes `generateSpeculative`, `specRun`, and the existing
 assistant, two-model, Qwen/GLM MTP, DFlash, DeepSpec, and n-gram proposal providers.
 Supply the target graph, draft provider, token budget, and token callback yourself.
-`specRun` accepts an explicit binding from `execution/speculative`; it does not
+`specRun` accepts an explicit binding from `generation/speculative/binding`; it does not
 require a concrete model class. The former `specServeRun` name remains available.
 
 Draft graphs live in `models/gemma4/assistant`, `models/qwen/mtp`, `models/glm52/mtp`,
 and `models/speculative/*`. Proposal sources live in `generation/speculative/sources`;
 verification and acceptance belong to `generation/speculative`; batched draft work
-belongs to `execution/speculative`; draft checkpoints belong to `state/speculative`.
+belongs to `generation/speculative/bindings`; draft checkpoints belong to `state/speculative`.
 Existing sampling, rejection, rollback, and specialized kernel behavior is preserved.
 
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,

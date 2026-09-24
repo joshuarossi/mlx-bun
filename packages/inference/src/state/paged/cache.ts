@@ -4,14 +4,14 @@
 // Published views and SSD snapshots own immutable buffers independently of
 // appends, row membership and RAM eviction.
 
-import { disposeResources } from "../../execution/resources";
+import { disposeResources } from "../../runtime/resources";
 import { pagedAttentionView } from "../../kernels/attention/paged";
-import { runtimeFlag } from "../../execution/config";
+import { runtimeFlag } from "../../runtime/config";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { createCausalMask } from "../../layers/masks";
-import { type Cache, type Mask, type KvAttentionView } from "../../contracts/cache";
+import { createCausalMask } from "../../kernels/attention/masks";
+import { type Cache, type Mask, type KvAttentionView } from "../../contracts/mlx/cache";
 
 /** Typed pool-exhaustion error: a generation outgrew its pool. Sizing from
  *  prompt+maxTokens at construction makes this unreachable in practice;

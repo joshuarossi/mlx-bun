@@ -14,7 +14,7 @@ import {
   type Proposal,
   type ProposalSource,
 } from "../../src/generation/fill/session";
-import { configureRuntime } from "../../src/execution/config";
+import { configureRuntime } from "../../src/runtime/config";
 
 const plan = (rows: FillRow[], extra: Partial<FillPlan> = {}): FillPlan => ({
   rows, echo: null, eos: [99], ...extra,

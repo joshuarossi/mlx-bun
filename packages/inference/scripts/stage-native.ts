@@ -1,6 +1,6 @@
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { NATIVE_DIR, NATIVE_FILES } from "../src/native";
+import { NATIVE_DIR, NATIVE_FILES } from "../src/runtime/native";
 
 // Supply a built native directory to stage it, or omit it to validate before packing.
 const source = resolve(process.argv[2] ?? NATIVE_DIR);

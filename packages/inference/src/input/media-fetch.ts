@@ -21,7 +21,7 @@
 // runs model-free.
 
 import { lookup } from "node:dns/promises";
-import { runtimeValue } from "../execution/config";
+import { runtimeValue } from "../runtime/config";
 
 export interface MediaFetchPolicy {
   /** Permit private/loopback/link-local destinations (LAN hosts). */

@@ -21,7 +21,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { runtimeValue } from "../../execution/config";
+import { runtimeValue } from "../../runtime/config";
 import { applyMinP, applyTopK, applyTopP, stepKey, toLogprobs, type SamplerOptions } from "../../sampling/index";
 
 export interface QuantizedHeadState {

@@ -290,7 +290,7 @@ test("stateless sampled rows verify the whole window in one readback and match s
 });
 
 test("phase timing is absent by default and attributes draft/verify/sample/commit under the diagnostic flag", async () => {
-  const { createRuntimeConfig, withRuntimeConfig } = await import("../../src/execution/config");
+  const { createRuntimeConfig, withRuntimeConfig } = await import("../../src/runtime/config");
   const run = (config: Record<string, string>) => withRuntimeConfig(createRuntimeConfig(config), async () => {
     const sampling = makeStepSampler({ temperature: 0 }, {
       tokenRepresentation: "number", grammarWait: "before-sample", historyUpdate: "after-sample",

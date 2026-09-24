@@ -1,9 +1,10 @@
 import { snapshotGenerationPolicy } from "./request-policy";
 import type { GenerateOptions } from "../generation/index";
-import type { ResolvedExecution } from "../contracts/execution";
+import type { ResolvedExecution } from "../contracts/portable/execution";
 import { makeStepSampler } from "../sampling/index";
 import { createRowSampling } from "./row-sampling";
-import { bindContinuationPolicy, type OrdinaryContinuation } from "./continuation";
+import { bindContinuationPolicy } from "./continuation";
+import { type OrdinaryContinuation } from "./continuation-types";
 
 /** Optional policy and sampler recovery for the existing ordinary driver.
  * KV layout and delayed conversion remain owned by cache maintenance and persistence. */

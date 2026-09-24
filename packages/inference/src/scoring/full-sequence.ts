@@ -19,8 +19,8 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { createCausalMask } from "../layers/masks";
-import { type Cache, type Mask } from "../contracts/cache";
+import { createCausalMask } from "../kernels/attention/masks";
+import { type Cache, type Mask } from "../contracts/mlx/cache";
 import { SSMCache } from "../state/ssm";
 import type { RuntimeModel } from "../models/factory";
 

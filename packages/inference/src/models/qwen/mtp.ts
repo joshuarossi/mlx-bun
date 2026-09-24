@@ -7,7 +7,7 @@ import type { Weights } from "../../artifacts/weights";
 import { disposing } from "../../layers/helpers";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
-import { type Cache, type Mask } from "../../contracts/cache";
+import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { DenseLinear } from "../../layers/dense-linear";
 import { compiledSwiglu } from "./qwen3_5";
 

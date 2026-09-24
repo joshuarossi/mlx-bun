@@ -3,8 +3,8 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { FullPrefillPadding } from "./full-prefill-padding";
-import type { Mask, PrefillPadding } from "../contracts/cache";
-import { cleanupFailure, disposeResources } from "../execution/resources";
+import type { Mask, PrefillPadding } from "../contracts/mlx/cache";
+import { cleanupFailure, disposeResources } from "../runtime/resources";
 
 /** Borrowed tensor planes with shared token positions. Plane shapes may differ
  * in head width and dtype. Every plane uses [row, head, token, field]. */
@@ -34,7 +34,7 @@ export class KvTensorRows implements KvTensorRowView {
   }
 
   /** Snapshot logical validity without changing physical row alignment. */
-  captureDonorValidity(): Pick<import("../contracts/cache").KvDonorRows, "offsets" | "starts" | "ends"> {
+  captureDonorValidity(): Pick<import("../contracts/mlx/cache").KvDonorRows, "offsets" | "starts" | "ends"> {
     const offsets = this.rowOffsets.map((offset, row) => Math.max(0, this.#padding.validOffset(offset, row)));
     return { offsets, starts: [...this.leftPad], ends: offsets.map((offset, row) => offset + this.leftPad[row]!) };
   }

@@ -1,4 +1,4 @@
-import { cleanupFailure, disposeResources } from "../../execution/resources";
+import { cleanupFailure, disposeResources } from "../../runtime/resources";
 // DiffusionGemma-26B-A4B-it (model_type "diffusion_gemma") — the first
 // NON-autoregressive model in the codebase. Instead of a left-to-right AR loop
 // it runs an ENCODER prefill over the prompt (builds a KV cache) and then a
@@ -31,13 +31,13 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
-import { LoraState } from "../../adapters/state";
+import { LoraState } from "../../layers/lora";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { RotatingKVCache } from "../../state/rotating-kv";
-import { type Cache } from "../../contracts/cache";
+import { type Cache } from "../../contracts/mlx/cache";
 import { DiffusionVisionTower } from "./vision";
 
 /** A mask in the shape ops.sdpa wants: a mode string + optional bool array.

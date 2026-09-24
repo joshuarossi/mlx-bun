@@ -1,7 +1,8 @@
 // Transcription output formats shared by the CLI and /v1/audio/transcriptions:
 // OpenAI `json` / `verbose_json` / `text` / `srt` / `vtt`.
 
-import type { WhisperSegment, WhisperTranscription } from "./transcribe";
+import type { WhisperSegment } from "./types";
+import type { WhisperTranscription } from "./transcribe";
 
 export type TranscriptionFormat = "json" | "verbose_json" | "text" | "srt" | "vtt";
 

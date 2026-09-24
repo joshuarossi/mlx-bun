@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { GenerateOptions } from "../../src/generation/index";
-import { generationCheckpointKey } from "../../src/state/continuation-identity";
+import { generationCheckpointKey } from "../../src/generation/checkpoint-identity";
 import { resolveExecution } from "../../src/execution/plan";
 
 describe("generationCheckpointKey", () => {

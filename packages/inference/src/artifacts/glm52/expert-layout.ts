@@ -5,7 +5,8 @@ import type {
 } from "./container";
 import type { Glm52Config } from "../glm52-config";
 
-export const GLM52_EXPERT_SLOT_ALIGNMENT = 16 * 1024;
+import { GLM52_EXPERT_SLOT_ALIGNMENT } from "../../kernels/glm52/layout";
+export { GLM52_EXPERT_SLOT_ALIGNMENT };
 export const GLM52_EXPERT_MAX_READ_SEGMENTS = 8;
 
 export type Glm52ExpertProjection = "down" | "gate" | "up";

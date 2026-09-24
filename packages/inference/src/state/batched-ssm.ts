@@ -1,8 +1,8 @@
 import { SsmPrefillPadding } from "./ssm-prefill-padding";
-import type { PaddedPrefillCache, PrefillPadding } from "../contracts/cache";
+import type { PaddedPrefillCache, PrefillPadding } from "../contracts/mlx/cache";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { MlxArray } from "@mlx-bun/mlx/array";
-import type { BatchableCache, Cache } from "../contracts/cache";
+import type { BatchableCache, Cache } from "../contracts/mlx/cache";
 import { SSMCache } from "./ssm";
 
 /** Recurrent storage behind the same row-layout port as attention KV.

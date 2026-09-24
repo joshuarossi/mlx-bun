@@ -1,4 +1,4 @@
-import type { PrefillPadding } from "../contracts/cache";
+import type { PrefillPadding } from "../contracts/mlx/cache";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";

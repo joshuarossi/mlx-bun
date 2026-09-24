@@ -38,12 +38,13 @@
 // speculation is structurally never worse than plain decode by more than the
 // host lookup and verification overhead.
 
-import { runtimeFlag } from "../../../execution/config";
+import { runtimeFlag } from "../../../runtime/config";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { CheckpointAttachment } from "../../../state/checkpoint";
-import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, GroupedDraftProvider, DraftRowConstraints } from "../source";
-import { applyStateChanges } from "../../../execution/resources";
+import type { CheckpointAttachment } from "../../../contracts/mlx/checkpoint";
+import type { DraftProvider, DraftSource, DraftRowGroup, DraftPrefillGroup, GroupedDraftProvider, DraftRowConstraints } from "../source";
+import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
+import { applyStateChanges } from "../../../runtime/resources";
 
 // Histories are append-only between prefill/restore replacements. Weak keys
 // release derived indexes with retired rows; checkpoints still contain tokens

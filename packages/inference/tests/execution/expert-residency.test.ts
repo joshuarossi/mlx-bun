@@ -3,8 +3,8 @@ import type {
   ExpertIOHintSegment,
   ExpertIOHintSnapshot,
   ExpertIOSegment,
-} from "../../src/execution/experts/io";
-import { ExpertUsageLedger } from "../../src/execution/experts/usage";
+} from "../../src/artifacts/experts/io";
+import { ExpertUsageLedger } from "../../src/artifacts/experts/usage";
 import {
   ExpertResidencyManager,
   buildExpertHintSegments,
@@ -12,7 +12,7 @@ import {
   planExpertResidency,
   summarizeExpertLatencies,
   type ExpertResidencyBackend,
-} from "../../src/execution/experts/residency";
+} from "../../src/artifacts/experts/residency";
 
 class FakeBackend implements ExpertResidencyBackend {
   readonly events: string[] = [];

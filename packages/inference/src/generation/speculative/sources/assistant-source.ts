@@ -1,6 +1,6 @@
 import * as ops from "@mlx-bun/mlx/ops";
 import { artifactIdentity } from "../../../artifacts/identity";
-import { assistantGroups } from "../../../execution/speculative/assistant-rows";
+import { assistantGroups } from "../bindings/assistant-rows";
 // AssistantSource — the optiq KV-borrowing Gemma "-assistant" drafter
 // (src/spec/drafter.ts) behind the serve-time DraftSource seam. L2 oracle:
 // optiq spec_generate. This is the SAME drafter the standalone specGenerate

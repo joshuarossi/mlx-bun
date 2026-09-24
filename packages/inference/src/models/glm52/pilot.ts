@@ -10,7 +10,7 @@ import {
   type ExpertHintTelemetry,
   type ExpertLatencySummary,
   type ExpertRouteLike,
-} from "../../execution/experts/residency";
+} from "../../artifacts/experts/residency";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Glm52Config } from "../../artifacts/glm52-config";

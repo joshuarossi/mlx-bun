@@ -1,7 +1,7 @@
 import { Glm52Cache } from "./glm52-cache";
 import { SpeculativeRotatingKVCache } from "./speculative-rotating-kv";
 import { RotatingAffineLayout, SpeculativeRotatingAffineLayout } from "./rotating-kv-layout";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { TurboQuantKVCache } from "./turboquant-kv";

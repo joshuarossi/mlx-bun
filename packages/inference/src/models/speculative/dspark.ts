@@ -31,10 +31,10 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Gemma4Model } from "../gemma4/model";
-import type { DraftProjection } from "../../generation/speculative/source";
+import type { DraftProjection } from "../../contracts/mlx/draft-projection";
 import { loadAdapterTensors } from "../../adapters/manager";
 import { writeShardedSafetensors, type NamedTensor } from "../../artifacts/safetensors-writer";
-import { processLogits, sampleToken, KeyStream, type DSparkSampleConfig } from "../../generation/speculative/dspark/sample";
+import { processLogits, sampleToken, KeyStream, type DSparkSampleConfig } from "../../sampling/draft";
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 

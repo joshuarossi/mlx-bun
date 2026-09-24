@@ -1,12 +1,12 @@
-import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "./config";
+import { runtimeConfig, withRuntimeConfig, type RuntimeConfig } from "../runtime/config";
 import { snapshotGenerationPolicy } from "./request-policy";
-import type { GenerationOutput, InferenceMethod, MethodResult } from "../contracts/generation";
+import type { GenerationOutput, InferenceMethod, MethodResult } from "../contracts/portable/generation";
 import { throwIfCancelled } from "./cancellation";
 import { generateAutoregressive, generateDenoising, type GenerateOptions, type GenerateStats } from "../generation/index";
 import { specRun } from "../generation/speculative/run";
-import type { MlxAutoregressiveBinding } from "./autoregressive";
-import type { MlxSpeculativeBinding } from "./speculative/binding";
-import type { MlxDenoisingBinding } from "./denoising";
+import type { MlxAutoregressiveBinding } from "../generation/bindings/autoregressive";
+import type { MlxSpeculativeBinding } from "../generation/speculative/bindings/binding";
+import type { MlxDenoisingBinding } from "../generation/bindings/denoising";
 
 /** The native algorithm owns cleanup in its finally. This host adapter owns
  * cancellation subscriptions and waits for the algorithm before closing. */

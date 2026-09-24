@@ -1,18 +1,18 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { MlxPrefillCohort, type PrefillState } from "../../src/execution/prefill-cohort";
-import type { Row } from "../../src/execution/batch-group";
+import type { Row } from "../../src/execution/batch-types";
 import type { RuntimeModel } from "../../src/models/factory";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { captureKvAttention } from "../../src/state/kv-attention-view";
 import { createKvMaintenance } from "../../src/state/kv-maintenance";
 import type { KvSchemeOptions } from "../../src/state/kv-scheme";
-import { leaseCacheStates } from "../../src/state/views";
-import { PromptResponseTrace, type P2RTraceRecord } from "../../src/execution/trace";
-import { withResource } from "../../src/execution/resources";
+import { leaseCacheStates } from "../../src/state/leases";
+import { PromptResponseTrace, type P2RTraceRecord } from "../../src/runtime/trace";
+import { withResource } from "../../src/runtime/resources";
 import { bindEmbeddingsInput } from "../../src/execution/prompt-input";
 
 const dispose = (cache: Cache[]) => { for (const layer of cache) layer.dispose(); };

@@ -1,5 +1,5 @@
-import type { ExecutionGroup, SchedulingClock } from "../contracts/scheduling";
-import { disposeResources } from "./resources";
+import type { ExecutionGroup, SchedulingClock } from "../contracts/portable/scheduling";
+import { disposeResources } from "../runtime/resources";
 
 /** Continuous scheduling policy. Each advance is a backend-defined safe unit;
  * this driver neither handles native state nor forces pending work to evaluate. */

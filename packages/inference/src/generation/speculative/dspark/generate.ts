@@ -27,7 +27,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Gemma4Model } from "../../../models/gemma4/model";
 import type { DSparkDrafter } from "../../../models/speculative/dspark";
-import { KeyStream, processLogits, probsOf, probAtToken, sampleToken, sampleResidual, type DSparkSampleConfig } from "./sample";
+import { KeyStream, processLogits, probsOf, probAtToken, sampleToken, sampleResidual, type DSparkSampleConfig } from "../../../sampling/draft";
 
 export interface DSparkOptions {
   gamma?: number;

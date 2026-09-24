@@ -1,12 +1,12 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
-import { withResource, disposeResources } from "../execution/resources";
-import { leaseCacheState } from "./views";
+import { withResource, disposeResources } from "../runtime/resources";
+import { leaseCacheState } from "./leases";
 import { FullPrefillPadding } from "./full-prefill-padding";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { TurboQuantKVCache } from "./turboquant-kv";
-import { type Cache, type Mask, type PrefillPadding } from "../contracts/cache";
+import { type Cache, type Mask, type PrefillPadding } from "../contracts/mlx/cache";
 
 type FullCache = KVCache | QuantizedKVCache | TurboQuantKVCache;
 

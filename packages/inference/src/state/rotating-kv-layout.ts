@@ -1,7 +1,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { cloneKvCaches } from "./persistence";
-import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { BatchedRotatingCache, buildBatchedRotatingMask } from "./batched-rotating";
@@ -165,7 +165,7 @@ export class RotatingAffineLayout implements TransitionedKvLayout, PaddedPrefill
   constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number) {}
   get minimumReusableOffset(): number { return Math.max(0, ...this.#minimum); }
   get quantizedAttention() { return this.#inner; }
-  captureDonorAttention(): import("../contracts/cache").KvDonorAttention {
+  captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
     return captureRotatingDonorAttention(this.#inner!);
   }
   get rowOffsets(): readonly number[] { return this.#inner?.offsetArr ?? []; }

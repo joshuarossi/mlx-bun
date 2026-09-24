@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { resolveKvScheme } from "../../src/state/kv-scheme";
-import { generationCheckpointKey } from "../../src/state/continuation-identity";
+import { generationCheckpointKey } from "../../src/generation/checkpoint-identity";
 import { snapshotGenerationPolicy } from "../../src/execution/request-policy";
 
 test("optional server threshold preserves omitted policy and separates checkpoint identities", () => {

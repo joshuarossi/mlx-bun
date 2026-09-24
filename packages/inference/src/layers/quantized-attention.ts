@@ -1,9 +1,9 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype,deviceArchitecture } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Mask } from "../contracts/cache";
-import { isCompiledTrace } from "../execution/compiled-trace";
-import { runtimeValue } from "../execution/config";
+import type { Mask } from "../contracts/mlx/cache";
+import { isCompiledTrace } from "../runtime/compiled-trace";
+import { runtimeValue } from "../runtime/config";
 
 
 export const FINFO_MIN: Partial<Record<Dtype, number>> = {

@@ -1,22 +1,5 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache } from "../contracts/cache";
-
-export interface TokenWorkOptions {
-  /** Verification keeps its established GEMV/GEMM geometry. Other groups may
-   * still pack their tokenwise work independently. */
-  readonly preserveTokenGeometry?: boolean;
-  /** Borrows a residual stream; the method copies only the layers it needs.
-   * The layer-count index denotes the post-final-norm output. */
-  readonly captureLayer?: (layer: number, hidden: MlxArray) => void;
-}
-
-/** Independent sequences presented to one model execution. Each item keeps
- * its existing rectangular row geometry and owns a disjoint cache. */
-export interface TokenGroup extends TokenWorkOptions {
-  readonly ids: MlxArray;
-  readonly cache: Cache[];
-}
 
 /** Apply a tokenwise block while respecting each method's numerical policy. */
 export function mapTokenGroups(
@@ -31,11 +14,6 @@ export function mapTokenGroups(
     for (let row = 0; row < groups.length; row++) results[row] ??= operation(inputs[row]!);
     return results;
   } catch (error) { for (const result of results) result?.dispose(); throw error; }
-}
-
-export interface MixedTokenModel {
-  /** Borrows inputs/state; returns one owned hidden array per input group. */
-  forwardHiddenMixed(groups: readonly TokenGroup[]): MlxArray[];
 }
 
 /** Pack real tokens for a tokenwise operation, then restore each group's
@@ -64,3 +42,6 @@ export function mapPackedTokens(
     return results;
   } catch (error) { for (const result of results) result.dispose(); throw error; }
 }
+
+import { TokenGroup } from "../contracts/mlx/token-work";
+export { type MixedTokenModel,type TokenGroup,type TokenWorkOptions } from "../contracts/mlx/token-work";

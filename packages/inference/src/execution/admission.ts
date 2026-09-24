@@ -1,5 +1,5 @@
-import type { Cancellation } from "../contracts/generation";
-import type { DisposableResource } from "../contracts/resources";
+import type { Cancellation } from "../contracts/portable/generation";
+import type { DisposableResource } from "../contracts/portable/resources";
 import { throwIfCancelled } from "./cancellation";
 
 export class AdmissionRejected extends Error {

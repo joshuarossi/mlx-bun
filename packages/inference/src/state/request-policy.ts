@@ -1,12 +1,15 @@
 import { namespacedCache } from "./namespaced-cache";
-import { runtimeConfig, runtimeFlag, withRuntimeConfig, type RuntimeConfig } from "../execution/config";
-import type { GenerateOptions } from "../generation/types";
-import type { RuntimeModel } from "../models/factory";
+import { runtimeConfig, runtimeFlag, withRuntimeConfig, type RuntimeConfig } from "../runtime/config";
+import type { KvSchemeOptions } from "./kv-scheme";
+
+export interface PagedRequestOptions extends KvSchemeOptions { pagedKv?: { blockSize?: number } }
+export interface CacheFactory { makeCache(): Cache[] }
+
 import { KVCache } from "./kv";
-import { type Cache } from "../contracts/cache";
+import { type Cache } from "../contracts/mlx/cache";
 import { PagedKVCache } from "./paged/cache";
 import type { MlxPrefixCache as RowPromptCache } from "./checkpoint";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 
 /** Request state construction and reusable-prefix policy. Equal keys declare
  * compatible state layouts; the executor need not inspect their settings. */
@@ -19,7 +22,7 @@ export interface MlxRequestStatePolicy {
 /** Replace fresh full-attention storage before prefill. Sliding layers retain
  * their layout; pre-warmed library caches retain their existing storage. */
 export function maybePageKv(
-  cache: Cache[], options: GenerateOptions, capacityTokens: number,
+  cache: Cache[], options: PagedRequestOptions, capacityTokens: number,
 ): void {
   if (!options.pagedKv) return;
   if (cache.some((c) => c.offset > 0)) return;
@@ -33,13 +36,13 @@ export function maybePageKv(
   }
 }
 
-export function pagedPrefixNamespace(options: GenerateOptions, base: string,
+export function pagedPrefixNamespace(options: PagedRequestOptions, base: string,
   direct = runtimeFlag("MLX_BUN_PAGED_ATTN", false)): string {
   return JSON.stringify(["paged-v1", options.pagedKv?.blockSize ?? PagedKVCache.DEFAULT_BLOCK_SIZE,
     options.kvBits ?? 0, options.kvGroupSize ?? 64, direct, base]);
 }
 
-export function bindPagedRequestState(model: RuntimeModel, options: GenerateOptions,
+export function bindPagedRequestState(model: CacheFactory, options: PagedRequestOptions,
   capacityTokens: number, cache?: RowPromptCache, runtime: RuntimeConfig = runtimeConfig()): MlxRequestStatePolicy | undefined {
   if (!options.pagedKv) return undefined;
   const blockSize = options.pagedKv.blockSize ?? PagedKVCache.DEFAULT_BLOCK_SIZE;

@@ -1,5 +1,6 @@
-import { type CheckpointAttachment, attachmentBytes, disposeAttachments } from "./checkpoint";
-import { cleanupFailure, disposeResources } from "../execution/resources";
+import { type CheckpointAttachment } from "../contracts/mlx/checkpoint";
+import { cleanupFailure,disposeResources } from "../runtime/resources";
+import { attachmentBytes,disposeAttachments } from "./checkpoint";
 // KV-cache persistence: save prompt caches to disk, reload by streamed copy.
 // The serialization core of the SSD cold tier (docs/design/kv-cache.md).
 //
@@ -42,27 +43,26 @@ import { cleanupFailure, disposeResources } from "../execution/resources";
 // restored buffers made the first post-restore decode step concat-copy the
 // whole entry again.
 
-import { openSync, writeSync, readSync, closeSync, fsyncSync, renameSync, rmSync } from "node:fs";
-import { pagedCacheCodec } from "./paged/codec";
-import { HostBuffer } from "@mlx-bun/mlx/host-buffer";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { createHash } from "node:crypto";
-import { MmapFile, MADV_DONTNEED } from "../artifacts/mmap";
 import { MlxArray } from "@mlx-bun/mlx/array";
-import { kvWriter, kvReader, type KvWriteRequest } from "./persistence-worker";
 import type { Dtype } from "@mlx-bun/mlx/ffi";
+import { HostBuffer } from "@mlx-bun/mlx/host-buffer";
 import * as ops from "@mlx-bun/mlx/ops";
-import { type Cache } from "../contracts/cache";
+import { createHash } from "node:crypto";
+import { closeSync,fsyncSync,openSync,readFileSync,readSync,renameSync,rmSync,writeSync } from "node:fs";
+import { dirname,join } from "node:path";
+import { MADV_DONTNEED,MmapFile } from "../artifacts/mmap";
+import { type Cache } from "../contracts/mlx/cache";
 import { cacheSignature } from "./capabilities";
+import { Glm52Cache,MLACache } from "./glm52-cache";
 import { KVCache } from "./kv";
-import { RotatingKVCache } from "./rotating-kv";
+import { pagedCacheCodec } from "./paged/codec";
+import { kvReader,kvWriter,type KvWriteRequest } from "./persistence-worker";
 import { QuantizedKVCache } from "./quantized-kv";
+import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
-import { TurboQuantKVCache } from "./turboquant-kv";
-import { type TurboQuantTensor } from "./turboquant-codec";
-import { Glm52Cache, MLACache } from "./glm52-cache";
 import { SSMCache } from "./ssm";
+import { type TurboQuantTensor } from "./turboquant-codec";
+import { TurboQuantKVCache } from "./turboquant-kv";
 
 const MAGIC = "MLXBUNKV2\n";
 const ALIGN = 16384;
@@ -73,97 +73,6 @@ const PREFIX_LEN = MAGIC.length + 4 + 4 + 8;
 // BEFORE materializing any tensor bytes, so hash strings must not change
 // the header's byte length when the real values replace the placeholders.
 const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16).padStart(16, "0");
-
-export type CacheKind =
-  | "kv"
-  | "paged"
-  | "rotating"
-  | "qkv"
-  | "rotating-qkv"
-  | "ssm"
-  | "turboquant"
-  | "mla"
-  | "mla-dsa"
-  | "mtp-mla";
-
-export interface TensorSlot {
-  blocks?: Array<{ hash: string; bytes: number }>;
-  off: number;
-  bytes: number;
-  shape: number[];
-  dtype: number;
-  hash: string;
-}
-
-export interface CacheHeaderEntry {
-  paged?: { capacityTokens: number; blockSize: number; blockTable: number[]; numBlocks: number;
-    headDim: number; vHeadDim: number; dtype: Dtype; direct: boolean };
-  kind: CacheKind;
-  offset: number;
-  minimumReusableOffset?: number;
-  /** rotating variants: ring write index */
-  idx?: number;
-  /** rotating variants: window size */
-  maxSize?: number;
-  /** quantized variants (qkv/rotating-qkv: mlx affine scheme) */
-  groupSize?: number;
-  bits?: number;
-  /** turboquant: per-side bit widths (reuses the `bits` field's slot class
-   *  but needs both — asymmetric key/value bit widths, unlike qkv's single
-   *  `bits`). `groupSize` is unused for turboquant (fixed at 32, the
-   *  BLOCK_SIZE constant — not a configurable field like qkv's). */
-  kBits?: number;
-  vBits?: number;
-  /** turboquant: head_dim, needed to unpack kIdx/vPacked on restore
-   *  (packed byte width alone doesn't recover the original element count). */
-  headDim?: number;
-  /** GLM checkpoint-native compressed-cache geometry. */
-  kvLoraRank?: number;
-  ropeHeadDim?: number;
-  dsaHeadDim?: number;
-  maxTokens?: number;
-  /** kv/rotating: [k, v] · qkv/rotating-qkv: [kPacked, kScales, kBiases,
-   *  vPacked, vScales, vBiases] · ssm: [conv, recurrent] · turboquant:
-   *  [kIdx, kScales, kZeros, vPacked, vScales] */
-  tensors: TensorSlot[];
-}
-
-export interface KvSaveMeta {
-  attachments?: CheckpointAttachment[];
-  modelId?: string;
-  /** configFingerprint(config) — covers every graph-shaping field incl.
-   *  the kv-quant scheme, so a scheme flip invalidates naturally. */
-  configFingerprint?: string;
-  /** Adapter namespace (PromptCache ns — adapters joined with "+"). */
-  ns?: string;
-  /** sha256 of tokenizer.json: identical ids must mean identical text. */
-  tokenizerHash?: string;
-  /** In-flight generation state. The serialized caches cover `tokens`;
-   *  pendingToken was sampled from that state but has not been emitted. */
-  generationCheckpoint?: {
-    key: string;
-    cacheNs: string;
-    originalPromptTokens: number;
-    generatedTokens: number;
-    pendingToken: number;
-    /** Actual sampler seed, including a server-generated default. Required to
-     *  continue the random stream exactly after a restart. */
-    seed: number;
-    /** True when `seed` was part of the client request rather than generated
-     *  by the server. */
-    seedWasExplicit: boolean;
-  };
-}
-
-export interface KvFileHeader extends Omit<KvSaveMeta, "attachments"> {
-  attachments?: Array<Omit<CheckpointAttachment, "tensors"> & { tensors: TensorSlot[] }>;
-  /** Absent in earlier v3 files, which used mlx-cache-v3. */
-  codecProvider?: string;
-  formatVersion: 3 | 4 | 5;
-  createdAt: number;
-  tokens: number[];
-  caches: CacheHeaderEntry[];
-}
 
 const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
 
@@ -177,36 +86,6 @@ const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
  *  as-laid-out with ringIdx. Slice handles are lazy graph nodes (no GPU
  *  materialization until rawBytes at write time). */
 interface TensorSource { arr: MlxArray; disposeAfter: boolean }
-
-export interface SnapshotContext {
-  slots: TensorSlot[];
-  push(a: MlxArray, disposeAfter: boolean): void;
-  liveSlice(a: MlxArray, upTo: number): MlxArray;
-  liveMlaSlice(a: MlxArray, upTo: number): MlxArray;
-  pushTriple(t: ops.QuantizedTensor, upTo: number | null): void;
-}
-
-export interface CloneContext {
-  view(a: MlxArray): MlxArray;
-  liveView(a: MlxArray, upTo: number): MlxArray;
-  mlaView(a: MlxArray, upTo: number): MlxArray;
-  tripleView(t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor;
-}
-
-export interface LoadContext {
-  path: string;
-  arr(slot: TensorSlot): MlxArray;
-  grownArr(slot: TensorSlot, offset: number): MlxArray;
-  triple(slots: TensorSlot[], at: number): ops.QuantizedTensor;
-}
-
-export interface CacheCodec {
-  matches(cache: Cache): boolean;
-  snapshot(cache: Cache, context: SnapshotContext): CacheHeaderEntry;
-  clone(cache: Cache, context: CloneContext): Cache;
-  load(entry: CacheHeaderEntry, context: LoadContext): Cache;
-  headerTrimmable(entry: CacheHeaderEntry): boolean;
-}
 
 const requireMlaState = (cache: Glm52Cache, operation: string): void => {
   if (!cache.latent || !cache.rope || cache.batchSize === null || cache.offset === 0)
@@ -494,14 +373,6 @@ const CACHE_CODECS = {
   },
 } satisfies Record<CacheKind, CacheCodec>;
 
-/** Codecs belong to the loaded backend binding. The persisted ID is checked
- * before allocating state; codecs are engine code, never loaded from a file. */
-export interface CacheCodecProvider {
-  readonly id: string;
-  forCache(cache: Cache): CacheCodec;
-  forHeader(entry: CacheHeaderEntry): CacheCodec;
-}
-
 export function createCacheCodecProvider(
   id: string, entries: Readonly<Partial<Record<CacheKind, CacheCodec>>>,
 ): CacheCodecProvider {
@@ -760,14 +631,6 @@ export async function saveKvCacheAsync(
   }
 }
 
-/** Queued immutable snapshot; the queue releases its shared views on settle. */
-export interface SpillItem {
-  attachments?: CheckpointAttachment[];
-  tokens: number[];
-  caches: Cache[];
-  ns: string;
-}
-
 /** Serial snapshot queue with optional capacity shedding. TieredPromptCache
  * disables shedding and owns residency itself. Interrupted-generation
  * persistence uses the cap for supersedable intervals. Queue ownership ends
@@ -897,24 +760,6 @@ export function readKvHeader(path: string): KvFileHeader & { dataStart: number }
   } finally {
     closeSync(fd);
   }
-}
-
-export interface LoadedKvCache {
-  attachments?: CheckpointAttachment[];
-  tokens: number[];
-  header: KvFileHeader;
-  caches: Cache[];
-}
-
-export interface KvLoadExpect {
-  /** Reject on metadata mismatch (pass what the server is running). */
-  modelId?: string;
-  configFingerprint?: string;
-  tokenizerHash?: string;
-  ns?: string;
-  /** Verify every tensor hash before copying it in (off by default,
-   *  `--ssd-cache-verify` — the hash pass roughly doubles restore reads). */
-  verify?: boolean;
 }
 
 /** Reject GLM cache/layout drift before opening the tensor mmap. Generic KV
@@ -1136,3 +981,6 @@ export function loadKvCache(
     });
   } finally { mmap.unmap(); }
 }
+
+import { CacheCodec,CacheCodecProvider,CacheHeaderEntry,CacheKind,CloneContext,KvFileHeader,KvLoadExpect,KvSaveMeta,LoadContext,LoadedKvCache,SnapshotContext,SpillItem,TensorSlot } from "./persistence-types";
+export { type CacheCodec,type CacheCodecProvider,type CacheHeaderEntry,type CacheKind,type CloneContext,type KvFileHeader,type KvLoadExpect,type KvSaveMeta,type LoadContext,type LoadedKvCache,type SnapshotContext,type SpillItem,type TensorSlot } from "./persistence-types";

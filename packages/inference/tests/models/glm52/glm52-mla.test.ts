@@ -3,11 +3,8 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { MLACache } from "../../../src/state/glm52-cache";
 import type { Glm52Config } from "../../../src/artifacts/glm52-config";
-import {
-  Glm52Mla,
-  partialInterleavedRopeMlx,
-  type Glm52MlaWeightSource,
-} from "../../../src/models/glm52/mla";
+import { Glm52Mla, partialInterleavedRopeMlx } from "../../../src/models/glm52/mla";
+import { type Glm52MlaWeightSource } from "../../../src/contracts/mlx/glm52-weights";
 import {
   matvecF32,
   partialInterleavedRopeF32,

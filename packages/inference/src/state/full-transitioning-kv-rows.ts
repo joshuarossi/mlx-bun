@@ -1,5 +1,5 @@
 import { KVCache } from "./kv";
-import { type Cache, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type Cache, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { FullPrefillRow, fullRowInner } from "./full-prefill-row";
 import { cloneKvCaches } from "./persistence";
 import { FullKvPositions, SpeculativeTransitioningKvRows, type KvRowTransition, type SpeculativeTransitionedKvLayout } from "./transitioning-kv-rows";

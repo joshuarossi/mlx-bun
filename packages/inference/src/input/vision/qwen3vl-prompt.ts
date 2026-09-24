@@ -14,16 +14,20 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { ChatMessage, ChatTemplate, ToolDefinition } from "../chat-template";
-import type { LoadedTokenizer } from "../tokenizer";
-import type { Qwen35Model } from "../../models/qwen/qwen3_5";
-import { qwenRopeIndex, type MropeRequestState } from "../../layers/qwen-mrope";
-import { preprocessQwen3VLImage, preprocessQwen3VLVideoFrames, pyFixed1, type Qwen3VLPreprocessed } from "./qwen3vl-preprocess";
-import { extractVideoFrames } from "./video-frames";
-import { QWEN3VL_MERGE_SIZE } from "./qwen3vl-preprocess";
-import type { Qwen3VLVisionTower } from "../../models/vision/qwen3vl";
 import { createHash } from "node:crypto";
+import type { TextEmbeddingModel } from "../../contracts/mlx/media";
+import { type MropeRequestState } from "../../contracts/mlx/positions";
+import { qwenRopeIndex } from "../../layers/qwen-mrope";
 import type { EncoderCache } from "../../state/encoder-cache";
+import type { ChatMessage,ChatTemplate } from "../chat-template";
+import type { LoadedTokenizer } from "../tokenizer";
+import { preprocessQwen3VLImage,preprocessQwen3VLVideoFrames,pyFixed1,QWEN3VL_MERGE_SIZE,type Qwen3VLPreprocessed } from "./qwen3vl-preprocess";
+import { extractVideoFrames } from "./video-frames";
+/** A Qwen-compatible image encoder; the caller chooses its implementation. */
+export interface QwenVisionEncoder {
+  readonly cacheIdentity?: string;
+  encode(input: Qwen3VLPreprocessed): MlxArray;
+}
 
 export interface Qwen3VLTokenIds {
   imageTokenId: number; // <|image_pad|>
@@ -44,8 +48,8 @@ export interface Qwen3VLVisionPrompt {
 }
 
 export async function buildQwen3VLVisionPrompt(
-  model: Qwen35Model,
-  tower: Qwen3VLVisionTower,
+  model: TextEmbeddingModel,
+  tower: QwenVisionEncoder,
   tokenizer: LoadedTokenizer,
   template: ChatTemplate,
   messages: ChatMessage[],

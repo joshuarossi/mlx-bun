@@ -1,6 +1,6 @@
-import type { BatchableCache, Cache } from "../contracts/cache";
-import { applyStateChanges, cleanupFailure, disposeResources } from "../execution/resources";
-import type { PreparedStateChange } from "../contracts/resources";
+import type { BatchableCache, Cache } from "../contracts/mlx/cache";
+import { applyStateChanges, cleanupFailure, disposeResources } from "../runtime/resources";
+import type { PreparedStateChange } from "../contracts/portable/resources";
 
 /** Preserve the graph's layout capabilities when an empty sibling is made. */
 export interface MlxRowLayout<Layout extends BatchableCache> extends BatchableCache {

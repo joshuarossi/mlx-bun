@@ -2,9 +2,10 @@ import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { QwenMtpRows, type MtpRowState } from "../../src/execution/speculative/qwen-mtp-rows";
+import { QwenMtpRows } from "../../src/generation/speculative/bindings/qwen-mtp-rows";
+import { type MtpRowState } from "../../src/state/speculative/qwen-mtp-state";
 import type { MtpModule } from "../../src/models/qwen/mtp";
-import type { Cache } from "../../src/contracts/cache";
+import type { Cache } from "../../src/contracts/mlx/cache";
 
 function fixture() {
   const forwards: number[][] = [];

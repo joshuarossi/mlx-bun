@@ -1,9 +1,9 @@
 import { decodedKvDonorAttention } from "./decoded-kv-donor";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { KvTensorRows, type KvTensorRowView } from "./kv-tensor-rows";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 import { TurboQuantKVCache } from "./turboquant-kv";
-import { type BatchableCache, type Cache, type Mask, type RotatedValueAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type BatchableCache, type Cache, type Mask, type RotatedValueAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { TurboQuantCodec, turboQuantFusedDecode, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
 
 const fields = ["kIdx", "kScales", "kZeros", "vPacked", "vScales"] as const;
@@ -28,12 +28,12 @@ export class BatchedTurboQuantKVCache implements BatchableCache, PaddedPrefillCa
     if (!this.#reuseOffsets.length) this.#reuseOffsets = padding.lengths.map(() => 0);
   }
   finalizePrefill(): void { this.#storage.finalizePrefill(); }
-  captureDonorRows(): import("../contracts/cache").KvDonorRows {
+  captureDonorRows(): import("../contracts/mlx/cache").KvDonorRows {
     if (!this.#storage.planes.length || this.#headDim === null) throw new Error("cache is empty");
     const [keys, values] = this.#codec.decode(encoded(this.#storage.planes), this.offset, this.#headDim, false);
     return { keys, values, ...this.#storage.captureDonorValidity() };
   }
-  captureDonorAttention(): import("../contracts/cache").KvDonorAttention {
+  captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
     return decodedKvDonorAttention(this.captureDonorRows());
   }
   get rotatedValueAttention(): RotatedValueAttentionState { return this; }

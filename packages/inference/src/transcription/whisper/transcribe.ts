@@ -12,37 +12,16 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
+import {
+WHISPER_FRAMES_PER_SECOND,WHISPER_HOP,WHISPER_N_FRAMES,WHISPER_N_SAMPLES,
+WHISPER_SAMPLE_RATE,WhisperMelExtractor,padOrTrimFrames,
+} from "../../input/audio/whisper-mel";
+import { normalizeWhisperLanguage,type WhisperTokenizer } from "../../input/audio/whisper-tokenizer";
 import type { WhisperModel } from "../../models/whisper/model";
 import {
-  WhisperDecodingTask, type WhisperDecodingOptions, type WhisperDecodingResult,
+WhisperDecodingTask,type WhisperDecodingOptions,type WhisperDecodingResult,
 } from "./decode";
-import {
-  WHISPER_FRAMES_PER_SECOND, WHISPER_HOP, WHISPER_N_FRAMES, WHISPER_N_SAMPLES,
-  WHISPER_SAMPLE_RATE, WhisperMelExtractor, padOrTrimFrames,
-} from "../../input/audio/whisper-mel";
 import { addWordTimestamps } from "./timing";
-import { normalizeWhisperLanguage, type WhisperTokenizer } from "../../input/audio/whisper-tokenizer";
-
-export interface WhisperSegment {
-  id: number;
-  seek: number;
-  start: number;
-  end: number;
-  text: string;
-  tokens: number[];
-  temperature: number;
-  avgLogprob: number;
-  compressionRatio: number;
-  noSpeechProb: number;
-  words?: WhisperWord[];
-}
-
-export interface WhisperWord {
-  word: string;
-  start: number;
-  end: number;
-  probability: number;
-}
 
 export interface WhisperTranscribeOptions extends WhisperDecodingOptions {
   /** Single temperature or the fallback ladder (oracle default: 0, .2 … 1). */
@@ -408,3 +387,6 @@ function isSegmentAnomaly(segment: WhisperSegment | undefined): boolean {
   const score = words.reduce((a, w) => a + wordAnomalyScore(w), 0);
   return score >= 3 || score + 0.01 >= words.length;
 }
+
+import { WhisperSegment,WhisperWord } from "./types";
+export { type WhisperSegment,type WhisperWord } from "./types";

@@ -12,20 +12,8 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Glm52Config } from "../../artifacts/glm52-config";
-import type { MLACompressedState, MLACache } from "../../state/glm52-cache";
 import type { ColibriGlm52Weights } from "../../artifacts/glm52/weights";
-
-/** Structural seam used by tiny fixtures as well as ColibriGlm52Weights. */
-export interface Glm52MlaWeightSource {
-  tensor(name: string): MlxArray;
-  dequantized(name: string, outputRows: number, inputColumns: number): MlxArray;
-  linear(
-    x: MlxArray,
-    name: string,
-    outputRows: number,
-    inputColumns: number,
-  ): MlxArray;
-}
+import type { MLACache,MLACompressedState } from "../../state/glm52-cache";
 
 export interface Glm52MlaProjection {
   /** [B,T,H,qk_nope_head_dim]. */
@@ -790,3 +778,6 @@ export class Glm52Mla {
     }
   }
 }
+
+import { Glm52MlaWeightSource } from "../../contracts/mlx/glm52-weights";
+export { type Glm52MlaWeightSource } from "../../contracts/mlx/glm52-weights";

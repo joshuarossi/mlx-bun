@@ -1,11 +1,11 @@
-import { configureRuntime } from "../../src/execution/config";
+import { configureRuntime } from "../../src/runtime/config";
 import { expect, test } from "bun:test";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { KVCache } from "../../src/state/kv";
 import { TurboQuantKVCache } from "../../src/state/turboquant-kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { DelayedTurboQuantKVCache } from "../../src/state/delayed-turboquant-kv";
 import { createKvMaintenance } from "../../src/state/kv-maintenance";
 import { cloneKvCaches } from "../../src/state/persistence";

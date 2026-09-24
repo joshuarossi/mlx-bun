@@ -1,5 +1,5 @@
 import * as ops from "@mlx-bun/mlx/ops";
-import type { KvDonorAttention, KvDonorRows } from "../contracts/cache";
+import type { KvDonorAttention, KvDonorRows } from "../contracts/mlx/cache";
 
 /** Takes ownership of decoded donor planes. Assistant attention uses decoded
  * values, preserving its SDPA arithmetic rather than moving inverse rotation. */

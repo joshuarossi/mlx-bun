@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { ExecutionGroup } from "../../src/contracts/scheduling";
+import type { ExecutionGroup } from "../../src/contracts/portable/scheduling";
 import { driveExecutionGroup } from "../../src/execution/scheduler";
 
 function fixture(chunks = [1, 1], yieldAfterPreparation = false) {

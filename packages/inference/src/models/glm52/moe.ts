@@ -9,7 +9,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import {
   buildExpertBatchUnion,
   type ExpertUnionWave,
-} from "../../execution/experts/residency";
+} from "../../artifacts/experts/residency";
 import {
   routeTrueTopKF32,
   swiGluF32,

@@ -1,9 +1,10 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { BatchableCache, Cache, Mask } from "../contracts/cache";
+import type { BatchableCache, Cache, Mask } from "../contracts/mlx/cache";
 import { KvTensorRows } from "./kv-tensor-rows";
-import { leaseCacheStates, minimumReusableOffset } from "./views";
-import { withResource, disposeResources } from "../execution/resources";
+import { leaseCacheStates } from "./leases";
+import { minimumReusableOffset } from "./views";
+import { withResource, disposeResources } from "../runtime/resources";
 import { cloneKvCaches } from "./persistence";
 
 /** Encoded layouts retain physical row alignment across precision changes. */

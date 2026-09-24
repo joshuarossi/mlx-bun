@@ -12,12 +12,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AdapterManager } from "../../src/adapters/manager";
+import { AdapterManager, type AdapterTarget } from "../../src/adapters/manager";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 
-import type { LoraWeights } from "../../src/adapters/state";
-import type { RuntimeModel } from "../../src/models/factory";
+import { LoraState, type LoraWeights } from "../../src/layers/lora";
+
 
 const root = mkdtempSync(join(tmpdir(), "mlx-bun-lora-format-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -54,14 +54,14 @@ interface StubLinear {
   inFeatures: number;
   outFeatures: number;
   adapters: Map<string, LoraWeights> | null;
-  loraState: { active: string[] } | null;
+  loraState: LoraState | null;
 }
 
 function stubModel(): {
-  model: RuntimeModel;
+  model: AdapterTarget;
   linear: StubLinear;
 } {
-  const state = { active: [] as string[] };
+  const state = new LoraState();
   const linear: StubLinear = {
     inFeatures: 3,
     outFeatures: 4,
@@ -73,7 +73,7 @@ function stubModel(): {
     prefixBase: "model",
     loraState: state,
     loraTargets: () => targets,
-  } as unknown as RuntimeModel;
+  } satisfies AdapterTarget;
   return { model, linear };
 }
 

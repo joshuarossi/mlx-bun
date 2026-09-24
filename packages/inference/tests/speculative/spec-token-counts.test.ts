@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { bindMlxGraph } from "../../src/models/graph";
 import { bindCacheRollback } from "../../src/state/rollback";
-import type { MlxSpeculativeBinding } from "../../src/execution/speculative/binding";
+import type { MlxSpeculativeBinding } from "../../src/generation/speculative/bindings/binding";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { KVCache } from "../../src/state/kv";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { specRun } from "../../src/generation/speculative/run";
 
 // A tie-free vocabulary predicts token i+1, with 7 as EOS. This exercises

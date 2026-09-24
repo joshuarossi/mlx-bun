@@ -1,4 +1,4 @@
-import type { ExecutionPlanner, GenerationSession, InferenceEngine, RunControl, Timer } from "../contracts/generation";
+import type { ExecutionPlanner, GenerationSession, InferenceEngine, RunControl, Timer } from "../contracts/portable/generation";
 import { EngineSession, type SessionResources } from "./session";
 
 export interface EngineOptions {

@@ -4,7 +4,7 @@ import { KVCache } from "../../src/state/kv";
 import { QuantizedKVCache } from "../../src/state/quantized-kv";
 import { quantizedSdpa } from "../../src/layers/quantized-attention";
 import { disposeTriple } from "../../src/state/quantized-tensor";
-import { type Cache } from "../../src/contracts/cache";
+import { type Cache } from "../../src/contracts/mlx/cache";
 import { DelayedQuantizedKVCache } from "../../src/state/delayed-quantized-kv";
 import { createKvMaintenance } from "../../src/state/kv-maintenance";
 import { cloneKvCaches } from "../../src/state/persistence";

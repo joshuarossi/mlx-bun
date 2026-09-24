@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ExpertHintTelemetry } from "../../../src/execution/experts/residency";
+import type { ExpertHintTelemetry } from "../../../src/artifacts/experts/residency";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Glm52Config } from "../../../src/artifacts/glm52-config";

@@ -22,7 +22,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { QuantizedKVCache } from "./quantized-kv";
-import { type Mask } from "../contracts/cache";
+import { type Mask } from "../contracts/mlx/cache";
 import { buildBatchedDecodeMask } from "./batched-mask";
 
 export interface QuantRow {

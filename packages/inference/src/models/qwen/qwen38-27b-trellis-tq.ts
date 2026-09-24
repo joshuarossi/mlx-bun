@@ -31,9 +31,9 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Weights } from "../../artifacts/weights";
 import { quantFor, type ModelConfig } from "../../artifacts/config";
-import { runtimeFlag, runtimeValue } from "../../execution/config";
+import { runtimeFlag, runtimeValue } from "../../runtime/config";
 import { QuantizedLinear } from "../../layers/quantized-linear";
-import { type Cache, type Mask } from "../../contracts/cache";
+import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { Qwen35Model, compiledSwiglu, type Qwen3Layer } from "./qwen3_5";
 import type { SSMCache } from "../../state/ssm";
 import {

@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { QwenMtpRows } from "../../src/execution/speculative/qwen-mtp-rows";
+import { QwenMtpRows } from "../../src/generation/speculative/bindings/qwen-mtp-rows";
 import type { MtpModule } from "../../src/models/qwen/mtp";
-import type { Cache } from "../../src/contracts/cache";
+import type { Cache } from "../../src/contracts/mlx/cache";
 import { toLogprobs } from "../../src/sampling/index";
-import { createRuntimeConfig, withRuntimeConfig } from "../../src/execution/config";
+import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 import { greedyDraftPolicy } from "../../src/generation/speculative/draft-policy";
 
 const V = 6;

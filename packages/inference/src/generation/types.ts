@@ -9,9 +9,9 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import type { KvQuantSpec,TurboQuantScheme } from "../artifacts/config";
-import { type Cache } from "../contracts/cache";
-import type { TokenLogprobs } from "../contracts/generation";
-import type { PromptResponseTrace } from "../execution/trace";
+import { type Cache } from "../contracts/mlx/cache";
+import type { TokenLogprobs } from "../contracts/portable/generation";
+import type { PromptResponseTrace } from "../runtime/trace";
 import type { GrammarController } from "../sampling/grammar";
 import {
 type LogitsProcessorOptions,
@@ -27,7 +27,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   cacheSessionId?: string;
   /** Resolved host policy. Direct compatibility calls resolve from their
    * captured binding when this is absent. */
-  decodePolicy?: Readonly<Pick<import("../contracts/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;
+  decodePolicy?: Readonly<Pick<import("../contracts/portable/execution").ResolvedExecution, "compiledDecode" | "grammarJump">>;
   /** Cooperatively cancel at prefill/decode boundaries; pending native work
    *  finishes before owned resources are released. */
   signal?: AbortSignal;

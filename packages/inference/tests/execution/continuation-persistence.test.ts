@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { ContinuationPersistence } from "../../src/execution/continuation-persistence";
-import type { ContinuationStore } from "../../src/execution/continuation";
-import type { Cache } from "../../src/contracts/cache";
+import type { ContinuationStore } from "../../src/execution/continuation-types";
+import type { Cache } from "../../src/contracts/mlx/cache";
 
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; }
 function fixture() {

@@ -19,23 +19,8 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
-import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
-
-export interface MropeRequestState {
-  /** Full-grid positions for the prompt, one Int32Array per t/h/w stream. */
-  positions: [Int32Array, Int32Array, Int32Array];
-  /** (max position + 1) - promptLength; decode positions = offset + delta. */
-  delta: number;
-}
-
-export interface MropeForwardState {
-  /** Effective positions [3, B, L] int32 for the current forward window. */
-  posIds: MlxArray;
-  /** Borrowed model-owned f32 inv_freq (mropeInvFreq) — not disposed here. */
-  invFreq: MlxArray;
-  rotaryDims: number;
-}
+import * as ops from "@mlx-bun/mlx/ops";
 
 const MROPE_SECTION = [11, 11, 10] as const;
 
@@ -248,3 +233,6 @@ export function qwenRopeIndex(
     throw new Error(`qwenRopeIndex covered ${write} of ${L} tokens (grids misaligned?)`);
   return { positions: P, delta: base - L };
 }
+
+import { MropeForwardState,MropeRequestState } from "../contracts/mlx/positions";
+export { type MropeForwardState,type MropeRequestState } from "../contracts/mlx/positions";

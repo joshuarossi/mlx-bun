@@ -26,7 +26,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 // existing importers keep one entry point.
 
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
-import { runtimeFlag } from "../execution/config";
+import { runtimeFlag } from "../runtime/config";
 
 /** Verbatim port of mlx_lm/models/gemma4_text.py:
  *    `@partial(mx.compile, shapeless=True) def geglu(gate, x): return nn.gelu_approx(gate) * x`

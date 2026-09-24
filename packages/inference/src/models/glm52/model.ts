@@ -4,59 +4,41 @@
 // resolved by their exact tensor names and composed in route order. G3 swaps
 // that expert resolver for bounded slabs/LRU without changing this graph.
 
-import type { ModelConfig } from "../../artifacts/config";
-import { loadModelConfig } from "../../artifacts/config";
-import { gpuStream, MlxArray } from "@mlx-bun/mlx/array";
+import { gpuStream,MlxArray } from "@mlx-bun/mlx/array";
 import { synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { argmaxLastPosition } from "../../scoring/logits";
-import { LoraState } from "../../adapters/state";
-import { type Cache } from "../../contracts/cache";
-import { type QuantizedLinear } from "../../layers/quantized-linear";
+import type { ModelConfig } from "../../artifacts/config";
+import { loadModelConfig } from "../../artifacts/config";
 import {
-  Glm52DsaSelectionState,
-  glm52DsaScoresMlx,
-  type Glm52DsaSelectionObserver,
-} from "./dsa";
-import { MLACache } from "../../state/glm52-cache";
-import {
-  loadGlm52Config,
-  type Glm52Config,
+loadGlm52Config,
+type Glm52Config,
 } from "../../artifacts/glm52-config";
-import {
-  Glm52Mla,
-  partialInterleavedRopeMlx,
-  rmsNormF32Mlx,
-  type Glm52MlaBatchedSelection,
-  type Glm52MlaWeightSource,
-} from "./mla";
 import { validateGlm52ContainerLayout } from "../../artifacts/glm52/layout";
-import {
-  composeGlm52MoeOutputsMlx,
-  planGlm52MoeBatchF32,
-  routeGlm52MoeF32,
-  type Glm52RoutedExpertOutput,
-} from "./moe";
-import { Glm52PilotTracker } from "./pilot";
-import type { Glm52ExpertExecutionBackend } from "./streamed-experts";
-import {
-  Glm52ExpertRuntime,
-  type Glm52ExpertRuntimeOptions,
-} from "./residency";
 import { ColibriGlm52ResidentWeights } from "../../artifacts/glm52/resident-weights";
 import { ColibriGlm52Weights } from "../../artifacts/glm52/weights";
-
-export interface Glm52WeightSource extends Glm52MlaWeightSource {
-  readonly weightsBytes: number;
-  has(name: string): boolean;
-  embedding(
-    ids: MlxArray,
-    name: string,
-    vocabSize: number,
-    hiddenSize: number,
-  ): MlxArray;
-  dispose(): void;
-}
+import { type Cache } from "../../contracts/mlx/cache";
+import { argmaxLastPosition } from "../../kernels/logits";
+import { LoraState } from "../../layers/lora";
+import { type QuantizedLinear } from "../../layers/quantized-linear";
+import { MLACache } from "../../state/glm52-cache";
+import {
+glm52DsaScoresMlx,
+Glm52DsaSelectionState,
+type Glm52DsaSelectionObserver,
+} from "./dsa";
+import { Glm52Mla,partialInterleavedRopeMlx,rmsNormF32Mlx,type Glm52MlaBatchedSelection } from "./mla";
+import {
+composeGlm52MoeOutputsMlx,
+planGlm52MoeBatchF32,
+routeGlm52MoeF32,
+type Glm52RoutedExpertOutput,
+} from "./moe";
+import { Glm52PilotTracker } from "./pilot";
+import {
+Glm52ExpertRuntime,
+type Glm52ExpertRuntimeOptions,
+} from "./residency";
+import type { Glm52ExpertExecutionBackend } from "./streamed-experts";
 
 export interface Glm52ModelCapabilities {
   readonly dsa: boolean;
@@ -1128,3 +1110,6 @@ export class Glm52Model {
     this.expertRuntime?.close();
   }
 }
+
+import { Glm52WeightSource } from "../../contracts/mlx/glm52-weights";
+export { type Glm52WeightSource } from "../../contracts/mlx/glm52-weights";

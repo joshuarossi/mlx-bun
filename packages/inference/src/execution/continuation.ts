@@ -1,29 +1,8 @@
-import type { ContinuationPersistence } from "./continuation-persistence";
-import type { Cache } from "../contracts/cache";
+import type { ResolvedExecution } from "../contracts/portable/execution";
+import { generationCheckpointKey } from "../generation/checkpoint-identity";
 import type { GenerateOptions } from "../generation/index";
-import type { ResolvedExecution } from "../contracts/execution";
-import type { SsdCacheStore } from "../state/ssd-cache";
-import { generationCheckpointKey } from "../state/continuation-identity";
-import { disposeResources } from "./resources";
-
-export interface OrdinaryContinuationState {
-  caches: Cache[];
-  cacheTokens: number[];
-  generatedTokens: number;
-  pendingToken: number;
-  seed: number;
-}
-/** Request-owned policy. Restore and captureOwned transfer cache ownership.
- * No store or key knowledge enters the driver. */
-export interface OrdinaryContinuation {
-  readonly interval: number;
-  restore(namespace: string): OrdinaryContinuationState | null;
-  resumeSampling(state: Omit<OrdinaryContinuationState, "caches">): void;
-  captureOwned(state: Omit<OrdinaryContinuationState, "seed">): void;
-  complete(): void;
-}
-export type ContinuationStore = Pick<SsdCacheStore, "findGenerationCheckpoint" | "restore" |
-  "storeGenerationCheckpoint" | "removeGenerationCheckpoints">;
+import { disposeResources } from "../runtime/resources";
+import type { ContinuationPersistence } from "./continuation-persistence";
 
 /** Shared persistence policy for compatibility and grouped ordinary drivers. */
 export function bindContinuationPolicy(input: {
@@ -75,3 +54,6 @@ export function bindContinuationPolicy(input: {
     },
   };
 }
+
+import { ContinuationStore,OrdinaryContinuationState } from "./continuation-types";
+export { type ContinuationStore,type OrdinaryContinuation,type OrdinaryContinuationState } from "./continuation-types";

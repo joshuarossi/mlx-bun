@@ -22,16 +22,16 @@ import type { Weights } from "../../artifacts/weights";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
-import { argmaxLastPosition } from "../../scoring/logits";
+import { argmaxLastPosition } from "../../kernels/logits";
 import { disposing } from "../../layers/helpers";
-import { isCompiledTrace } from "../../execution/compiled-trace";
+import { isCompiledTrace } from "../../runtime/compiled-trace";
 import { KVCache } from "../../state/kv";
-import { LoraState } from "../../adapters/state";
+import { LoraState } from "../../layers/lora";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
 import { RMSNorm } from "../../layers/normalization";
-import { type Cache, type Mask } from "../../contracts/cache";
+import { type Cache, type Mask } from "../../contracts/mlx/cache";
 
 // ── activations.py swiglu (mx.compile) ───────────────────────────────────────
 // `@partial(mx.compile, shapeless=True) def swiglu(gate, x): return nn.silu(gate) * x`

@@ -20,7 +20,7 @@
 // sources in priority order, clamps what they return, and counts. It never
 // touches MLX, the tokenizer, or the template. Row COMPILATION is
 // ./schema-rows.ts.
-import { runtimeFlag, runtimeNumber, runtimeValue } from "../../execution/config";
+import { runtimeFlag, runtimeNumber, runtimeValue } from "../../runtime/config";
 import { EchoSource, type EchoConfig } from "./echo-index";
 import type {
   Proposal, ProposalOrigin, ProposalPolicy, ProposalSource, TokenView,

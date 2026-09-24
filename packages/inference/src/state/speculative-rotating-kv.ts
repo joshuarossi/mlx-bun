@@ -1,13 +1,13 @@
 import { rotatingSourcePosition } from "./rotating-kv-layout";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { type BatchableCache, type Cache, type Mask, type PrefillPadding } from "../contracts/cache";
+import { type BatchableCache, type Cache, type Mask, type PrefillPadding } from "../contracts/mlx/cache";
 import { RotatingKVCache } from "./rotating-kv";
 import { BatchedRotatingCache } from "./batched-rotating";
 import { rollbackRotatingRing } from "./rotating-row-transaction";
 import { BatchedRotatingState } from "./batched-rotating-state";
 import { plainRowStorage, temporalStorageView } from "./batched-row-storage";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 
 /** Ring transactions retain accepted KV columns, including rounds that cross
  * the window boundary. The verify block already retains the complete history
@@ -47,7 +47,7 @@ export class SpeculativeRotatingKVCache implements BatchableCache {
     catch (error) { keys.dispose(); throw error; }
     result.restoreState(keys, values, this.rowOffsets[row]!, keys.shape[2]!); return result;
   }
-  captureDonorRows(): import("../contracts/cache").KvDonorRows {
+  captureDonorRows(): import("../contracts/mlx/cache").KvDonorRows {
     const position = new BatchedRotatingState(this.maxSize, []); position.restore(this.#inner.positionSnapshot);
     const from = Math.max(0, position.activeLength - this.maxSize);
     const range = { from, to: position.activeLength };

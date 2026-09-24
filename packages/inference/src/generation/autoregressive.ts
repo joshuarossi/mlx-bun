@@ -17,18 +17,18 @@ synchronize
 } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { appendFileSync } from "node:fs";
-import { type Cache } from "../contracts/cache";
-import { nextPrefillStep } from "../contracts/prefill";
+import { type Cache } from "../contracts/mlx/cache";
+import { nextPrefillStep } from "../contracts/portable/prefill";
 import {
 assertMlxAutoregressiveBinding,
 supportsCommittedAppendCache,
 type MlxAutoregressiveBinding,
 type MlxDecodeStep,type MlxTokenAppend
-} from "../execution/autoregressive";
-import { runtimeConfig,type RuntimeConfig } from "../execution/config";
-import { appendFillHidden } from "../execution/fill-append";
-import { adapterScoped,modelNeedsWiredLimit,usageScoped,wiredScoped } from '../execution/generation-scopes';
-import { evalCacheState,executeMlxPrefillStep } from "../execution/prefill";
+} from "./bindings/autoregressive";
+import { runtimeConfig,type RuntimeConfig } from "../runtime/config";
+import { appendFillHidden } from "./fill-append";
+import { adapterScoped,modelNeedsWiredLimit,usageScoped,wiredScoped } from "./scopes";
+import { evalCacheState,executeMlxPrefillStep } from "./prefill";
 import {
 disposeStepExtras,
 makeStepSampler,
@@ -46,8 +46,8 @@ resolveFillMode,
 type FillTraceRecord,
 type Proposal
 } from "./fill/session";
-import { Generation } from './result';
-import { GenerateDiagnostics,GenerateOptions,GenerateStats,GeneratedToken } from './types';
+import { Generation } from "./result";
+import { GenerateDiagnostics,GenerateOptions,GenerateStats,GeneratedToken } from "./types";
 
 export function shouldUseGrammarJump(
   options: Pick<GenerateOptions, "grammar" | "logprobs" | "topLogprobs">,

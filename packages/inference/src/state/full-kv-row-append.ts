@@ -1,8 +1,8 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache } from "../contracts/cache";
+import type { Cache } from "../contracts/mlx/cache";
 import { fullRowPadding } from "./full-prefill-row";
-import { disposeResources } from "../execution/resources";
+import { disposeResources } from "../runtime/resources";
 
 /** Assemble full-attention tensors at the model's B while storage retains
  * per-row formats and positions. Returned arrays own their captured state. */

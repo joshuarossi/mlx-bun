@@ -1,7 +1,7 @@
-import { runtimeConfig, type RuntimeConfig } from "../execution/config";
+import { runtimeConfig, type RuntimeConfig } from "../runtime/config";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as tq from "../kernels/turboquant/ops";
-import type { KvCodec } from "../contracts/kv-codec";
+import type { KvCodec } from "../contracts/mlx/kv-codec";
 
 /** Resolve once when a cache is created; storage copies retain this policy. */
 export function turboQuantFusedDecode(config: RuntimeConfig = runtimeConfig()): boolean {

@@ -7,7 +7,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
 import { BatchedQuantizedKVCache } from "./batched-quantized-kv";
 import { QuantizedKVCache } from "./quantized-kv";
-import { type Cache, type Mask, type KvAttentionState, type KvAttentionView } from "../contracts/cache";
+import { type Cache, type Mask, type KvAttentionState, type KvAttentionView } from "../contracts/mlx/cache";
 
 /** Affine storage keeps its native quantized-attention arithmetic while rows
  * cross the conversion boundary independently. Once all rows convert, their

@@ -1,11 +1,11 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { cleanupFailure, disposeResources } from "../execution/resources";
+import { cleanupFailure, disposeResources } from "../runtime/resources";
 import { BatchedKVCache } from "./batched-kv";
 import { KVCache } from "./kv";
 import { QuantizedKVCache } from "./quantized-kv";
 import { isQuantizedKvCache } from "./capabilities";
-import { type BatchableCache, type Cache, type Mask, type QuantizedAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/cache";
+import { type BatchableCache, type Cache, type Mask, type QuantizedAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 
 import { KvTensorRows } from "./kv-tensor-rows";
 import { quantizedDonorAttention } from "./kv-attention-view";
@@ -27,8 +27,8 @@ export class BatchedQuantizedKVCache implements BatchableCache, QuantizedAttenti
   }
   finalizePrefill(): void { for (const plane of this.#planes) plane.finalizePrefill(); }
   get quantizedAttention(): QuantizedAttentionState { return this; }
-  captureDonorAttention(): import("../contracts/cache").KvDonorAttention {
-    const views: import("../contracts/cache").KvDonorRows[] = [];
+  captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
+    const views: import("../contracts/mlx/cache").KvDonorRows[] = [];
     try {
       for (const plane of this.#planes) views.push(plane.captureDonorRows());
       const field = (name: "keys" | "values") => ({

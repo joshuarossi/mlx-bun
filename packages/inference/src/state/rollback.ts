@@ -1,5 +1,5 @@
-import type { SpeculativeTransaction } from "../contracts/rollback";
-import type { Cache } from "../contracts/cache";
+import type { SpeculativeTransaction } from "../contracts/portable/rollback";
+import type { Cache } from "../contracts/mlx/cache";
 
 interface TransactionLayer<Acceptance> {
   fits(drafts: number): boolean;

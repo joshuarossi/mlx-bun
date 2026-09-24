@@ -1,8 +1,9 @@
 import { cloneAttachments } from "./checkpoint";
-import { cleanupFailure, disposeResources } from "../execution/resources";
-import type { Cache } from "../contracts/cache";
+import { cleanupFailure, disposeResources } from "../runtime/resources";
+import type { Cache } from "../contracts/mlx/cache";
 import type { PromptCacheEntry } from "./prefix-cache";
-import type { SpillItem, SpillQueue } from "./persistence";
+import type { SpillItem } from "./persistence-types";
+import type { SpillQueue } from "./persistence";
 
 export interface DurabilityPromptCache {
   findExact(tokens: number[], ns?: string): PromptCacheEntry | null;

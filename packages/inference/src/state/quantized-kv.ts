@@ -1,8 +1,8 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache,DecodeStepPlan,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/cache";
-import { createCausalMask } from "../layers/masks";
+import type { Cache,DecodeStepPlan,KvDonorAttention,Mask,QuantizedAttentionState } from "../contracts/mlx/cache";
+import { createCausalMask } from "../kernels/attention/masks";
 import { quantizedSdpa } from "../layers/quantized-attention";
 import { disposeTriple } from "./quantized-tensor";
 

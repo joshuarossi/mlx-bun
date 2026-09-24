@@ -1,16 +1,17 @@
-import type { BatchableCache, Cache } from "../contracts/cache";
+import type { BatchableCache, Cache } from "../contracts/mlx/cache";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";
-import type { PrefillStep } from "../contracts/prefill";
-import { cloneKvCaches, type CacheCodecProvider } from "../state/persistence";
-import { disposeResources, cleanupFailure } from "./resources";
-import type { MlxGroupPreparation, Row } from "./batch-group";
-import { evalCacheState } from "./prefill";
+import type { PrefillStep } from "../contracts/portable/prefill";
+import { cloneKvCaches } from "../state/persistence";
+import { type CacheCodecProvider } from "../state/persistence-types";
+import { disposeResources, cleanupFailure } from "../runtime/resources";
+import type { MlxGroupPreparation, Row } from "./batch-types";
+import { evalCacheState } from "../generation/prefill";
 import { prefillCacheLayout } from "../state/layout";
 import { MlxStateRows } from "../state/rows";
-import type { P2RTracePhase, P2RTraceAttributes } from "./trace";
-import type { MlxForwardWork, MlxPreparationWork } from "./mixed-iteration";
+import type { P2RTracePhase, P2RTraceAttributes } from "../runtime/trace";
+import type { MlxForwardWork, MlxPreparationWork } from "../contracts/mlx/forward-work";
 import type { KvMaintenance } from "../state/kv-maintenance";
 
 // Shared work is recorded on every participating request. workId identifies

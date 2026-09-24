@@ -7,8 +7,8 @@
 // - opt-in early token-zero yield reduces latency before that pipeline starts
 // - sampling stays on-device; only the chosen token id crosses to JS
 
-import { runtimeConfig,withRuntimeConfig } from "../execution/config";
-import { GenerateStats,GeneratedToken } from './types';
+import { runtimeConfig,withRuntimeConfig } from "../runtime/config";
+import { GenerateStats,GeneratedToken } from "./types";
 
 export class Generation implements AsyncIterable<GeneratedToken> {
   stats: GenerateStats | null = null;

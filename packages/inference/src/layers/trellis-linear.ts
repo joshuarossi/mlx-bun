@@ -3,7 +3,7 @@ import { Dtype, activeMemory, maxRecommendedWorkingSetSize } from "@mlx-bun/mlx/
 import * as ops from "@mlx-bun/mlx/ops";
 import { quantFor, type ModelConfig, type QuantSpec } from "../artifacts/config";
 import type { Weights } from "../artifacts/weights";
-import { runtimeFlag, runtimeNumber, runtimeValue } from "../execution/config";
+import { runtimeFlag, runtimeNumber, runtimeValue } from "../runtime/config";
 import { QuantizedLinear } from "./quantized-linear";
 import { wordsPerBlock } from "../kernels/trellis/codebook";
 import {
@@ -13,8 +13,8 @@ import {
   tiledTrellisPrefill, tiledTrellisPrefillEligible,
   splitKTrellisPrefill, splitKTrellisPrefillEligible,
   wideTrellisPrefill, wideTrellisPrefillEligible, type MixedGateUpTail,
-} from "../kernels/trellis";
-export { TRELLIS_MATVEC_MAX_M, type TrellisGeometry, type MixedGateUpTail } from "../kernels/trellis";
+} from "../kernels/trellis/index";
+export { TRELLIS_MATVEC_MAX_M, type TrellisGeometry, type MixedGateUpTail } from "../kernels/trellis/index";
 
 /** Decode variant (see HEADER). Default passed the M4 Pro closeout matrix;
  *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */

@@ -12,7 +12,7 @@
 // so they share their Gumbel noise: a coupled draw whose match rate is far
 // above independent sampling. Every knob here keeps that key; each is default
 // off and needs a paired microbench win before any default (flag-and-try-both).
-import { runtimeFlag, runtimeValue } from "../../execution/config";
+import { runtimeFlag, runtimeValue } from "../../runtime/config";
 import type { SamplerOptions } from "../../sampling/index";
 
 /** Argmax drafts (`MLX_BUN_SPEC_GREEDY_DRAFT=1`). Drops the shared noise. */

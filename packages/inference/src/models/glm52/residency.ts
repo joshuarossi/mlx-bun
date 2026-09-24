@@ -1,10 +1,10 @@
-import { ExpertIOSlabStore } from "../../execution/experts/io";
+import { ExpertIOSlabStore } from "../../artifacts/experts/io";
 import {
   ExpertUsageLedger,
   planExpertAutoPins,
   selectExpertLfruCandidates,
   type ExpertAutoPinPlan,
-} from "../../execution/experts/usage";
+} from "../../artifacts/experts/usage";
 import { join } from "node:path";
 import {
   buildExpertHintSegments,
@@ -17,7 +17,7 @@ import {
   type ExpertRepinEvent,
   type ExpertResidencyPlan,
   type ExpertResidencyManagerOptions,
-} from "../../execution/experts/residency";
+} from "../../artifacts/experts/residency";
 import type { Glm52Config } from "../../artifacts/glm52-config";
 import { ColibriGlm52Container } from "../../artifacts/glm52/container";
 import {

@@ -7,7 +7,7 @@ import { KVCache } from "../../src/state/kv";
 import { SSMCache } from "../../src/state/ssm";
 import { SsdCacheStore } from "../../src/state/ssd-cache";
 import { kvWriter } from "../../src/state/persistence-worker";
-import { disposeResources } from "../../src/execution/resources";
+import { disposeResources } from "../../src/runtime/resources";
 function caches(offset:number){
   const kv=new KVCache(),ssm=new SSMCache();
   const values=()=>MlxArray.fromFloat32(Float32Array.from({length:2*16*64},(_,i)=>Math.sin(i)),[1,2,16,64]);

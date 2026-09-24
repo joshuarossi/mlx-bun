@@ -2,7 +2,7 @@ import { speculativePrefixNamespace, captureSpeculativeOptions } from "../genera
 import { createOrdinaryContinuationRequest } from "./continuation-request";
 import type { MlxSerialServices } from "./serial-executor";
 import { bindPagedRequestState, pagedPrefixNamespace, type MlxRequestStatePolicy } from "../state/request-policy";
-import type { ExecutionContext } from "../contracts/scheduling";
+import type { ExecutionContext } from "../contracts/portable/scheduling";
 import type { ModelConfig } from "../artifacts/config";
 import type { KvScheme } from "../state/kv-scheme";
 import type { RuntimeModel } from "../models/factory";
@@ -14,21 +14,22 @@ import { isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state
 import { SSMCache } from "../state/ssm";
 import { Gemma4Model } from "../models/gemma4/model";
 import { Qwen35Model } from "../models/qwen/qwen3_5";
-import { runtimeConfig, type RuntimeConfig } from "./config";
-import { disposeResources } from "./resources";
-import { legacyCompiledDecodeAvailable } from "./autoregressive";
-import { MlxBatchExecutionGroup, type MlxBatchExecutionGroupOptions, type MlxGroupMethodRequest } from "./batch-group";
+import { runtimeConfig, type RuntimeConfig } from "../runtime/config";
+import { disposeResources } from "../runtime/resources";
+import { legacyCompiledDecodeAvailable } from "../generation/bindings/autoregressive";
+import { MlxBatchExecutionGroup } from "./batch-group";
+import { type MlxBatchExecutionGroupOptions, type MlxGroupMethodRequest } from "./batch-types";
 import type { DraftProvider } from "../generation/speculative/source";
 import { constraintDraftProvider } from "../generation/speculative/sources/ngram-source";
 import { targetRowLayoutFactory } from "../state/target-layout";
 import { bindSpeculativeGroupRequests } from "./speculative-group";
 import { bindFillGroupRequests } from "./fill-group";
 import type { GenerateOptions } from "../generation/index";
-import type { ExecutionRequirements, ResolvedExecution } from "../contracts/execution";
+import type { ExecutionRequirements, ResolvedExecution } from "../contracts/portable/execution";
 import { resolveExecution } from "./plan";
 import { bindEmbeddingsInput, type MlxPromptInput } from "./prompt-input";
 import { bindQwenMediaInput } from "./qwen-prompt-input";
-import type { Vision } from "../contracts/execution-input";
+import type { Vision } from "../contracts/mlx/media";
 
 export interface MlxBatchGroup extends Pick<MlxBatchExecutionGroup,
   "activeRows" | "pendingRows" | "projectedKvBytes" | "kvBudgetBytes" | "submit" | "kick" | "close"> {

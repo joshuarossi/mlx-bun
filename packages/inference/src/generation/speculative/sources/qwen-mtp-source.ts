@@ -32,14 +32,16 @@ import { loadModelConfig, type ModelConfig } from "../../../artifacts/config";
 import { Weights } from "../../../artifacts/weights";
 import { KVCache } from "../../../state/kv";
 import { MtpModule } from "../../../models/qwen/mtp";
-import type { DraftProvider, DraftSource, DraftRowCheckpoint, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, QwenMtpTarget, TargetView } from "../source";
-import { QwenMtpRows, type MtpRowState } from "../../../execution/speculative/qwen-mtp-rows";
+import type { DraftProvider, DraftSource, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, QwenMtpTarget, TargetView } from "../source";
+import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
+import { QwenMtpRows } from "../bindings/qwen-mtp-rows";
+import { type MtpRowState } from "../../../state/speculative/qwen-mtp-state";
 import { captureQwenMtpState, restoreQwenMtpState } from "../../../state/speculative/qwen-mtp-state";
-import type { Cache } from "../../../contracts/cache";
-import { applyStateChanges, cleanupFailure, disposeResources } from "../../../execution/resources";
+import type { Cache } from "../../../contracts/mlx/cache";
+import { applyStateChanges, cleanupFailure, disposeResources } from "../../../runtime/resources";
 import { artifactIdentity } from "../../../artifacts/identity";
 import { configFingerprint } from "../../../artifacts/fingerprint";
-import type { PreparedStateChange } from "../../../contracts/resources";
+import type { PreparedStateChange } from "../../../contracts/portable/resources";
 
 type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 

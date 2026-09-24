@@ -12,11 +12,11 @@
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { FullPrefillPadding } from "./full-prefill-padding";
-import type { PrefillPadding } from "../contracts/cache";
+import type { PrefillPadding } from "../contracts/mlx/cache";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { type BatchableCache, type Cache, type Mask } from "../contracts/cache";
-import { createCausalMask } from "../layers/masks";
+import { type BatchableCache, type Cache, type Mask } from "../contracts/mlx/cache";
+import { createCausalMask } from "../kernels/attention/masks";
 
 export interface DSAIndexGeometry {
   readonly headDim: number;

@@ -23,26 +23,13 @@
 // mlx inline-temporary hazard (CLAUDE.md): every op result is held in a
 // local and disposed; no nested `ops.foo(x.slice(...))` chains.
 
-import type { ModelConfig } from "../../artifacts/config";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
-import { WhisperFastPath } from "./fast";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
+import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
-
-export interface WhisperDims {
-  nMels: number;
-  nAudioCtx: number;
-  nAudioState: number;
-  nAudioHead: number;
-  nAudioLayer: number;
-  nVocab: number;
-  nTextCtx: number;
-  nTextState: number;
-  nTextHead: number;
-  nTextLayer: number;
-}
+import { WhisperFastPath } from "./fast";
 
 export function parseWhisperDims(raw: Record<string, unknown>): WhisperDims {
   const n = (k: string): number => {
@@ -433,3 +420,6 @@ export class WhisperModel {
     this.#w.dispose();
   }
 }
+
+import { WhisperDims } from "./contracts";
+export { type WhisperDims } from "./contracts";

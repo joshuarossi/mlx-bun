@@ -40,5 +40,5 @@ export class ExecutionTasks {
     for (const task of tasks) task.reject(error);
   }
 }
-import type { Cancellation } from "../contracts/generation";
+import type { Cancellation } from "../contracts/portable/generation";
 import { GenerationCancelled } from "./cancellation";
