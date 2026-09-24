@@ -1,0 +1,408 @@
+// Hot-swap mounted LoRA adapters — port of optiq/adapters/{mount,
+// registry,resolver}.py (serving side; lora/apply.py is the training-
+// side rank logic). Mount N adapters on one quantized base, select per
+// request by id, never reload the base.
+//
+// Deviations from the reference, both deliberate (PLAN Phase 8):
+// - No ContextVar/serve-pin: our generation queue is serialized, so the
+//   active adapter is a plain field (LoraState) set by generate().
+// - Residual composition is mlx-lm LoRALinear / optiq apply.py
+//   (`y + (scale·z).astype(x.dtype)`), not mount.py's uncast f32 add —
+//   the cast form is what the adapters were trained behind.
+
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { ptr, read } from "bun:ffi";
+import { MlxArray, cpuStream } from "@mlx-bun/mlx/array";
+import { C } from "@mlx-bun/mlx/ffi";
+import { transposeAxes } from "@mlx-bun/mlx/ops";
+import { SafetensorsFile } from "../artifacts/safetensors";
+import type { LoraWeights } from "./state";
+import type { RuntimeModel } from "../models/factory";
+
+const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
+
+export interface AdapterInfo {
+  id: string;
+  path: string;
+  rank: number | null;
+  scale: number;
+  sizeBytes: number;
+  mountedLayers: number;
+  /** Adapter tensors for modules outside the 7 target suffixes
+   *  (per-layer-input projections etc.) — skipped, like the reference. */
+  skippedTensors: number;
+  /** Actual resident bytes of this adapter's mounted lora_a/lora_b arrays
+   *  (sum of MlxArray.nbytes — the real RAM cost while mounted, not the
+   *  on-disk safetensors size). Web chat's adapter routing table (plan
+   *  §5.6/§9 Phase 2) shows this per loaded adapter instead of guessing
+   *  from file size. */
+  ramBytes: number;
+}
+
+/** Read every tensor from an adapter safetensors file (small, f32) into
+ *  materialized mlx arrays. Tensor names come from our header parser;
+ *  arrays from mlx's native loader via the proven map-get pattern
+ *  (weights.ts). The map and header mmap are freed before returning. */
+export function loadAdapterTensors(file: string): Map<string, MlxArray> {
+  const sf = SafetensorsFile.open(file);
+  const names = [...sf.tensors.keys()];
+  sf.mmap.unmap();
+
+  const arrMapSlot = new BigUint64Array([C.mlx_map_string_to_array_new()]);
+  const metaMapSlot = new BigUint64Array([C.mlx_map_string_to_string_new()]);
+  const arrMapPtr = ptr(arrMapSlot);
+  const metaMapPtr = ptr(metaMapSlot);
+  const status = C.mlx_load_safetensors(arrMapPtr, metaMapPtr, ptr(cstr(file)), cpuStream);
+  C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
+  const mapHandle = read.u64(arrMapPtr, 0);
+  if (status !== 0) {
+    C.mlx_map_string_to_array_free(mapHandle);
+    throw new Error(`mlx_load_safetensors(${file}) failed`);
+  }
+  const out = new Map<string, MlxArray>();
+  try {
+    for (const name of names) {
+      const slot = new BigUint64Array([C.mlx_array_new()]);
+      const slotPtr = ptr(slot);
+      if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(name))) !== 0)
+        throw new Error(`adapter tensor ${name} missing from native map`);
+      const arr = new MlxArray(read.u64(slotPtr, 0));
+      arr.eval(); // materialize — the map (and its Load refs) is freed below
+      out.set(name, arr);
+    }
+  } catch (e) {
+    for (const a of out.values()) a.dispose();
+    C.mlx_map_string_to_array_free(mapHandle);
+    throw e;
+  }
+  C.mlx_map_string_to_array_free(mapHandle);
+  return out;
+}
+
+/** Adapter scale from its config: mlx-lm writes lora_parameters.scale;
+ *  PEFT writes lora_alpha + r and optionally use_rslora. For ordinary PEFT
+ *  return alpha/r as the scale. For PEFT rsLoRA return alpha and set rsLora,
+ *  so the caller's one per-layer division produces alpha/√rank exactly once.
+ *  Internal configs already store their pre-√rank scale directly. */
+export async function readAdapterScale(dir: string): Promise<{ scale: number; rank: number | null; rsLora: boolean }> {
+  for (const name of ["optiq_lora_config.json", "adapter_config.json"]) {
+    const f = Bun.file(`${dir}/${name}`);
+    if (await f.exists()) {
+      const cfg = (await f.json()) as Record<string, any>;
+      const lp = cfg.lora_parameters;
+      const rsLora = Boolean(cfg.rs_lora ?? lp?.rs_lora ?? cfg.use_rslora ?? false);
+      if (lp && typeof lp === "object")
+        return { scale: Number(lp.scale ?? 20.0), rank: lp.rank ?? null, rsLora };
+      const alpha = Number(cfg.lora_alpha ?? 16);
+      const r = Number(cfg.r ?? 8);
+      return {
+        scale: rsLora ? alpha : r ? alpha / r : 1.0,
+        rank: r || null,
+        rsLora,
+      };
+    }
+  }
+  throw new Error(`no adapter_config.json in ${dir}`);
+}
+
+export function adapterWeightsFile(dir: string): string {
+  for (const name of ["adapters.safetensors", "adapter_model.safetensors"]) {
+    const p = `${dir}/${name}`;
+    if (existsSync(p)) return p;
+  }
+  throw new Error(`no adapter weights at ${dir}/adapters.safetensors or adapter_model.safetensors`);
+}
+
+/** A mountable adapter found on disk (not yet mounted). */
+export interface AvailableAdapter {
+  id: string; // directory basename — the handle to mount it under
+  path: string; // absolute adapter dir
+  scale: number;
+  rank: number | null;
+  /** Base model repo id (org/name) the adapter was trained on, or null if the
+   *  config doesn't record it. Lets the chat selector hide adapters that don't
+   *  fit the served model (a MiniCPM5 adapter can't mount on Gemma). */
+  baseModel: string | null;
+}
+
+/** The base-model repo id an adapter was trained on, from its config's
+ *  source_model / base_model_name_or_path. These are stored as machine-local
+ *  snapshot PATHS (…/models--ORG--NAME/snapshots/HASH), so recover the stable
+ *  repo id (ORG/NAME) from the path; returns null if unrecorded. */
+async function readAdapterBaseRepoId(dir: string): Promise<string | null> {
+  for (const [name, key] of [
+    ["optiq_lora_config.json", "source_model"],
+    ["adapter_config.json", "base_model_name_or_path"],
+  ] as const) {
+    const f = Bun.file(`${dir}/${name}`);
+    if (await f.exists()) {
+      const cfg = (await f.json()) as Record<string, any>;
+      const src = cfg[key];
+      if (typeof src === "string" && src) {
+        const m = src.match(/models--([^/]+)/);
+        return m ? m[1]!.replace(/--/g, "/") : src;
+      }
+    }
+  }
+  return null;
+}
+
+/** Scan adapter stores for mountable adapters: directories holding an adapter
+ *  weights file. id = dir basename; scale/rank/baseModel read from each adapter's
+ *  config. Dirs without weights (dataset folders) and unreadable stores are skipped.
+ *  Backs GET /v1/adapters/available, which populates the chat adapter selector. */
+export async function listAvailableAdapters(stores: string[]): Promise<AvailableAdapter[]> {
+  const out: AvailableAdapter[] = [];
+  const seen = new Set<string>();
+  for (const store of stores) {
+    let entries;
+    try {
+      entries = readdirSync(store, { withFileTypes: true });
+    } catch {
+      continue; // store missing → skip
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const dir = resolve(store, e.name);
+      try {
+        adapterWeightsFile(dir);
+      } catch {
+        continue; // no weights → not an adapter
+      }
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      let scale = 1;
+      let rank: number | null = null;
+      try {
+        ({ scale, rank } = await readAdapterScale(dir));
+      } catch {
+        // keep defaults if the config is unreadable
+      }
+      const baseModel = await readAdapterBaseRepoId(dir).catch(() => null);
+      out.push({ id: e.name, path: dir, scale, rank, baseModel });
+    }
+  }
+  return out;
+}
+
+/** Parse an adapter selection spec: "sft" | "sft+dpo" | "sft,dpo"
+ *  (reference mount.py stacking syntax — residuals sum in order). */
+export function parseAdapterSpec(spec: string): string[] {
+  const sep = spec.includes("+") ? "+" : ",";
+  return spec.split(sep).map((s) => s.trim()).filter(Boolean);
+}
+
+export class AdapterManager {
+  readonly #model: RuntimeModel;
+  readonly #mounted = new Map<string, AdapterInfo>();
+  /** Owned adapter arrays per id (disposed on unmount). */
+  readonly #arrays = new Map<string, MlxArray[]>();
+  readonly #revisions = new Map<string, string>();
+
+  constructor(model: RuntimeModel) {
+    this.#model = model;
+  }
+
+  /** Mount an adapter directory under `id`. Validates layer-name and
+   *  rank/shape compatibility against the base BEFORE any weights are
+   *  attached — a bad adapter fails here, never at request time
+   *  (reference: resolver.py + mount.py add_adapter checks). */
+  async mount(id: string, dir: string): Promise<AdapterInfo> {
+    if (this.#mounted.has(id)) return this.#mounted.get(id)!;
+    if (id.includes("+") || id.includes(","))
+      throw new Error(`adapter id ${JSON.stringify(id)} may not contain '+' or ','`);
+    const path = resolve(dir);
+    if (!existsSync(path)) throw new Error(`adapter dir not found: ${path}`);
+
+    const weightsFile = adapterWeightsFile(path);
+    const { scale, rank: configRank, rsLora } = await readAdapterScale(path);
+    // Hash once at mount, before native allocation. Reusing an adapter name
+    // for different weights or scale must never reuse its prefix/checkpoint.
+    const digest = createHash("sha256").update(JSON.stringify({ scale, rank: configRank, rsLora }));
+    for await (const chunk of Bun.file(weightsFile).stream()) digest.update(chunk);
+    const revision = digest.digest("hex");
+    const tensors = loadAdapterTensors(weightsFile);
+    const targets = this.#model.loraTargets();
+
+    // Group adapter tensors into (modulePath → {a, b}), probing both the
+    // pure-LLM and VLM-wrapped prefixes like the reference _find_weight_pair.
+    const pairs = new Map<string, {
+      a?: MlxArray;
+      b?: MlxArray;
+      aIsPeft?: boolean;
+      bIsPeft?: boolean;
+    }>();
+    let skipped = 0;
+    const ourPrefix = `${this.#model.prefixBase}.layers.`;
+    const altPrefix = ourPrefix.startsWith("language_model.")
+      ? ourPrefix.slice("language_model.".length)
+      : `language_model.${ourPrefix}`;
+    for (const [name, arr] of tensors) {
+      const m = name.match(/^(.*)\.(lora_a|lora_A|lora_b|lora_B)(\.weight)?$/);
+      if (!m) { skipped++; arr.dispose(); continue; }
+      let modulePath = m[1]!;
+      // Standard PEFT state dicts wrap the model path in
+      // `base_model.model.`. The remainder is the underlying HF module path
+      // (`model.layers...` or `language_model.model.layers...`).
+      if (modulePath.startsWith("base_model.model."))
+        modulePath = modulePath.slice("base_model.model.".length);
+      if (modulePath.startsWith(altPrefix))
+        modulePath = ourPrefix + modulePath.slice(altPrefix.length);
+      if (!targets.has(modulePath)) { skipped++; arr.dispose(); continue; }
+      const slot = pairs.get(modulePath) ?? {};
+      const peftName = m[3] === ".weight" || m[2] === "lora_A" || m[2] === "lora_B";
+      if (m[2]!.toLowerCase() === "lora_a") {
+        slot.a = arr;
+        slot.aIsPeft = peftName;
+      } else {
+        slot.b = arr;
+        slot.bIsPeft = peftName;
+      }
+      pairs.set(modulePath, slot);
+    }
+
+    // Validate every pair against the base linear's dims before mounting
+    // anything (all-or-nothing: a bad adapter must not half-mount).
+    const validated: { linear: import("../layers/quantized-linear").QuantizedLinear; lw: LoraWeights }[] = [];
+    const dispose = () => {
+      for (const { a, b } of pairs.values()) { a?.dispose(); b?.dispose(); }
+    };
+    try {
+      for (const [modulePath, pair] of pairs) {
+        const { a, b } = pair;
+        if (!a || !b)
+          throw new Error(`${modulePath}: adapter has only one of lora_a/lora_b`);
+        const linear = targets.get(modulePath)!;
+        if (a.shape.length !== 2 || b.shape.length !== 2)
+          throw new Error(
+            `${modulePath}: LoRA tensors must be rank-2; got ` +
+            `lora_a [${a.shape}] / lora_b [${b.shape}]`,
+          );
+
+        const internalLayout =
+          a.shape[0] === linear.inFeatures &&
+          b.shape[0] === a.shape[1] &&
+          b.shape[1] === linear.outFeatures;
+        const peftLayout =
+          a.shape[1] === linear.inFeatures &&
+          b.shape[1] === a.shape[0] &&
+          b.shape[0] === linear.outFeatures;
+        if (!internalLayout && !peftLayout)
+          throw new Error(
+            `${modulePath}: shape mismatch — lora_a [${a.shape}] / lora_b [${b.shape}] ` +
+            `vs base [in ${linear.inFeatures}, out ${linear.outFeatures}]. Expected ` +
+            `mlx-lm [in, rank] + [rank, out] or PEFT [rank, in] + [out, rank].`,
+          );
+
+        // Full-rank square adapters satisfy both shape predicates. In that
+        // ambiguous case the PEFT spelling is authoritative; otherwise the
+        // unique compatible layout decides.
+        const usePeftLayout =
+          peftLayout && (!internalLayout || (pair.aIsPeft === true && pair.bIsPeft === true));
+        let mountedA = a;
+        let mountedB = b;
+        if (usePeftLayout) {
+          let transposedA: MlxArray | null = null;
+          let transposedB: MlxArray | null = null;
+          try {
+            transposedA = transposeAxes(a, [1, 0]);
+            transposedB = transposeAxes(b, [1, 0]);
+          } catch (e) {
+            transposedA?.dispose();
+            transposedB?.dispose();
+            throw e;
+          }
+          mountedA = transposedA;
+          mountedB = transposedB;
+          pair.a = mountedA;
+          pair.b = mountedB;
+          a.dispose();
+          b.dispose();
+        }
+        const rank = mountedA.shape[1]!;
+        // rsLoRA: effective per-layer scale is α/√rank (matches training).
+        const effScale = rsLora ? scale / Math.sqrt(rank) : scale;
+        validated.push({ linear, lw: { a: mountedA, b: mountedB, scale: effScale, rank } });
+      }
+      if (validated.length === 0)
+        throw new Error(
+          `failed to mount adapter ${JSON.stringify(id)}: no tensors match the ` +
+          `target modules (q/k/v/o/gate/up/down_proj). Check that the adapter ` +
+          `was trained for this base model.`,
+        );
+    } catch (e) {
+      dispose();
+      throw e;
+    }
+
+    for (const { linear, lw } of validated) {
+      (linear.adapters ??= new Map()).set(id, lw);
+      linear.loraState = this.#model.loraState;
+    }
+
+    const ramBytes = validated.reduce((sum, { lw }) => sum + lw.a.nbytes + lw.b.nbytes, 0);
+    const info: AdapterInfo = {
+      id,
+      path,
+      rank: configRank,
+      scale,
+      sizeBytes: statSync(weightsFile).size,
+      mountedLayers: validated.length,
+      skippedTensors: skipped,
+      ramBytes,
+    };
+    this.#mounted.set(id, info);
+    this.#revisions.set(id, revision);
+    this.#arrays.set(id, validated.flatMap(({ lw }) => [lw.a, lw.b]));
+    return info;
+  }
+
+  /** Remove `id` from every linear (frees its arrays). The mount points
+   *  stay in place for other adapters, like the reference. */
+  unmount(id: string): number {
+    if (!this.#mounted.delete(id)) return 0;
+    this.#revisions.delete(id);
+    let removed = 0;
+    for (const linear of this.#model.loraTargets().values()) {
+      if (linear.adapters?.delete(id)) removed++;
+    }
+    for (const a of this.#arrays.get(id) ?? []) a.dispose();
+    this.#arrays.delete(id);
+    if (this.#model.loraState.active.includes(id))
+      this.#model.loraState.active = this.#model.loraState.active.filter((x) => x !== id);
+    return removed;
+  }
+
+  /** Ordered, content-addressed namespace for the actual mounted composition. */
+  cacheNamespace(ids: readonly string[]): string {
+    return ids.map((id) => {
+      const revision = this.#revisions.get(id);
+      if (!revision) throw new Error(`adapter ${id} is no longer mounted`);
+      return `${id}@${revision}`;
+    }).join("+");
+  }
+
+  list(): AdapterInfo[] {
+    return [...this.#mounted.values()];
+  }
+
+  get(id: string): AdapterInfo | undefined {
+    return this.#mounted.get(id);
+  }
+
+  /** Resolve a request's adapter spec to validated ids ([] for none).
+   *  Unknown ids are an error — selection must fail loudly, not no-op. */
+  resolveSpec(spec: string | null | undefined): string[] {
+    if (!spec || spec.toLowerCase() === "none") return [];
+    const ids = parseAdapterSpec(spec);
+    for (const id of ids)
+      if (!this.#mounted.has(id))
+        throw new Error(
+          `unknown adapter ${JSON.stringify(id)} — mounted: ` +
+          `${[...this.#mounted.keys()].join(", ") || "(none)"}`,
+        );
+    return ids;
+  }
+}

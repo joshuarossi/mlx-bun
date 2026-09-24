@@ -184,3 +184,22 @@ Native libraries belong to `@mlx-bun/mlx`; this package depends on it. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`
 from the repository root. Generation methods and the remaining higher-level APIs are being migrated
 incrementally.
+
+## Sampling, embeddings, and adapters
+
+`@mlx-bun/inference/sampling` exposes `makeSampler`, `makeLogitsProcessors`,
+`makeStepSampler`, and the individual top-p/top-k/min-p/XTC and tone-curve
+operations. `sampling/types.ts` owns options; `filters.ts`, `processors.ts`,
+`hlg.ts`, and `curve.ts` own transformations; `step.ts` owns token history and
+per-step sampling; `extras.ts` owns captured log-probability readback and disposal.
+The caller supplies scores and chooses options. Returned arrays belong to the caller.
+
+`sampling/grammar` compiles constraints against the caller's loaded tokenizer
+using the existing xgrammar dependency. Await `ready()`, apply the mask to logits,
+accept the sampled token, and dispose the controller when finished. The normalized
+argmax and token-bitmask kernels are exposed through `kernels/sampling`.
+
+`embeddings` provides the existing Qwen3 embedding helpers: `embedOne`, `embedMany`,
+and `withInstruction`. Supply the graph and tokenizer explicitly. `adapters`
+provides `AdapterManager` for loading and applying existing mlx-lm and PEFT LoRA
+artifacts to a caller-owned graph; adapter weight/state types are also exported.

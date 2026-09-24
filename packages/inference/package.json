@@ -39,7 +39,12 @@
     "./models/whisper": "./src/models/whisper/model.ts",
     "./artifacts/glm52": "./src/artifacts/glm52/index.ts",
     "./input/vision": "./src/input/vision/preprocess.ts",
-    "./kernels/glm52": "./src/kernels/glm52/streamed-experts.ts"
+    "./kernels/glm52": "./src/kernels/glm52/streamed-experts.ts",
+    "./sampling": "./src/sampling/index.ts",
+    "./sampling/grammar": "./src/sampling/grammar.ts",
+    "./kernels/sampling": "./src/kernels/sampling/index.ts",
+    "./adapters": "./src/adapters/index.ts",
+    "./embeddings": "./src/embeddings/index.ts"
   },
   "files": [
     "src",
@@ -58,6 +63,7 @@
     "@mlx-bun/mlx": "workspace:*",
     "@huggingface/tokenizers": "^0.1.3",
     "@huggingface/jinja": "^0.5.9",
-    "fast-png": "^8.0.0"
+    "fast-png": "^8.0.0",
+    "@mlc-ai/web-xgrammar": "^0.1.27"
   }
 }
