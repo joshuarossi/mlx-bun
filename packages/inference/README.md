@@ -38,6 +38,27 @@ of a predicted memory estimate. Explicit user limits, queue capacity, and actual
 layout requirements still apply; release owned resources on failure. Application
 composition must preserve this policy when binding the optional execution layer.
 
+### External parity evidence
+
+On 2026-09-24, inference at `5527989` and main at `02d723a` independently matched
+the external mlx-lm reference for MiniCPM5-1B-OptiQ-4bit, snapshot
+`664aabaed233c653f82716d8dc822234d0091f78`. On an Apple M1 Max with 32 GiB RAM,
+macOS 27.0 (26A428), and Bun 1.4.2, all 100 greedy tokens and all 13,056,000
+float32 logits were byte-identical; all logits were finite. The prompt was
+`The capital of France is` (six matching tokenizer IDs), batch one, default
+unquantized KV, with no `MLX_BUN_*` overrides and no EOS early stopping.
+
+The external environment used Python 3.13.5, MLX/MLX-Metal 0.32.2 and mlx-lm
+0.31.3. Reference generation used the unchanged Python body from
+`02d723a:scripts/regen/minicpm5.ts`; model-file and per-step reference hashes
+were checked. The reference manifest SHA-256 is
+`e20d64193328d5dfe1c4b9681651730b35b2eeb2f5152b0ae3d8fb50b05dfd5f`.
+The external Bun harness used public root, model, and scoring imports, forwarding
+the prompt once and each selected token thereafter with the same live cache.
+This result covers that path only, not other models, batching, quantized KV,
+snapshot restore, long contexts, or speed. Raw outputs and the comparison
+harness remain external; Python is not a project dependency.
+
 ## Direct library use
 
 ```ts

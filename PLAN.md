@@ -5,17 +5,14 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
 
 ## Verify the migrated library
 
-- [ ] Restore the minimum reproducible oracle and comparison tooling. Recover
-  `scripts/oracle/requirements.lock` and setup from the historical source linked
-  in ARCHITECTURE; preserve the complete lock, Python version, and Metal wheel
-  hash in executable configuration. Audit script dependencies before migration.
-  Exit: a documented command sets up and validates the pinned reference without
-  relying on one developer's environment; setup does not download model weights.
-- [ ] Establish real-weight parity for Qwen Trellis, Gemma, and MiniCPM against
-  their applicable oracle and main. Cover logits, state continuation, and the
-  relevant specialized paths under identical artifacts and settings. Exit:
-  reproducible comparisons meet the numerical contracts, with curated evidence;
-  synthetic tests alone do not close this item.
+- [ ] Establish real-weight parity for Qwen Trellis and Gemma, and extend MiniCPM
+  beyond the [verified basic decode path](packages/inference/README.md#external-parity-evidence),
+  against their applicable external oracle and main. Keep Python environments, setup,
+  and reference generation outside this repository. Cover logits, state
+  continuation, and relevant specialized paths under identical artifacts and
+  settings. Exit: reproducible comparisons meet the numerical contracts, with
+  source revisions, external oracle versions, and curated evidence in approved
+  docs; synthetic tests alone do not close this item.
 - [ ] Run paired same-machine performance comparisons against main using the
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.

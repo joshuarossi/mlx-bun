@@ -16,6 +16,9 @@ needs a separate installation or release boundary.
 - Keep one inference package with enforced internal boundaries. Split a package
   when a consumer needs that boundary, not merely because a directory exists.
 - Preserve behavior during migration; numerical optimization is separate work.
+- Python reference oracles run externally. This repository has no Python
+  dependency, venv, oracle setup script, or Python dependency lock. Gather
+  comparison data externally and record curated evidence in approved docs.
 
 ## Composition and public APIs
 
