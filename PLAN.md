@@ -25,8 +25,6 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
 - [ ] Integrate the existing packed-package consumer checks into repeatable release
   validation. Exit: clean Bun projects import both high-level and component APIs
   and exercise bundled natives without depending on the checkout.
-- [ ] Establish short contributor and agent entry guidance with the verification
-  tooling. Exit: rules and commands have one home, with no duplicated status ledger.
 
 ## Migrate applications after library verification
 

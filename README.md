@@ -18,6 +18,8 @@ and optional in-process execution.
 `apps/` will be created with its first application.
 See [the library architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.
 Remaining migration work is in [PLAN.md](PLAN.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and review expectations;
+agents start at [AGENTS.md](AGENTS.md).
 
 ## Using the app
 
