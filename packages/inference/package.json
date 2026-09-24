@@ -17,9 +17,21 @@
     "./state": "./src/state/index.ts",
     "./contracts": "./src/contracts/index.ts",
     "./kernels/turboquant": "./src/kernels/turboquant/index.ts",
-    "./kernels/delta": "./src/kernels/delta/gated.ts",
+    "./kernels/delta": "./src/kernels/delta/index.ts",
     "./kernels/attention/paged": "./src/kernels/attention/paged.ts",
-    "./state/paged": "./src/state/paged/cache.ts"
+    "./state/paged": "./src/state/paged/cache.ts",
+    "./models/qwen3": "./src/models/qwen/qwen3.ts",
+    "./models/qwen3-moe": "./src/models/qwen/qwen3-moe.ts",
+    "./models/qwen3_5": "./src/models/qwen/qwen3_5.ts",
+    "./models/qwen38-27b-trellis-tq": "./src/models/qwen/qwen38-27b-trellis-tq.ts",
+    "./models/gemma4": "./src/models/gemma4/model.ts",
+    "./models/gemma4/generated": "./src/models/gemma4/generated/index.ts",
+    "./models/minicpm5": "./src/models/minicpm5/model.ts",
+    "./models/universal": "./src/models/universal/dense.ts",
+    "./models/graph": "./src/models/graph.ts",
+    "./kernels/attention/flash": "./src/kernels/attention/flash.ts",
+    "./scoring": "./src/scoring/index.ts",
+    "./execution/compiled-decode": "./src/execution/compiled-decode.ts"
   },
   "files": [
     "src",

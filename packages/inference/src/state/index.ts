@@ -20,3 +20,6 @@ export * from "./batched-rotating-quant";
 export * from "./delayed-quantized-kv";
 export * from "./delayed-turboquant-kv";
 export * from "./delayed-rotating-quantized-kv";
+export * from "./batched-ssm";
+export * from "./speculative-rotating-kv";
+export * from "./rollback";

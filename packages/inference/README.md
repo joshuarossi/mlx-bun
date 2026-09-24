@@ -87,6 +87,39 @@ by `Weights.tensor()` are borrowed from the weights owner; release them through
 `Weights.release()`, `releaseShard()`, or `dispose()`. Layer outputs are owned
 by the caller.
 
+## Concrete graphs
+
+Import a graph directly, provide its weights and configuration, and own its state:
+
+```ts
+import { loadModelConfig, Weights } from "@mlx-bun/inference/artifacts";
+import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
+
+const config = await loadModelConfig(modelDirectory);
+const weights = await Weights.open(modelDirectory);
+try {
+  const graph = new Qwen3Model(weights, config);
+  const tokens = graph.generate(promptTokenIds, 32, config.eosTokenIds);
+} finally {
+  weights.dispose();
+}
+```
+
+The direct graph imports currently include `models/gemma4`,
+`models/gemma4/generated`, `models/minicpm5`, `models/qwen3`, `models/qwen3-moe`,
+`models/qwen3_5`, `models/qwen38-27b-trellis-tq`, and `models/universal`.
+These retain the existing dedicated and specialized implementations.
+
+For explicit state and tensor operations, use `graph.makeCache()`,
+`graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
+Release state with each cache's `dispose()` and release returned arrays when
+finished. `bindMlxGraph` from `models/graph` adapts caller-supplied operations to
+an explicit graph descriptor and logits selection contract without owning weights.
+
+Shared dense/quantized layers, activations, normalization, and RoPE live under
+`layers/`; architecture assembly lives under `models/<family>/`. DeltaNet
+kernels remain independently importable through `kernels/delta`.
+
 ## State and attention
 
 `@mlx-bun/inference/state` exposes the existing plain, affine, rotating,
@@ -133,5 +166,5 @@ The wide-prefill native comparison runs only on supported hardware.
 
 Native libraries belong to `@mlx-bun/mlx`; this package depends on it. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`
-from the repository root. Model graphs and the remaining inference components
-will be migrated incrementally.
+from the repository root. The remaining graph families and generation methods are being migrated
+incrementally.
