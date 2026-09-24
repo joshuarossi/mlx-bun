@@ -63,10 +63,13 @@ These do not give their dependencies permission to import back upward.
 
 The exact direct-dependency rules live in
 [`architecture.test.ts`](packages/inference/tests/architecture.test.ts).
-The test parses both packages' TypeScript and JavaScript, resolves imports,
-checks the declared layer DAG, and rejects module cycles, including type-only
-cycles. Static imports, re-exports, import types, dynamic imports, and `require`
-are checked. New source directories need an explicit owner in this gate.
+The test discovers every `packages/*/src` directory and parses its TypeScript
+and JavaScript. Package manifests declare dependencies; cross-package imports
+must use public exports, and package dependencies must form a DAG. Within
+inference, the stricter layer rules also apply. The gate rejects module cycles
+across all libraries, including type-only cycles. Static imports, re-exports,
+import types, dynamic imports, and `require` are checked. New inference source
+directories need an explicit layer owner in this gate.
 
 Application contracts migrate with their owning apps: Pi UI/provider protocols,
 job runner types, engine host, and completion clients. Within the apps, Pi
