@@ -1,7 +1,7 @@
+import { expandWeights } from "../../examples/trellis-expand";
 import { expect, test } from "bun:test";
 import { Dtype, MlxArray, ops } from "@mlx-bun/mlx";
 import {
-  vectorTrellisExpand,
   vectorTrellisExpandEligible,
   type TrellisGeometry,
 } from "@mlx-bun/inference/kernels/trellis";
@@ -58,7 +58,7 @@ function expectExpansion(codes: MlxArray, scales: MlxArray, host: Int32Array, g:
   using contiguousScales = ops.contiguous(scales);
   using expected32 = MlxArray.fromFloat32(reference(host, contiguousScales.toFloat32(), g), [g.rows, g.cols]);
   using expected = expected32.astype(Dtype.bfloat16);
-  using actual = vectorTrellisExpand(codes, scales, g);
+  using actual = expandWeights(codes, scales, g);
   expect(actual.shape).toEqual([g.rows, g.cols]);
   expect(actual.dtype).toBe(Dtype.bfloat16);
   const actualBytes = actual.rawBytes(), expectedBytes = expected.rawBytes();

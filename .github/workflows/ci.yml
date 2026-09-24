@@ -1,0 +1,34 @@
+name: Library checks
+
+on:
+  push:
+    branches: [main, refactor/monorepo]
+  pull_request:
+    branches: [main, refactor/monorepo]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  libraries:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: brew install cmake
+      - name: Build and stage native libraries
+        run: |
+          bun run --cwd packages/mlx build:native "$RUNNER_TEMP/mlx-native"
+          bun run --cwd packages/mlx stage:native "$RUNNER_TEMP/mlx-native/lib"
+          bun run --cwd packages/inference build:native
+      - run: bun run test
+      - run: bun run verify:packages

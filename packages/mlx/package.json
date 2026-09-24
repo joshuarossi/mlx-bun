@@ -28,6 +28,7 @@
   },
   "files": [
     "src",
+    "examples",
     "dist/native",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"

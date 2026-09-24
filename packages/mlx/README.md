@@ -4,13 +4,8 @@ Low-level Bun bindings for MLX on Apple Silicon Macs. This package owns native
 library loading, arrays, tensor operations, graph compilation, and custom Metal
 kernel execution. It uses the existing mlx-bun implementation and MLX 0.32.2.
 
-```ts
-import { MlxArray, ops } from "@mlx-bun/mlx";
-
-using input = MlxArray.fromFloat32(new Float32Array([1, 2, 3]), [3]);
-using output = ops.mulScalar(input, 2);
-console.log([...output.toFloat32()]); // [2, 4, 6]
-```
+See the runnable [array example](examples/arrays.ts):
+`bun packages/mlx/examples/arrays.ts` prints `[2, 4, 6]`.
 
 Arrays own native handles. Release them with `using` or `.dispose()`. Operations
 are lazy; reading the result evaluates it. Zero-copy constructors have additional
@@ -35,8 +30,8 @@ buffer lifetime contracts documented on their methods.
 
 Each source module except `native.ts` also has an explicit package subpath, such
 as `@mlx-bun/mlx/ops` or `@mlx-bun/mlx/autograd`. `@mlx-bun/mlx/ffi` exposes raw
-bindings for code that needs them. Model graphs, model artifact loading,
-tokenizers, and generation will be migrated separately.
+bindings for code that needs them. Model graphs, artifact loading, tokenizers, and generation belong to
+[`@mlx-bun/inference`](../inference/README.md).
 
 ## Development
 

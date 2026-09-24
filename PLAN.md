@@ -19,12 +19,6 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
 
 ## Make the developer contract reproducible
 
-- [ ] Source README examples from executable examples or existing behavior tests;
-  run them in CI alongside typechecking and the architecture gate. Exit: displayed
-  examples have one tested source and missing native prerequisites are explicit.
-- [ ] Integrate the existing packed-package consumer checks into repeatable release
-  validation. Exit: clean Bun projects import both high-level and component APIs
-  and exercise bundled natives without depending on the checkout.
 - [ ] Establish short contributor and agent entry guidance with the verification
   tooling. Exit: rules and commands have one home, with no duplicated status ledger.
 
