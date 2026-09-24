@@ -253,3 +253,20 @@ expert I/O in `dist/native`. It needs no runtime download or compilation.
 `MLX_BUN_FRAME_EXTRACT` remains an explicit override. AudioToolbox and `afconvert`
 use macOS system facilities. Optional encoder caching lives in `state/encoder-cache`;
 media fetching keeps the existing destination, size, and timeout controls.
+
+## Speculative generation
+
+`generation/speculative` exposes `generateSpeculative`, `specRun`, and the existing
+assistant, two-model, Qwen/GLM MTP, DFlash, DeepSpec, and n-gram proposal providers.
+Supply the target graph, draft provider, token budget, and token callback yourself.
+`specRun` accepts an explicit binding from `execution/speculative`; it does not
+require a concrete model class. The former `specServeRun` name remains available.
+
+Draft graphs live in `models/gemma4/assistant`, `models/qwen/mtp`, `models/glm52/mtp`,
+and `models/speculative/*`. Proposal sources live in `generation/speculative/sources`;
+verification and acceptance belong to `generation/speculative`; batched draft work
+belongs to `execution/speculative`; draft checkpoints belong to `state/speculative`.
+Existing sampling, rejection, rollback, and specialized kernel behavior is preserved.
+
+`state` also exposes the byte-limited `PromptCache`, retention policies, row state,
+and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.

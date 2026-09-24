@@ -59,7 +59,18 @@
     "./models/vision/qwen3vl": "./src/models/vision/qwen3vl.ts",
     "./models/vision/siglip": "./src/models/vision/siglip.ts",
     "./embeddings/vision": "./src/embeddings/vision.ts",
-    "./transcription": "./src/transcription/index.ts"
+    "./transcription": "./src/transcription/index.ts",
+    "./generation/speculative": "./src/generation/speculative/index.ts",
+    "./generation/speculative/dspark": "./src/generation/speculative/dspark/generate.ts",
+    "./generation/speculative/dflash": "./src/generation/speculative/dspark/generate-dflash.ts",
+    "./generation/speculative/loader": "./src/generation/speculative/dspark/loader.ts",
+    "./execution/speculative": "./src/execution/speculative/binding.ts",
+    "./models/gemma4/assistant": "./src/models/gemma4/assistant.ts",
+    "./models/qwen/mtp": "./src/models/qwen/mtp.ts",
+    "./models/glm52/mtp": "./src/models/glm52/mtp.ts",
+    "./models/speculative/dspark": "./src/models/speculative/dspark.ts",
+    "./models/speculative/dflash": "./src/models/speculative/dflash.ts",
+    "./models/speculative/deepspec": "./src/models/speculative/deepspec.ts"
   },
   "files": [
     "src",

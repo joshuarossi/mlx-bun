@@ -1,0 +1,649 @@
+// Token fast-forwarding through the REAL generate() decode loop (K3a).
+//
+// Model-free but not MLX-free: a stub RuntimeModel drives the actual loop with
+// real MLX arrays, caches, and sampler, so the append mechanism is exercised
+// end to end — including the invariant that makes it safe.
+//
+// THE INVARIANT. The fill forward carries ONLY the injected ids: the normal
+// step already consumed the trigger token and wrote its KV. Forwarding
+// [trigger, ...ids] would duplicate a position and silently corrupt both the
+// cache and PromptCache.put's key. `model.forwards` records every id sequence
+// the loop pushed through the model, so the test can see it directly.
+import { describe, expect, test } from "bun:test";
+import { generate, shouldUseFill, type GenerateOptions, type GenerateStats } from "../../src/generation/index";
+import {
+  FillSession, type FillRow, type Proposal, type ProposalSource,
+} from "../../src/generation/fill/session";
+import { KVCache } from "../../src/state/kv";
+import { type Cache } from "../../src/contracts/cache";
+import type { RuntimeModel } from "../../src/models/factory";
+import type { MlxTokenAppend } from "../../src/execution/autoregressive";
+import { MlxArray } from "@mlx-bun/mlx/array";
+import { configureRuntime, runtimeConfig } from "../../src/execution/config";
+import { cloneKvCaches } from "../../src/state/persistence";
+import { specServeRun } from "../../src/generation/speculative/run";
+import type { DraftProvider, DraftSource } from "../../src/generation/speculative/source";
+
+const VOCAB = 128;
+const EOS = 2;
+const PROMPT = [1, 41, 42];
+/** The trigger the stub emits at step 0, and the span a row fills after it. */
+const TRIGGER = 7;
+const SPAN = [11, 12, 13];
+/** Sampled at the trigger's own forward and DISCARDED by the fill — an
+ *  in-flight pipeline dispatch, never inspected. It must never be emitted. */
+const WASTED = 61;
+
+/** last forwarded id → next greedy token. */
+const SCRIPT = new Map<number, number>([
+  [42, TRIGGER],   // end of prompt → open the "tool call"
+  [TRIGGER, WASTED],
+  [13, 20],        // after the injected span
+  [20, EOS],
+]);
+
+class StubModel {
+  constructor(
+    readonly script: Map<number, number> = SCRIPT,
+    private readonly makeCacheImpl: () => Cache[] = () => [new KVCache()],
+  ) {}
+
+  readonly config = {
+    eosTokenIds: [EOS],
+    modelType: "stub-fill",
+    text: { vocabSize: VOCAB, enableMoeBlock: false },
+  };
+  readonly weightsBytes = 1;
+  /** Every id sequence pushed through forwardHidden, in order. */
+  readonly forwards: number[][] = [];
+  readonly headInputs: number[][] = [];
+
+  makeCache(): Cache[] {
+    return this.makeCacheImpl();
+  }
+
+  createAppend(): MlxTokenAppend | null {
+    // This stub's rows are independent and have no shape-dependent rounding.
+    return { maxChunkSize: () => 32, forwardHidden: this.forwardHidden.bind(this) };
+  }
+
+  forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
+    const list = ids.toIntTokens();
+    this.forwards.push(list);
+    const L = list.length;
+    const k = MlxArray.fromFloat32(new Float32Array(L * 4), [1, 1, L, 4]);
+    const v = MlxArray.fromFloat32(new Float32Array(L * 4), [1, 1, L, 4]);
+    const [outK, outV] = cache[0]!.updateAndFetch(k, v);
+    for (const a of [k, v, outK, outV]) a.dispose();
+    // The "hidden state" carries each position's token id, so logits can be
+    // produced PER POSITION — which is what the verify policy reads.
+    return MlxArray.fromFloat32(Float32Array.from(list), [1, L, 1]);
+  }
+
+  logitsFromHidden(hidden: MlxArray): MlxArray {
+    const ids = hidden.toFloat32Host();
+    this.headInputs.push(Array.from(ids));
+    const rows = new Float32Array(ids.length * VOCAB);
+    for (let j = 0; j < ids.length; j++)
+      rows[j * VOCAB + (this.script.get(Math.round(ids[j]!)) ?? EOS)!] = 10;
+    return MlxArray.fromFloat32(rows, [1, ids.length, VOCAB]);
+  }
+}
+
+const row = (trigger: number[], emit: number[]): FillRow =>
+  ({ trigger, emit, kind: "scaffold" });
+
+const session = (rows: FillRow[], maxSpan?: number, appendChunkSize?: number) =>
+  new FillSession(
+    { rows, echo: null, eos: [EOS] },
+    PROMPT,
+    { maxSpan, appendChunkSize },
+  );
+
+test("the append binding owns affine fill format support", () => {
+  const restore = configureRuntime({ MLX_BUN_FILL: "strict" });
+  try {
+    const options = { fill: session([row([TRIGGER], SPAN)]), kvBits: 4 };
+    const supported = { affineKvBits: [4, 8] };
+    expect(shouldUseFill(options, runtimeConfig())).toBe(false);
+    expect(shouldUseFill(options, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvBits: 8 }, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvConfig: [{ layerIdx: 3, bits: 4, groupSize: 64 },
+      { layerIdx: 7, bits: 8, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvBits: 2 }, runtimeConfig(), supported)).toBe(false);
+    expect(shouldUseFill({ ...options, kvBits: 2, kvConfig: [{ layerIdx: 3, bits: 4, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(true);
+    expect(shouldUseFill({ ...options, kvConfig: [{ layerIdx: 3, bits: 2, groupSize: 64 }] }, runtimeConfig(), supported)).toBe(false);
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 8, vBits: 3 } }, runtimeConfig(), supported)).toBe(false);
+    const rotated = { turboQuantFormats: [{ kBits: 8, vBits: 3 }] };
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 8, vBits: 3 } }, runtimeConfig(), rotated)).toBe(true);
+    expect(shouldUseFill({ ...options, turboQuant: { kBits: 4, vBits: 3 } }, runtimeConfig(), rotated)).toBe(false);
+  } finally { restore(); }
+});
+
+async function run(
+  options: GenerateOptions,
+  breakAfter = Number.POSITIVE_INFINITY,
+  model: StubModel = new StubModel(),
+): Promise<{ model: StubModel; tokens: number[]; stats: GenerateStats }> {
+  const gen = generate(
+    model as unknown as RuntimeModel,
+    PROMPT,
+    { temperature: 0, maxTokens: 32, ...options },
+  );
+  const tokens: number[] = [];
+  for await (const t of gen) {
+    tokens.push(t.token);
+    if (tokens.length >= breakAfter) break;
+  }
+  return { model, tokens, stats: gen.stats! };
+}
+
+const withFill = async <T>(env: Record<string, string | undefined>, fn: () => Promise<T>) => {
+  const restore = configureRuntime(env as never);
+  try { return await fn(); } finally { restore(); }
+};
+
+describe("generate(): cancellation", () => {
+  test("cancellation between prefill chunks stops before another forward and releases owned caches", async () => {
+    const abort = new AbortController();
+    let disposals = 0;
+    class OwnedCache extends KVCache {
+      override dispose(): void { disposals++; super.dispose(); }
+    }
+    class CancellingModel extends StubModel {
+      override forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
+        const hidden = super.forwardHidden(ids, cache);
+        abort.abort(new DOMException("cancelled during prefill", "AbortError"));
+        return hidden;
+      }
+      override logitsFromHidden(): MlxArray {
+        throw new Error("cancelled prefill must not project logits");
+      }
+    }
+    const model = new CancellingModel(SCRIPT, () => [new OwnedCache()]);
+    await expect(run({ signal: abort.signal, prefillChunkSize: 1 }, Infinity, model))
+      .rejects.toHaveProperty("name", "AbortError");
+    expect(model.forwards).toEqual([[1]]);
+    expect(disposals).toBe(1);
+  });
+
+  test("an already cancelled generation allocates no cache", async () => {
+    const abort = new AbortController();
+    abort.abort(new DOMException("cancelled", "AbortError"));
+    const model = new StubModel(SCRIPT, () => { throw new Error("must not allocate"); });
+    await expect(run({ signal: abort.signal }, Infinity, model))
+      .rejects.toHaveProperty("name", "AbortError");
+    expect(model.forwards).toEqual([]);
+  });
+
+  test("speculative cancellation between target prefill chunks releases target and draft state", async () => {
+    const abort = new AbortController();
+    let cacheDisposals = 0;
+    let sourceDisposals = 0;
+    class OwnedCache extends KVCache {
+      override dispose(): void { cacheDisposals++; super.dispose(); }
+    }
+    class CancellingModel extends StubModel {
+      override forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
+        const hidden = super.forwardHidden(ids, cache);
+        abort.abort(new DOMException("cancelled during spec prefill", "AbortError"));
+        return hidden;
+      }
+    }
+    const model = new CancellingModel(SCRIPT, () => [new OwnedCache()]);
+    const source = {
+      prefill() { throw new Error("cancelled target must not start draft prefill"); },
+      dispose() { sourceDisposals++; },
+    } as unknown as DraftSource;
+    const provider = { open: () => source } as unknown as DraftProvider;
+    await expect(specServeRun(model as unknown as RuntimeModel, provider, 3,
+      Array.from({ length: 4098 }, () => 1), { temperature: 0, signal: abort.signal },
+      () => { throw new Error("cancelled prefill must not emit"); }))
+      .rejects.toHaveProperty("name", "AbortError");
+    expect(model.forwards).toHaveLength(1);
+    expect(cacheDisposals).toBe(1);
+    expect(sourceDisposals).toBe(1);
+  });
+});
+
+describe("generate(): the fill append", () => {
+  test("an unqualified graph appends M1 without intermediate heads or verification", async () => {
+    class UnqualifiedModel extends StubModel {
+      override createAppend(): null { return null; }
+    }
+    const fill = session([row([TRIGGER], SPAN)], 32, 4);
+    const { model, tokens, stats } = await withFill({ MLX_BUN_FILL: "strict" },
+      () => run({ fill }, Infinity, new UnqualifiedModel()));
+    expect(tokens).toEqual([TRIGGER, ...SPAN, 20]);
+    expect(model.forwards).toEqual([[1, 41], [42], [TRIGGER], [11], [12], [13], [20], [EOS]]);
+    expect(model.headInputs).not.toContainEqual([11]);
+    expect(model.headInputs).not.toContainEqual([12]);
+    expect(stats.fill).toMatchObject({ injected: 3, verifyEvents: 0 });
+    expect(stats.cacheTokens).toEqual([...PROMPT, TRIGGER, ...SPAN, 20, EOS]);
+  });
+
+  test("the graph's chunk limit caps a caller's larger requested chunks", async () => {
+    class TwoRowModel extends StubModel {
+      override createAppend(): MlxTokenAppend {
+        return { maxChunkSize: () => 2, forwardHidden: this.forwardHidden.bind(this) };
+      }
+    }
+    const fill = session([row([TRIGGER], SPAN)], 32, 8);
+    const { model, tokens, stats } = await withFill({ MLX_BUN_FILL: "strict" },
+      () => run({ fill }, Infinity, new TwoRowModel()));
+    expect(tokens).toEqual([TRIGGER, ...SPAN, 20]);
+    expect(model.forwards).toEqual([[1, 41], [42], [TRIGGER], [11, 12], [13], [20], [EOS]]);
+    expect(stats.fill).toMatchObject({ injected: 3, verifyEvents: 0 });
+  });
+
+  test("the graph rechecks its limit after each committed chunk", async () => {
+    const offsets: number[] = [];
+    class BoundaryModel extends StubModel {
+      override createAppend(): MlxTokenAppend {
+        return {
+          maxChunkSize(state) { offsets.push(state[0]!.offset); return state[0]!.offset === 4 ? 1 : 2; },
+          forwardHidden: this.forwardHidden.bind(this),
+        };
+      }
+    }
+    const fill = session([row([TRIGGER], SPAN)], 32, 4);
+    const { model, tokens, stats } = await withFill({ MLX_BUN_FILL: "strict" },
+      () => run({ fill }, Infinity, new BoundaryModel()));
+    expect(offsets).toEqual([4, 5]);
+    expect(tokens).toEqual([TRIGGER, ...SPAN, 20]);
+    expect(model.forwards).toEqual([[1, 41], [42], [TRIGGER], [11], [12, 13], [20], [EOS]]);
+    expect(model.headInputs).not.toContainEqual([11]);
+    expect(stats.fill).toMatchObject({ injected: 3, verifyEvents: 0 });
+  });
+
+  test("injected tokens stream in order and the discarded sample never appears", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "strict" }, () => run({ fill }));
+    expect(tokens).toEqual([TRIGGER, ...SPAN, 20]);
+    expect(tokens).not.toContain(WASTED);
+    // ONE forward carried the whole span — that is the entire point.
+    expect(model.forwards).toEqual([
+      [1, 41], [42],       // prefill (mlx-lm's drain-to-len-1 + L=1 step 0)
+      [TRIGGER],           // ordinary decode step
+      SPAN,                // the fill: injected ids ONLY, never [TRIGGER, ...SPAN]
+      [20], [EOS],
+    ]);
+    expect(stats.cacheTokens).toEqual([...PROMPT, TRIGGER, ...SPAN, 20, EOS]);
+    expect(stats.generatedTokens).toBe(6); // 5 emitted + the unyielded EOS
+  });
+
+  test("telemetry: events, injected tokens, discarded samples, real decode steps", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { stats } = await withFill({ MLX_BUN_FILL: "strict" }, () => run({ fill }));
+    expect(stats.fill).toMatchObject({
+      events: 1, injected: 3, strict: 3, echo: 0,
+      spanLens: [3], wastedSamples: 1, parseFallback: 0,
+    });
+    // decodeSteps counts the SAMPLED tokens the session saw: the trigger and
+    // 20. A terminal EOS stops the loop before the fill hook, by design.
+    expect(stats.fill!.decodeSteps).toBe(2);
+  });
+
+  test("MLX_BUN_FILL unset: the same request decodes every token", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: undefined }, () => run({ fill }));
+    expect(tokens).toEqual([TRIGGER, WASTED]); // WASTED → not in SCRIPT → EOS
+    expect(model.forwards).toEqual([[1, 41], [42], [TRIGGER], [WASTED], [EOS]]);
+    expect(stats.fill).toBeUndefined();
+  });
+
+  test("MLX_BUN_FILL_TRACE=1 asserts cache alignment on both sides of the append", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { tokens } = await withFill(
+      { MLX_BUN_FILL: "strict", MLX_BUN_FILL_TRACE: "1" }, () => run({ fill }));
+    expect(tokens).toEqual([TRIGGER, ...SPAN, 20]);
+  });
+
+  test("max_tokens clamps the span; the burst never overshoots the budget", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "strict" }, () => run({ fill, maxTokens: 3 }));
+    expect(tokens).toEqual([TRIGGER, 11, 12]);
+    expect(stats.generatedTokens).toBe(3);
+    expect(model.forwards).toEqual([[1, 41], [42], [TRIGGER], [11, 12]]);
+    expect(stats.fill!.injected).toBe(2);
+  });
+
+  test("MLX_BUN_FILL_MAX_SPAN caps one injection", async () => {
+    const fill = session([row([TRIGGER], SPAN)], 2);
+    const { tokens } = await withFill({ MLX_BUN_FILL: "strict" }, () => run({ fill }));
+    // 11,12 injected; the next sample comes from position 12 → not scripted → EOS.
+    expect(tokens).toEqual([TRIGGER, 11, 12]);
+  });
+
+  test("a consumer break mid-burst leaves cacheTokens exact (the append precedes the yields)", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { stats } = await withFill(
+      { MLX_BUN_FILL: "strict" }, () => run({ fill }, 2));
+    // Broke after the 2nd emitted token, but the whole span's KV is committed.
+    expect(stats.cacheTokens).toEqual([...PROMPT, TRIGGER, ...SPAN]);
+  });
+
+  test("an EOS inside a row is never injected — ending the turn stays the model's call", async () => {
+    const fill = session([row([TRIGGER], [11, EOS, 12, 13])]);
+    const { model, tokens } = await withFill(
+      { MLX_BUN_FILL: "strict" }, () => run({ fill }));
+    // Only one id survives the EOS cut → below the 2-token floor → no fill.
+    expect(tokens).toEqual([TRIGGER, WASTED]);
+    expect(model.forwards).toEqual([[1, 41], [42], [TRIGGER], [WASTED], [EOS]]);
+  });
+
+  test("composition: a request that asks for logprobs never fills", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "strict" }, () => run({ fill, logprobs: true }));
+    expect(tokens).toEqual([TRIGGER, WASTED]);
+    expect(stats.fill).toBeUndefined();
+  });
+
+  test("an assert fill takes no checkpoint and never rewinds", async () => {
+    const fill = session([row([TRIGGER], SPAN)]);
+    const { stats } = await withFill({ MLX_BUN_FILL: "strict" }, () => run({ fill }));
+    expect(stats.fill).toMatchObject({
+      verifyEvents: 0, verifyAccepted: 0, verifyRejected: 0, checkpointMs: 0,
+    });
+  });
+});
+
+describe("generate(): chunked assert append", () => {
+  const span = [11, 12, 13, 14, 15, 16, 17, 18, 19];
+  const script = new Map([...SCRIPT, [19, 20] as [number, number]]);
+
+  test("retains the whole span and projects only its last hidden position", async () => {
+    const fill = session([row([TRIGGER], span)], 32, 4);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "strict", MLX_BUN_FILL_TRACE: "1" },
+      () => run({ fill }, Infinity, new StubModel(script)));
+    expect(tokens).toEqual([TRIGGER, ...span, 20]);
+    expect(model.forwards).toEqual([
+      [1, 41], [42], [TRIGGER], span.slice(0, 4), span.slice(4, 8), [19], [20], [EOS],
+    ]);
+    expect(model.headInputs).toContainEqual([19]);
+    expect(model.headInputs.every((ids) => ids.length === 1)).toBe(true);
+    expect(stats.cacheTokens).toEqual([...PROMPT, TRIGGER, ...span, 20, EOS]);
+    expect(stats.fill).toMatchObject({ injected: 9, events: 1, spanLens: [9], verifyEvents: 0 });
+  });
+
+  test("a break inside the emitted burst retains the complete cache-covered span", async () => {
+    const fill = session([row([TRIGGER], span)], 32, 4);
+    const { tokens, stats } = await withFill({ MLX_BUN_FILL: "strict" },
+      () => run({ fill }, 3, new StubModel(script)));
+    expect(tokens).toEqual([TRIGGER, 11, 12]);
+    expect(stats.cacheTokens).toEqual([...PROMPT, TRIGGER, ...span]);
+  });
+
+  test("the token budget shortens the span independently of its execution chunks", async () => {
+    const fill = session([row([TRIGGER], span)], 32, 4);
+    const { model, tokens, stats } = await withFill({ MLX_BUN_FILL: "strict" },
+      () => run({ fill, maxTokens: 6 }, Infinity, new StubModel(script)));
+    expect(tokens).toEqual([TRIGGER, ...span.slice(0, 5)]);
+    expect(model.forwards.slice(-2)).toEqual([span.slice(0, 4), [15]]);
+    expect(model.headInputs).not.toContainEqual([15]);
+    expect(stats.cacheTokens).toEqual([...PROMPT, ...tokens]);
+  });
+
+  test("cancellation during an append finishes the cache update before the burst", async () => {
+    const abort = new AbortController();
+    const cache = new KVCache();
+    class CancellingModel extends StubModel {
+      override forwardHidden(ids: MlxArray, caches: Cache[]): MlxArray {
+        const hidden = super.forwardHidden(ids, caches);
+        if (ids.toIntTokens()[0] === 11) abort.abort();
+        return hidden;
+      }
+    }
+    const model = new CancellingModel(script);
+    const fill = session([row([TRIGGER], span)], 32, 4);
+    try {
+      await expect(withFill({ MLX_BUN_FILL: "strict" },
+        () => run({ fill, cache: [cache], signal: abort.signal }, Infinity, model)))
+        .rejects.toHaveProperty("name", "AbortError");
+      expect(model.forwards.slice(-3)).toEqual([span.slice(0, 4), span.slice(4, 8), [19]]);
+      expect(cache.offset).toBe(PROMPT.length + 1 + span.length);
+      expect(fill.stats.injected).toBe(span.length);
+    } finally { cache.dispose(); }
+  });
+
+  test("a failed later chunk releases earlier hidden arrays and owned caches", async () => {
+    let hiddenDisposals = 0, cacheDisposals = 0;
+    class OwnedCache extends KVCache {
+      override dispose(): void { cacheDisposals++; super.dispose(); }
+    }
+    class FailingModel extends StubModel {
+      override forwardHidden(ids: MlxArray, caches: Cache[]): MlxArray {
+        const first = ids.toIntTokens()[0];
+        if (first === 15) throw new Error("failed append chunk");
+        const hidden = super.forwardHidden(ids, caches);
+        if (first === 11) {
+          const dispose = hidden.dispose.bind(hidden);
+          hidden.dispose = () => { hiddenDisposals++; dispose(); };
+        }
+        return hidden;
+      }
+    }
+    const fill = session([row([TRIGGER], span)], 32, 4);
+    await expect(withFill({ MLX_BUN_FILL: "strict" },
+      () => run({ fill }, Infinity, new FailingModel(script, () => [new OwnedCache()]))))
+      .rejects.toThrow("failed append chunk");
+    expect(hiddenDisposals).toBe(1);
+    expect(cacheDisposals).toBe(1);
+    expect(fill.stats.injected).toBe(0);
+  });
+});
+
+describe("generate(): durable decode resume", () => {
+  test("continues from a cache-covered prefix and its already-sampled token", async () => {
+    let saved: {
+      cacheTokens: number[];
+      caches: Cache[];
+      generatedTokens: number;
+      pendingToken: number;
+    } | null = null;
+    const before: number[] = [];
+    const interrupted = generate(
+      new StubModel(VERIFY_SCRIPT) as unknown as RuntimeModel,
+      PROMPT,
+      {
+        temperature: 0,
+        maxTokens: 10,
+        checkpointEveryTokens: 2,
+        onDecodeCheckpoint: (state) => {
+          saved = { ...state, cacheTokens: [...state.cacheTokens], caches: cloneKvCaches(state.caches) };
+          throw new Error("simulated process interruption after durable write");
+        },
+      },
+    );
+    await expect(async () => {
+      for await (const token of interrupted) before.push(token.token);
+    }).toThrow("simulated process interruption");
+    expect(before).toEqual([TRIGGER, V0]);
+    expect(saved).not.toBeNull();
+
+    const checkpoint = saved!;
+    const resumed = generate(
+      new StubModel(VERIFY_SCRIPT) as unknown as RuntimeModel,
+      checkpoint.cacheTokens,
+      {
+        temperature: 0,
+        maxTokens: 10,
+        cache: checkpoint.caches,
+        initialPendingToken: checkpoint.pendingToken,
+        initialGeneratedTokens: checkpoint.generatedTokens,
+        originalPromptTokens: PROMPT.length,
+      },
+    );
+    const after: number[] = [];
+    for await (const token of resumed) after.push(token.token);
+
+    expect([...before, ...after]).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(resumed.stats).toMatchObject({
+      promptTokens: PROMPT.length,
+      generatedTokens: 6,
+    });
+    expect(resumed.stats!.cacheTokens).toEqual([
+      ...PROMPT, TRIGGER, V0, V1, V2, AFTER, EOS,
+    ]);
+    for (const cache of checkpoint.caches) cache.dispose();
+  });
+});
+
+// --- verify policy (K3c) --------------------------------------------------
+// Same apply primitive, same single forward; the difference is that the span's
+// own logits are read back to decide how much of it survives.
+const V0 = 70, V1 = 71, V2 = 72, AFTER = 73, WRONG = 80, TAIL = 81;
+const VERIFY_SCRIPT = new Map<number, number>([
+  [42, TRIGGER], [TRIGGER, V0], [V0, V1], [V1, V2], [V2, AFTER], [AFTER, EOS],
+]);
+
+/** A source that proposes `ids` under policy "verify" once, after TRIGGER. */
+function verifySession(ids: number[], appendChunkSize?: number): FillSession {
+  let fired = false;
+  const source: ProposalSource = {
+    name: "test-verify",
+    windowNeeded: 1,
+    propose: (view) => {
+      if (fired || view.tail(1)[0] !== TRIGGER) return null;
+      fired = true;
+      return { ids: [...ids], policy: "verify", origin: "echo" } as Proposal;
+    },
+  };
+  return new FillSession(
+    { rows: [], echo: null, eos: [EOS] }, PROMPT, { sources: [source], appendChunkSize });
+}
+
+/** Trimmable=false, but round-capable — the shape SSMCache has. Records the
+ *  round calls so the test can prove the spec-round contract is driven. */
+class RoundCache extends KVCache {
+  static calls: string[] = [];
+  #saved = 0;
+  override isTrimmable(): boolean { return false; }
+  specRoundBegin(): void { RoundCache.calls.push("begin"); this.#saved = this.offset; }
+  specRoundCommit(): void { RoundCache.calls.push("commit"); }
+  specRoundRollback(keep: number): void {
+    RoundCache.calls.push(`rollback(${keep})`);
+    this.offset = this.#saved + keep;
+  }
+}
+
+/** Neither trimmable nor round-capable: verify has nowhere to rewind to. */
+class UnrewindableCache extends KVCache {
+  override isTrimmable(): boolean { return false; }
+}
+
+describe("generate(): the verify policy", () => {
+  test("assert chunking leaves a verify round in one forward", async () => {
+    RoundCache.calls = [];
+    const fill = verifySession([V0, WRONG, TAIL], 1);
+    const { model, tokens, stats } = await withFill({ MLX_BUN_FILL: "echo" },
+      () => run({ fill }, Infinity, new StubModel(VERIFY_SCRIPT, () => [new RoundCache()])));
+    expect(model.forwards).toContainEqual([V0, WRONG, TAIL]);
+    expect(RoundCache.calls).toEqual(["begin", "rollback(1)"]);
+    expect(tokens).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(stats.fill).toMatchObject({ verifyEvents: 1, verifyAccepted: 1, verifyRejected: 2 });
+  });
+
+  test("full accept: the whole span survives and decode resumes after it", async () => {
+    const fill = verifySession([V0, V1, V2]);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "echo" },
+      () => run({ fill }, Infinity, new StubModel(VERIFY_SCRIPT)));
+    expect(tokens).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(model.forwards).toEqual([
+      [1, 41], [42], [TRIGGER], [V0, V1, V2], [AFTER], [EOS],
+    ]);
+    expect(stats.fill).toMatchObject({
+      events: 1, injected: 3, echo: 3, strict: 0,
+      verifyEvents: 1, verifyAccepted: 3, verifyRejected: 0,
+      // Verify consumes the in-flight sample as position 0's check, so
+      // nothing is discarded unexamined.
+      wastedSamples: 0,
+    });
+  });
+
+  test("partial accept: the rejected tail is rewound and never reaches the stream", async () => {
+    const fill = verifySession([V0, WRONG, TAIL]);
+    const { model, tokens, stats } = await withFill(
+      // TRACE on: the cache-alignment invariant is ASSERTED across the rewind.
+      { MLX_BUN_FILL: "echo", MLX_BUN_FILL_TRACE: "1" },
+      () => run({ fill }, Infinity, new StubModel(VERIFY_SCRIPT)));
+    // The model's own continuation after V0 is V1, so WRONG/TAIL are dropped
+    // and decode resumes at the first disagreement — producing EXACTLY the
+    // stream an unfilled run produces. A wrong guess costs a rewind, never a
+    // wrong token.
+    expect(tokens).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(tokens).not.toContain(WRONG);
+    expect(model.forwards).toEqual([
+      [1, 41], [42], [TRIGGER], [V0, WRONG, TAIL], [V1], [V2], [AFTER], [EOS],
+    ]);
+    // cacheTokens is the sequence the KV actually holds — the rewound tail is
+    // absent, which is the whole point of the rollback.
+    expect(stats.cacheTokens).toEqual([...PROMPT, TRIGGER, V0, V1, V2, AFTER, EOS]);
+    expect(stats.fill).toMatchObject({
+      events: 1, injected: 1, echo: 1,
+      verifyEvents: 1, verifyAccepted: 1, verifyRejected: 2,
+    });
+  });
+
+  test("rejected at position 0: no forward, no rewind, no cost", async () => {
+    const fill = verifySession([WRONG, V1, V2]);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "echo" },
+      () => run({ fill }, Infinity, new StubModel(VERIFY_SCRIPT)));
+    // The in-flight sample already disagreed, so the span never reached the
+    // model: the generation is exactly the unfilled one.
+    expect(tokens).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(model.forwards).toEqual([
+      [1, 41], [42], [TRIGGER], [V0], [V1], [V2], [AFTER], [EOS],
+    ]);
+    expect(stats.fill).toMatchObject({
+      events: 0, injected: 0, verifyEvents: 0, verifyRejected: 3, checkpointMs: 0,
+    });
+  });
+
+  test("an untrimmable but round-capable cache rewinds through specRound*", async () => {
+    RoundCache.calls = [];
+    const fill = verifySession([V0, WRONG, TAIL]);
+    const { tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "echo", MLX_BUN_FILL_TRACE: "1" },
+      () => run({ fill }, Infinity,
+        new StubModel(VERIFY_SCRIPT, () => [new RoundCache()])),
+    );
+    // Same contract the spec lane uses: arm before the forward, then roll back
+    // to the accepted window length (SSMCache replays that prefix bit-exactly).
+    expect(RoundCache.calls).toEqual(["begin", "rollback(1)"]);
+    expect(tokens).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(stats.fill!.verifyAccepted).toBe(1);
+  });
+
+  test("a full accept commits the round instead of rolling it back", async () => {
+    RoundCache.calls = [];
+    const fill = verifySession([V0, V1, V2]);
+    await withFill(
+      { MLX_BUN_FILL: "echo" },
+      () => run({ fill }, Infinity,
+        new StubModel(VERIFY_SCRIPT, () => [new RoundCache()])),
+    );
+    expect(RoundCache.calls).toEqual(["begin", "commit"]);
+  });
+
+  test("a cache that can neither trim nor checkpoint drops verify proposals", async () => {
+    const fill = verifySession([V0, V1, V2]);
+    const { model, tokens, stats } = await withFill(
+      { MLX_BUN_FILL: "echo" },
+      () => run({ fill }, Infinity,
+        new StubModel(VERIFY_SCRIPT, () => [new UnrewindableCache()])),
+    );
+    expect(tokens).toEqual([TRIGGER, V0, V1, V2, AFTER]);
+    expect(model.forwards.some((f) => f.length > 1 && f[0] === V0)).toBe(false);
+    expect(stats.fill).toMatchObject({
+      verifyUnsupported: 1, verifyEvents: 0, events: 0, injected: 0,
+    });
+  });
+});

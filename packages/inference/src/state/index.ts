@@ -24,3 +24,7 @@ export * from "./batched-ssm";
 export * from "./speculative-rotating-kv";
 export * from "./rollback";
 export * from "./encoder-cache";
+export * from "./prefix-cache";
+export * from "./retention-policy";
+export * from "./rows";
+export * from "./attachment";
