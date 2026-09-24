@@ -1,2 +1,10 @@
-export type { TrellisGeometry } from "./geometry";
+export type { TrellisGeometry, TrellisWeights } from "./geometry";
 export { vectorTrellisExpand, vectorTrellisExpandEligible } from "./vector-expand";
+export { expandTrellis } from "./expand";
+export { trellisReduce, TRELLIS_MATVEC_MAX_M } from "./reduce";
+export { trellisScatter } from "./scatter";
+export { fusedGateUpSwiglu } from "./gate-up";
+export { fusedGateUpSwigluMixed, type MixedGateUpTail } from "./mixed-gate-up";
+export { tiledTrellisPrefill, tiledTrellisPrefillEligible } from "./tiled-prefill";
+export { splitKTrellisPrefill, splitKTrellisPrefillEligible } from "./splitk-prefill";
+export { wideTrellisPrefill, wideTrellisPrefillEligible, nativeTrellisWidePrefill } from "./wide-prefill";

@@ -1,3 +1,5 @@
+import type { MlxArray } from "@mlx-bun/mlx/array";
+
 export interface TrellisGeometry {
   k: number;
   L: number;
@@ -10,4 +12,11 @@ export interface TrellisGeometry {
   outFeatures: number;
   /** Two coded blocks interleaved across rows; absent for row-major codes. */
   blockInterleave?: 2;
+}
+
+/** Borrowed packed weights and their caller-supplied geometry. */
+export interface TrellisWeights {
+  codes: MlxArray;
+  scales: MlxArray;
+  geometry: TrellisGeometry;
 }

@@ -1,7 +1,8 @@
 # @mlx-bun/inference
 
 Composable inference components built on [`@mlx-bun/mlx`](../mlx/README.md).
-The first migrated component is the existing Trellis vector-expansion kernel.
+The migrated components are the existing Trellis expansion, matvec, fused gate/up,
+and prefill kernels. Their Metal source stays inline in the owning TypeScript file.
 
 ## Trellis weight expansion
 
@@ -39,14 +40,56 @@ The existing interleaved 3-bit layout uses `blockInterleave: 2` and codes shaped
 Expansion is lazy. The caller decides when to evaluate the result and owns its
 array handle. The kernel does not load checkpoints or choose a model.
 
+## Packed operations
+
+All operations are imported from `@mlx-bun/inference/kernels/trellis`.
+They borrow input arrays and return an owned, lazy output array.
+
+| Operation | Input and purpose |
+| --- | --- |
+| `trellisReduce(x, codes, scales, geometry, variant)` | Axis-1 projection; `x` is `[M, inFeatures]`, M=1..4 |
+| `trellisScatter(x, codes, scales, geometry, variant, useSharedScatterCodebook?)` | Axis-0 projection; same input shape and row budget |
+| `fusedGateUpSwiglu(x, gate, up, variant)` | Matching axis-1 gate/up geometry and bit width; preserves leading input dimensions, with 1..4 total rows |
+| `fusedGateUpSwigluMixed(x, gate, up, variant, tail?)` | Matching axis-1 geometry with independent bit widths; `tail` is `"fused"` or `"split"` |
+| `expandTrellis(codes, scales, geometry, dtype, variant)` | Existing general expansion and variant-13 vector specialization |
+| `tiledTrellisPrefill(x, codes, scales, geometry)` | Axis-1 packed prefill, M=5..32 |
+| `splitKTrellisPrefill(x, codes, scales, geometry)` | Axis-0 packed prefill, M=5..8 |
+| `wideTrellisPrefill(x, codes, scales, geometry)` | Axis-1 prefill following MLX's GemvWide arithmetic, M=5..15 |
+
+`gate` and `up` are `TrellisWeights`: `{ codes, scales, geometry }`.
+Callers supply compatible tensors and choose the variant explicitly. Existing
+variant numbers are preserved: 6 uses the original packed f32 code/scale path;
+13 adds the existing shared-work and expansion specializations. Variant 4 is
+the inherited timing-only path and does not compute decoded weights correctly.
+No application environment flags are read by these operations.
+
+For prefill, use the corresponding `*Eligible(geometry, rowCount, dtype)` helper
+to preserve the existing dispatch profile. Wide prefill additionally requires
+caller-proven aligned, row-contiguous input. These profiles and numerical
+contracts are unchanged; they are not universal dispatch rules for every shape.
+
 ## Source ownership
 
-- `src/kernels/trellis/vector-expand.ts` owns the unchanged inline Metal source,
-  launch configuration, and eligibility rules from the existing implementation.
-- `src/kernels/trellis/geometry.ts` owns the shared Trellis geometry type.
-- `src/kernels/trellis/index.ts` exposes the public Trellis imports.
-- `tests/kernels/trellis-vector-expand.test.ts` compares decoded bytes against
-  the scalar host codec across codebook states, packing, scales, and strides.
+All kernel files below live under `src/kernels/trellis/`.
+
+| File | Responsibility |
+| --- | --- |
+| `codebook.ts` | Shared 1MAD Metal helpers, host LUT, and decoder variant mapping |
+| `geometry.ts` | Trellis geometry and borrowed weight types |
+| `reduce.ts` | Axis-1 packed matvec and its shared-row variant |
+| `scatter.ts` | Axis-0 packed matvec, balanced/shared variants, and partial reduction |
+| `gate-up.ts` | Same-width fused gate/up SwiGLU |
+| `mixed-gate-up.ts` | Independent-width gate/up and its two activation tails |
+| `expand.ts` | General stored-matrix expansion and vector dispatch |
+| `vector-expand.ts` | Four-weight vector expansion |
+| `tiled-prefill.ts` | Axis-1 tiled prefill |
+| `splitk-prefill.ts` | Axis-0 split-K prefill and ordered reduction |
+| `wide-prefill.ts` | GemvWide-compatible prefill and hardware eligibility |
+| `index.ts` | Public Trellis imports |
+
+Tests in `tests/kernels/` cover the host decoding reference, variant equivalence,
+activation tails, packing, strides, and existing prefill comparisons against MLX.
+The wide-prefill native comparison runs only on supported hardware.
 
 Native libraries belong to `@mlx-bun/mlx`; this package depends on it. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`

@@ -5,7 +5,7 @@ applications people can run and libraries developers can embed in their own apps
 
 The current target is Apple Silicon Macs. This branch is rebuilding mlx-bun
 as a Bun workspace. The first migrated pieces are the low-level MLX binding
-and an existing Trellis inference kernel.
+and the existing Trellis inference kernels.
 
 ## Repository layout
 
