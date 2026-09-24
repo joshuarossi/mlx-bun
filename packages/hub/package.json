@@ -1,0 +1,34 @@
+{
+  "name": "@mlx-bun/hub",
+  "version": "0.0.0",
+  "description": "Local model registry, Hugging Face downloads, and memory fit for MLX models on Apple Silicon",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./registry": "./src/registry.ts",
+    "./download": "./src/download.ts",
+    "./fit": "./src/fit.ts"
+  },
+  "files": [
+    "src",
+    "examples",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/inference": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}
