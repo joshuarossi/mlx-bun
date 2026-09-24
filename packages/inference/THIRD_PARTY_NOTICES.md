@@ -1,9 +1,15 @@
 # Third-party notices
 
-The tiled, split-K, and wide Trellis kernels incorporate MLX code under MIT.
+The Trellis prefill kernels and TurboQuant inverse kernel incorporate MLX code
+under MIT. DeltaNet kernels and cache/attention implementations are ported
+from mlx-lm; the owning source files identify these origins.
 Source references are recorded in the owning kernel files.
 
 MLX: https://github.com/ml-explore/mlx
+
+MLX-LM: https://github.com/ml-explore/mlx-lm
+
+MLX derived code also carries Copyright © 2024 Apple Inc.
 
 MIT License
 

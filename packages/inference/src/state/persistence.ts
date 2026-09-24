@@ -1,0 +1,1138 @@
+import { type CheckpointAttachment, attachmentBytes, disposeAttachments } from "./checkpoint";
+import { cleanupFailure, disposeResources } from "../execution/resources";
+// KV-cache persistence: save prompt caches to disk, reload by streamed copy.
+// The serialization core of the SSD cold tier (docs/design/kv-cache.md).
+//
+// File layout (every tensor PAGE-ALIGNED — the Phase 1 corollary: files
+// we write can be mmap'd and handed to the GPU without copies):
+//   [magic "MLXBUNKV2\n"][u32 LE header length][u32 LE dataStart]
+//   [u64 LE header hash][JSON header][padding]
+//   [tensor data at 16 KiB-aligned offsets]
+// Header: { formatVersion, modelId, configFingerprint, ns, tokenizerHash,
+//           createdAt, tokens, caches: [{ kind, offset, idx?, maxSize?,
+//           groupSize?, bits?, kBits?, vBits?, headDim?,
+//           tensors: [{ off, bytes, shape, dtype, hash }] }] }
+//
+// v2 over v1: quantized cache kinds (kv_config quantization — v1 could not
+// persist it; NOTE bf16 is the serving default since the 2026-07-05 L1
+// decision, quantized KV is opt-in), SSM kind (Qwen3.5 hybrid),
+// invalidation metadata (configFingerprint covers the kv-quant scheme;
+// tokenizerHash guards vocab drift; ns = adapter spec), per-tensor hashes
+// (verified opt-in — the hash pass roughly doubles restore reads),
+// a header hash (always verified — cheap), and atomic tmp+fsync+rename
+// writes. v1 files are not migrated: nothing shipped wrote them (the
+// format was test/experiment-only) — they read as "not a v2 file" and the
+// SSD tier deletes-and-regenerates.
+//
+// v3 over v2: fixed-width (zero-padded 16-hex) tensor hashes, which let the
+// writer STREAM — header sized up front, tensors materialized/hashed/written
+// one at a time, header patched in last (peak host transient = one tensor,
+// not the whole entry). Same magic; v2 files read as unsupported and the
+// SSD tier deletes-and-regenerates (machine-local, cheap).
+//
+// Reload (2026-07-07, A7-restore) is a STREAMED COPY — the read-side twin
+// of the v3 streaming writer: each tensor is copied out of a read-only mmap
+// into an mlx-owned leaf (MlxArray.fromBytesCopy), its clean file pages
+// dropped (MADV_DONTNEED) right after, and the mapping unmapped before
+// loadKvCache returns. Peak host transient = the live entry + one tensor,
+// and NOTHING outlives the call: the old zero-copy wrap (COW mmap +
+// fromPointer) required pinning every restore mapping for the PROCESS
+// lifetime once the FFI-dtor fix removed the unmap signal (2026-07-06) —
+// one leaked full-entry mapping per restore — and the exactly-offset-sized
+// restored buffers made the first post-restore decode step concat-copy the
+// whole entry again.
+
+import { openSync, writeSync, readSync, closeSync, fsyncSync, renameSync, rmSync } from "node:fs";
+import { pagedCacheCodec } from "./paged/codec";
+import { HostBuffer } from "@mlx-bun/mlx/host-buffer";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { MmapFile, MADV_DONTNEED } from "../artifacts/mmap";
+import { MlxArray } from "@mlx-bun/mlx/array";
+import { kvWriter, kvReader, type KvWriteRequest } from "./persistence-worker";
+import type { Dtype } from "@mlx-bun/mlx/ffi";
+import * as ops from "@mlx-bun/mlx/ops";
+import { type Cache } from "../contracts/cache";
+import { cacheSignature } from "./capabilities";
+import { KVCache } from "./kv";
+import { RotatingKVCache } from "./rotating-kv";
+import { QuantizedKVCache } from "./quantized-kv";
+import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
+import { TurboQuantKVCache } from "./turboquant-kv";
+import { type TurboQuantTensor } from "./turboquant-codec";
+import { Glm52Cache, MLACache } from "./glm52-cache";
+import { SSMCache } from "./ssm";
+
+const MAGIC = "MLXBUNKV2\n";
+const ALIGN = 16384;
+/** magic + u32 headerLen + u32 dataStart + u64 headerHash */
+const PREFIX_LEN = MAGIC.length + 4 + 4 + 8;
+
+// Fixed-width (16 hex chars): the v3 streaming writer sizes the header
+// BEFORE materializing any tensor bytes, so hash strings must not change
+// the header's byte length when the real values replace the placeholders.
+const hash64 = (bytes: Uint8Array): string => Bun.hash(bytes).toString(16).padStart(16, "0");
+
+export type CacheKind =
+  | "kv"
+  | "paged"
+  | "rotating"
+  | "qkv"
+  | "rotating-qkv"
+  | "ssm"
+  | "turboquant"
+  | "mla"
+  | "mla-dsa"
+  | "mtp-mla";
+
+export interface TensorSlot {
+  blocks?: Array<{ hash: string; bytes: number }>;
+  off: number;
+  bytes: number;
+  shape: number[];
+  dtype: number;
+  hash: string;
+}
+
+export interface CacheHeaderEntry {
+  paged?: { capacityTokens: number; blockSize: number; blockTable: number[]; numBlocks: number;
+    headDim: number; vHeadDim: number; dtype: Dtype; direct: boolean };
+  kind: CacheKind;
+  offset: number;
+  minimumReusableOffset?: number;
+  /** rotating variants: ring write index */
+  idx?: number;
+  /** rotating variants: window size */
+  maxSize?: number;
+  /** quantized variants (qkv/rotating-qkv: mlx affine scheme) */
+  groupSize?: number;
+  bits?: number;
+  /** turboquant: per-side bit widths (reuses the `bits` field's slot class
+   *  but needs both — asymmetric key/value bit widths, unlike qkv's single
+   *  `bits`). `groupSize` is unused for turboquant (fixed at 32, the
+   *  BLOCK_SIZE constant — not a configurable field like qkv's). */
+  kBits?: number;
+  vBits?: number;
+  /** turboquant: head_dim, needed to unpack kIdx/vPacked on restore
+   *  (packed byte width alone doesn't recover the original element count). */
+  headDim?: number;
+  /** GLM checkpoint-native compressed-cache geometry. */
+  kvLoraRank?: number;
+  ropeHeadDim?: number;
+  dsaHeadDim?: number;
+  maxTokens?: number;
+  /** kv/rotating: [k, v] · qkv/rotating-qkv: [kPacked, kScales, kBiases,
+   *  vPacked, vScales, vBiases] · ssm: [conv, recurrent] · turboquant:
+   *  [kIdx, kScales, kZeros, vPacked, vScales] */
+  tensors: TensorSlot[];
+}
+
+export interface KvSaveMeta {
+  attachments?: CheckpointAttachment[];
+  modelId?: string;
+  /** configFingerprint(config) — covers every graph-shaping field incl.
+   *  the kv-quant scheme, so a scheme flip invalidates naturally. */
+  configFingerprint?: string;
+  /** Adapter namespace (PromptCache ns — adapters joined with "+"). */
+  ns?: string;
+  /** sha256 of tokenizer.json: identical ids must mean identical text. */
+  tokenizerHash?: string;
+  /** In-flight generation state. The serialized caches cover `tokens`;
+   *  pendingToken was sampled from that state but has not been emitted. */
+  generationCheckpoint?: {
+    key: string;
+    cacheNs: string;
+    originalPromptTokens: number;
+    generatedTokens: number;
+    pendingToken: number;
+    /** Actual sampler seed, including a server-generated default. Required to
+     *  continue the random stream exactly after a restart. */
+    seed: number;
+    /** True when `seed` was part of the client request rather than generated
+     *  by the server. */
+    seedWasExplicit: boolean;
+  };
+}
+
+export interface KvFileHeader extends Omit<KvSaveMeta, "attachments"> {
+  attachments?: Array<Omit<CheckpointAttachment, "tensors"> & { tensors: TensorSlot[] }>;
+  /** Absent in earlier v3 files, which used mlx-cache-v3. */
+  codecProvider?: string;
+  formatVersion: 3 | 4 | 5;
+  createdAt: number;
+  tokens: number[];
+  caches: CacheHeaderEntry[];
+}
+
+const alignUp = (n: number) => Math.ceil(n / ALIGN) * ALIGN;
+
+/** Snapshot one cache into header entry + LAZY tensor sources (v3 streaming
+ *  writer: sizes/shapes are metadata, bytes materialize ONE tensor at a
+ *  time at write — the old all-blobs-up-front path doubled RSS by the whole
+ *  entry, ~390 MB for a 16k cpm5 entry, on every write-behind). Quantized
+ *  full caches are sliced to the live [.., :offset, :] region (token axis —
+ *  quantization groups run along the FEATURE dim, so a sequence-axis cut
+ *  never splits a group); rotating caches persist the whole ring
+ *  as-laid-out with ringIdx. Slice handles are lazy graph nodes (no GPU
+ *  materialization until rawBytes at write time). */
+interface TensorSource { arr: MlxArray; disposeAfter: boolean }
+
+export interface SnapshotContext {
+  slots: TensorSlot[];
+  push(a: MlxArray, disposeAfter: boolean): void;
+  liveSlice(a: MlxArray, upTo: number): MlxArray;
+  liveMlaSlice(a: MlxArray, upTo: number): MlxArray;
+  pushTriple(t: ops.QuantizedTensor, upTo: number | null): void;
+}
+
+export interface CloneContext {
+  view(a: MlxArray): MlxArray;
+  liveView(a: MlxArray, upTo: number): MlxArray;
+  mlaView(a: MlxArray, upTo: number): MlxArray;
+  tripleView(t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor;
+}
+
+export interface LoadContext {
+  path: string;
+  arr(slot: TensorSlot): MlxArray;
+  grownArr(slot: TensorSlot, offset: number): MlxArray;
+  triple(slots: TensorSlot[], at: number): ops.QuantizedTensor;
+}
+
+export interface CacheCodec {
+  matches(cache: Cache): boolean;
+  snapshot(cache: Cache, context: SnapshotContext): CacheHeaderEntry;
+  clone(cache: Cache, context: CloneContext): Cache;
+  load(entry: CacheHeaderEntry, context: LoadContext): Cache;
+  headerTrimmable(entry: CacheHeaderEntry): boolean;
+}
+
+const requireMlaState = (cache: Glm52Cache, operation: string): void => {
+  if (!cache.latent || !cache.rope || cache.batchSize === null || cache.offset === 0)
+    throw new Error(`cannot ${operation} an empty GLM compressed cache`);
+  if (cache.dsa && (!cache.dsa.data || cache.dsa.offset !== cache.offset))
+    throw new Error(`cannot ${operation} misaligned GLM DSA state`);
+};
+
+const snapshotMla = (
+  kind: Extract<CacheKind, "mla" | "mla-dsa" | "mtp-mla">,
+  cache: Cache,
+  context: SnapshotContext,
+): CacheHeaderEntry => {
+  const c = cache as Glm52Cache;
+  requireMlaState(c, "persist");
+  context.push(context.liveMlaSlice(c.latent!, c.offset), true);
+  context.push(context.liveMlaSlice(c.rope!, c.offset), true);
+  if (c.dsa) context.push(context.liveMlaSlice(c.dsa.data!, c.offset), true);
+  return {
+    kind,
+    offset: c.offset,
+    kvLoraRank: c.kvLoraRank,
+    ropeHeadDim: c.ropeHeadDim,
+    ...(c.dsa ? { dsaHeadDim: c.dsa.headDim } : {}),
+    maxTokens: c.maxTokens,
+    tensors: context.slots,
+  };
+};
+
+const cloneMla = (cache: Cache, context: CloneContext): Cache => {
+  const c = cache as Glm52Cache;
+  requireMlaState(c, "clone");
+  const clone = new MLACache({
+    kvLoraRank: c.kvLoraRank,
+    ropeHeadDim: c.ropeHeadDim,
+    ...(c.dsa ? { dsa: { headDim: c.dsa.headDim } } : {}),
+    maxTokens: c.maxTokens,
+    role: c.role,
+  });
+  clone.restoreCompressedState(
+    context.mlaView(c.latent!, c.offset),
+    context.mlaView(c.rope!, c.offset),
+    c.dsa ? context.mlaView(c.dsa.data!, c.offset) : null,
+    c.offset,
+  );
+  return clone;
+};
+
+const loadMla = (entry: CacheHeaderEntry, context: LoadContext): Cache => {
+  const hasDsa = entry.kind === "mla-dsa";
+  if (entry.kind === "mtp-mla" && entry.dsaHeadDim !== undefined)
+    throw new Error(`${context.path}: native MTP cache cannot contain DSA state`);
+  const cache = new MLACache({
+    kvLoraRank: entry.kvLoraRank!,
+    ropeHeadDim: entry.ropeHeadDim!,
+    ...(hasDsa ? { dsa: { headDim: entry.dsaHeadDim! } } : {}),
+    maxTokens: entry.maxTokens,
+    role: entry.kind === "mtp-mla" ? "mtp" : "target",
+  });
+  cache.restoreCompressedState(
+    context.arr(entry.tensors[0]!),
+    context.arr(entry.tensors[1]!),
+    hasDsa ? context.arr(entry.tensors[2]!) : null,
+    entry.offset,
+  );
+  return cache;
+};
+
+/** One authoritative persistence algebra. Adding a cache storage kind must
+ *  define all four operations here; save/clone/load and SSD eligibility
+ *  therefore cannot grow independent instanceof/switch chains. */
+const CACHE_CODECS = {
+  kv: {
+    matches: (cache) => cacheSignature(cache) === "kv:plain",
+    snapshot: (cache, context) => {
+      const c = cache as KVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.push(context.liveSlice(c.keys, c.offset), true);
+      context.push(context.liveSlice(c.values, c.offset), true);
+      return { kind: "kv", offset: c.offset, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as KVCache;
+      const clone = new KVCache();
+      if (!c.keys || !c.values) return clone;
+      clone.restoreState(
+        context.liveView(c.keys, c.offset),
+        context.liveView(c.values, c.offset),
+        c.offset,
+      );
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new KVCache();
+      cache.restoreState(
+        context.grownArr(entry.tensors[0]!, entry.offset),
+        context.grownArr(entry.tensors[1]!, entry.offset),
+        entry.offset,
+      );
+      return cache;
+    },
+    headerTrimmable: () => true,
+  },
+  rotating: {
+    matches: (cache) => cacheSignature(cache) === "kv:rotating-plain",
+    snapshot: (cache, context) => {
+      const c = cache as RotatingKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.push(c.keys, false);
+      context.push(c.values, false);
+      return { kind: "rotating", offset: c.offset, idx: c.ringIdx,
+        maxSize: c.maxSize, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as RotatingKVCache;
+      const clone = new RotatingKVCache(c.maxSize);
+      if (!c.keys || !c.values) return clone;
+      clone.restoreState(context.view(c.keys), context.view(c.values), c.offset, c.ringIdx);
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new RotatingKVCache(entry.maxSize!);
+      cache.restoreState(
+        context.arr(entry.tensors[0]!), context.arr(entry.tensors[1]!),
+        entry.offset, entry.idx!,
+      );
+      return cache;
+    },
+    headerTrimmable: (entry) => entry.offset < (entry.maxSize ?? 0),
+  },
+  qkv: {
+    matches: (cache) => cacheSignature(cache).startsWith("kv:quant:"),
+    snapshot: (cache, context) => {
+      const c = cache as QuantizedKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.pushTriple(c.keys, c.offset);
+      context.pushTriple(c.values, c.offset);
+      return { kind: "qkv", offset: c.offset, groupSize: c.groupSize,
+        bits: c.bits, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as QuantizedKVCache;
+      const clone = new QuantizedKVCache(c.groupSize, c.bits);
+      if (!c.keys || !c.values) return clone;
+      clone.restoreState(
+        context.tripleView(c.keys, c.offset),
+        context.tripleView(c.values, c.offset),
+        c.offset,
+      );
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new QuantizedKVCache(entry.groupSize!, entry.bits!);
+      cache.restoreState(
+        context.triple(entry.tensors, 0), context.triple(entry.tensors, 3), entry.offset,
+      );
+      return cache;
+    },
+    headerTrimmable: () => true,
+  },
+  "rotating-qkv": {
+    matches: (cache) => cacheSignature(cache).startsWith("kv:rotating-quant:"),
+    snapshot: (cache, context) => {
+      const c = cache as RotatingQuantizedKVCache;
+      if (!c.keys || !c.values) throw new Error("cannot persist an empty cache");
+      context.pushTriple(c.keys, null);
+      context.pushTriple(c.values, null);
+      return { kind: "rotating-qkv", offset: c.offset, idx: c.ringIdx,
+        maxSize: c.maxSize, groupSize: c.groupSize, bits: c.bits,
+        tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as RotatingQuantizedKVCache;
+      const clone = new RotatingQuantizedKVCache(c.maxSize, c.groupSize, c.bits);
+      if (!c.keys || !c.values) return clone;
+      clone.restoreState(
+        context.tripleView(c.keys, null), context.tripleView(c.values, null),
+        c.offset, c.ringIdx,
+      );
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new RotatingQuantizedKVCache(
+        entry.maxSize!, entry.groupSize!, entry.bits!,
+      );
+      cache.restoreState(
+        context.triple(entry.tensors, 0), context.triple(entry.tensors, 3),
+        entry.offset, entry.idx!,
+      );
+      return cache;
+    },
+    headerTrimmable: (entry) => entry.offset < (entry.maxSize ?? 0),
+  },
+  ssm: {
+    matches: (cache) => cacheSignature(cache) === "ssm",
+    snapshot: (cache, context) => {
+      const c = cache as SSMCache;
+      if (!c.conv || !c.recurrent) throw new Error("cannot persist an empty cache");
+      context.push(c.conv, false);
+      context.push(c.recurrent, false);
+      return { kind: "ssm", offset: c.offset, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as SSMCache;
+      if (!c.conv || !c.recurrent) throw new Error("cannot clone an empty cache");
+      const clone = new SSMCache();
+      clone.conv = context.view(c.conv);
+      clone.recurrent = context.view(c.recurrent);
+      clone.offset = c.offset;
+      return clone;
+    },
+    load: (entry, context) => {
+      const cache = new SSMCache();
+      cache.conv = context.arr(entry.tensors[0]!);
+      cache.recurrent = context.arr(entry.tensors[1]!);
+      cache.offset = entry.offset;
+      return cache;
+    },
+    headerTrimmable: () => false,
+  },
+  turboquant: {
+    matches: (cache) => cacheSignature(cache).startsWith("kv:turboquant:"),
+    snapshot: (cache, context) => {
+      const c = cache as TurboQuantKVCache;
+      const state = c.state();
+      if (state.length === 0) throw new Error("cannot persist an empty cache");
+      for (const array of state) context.push(array, true);
+      return { kind: "turboquant", offset: c.offset, kBits: c.kBits,
+        vBits: c.vBits, headDim: c.headDim ?? 0, tensors: context.slots };
+    },
+    clone: (cache, context) => {
+      const c = cache as TurboQuantKVCache;
+      const state = c.state();
+      if (state.length === 0) throw new Error("cannot clone an empty cache");
+      try {
+        const [kIdx, kScales, kZeros, vPacked, vScales] = state;
+        const clone = new TurboQuantKVCache(c.kBits, c.vBits, c.fusedDecode);
+        clone.restoreState({
+          kIdx: context.view(kIdx!),
+          kScales: context.view(kScales!),
+          kZeros: context.view(kZeros!),
+          vPacked: context.view(vPacked!),
+          vScales: context.view(vScales!),
+        }, c.offset, c.headDim!);
+        return clone;
+      } finally {
+        for (const array of state) array.dispose();
+      }
+    },
+    load: (entry, context) => {
+      const cache = new TurboQuantKVCache(entry.kBits!, entry.vBits!);
+      const tensors: TurboQuantTensor = {
+        kIdx: context.arr(entry.tensors[0]!),
+        kScales: context.arr(entry.tensors[1]!),
+        kZeros: context.arr(entry.tensors[2]!),
+        vPacked: context.arr(entry.tensors[3]!),
+        vScales: context.arr(entry.tensors[4]!),
+      };
+      cache.restoreState(tensors, entry.offset, entry.headDim!);
+      return cache;
+    },
+    headerTrimmable: () => true,
+  },
+  paged: pagedCacheCodec,
+  mla: {
+    matches: (cache) => cacheSignature(cache) === "kv:mla:target",
+    snapshot: (cache, context) => snapshotMla("mla", cache, context),
+    clone: cloneMla,
+    load: loadMla,
+    headerTrimmable: () => true,
+  },
+  "mla-dsa": {
+    matches: (cache) => cacheSignature(cache) === "kv:mla:target:dsa",
+    snapshot: (cache, context) => snapshotMla("mla-dsa", cache, context),
+    clone: cloneMla,
+    load: loadMla,
+    headerTrimmable: () => true,
+  },
+  "mtp-mla": {
+    matches: (cache) => cacheSignature(cache) === "kv:mla:mtp",
+    snapshot: (cache, context) => snapshotMla("mtp-mla", cache, context),
+    clone: cloneMla,
+    load: loadMla,
+    headerTrimmable: () => true,
+  },
+} satisfies Record<CacheKind, CacheCodec>;
+
+/** Codecs belong to the loaded backend binding. The persisted ID is checked
+ * before allocating state; codecs are engine code, never loaded from a file. */
+export interface CacheCodecProvider {
+  readonly id: string;
+  forCache(cache: Cache): CacheCodec;
+  forHeader(entry: CacheHeaderEntry): CacheCodec;
+}
+
+export function createCacheCodecProvider(
+  id: string, entries: Readonly<Partial<Record<CacheKind, CacheCodec>>>,
+): CacheCodecProvider {
+  if (!id.trim()) throw new Error("cache codec provider needs an identity");
+  const table = new Map(Object.entries(entries).map(([kind, codec]) => [kind, Object.freeze({
+    matches: codec.matches.bind(codec), snapshot: codec.snapshot.bind(codec), clone: codec.clone.bind(codec),
+    load: codec.load.bind(codec), headerTrimmable: codec.headerTrimmable.bind(codec),
+  })]));
+  const candidates = [...table.values()];
+  const selected = new WeakMap<Cache, CacheCodec>();
+  return Object.freeze({
+    id,
+    forCache(cache: Cache) {
+      const bound = selected.get(cache);
+      if (bound) return bound;
+      const matches = candidates.filter((codec) => codec.matches(cache));
+      if (matches.length !== 1)
+        throw new Error(`cache codec provider ${id}: ${matches.length} matches for ${cacheSignature(cache)}`);
+      selected.set(cache, matches[0]!);
+      return matches[0]!;
+    },
+    forHeader(entry: CacheHeaderEntry) {
+      const codec = table.get(entry.kind);
+      if (!codec) throw new Error(`cache codec provider ${id}: unsupported cache kind ${entry.kind}`);
+      return codec;
+    },
+  });
+}
+
+export const legacyCacheCodecs = createCacheCodecProvider("mlx-cache-v3", CACHE_CODECS);
+
+/** Old TQ files lack the conversion boundary. Keep them reusable at their
+ * stored offset, but never infer that an earlier precision state is valid. */
+export function cacheHeaderMinimumReusableOffset(entry: CacheHeaderEntry): number {
+  const offset = entry.minimumReusableOffset ?? (entry.kind === "turboquant" ? entry.offset : 0);
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > entry.offset)
+    throw new Error("invalid cache minimum reusable offset");
+  return offset;
+}
+export const cacheHeadersMinimumReusableOffset = (caches: readonly CacheHeaderEntry[]): number =>
+  Math.max(0, ...caches.map(cacheHeaderMinimumReusableOffset));
+
+export const cacheHeadersTrimmable = (
+  caches: readonly CacheHeaderEntry[], codecs: CacheCodecProvider = legacyCacheCodecs,
+): boolean => caches.every((entry) => codecs.forHeader(entry).headerTrimmable(entry));
+
+function snapshotCache(c: Cache, dataOffset: number, codecs: CacheCodecProvider): { entry: CacheHeaderEntry; sources: TensorSource[]; next: number } {
+  const slots: TensorSlot[] = [];
+  const sources: TensorSource[] = [];
+  let cursor = dataOffset;
+  const HASH_PLACEHOLDER = "0".repeat(16); // fixed-width; patched at write
+  const push = (a: MlxArray, disposeAfter: boolean): void => {
+    const off = alignUp(cursor);
+    slots.push({ off, bytes: a.nbytes, shape: a.shape, dtype: a.dtype, hash: HASH_PLACEHOLDER });
+    sources.push({ arr: a, disposeAfter });
+    cursor = off + a.nbytes;
+  };
+  const liveSlice = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, H, , D] = a.shape as [number, number, number, number];
+    return a.slice([0, 0, 0, 0], [B, H, upTo, D]);
+  };
+  const liveMlaSlice = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, , D] = a.shape as [number, number, number];
+    return a.slice([0, 0, 0], [B, upTo, D]);
+  };
+  const pushTriple = (t: ops.QuantizedTensor, upTo: number | null): void => {
+    for (const a of [t.packed, t.scales, t.biases]) {
+      if (upTo === null) push(a, false);
+      else push(liveSlice(a, upTo), true);
+    }
+  };
+
+  try {
+    const entry = codecs.forCache(c).snapshot(c, { slots, push, liveSlice, liveMlaSlice, pushTriple });
+    if (c.minimumReusableOffset !== undefined) entry.minimumReusableOffset = c.minimumReusableOffset;
+    return { entry, sources, next: cursor };
+  } catch (error) {
+    for (const source of sources) if (source.disposeAfter) source.arr.dispose();
+    throw error;
+  }
+}
+
+/** Persist `caches` (+ the exact token prefix they encode) to `path`.
+ *  ATOMIC: written to `<path>.tmp`, fsync'd, renamed — a crash mid-write
+ *  leaves only a .tmp orphan (ignored + reaped by SsdCacheStore.scan). */
+/** Zero-copy in-memory clone of a cache list at its CURRENT state — new
+ *  cache instances holding slice VIEWS of the live tensors (mlx arrays are
+ *  immutable: continued generation replaces the source caches' internal
+ *  arrays, it never mutates the shared buffers, so views are stable).
+ *  Built for the prompt-boundary prompt-cache snapshot (multi-turn agent
+ *  traffic: the reply's decode→encode roundtrip drift makes prompt+gen
+ *  entries untrimmable at context > sliding window — a prompt-only entry
+ *  is ALWAYS an exact prefix of the next turn, immune to drift). Must be
+ *  called while the caches hold EXACTLY the state to snapshot (post-wrap
+ *  rings cannot be rewound later). Same per-kind dispatch as
+ *  snapshotCache/loadKvCache. */
+export function cloneKvCaches(caches: Cache[], codecs: CacheCodecProvider = legacyCacheCodecs): Cache[] {
+  const pending: MlxArray[] = [];
+  const hold = (array: MlxArray): MlxArray => { pending.push(array); return array; };
+  const view = (a: MlxArray): MlxArray => hold(a.slice(a.shape.map(() => 0), [...a.shape]));
+  const liveView = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, H, , D] = a.shape as [number, number, number, number];
+    return hold(a.slice([0, 0, 0, 0], [B, H, upTo, D]));
+  };
+  const mlaView = (a: MlxArray, upTo: number): MlxArray => {
+    const [B, , D] = a.shape as [number, number, number];
+    return hold(a.slice([0, 0, 0], [B, upTo, D]));
+  };
+  const tripleView = (t: ops.QuantizedTensor, upTo: number | null): ops.QuantizedTensor => ({
+    packed: upTo === null ? view(t.packed) : liveView(t.packed, upTo),
+    scales: upTo === null ? view(t.scales) : liveView(t.scales, upTo),
+    biases: upTo === null ? view(t.biases) : liveView(t.biases, upTo),
+  });
+  const out: Cache[] = [];
+  try {
+    for (const c of caches) {
+      const clone = codecs.forCache(c).clone(c, { view, liveView, mlaView, tripleView });
+      if (c.minimumReusableOffset !== undefined) clone.minimumReusableOffset = c.minimumReusableOffset;
+      out.push(clone);
+      pending.length = 0; // transferred to the returned cache
+    }
+  } catch (err) {
+    cleanupFailure(err, () => disposeResources([...pending, ...out]));
+  }
+  return out;
+}
+
+/** Shared file layout and codec planning for synchronous and worker writes. */
+function planKvCache(tokens: number[], caches: Cache[], meta: KvSaveMeta, codecs: CacheCodecProvider): { header: KvFileHeader; sources: TensorSource[] } {
+  // Plan pass: header entries + lazy tensor sources, NO bytes materialized.
+  const entries: CacheHeaderEntry[] = [];
+  const sources: TensorSource[] = [];
+  let dataOffset = 0; // relative; rebased after header is sized
+  try {
+    for (const c of caches) {
+      const s = snapshotCache(c, dataOffset, codecs);
+      entries.push(s.entry);
+      sources.push(...s.sources);
+      dataOffset = s.next;
+    }
+
+    const { attachments: liveAttachments, ...identity } = meta;
+    const attachments = liveAttachments?.map((attachment) => ({
+      schema: attachment.schema,
+      metadata: { ...attachment.metadata },
+      tensors: attachment.tensors.map((arr) => {
+        const slot: TensorSlot = { off: dataOffset, bytes: arr.nbytes,
+          shape: [...arr.shape], dtype: arr.dtype, hash: "0000000000000000" };
+        dataOffset = alignUp(dataOffset + slot.bytes);
+        sources.push({ arr, disposeAfter: false });
+        return slot;
+      }),
+    }));
+
+    // Header size is final NOW: hashes are fixed-width placeholders that get
+    // patched in place (same byte length) after the data pass computes them.
+    const header: KvFileHeader = {
+      formatVersion: attachments?.length ? 4 : 3, createdAt: Date.now(), ...identity,
+      ...(attachments?.length ? { attachments } : {}), codecProvider: codecs.id, tokens, caches: entries,
+    };
+    return { header, sources };
+  } catch (error) {
+    for (const source of sources) if (source.disposeAfter) source.arr.dispose();
+    throw error;
+  }
+}
+
+function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta, codecs: CacheCodecProvider): Generator<void, void, void> {
+  const { header, sources } = planKvCache(tokens, caches, meta, codecs);
+  const entries = header.caches, attachments = header.attachments;
+  try {
+    const headerLen = new TextEncoder().encode(JSON.stringify(header)).length;
+    const dataStart = alignUp(PREFIX_LEN + headerLen);
+
+    const tmp = `${path}.tmp`;
+    const fd = openSync(tmp, "w");
+    try {
+      // Data pass: materialize → hash → write → drop, ONE tensor at a time.
+      // The hash+write read a ZERO-COPY view of the contiguous mlx buffer
+      // (rawBytesView) — never a JS-heap copy. rawBytes() here looked
+      // "streamed" but each call allocated a dead per-tensor JS-heap copy
+      // whose reclamation is GC-timing-dependent — up to a whole extra
+      // entry of heap on a busy server (the A7 residual). Now zero JS
+      // allocations; the only real transient is the one mlx-side
+      // contiguous copy (allocator-pooled; none at all for contiguous
+      // sources — mlx save-transient measured 0 bytes, 2026-07-07). NOTE:
+      // the hash+write still CPU-touch the live entry's unified-memory
+      // pages, which makes them VISIBLE to ps RSS — accounting, not an
+      // allocation (see bench-serve.ts' per-leg RSS note).
+      let srcIdx = 0;
+      for (const e of [...entries, ...(attachments ?? [])]) {
+        for (const slot of e.tensors) {
+          const src = sources[srcIdx++]!;
+          const c = ops.contiguous(src.arr);
+          try {
+            const bytes = c.rawBytesView(); // evals; aliases the mlx buffer
+            if (bytes.length !== slot.bytes)
+              throw new Error(`tensor byte-length drift: planned ${slot.bytes}, got ${bytes.length}`);
+            slot.hash = hash64(bytes);
+            writeSync(fd, bytes, 0, bytes.length, dataStart + slot.off);
+          } finally {
+            c.dispose(); // the view dies with the buffer — nothing retains it
+          }
+          if (src.disposeAfter) { src.arr.dispose(); src.disposeAfter = false; }
+          yield;
+        }
+      }
+
+      // Header pass: real hashes in, byte length unchanged by construction.
+      const headerJson = new TextEncoder().encode(JSON.stringify(header));
+      if (headerJson.length !== headerLen)
+        throw new Error(`header length drift: planned ${headerLen}, got ${headerJson.length}`);
+      const pre = new Uint8Array(dataStart);
+      pre.set(new TextEncoder().encode(MAGIC), 0);
+      const dv = new DataView(pre.buffer);
+      dv.setUint32(MAGIC.length, headerJson.length, true);
+      dv.setUint32(MAGIC.length + 4, dataStart, true);
+      dv.setBigUint64(MAGIC.length + 8, BigInt(Bun.hash(headerJson)), true);
+      pre.set(headerJson, PREFIX_LEN);
+      writeSync(fd, pre, 0, pre.length, 0);
+      fsyncSync(fd);
+    } catch (err) {
+      closeSync(fd);
+      try { rmSync(tmp, { force: true }); } catch {}
+      throw err;
+    }
+    closeSync(fd);
+    renameSync(tmp, path);
+  } finally {
+    // Slices created in the plan pass are ours to free on EVERY path.
+    for (const s of sources) if (s.disposeAfter) s.arr.dispose();
+  }
+}
+
+export function saveKvCache(path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {}, codecs: CacheCodecProvider = legacyCacheCodecs): void {
+  for (const _ of saveKvCacheSteps(path, tokens, caches, meta, codecs)) { /* drain */ }
+}
+
+/** Prepare immutable native storage on the owner thread, then pack, hash and
+ * write it on the CPU worker. The optional runner covers preparation only.
+ * Callers retain cache and attachment ownership until this promise settles. */
+export async function saveKvCacheAsync(
+  path: string, tokens: number[], caches: Cache[], meta: KvSaveMeta = {},
+  runStep?: <T>(step: () => T) => Promise<T>, codecs: CacheCodecProvider = legacyCacheCodecs,
+  storage: Pick<KvWriteRequest, "layout" | "blockBytes" | "segmented"> = {},
+): Promise<void> {
+  const { header, sources } = planKvCache(tokens, caches, meta, codecs);
+  try {
+    // Snapshot preparation belongs to the MLX owner. After publication the
+    // worker sees only immutable bytes and never evaluates or calls MLX.
+    const prepare = () => sources.map(source => source.arr.storageView());
+    const tensors = runStep ? await runStep(prepare) : prepare();
+    await kvWriter.write({ path, header, tensors, ...storage });
+  } finally {
+    for (const source of sources) if (source.disposeAfter) source.arr.dispose();
+  }
+}
+
+/** Queued immutable snapshot; the queue releases its shared views on settle. */
+export interface SpillItem {
+  attachments?: CheckpointAttachment[];
+  tokens: number[];
+  caches: Cache[];
+  ns: string;
+}
+
+/** Serial snapshot queue with optional capacity shedding. TieredPromptCache
+ * disables shedding and owns residency itself. Interrupted-generation
+ * persistence uses the cap for supersedable intervals. Queue ownership ends
+ * after each write settles; the cache can retain independent shared views. */
+type SpillRec = SpillItem & {
+  bytes: number;
+  dropped: boolean;
+  settle: (stored: boolean) => void;
+};
+
+export class SpillQueue {
+  #queue: SpillRec[] = [];
+  #bytes = 0;
+  #dropped = 0;
+  #failed = 0;
+  #inFlight: object | null = null;
+  #chain: Promise<void> = Promise.resolve();
+
+  constructor(
+    readonly capBytes: number,
+    /** Byte size of a clone set (prompt-cache's cacheBytes). */
+    readonly bytesOf: (caches: Cache[]) => number,
+    /** The asynchronous storage operation. */
+    readonly store: (item: SpillItem) => Promise<unknown>,
+    /** Clone disposal — frees the pinned GPU memory. */
+    readonly disposeClones: (caches: Cache[]) => void,
+    /** Zero-byte control barriers may need to survive capacity shedding. */
+    readonly canDrop: (item: SpillItem) => boolean = () => true,
+  ) {}
+
+  /** Bytes pinned by queued (not yet flushed) clones. */
+  get pendingBytes(): number { return this.#bytes; }
+  get pendingCount(): number { return this.#queue.length; }
+  /** Spills dropped by the cap since start (each = one future cache miss). */
+  get droppedCount(): number { return this.#dropped; }
+  /** Store calls that threw or returned false. */
+  get failedCount(): number { return this.#failed; }
+
+  enqueue(item: SpillItem): Promise<boolean> {
+    let settle!: (stored: boolean) => void;
+    const result = new Promise<boolean>((resolve) => { settle = resolve; });
+    const rec: SpillRec = {
+      ...item,
+      bytes: this.bytesOf(item.caches) + attachmentBytes(item.attachments),
+      dropped: false,
+      settle,
+    };
+    this.#queue.push(rec);
+    this.#bytes += rec.bytes;
+    while (this.#bytes > this.capBytes) {
+      const victim = this.#queue.find(
+        (p) => !p.dropped && p !== this.#inFlight && p !== rec && this.canDrop(p),
+      );
+      if (!victim) break; // only the new item (or in-flight) left — soft cap
+      this.#drop(victim);
+    }
+    this.#chain = this.#chain.then(async () => {
+      if (rec.dropped) return; // clones already disposed at drop time
+      this.#inFlight = rec;
+      try {
+        const stored = await this.store(rec);
+        if (stored === false) this.#failed++;
+        rec.settle(stored !== false);
+      } catch {
+        // best-effort tier — the entry simply won't restore
+        this.#failed++;
+        rec.settle(false);
+      } finally {
+        this.#inFlight = null;
+        this.#remove(rec);
+        disposeResources([{ dispose: () => this.disposeClones(rec.caches) },
+          { dispose: () => disposeAttachments(rec.attachments) }]);
+      }
+    });
+    return result;
+  }
+
+  /** Cancel queued ownership, excluding the write already in flight. */
+  cancelWhere(matches: (item: SpillItem) => boolean): void {
+    for (const rec of [...this.#queue])
+      if (!rec.dropped && rec !== this.#inFlight && matches(rec)) this.#drop(rec);
+  }
+
+  /** Settles when everything enqueued so far has flushed or dropped
+   *  (tests and graceful shutdown). */
+  drain(): Promise<void> { return this.#chain; }
+
+  #drop(rec: SpillRec): void {
+    rec.dropped = true;
+    this.#dropped++;
+    rec.settle(false);
+    this.#remove(rec);
+    disposeResources([{ dispose: () => this.disposeClones(rec.caches) },
+          { dispose: () => disposeAttachments(rec.attachments) }]);
+  }
+
+  #remove(rec: SpillRec): void {
+    const i = this.#queue.indexOf(rec);
+    if (i >= 0) {
+      this.#queue.splice(i, 1);
+      this.#bytes -= rec.bytes;
+    }
+  }
+}
+
+/** Read only the header (cheap — for prefix matching across many files).
+ *  Always verifies the header hash; throws on any structural mismatch. */
+export function readKvHeader(path: string): KvFileHeader & { dataStart: number } {
+  const fd = openSync(path, "r");
+  try {
+    const head = new Uint8Array(PREFIX_LEN);
+    readSync(fd, head, 0, head.length, 0);
+    if (new TextDecoder().decode(head.subarray(0, MAGIC.length)) !== MAGIC)
+      throw new Error(`${path}: not an mlx-bun KV v2 cache file`);
+    const dv = new DataView(head.buffer);
+    const len = dv.getUint32(MAGIC.length, true);
+    const dataStart = dv.getUint32(MAGIC.length + 4, true);
+    const expectHash = dv.getBigUint64(MAGIC.length + 8, true);
+    const body = new Uint8Array(len);
+    readSync(fd, body, 0, len, PREFIX_LEN);
+    if (BigInt(Bun.hash(body)) !== expectHash)
+      throw new Error(`${path}: header hash mismatch (truncated or corrupt)`);
+    const header = JSON.parse(new TextDecoder().decode(body)) as KvFileHeader;
+    if (header.formatVersion !== 3 && header.formatVersion !== 4 && header.formatVersion !== 5)
+      throw new Error(`${path}: unsupported formatVersion ${header.formatVersion}`);
+    return { ...header, dataStart };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export interface LoadedKvCache {
+  attachments?: CheckpointAttachment[];
+  tokens: number[];
+  header: KvFileHeader;
+  caches: Cache[];
+}
+
+export interface KvLoadExpect {
+  /** Reject on metadata mismatch (pass what the server is running). */
+  modelId?: string;
+  configFingerprint?: string;
+  tokenizerHash?: string;
+  ns?: string;
+  /** Verify every tensor hash before copying it in (off by default,
+   *  `--ssd-cache-verify` — the hash pass roughly doubles restore reads). */
+  verify?: boolean;
+}
+
+/** Reject GLM cache/layout drift before opening the tensor mmap. Generic KV
+ *  kinds may legitimately differ from makeCache() after runtime quantization;
+ *  GLM's checkpoint-native cache geometry does not. */
+function validateGlm52Prototype(
+  path: string,
+  entry: CacheHeaderEntry,
+  prototype: Cache,
+): void {
+  const glmKind = entry.kind === "mla" || entry.kind === "mla-dsa" ||
+    entry.kind === "mtp-mla";
+  const prototypeSignature = cacheSignature(prototype);
+  if (!prototypeSignature.startsWith("kv:mla:")) {
+    if (glmKind)
+      throw new Error(`${path}: GLM cache kind ${entry.kind} does not match model cache`);
+    return;
+  }
+  const glmPrototype = prototype as Glm52Cache;
+  const expectedKind: CacheKind = glmPrototype.role === "mtp"
+    ? "mtp-mla"
+    : glmPrototype.dsa ? "mla-dsa" : "mla";
+  if (entry.kind !== expectedKind) {
+    throw new Error(
+      `${path}: cache kind ${entry.kind} != model cache kind ${expectedKind}`,
+    );
+  }
+  for (const [field, actual, expected] of [
+    ["kvLoraRank", entry.kvLoraRank, glmPrototype.kvLoraRank],
+    ["ropeHeadDim", entry.ropeHeadDim, glmPrototype.ropeHeadDim],
+    ["dsaHeadDim", entry.dsaHeadDim, glmPrototype.dsa?.headDim],
+    ["maxTokens", entry.maxTokens, glmPrototype.maxTokens],
+  ] as const) {
+    if (actual !== expected) {
+      throw new Error(
+        `${path}: ${field} ${String(actual)} != model ${String(expected)}`,
+      );
+    }
+  }
+  const expectedTensors = glmPrototype.dsa ? 3 : 2;
+  if (entry.tensors.length !== expectedTensors) {
+    throw new Error(
+      `${path}: ${entry.kind} has ${entry.tensors.length} tensors, ` +
+      `expected ${expectedTensors}`,
+    );
+  }
+}
+
+/** Copy-restore a full-attention KV tensor into STEP-rounded capacity with
+ *  ≥1 token of slack (what a live mid-generation cache looks like) so the
+ *  first post-restore updateAndFetch never takes the grow path — the old
+ *  exactly-offset-sized restore made that first step concat-copy the ENTIRE
+ *  entry into a fresh buffer. Zero padding is bit-safe: writes land at
+ *  [offset..) before any read, and attention only reads [:offset+L).
+ *  Evaluated EAGERLY so the host-copy leaf frees before the next tensor
+ *  streams in (bounded transient). Plain KVCache only — rotating rings and
+ *  quantized triples are position-exact layouts. */
+function withStepCapacity(a: MlxArray, offset: number): MlxArray {
+  const [B, H, S, D] = a.shape as [number, number, number, number];
+  const cap = Math.ceil((offset + 1) / KVCache.STEP) * KVCache.STEP;
+  if (S >= cap) return a;
+  // Internals drained on throw (2026-07-07 review: a grown.eval() failure
+  // orphaned z/grown; `a` stays the CALLER's to free — loadKvCache's
+  // pending[] holds it).
+  let z: MlxArray | null = null;
+  let grown: MlxArray | null = null;
+  try {
+    z = ops.zeros([B, H, cap, D], a.dtype);
+    grown = ops.sliceUpdate(z, a, [0, 0, 0, 0], [B, H, S, D]);
+    z.dispose();
+    z = null;
+    grown.eval();
+    a.dispose();
+    const out = grown;
+    grown = null;
+    return out;
+  } finally {
+    z?.dispose();
+    grown?.dispose();
+  }
+}
+
+function validateKvHeader(path: string, header: KvFileHeader, model: { makeCache(): Cache[] },
+  expect: KvLoadExpect, codecs: CacheCodecProvider): void {
+  if ((header.codecProvider ?? legacyCacheCodecs.id) !== codecs.id)
+    throw new Error(`${path}: cache codec provider mismatch`);
+  for (const entry of header.caches) codecs.forHeader(entry);
+  for (const key of [
+    "modelId",
+    "configFingerprint",
+    "tokenizerHash",
+    "ns",
+  ] as const) {
+    if (expect[key] !== undefined && header[key] !== expect[key])
+      throw new Error(`${path}: ${key} mismatch (file ${header[key]}, expected ${expect[key]})`);
+  }
+  const proto = model.makeCache();
+  try {
+    if (header.caches.length !== proto.length) {
+      throw new Error(
+        `${path}: ${header.caches.length} cached layers but model has ${proto.length}`,
+      );
+    }
+    for (let index = 0; index < proto.length; index++) {
+      validateGlm52Prototype(path, header.caches[index]!, proto[index]!);
+    }
+  } finally {
+    for (const c of proto) c.dispose();
+  }
+
+}
+
+/** Decode cache layouts independently of the transport supplying arrays. */
+function restoreKvArrays(path: string, header: KvFileHeader, codecs: CacheCodecProvider,
+  readArray: (slot: TensorSlot) => MlxArray): LoadedKvCache {
+  // Every tensor materialized for the CURRENT entry, drained on any throw
+  // (2026-07-07 review: a hash mismatch under --ssd-cache-verify — or any
+  // per-tensor failure — orphaned the entry's already-built tensors: the
+  // catch below only saw completed caches). Cleared once the entry's cache
+  // takes ownership; disposing an array withStepCapacity already consumed
+  // is safe (dispose is idempotent).
+  const pending: MlxArray[] = [];
+  const arr = (slot: TensorSlot): MlxArray => {
+    const a = readArray(slot); pending.push(a); return a;
+  };
+  /** withStepCapacity whose (possibly fresh) result is pending-tracked. */
+  const grownArr = (slot: TensorSlot, offset: number): MlxArray => {
+    const g = withStepCapacity(arr(slot), offset);
+    pending.push(g);
+    return g;
+  };
+  const triple = (slots: TensorSlot[], at: number): ops.QuantizedTensor =>
+    ({ packed: arr(slots[at]!), scales: arr(slots[at + 1]!), biases: arr(slots[at + 2]!) });
+
+  const caches: Cache[] = [];
+  const attachments: CheckpointAttachment[] = [];
+  try {
+    for (const e of header.caches) {
+      const codec = codecs.forHeader(e);
+      const minimumOffset = cacheHeaderMinimumReusableOffset(e);
+      const cache = codec.load(e, { path, arr, grownArr, triple });
+      cache.minimumReusableOffset = minimumOffset;
+      caches.push(cache);
+      // This entry's tensors are now owned by its cache — stop tracking them
+      // (the catch must not double-free through both pending AND caches).
+      pending.length = 0;
+    }
+    for (const attachment of header.attachments ?? []) {
+      attachments.push({ schema: attachment.schema, metadata: { ...attachment.metadata },
+        tensors: attachment.tensors.map(arr) });
+      pending.length = 0;
+    }
+  } catch (err) {
+    disposeAttachments(attachments);
+    for (const a of pending) a.dispose(); // the mid-entry orphans
+    for (const c of caches) c.dispose();
+    throw err;
+  }
+  return { tokens: header.tokens, header, caches, ...(attachments.length ? { attachments } : {}) };
+}
+
+/** CPU-only asynchronous reads into unpublished allocations; no tensor copy
+ * crosses the event loop. Native array construction uses the shared codecs. */
+export async function loadKvCacheAsync(path: string, model: { makeCache(): Cache[] },
+  expect: KvLoadExpect = {}, codecs: CacheCodecProvider = legacyCacheCodecs): Promise<LoadedKvCache> {
+  const header = readKvHeader(path);
+  validateKvHeader(path, header, model, expect, codecs);
+  const slots = [...header.caches, ...(header.attachments ?? [])].flatMap(e => e.tensors);
+  const buffers = new Map<TensorSlot, HostBuffer>();
+  try {
+    for (const slot of slots) buffers.set(slot, new HostBuffer(slot.bytes));
+    await kvReader.read({ path, header, pointers: slots.map(slot => buffers.get(slot)!.pointer), verify: expect.verify });
+    return restoreKvArrays(path, header, codecs, slot =>
+      MlxArray.adoptHostBuffer(buffers.get(slot)!, slot.shape, slot.dtype as Dtype));
+  } finally { for (const buffer of buffers.values()) buffer.dispose(); }
+}
+
+/** Reload by STREAMED COPY (see the header note): every tensor is copied
+ *  into an mlx-owned leaf; the mapping is read-only, its pages dropped
+ *  per-tensor, and unmapped before returning — the caches own their bytes
+ *  outright (no dtor contract, no pinned mapping, nothing to retain).
+ *  `model` is anything with makeCache() — the entry count is validated
+ *  against the DONOR cache list (model.layers.length was wrong for
+ *  KV-shared models like e4b, whose makeCache() returns donors only). */
+export function loadKvCache(
+  path: string,
+  model: { makeCache(): Cache[] },
+  expect: KvLoadExpect = {}, codecs: CacheCodecProvider = legacyCacheCodecs,
+): LoadedKvCache {
+  const header = readKvHeader(path);
+  validateKvHeader(path, header, model, expect, codecs);
+  if (header.formatVersion === 5) {
+    return restoreKvArrays(path, header, codecs, slot => {
+      const bytes = new Uint8Array(slot.bytes);
+      let offset = 0;
+      for (const block of slot.blocks ?? []) {
+        if (!/^[a-f0-9]{64}$/.test(block.hash) || block.bytes <= 0 || offset + block.bytes > bytes.length)
+          throw new Error(`${path}: invalid KV block reference`);
+        const part = readFileSync(join(dirname(path), "blocks", block.hash));
+        if (part.length !== block.bytes || (expect.verify && createHash("sha256").update(part).digest("hex") !== block.hash))
+          throw new Error(`${path}: KV block mismatch`);
+        bytes.set(part, offset); offset += part.length;
+      }
+      if (offset !== bytes.length)
+        throw new Error(`${path}: KV tensor mismatch`);
+      return MlxArray.fromBytesCopy(bytes, slot.shape, slot.dtype as Dtype);
+    });
+  }
+  const mmap = MmapFile.open(path, "ro"), dataStart = header.dataStart;
+  try {
+    return restoreKvArrays(path, header, codecs, slot => {
+      const view = mmap.view(dataStart + slot.off, slot.bytes);
+      if (expect.verify && hash64(view) !== slot.hash)
+        throw new Error(`${path}: tensor hash mismatch at offset ${slot.off}`);
+      const array = MlxArray.fromBytesCopy(view, slot.shape, slot.dtype as Dtype);
+      const len = Math.min(alignUp(slot.bytes), mmap.size - (dataStart + slot.off));
+      mmap.advise(dataStart + slot.off, len, MADV_DONTNEED);
+      return array;
+    });
+  } finally { mmap.unmap(); }
+}

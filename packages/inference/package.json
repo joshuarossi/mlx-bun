@@ -13,7 +13,13 @@
     "./input": "./src/input/index.ts",
     "./layers": "./src/layers/index.ts",
     "./execution/config": "./src/execution/config.ts",
-    "./adapters/state": "./src/adapters/state.ts"
+    "./adapters/state": "./src/adapters/state.ts",
+    "./state": "./src/state/index.ts",
+    "./contracts": "./src/contracts/index.ts",
+    "./kernels/turboquant": "./src/kernels/turboquant/index.ts",
+    "./kernels/delta": "./src/kernels/delta/gated.ts",
+    "./kernels/attention/paged": "./src/kernels/attention/paged.ts",
+    "./state/paged": "./src/state/paged/cache.ts"
   },
   "files": [
     "src",

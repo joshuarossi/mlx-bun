@@ -87,6 +87,27 @@ by `Weights.tensor()` are borrowed from the weights owner; release them through
 `Weights.release()`, `releaseShard()`, or `dispose()`. Layer outputs are owned
 by the caller.
 
+## State and attention
+
+`@mlx-bun/inference/state` exposes the existing plain, affine, rotating,
+TurboQuant, recurrent, and GLM compressed caches, plus row batching, scoped KV
+maintenance, cloning, and persistence. The caller creates and owns the state.
+`@mlx-bun/inference/contracts` holds the shared cache and ownership interfaces.
+
+- `state/`: storage layout, positions, row membership, precision transitions,
+  snapshots, and persistence. `persistence.worker.js` performs CPU disk I/O.
+- `layers/quantized-attention.ts`: existing fused/unfused attention dispatch.
+- `kernels/turboquant/`: packing, rotation, codebooks, and packed decode kernels.
+- `kernels/delta/gated.ts`: DeltaNet kernels; recurrent storage lives in
+  `state/ssm.ts`.
+- `state/paged/`: existing opt-in paged state and its persistence codec.
+  The numerical attention implementation lives in `kernels/attention/paged.ts`.
+
+Public kernel imports are `@mlx-bun/inference/kernels/turboquant`,
+`@mlx-bun/inference/kernels/delta`, and
+`@mlx-bun/inference/kernels/attention/paged`. Paged state is available through
+`@mlx-bun/inference/state/paged`. No cache mode or experimental default changed.
+
 ## Source ownership
 
 All kernel files below live under `src/kernels/trellis/`.

@@ -1,6 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { quantFor, type ModelConfig } from "../artifacts/config";
+import { quantFor,type ModelConfig } from "../artifacts/config";
 import type { Weights } from "../artifacts/weights";
 
 export class QuantizedEmbedding {
