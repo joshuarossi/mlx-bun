@@ -18,7 +18,7 @@ export function piModelDefinition(options: PiModelOptions = {}) {
     input: (options.vision ? ["text", "image"] : ["text"]) as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: options.contextWindow ?? 32768,
-    maxTokens: options.maxTokens ?? 8192,
+    maxTokens: options.maxTokens ?? 100_000,
   };
 }
 

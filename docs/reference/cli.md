@@ -144,8 +144,9 @@ For people who already run [pi](https://www.npmjs.com/package/@earendil-works/pi
 writes one reversible extension, `~/.pi/agent/extensions/mlx-bun-provider.ts`,
 that registers `mlx-bun` as a pi provider. Models are discovered live from
 `/v1/models` at pi startup (the list baked at install time is the fallback
-when the server is down), exposed under the stable id `mlx-bun/local`. It
-never touches your existing pi config.
+when the server is down), exposed under the stable id `mlx-bun/local`. Pi
+sends `max_tokens: 100000` for that model (thinking and the answer share
+the cap). It never touches your existing pi config.
 
 ```sh
 mlx-bun harness pi                                  # install; requires pi on PATH

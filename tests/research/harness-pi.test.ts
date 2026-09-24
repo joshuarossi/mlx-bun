@@ -44,7 +44,7 @@ const baseUrl = `http://localhost:${stub.port}/v1`;
 
 describe("renderPiExtension", () => {
   const src = renderPiExtension("http://localhost:9999/v1", [
-    { id: "org/some-model", contextWindow: 65536, maxTokens: 8192, reasoning: false, vision: false },
+    { id: "org/some-model", contextWindow: 65536, maxTokens: 100000, reasoning: false, vision: false },
   ]);
 
   it("registers the mlx-bun provider with an openai-completions API", () => {
@@ -89,7 +89,7 @@ describe("fetchServerModels", () => {
   it("keeps ONLY the served model from a multi-row /v1/models (registry rows dropped)", async () => {
     const models = await fetchServerModels(baseUrl);
     expect(models).toEqual([
-      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false, vision: true },
+      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 100000, reasoning: false, vision: true },
     ]);
   });
 
@@ -102,7 +102,7 @@ describe("fetchServerModels", () => {
 describe("probeServer", () => {
   it("returns the served model when a server answers /v1/models", async () => {
     expect(await probeServer(baseUrl)).toEqual([
-      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 8192, reasoning: false, vision: true },
+      { id: "test/model-4bit", contextWindow: 131072, maxTokens: 100000, reasoning: false, vision: true },
     ]);
   });
 

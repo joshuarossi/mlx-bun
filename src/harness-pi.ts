@@ -138,6 +138,7 @@ export default async function (pi: any) {
           name: \`\${served.id} (mlx-bun local)\`,
           reasoning: !!served.reasoning, vision: !!served.vision,
           contextWindow: served.context_window,
+          maxTokens: ${DEFAULT_MAX_TOKENS},
         })];
       }
     }
