@@ -21,6 +21,23 @@ Paged attention accepts numerical storage; adapter mounting accepts named LoRA
 targets; prompt preparation accepts encoder interfaces. Callers can supply their
 own implementations without subclassing a concrete model or cache.
 
+## Numerical and execution policy
+
+The inherited fidelity policy is L1 by default: bit-exact numerics against the
+pinned mlx-lm oracle for matching artifacts, inputs, and settings. L2 covers
+schemes with a different oracle, including mlx-optiq mixed-KV, and requires
+bit-exact comparison to that scheme's reference. Lab paths without an oracle
+need numerical/quality evaluation and a paired A/B before becoming defaults.
+These are correctness obligations; the outstanding real-weight verification is
+tracked in the [refactor plan](../../PLAN.md#verify-the-migrated-library).
+They do not make application sampling or serving defaults identical to mlx-lm.
+
+Execution policy treats default memory estimates as advisory. Attempt the
+requested work without rejecting it or clamping output tokens solely because
+of a predicted memory estimate. Explicit user limits, queue capacity, and actual
+layout requirements still apply; release owned resources on failure. Application
+composition must preserve this policy when binding the optional execution layer.
+
 ## Direct library use
 
 ```ts

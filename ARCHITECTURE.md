@@ -5,6 +5,18 @@ in `apps/` and importable libraries in `packages/`. The current target is macOS
 on Apple Silicon. Keep responsibilities explicit; add packages when a consumer
 needs a separate installation or release boundary.
 
+## Foundational decisions
+
+- One repository and Git history; Bun workspaces, without Turbo. YAGNI and KISS
+  guide additions. The empty-tree rebuild admits only files Josh approves.
+- Libraries publish under `@mlx-bun/`; the runnable app keeps `mlx-bun`.
+- Libraries use MIT. Licensing for future apps remains a separate decision.
+- Ship required native binaries inside package artifacts, outside Git. Support
+  the current Apple Silicon Mac target; other Apple devices remain undecided.
+- Keep one inference package with enforced internal boundaries. Split a package
+  when a consumer needs that boundary, not merely because a directory exists.
+- Preserve behavior during migration; numerical optimization is separate work.
+
 ## Composition and public APIs
 
 `@mlx-bun/mlx` owns the native MLX binding. `@mlx-bun/inference` builds on it.
@@ -60,10 +72,7 @@ host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
 
-The existing application contract definitions
-are preserved at `02d723a:src/contracts/` in Git history. They are part of the app
-migration plan, outside the inference package. Extract a shared app-contract
-package only when the app consumers require it.
+Extract a shared app-contract package only when the app consumers require it.
 
 ## Changing or replacing a piece
 
@@ -89,5 +98,45 @@ typechecking also compiles portable contracts with only the ES2022 library.
 Pack and exercise the libraries from a separate Bun project when imports or
 native packaging change. Model-free and small synthetic-model tests do not
 replace bit-exact real-weight parity against the pinned oracle. Real-weight
-Qwen Trellis, Gemma, and MiniCPM parity and matched performance comparisons
-remain migration verification work; no speed improvement is claimed here.
+parity and performance work is tracked in [PLAN.md](PLAN.md).
+
+## Documentation
+
+Read the root README, this architecture, the owning package README, then code.
+Read [PLAN.md](PLAN.md) when choosing work and decision records when asking why.
+Keep documentation reachable within two links of the root README.
+
+One fact has one owner. Cross-package ownership lives here; package design
+explanations live in the package README. Export JSDoc describes obligations
+types cannot express: tensor ownership, disposal, cancellation, and numerical
+guarantees. Test those obligations where possible.
+
+Generate inventories from source; write explanations and getting-started prose.
+Examples come from executable files tested in CI, including suitable behavior
+tests; include or extract those examples rather than maintaining another copy.
+Generated reference is build-only, with generator and inputs in Git and a
+coverage check for registered public surfaces. Procedures belong in executable
+scripts with `--help`. Add that tooling with its actual consumer.
+
+Documentation changes follow a code change, decision, measurement, or misleading
+guide. Update it with that change. Open work lives only in PLAN; delete completed
+blocks. No STATUS file, parallel issue backlog for this refactor, or scheduled
+documentation passes. Mechanical rules get gates and pointers; policy rules,
+including approval before adding files, remain binding without a gate. A future
+agent entry file should stay short: navigation and those policy rules.
+
+Separate decision records are for consequential tradeoffs or costly
+investigations likely to recur. Keep the body frozen, allow a small mutable
+status header, and append dated corrections. Foundational conventions belong
+in the decisions list above. Recover historical decisions only as needed.
+
+Keep curated measurement records in Git, raw output elsewhere. Record machine,
+chip, RAM, OS, commit, artifact, configuration, context length, batch, date, and
+results. Corrections reference the original record. A negative performance
+result merits a decision record only with a paired A/B on a named machine and
+a question likely to recur; preserve its conditions rather than generalizing.
+
+Historical source: pre-refactor main at
+[`02d723a`](https://github.com/joshuarossi/mlx-bun/tree/02d723a2875153196f8c6c10bce2daf6f0044655)
+contains the original code, app contracts, oracle tooling, and investigations.
+Use `git show 02d723a:<path>` for recovery; do not copy the archive wholesale.
