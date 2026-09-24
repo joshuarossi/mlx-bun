@@ -15,6 +15,7 @@
   },
   "files": [
     "src",
+    "examples",
     "LICENSE"
   ],
   "scripts": {

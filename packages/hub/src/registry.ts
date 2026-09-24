@@ -10,7 +10,7 @@ import {
   readlinkSync, readSync, rmSync, statSync,
 } from "node:fs";
 import { join } from "node:path";
-import { isDrafterModelType } from "@mlx-bun/inference/models";
+import { isDrafterModelType } from "@mlx-bun/inference/models/support";
 
 export interface ModelRecord {
   path: string;

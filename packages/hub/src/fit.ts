@@ -9,16 +9,16 @@
 // (see PLAN.md baselines; eval DB validates predictions against peaks).
 
 import { totalmem } from "node:os";
-import type { ModelConfig } from "@mlx-bun/inference/artifacts";
+import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import type { MemoryPlan } from "@mlx-bun/inference/contracts/portable";
 import {
   kvBytesAt,
   kvQuantBytesPerElement,
   sdpaFallbackBytes,
   type KvSchemeOptions,
-} from "@mlx-bun/inference/state";
+} from "@mlx-bun/inference/state/kv-scheme";
 
-export { kvBytesAt, kvQuantBytesPerElement, sdpaFallbackBytes } from "@mlx-bun/inference/state";
+export { kvBytesAt, kvQuantBytesPerElement, sdpaFallbackBytes } from "@mlx-bun/inference/state/kv-scheme";
 export type FitKvScheme = KvSchemeOptions;
 
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the

@@ -75,7 +75,10 @@
     "./execution": "./src/execution/index.ts",
     "./kernels/quantization": "./src/kernels/quantization/affine-rows.ts",
     "./contracts/portable": "./src/contracts/portable/index.ts",
-    "./contracts/mlx": "./src/contracts/mlx/index.ts"
+    "./contracts/mlx": "./src/contracts/mlx/index.ts",
+    "./artifacts/config": "./src/artifacts/config.ts",
+    "./models/support": "./src/models/support.ts",
+    "./state/kv-scheme": "./src/state/kv-scheme.ts"
   },
   "files": [
     "src",
