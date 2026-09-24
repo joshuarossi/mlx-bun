@@ -1,0 +1,194 @@
+// Memory contracts — `mlx-bun fit`. Every term is deterministic:
+//   weights        — safetensors byte sizes (registry)
+//   KV bytes/token — config: layers × kv_heads × head_dim × bytes;
+//                    sliding-window layers saturate at the window
+//   prefill transient — chunk size we choose × calibrated bytes/token
+//   machine        — RAM (queried) + Metal wired ceiling fraction
+//
+// Calibration constants come from measured runs on the reference M4 Pro
+// (see PLAN.md baselines; eval DB validates predictions against peaks).
+
+import { totalmem } from "node:os";
+import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
+import type { MemoryPlan } from "@mlx-bun/inference/contracts/portable";
+import {
+  kvBytesAt,
+  kvQuantBytesPerElement,
+  sdpaFallbackBytes,
+  type KvSchemeOptions,
+} from "@mlx-bun/inference/state/kv-scheme";
+
+export { kvBytesAt, kvQuantBytesPerElement, sdpaFallbackBytes } from "@mlx-bun/inference/state/kv-scheme";
+export type FitKvScheme = KvSchemeOptions;
+
+/** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
+ *  reference machine (24.9 tok/s vs 30.3 ceiling @600 ctx). */
+export const DECODE_EFFICIENCY = 0.82;
+/** MoE decode efficiency vs the active-bytes ceiling. RECALIBRATED from
+ *  the Phase 15 cleared-machine matrix: 26B-A4B measured 54.5 tok/s
+ *  (python 55.7 — parity) vs ~71 tok/s raw ceiling → 0.76. The earlier
+ *  0.42 came from a session where BOTH stacks were memory-degraded
+ *  (32.3/33.0 "parity" — equally wrong, mutually consistent). */
+export const MOE_DECODE_EFFICIENCY = 0.76;
+/** Prefill transient bytes per chunk token (measured: ~1.1 GB @ 2048). */
+export const TRANSIENT_PER_TOKEN = 0.55e6;
+/** Fraction of unified RAM usable as GPU working set (Metal's
+ *  recommendedMaxWorkingSetSize is ~75% on consumer SKUs). */
+export const WIRED_FRACTION = 0.75;
+export const DEFAULT_CHUNK = 2048;
+
+export interface MachineSpec {
+  name: string;
+  ramBytes: number;
+  bandwidthGBs: number;
+}
+
+/** Representative Apple Silicon SKUs (memory bandwidth GB/s). */
+export const APPLE_SKUS: { chip: string; bandwidthGBs: number; ramOptions: number[] }[] = [
+  { chip: "M1", bandwidthGBs: 68, ramOptions: [8, 16] },
+  { chip: "M1 Pro", bandwidthGBs: 200, ramOptions: [16, 32] },
+  { chip: "M1 Max", bandwidthGBs: 400, ramOptions: [32, 64] },
+  { chip: "M1 Ultra", bandwidthGBs: 800, ramOptions: [64, 128] },
+  { chip: "M2", bandwidthGBs: 100, ramOptions: [8, 16, 24] },
+  { chip: "M2 Pro", bandwidthGBs: 200, ramOptions: [16, 32] },
+  { chip: "M2 Max", bandwidthGBs: 400, ramOptions: [32, 64, 96] },
+  { chip: "M2 Ultra", bandwidthGBs: 800, ramOptions: [64, 128, 192] },
+  { chip: "M3", bandwidthGBs: 100, ramOptions: [8, 16, 24] },
+  { chip: "M3 Pro", bandwidthGBs: 150, ramOptions: [18, 36] },
+  { chip: "M3 Max", bandwidthGBs: 400, ramOptions: [36, 48, 64, 96, 128] },
+  { chip: "M3 Ultra", bandwidthGBs: 819, ramOptions: [96, 256, 512] },
+  { chip: "M4", bandwidthGBs: 120, ramOptions: [16, 24, 32] },
+  { chip: "M4 Pro", bandwidthGBs: 273, ramOptions: [24, 48] },
+  { chip: "M4 Max", bandwidthGBs: 546, ramOptions: [36, 48, 64, 128] },
+];
+
+/** Chip name from sysctl ("M1 Max") + its bandwidth from APPLE_SKUS. */
+export function detectChip(): { name: string | null; bandwidthGBs: number | null } {
+  try {
+    const proc = Bun.spawnSync(["sysctl", "-n", "machdep.cpu.brand_string"]);
+    const name = proc.stdout.toString().trim().replace(/^Apple\s+/, "");
+    if (!name) return { name: null, bandwidthGBs: null };
+    const sku = APPLE_SKUS.find((s) => s.chip === name);
+    return { name, bandwidthGBs: sku?.bandwidthGBs ?? null };
+  } catch {
+    return { name: null, bandwidthGBs: null };
+  }
+}
+
+export function thisMachine(bandwidthGBs?: number): MachineSpec {
+  // Default bandwidth: the detected chip's table entry; 273 (M4 Pro, the
+  // original dev machine) only as the last resort.
+  const bw = bandwidthGBs ?? detectChip().bandwidthGBs ?? 273;
+  return { name: "this machine", ramBytes: totalmem(), bandwidthGBs: bw };
+}
+
+
+export interface FitReport extends MemoryPlan {
+  readonly strategy: "generic-kv";
+  readonly predictedDecodeTps: number;
+}
+
+export function fit(
+  config: ModelConfig,
+  weightsBytes: number,
+  ctx: number,
+  machine: MachineSpec = thisMachine(),
+  chunk: number = DEFAULT_CHUNK,
+  /** Bytes of `.experts.` tensors (registry). MoE decode reads only
+   *  top_k/num_experts of them per token; residency still needs all. */
+  expertsBytes = 0,
+  /** Explicit memory budget in bytes (admission control). When set it
+   *  replaces the machine-derived usable ceiling (ram × WIRED_FRACTION)
+   *  outright — the budget IS the usable envelope. */
+  usableBytes?: number,
+  /** Active KV-quant scheme; a quantized cache holds more context in the
+   *  same budget, so the solved ceiling (and admission) must bill it. */
+  kvScheme?: FitKvScheme,
+): FitReport {
+  const usable = usableBytes ?? machine.ramBytes * WIRED_FRACTION;
+  // Prefill transient = the calibrated per-chunk-token constant + the
+  // SDPA-fallback scores tensor (heads × min(chunk, ctx) × ctx × 2 B) for
+  // attention layers whose head dim MLX cannot fuse (kv-scheme.ts). The
+  // second term is what grows with context on Qwen3.x (head_dim 256) and
+  // Gemma 4 (256/512) and was unbilled before 2026-09-08.
+  const transientAt = (n: number) =>
+    Math.min(chunk, n) * TRANSIENT_PER_TOKEN + sdpaFallbackBytes(config, chunk, n);
+  const transient = transientAt(ctx);
+  const kv = kvBytesAt(config, ctx, kvScheme);
+  const total = weightsBytes + kv + transient;
+
+  // solve max context: weights + kv(n) + transient(n) ≤ usable. The same
+  // formula `fits` uses, so the solved ceiling always fits. It is monotone
+  // in n (KV linear, sliding saturating at the window, scores quadratic
+  // below the chunk then linear), so bisect over [0, maxPositionEmbeddings].
+  const totalAt = (n: number) => weightsBytes + kvBytesAt(config, n, kvScheme) + transientAt(n);
+  let maxCtx = 0;
+  {
+    let lo = 0;
+    let hi = Math.max(0, Math.floor(config.text.maxPositionEmbeddings));
+    if (totalAt(hi) <= usable) lo = hi;
+    else {
+      // invariant: totalAt(lo) ≤ usable (lo = 0 may itself not fit → 0)
+      if (totalAt(0) > usable) hi = 0;
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (totalAt(mid) <= usable) lo = mid;
+        else hi = mid;
+      }
+    }
+    maxCtx = lo;
+  }
+
+  // decode reads all weights + the KV cache once per token — except MoE
+  // expert weights, where only top_k of num_experts are touched per token
+  const t = config.text;
+  const isMoe = t.enableMoeBlock && t.numExperts > 0;
+  const expertsSkipped = isMoe
+    ? expertsBytes * (1 - t.topKExperts / t.numExperts)
+    : 0;
+  const bytesPerToken = weightsBytes - expertsSkipped + kv;
+  const predictedDecodeTps =
+    ((machine.bandwidthGBs * 1e9) / bytesPerToken) *
+    (isMoe ? MOE_DECODE_EFFICIENCY : DECODE_EFFICIENCY);
+
+  return {
+    schemaVersion: 1,
+    strategy: "generic-kv",
+    fits: total <= usable,
+    contextTokens: ctx,
+    weightsBytes,
+    kvBytes: kv,
+    transientBytes: transient,
+    reserveBytes: 0,
+    totalBytes: total,
+    usableBytes: usable,
+    maxSafeContext: maxCtx,
+    predictedDecodeTps,
+  };
+}
+
+/** The SKU matrix: which Apple Silicon configs run this model at `ctx`. */
+export function skuMatrix(
+  config: ModelConfig, weightsBytes: number, ctx: number, expertsBytes = 0,
+  kvScheme?: FitKvScheme,
+): { sku: string; ramGB: number; fits: boolean; maxContext: number; decodeTps: number }[] {
+  const rows: ReturnType<typeof skuMatrix> = [];
+  for (const sku of APPLE_SKUS) {
+    for (const ram of sku.ramOptions) {
+      const m: MachineSpec = {
+        name: `${sku.chip} ${ram}GB`,
+        ramBytes: ram * 2 ** 30,
+        bandwidthGBs: sku.bandwidthGBs,
+      };
+      const r = fit(config, weightsBytes, ctx, m, DEFAULT_CHUNK, expertsBytes, undefined, kvScheme);
+      rows.push({
+        sku: sku.chip,
+        ramGB: ram,
+        fits: r.fits,
+        maxContext: r.maxSafeContext,
+        decodeTps: r.predictedDecodeTps,
+      });
+    }
+  }
+  return rows;
+}
