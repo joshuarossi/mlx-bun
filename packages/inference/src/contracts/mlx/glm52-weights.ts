@@ -1,5 +1,4 @@
-import { MlxArray } from "@mlx-bun/mlx/array";
-
+import type { MlxArray } from "@mlx-bun/mlx/array";
 
 /** Structural seam used by tiny fixtures as well as ColibriGlm52Weights. */
 export interface Glm52MlaWeightSource {

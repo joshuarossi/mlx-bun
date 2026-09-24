@@ -24,7 +24,7 @@ Inside `packages/inference/src/`:
 
 | Owner | Responsibility |
 | --- | --- |
-| `contracts/portable/` | Main's shared contracts, plus backend-independent graph, state, output, and scheduling interfaces. No platform imports. |
+| `contracts/portable/` | Backend-independent inference graph, state, output, and scheduling interfaces. No platform imports. |
 | `contracts/mlx/` | Tensor, attention, cache, position, weight-source, and forward-work interfaces. May reference the MLX binding and portable contracts. |
 | `runtime/` | Shared configuration scopes, resource ownership helpers, tracing context, and bundled native paths. No model or scheduling dependencies. |
 | `kernels/` | Numerical operations and their input layouts. No concrete cache, artifact loader, model, or scheduler imports. |
@@ -52,6 +52,18 @@ The test parses both packages' TypeScript and JavaScript, resolves imports,
 checks the declared layer DAG, and rejects module cycles, including type-only
 cycles. Static imports, re-exports, import types, dynamic imports, and `require`
 are checked. New source directories need an explicit owner in this gate.
+
+Application contracts migrate with their owning apps: Pi UI/provider protocols,
+job runner types, engine host, and completion clients. Within the apps, Pi
+protocols belong to the Pi integration, job contracts to job orchestration, and
+host/client interfaces to their application boundary. Apps import reusable
+inference contracts from the library rather than duplicating them. Portability
+is a dependency constraint; domain ownership determines the home.
+
+The existing application contract definitions
+are preserved at `02d723a:src/contracts/` in Git history. They are part of the app
+migration plan, outside the inference package. Extract a shared app-contract
+package only when the app consumers require it.
 
 ## Changing or replacing a piece
 

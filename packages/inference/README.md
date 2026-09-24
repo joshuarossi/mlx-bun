@@ -11,10 +11,11 @@ The root API composes the lower layers for loading and generation. Component
 subpaths remain available for direct use and custom graphs. See the
 [architecture](../../ARCHITECTURE.md) for dependency direction and ownership.
 
-`contracts/portable` preserves main's platform-free interfaces and can be consumed
+`contracts/portable` contains platform-free inference interfaces and can be consumed
 without Bun or MLX types. `contracts/mlx` describes tensor and state interactions
 using MLX types. `contracts` exports both. Use the portable entry when sharing
-request, output, or scheduling types with application and browser code.
+inference output or scheduling types with application and browser code.
+Application protocols and job contracts migrate with their owning apps.
 
 Paged attention accepts numerical storage; adapter mounting accepts named LoRA
 targets; prompt preparation accepts encoder interfaces. Callers can supply their
