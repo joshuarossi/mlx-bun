@@ -68,6 +68,25 @@ to preserve the existing dispatch profile. Wide prefill additionally requires
 caller-proven aligned, row-contiguous input. These profiles and numerical
 contracts are unchanged; they are not universal dispatch rules for every shape.
 
+## Artifact, input, and layer APIs
+
+- `@mlx-bun/inference/artifacts`: model configuration, safetensors metadata,
+  and lazy native weight loading through `Weights.open(directory)`. The caller
+  supplies the local artifact directory and any graph-specific weight view.
+- `@mlx-bun/inference/input`: `loadTokenizer(directory)` consumes the existing
+  Hugging Face tokenizer files; `ChatTemplate.load(directory)` loads the template.
+- `@mlx-bun/inference/layers`: quantized linear and embedding layers, RMSNorm,
+  and `TrellisLinear`, which composes the standalone Trellis kernels and retains
+  the existing dispatch and expansion fallback.
+- `@mlx-bun/inference/adapters/state`: inference-time LoRA state and weights.
+- `@mlx-bun/inference/execution/config`: immutable execution settings and scoped
+  overrides. The existing `MLX_BUN_*` defaults are preserved during migration.
+
+These modules do not download models or start services. Tensor handles returned
+by `Weights.tensor()` are borrowed from the weights owner; release them through
+`Weights.release()`, `releaseShard()`, or `dispose()`. Layer outputs are owned
+by the caller.
+
 ## Source ownership
 
 All kernel files below live under `src/kernels/trellis/`.

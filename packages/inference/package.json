@@ -8,7 +8,12 @@
     "bun": ">=1.4.2"
   },
   "exports": {
-    "./kernels/trellis": "./src/kernels/trellis/index.ts"
+    "./kernels/trellis": "./src/kernels/trellis/index.ts",
+    "./artifacts": "./src/artifacts/index.ts",
+    "./input": "./src/input/index.ts",
+    "./layers": "./src/layers/index.ts",
+    "./execution/config": "./src/execution/config.ts",
+    "./adapters/state": "./src/adapters/state.ts"
   },
   "files": [
     "src",
@@ -20,6 +25,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@mlx-bun/mlx": "workspace:*"
+    "@mlx-bun/mlx": "workspace:*",
+    "@huggingface/tokenizers": "^0.1.3",
+    "@huggingface/jinja": "^0.5.9"
   }
 }
