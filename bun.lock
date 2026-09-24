@@ -24,6 +24,14 @@
       "name": "@mlx-bun/mlx",
       "version": "0.0.0",
     },
+    "packages/quantize": {
+      "name": "@mlx-bun/quantize",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/mlx": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@huggingface/jinja": ["@huggingface/jinja@0.5.10", "", {}, "sha512-SgS1D1bglQ94ceD4ZCL6eayUDy9uV1xuyk61OjgSxU5GJh7upqZCKII0JoTYMc6wWsg3JUgaPRX0ElQzXPk3Cw=="],
@@ -35,6 +43,8 @@
     "@mlx-bun/inference": ["@mlx-bun/inference@workspace:packages/inference"],
 
     "@mlx-bun/mlx": ["@mlx-bun/mlx@workspace:packages/mlx"],
+
+    "@mlx-bun/quantize": ["@mlx-bun/quantize@workspace:packages/quantize"],
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
