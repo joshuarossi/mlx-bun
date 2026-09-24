@@ -1,3 +1,5 @@
+import { generateText } from "../../examples/qwen3-generate";
+import { forwardTokens } from "../../examples/qwen3-forward";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,10 +40,19 @@ async function checkpoint(dir: string): Promise<void> {
     using raw = MlxArray.fromFloat32(new Float32Array(width).fill(1), [width]);
     using value = raw.astype(Dtype.bfloat16); tensor(name + ".weight", value, "BF16");
   }
+  // The examples use a tokenizer loaded from the same temporary checkpoint.
+  await Bun.write(join(dir, "tokenizer.json"), JSON.stringify({
+    version: "1.0", truncation: null, padding: null, normalizer: null,
+    added_tokens: [], pre_tokenizer: { type: "WhitespaceSplit" }, decoder: null,
+    model: { type: "WordLevel", vocab: { "[UNK]": 0, ...Object.fromEntries(
+      Array.from({ length: 63 }, (_, i) => [`token${i + 1}`, i + 1])) }, unk_token: "[UNK]" },
+    post_processor: null,
+  }));
+  await Bun.write(join(dir, "tokenizer_config.json"), JSON.stringify({ unk_token: "[UNK]", add_bos_token: false }));
   const json = JSON.stringify(tensors), header = Buffer.from(json.padEnd(Math.ceil(json.length / 8) * 8, " "));
   const size = Buffer.alloc(8); size.writeBigUInt64LE(BigInt(header.length));
   await Bun.write(join(dir, "model.safetensors"), Buffer.concat([size, header, ...chunks]));
-  await Bun.write(join(dir, "config.json"), JSON.stringify({ model_type: "qwen3", hidden_size: 64, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 1, head_dim: 32, intermediate_size: 64, vocab_size: 64, rms_norm_eps: 1e-6, max_position_embeddings: 128, tie_word_embeddings: true, quantization: { group_size: 64, bits: 4 } }));
+  await Bun.write(join(dir, "config.json"), JSON.stringify({ model_type: "qwen3", hidden_size: 64, num_hidden_layers: 1, num_attention_heads: 2, num_key_value_heads: 1, head_dim: 32, intermediate_size: 64, vocab_size: 64, eos_token_id: [], rms_norm_eps: 1e-6, max_position_embeddings: 128, tie_word_embeddings: true, quantization: { group_size: 64, bits: 4 } }));
 }
 
 test("a caller loads a graph, owns its state, selects logits and generates directly", async () => {
@@ -79,6 +90,15 @@ test("a caller loads a graph, owns its state, selects logits and generates direc
         const streamed: number[] = [];
         for await (const value of generation) streamed.push(value.token);
         expect(streamed).toEqual(tokens);
+        const example = await generateText(dir, "token1 token2 token3", 4);
+        expect(example.tokens).toEqual(tokens);
+        expect(example.text).toBe(tokens.map(token => token === 0 ? "[UNK]" : `token${token}`).join(" "));
+        expect(example.stats).toMatchObject({ promptTokens: 3, generatedTokens: 4 });
+        const forward = await forwardTokens(dir, [1, 2, 3]);
+        expect([forward.token, forward.nextToken]).toEqual(tokens.slice(0, 2));
+        expect(forward.offset).toBe(4);
+        expect(forward.logits.length).toBe(64);
+        expect(Array.from(forward.logits).every(Number.isFinite)).toBe(true);
         expect(generation.stats).toMatchObject({ promptTokens: 3, generatedTokens: 4 });
         const draft = await TwoModelProvider.load(dir, 64);
         try {

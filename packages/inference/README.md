@@ -61,25 +61,10 @@ harness remain external; Python is not a project dependency.
 
 ## Direct library use
 
-```ts
-import { loadModelConfig, Weights, loadTokenizer, generate } from "@mlx-bun/inference";
-import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
-
-const directory = "/path/to/your/qwen3-checkpoint";
-const config = await loadModelConfig(directory);
-const weights = await Weights.open(directory);
-try {
-  const graph = new Qwen3Model(weights, config);
-  const tokenizer = await loadTokenizer(directory);
-  const output: number[] = [];
-  for await (const { token } of generate(graph, tokenizer.encode("Hello"), {
-    maxTokens: 32, temperature: 0,
-  })) output.push(token);
-  console.log(tokenizer.decode(output));
-} finally {
-  weights.dispose();
-}
-```
+See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
+repository root with `bun packages/inference/examples/qwen3-generate.ts <checkpoint-directory> "Hello"`.
+It loads the local tokenizer, streams tokens from the supplied graph, and releases
+weights after generation completes.
 
 Use the graph matching your checkpoint, or compose your own operations and supply
 an explicit binding. The root export contains common loading and generation
@@ -88,26 +73,10 @@ are version `0.0.0` during the refactor and have not been published to npm.
 
 ## Trellis weight expansion
 
-```ts
-import { Dtype } from "@mlx-bun/mlx";
-import {
-  vectorTrellisExpand,
-  vectorTrellisExpandEligible,
-  type TrellisGeometry,
-} from "@mlx-bun/inference/kernels/trellis";
-
-// codes and scales are caller-owned MlxArrays containing packed model weights.
-// This example describes 64 rows of 512 weights, packed at 3 bits per weight.
-const geometry: TrellisGeometry = {
-  k: 3, L: 12, T: 256, axis: 1,
-  rows: 64, cols: 512, inFeatures: 512, outFeatures: 64,
-};
-
-if (vectorTrellisExpandEligible(geometry, Dtype.bfloat16)) {
-  using weights = vectorTrellisExpand(codes, scales, geometry);
-  // Compose weights with other MLX operations here.
-}
-```
+See the runnable [Trellis expansion example](examples/trellis-expand.ts). Its
+`expandWeights` function borrows codes and scales and returns an owned lazy tensor.
+`bun packages/inference/examples/trellis-expand.ts` demonstrates the layout with
+small generated inputs, without a model download.
 
 The caller supplies uint32 packed codes, one floating-point scale per stored
 row, and matching geometry. The eligibility helper checks the kernel's supported
@@ -173,19 +142,10 @@ by the caller.
 
 Import a graph directly, provide its weights and configuration, and own its state:
 
-```ts
-import { loadModelConfig, Weights } from "@mlx-bun/inference/artifacts";
-import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
-
-const config = await loadModelConfig(modelDirectory);
-const weights = await Weights.open(modelDirectory);
-try {
-  const graph = new Qwen3Model(weights, config);
-  const tokens = graph.generate(promptTokenIds, 32, config.eosTokenIds);
-} finally {
-  weights.dispose();
-}
-```
+See [explicit forward passes and state ownership](examples/qwen3-forward.ts).
+Run `bun packages/inference/examples/qwen3-forward.ts <checkpoint-directory> "[1,2,3]"`
+with token IDs from your checkpoint’s tokenizer. The example forwards the prompt,
+selects a token, continues with the same cache, and disposes cache before weights.
 
 The direct graph imports currently include `models/gemma4`,
 `models/gemma4/generated`, `models/minicpm5`, `models/qwen3`, `models/qwen3-moe`,
@@ -288,18 +248,9 @@ artifacts to a caller-owned graph; adapter weight/state types are also exported.
 
 ## Generation
 
-```ts
-import { generate } from "@mlx-bun/inference/generation";
-
-const generation = generate(graph, promptTokenIds, {
-  maxTokens: 128,
-  temperature: 0,
-});
-for await (const { token } of generation) {
-  // Feed the token to your own decoder or application.
-}
-console.log(generation.stats);
-```
+The [generation example](examples/qwen3-generate.ts) iterates over emitted tokens
+and returns the final generation statistics. It uses the same public generation
+API available through the root and `@mlx-bun/inference/generation`.
 
 `generate` uses the graph supplied by the caller. `generateAutoregressive` accepts
 an explicit `MlxAutoregressiveBinding` from `generation/bindings/autoregressive`, including

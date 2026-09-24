@@ -1,3 +1,4 @@
+import { double } from "../examples/arrays";
 import { expect, test } from "bun:test";
 import { MlxArray, cpuStream, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
@@ -48,4 +49,8 @@ test("attention preserves grouped heads, masks and stream across the C ABI", () 
       } finally { for (const { output } of cases) output.dispose(); }
     } finally { q.dispose(); k.dispose(); v.dispose(); mask.dispose(); }
   }
+});
+
+test("the runnable array example uses the public package API", () => {
+  expect(double([1, 2, 3])).toEqual([2, 4, 6]);
 });
