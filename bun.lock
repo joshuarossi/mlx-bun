@@ -22,6 +22,7 @@
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
         "@mlx-bun/quantize": "workspace:*",
+        "@mlx-bun/training": "workspace:*",
         "typebox": "1.1.38",
       },
       "devDependencies": {
@@ -170,6 +171,7 @@
     "@mlx-bun/quantize": ["@mlx-bun/quantize@workspace:packages/quantize"],
 
     "@mlx-bun/training": ["@mlx-bun/training@workspace:packages/training"],
+
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.43.0", "", {}, "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg=="],

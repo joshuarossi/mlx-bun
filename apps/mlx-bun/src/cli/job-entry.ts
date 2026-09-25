@@ -5,6 +5,7 @@ import type { JobRunner } from "../jobs/protocol";
 
 async function resolveRunner(kind: string): Promise<JobRunner> {
   if (kind === "quantize") return (await import("../quantize/job")).createQuantizeRunner();
+  if (kind === "finetune") return (await import("../finetune/job")).createFinetuneRunner();
   throw new Error(`no runner registered for kind "${kind}"`);
 }
 
