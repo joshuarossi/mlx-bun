@@ -5,12 +5,13 @@
   "type": "module",
   "private": true,
   "bin": {
-    "mlx-bun": "./src/cli/main.ts"
+    "mlx-bun": "./bin/mlx-bun.mjs"
   },
   "engines": {
     "bun": ">=1.4.2"
   },
   "files": [
+    "bin",
     "src",
     "dist/web"
   ],

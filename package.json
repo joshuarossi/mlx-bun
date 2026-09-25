@@ -13,7 +13,8 @@
     "test": "bun run --filter '*' test",
     "verify:packages": "bun scripts/verify-packages.ts",
     "build:binary": "bun scripts/build-binary.ts",
-    "verify:binary": "bun scripts/verify-binary.ts"
+    "verify:binary": "bun scripts/verify-binary.ts",
+    "link-cli": "mkdir -p \"${BUN_INSTALL:-$HOME/.bun}/bin\" && ln -sf \"$PWD/apps/mlx-bun/bin/mlx-bun.mjs\" \"${BUN_INSTALL:-$HOME/.bun}/bin/mlx-bun\""
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

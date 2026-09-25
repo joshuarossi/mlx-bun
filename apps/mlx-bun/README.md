@@ -6,7 +6,10 @@ completions through one continuous scheduler. Model-management commands remain
 available separately: `get`, `scan`, `ls`, `fit`, and `gc`.
 
 After the root native setup, run
-`bun apps/mlx-bun/src/cli/main.ts serve --model <cached-model-or-directory>`.
+`bun apps/mlx-bun/bin/mlx-bun.mjs serve --model <cached-model-or-directory>`,
+or use `mlx-bun` after the root's `bun run link-cli` step. The launcher checks
+the app manifest's Bun minimum and Apple Silicon macOS before loading app code.
+Help and version work before native setup; inference requires the staged natives.
 Use `serve --help` for accepted options. A terminal session opens the browser
 unless `--no-open` is supplied. Startup without a model selects a cached model;
 if none is supported, it downloads the starter, then hands the recommended model
