@@ -30,6 +30,8 @@ class PiBackend implements ChatBackend {
   private sessionManager?: SessionManager;
   private unsubscribe?: () => void;
   private disposed = false;
+  private disposal?: Promise<void>;
+  private readonly runtimeChanges = new Set<Promise<unknown>>();
   /** Active LoRA adapter id for this connection (null = none/base model).
    *  Read by the before_provider_request hook; set via the set_adapter msg. */
   private selectedAdapter: string | null = null;
@@ -343,7 +345,10 @@ class PiBackend implements ChatBackend {
     if (!this.runtime) {
       await this.replaceRuntime(SessionManager.create(this.cwd, this.sessionDir));
     } else {
-      await this.runtime.newSession();
+      const runtime = this.runtime;
+      const change = runtime.newSession();
+      this.runtimeChanges.add(change);
+      try { await change; } finally { this.runtimeChanges.delete(change); }
     }
     this.sendCodingToolsState();
     this.sendHistory();
@@ -358,7 +363,12 @@ class PiBackend implements ChatBackend {
       return;
     }
     if (!this.runtime) await this.replaceRuntime(SessionManager.open(path, this.sessionDir));
-    else await this.runtime.switchSession(path);
+    else {
+      const runtime = this.runtime;
+      const change = runtime.switchSession(path);
+      this.runtimeChanges.add(change);
+      try { await change; } finally { this.runtimeChanges.delete(change); }
+    }
     this.sendCodingToolsState();
     this.sendHistory();
     await this.sendSessions();
@@ -881,13 +891,24 @@ class PiBackend implements ChatBackend {
   }
 
   /** Tear down the session and reject any in-flight approvals. */
-  async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
-    this.teardownBindings();
-    const runtime = this.runtime;
-    this.runtime = undefined;
-    await runtime?.dispose();
+  dispose(): Promise<void> {
+    return this.disposal ??= (async () => {
+      this.disposed = true;
+      const runtime = this.runtime;
+      const session = runtime?.session ?? this.session;
+      this.runtime = undefined;
+      const errors: unknown[] = [];
+      try { this.teardownBindings(); } catch (error) { errors.push(error); }
+      // SDK runtime.dispose requests cancellation through synchronous session
+      // disposal; only session.abort waits for the active agent turn to stop.
+      try { await session?.abort(); } catch (error) { errors.push(error); }
+      // SDK replacements can publish a new session after cancellation. Join
+      // them before releasing the captured runtime so its latest session closes.
+      await Promise.allSettled([...this.runtimeChanges]);
+      try { await runtime?.dispose(); } catch (error) { errors.push(error); }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length) throw new AggregateError(errors, "Pi cleanup failed");
+    })();
   }
 
   /** Send a frame, swallowing errors on a closed socket. */

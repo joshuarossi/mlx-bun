@@ -151,3 +151,75 @@ test("the memory owner explicitly supplies tool definitions, names, skills, and 
   expect(surface.skillPaths).toEqual(["/memory/skill"]);
   expect(surface.memoryHint).toBe("Use memory only when relevant.");
 });
+
+test("shutdown waits for in-flight message cleanup after initiating cancellation", async () => {
+  const work = deferred(); const events: string[] = [];
+  const handler = makeChatWebSocketHandler(() => ({ async start() {},
+    async handle() { events.push("handling"); await work.promise; events.push("late cleanup"); },
+    dispose() { events.push("cancel"); },
+  }));
+  const client = socket(); await handler.websocket.open!(client.ws);
+  const operation = handler.websocket.message(client.ws, '{"type":"fork_session","path":"session"}');
+  let closed = false; const closing = handler.dispose().then(() => { closed = true; events.push("closed"); });
+  await tick(); await tick(); expect(closed).toBe(false); expect(events).toEqual(["handling", "cancel"]);
+  work.resolve(); await operation; await closing;
+  expect(events).toEqual(["handling", "cancel", "late cleanup", "closed"]);
+});
+
+test("shutdown preserves peer cleanup failures and still waits for every disposer", async () => {
+  const firstFailure = new Error("first cleanup"); const secondFailure = new Error("second cleanup");
+  const second = deferred(); let count = 0;
+  const handler = makeChatWebSocketHandler(() => {
+    const index = count++;
+    return { async start() {}, async handle() {}, async dispose() {
+      if (index === 0) throw firstFailure;
+      await second.promise; throw secondFailure;
+    } };
+  });
+  const a = socket(), b = socket(); await handler.websocket.open!(a.ws); await handler.websocket.open!(b.ws);
+  // A disconnected peer's failed cleanup must remain observable at shutdown.
+  handler.websocket.close!(a.ws, 1000, ""); await tick(); await tick();
+  let settled = false; const closing = handler.dispose().catch(error => { settled = true; return error; });
+  await tick(); expect(settled).toBe(false); second.resolve();
+  const error = await closing; expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors).toEqual([firstFailure, secondFailure]);
+  await expect(handler.dispose()).rejects.toBe(error);
+});
+
+test("Pi disposal waits for agent abort before runtime release and is idempotent", async () => {
+  const idle = deferred(); const events: string[] = [];
+  const backend = createPiBackend({ port: 1 })(() => {});
+  const session = { async abort() { events.push("abort"); await idle.promise; events.push("idle"); } };
+  Object.assign(backend, { runtime: { session, async dispose() { events.push("runtime dispose"); } }, session });
+  let closed = false; const first = backend.dispose()!; const second = backend.dispose()!;
+  const closing = Promise.resolve(first).then(() => { closed = true; });
+  await tick(); expect(closed).toBe(false); expect(events).toEqual(["abort"]);
+  idle.resolve(); await closing; await second;
+  expect(events).toEqual(["abort", "idle", "runtime dispose"]);
+});
+
+test("Pi still releases its runtime when abort fails and retains both failures", async () => {
+  const backend = createPiBackend({ port: 1 })(() => {});
+  const abortFailure = new Error("abort failure"), disposeFailure = new Error("dispose failure");
+  let releases = 0; const session = { async abort() { throw abortFailure; } };
+  Object.assign(backend, { runtime: { session, async dispose() { releases++; throw disposeFailure; } }, session });
+  const failure = await Promise.resolve(backend.dispose()).catch(error => error);
+  expect(failure).toBeInstanceOf(AggregateError); expect(failure.errors).toEqual([abortFailure, disposeFailure]);
+  await expect(Promise.resolve(backend.dispose())).rejects.toBe(failure); expect(releases).toBe(1);
+});
+
+test("Pi closes the session published by an SDK replacement that finishes during shutdown", async () => {
+  const replacement = deferred(); const events: string[] = [];
+  const backend = createPiBackend({ port: 1 })(() => {});
+  let current = "old";
+  const session = { async abort() { events.push("abort"); } };
+  Object.assign(backend, { session, runtime: { session,
+    async newSession() { events.push("replace started"); await replacement.promise; current = "new"; events.push("replace ended"); },
+    async dispose() { events.push(`dispose ${current}`); },
+  }, sendSessions: async () => {}, sendHistory() {}, sendCodingToolsState() {} });
+  const changing = backend.handle({ type: "new_session" });
+  let closed = false; const closing = Promise.resolve(backend.dispose()).then(() => { closed = true; });
+  await tick(); await tick(); expect(closed).toBe(false); expect(events).toEqual(["replace started", "abort"]);
+  replacement.resolve(); await changing; await closing;
+  expect(events).toEqual(["replace started", "abort", "replace ended", "dispose new"]);
+});
