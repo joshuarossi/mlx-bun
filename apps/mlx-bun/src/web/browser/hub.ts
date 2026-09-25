@@ -313,7 +313,8 @@ function stopDownloadPolling(): void {
   if (downloadPollTimer) { clearInterval(downloadPollTimer); downloadPollTimer = undefined; }
 }
 
-async function pollDownloads(): Promise<void> {
+/** Exported for tests: one polling step over the tracker's rows. */
+export async function pollDownloads(): Promise<void> {
   let downloads: DownloadInfo[] = [];
   try {
     const r = await fetch("/downloads");

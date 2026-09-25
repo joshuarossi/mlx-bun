@@ -37,7 +37,7 @@ import {
   INLINE_THRESHOLD_CHARS, bm25TopK, buildContextBlock, buildIndex, chunkFiles, chunkText,
   retrieve, shouldRetrieve, tokenize, toCitations, type Chunk, type Citation,
 } from "../../src/web/browser/rag";
-import { renderHubLocalHtml, renderHubSearchHtml, type HubLocalRow, type HubSearchRow } from "../../src/web/browser/hub";
+import { pollDownloads, renderHubLocalHtml, renderHubSearchHtml, type HubLocalRow, type HubSearchRow } from "../../src/web/browser/hub";
 import {
   ambientLine, buildAppContext, captureUiSnapshot, resolveSpotlightTarget, type UiSnapshot,
 } from "../../src/web/browser/assistant";
@@ -1414,4 +1414,28 @@ it("memory provenance chips cover every callable memory and reference tool", () 
   expect([...MEMORY_CHIP_TOOL_NAMES].sort()).toEqual([...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES].sort());
   for (const name of [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES]) expect(isMemoryToolName(name)).toBe(true);
   for (const name of ["read", "bash", "web_search", "memory_fake", "reference_fake", ""]) expect(isMemoryToolName(name)).toBe(false);
+});
+
+it("hub search rows reflect GET /downloads progress: percent while active, then done or the error text", async () => {
+  const container = document.createElement("div");
+  container.innerHTML = renderHubSearchHtml([{ id: "org/tiny", downloads: 12, likes: 0, size_estimate: null }], false, new Set(["org/tiny"]));
+  document.body.appendChild(container);
+  const originalFetch = globalThis.fetch;
+  const rows: Record<string, unknown>[] = [];
+  const requested: string[] = [];
+  globalThis.fetch = (async (input: string) => { requested.push(String(input)); return Response.json({ downloads: rows }); }) as unknown as typeof fetch;
+  try {
+    const actions = () => container.querySelector(".hub-row-actions")!.innerHTML;
+    expect(actions()).toBe('<span class="hub-dl-tag">downloading…</span>');
+    rows.push({ repoId: "org/tiny", state: "active", currentFile: "model.safetensors", receivedBytes: 50, totalBytes: 200 });
+    await pollDownloads();
+    expect(actions()).toBe('<span class="hub-dl-tag">25%</span>');
+    rows[0] = { ...rows[0], state: "done", receivedBytes: 200 };
+    await pollDownloads();
+    expect(actions()).toBe('<span class="hub-dl-tag done">done — reload to serve</span>');
+    rows[0] = { repoId: "org/tiny", state: "error", error: "checksum mismatch for model.safetensors", currentFile: null, receivedBytes: 0, totalBytes: 200 };
+    await pollDownloads();
+    expect(actions()).toBe('<span class="hub-dl-tag error">checksum mismatch for model.safetensors</span>');
+    expect(requested).toEqual(["/downloads", "/downloads", "/downloads"]);
+  } finally { globalThis.fetch = originalFetch; container.remove(); }
 });

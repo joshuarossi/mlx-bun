@@ -4,9 +4,12 @@ import { Registry, visionCapable, type ModelRecord } from "@mlx-bun/hub/registry
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { supportTier } from "@mlx-bun/inference/models/support";
 import { errorResponse } from "./http";
+import { DuplicateDownloadError, type DownloadOwner } from "../hub/downloads";
 
 export interface HubRouteOptions {
   hubDirectory?: string;
+  /** Without an owner the download route is unmounted and answers 404. */
+  downloads?: Pick<DownloadOwner, "start">;
   /** The handler owns and closes each registry returned by this factory. */
   createRegistry?: () => Pick<Registry, "scan" | "listCanonical" | "close">;
   token?: () => string | null;
@@ -29,15 +32,32 @@ async function localRow(model: ModelRecord) {
 }
 
 /** Web hub policy over public registry/fit APIs. Search belongs to the current
- * request; this owner starts no downloads and never replaces the loaded model. */
+ * request; downloads are admitted to the composition's owner and outlive the
+ * request; this handler never replaces the loaded model. */
 export function createHubRoutes(options: HubRouteOptions = {}) {
   const jsonError = (error: string, status = 400) => Response.json({ ok: false, error }, { status });
   return { async handle(request: Request): Promise<Response | null> {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
-    if (!["GET /api/hub/local", "GET /api/hub/search", "POST /api/hub/serve"].includes(route)) return null;
+    if (!["GET /api/hub/local", "GET /api/hub/search", "POST /api/hub/serve", "POST /api/hub/download"].includes(route)) return null;
+    if (route === "POST /api/hub/download" && !options.downloads) return null;
     try {
       request.signal.throwIfAborted();
+      if (route === "POST /api/hub/download") {
+        const body: unknown = await request.json().catch(() => undefined);
+        const repo = body && typeof body === "object" && !Array.isArray(body) && "repo" in body && typeof body.repo === "string"
+          ? body.repo.trim() : "";
+        if (!repo) return jsonError('missing "repo"');
+        // The id names cache directories and request paths; keep it to org/name.
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo.split("/").some(part => part === "." || part === ".."))
+          return jsonError('invalid "repo": expected org/name');
+        try { options.downloads!.start(repo); }
+        catch (error) {
+          if (error instanceof DuplicateDownloadError) return jsonError(error.message, 409);
+          throw error;
+        }
+        return Response.json({ ok: true, repo, started: true });
+      }
       if (route === "GET /api/hub/local") {
         const registry = options.createRegistry?.() ?? new Registry();
         try {

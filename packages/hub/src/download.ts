@@ -46,6 +46,12 @@ export interface DownloadOptions {
   endpoint?: string;
   token?: string | null;
   onProgress?: (file: string, received: number, total: number) => void;
+  /** Aborting rejects with the signal's reason at the next checkpoint: the
+   * metadata request, a lock attempt, a Range retry, each streamed chunk, and
+   * the final publish. Pending writes settle first, so an `.incomplete` prefix
+   * stays resumable, and nothing is published (blob rename, refs, or tracker
+   * completion) once the signal has fired. */
+  signal?: AbortSignal;
 }
 
 export interface DownloadSpacePlan {
@@ -150,9 +156,10 @@ function lockIsStale(lockPath: string): boolean {
 
 /** Take `<blobPath>.lock` (O_EXCL). Returns a release fn, or throws the
  *  friendly "another download in progress" error when live-held. */
-function acquireLock(blobPath: string, name: string): () => void {
+function acquireLock(blobPath: string, name: string, signal?: AbortSignal): () => void {
   const lockPath = `${blobPath}.lock`;
   for (let attempt = 0; attempt < 2; attempt++) {
+    signal?.throwIfAborted();
     try {
       const fd = openSync(lockPath, "wx");
       writeSync(fd, `${process.pid}\n${new Date().toISOString()}\n`);
@@ -214,6 +221,7 @@ export async function listRepoFiles(
   const url = `${endpoint}/api/models/${repoId}/revision/${encodeURIComponent(revision)}?blobs=true`;
   const res = await fetch(url, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
+    signal: opts.signal,
   });
   if (!res.ok)
     throw new Error(
@@ -253,23 +261,35 @@ export async function listRepoFiles(
   };
 }
 
+/** Reject with the signal's reason while `promise` is pending. A stalled body
+ * read does not observe fetch's own abort, so shutdown must not wait on it. */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /** Follow redirects manually so the Authorization header is DROPPED at
  *  the CDN hop — presigned S3/CloudFront URLs reject requests that
  *  carry it (the classic hub-client footgun). Range survives. */
 async function fetchBlob(
-  url: string, token: string | null, rangeStart: number,
+  url: string, token: string | null, rangeStart: number, signal?: AbortSignal,
 ): Promise<Response> {
   const range: Record<string, string> = {};
   if (rangeStart > 0) range["range"] = `bytes=${rangeStart}-`;
   const authed: Record<string, string> = { ...range };
   if (token) authed["authorization"] = `Bearer ${token}`;
-  let res = await fetch(url, { redirect: "manual", headers: authed });
+  let res = await fetch(url, { redirect: "manual", headers: authed, signal });
   let hops = 0;
   while (res.status >= 300 && res.status < 400 && hops < 5) {
     const loc = res.headers.get("location");
     if (!loc) break;
     // no auth past the redirect — presigned URLs reject it
-    res = await fetch(new URL(loc, url).href, { redirect: "manual", headers: range });
+    res = await fetch(new URL(loc, url).href, { redirect: "manual", headers: range, signal });
     hops++;
   }
   return res;
@@ -278,13 +298,13 @@ async function fetchBlob(
 export async function downloadOne(
   url: string, token: string | null, blobPath: string,
   expected: { size: number; sha256?: string; sha1?: string; name: string },
-  onProgress?: DownloadOptions["onProgress"],
+  onProgress?: DownloadOptions["onProgress"], signal?: AbortSignal,
 ): Promise<void> {
   // Serialize concurrent writers (foreground get vs background auto-download)
   // on this blob — both appending to one .incomplete corrupts it.
-  const release = acquireLock(blobPath, expected.name);
+  const release = acquireLock(blobPath, expected.name, signal);
   try {
-    await downloadOneLocked(url, token, blobPath, expected, onProgress);
+    await downloadOneLocked(url, token, blobPath, expected, onProgress, signal);
   } finally {
     release();
   }
@@ -293,7 +313,7 @@ export async function downloadOne(
 async function downloadOneLocked(
   url: string, token: string | null, blobPath: string,
   expected: { size: number; sha256?: string; sha1?: string; name: string },
-  onProgress?: DownloadOptions["onProgress"],
+  onProgress?: DownloadOptions["onProgress"], signal?: AbortSignal,
 ): Promise<void> {
   const partPath = `${blobPath}.incomplete`;
   let offset = existsSync(partPath) ? statSync(partPath).size : 0;
@@ -327,17 +347,27 @@ async function downloadOneLocked(
   }
 
   if (offset < expected.size) {
-    const res = await fetchBlob(url, token, offset);
+    signal?.throwIfAborted();
+    const res = await fetchBlob(url, token, offset, signal);
     if (res.status === 200 && offset > 0) {
       // server ignored Range — start the file (and hashes) over
+      await res.body?.cancel();
+      signal?.throwIfAborted();
       rmSync(partPath);
-      return downloadOneLocked(url, token, blobPath, expected, onProgress);
+      return downloadOneLocked(url, token, blobPath, expected, onProgress, signal);
     }
-    if (res.status !== 200 && res.status !== 206)
+    if (res.status !== 200 && res.status !== 206) {
+      await res.body?.cancel();
       throw new Error(`download failed (${res.status}) for ${expected.name}${authHint(res.status)}`);
+    }
     const out = createWriteStream(partPath, { flags: offset > 0 ? "a" : "w" });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     try {
-      for await (const chunk of res.body as ReadableStream<Uint8Array>) {
+      while (true) {
+        const { done, value: chunk } = await abortable(reader.read(), signal);
+        if (done) break;
+        // Every received chunk is written before an abort is honored, so the
+        // prefix on disk matches what the hashes consumed.
         sha256.update(chunk);
         sha1.update(chunk);
         await new Promise<void>((resolve, reject) =>
@@ -345,12 +375,21 @@ async function downloadOneLocked(
         );
         offset += chunk.length;
         onProgress?.(expected.name, offset, expected.size);
+        signal?.throwIfAborted();
       }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
     } finally {
+      // Settle the partial before propagating any error: a resumed run trusts
+      // the .incomplete size.
       await new Promise<void>((resolve) => out.end(() => resolve()));
     }
   }
 
+  // A complete but unpublished partial is still a partial after an abort; the
+  // next run rehashes it without another network request.
+  signal?.throwIfAborted();
   if (expected.size === 0 && !existsSync(partPath)) await Bun.write(partPath, "");
   if (offset !== expected.size) {
     throw new Error(
@@ -410,8 +449,11 @@ export async function downloadModel(
   const revision = opts.revision ?? "main";
   const token = opts.token === undefined ? hfToken() : opts.token;
   const hub = opts.cacheDir ?? DEFAULT_HUB;
+  const signal = opts.signal;
 
+  signal?.throwIfAborted();
   const listing = await listRepoFiles(repoId, { ...opts, token });
+  signal?.throwIfAborted();
   // Fail the whole download closed (not skip-and-continue) if the repo's
   // file listing contains a path-traversal rfilename — see
   // isSafeRepoFilename's doc comment. This gates BOTH the CLI and the web
@@ -474,6 +516,7 @@ export async function downloadModel(
       if (!blobId) throw new Error(`no blob id for ${f.rfilename} (API response missing ?blobs=true data)`);
       const blobPath = join(blobsDir, blobId);
 
+      signal?.throwIfAborted();
       if (!existsSync(blobPath) || statSync(blobPath).size !== f.size) {
         const url = `${endpoint}/${repoId}/resolve/${listing.sha}/${f.rfilename}`;
         status.currentFile = f.rfilename;
@@ -484,7 +527,7 @@ export async function downloadModel(
           status.receivedBytes = doneBytes + received;
           sampleRate(status.receivedBytes);
           opts.onProgress?.(file, received, total);
-        });
+        }, signal);
       }
       doneBytes += f.size;
       status.receivedBytes = doneBytes;
@@ -499,6 +542,9 @@ export async function downloadModel(
         symlinkSync(join("../".repeat(depth + 2), "blobs", blobId), linkPath);
       }
     }
+    // Completion (tracker state and the revision ref) is never published
+    // once the caller has aborted, even if every byte arrived.
+    signal?.throwIfAborted();
     status.state = "done";
     status.bytesPerSec = 0;
     status.finishedAt = Date.now();

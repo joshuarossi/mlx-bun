@@ -117,6 +117,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     import("../server/management-routes"), import("../server/adapter-routes"),
     import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"), import("../server/cache-routes"),
   ]);
+  const [{ createDownloadOwner }, { Registry }] = await Promise.all([import("../hub/downloads"), import("@mlx-bun/hub/registry")]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
   const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1" });
@@ -153,7 +154,17 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
       ssdCacheDir: options.cache.ssdCacheDir });
-    const hub = createHubRoutes();
+    // Web-started transfers outlive their request; completion refreshes the
+    // registry and discovery, and shutdown joins them before the engine closes.
+    const downloads = createDownloadOwner({
+      onComplete: async () => {
+        const registry = new Registry();
+        try { await registry.scan(); } finally { registry.close(); }
+        completions.invalidateLibrary();
+      },
+      onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
+    });
+    const hub = createHubRoutes({ downloads });
     const cacheAdmin = createCacheRoutes(caches);
     const adapters = createAdapterRoutes(context, engine.gateway);
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
@@ -206,7 +217,14 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
     const listener = await startServer({ routes, web, chat,
-      beforeDrain: async () => { try { caches.stopIdleDemotion(); } finally { await jobs.close(); } },
+      beforeDrain: async () => {
+        const errors: unknown[] = [];
+        try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
+        for (const result of await Promise.allSettled([jobs.close(), downloads.close()]))
+          if (result.status === "rejected") errors.push(result.reason);
+        if (errors.length === 1) throw errors[0];
+        if (errors.length) throw new AggregateError(errors, "background shutdown failed");
+      },
       closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });
