@@ -117,8 +117,10 @@ reference data is downloaded.
 
 The test compares native full-logit bytes for identical fixed tokens with plain
 and artifact-configured KV, both before and after the sliding window fills.
-It separately checks greedy trajectories, actual compiled-step activation, zero
-unexpected retraces, and dense Gemma's mid-segment failure recovery. These are
+Greedy trajectories and dense Gemma's mid-segment failure recovery use main's
+original tokenizer-rendered prompts (12B targets 600/1100 tokens; e4b targets 700).
+Those checks require actual compiled-step activation and zero unexpected retraces.
+The forced-token full-logit matrix uses deterministic IDs independently of EOS. These are
 compiled-versus-ordinary checks, not an external-oracle or performance claim.
 Runtime compilation overrides stay inside the test; this adds no application option.
 

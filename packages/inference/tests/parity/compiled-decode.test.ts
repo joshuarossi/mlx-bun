@@ -22,6 +22,8 @@ for (const [family, checkpoint] of [
     let weights: import("@mlx-bun/inference/artifacts").Weights | undefined;
     let model: import("@mlx-bun/inference/models/gemma4").Gemma4Model;
     let initialRetraces: number;
+    let growingPrompt: number[];
+    let wrappedPrompt: number[];
 
     beforeAll(async () => {
       // A supplied but invalid checkpoint fails instead of silently skipping.
@@ -32,6 +34,7 @@ for (const [family, checkpoint] of [
       ({ generate } = await import("@mlx-bun/inference/generation"));
       const { loadModelConfig, Weights } = await import("@mlx-bun/inference/artifacts");
       const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");
+      const { loadTokenizer, ChatTemplate } = await import("@mlx-bun/inference/input");
       const config = await loadModelConfig(checkpoint!);
       expect(config.modelType.startsWith("gemma4")).toBe(true);
       expect(config.text.enableMoeBlock).toBe(false);
@@ -43,6 +46,24 @@ for (const [family, checkpoint] of [
       expect(model.windowSize).toBeGreaterThan(8);
       expect(model.perLayerWidth > 0).toBe(family === "e4b");
       initialRetraces = CompiledDecode.unexpectedRetraces;
+      const tokenizer = await loadTokenizer(checkpoint!);
+      const template = await ChatTemplate.load(checkpoint!);
+      // Keep main's rendered prompts for trajectories: arbitrary fixed IDs can
+      // legitimately yield immediate EOS before any decode step is exercised.
+      const renderedPrompt = (targetTokens: number): number[] => {
+        let message = family === "12B"
+          ? "Write a detailed essay about the history of computing."
+          : "Explain how a transistor works.";
+        const filler = family === "12B"
+          ? "Background context: the history of computation spans mechanical " +
+            "calculators, relays, vacuum tubes, transistors, and accelerators. "
+          : "Context: semiconductors, doping, junctions, and gates matter here. ";
+        while (tokenizer.encode(message).length < targetTokens - 24) message = filler + message;
+        const ids = tokenizer.encode(template.render([{ role: "user", content: message }]));
+        return ids[0] === ids[1] && ids[0] === tokenizer.bosTokenId ? ids.slice(1) : ids;
+      };
+      growingPrompt = renderedPrompt(600);
+      wrappedPrompt = renderedPrompt(family === "12B" ? 1100 : 700);
     }, timeout);
 
     afterEach(() => {
@@ -92,7 +113,7 @@ for (const [family, checkpoint] of [
       : ["plain wrapped", "artifact mixed wrapped"];
     for (const name of trajectoryCases) {
       test(`greedy trajectory and compiled activation: ${name}`, async () => {
-        const prompt = promptOf(name.endsWith("growing") ? Math.floor(model.windowSize / 2) : model.windowSize + 64);
+        const prompt = name.endsWith("growing") ? growingPrompt : wrappedPrompt;
         const extra = name.startsWith("uniform")
           ? { kvBits: 4, kvGroupSize: 64, quantizedKvStart: 0 }
           : kvOptions(name.startsWith("artifact"));
@@ -187,7 +208,7 @@ for (const [family, checkpoint] of [
     if (family === "12B") {
       test("mid-step segment failure rolls back writes before ordinary decode retries", async () => {
         const extra = { kvBits: 8, kvGroupSize: 64, quantizedKvStart: 0 };
-        const prompt = promptOf(model.windowSize + 64);
+        const prompt = wrappedPrompt;
         const origApply = mlx.CompiledFunction.prototype.apply;
         let segmentApplies = 0;
         let forcedThrows = 0;
