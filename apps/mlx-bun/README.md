@@ -71,7 +71,7 @@ remain separate verification.
 
 ## Server seams
 
-`server/routes.ts` composes chat/text completion, Anthropic Messages, embedding, and discovery
+`server/routes.ts` composes chat/text completion, Anthropic Messages, Responses, embedding, and discovery
 handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
@@ -97,6 +97,12 @@ Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
 requests and semantic completion events, including tools, thinking, and usage.
 Its JSON and SSE paths use the same preparation, capability admission, scheduler,
 and cancellation as chat completions; no second service is created.
+`responses.ts` owns Responses translation and its process-local, one-hour,
+32 MiB history. Successful JSON and SSE requests retain input, output, and
+instructions for `previous_response_id`; failed or cancelled requests do not.
+A generation error ends SSE with `response.failed`, without a misleading completion event. Composition
+may supply `responseHistory` to replace the store; no isolated-worker forwarding
+or duplicate completion service is involved.
 
 The [request pipeline](tests/server/pipeline.test.ts) and
 [HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
@@ -136,6 +142,17 @@ Memory is disabled until its app owner supplies tool definitions, names, skill
 paths, and its prompt hint through `PiBackendOptions.memory`. Download context
 is an optional callback from app composition. Standalone Pi integration remains
 deferred. The protocol exposes no serial-serving lane selection.
+
+`chat/session-search.ts` reads Pi JSONL transcripts for body search; the sibling
+`session-files.ts` owns confined reads and the shared default directory.
+`server/session-routes.ts` owns search/export HTTP responses. Startup passes the
+same resolved session directory to Pi and these routes. Searches retain main's
+case-insensitive Unicode snippets and limits; export returns valid raw JSONL
+entries while skipping partial lines. Lexical and resolved paths must stay in
+the configured directory, including symlink targets. No index or background
+lifecycle is created. [Session tests](tests/session-search.test.ts) use temporary
+trees, and the [Pi smoke test](tests/chat-runtime.test.ts) searches and exports a
+transcript written by the real SDK in app-supplied paths.
 
 App composition can supply `PiBackendOptions.paths` (`cwd`, `agentDir`,
 `sessionDir`, `toolApprovalsFile`) to isolate runtime settings and transcripts.

@@ -49,8 +49,7 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   synthesis lifecycle; read/init routes alone do not enable background work.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
   their owners migrate: memory synthesis; lease/drain/cache admin;
-  Responses, audio, hub/browser model switching, session
-  search/export, curve terrain, generate, signal, fit and stats.
+  audio, hub/browser model switching, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
 - [ ] Migrate an owned generated-code execution facility before enabling the
   `verified_code` dataset template. Its metadata currently states unavailable
