@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildBinary, compileApp } from "./build-binary";
@@ -120,6 +120,12 @@ try {
   await compileApp(join(root, "apps/mlx-bun/tests/compiled-consumer.ts"), join(original, "verify-consumer"));
   await rename(original, relocated);
   assert(!existsSync(original), "original bundle must be unavailable after relocation");
+  const notices = await readFile(join(relocated, "THIRD_PARTY_NOTICES.md"), "utf8");
+  for (const name of ["mlx", "inference"]) {
+    const source = await readFile(join(root, "packages", name, "THIRD_PARTY_NOTICES.md"), "utf8");
+    assert(source.trim().length > 0, `${name} source notices must not be empty`);
+    assert(notices.includes(source), `relocated bundle must retain the complete ${name} notices`);
+  }
   const env = { ...process.env, MLX_BUN_LIBMLXC: "", MLX_BUN_EXPERT_IO_DYLIB: "", MLX_BUN_FRAME_EXTRACT: "" };
   async function run(command: string[]): Promise<string> {
     const child = Bun.spawn(command, { cwd: scratch, env, stdout: "pipe", stderr: "pipe" });
