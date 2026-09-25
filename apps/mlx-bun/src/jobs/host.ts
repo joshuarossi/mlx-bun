@@ -22,7 +22,7 @@ export function createJobHost(options: SubprocessOpts & { createStore?: () => Jo
   return {
     signal: cancellation.signal,
     ensureStore,
-    submit(kind: "quantize", config: Record<string, unknown>, outputPath: string) {
+    submit(kind: "quantize" | "finetune", config: Record<string, unknown>, outputPath: string) {
       return submitSubprocess(ensureStore(), kind, config, outputPath, options);
     },
     submitTask(kind: JobKind, config: Record<string, unknown>, runner: JobRunner, outputPath?: string) {
