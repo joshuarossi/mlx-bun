@@ -162,6 +162,7 @@ test("shutdown waits for in-flight message cleanup after initiating cancellation
   const operation = handler.websocket.message(client.ws, '{"type":"fork_session","path":"session"}');
   let closed = false; const closing = handler.dispose().then(() => { closed = true; events.push("closed"); });
   await tick(); await tick(); expect(closed).toBe(false); expect(events).toEqual(["handling", "cancel"]);
+  expect(client.closes).toBe(1);
   work.resolve(); await operation; await closing;
   expect(events).toEqual(["handling", "cancel", "late cleanup", "closed"]);
 });

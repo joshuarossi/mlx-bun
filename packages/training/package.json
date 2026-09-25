@@ -1,0 +1,46 @@
+{
+  "name": "@mlx-bun/training",
+  "version": "0.0.0",
+  "description": "Composable LoRA, preference, and diffusion training for MLX on Apple Silicon",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./dataset": "./src/dataset.ts",
+    "./optimizer": "./src/optimizer.ts",
+    "./lora": "./src/lora-params.ts",
+    "./rank": "./src/rank.ts",
+    "./loss": "./src/loss.ts",
+    "./prefix-shared": "./src/prefix-shared.ts",
+    "./segmented": "./src/segmented.ts",
+    "./diffusion": "./src/diffusion-lora.ts",
+    "./merge": "./src/merge.ts",
+    "./fuse": "./src/fuse.ts",
+    "./export": "./src/export.ts",
+    "./progress": "./src/progress.ts",
+    "./kernels/flash-cce": "./src/kernels/flash-cce.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests/cpu",
+    "test:native": "MLX_BUN_TEST_NATIVE=1 bun test tests/native"
+  },
+  "dependencies": {
+    "@mlx-bun/mlx": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/quantize": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

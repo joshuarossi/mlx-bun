@@ -8,6 +8,7 @@ import { submitSubprocess, closeSubprocessJobs } from "../../src/jobs/runner";
 import { makeEmit } from "../../src/jobs/events";
 import { streamJobResponse, tailJob } from "../../src/jobs/sse";
 import { createJobRoutes } from "../../src/server/job-routes";
+import { startServer } from "../../src/server/start";
 import type { JobEvent } from "../../src/jobs/protocol";
 
 const stores: JobStore[] = [], roots: string[] = [];
@@ -52,6 +53,33 @@ test("the host opens storage lazily, marks zombies, and refuses work after close
   await host.close(); await host.close();
   expect(host.signal.aborted).toBe(true);
   expect(() => host.ensureStore()).toThrow("closed");
+});
+
+test("listener shutdown cancels a live job stream and joins its child before releasing the engine", async () => {
+  const { store } = fresh(), running = child();
+  const events: string[] = [];
+  running.proc.kill = () => { events.push("kill"); };
+  const host = createJobHost({ entry: "unused", createStore: () => store,
+    acquire: async () => ({ dispose() { events.push("release"); } }), spawn: running.spawn });
+  const { jobId } = host.submit("quantize", {}, "unused");
+  stores.splice(stores.indexOf(store), 1);
+  const app = await startServer({ routes: createJobRoutes(host), web: () => null,
+    chat: () => { throw new Error("no chat expected"); }, beforeDrain: () => host.close(),
+    closeEngine: async () => { expect(events).toEqual(["kill", "release"]); events.push("engine"); },
+  }, { port: 0 });
+  try {
+    const response = await fetch(new URL(`/api/jobs/${jobId}/stream`, app.server.url));
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    const drained = (async () => { while (!(await reader.read()).done) {} })();
+    const closing = app.close();
+    await until(() => events.includes("kill"));
+    expect(events).toEqual(["kill"]);
+    running.exit.resolve(143);
+    await closing; await drained;
+    expect(events).toEqual(["kill", "release", "engine"]);
+  } finally { running.exit.resolve(143); await app.close(); }
 });
 
 test("a queued child waits for admission and holds the lease until process exit", async () => {
