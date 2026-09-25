@@ -1,4 +1,4 @@
-import { copyFile, mkdir, stat } from "node:fs/promises";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
@@ -30,8 +30,13 @@ export async function buildBinary(output = join(root, "dist/bundle")): Promise<s
     ...MLX_FILES.map(name => [join(MLX_DIR, name), name] as [string, string]),
     ...INFERENCE_FILES.map(name => [join(INFERENCE_DIR, name), name] as [string, string]),
     [photon, "photon_rs_bg.wasm"], [join(root, "LICENSE"), "LICENSE"],
-    [join(root, "packages/mlx/THIRD_PARTY_NOTICES.md"), "THIRD_PARTY_NOTICES.md"],
   ];
+  const notices = await Promise.all(["mlx", "inference"].map(async name => {
+    const source = join(root, "packages", name, "THIRD_PARTY_NOTICES.md");
+    const text = await readFile(source, "utf8");
+    if (!text.trim()) throw new Error(`Empty bundle notice: ${source}`);
+    return `# @mlx-bun/${name}\n\n${text}`;
+  }));
   for (const [source] of copies) {
     const info = await stat(source).catch(() => null);
     if (!info?.isFile() || !info.size) throw new Error(`Missing bundle input: ${source}. Stage package native files first.`);
@@ -42,6 +47,7 @@ export async function buildBinary(output = join(root, "dist/bundle")): Promise<s
   const executable = join(out, "mlx-bun");
   await compileApp(join(app, "src/cli/main.ts"), executable);
   for (const [source, name] of copies) await copyFile(source, join(out, name));
+  await Bun.write(join(out, "THIRD_PARTY_NOTICES.md"), notices.join("\n\n---\n\n"));
   return executable;
 }
 

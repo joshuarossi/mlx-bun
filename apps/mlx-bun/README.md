@@ -442,8 +442,9 @@ switch.
 ## Standalone bundle
 
 After staging the root native setup, run `bun run build:binary` from the root.
-`dist/bundle/` contains the executable, native libraries/helpers, and Pi's Photon
-WASM sidecar. Move the whole directory together. Web assets and the memory skill
+`dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
+WASM sidecar, the project license, and combined MLX/inference third-party notices.
+Move the whole directory together. Web assets and the memory skill
 are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
 
