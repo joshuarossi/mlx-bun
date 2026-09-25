@@ -27,7 +27,8 @@
     "@earendil-works/pi-ai": "0.80.3",
     "@earendil-works/pi-coding-agent": "0.80.3",
     "typebox": "1.1.38",
-    "@mlx-bun/quantize": "workspace:*"
+    "@mlx-bun/quantize": "workspace:*",
+    "@mlx-bun/training": "workspace:*"
   },
   "os": [
     "darwin"

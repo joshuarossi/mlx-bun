@@ -30,14 +30,17 @@ export type JobEvent =
 
 /** Sink a job calls to report progress. Implementations append to the log
  *  file and (for stage/metric events carrying `progress`/`message`) update
- *  the SQLite row. Never throws — a logging failure must not kill a job. */
+ *  the SQLite row. Logging failures must not kill a job; the task owner may
+ * throw cancellation when a runner reports progress after shutdown. */
 export type Emit = (e: JobEvent) => void;
 
 /** The unit of work. Returns an optional output path recorded on the row.
- *  Receives the parsed `config` from the submit request. */
+ *  Receives the parsed `config` from the submit request. In-process runners
+ * receive a shutdown signal and must pass it to cancellable I/O. */
 export type JobRunner = (
   emit: Emit,
   config: Record<string, unknown>,
+  signal?: AbortSignal,
 ) => Promise<{ outputPath?: string } | void>;
 
 /** Job kinds in the system. */

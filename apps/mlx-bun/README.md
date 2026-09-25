@@ -71,7 +71,7 @@ remain separate verification.
 
 ## Server seams
 
-`server/routes.ts` composes chat/text completion, embedding, and discovery
+`server/routes.ts` composes chat/text completion, Anthropic Messages, Responses, embedding, and discovery
 handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
@@ -93,7 +93,16 @@ and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
 `prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` adapts
 HTTP content parts to the library's numerical input builders. Grammar and media
 work enter the engine's preparation domain before allocating native resources.
-Text-only protocol work loads no MLX library.
+Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
+requests and semantic completion events, including tools, thinking, and usage.
+Its JSON and SSE paths use the same preparation, capability admission, scheduler,
+and cancellation as chat completions; no second service is created.
+`responses.ts` owns Responses translation and its process-local, one-hour,
+32 MiB history. Successful JSON and SSE requests retain input, output, and
+instructions for `previous_response_id`; failed or cancelled requests do not.
+A generation error ends SSE without a misleading completion event. Composition
+may supply `responseHistory` to replace the store; no isolated-worker forwarding
+or duplicate completion service is involved.
 
 The [request pipeline](tests/server/pipeline.test.ts) and
 [HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
@@ -198,13 +207,21 @@ and real local Git history; [article tests](tests/memory/article.test.ts) cover
 parsing and round trips. Synthesis, memory tools, and scheduling remain separate
 migration work; the chat backend still receives no memory integration.
 
-## Jobs and quantization
+## Jobs, quantization, and fine-tuning
 
 `jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,
 and managed subprocess lifetimes. `quantize/` owns submitted quantization policy
 and CPU-only model inspection; the numerical work uses `@mlx-bun/quantize`.
+`finetune/` owns dataset inspection and submitted SFT/DPO/ORPO policy; its child
+runner loads the chosen model and invokes `@mlx-bun/training`. Library defaults
+are supplied to the app mapper, which preserves main's ORPO recipe and bf16
+head fallback. The child restores its wired-memory limit and releases its model
+and weights on completion or failure. Training progress passes through unchanged
+to job events, preserving metrics, adapter paths, and stage fields; the job owner
+alone emits the terminal lifecycle event.
 `cli/job-entry.ts` resolves the producer in the child process. HTTP parsing and
-wire responses stay in `server/job-routes.ts` and `server/quantize-routes.ts`.
+wire responses stay in `server/job-routes.ts`, `server/quantize-routes.ts`, and
+`server/finetune-routes.ts`.
 
 Composition injects the engine execution lease. A job drains active inference
 and holds that lease until its child exits and output streams finish; inference
@@ -212,10 +229,30 @@ then resumes. As in main's direct-process server, resident model weights and
 caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
 admission waits, terminates active children, and awaits them before closing the
 store and engine. Opening the app does not create the job database until a job
-route is used. Dataset, finetune, and artifact publishing remain separate work.
+route is used. Dataset generation, adapter mounting/merge/export, and artifact
+publishing remain separate work. A fine-tuning job selects its own model path;
+the resident inference model's adapter/training capabilities do not gate it.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
 paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
 [Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
 and output naming with an injected numerical operation. They do not run or
 establish parity for actual checkpoint quantization.
+[Fine-tuning policy tests](tests/finetune/policy.test.ts) cover the app recipe,
+explicit overrides, dataset inspection, HTTP submission, progress, and resource
+cleanup with a fake native runtime. These CPU checks do not extend the numerical
+claims in the [training evidence](../../packages/training/README.md).
+
+## Dataset jobs
+
+`dataset/` owns the existing template inputs, generation, Hugging Face import,
+and 90/10 JSONL split. `server/dataset-routes.ts` owns template discovery and
+submission; CLI composition supplies the bound loopback port and runner. Jobs
+run in-process and call the normal HTTP inference surface, so each inference
+request uses continuous batching without an exclusive GPU lease. Shutdown
+cancels requests and retry waits and joins tasks before closing job storage.
+
+Twelve templates are enabled. `verified_code` remains visible with an unavailable
+explanation and returns 501 until generated-code execution has a migrated owner.
+Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
+use temporary storage and synthetic HTTP responses, without a model or download.

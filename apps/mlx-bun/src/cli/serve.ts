@@ -144,8 +144,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const adapters = createAdapterRoutes(context, engine.gateway);
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
       toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
-    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }] = await Promise.all([
+    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }, { createDatasetRoutes }, { createDatasetRunner }, { createFinetuneRoutes }] = await Promise.all([
       import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
+      import("../server/dataset-routes"), import("../dataset/job"), import("../server/finetune-routes"),
     ]);
     const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
       acquire: signal => engine.gateway.acquireExecutionLease(signal),
@@ -158,13 +159,16 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
     cleanup = closeApp;
-    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
+    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs), finetuneRoutes = createFinetuneRoutes(jobs);
     const memory = createMemoryRoutes();
     const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
     const sessions = createSessionRoutes(sessionDir);
-    const routes = { handle: async (request: Request) => await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
-      await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
+    const datasetRunner = createDatasetRunner();
+    const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
+      submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
+    const routes = { handle: async (request: Request) => await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+      await quantizeRoutes.handle(request) ?? await datasetRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await completions.handle(request) };
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       paths: { ...options.chatPaths, sessionDir },
       contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
