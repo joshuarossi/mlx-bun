@@ -30,16 +30,16 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
     expect(await (await fetch(new URL("/api/memory/status", app.server.url))).json()).toMatchObject({ ok: false, enabled: false, root });
     expect(existsSync(root)).toBe(false);
-    for (const path of ["/v1/memory/synthesize", "/v1/audio/transcriptions", "/admin/cache/flush", "/api/hub/download",
-      "/curve-terrain",
+    for (const path of ["/v1/memory/synthesize", "/v1/audio/transcriptions", "/api/hub/download",
       "/v1/audio/sessions", "/v1/audio/sessions/session/audio", "/v1/audio/sessions/session/finish",
-      "/admin/transcription/unload"]) {
-
+      "/admin/transcription/unload", "/admin/lease", "/admin/drain", "/engine"]) {
       const response = await fetch(new URL(path, app.server.url));
       expect(response.status).toBe(501);
       expect((await response.json()).error.type).toBe("not_implemented");
     }
-    for (const path of ["/unknown", "/api/quantize/nonsense", "/toString", "/api/sessions/search", "/api/sessions/export", "/api/hub/local", "/api/hub/search", "/api/hub/serve", "/stats", "/fit"]) {
+    // Lab pages are not product surface; unmounted owners answer 404, never a placeholder.
+    for (const path of ["/unknown", "/api/quantize/nonsense", "/toString", "/api/sessions/search", "/api/sessions/export", "/api/hub/local", "/api/hub/search", "/api/hub/serve", "/stats", "/fit",
+      "/curves", "/curve-terrain", "/dag", "/generate", "/signal", "/admin/cache/flush", "/admin/cache/session/close"]) {
       expect((await fetch(new URL(path, app.server.url))).status).toBe(404);
     }
     expect((await fetch(new URL("/ws/chat", app.server.url))).status).toBe(426);

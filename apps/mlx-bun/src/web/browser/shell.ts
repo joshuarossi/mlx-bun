@@ -551,13 +551,8 @@ export function initGlobalKeydown(): void {
    ════════════════════════════════════════════════════════════════════ */
 const DEV_KEY = "mlxbun.developer";
 /** Dev-only tabs, matching data-tab on the <a class="tab"> elements in nav
- *  (routes' visibility is further gated by the /dag probe below). "curves"
- *  is listed for applyDeveloperMode's DOM sweep even though it can never be
- *  a `Route` — it's a full-page href, not hash-routed, so
- *  ensureDeveloperModeFor(route: Route) below can never match it; a direct
- *  /curves visit reaches a real page load, not the SPA router, so there's
- *  no deep-link case to flip the toggle for. */
-const DEV_TABS = ["quantize", "finetune", "dataset", "status", "curves", "routes"] as const;
+ *  (routes' visibility is further gated by the /dag probe below). */
+const DEV_TABS = ["quantize", "finetune", "dataset", "status", "routes"] as const;
 
 /** True if any OTHER mlxbun.* key already exists — i.e. this is a returning
  *  user of the app, not a fresh browser profile. Checked BEFORE writing the
