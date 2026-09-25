@@ -99,9 +99,9 @@ export interface RunningApp { port: number; close(): Promise<void> }
 /** CLI composition owns resources until each explicit ownership transfer. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
-    { createCompletionRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
+    { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
     { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }] = await Promise.all([
-    import("../engine"), import("../server/routes"), import("../server/start"),
+    import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
   ]);
@@ -151,7 +151,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     };
     cleanup = closeApp;
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
-    const routes = { handle: async (request: Request) => await jobRoutes.handle(request) ??
+    const memory = createMemoryRoutes();
+    const routes = { handle: async (request: Request) => await memory.handle(request) ?? await jobRoutes.handle(request) ??
       await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,

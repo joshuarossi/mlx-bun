@@ -154,6 +154,24 @@ escaping, attachments, panels, and interactions without a live server.
 headers. The packed consumer check verifies the same assets after installation.
 
 
+## Memory vault
+
+`src/memory/article.ts` owns Markdown article structure; `vault.ts` owns vault
+initialization, filesystem reads, search, links, and Git history. The default
+vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
+`server/memory-routes.ts` exposes the read/init HTTP surface through
+`createMemoryRoutes({ root })`; CLI startup composes it before model routes.
+Initialization is explicit and idempotent, and its path stays confined to the
+vault or temporary trees. Existing article/Talk directory links remain usable;
+initialization confines its actual write targets. Reference seeding defaults to
+none; composition can pass explicit `referenceSources` without inferring old
+repository documentation paths. Merely starting the app does not create a vault.
+
+[Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
+and real local Git history; [article tests](tests/memory/article.test.ts) cover
+parsing and round trips. Synthesis, memory tools, and scheduling remain separate
+migration work; the chat backend still receives no memory integration.
+
 ## Jobs and quantization
 
 `jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,

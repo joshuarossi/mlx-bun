@@ -98,6 +98,10 @@ Browser code consumes only its own modules and the leaf chat/job protocols.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
 other domains with their first migrated consumers and explicit dependency rules.
 
+`memory/` owns Markdown vault storage, initialization, and article semantics.
+Its HTTP adapter belongs to `server/`; composition supplies reference sources
+explicitly rather than deriving them from repository layout.
+
 Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.
 
