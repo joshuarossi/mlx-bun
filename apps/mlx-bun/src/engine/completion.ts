@@ -12,6 +12,24 @@ export interface GenerationPlacement {
   readonly execution: ResolvedExecution;
 }
 
+const sharedExecutionExclusions = new Set([
+  "continuous-unavailable", "media-requires-serial", "adapters-require-serial",
+  "kv-scheme-requires-serial", "turbo-kv-requires-serial", "grammar-batching-disabled",
+  "paged-kv-requires-serial", "method-requires-serial",
+]);
+
+/** A migrated request shape whose shared executor is not available yet.
+ * Transport layers can distinguish this capability gap from an execution failure. */
+export class UnsupportedExecutionError extends Error {
+  readonly reasons: readonly string[];
+  constructor(readonly modelType: string, readonly method: ResolvedExecution["method"], reasons: readonly string[]) {
+    const exclusions = reasons.filter(reason => sharedExecutionExclusions.has(reason));
+    super(`model ${modelType} method ${method} does not support shared execution${exclusions.length ? `: ${exclusions.join(", ")}` : ""}`);
+    this.name = "UnsupportedExecutionError";
+    this.reasons = Object.freeze(exclusions);
+  }
+}
+
 /** App-owned completion boundary. HTTP parsing and output formatting stay above it. */
 export interface CompletionEngine {
   place(shape: RequestShape, options?: GenerateOptions): GenerationPlacement;
