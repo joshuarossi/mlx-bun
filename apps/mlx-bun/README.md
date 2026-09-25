@@ -498,8 +498,57 @@ cover the flags, both `runServe` branches, and both compositions. The opt-in
 (`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_WHISPER_MODEL=<snapshot directory>`)
 serves a real checkpoint, transcribes a synthesized tone, and pages the weights
 out through the unload route; transcript parity against mlx-whisper is the
-library's contract, not this app check. The `transcribe` and `dictate` verbs
-and microphone capture are not ported yet ([PLAN](../../PLAN.md)).
+library's contract, not this app check.
+
+`mlx-bun transcribe <audio-file> [query]` is main's one-shot speech-to-text
+verb over the same service, no server. The clip is read and decoded (WAV
+through the exact PCM parser, anything CoreAudio reads through AudioToolbox)
+before any model is resolved, so a bad file never opens the registry. The
+model is `--model`, else the second positional, else `--query`, else the first
+downloaded `whisper` checkpoint (the `mlx-bun get` hint when none).
+`--language`, `--task translate`, `--beam-size`, `--temperature`,
+`--no-fallback`, `--prompt`, `--no-timestamps`, `--no-condition`,
+`--word-timestamps`, `--faithful`, and `--audio-ctx` keep main's decoding
+policy (the `(0, 0.2, …, 1.0)` fallback ladder unless a temperature or
+`--no-fallback` is given). `--vad` (with `--vad-threshold` and `--vad-model`)
+prints an empty result and never loads Whisper when the Silero gate finds no
+speech; `--vad-trim` is accepted without cropping, as in main. `--format` is
+`text` (default) | `json` | `verbose_json` | `srt` | `vtt`; `--verbose` prints
+each segment as it decodes and a realtime summary on stderr. SIGINT aborts the
+decode or the take, releases the weights, and exits 1. Clips under 0.1 s are
+refused by the service (main's direct transcriber accepted them).
+
+`mlx-bun dictate [query]` is main's push-to-talk loop. `engine/mic-capture.ts`
+spawns the AVAudioEngine sidecar (`native/mic-capture.swift` →
+`mlx-bun-mic-capture`: 16 kHz mono float32 PCM on stdout; `ready`, `hotkey
+down`, `hotkey up`, and `error:` lines on stderr; macOS asks for Microphone
+permission on first use), resolved from `MLX_BUN_MIC_CAPTURE`, beside the
+standalone executable, `dist/native/` (`scripts/build-native.sh`), or compiled
+from source with swiftc on first use. Enter starts and stops a take (`q` or
+Ctrl-C quits); `--hotkey [keycode]` holds a key instead (default 61, Right
+Option; needs Input Monitoring). Every 250 ms of audio feeds a transcription
+session while you speak, so the text lands about one window after the take
+ends, and the Silero gate keeps silence from running Whisper (`--no-vad` skips
+it and, unlike main, does not load its weights). The transcript prints;
+`--copy` pipes it to `pbcopy`; `--type` sends System Events keystrokes after
+`--type-delay` (1 s in Enter mode, 0 with `--hotkey`; needs Accessibility).
+The backend is the in-process service with `--idle-unload <s>` (default 30;
+0 = release after every take) and `--resident`, or `--server <url>` for a
+running server's `/v1/audio/sessions`. Stopping ends the sidecar's stdin,
+terminates it, joins it (SIGKILL after two seconds), and only then releases
+the weights; an open take is dropped and Ctrl-C exits 0, as in main.
+
+The [transcribe tests](tests/transcribe-cli.test.ts) and
+[dictate tests](tests/dictate-cli.test.ts) run both verbs over the real
+service with a fake runtime and a fake capture source (generated WAV and PCM,
+every format, chunked feeding, the VAD gate, residency, delivery, the server
+backend, cancellation joining the capture before the weights release) and
+spawn the CLI for help and error paths; they also run against the installed
+artifact in `verify-packages --app-only`. The
+[mic capture tests](tests/engine/mic-capture.test.ts) cover resolution, the
+sidecar protocol, and the terminate-and-join with shell stand-ins. A real
+microphone and real weights are exercised only by hand; the standalone bundle
+does not stage the sidecar yet ([PLAN](../../PLAN.md)).
 
 ## Standalone bundle
 

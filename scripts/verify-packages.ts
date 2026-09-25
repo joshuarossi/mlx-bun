@@ -124,7 +124,8 @@ try {
   // tests directory; their spawned runs use the installed CLI entry.
   const installedTests = join(consumer, "node_modules/mlx-bun/tests");
   await mkdir(installedTests, { recursive: true });
-  const verbTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts"];
+  const verbTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts",
+    "transcribe-cli.test.ts", "dictate-cli.test.ts"];
   for (const file of verbTests) await cp(join(workspace, "apps/mlx-bun/tests", file), join(installedTests, file));
   env.MLX_BUN_LIBMLXC = "/does-not-exist";
   env.MLX_BUN_TEST_CLI = appEntry;

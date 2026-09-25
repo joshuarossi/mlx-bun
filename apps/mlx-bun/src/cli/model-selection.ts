@@ -110,3 +110,18 @@ export async function defaultWhisperModel(registry: () => Pick<Registry, "list" 
     return null;
   } finally { open.close(); }
 }
+
+/** The Whisper checkpoint for `transcribe` and `dictate`, main's order: a
+ * directory with config.json is used as given (its path is the id), a query
+ * resolves through the registry, and nothing falls back to the first
+ * downloaded `whisper` checkpoint with main's `get` hint when none is on disk. */
+export async function resolveWhisperModel(query: string | undefined, supplied: {
+  resolve?: (query: string) => Promise<{ m: Pick<ModelRecord, "path" | "repoId"> }>;
+  defaultModel?: () => Promise<Pick<ModelRecord, "path" | "repoId"> | null>;
+} = {}): Promise<{ path: string; repoId: string }> {
+  if (query && existsSync(join(query, "config.json"))) return { path: query, repoId: query };
+  if (query) { const { m } = await (supplied.resolve ?? resolveModelAuto)(query); return { path: m.path, repoId: m.repoId }; }
+  const record = await (supplied.defaultModel ?? defaultWhisperModel)();
+  if (!record) throw new Error("no Whisper model downloaded — try: mlx-bun get mlx-community/whisper-large-v3-turbo");
+  return { path: record.path, repoId: record.repoId };
+}
