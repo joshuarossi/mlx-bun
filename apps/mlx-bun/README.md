@@ -208,3 +208,9 @@ paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
 [Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
 and output naming with an injected numerical operation. They do not run or
 establish parity for actual checkpoint quantization.
+
+`server/hub-routes.ts` owns the web hub list/search and restart-required response.
+Local rows consume registry and fit APIs; search remains request-owned and
+cancels with its caller. Download stays 501 until its background task has an
+explicit cancellation and shutdown owner. Selecting a model returns a restart
+command, preserving main's behavior without claiming a live switch.

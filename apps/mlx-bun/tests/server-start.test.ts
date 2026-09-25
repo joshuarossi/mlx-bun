@@ -30,8 +30,8 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
     expect(await (await fetch(new URL("/api/memory/status", app.server.url))).json()).toMatchObject({ ok: false, enabled: false, root });
     expect(existsSync(root)).toBe(false);
-    for (const path of ["/api/settings/hf-token", "/api/quantize/push", "/api/dataset/submit", "/v1/memory/synthesize", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/local", "/api/hub/search", "/api/hub/download",
-      "/api/hub/serve", "/api/sessions/search", "/api/sessions/export", "/curve-terrain",
+    for (const path of ["/api/settings/hf-token", "/api/quantize/push", "/api/dataset/submit", "/v1/memory/synthesize", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/download",
+      "/api/sessions/search", "/api/sessions/export", "/curve-terrain",
       "/v1/audio/sessions", "/v1/audio/sessions/session/audio", "/v1/audio/sessions/session/finish",
       "/admin/transcription/unload"]) {
 

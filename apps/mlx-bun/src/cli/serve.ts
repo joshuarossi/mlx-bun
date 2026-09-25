@@ -1,3 +1,4 @@
+import { createHubRoutes } from "../server/hub-routes";
 import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CommandArgs } from "./args";
@@ -140,6 +141,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory });
+    const hub = createHubRoutes();
     const adapters = createAdapterRoutes(context, engine.gateway);
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
       toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
@@ -159,7 +161,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     cleanup = closeApp;
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
     const memory = createMemoryRoutes();
-    const routes = { handle: async (request: Request) => await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+    const routes = { handle: async (request: Request) => await hub.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
       await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
