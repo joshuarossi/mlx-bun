@@ -87,6 +87,22 @@ This covers plain KV and chunked prefix continuation, not mixed KV, saved-state
 restoration, compiled decode, sliding-window wrap, other families or performance.
 Raw reports remain outside Git; the broader PLAN verification item stays open.
 
+The plan can additionally request `kv: "artifact"` for the checkpoint's existing
+mixed-KV policy and `restore: true` for persisted state and continuation checks.
+Conversion happens after each forward, never on empty state. Restore verifies
+tensor integrity, the saved token prefix, live planes and continuation against
+the uninterrupted path; it does not restore sampling or execution sessions.
+Temporary checkpoints are removed after each case.
+
+The [2026-09-25 state comparison](measurements/2026-09-25-runtime-state.json)
+records the exact model snapshots, weight/native/reference hashes and per-case
+outcomes. MiniCPM and Gemma plain KV match the external oracle; all tested paths,
+including their mixed KV and Trellis, match main and preserve saved continuation.
+Mixed KV has an unresolved oracle mismatch shared with main: a multi-token append
+to already quantized state differs, including prefixes split into multiple chunks.
+The comparator continues to fail those cases. Trellis's reference is main, not
+mlx-lm. These checks do not close the broader verification gate in PLAN.
+
 ## Direct library use
 
 See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
