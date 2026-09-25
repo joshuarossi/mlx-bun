@@ -128,13 +128,13 @@ test("GC planning failures use the management JSON error shape", async () => {
   } finally { log.mockRestore(); }
 });
 
-test("management matches only its owned methods and leaves HF credentials and uploads deferred", async () => {
+test("management matches only its owned methods and leaves HF credentials and uploads to publishing", async () => {
   const routes = createManagementRoutes({ toolApprovalsFile: join(temporary(), "approvals.json"), invalidateLibrary() {} });
   for (const [path, method] of [["/api/settings/tool-approvals", "POST"], ["/api/gc/plan", "POST"],
     ["/api/gc/execute", "GET"], ["/api/settings/hf-token", "GET"], ["/api/quantize/push", "POST"]])
     expect(await routes.handle(request(path!, method))).toBeNull();
-  expect(pendingRoute("/api/settings/hf-token")).toBe(true);
-  expect(pendingRoute("/api/quantize/push")).toBe(true);
+  expect(pendingRoute("/api/settings/hf-token")).toBe(false);
+  expect(pendingRoute("/api/quantize/push")).toBe(false);
   expect(pendingRoute("/api/settings/tool-approvals")).toBe(false);
   expect(pendingRoute("/api/gc/execute")).toBe(false);
 });
