@@ -82,7 +82,8 @@ export interface UploadOptions {
   /** Per-file progress: (repoPath, bytesSent, bytesTotal). */
   onProgress?: (file: string, sent: number, total: number) => void;
   /** Cancels the upload: the in-flight request is aborted, no later step runs,
-   *  and the promise rejects with the signal's reason. An aborted upload never commits. */
+   *  and the promise rejects with the signal's reason. No request starts once
+   *  cancellation is observed; a commit already submitted may have been accepted. */
   signal?: AbortSignal;
 }
 
@@ -106,6 +107,17 @@ async function request(url: string, init: RequestInit, signal?: AbortSignal): Pr
   signal?.throwIfAborted();
   try {
     return await fetch(url, { ...init, signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
+}
+
+/** Read a JSON body under the same contract as `request`: an abort observed
+ *  while the body is still arriving rejects with the signal's reason. */
+async function readJson<T>(res: Response, signal?: AbortSignal): Promise<T> {
+  try {
+    return (await res.json()) as T;
   } catch (error) {
     signal?.throwIfAborted();
     throw error;
@@ -198,7 +210,8 @@ export async function createRepo(
     try {
       json = (await res.json()) as { url?: string };
     } catch {
-      /* some servers return empty body */
+      // Some servers return an empty body; an abort mid-body is not that.
+      opts.signal?.throwIfAborted();
     }
     return { url: json.url ?? `${base}/${repoType === "dataset" ? "datasets/" : ""}${repoId}` };
   }
@@ -287,7 +300,7 @@ async function preupload(
     }),
   }, signal);
   if (!res.ok) throw await httpError("preupload", res);
-  const json = (await res.json()) as { files?: PreuploadEntry[] };
+  const json = await readJson<{ files?: PreuploadEntry[] }>(res, signal);
   const map = new Map<string, PreuploadEntry>();
   for (const e of json.files ?? []) map.set(e.path, e);
   return map;
@@ -337,7 +350,7 @@ async function uploadLfsFiles(
     }),
   }, signal);
   if (!batchRes.ok) throw await httpError("LFS batch", batchRes);
-  const batch = (await batchRes.json()) as { objects?: LfsObject[] };
+  const batch = await readJson<{ objects?: LfsObject[] }>(batchRes, signal);
 
   const byOid = new Map(items.map((i) => [i.oid, i]));
   for (const obj of batch.objects ?? []) {
@@ -442,7 +455,9 @@ async function commit(
   try {
     json = (await res.json()) as { commitOid?: string; commitUrl?: string };
   } catch {
-    /* empty body is acceptable */
+    // An empty body is acceptable; an abort while it arrives is reported as
+    // cancellation even though the Hub may already have accepted the commit.
+    signal?.throwIfAborted();
   }
   return json;
 }
@@ -461,7 +476,8 @@ async function commit(
  * referenced by oid/size). Creates the repo first (idempotent).
  *
  * `opts.signal` aborts the in-flight request and skips every later step; the
- * promise rejects with the signal's reason, and no commit follows an abort.
+ * promise rejects with the signal's reason. No request starts once cancellation
+ * is observed; a commit already submitted may have been accepted by the Hub.
  */
 export async function uploadFolder(
   dir: string,

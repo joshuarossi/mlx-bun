@@ -393,3 +393,43 @@ describe("uploadFolder (mock Hub)", () => {
       .toEqual(["README.md", "config.json", "model.safetensors", "tokenizer/tokenizer.json"]);
   });
 });
+
+// Abort while a response body is still arriving: the empty-body tolerance of
+// create and commit must not swallow cancellation, and the reason is preserved.
+describe("cancellation while reading a held response body", () => {
+  const files = () => {
+    const dir = mkdtempSync(join(tmpdir(), "upload-held-body-"));
+    writeFileSync(join(dir, "config.json"), "{}");
+    return dir;
+  };
+  for (const target of ["create", "commit"] as const) {
+    test(`an abort while the ${target} response body is held rejects with the signal's reason`, async () => {
+      const dir = files();
+      const abort = new AbortController(), reason = new Error("review cancellation");
+      const paths: string[] = [];
+      const held = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+        const path = new URL(request.url).pathname; paths.push(path);
+        if (path.includes("/preupload/")) {
+          const body = await request.json() as { files: { path: string }[] };
+          return Response.json({ files: body.files.map(file => ({ path: file.path, uploadMode: "regular" })) });
+        }
+        if ((target === "create" && path === "/api/repos/create") || (target === "commit" && path.includes("/commit/"))) {
+          setTimeout(() => abort.abort(reason), 50);
+          return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("{")); } }),
+            { headers: { "content-type": "application/json" } });
+        }
+        return Response.json({ url: "http://local/review" });
+      } });
+      try {
+        const work = target === "create"
+          ? createRepo("test/review", { token: null, baseUrl: held.url.href, signal: abort.signal })
+          : uploadFolder(dir, "test/review", { token: null, baseUrl: held.url.href, signal: abort.signal });
+        await expect(work).rejects.toBe(reason);
+        const after = paths.length;
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(paths.length).toBe(after);
+        if (target === "commit") expect(paths.some(path => path.includes("/commit/"))).toBe(true);
+      } finally { await held.stop(true); rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+});
