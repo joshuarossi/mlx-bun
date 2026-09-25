@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -63,11 +64,15 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (!host.trim()) throw new Error("--host expects an address");
   const kvBudget = number("kv-budget");
   const maxTokens = number("max-tokens", 1, 10_000_000);
+  const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
+  const profileLimit = profileContext === undefined ? null : Number(profileContext);
+  if (profileLimit !== null && (!Number.isSafeInteger(profileLimit) || profileLimit < 1))
+    throw new Error("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer");
   return {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
     capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
-    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? null,
+    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
     readOnly: args.values["read-only"] === true, noOpen: args.values["no-open"] === true,
@@ -125,7 +130,12 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       acquire: signal => engine.gateway.acquireExecutionLease(signal),
       onComplete: () => completions.invalidateLibrary(),
     });
-    const closeApp = async () => { try { await jobs.close(); } finally { await engine.close(); } };
+    const closeApp = async () => {
+      const errors: unknown[] = [];
+      try { await jobs.close(); } catch (error) { errors.push(error); }
+      try { await engine.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "application cleanup failed");
+    };
     cleanup = closeApp;
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
     let boundPort = options.port;

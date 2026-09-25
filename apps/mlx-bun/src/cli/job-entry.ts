@@ -66,4 +66,6 @@ export async function runJobEntry(jobId = process.argv[2]): Promise<number> {
   }
 }
 
-if (import.meta.main) process.exitCode = await runJobEntry();
+// The process owner exits after durable terminal publication and store cleanup;
+// producer-owned lingering handles must not retain the parent execution lease.
+if (import.meta.main) process.exit(await runJobEntry());
