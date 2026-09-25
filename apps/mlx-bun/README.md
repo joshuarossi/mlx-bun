@@ -45,3 +45,23 @@ paths, and its prompt hint through `PiBackendOptions.memory`. Download context
 is an optional callback from app composition. Browser assets and HTTP/WebSocket
 route wiring remain separate migration work. Standalone Pi integration remains
 deferred. The protocol exposes no serial-serving lane selection.
+
+## Browser app
+
+`src/web/browser/` preserves the existing chat, model, training, quantization,
+dataset, memory, and status UI. Browser code imports only local browser modules
+and the data-only chat/job protocols. Unported backend features may return 501
+during migration; preserving their UI does not claim their backend is ready.
+
+`src/web/assets.ts` provides `createWebHandler()`, which loads the static payloads
+and returns a `Request → Response | null` handler for application composition.
+It opens no listener. `bun run --filter mlx-bun build:web` creates ignored
+`dist/web/app.js`; prepack generates and includes that file, so installed apps
+need no build step. Static HTML, theme, manifest, worker, and icon live in
+`src/web/public/`. The vendored highlight.js bundle retains its BSD license in
+`public/vendor/hljs-LICENSE`; its existing header records upstream provenance.
+
+[Browser behavior tests](tests/web/browser.test.ts) cover streaming rendering,
+escaping, attachments, panels, and interactions without a live server.
+[Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
+headers. The packed consumer check verifies the same assets after installation.

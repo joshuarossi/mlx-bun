@@ -34,6 +34,8 @@ try {
     const directory = dirname(join(workspace, path));
     const archive = join(archives, `${basename(directory)}.tgz`);
     console.log(`Packing ${manifest.name}`);
+    if (manifest.name === "mlx-bun" && args.includes("--app-only"))
+      await run([process.execPath, "run", "build:web"], directory);
     await run([process.execPath, "pm", "pack", "--filename", archive, "--quiet", ...(args.includes("--app-only") ? ["--ignore-scripts"] : [])], directory);
     dependencies[manifest.name] = `file:${archive}`;
     const entries = Object.keys(manifest.exports ?? {}).map(key => {
@@ -53,6 +55,14 @@ try {
   assert((await realpath(appEntry)).startsWith((await realpath(consumer)) + "/"), "Installed app is a workspace link");
   const help = await run([join(consumer, "node_modules/.bin/mlx-bun"), "--help"], consumer);
   assert(help.includes("Usage: mlx-bun"));
+  await run([process.execPath, "-e", `
+    const { createWebHandler } = await import("./node_modules/mlx-bun/src/web/assets.ts");
+    const handle = await createWebHandler();
+    for (const path of ["/", "/assets/app.js", "/assets/hljs.js", "/assets/hljs.css", "/assets/icon.svg", "/manifest.webmanifest", "/sw.js"]) {
+      const response = handle(new Request("http://local" + path));
+      if (response?.status !== 200 || !(await response.text()).length) throw new Error("Missing packed asset: " + path);
+    }
+  `], consumer);
   await mkdir(join(consumer, "app-tests"));
   await cp(join(workspace, "apps/mlx-bun/tests/hub-cli.test.ts"), join(consumer, "app-tests/hub-cli.test.ts"));
   env.MLX_BUN_TEST_CLI = appEntry;
