@@ -22,7 +22,8 @@ import { type Cache, type Mask, type SharedKv } from "../../../contracts/mlx/cac
 import { Gemma4Model, type DecoderLayer } from "../model";
 import { isCompiledTrace } from "../../../runtime/compiled-trace";
 
-export const FINGERPRINT = "418e9adc386ea67c";
+import { GENERATED_GEMMA_FINGERPRINTS } from "../../profile";
+export const FINGERPRINT = GENERATED_GEMMA_FINGERPRINTS["e4b"];
 
 /** Forward passes served by the generated fast path (vs monolith
  *  fallback) — the parity gate asserts the fast path actually ran. */

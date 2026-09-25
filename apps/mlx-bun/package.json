@@ -23,6 +23,7 @@
   "dependencies": {
     "@mlx-bun/hub": "workspace:*",
     "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/mlx": "workspace:*",
     "@earendil-works/pi-ai": "0.80.3",
     "@earendil-works/pi-coding-agent": "0.80.3",
     "typebox": "1.1.38"
