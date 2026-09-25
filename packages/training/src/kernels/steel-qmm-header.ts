@@ -1,14 +1,15 @@
 /* eslint-disable */
 // AUTO-PORTED VERBATIM from MLX quantized.h + steel/* (github.com/ml-explore/mlx).
-// ONE DEVIATION from verbatim (compile-only; no arithmetic, layout or dispatch change):
-// every non-static member function of MMATile and BlockMMA is `thread`-qualified.
-// MSL 4.1 -- what MLX's JIT selects on macOS 27 (mlx/backend/metal/device.cpp,
-// get_metal_version) -- no longer treats the implicit `this` of an unqualified member
-// function as `thread`, so frag_at's `thread frag_type&` return, tile_matmad's
-// `thread MMATile&` params and the `thread`-qualified MMATile() ctor stop binding
-// ("constructor for BlockMMA<...> must explicitly initialize the member 'Atile'").
-// MSL <= 4.0 and MLX's precompiled metallib are unaffected; the qualifier restores
-// the <= 4.0 meaning under 4.1. Upstream mma.h (v0.32.2 == main) is unchanged.
+// Member functions of the copied structs (MMATile, BlockMMA, BlockLoader,
+// QuantizedBlockLoader, TransformAdd/Axpby) carry an explicit `thread` qualifier on
+// `this`, matching upstream PR #3963 ("Fix implicit thread address space qualifier
+// becoming explicit in metal 4.1", in MLX >= v0.32.2). MSL 4.1 -- what MLX's JIT
+// selects on macOS 27 (mlx/backend/metal/device.cpp get_metal_version) -- no longer
+// treats the implicit `this` of an unqualified member function as `thread`, so
+// frag_at's `thread frag_type&` return, tile_matmad's `thread MMATile&` params and
+// the `thread`-qualified MMATile() ctor stop binding ("constructor for BlockMMA<...>
+// must explicitly initialize the member 'Atile'"). Compile-only: no arithmetic,
+// layout or dispatch change. MSL <= 4.0 and MLX's precompiled metallib are unaffected.
 export const STEEL_QMM_HEADER = String.raw`// mlx metal_kernel preamble provides METAL_FUNC + using namespace metal; we add
 // the steel macros, type_traits + integral_constant (each self-manages its own
 // #pragma METAL internals enable/disable), then the GEMM-specific structs.
@@ -220,7 +221,7 @@ struct TransformNone {
 
 template <typename OutT, typename InT>
 struct TransformAdd {
-  TransformAdd(const float, const float) {}
+  TransformAdd(const float, const float) thread {}
 
   static METAL_FUNC OutT apply(InT x) {
     return static_cast<OutT>(x);
@@ -236,14 +237,14 @@ struct TransformAxpby {
   const float alpha;
   const float beta;
 
-  TransformAxpby(const float alpha_, const float beta_)
+  TransformAxpby(const float alpha_, const float beta_) thread
       : alpha(alpha_), beta(beta_) {}
 
   static METAL_FUNC OutT apply(InT x) {
     return static_cast<OutT>(x);
   }
 
-  METAL_FUNC OutT apply(InT x, OutT c) const {
+  METAL_FUNC OutT apply(InT x, OutT c) const thread {
     return static_cast<OutT>(
         x * static_cast<InT>(alpha) + (static_cast<OutT>(beta) * c));
   }
@@ -408,7 +409,7 @@ struct QuantizedBlockLoader {
       const int src_ld_,
       threadgroup T* dst_,
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]])
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread
       : src_ld(src_ld_),
         tile_stride(
             reduction_dim ? BCOLS_PACKED * bytes_per_pack
@@ -424,7 +425,7 @@ struct QuantizedBlockLoader {
         scales(scales_ + bi * src_ld / group_size),
         biases(biases_ + bi * src_ld / group_size) {}
 
-  void load_unsafe() const {
+  void load_unsafe() const thread {
     if (BCOLS_PACKED * BROWS < tgp_size && bi >= BROWS) {
       return;
     }
@@ -437,7 +438,7 @@ struct QuantizedBlockLoader {
     }
   }
 
-  void load_safe(short2 src_tile_dim) const {
+  void load_safe(short2 src_tile_dim) const thread {
     if (BCOLS_PACKED * BROWS < tgp_size && bi >= BROWS) {
       return;
     }
@@ -467,7 +468,7 @@ struct QuantizedBlockLoader {
     }
   }
 
-  void next() {
+  void next() thread {
     src += tile_stride;
     if (reduction_dim == 1) {
       if (group_steps > 1) {
@@ -536,7 +537,7 @@ struct BlockLoader {
       const int src_ld_,
       threadgroup T* dst_,
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]])
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread
       : src_ld(src_ld_),
         tile_stride(reduction_dim ? BCOLS : BROWS * src_ld),
         thread_idx(simd_group_id * 32 + simd_lane_id),
@@ -547,7 +548,7 @@ struct BlockLoader {
 
   /* Apply operation to threadgroup without bound checking */
   template <typename UnaryOp>
-  METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const {
+  METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
       STEEL_PRAGMA_UNROLL
@@ -558,7 +559,7 @@ struct BlockLoader {
   }
 
   /* Load from device memory into threadgroup memory - without bound checking */
-  METAL_FUNC void load_unsafe() const {
+  METAL_FUNC void load_unsafe() const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
       *((threadgroup ReadVector*)(&dst[i * dst_ld])) =
@@ -567,7 +568,7 @@ struct BlockLoader {
   }
 
   /* Load from device memory into threadgroup memory - with bound checking */
-  METAL_FUNC void load_safe(short2 src_tile_dim) const {
+  METAL_FUNC void load_safe(short2 src_tile_dim) const thread {
     src_tile_dim = src_tile_dim - short2(bj, bi);
 
     // Skip loading if thread has no valid reads
@@ -615,7 +616,7 @@ struct BlockLoader {
   }
 
   /* Iteration helper */
-  METAL_FUNC void next() {
+  METAL_FUNC void next() thread {
     src += tile_stride;
   }
 };
