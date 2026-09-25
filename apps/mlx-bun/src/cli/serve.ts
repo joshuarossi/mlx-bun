@@ -1,3 +1,4 @@
+import { requireChatTemplate } from "../engine/model-host";
 import { defaultSessionDir } from "../chat/session-files";
 import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
@@ -117,6 +118,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   try {
     const context = await loadContext(model.path, model.repoId);
     cleanup = () => context.dispose();
+    requireChatTemplate(context);
     const binding = await modelServingBinding(context);
     const caches = await createCacheServices(context, binding, options.cache);
     const closeCaches = async () => {

@@ -27,7 +27,7 @@ export interface ModelContext<Model = RuntimeModel> {
    * construction. Request-level methods are resolved separately. */
   profile: ResolvedModelProfile;
   tokenizer: LoadedTokenizer;
-  template: ChatTemplate;
+  template: ChatTemplate | null;
   modelId: string;
   /** Lazily-loaded vision tower cache — null until the first image request
    *  (see `getVisionTower`). The tower (SigLIP ~hundreds of MB, encoder-free
@@ -77,6 +77,8 @@ export interface ModelHostSource {
 }
 
 export interface LoadContextOptions<Model extends ServedModelInfo = RuntimeModel> {
+  /** Raw generation and embeddings do not require a chat template. Default true. */
+  requireChatTemplate?: boolean;
   /** Engine-owned complete implementations may own their loader and methods.
    * Selection happens before opening the default resident or streamed weights. */
   implementations?: ModelImplementationProvider<ModelHostSource, Promise<ModelContext<Model>>>;
@@ -130,6 +132,17 @@ export async function detectDraftKind(dir: string): Promise<DraftKind> {
     // no/unreadable config → fall through to a full second model
   }
   return "two-model";
+}
+
+/** Serving requires a template; one-shot consumers retain main's raw fallback. */
+export async function loadContextTemplate(modelDir: string, required: boolean,
+  load: (directory: string) => Promise<ChatTemplate>): Promise<ChatTemplate | null> {
+  try { return await load(modelDir); }
+  catch (error) { if (required) throw error; return null; }
+}
+
+export function requireChatTemplate<T extends { template: ChatTemplate | null; modelId: string }>(context: T): asserts context is T & { template: ChatTemplate } {
+  if (!context.template) throw new Error(`model ${context.modelId} has no chat template`);
 }
 
 async function loadGenSamplingDefaults(modelDir: string): Promise<GenSamplingDefaults> {
@@ -408,7 +421,7 @@ export async function loadContext(
       kvConfig: config.kvQuant,
       genDefaults: await loadGenSamplingDefaults(modelDir),
       tokenizer,
-      template: await ChatTemplate.load(modelDir),
+      template: await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => ChatTemplate.load(dir)),
       modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
       // Vision is loaded lazily (getVisionTower) — text-only sessions never
       // pay for the tower. The loader picks the encoder-free gemma4_unified

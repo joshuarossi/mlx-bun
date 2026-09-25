@@ -8,7 +8,7 @@ import { buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages, 
 import { buildQwen3VLVisionPrompt } from "@mlx-bun/inference/input/vision/qwen3vl-prompt";
 import type { Qwen3VLVisionTower } from "@mlx-bun/inference/models/vision/qwen3vl";
 import { normalizeMessages, type ChatRequestParams } from "./chat-request";
-import { getAudioTower, getVisionTower, type LoadedModelContext as ModelContext } from "../engine/model-host";
+import { requireChatTemplate, getAudioTower, getVisionTower, type LoadedModelContext as ModelContext } from "../engine/model-host";
 import { RequestError } from "./pipeline";
 import type { RequestOwnership } from "./request-plan";
 import type { RequestPrep } from "./request-prep";
@@ -24,6 +24,7 @@ export async function buildModelPrompt(
     nativeWork: PromptNativeWork = (work) => work(),
     objects?: import("@mlx-bun/inference/contracts/portable").ObjectCache<import("@mlx-bun/inference/state").CheckpointAttachment[]>,
   ): Promise<BuiltPrompt> {
+    requireChatTemplate(ctx);
     const toolList = tools ?? null;
     const partOf = (types: string[]) => body.messages.some(
       (m) => Array.isArray(m.content) &&
