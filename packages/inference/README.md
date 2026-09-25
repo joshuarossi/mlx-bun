@@ -59,6 +59,34 @@ This result covers that path only, not other models, batching, quantized KV,
 snapshot restore, long contexts, or speed. Raw outputs and the comparison
 harness remain external; Python is not a project dependency.
 
+
+### Repeatable runtime comparison
+
+The source-checkout tool `bun packages/inference/scripts/runtime-oracle.ts --help`
+explains the plan schema and `emit`/`compare` commands. It hashes complete logits,
+live cache planes and one-token continuation; `compare` is CPU-only. Supply local
+weights and external reference reports. No Python environment or reference data
+is installed by this repository. The opt-in test uses `MLX_BUN_PARITY_PLAN` and
+`MLX_BUN_PARITY_REFERENCE`; absent either, it skips. Legacy reports require explicit
+`--allow-unrecorded-config` (test: `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG=1`), after
+verifying their environment separately. New reports record runtime overrides,
+source/harness/native hashes, machine and plan; `--hash-weights` adds weight hashes.
+
+On 2026-09-25 UTC, `6b0fd69` matched main `02d723a` and its unchanged external
+`scripts/oracle/check-runtime.py` for the same MiniCPM snapshot above. All nine
+cases (contexts 0/64/320 × append lengths 1/8/128, prefix chunk 128, batch one)
+matched bit-for-bit for full logits, prefix/append state and continuation logits/state.
+The machine was the same M1 Max; Python was 3.14.5, MLX/MLX-Metal 0.32.2,
+mlx-lm 0.31.3. Runtime overrides were only `MLX_BUN_COMPILED_DECODE=0` and
+`MLX_BUN_TEST_RUNTIME_ORACLE=1`; references ran sequentially with HF offline.
+The weight SHA-256 was
+`88bb686ed4a28f7c2065e27aabef7669f84961ac47c83efe2d003436c179e2e4`;
+the Python report SHA-256 was
+`bc034fd8f6aec39ec9f90c1aeeed1caed713efc58453e85f4cfc32b6046c86d5`.
+This covers plain KV and chunked prefix continuation, not mixed KV, saved-state
+restoration, compiled decode, sliding-window wrap, other families or performance.
+Raw reports remain outside Git; the broader PLAN verification item stays open.
+
 ## Direct library use
 
 See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
