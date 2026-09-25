@@ -27,7 +27,9 @@ export interface MergeStats {
 }
 
 /** Merge N adapter directories into `outputDir`. `scales` overrides the
- *  per-source scales (else each source's adapter config scale is used). */
+ *  per-source scales (else each source's adapter config scale is used).
+ *  This call owns every materialized source and intermediate tensor and
+ *  releases them before resolving or rejecting. */
 export async function mergeAdapters(
   adapterDirs: string[],
   outputDir: string,
@@ -39,16 +41,9 @@ export async function mergeAdapters(
   if (resolvedScales.length !== adapterDirs.length)
     throw new Error("scales length must match adapter count");
 
-  const sources = adapterDirs.map((d) => ({
-    tensors: loadAdapterTensors(resolveSafetensors(d)),
-  }));
-
-  // Universe of module paths across all sources.
-  const allMods = new Set<string>();
-  for (const s of sources)
-    for (const k of s.tensors.keys())
-      if (k.endsWith(".lora_a")) allMods.add(k.slice(0, -".lora_a".length));
-
+  const sources: { tensors: Map<string, MlxArray> }[] = [];
+  const owned = new Set<MlxArray>();
+  const own = (array: MlxArray) => { owned.add(array); return array; };
   const merged = new Map<string, MlxArray>();
   const stats: MergeStats = {
     layersMerged: 0,
@@ -59,6 +54,17 @@ export async function mergeAdapters(
   };
 
   try {
+    // Acquire inside the cleanup scope: a later source may fail to load.
+    for (const directory of adapterDirs) {
+      const tensors = loadAdapterTensors(resolveSafetensors(directory));
+      sources.push({ tensors });
+      for (const array of tensors.values()) own(array);
+    }
+    const allMods = new Set<string>();
+    for (const source of sources)
+      for (const key of source.tensors.keys())
+        if (key.endsWith(".lora_a")) allMods.add(key.slice(0, -".lora_a".length));
+
     for (const mod of [...allMods].sort()) {
       const aParts: MlxArray[] = [];
       const bParts: MlxArray[] = [];
@@ -68,7 +74,7 @@ export async function mergeAdapters(
         if (a && b) {
           aParts.push(a);
           const scale = resolvedScales[s]!;
-          bParts.push(scale === 1.0 ? b : ops.mulScalar(b, scale));
+          bParts.push(scale === 1.0 ? b : own(ops.mulScalar(b, scale)));
         }
       }
       if (aParts.length === 0) continue;
@@ -79,8 +85,8 @@ export async function mergeAdapters(
         merged.set(`${mod}.lora_b`, bParts[0]!);
       } else {
         // rank axis: A is [in, r] → axis 1; B is [r, out] → axis 0.
-        const aMerged = ops.concatAxis(aParts, 1);
-        const bMerged = ops.concatAxis(bParts, 0);
+        const aMerged = own(ops.concatAxis(aParts, 1));
+        const bMerged = own(ops.concatAxis(bParts, 0));
         merged.set(`${mod}.lora_a`, aMerged);
         merged.set(`${mod}.lora_b`, bMerged);
         stats.layersMerged++;
@@ -91,19 +97,22 @@ export async function mergeAdapters(
     mkdirSync(outputDir, { recursive: true });
 
     const map = C.mlx_map_string_to_array_new();
-    const meta = C.mlx_map_string_to_string_new();
     try {
-      for (const [name, arr] of merged) {
-        arr.eval();
-        if (C.mlx_map_string_to_array_insert(map, ptr(cstr(name)), arr.handle) !== 0)
-          throw new Error(`map insert ${name} failed`);
+      const meta = C.mlx_map_string_to_string_new();
+      try {
+        for (const [name, arr] of merged) {
+          arr.eval();
+          if (C.mlx_map_string_to_array_insert(map, ptr(cstr(name)), arr.handle) !== 0)
+            throw new Error(`map insert ${name} failed`);
+        }
+        const file = `${outputDir}/adapters.safetensors`;
+        if (C.mlx_save_safetensors(ptr(cstr(file)), map, meta) !== 0)
+          throw new Error(`mlx_save_safetensors(${file}) failed`);
+      } finally {
+        C.mlx_map_string_to_string_free(meta);
       }
-      const file = `${outputDir}/adapters.safetensors`;
-      if (C.mlx_save_safetensors(ptr(cstr(file)), map, meta) !== 0)
-        throw new Error(`mlx_save_safetensors(${file}) failed`);
     } finally {
       C.mlx_map_string_to_array_free(map);
-      C.mlx_map_string_to_string_free(meta);
     }
 
     // Merged config: scale 1.0 (folded into B), rank = sum of source ranks.
@@ -119,9 +128,8 @@ export async function mergeAdapters(
     await Bun.write(`${outputDir}/adapter_config.json`, JSON.stringify(cfg, null, 2) + "\n");
     await Bun.write(`${outputDir}/optiq_lora_config.json`, JSON.stringify(cfg, null, 2) + "\n");
   } finally {
-    // dispose all source + merged arrays (merged copies are owned here).
-    for (const s of sources) for (const a of s.tensors.values()) a.dispose();
-    for (const a of merged.values()) a.dispose();
+    // Includes source aliases, scaled intermediates, and partially built outputs.
+    for (const array of owned) array.dispose();
   }
 
   return stats;
@@ -164,32 +172,34 @@ function loadAdapterTensors(file: string): Map<string, MlxArray> {
   sf.mmap.unmap();
 
   const arrMapSlot = new BigUint64Array([C.mlx_map_string_to_array_new()]);
-  const metaMapSlot = new BigUint64Array([C.mlx_map_string_to_string_new()]);
   const arrMapPtr = ptr(arrMapSlot);
-  const metaMapPtr = ptr(metaMapSlot);
-  const status = C.mlx_load_safetensors(arrMapPtr, metaMapPtr, ptr(cstr(file)), cpuStream);
-  C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0));
-  const mapHandle = read.u64(arrMapPtr, 0);
-  if (status !== 0) {
-    C.mlx_map_string_to_array_free(mapHandle);
-    throw new Error(`mlx_load_safetensors(${file}) failed`);
-  }
-  const out = new Map<string, MlxArray>();
   try {
-    for (const name of names) {
-      const slot = new BigUint64Array([C.mlx_array_new()]);
-      const slotPtr = ptr(slot);
-      if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(name))) !== 0)
-        throw new Error(`adapter tensor ${name} missing from native map`);
-      const arr = new MlxArray(read.u64(slotPtr, 0));
-      arr.eval();
-      out.set(name, arr);
+    const metaMapSlot = new BigUint64Array([C.mlx_map_string_to_string_new()]);
+    const metaMapPtr = ptr(metaMapSlot);
+    let status: number;
+    try { status = C.mlx_load_safetensors(arrMapPtr, metaMapPtr, ptr(cstr(file)), cpuStream); }
+    finally { C.mlx_map_string_to_string_free(read.u64(metaMapPtr, 0)); }
+    const mapHandle = read.u64(arrMapPtr, 0);
+    if (status !== 0) throw new Error(`mlx_load_safetensors(${file}) failed`);
+    const out = new Map<string, MlxArray>();
+    try {
+      for (const name of names) {
+        const slot = new BigUint64Array([C.mlx_array_new()]);
+        const slotPtr = ptr(slot);
+        if (C.mlx_map_string_to_array_get(slotPtr, mapHandle, ptr(cstr(name))) !== 0) {
+          C.mlx_array_free(read.u64(slotPtr, 0));
+          throw new Error(`adapter tensor ${name} missing from native map`);
+        }
+        const arr = new MlxArray(read.u64(slotPtr, 0));
+        out.set(name, arr);
+        arr.eval();
+      }
+      return out;
+    } catch (error) {
+      for (const array of out.values()) array.dispose();
+      throw error;
     }
-  } catch (e) {
-    for (const a of out.values()) a.dispose();
-    C.mlx_map_string_to_array_free(mapHandle);
-    throw e;
+  } finally {
+    C.mlx_map_string_to_array_free(read.u64(arrMapPtr, 0));
   }
-  C.mlx_map_string_to_array_free(mapHandle);
-  return out;
 }
