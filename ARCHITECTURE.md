@@ -83,12 +83,15 @@ directories need an explicit layer owner in this gate.
 surfaces. Its `cli/` domain parses arguments and presents results, consuming
 public library exports. Model discovery, acquisition, and fit remain in
 `@mlx-bun/hub`; numerical inference remains in `@mlx-bun/inference`.
-`engine/` owns loaded model lifetimes, preparation, and continuous execution;
-`cli/` consumes it. `chat/` owns the WebSocket backend and its Pi adapter; `web/` owns browser
-modules, static assets, and browser compilation. Browser code consumes only its
-own modules and the leaf chat/job protocols. `jobs/protocol.ts` currently owns
-the browser's job events; job orchestration is still pending. Add other domains
-with their first migrated consumers and explicit dependency rules.
+`engine/` owns loaded models and continuous scheduling. `server/` consumes its
+completion, preparation, and model-binding interfaces; HTTP request shapes,
+prompt policy, and JSON/SSE remain server-owned. The server borrows the engine,
+while application startup owns closing it. `chat/` owns the WebSocket backend
+and its Pi adapter; `web/` owns browser modules, static assets, and compilation.
+Browser code consumes only its own modules and the leaf chat/job protocols.
+`jobs/protocol.ts` currently owns the browser's job events; job orchestration
+is still pending. Add other domains with their first migrated consumers and
+explicit dependency rules.
 
 Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.
