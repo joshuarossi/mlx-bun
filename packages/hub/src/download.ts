@@ -98,11 +98,20 @@ function formatGib(bytes: number): string {
   return `${(bytes / 2 ** 30).toFixed(2)} GiB`;
 }
 
-/** HF auth: explicit > env > the file `hf auth login` writes. */
-export function hfToken(): string | null {
-  if (process.env.HF_TOKEN) return process.env.HF_TOKEN;
+export interface HfTokenOptions {
+  /** Defaults to process.env; explicit values replace it rather than merging. */
+  environment?: { HF_TOKEN?: string; HOME?: string };
+  /** Defaults to the standard cache token under environment.HOME. */
+  cacheTokenPath?: string;
+}
+
+/** Read env > the file `hf auth login` writes. No app credential storage.
+ * Downloads resolve their explicit token option before consulting this helper. */
+export function hfToken(options: HfTokenOptions = {}): string | null {
+  const environment = options.environment ?? process.env;
+  if (environment.HF_TOKEN) return environment.HF_TOKEN;
   try {
-    return readFileSync(`${process.env.HOME}/.cache/huggingface/token`, "utf8").trim() || null;
+    return readFileSync(options.cacheTokenPath ?? `${environment.HOME}/.cache/huggingface/token`, "utf8").trim() || null;
   } catch {
     return null;
   }
