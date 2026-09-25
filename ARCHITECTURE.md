@@ -34,6 +34,12 @@ this entry point. Component subpaths are public ways to compose kernels, layers,
 graphs, state, sampling, and generation directly. A small convenience API does
 not require hiding those components.
 
+`@mlx-bun/training` owns adapter training and production above the inference
+graphs, layers, state contracts, and MLX autograd. It uses the quantize package
+only to preserve auxiliary checkpoint files during adapter fusion. Training
+progress is a library contract; job lifecycle and terminal output stay in apps.
+Inference and quantization never depend on training.
+
 Interfaces describe required capabilities and ownership, not a selected model
 or service. A caller may provide a different implementation satisfying the
 same contract. Concrete model loading remains available as a convenience.
