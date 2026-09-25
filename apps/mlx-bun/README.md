@@ -71,7 +71,7 @@ remain separate verification.
 
 ## Server seams
 
-`server/routes.ts` composes chat/text completion, Anthropic Messages, embedding, and discovery
+`server/routes.ts` composes chat/text completion, Anthropic Messages, Responses, embedding, and discovery
 handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
@@ -97,6 +97,12 @@ Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
 requests and semantic completion events, including tools, thinking, and usage.
 Its JSON and SSE paths use the same preparation, capability admission, scheduler,
 and cancellation as chat completions; no second service is created.
+`responses.ts` owns Responses translation and its process-local, one-hour,
+32 MiB history. Successful JSON and SSE requests retain input, output, and
+instructions for `previous_response_id`; failed or cancelled requests do not.
+A generation error ends SSE with `response.failed`, without a misleading completion event. Composition
+may supply `responseHistory` to replace the store; no isolated-worker forwarding
+or duplicate completion service is involved.
 
 The [request pipeline](tests/server/pipeline.test.ts) and
 [HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
