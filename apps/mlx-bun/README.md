@@ -208,3 +208,17 @@ paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
 [Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
 and output naming with an injected numerical operation. They do not run or
 establish parity for actual checkpoint quantization.
+
+## Dataset jobs
+
+`dataset/` owns the existing template inputs, generation, Hugging Face import,
+and 90/10 JSONL split. `server/dataset-routes.ts` owns template discovery and
+submission; CLI composition supplies the bound loopback port and runner. Jobs
+run in-process and call the normal HTTP inference surface, so each inference
+request uses continuous batching without an exclusive GPU lease. Shutdown
+cancels requests and retry waits and joins tasks before closing job storage.
+
+Twelve templates are enabled. `verified_code` remains visible with an unavailable
+explanation and returns 501 until generated-code execution has a migrated owner.
+Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
+use temporary storage and synthetic HTTP responses, without a model or download.
