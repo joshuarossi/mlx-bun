@@ -1412,4 +1412,6 @@ describe("ui-catalog.ts: route/view validation", () => {
 
 it("memory provenance chips cover every callable memory and reference tool", () => {
   expect([...MEMORY_CHIP_TOOL_NAMES].sort()).toEqual([...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES].sort());
+  for (const name of [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES]) expect(isMemoryToolName(name)).toBe(true);
+  for (const name of ["read", "bash", "web_search", "memory_fake", "reference_fake", ""]) expect(isMemoryToolName(name)).toBe(false);
 });

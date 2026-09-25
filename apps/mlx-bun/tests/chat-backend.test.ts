@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import type { ServerWebSocket } from "bun";
 import { makeChatWebSocketHandler, type ChatBackend, type ChatSocketData, type SendFrame } from "../src/chat/backend";
@@ -145,9 +148,10 @@ test("Pi construction and absent memory need no native runtime or model", async 
 });
 
 test("the memory owner explicitly supplies tool definitions, names, skills, and prompt hint", () => {
-  const surface = buildPiAgentSurface({ toolNames: ["memory_read"], customTools: [], skillPaths: ["/memory/skill"], hint: "Use memory only when relevant." });
+  const surface = buildPiAgentSurface({ readOnly: true, toolNames: ["memory_read"], customTools: [], skillPaths: ["/memory/skill"], hint: "Use memory only when relevant." });
   expect(surface.memoryEnabled).toBe(true);
   expect(surface.memoryToolNames).toEqual(["memory_read"]);
+  expect(surface.readOnlyToolNames).toEqual(["memory_read"]);
   expect(surface.skillPaths).toEqual(["/memory/skill"]);
   expect(surface.memoryHint).toBe("Use memory only when relevant.");
 });
@@ -223,4 +227,54 @@ test("Pi closes the session published by an SDK replacement that finishes during
   await tick(); await tick(); expect(closed).toBe(false); expect(events).toEqual(["replace started", "abort"]);
   replacement.resolve(); await changing; await closing;
   expect(events).toEqual(["replace started", "abort", "replace ended", "dispose new"]);
+});
+
+
+test("an injected memory surface must attest read-only behavior", () => {
+  expect(() => buildPiAgentSurface({ toolNames: ["unclassified"], customTools: [], skillPaths: [], hint: "" } as never))
+    .toThrow("explicitly read-only");
+});
+
+
+test("unclassified tools and injected mutation names still pass through the approval gate", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-approval-class-"));
+  const frames: ServerMessage[] = [];
+  type Event = { toolName: string; toolCallId: string; input: Record<string, unknown> };
+  type Gate = (event: Event) => Promise<{ block: true; reason: string } | undefined>;
+  type ApprovalBackend = {
+    installApprovalGate(pi: { on(name: string, callback: Gate): void }, readOnly: ReadonlySet<string>): void;
+    resolveApproval(id: string, decision: "deny"): void;
+  };
+  const paths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  const backend = createPiBackend({ port: 1, paths })(frame => {
+    frames.push(frame);
+    if (frame.type === "tool_approval_request") queueMicrotask(() =>
+      (backend as unknown as ApprovalBackend).resolveApproval(frame.callId, "deny"));
+  });
+  const readOnlyBackend = createPiBackend({ port: 1, paths, readOnly: true })(frame => frames.push(frame));
+  const installed = (target: typeof backend) => {
+    let gate!: Gate;
+    (target as unknown as ApprovalBackend).installApprovalGate({ on(name, callback) {
+      expect(name).toBe("tool_call"); gate = callback;
+    } }, new Set(["memory_read", "bash"]));
+    return gate;
+  };
+  try {
+    const gate = installed(backend);
+    expect(await gate({ toolName: "memory_read", toolCallId: "read", input: {} })).toBeUndefined();
+    for (const tool of ["unknown_tool", "bash"]) {
+      expect(await gate({ toolName: tool, toolCallId: tool, input: {} })).toEqual({ block: true, reason: "Denied by user." });
+    }
+    expect(frames.filter(frame => frame.type === "tool_approval_request").map(frame => frame.tool))
+      .toEqual(["unknown_tool", "bash"]);
+    frames.length = 0;
+    const readOnlyGate = installed(readOnlyBackend);
+    for (const tool of ["unknown_tool", "bash"]) {
+      expect(await readOnlyGate({ toolName: tool, toolCallId: tool, input: {} }))
+        .toEqual({ block: true, reason: "Read-only session: only read-only tools are allowed." });
+    }
+    expect(frames).toEqual([]);
+  } finally {
+    await backend.dispose(); await readOnlyBackend.dispose(); rmSync(root, { recursive: true, force: true });
+  }
 });

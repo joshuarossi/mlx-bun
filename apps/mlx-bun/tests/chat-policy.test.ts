@@ -4,7 +4,7 @@ import { ambientContextLine, APP_AWARE_TOOL_NAMES, applyEditedArgs, applySetSamp
   buildWebChatSystemPrompt, composeSampling, consumeForRequest, decideBeforeToolCall,
   initialLoopHygieneState, initialSamplingScopeState, injectAdapter, injectSampling,
   injectSystemPrompt, isAppRouteId, LOOP_HYGIENE, recordToolCallOutcome, resolveAppRoute,
-  toolCallSignature, toolResultText, webChatToolAllowlist } from "../src/chat/policy";
+  toolCallSignature, toolResultText, toolApprovalClass, webChatToolAllowlist } from "../src/chat/policy";
 import { deepestLeafFrom, findLastUserMessageEntry, serializeHistory,
   toSessionListItems, userMessageSiblings } from "../src/chat/history";
 import { createAppAwareTools } from "../src/chat/app-tools";
@@ -923,5 +923,20 @@ describe("createAppAwareTools: get_current_app_context / navigate_app / spotligh
       expect((result as { isError?: boolean }).isError).toBe(true);
       expect(sent).toEqual([]);
     });
+  });
+});
+
+
+describe("approval classification", () => {
+  it("classifies only built-in or explicitly injected read-only tools as read-only", () => {
+    const memory = new Set(MEMORY_TOOLS);
+    expect(toolApprovalClass("read", memory)).toBe("read-only");
+    for (const tool of MEMORY_TOOLS) expect(toolApprovalClass(tool, memory)).toBe("read-only");
+    expect(toolApprovalClass("unknown_tool", memory)).toBe("approval");
+    expect(toolApprovalClass("test_memory_read", new Set())).toBe("approval");
+  });
+  it("injected names cannot turn known mutations into read-only tools", () => {
+    const attemptedOverride = new Set(["bash", "edit", "write"]);
+    for (const tool of attemptedOverride) expect(toolApprovalClass(tool, attemptedOverride)).toBe("approval");
   });
 });
