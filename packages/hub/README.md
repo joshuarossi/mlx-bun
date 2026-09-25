@@ -7,7 +7,7 @@ and fetches them.
 | Module | Owns |
 | --- | --- |
 | `registry` | A `bun:sqlite` index over the Hugging Face cache: canonical revisions, vision/audio capability, garbage-collection plans. Reads headers, never tensor bytes, and never loads MLX. |
-| `download` | Resumable Hugging Face snapshot downloads with disk-space planning and a filename safety check. |
+| `download` | Resumable Hugging Face snapshot downloads with disk-space planning, a filename safety check, and caller-owned cancellation that keeps partials resumable. |
 | `upload` | Repository creation, preupload classification, basic LFS transfer, and NDJSON commits for model or dataset folders. Callers supply an explicit token or null. |
 | `fit` | Deterministic memory estimates: weights, KV bytes per token, prefill transients, and this machine's RAM and wired ceiling. |
 
@@ -22,6 +22,14 @@ against your own Hugging Face cache; the package test runs it against a syntheti
 Downloads read `HF_TOKEN` or `~/.cache/huggingface/token` for gated repos.
 The exported `hfToken` reader accepts optional environment and cache-token path
 inputs so callers can reuse that precedence without mutating process state.
+`downloadModel` accepts an `AbortSignal`. An abort rejects with the signal's
+reason at the next checkpoint (metadata request, lock attempt, Range retry,
+streamed chunk, or final publish) after pending writes settle, so the
+`.incomplete` prefix resumes on the next run; the blob rename, the revision ref,
+and the tracker's completion are never published after an abort. `onStatus`
+hands the caller the live tracker row once the listing and preflight succeed,
+so a caller can show one lifecycle from its own admission onward. The
+[download tests](tests/download.test.ts) run every path against a local fake Hub.
 Uploads never resolve credentials implicitly. The app chooses its token and
 passes it to `createRepo` or `uploadFolder` from `@mlx-bun/hub/upload`.
 The [upload protocol tests](tests/upload.test.ts) are executable examples using

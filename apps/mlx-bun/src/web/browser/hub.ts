@@ -252,7 +252,8 @@ let searchDebounce: ReturnType<typeof setTimeout> | undefined;
 let lastSearchQuery = "";
 let inFlightDownloads = new Set<string>();
 
-async function runSearch(query: string): Promise<void> {
+/** Exported for tests: renders real search rows with wired Download buttons. */
+export async function runSearch(query: string): Promise<void> {
   const body = $("hub-search-body");
   if (!body) return;
   lastSearchQuery = query;
@@ -309,11 +310,13 @@ function ensureDownloadPolling(): void {
   downloadPollTimer = setInterval(pollDownloads, 1500);
 }
 
-function stopDownloadPolling(): void {
+/** Exported for tests, which drive `pollDownloads` directly and clear the timer. */
+export function stopDownloadPolling(): void {
   if (downloadPollTimer) { clearInterval(downloadPollTimer); downloadPollTimer = undefined; }
 }
 
-async function pollDownloads(): Promise<void> {
+/** Exported for tests: one polling step over the tracker's rows. */
+export async function pollDownloads(): Promise<void> {
   let downloads: DownloadInfo[] = [];
   try {
     const r = await fetch("/downloads");
@@ -329,8 +332,9 @@ async function pollDownloads(): Promise<void> {
     const actions = row.querySelector(".hub-row-actions");
     if (!actions) continue;
     if (dl.state === "active") {
-      const pct = dl.totalBytes ? Math.floor((dl.receivedBytes / dl.totalBytes) * 100) : 0;
-      actions.innerHTML = '<span class="hub-dl-tag">' + pct + "%</span>";
+      // No total yet means the listing and disk preflight are still running.
+      const pct = dl.totalBytes ? Math.floor((dl.receivedBytes / dl.totalBytes) * 100) + "%" : "preparing…";
+      actions.innerHTML = '<span class="hub-dl-tag">' + pct + "</span>";
     } else if (dl.state === "done") {
       inFlightDownloads.delete(dl.repoId);
       actions.innerHTML = '<span class="hub-dl-tag done">done — reload to serve</span>';

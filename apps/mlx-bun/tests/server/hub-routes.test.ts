@@ -118,3 +118,28 @@ test("cancellation during an empty registry scan returns 499 and closes the regi
   expect((await routes.handle(request("/api/hub/local", { signal: controller.signal })))!.status).toBe(499);
   expect(closed).toBe(1);
 });
+
+test("hub download validates the repo, admits it once, and reports a duplicate as 409", async () => {
+  const { DuplicateDownloadError } = await import("../../src/hub/downloads");
+  const started: string[] = [];
+  const routes = createHubRoutes({ downloads: { start(repo) {
+    if (started.includes(repo)) throw new DuplicateDownloadError(repo);
+    started.push(repo);
+  } } });
+  const post = (body: unknown) => routes.handle(request("/api/hub/download", { method: "POST",
+    headers: { "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body) }));
+  const missing = (await post({}))!;
+  expect(missing.status).toBe(400); expect(await missing.json()).toEqual({ ok: false, error: 'missing "repo"' });
+  expect((await post("not json"))!.status).toBe(400);
+  for (const repo of ["../x", "org/..", "org", "org/name/extra", "org/na me", "/org/name"]) {
+    const invalid = (await post({ repo }))!;
+    expect(invalid.status).toBe(400); expect(await invalid.json()).toEqual({ ok: false, error: 'invalid "repo": expected org/name' });
+  }
+  const ok = (await post({ repo: " mlx-community/tiny " }))!;
+  expect(ok.status).toBe(200); expect(await ok.json()).toEqual({ ok: true, repo: "mlx-community/tiny", started: true });
+  const duplicate = (await post({ repo: "mlx-community/tiny" }))!;
+  expect(duplicate.status).toBe(409);
+  expect(await duplicate.json()).toEqual({ ok: false, error: "a download for mlx-community/tiny is already in progress" });
+  expect(started).toEqual(["mlx-community/tiny"]);
+  expect(await createHubRoutes().handle(request("/api/hub/download", { method: "POST", body: "{}" }))).toBeNull();
+});

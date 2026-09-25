@@ -344,9 +344,16 @@ publish to Hugging Face.
 
 `server/hub-routes.ts` owns the web hub list/search and restart-required response.
 Local rows consume registry and fit APIs; search remains request-owned and
-cancels with its caller. Download stays 501 until its background task has an
-explicit cancellation and shutdown owner. Selecting a model returns a restart
-command, preserving main's behavior without claiming a live switch.
+cancels with its caller. `hub/downloads.ts` owns web-started transfers: admission
+is synchronous before the metadata request, so a duplicate submit answers 409;
+`GET /downloads` serves the owner's rows, one per transfer from admission (the
+browser shows "preparing…" until the listing and preflight finish) through the
+hub tracker's live row to done, or to an error when the listing fails or
+shutdown cancels it; completion rescans the registry and
+invalidates discovery; shutdown aborts and joins every transfer before the engine
+closes, leaving resumable partials and publishing nothing. Selecting a model
+returns a restart command, preserving main's behavior without claiming a live
+switch.
 
 ## Standalone bundle
 

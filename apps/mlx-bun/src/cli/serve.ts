@@ -110,13 +110,14 @@ export interface RunningApp { port: number; close(): Promise<void> }
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }, { createCacheRoutes }] = await Promise.all([
+    { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }, { createCacheRoutes }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
-    import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
+    import("../chat/pi-backend"), import("../web/assets"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"), import("../server/status-routes"),
     import("../server/management-routes"), import("../server/adapter-routes"),
     import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"), import("../server/cache-routes"),
   ]);
+  const [{ createDownloadOwner }, { Registry }] = await Promise.all([import("../hub/downloads"), import("@mlx-bun/hub/registry")]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
   const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1" });
@@ -147,13 +148,24 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
     const limits = resolveServingLimits(options, context.glmMemoryPlan);
+    // Web-started transfers outlive their request. The owner's rows feed
+    // discovery and chat; completion refreshes the registry and discovery, and
+    // shutdown joins every transfer before the engine closes.
+    const downloads = createDownloadOwner({
+      onComplete: async () => {
+        const registry = new Registry();
+        try { await registry.scan(); } finally { registry.close(); }
+        completions.invalidateLibrary();
+      },
+      onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
+    });
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, ...limits, tokenHistory });
+      kvScheme: caches.kvScheme, ...limits, tokenHistory, downloads: downloads.snapshot });
     const status = createStatusRoutes({ owner: "serve", context, caches, gateway: engine.gateway,
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
       ssdCacheDir: options.cache.ssdCacheDir });
-    const hub = createHubRoutes();
+    const hub = createHubRoutes({ downloads });
     const cacheAdmin = createCacheRoutes(caches);
     const adapters = createAdapterRoutes(context, engine.gateway);
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
@@ -201,12 +213,19 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
         temperature: options.request.defaultTemperature ?? context.genDefaults.temperature ?? null,
         topP: options.request.defaultTopP ?? context.genDefaults.topP ?? null,
         topK: options.request.defaultTopK ?? context.genDefaults.topK ?? null,
-      }, downloadsSnapshot,
+      }, downloadsSnapshot: downloads.snapshot,
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
     const listener = await startServer({ routes, web, chat,
-      beforeDrain: async () => { try { caches.stopIdleDemotion(); } finally { await jobs.close(); } },
+      beforeDrain: async () => {
+        const errors: unknown[] = [];
+        try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
+        for (const result of await Promise.allSettled([jobs.close(), downloads.close()]))
+          if (result.status === "rejected") errors.push(result.reason);
+        if (errors.length === 1) throw errors[0];
+        if (errors.length) throw new AggregateError(errors, "background shutdown failed");
+      },
       closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });

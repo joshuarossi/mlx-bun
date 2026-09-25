@@ -8,7 +8,6 @@ import type { createCompletionRoutes } from "./routes";
 // and answer 404. Lease, drain, and /engine wait on the isolation decision.
 const pending = [
   /^\/v1\/(?:audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
-  /^\/api\/hub\/download$/,
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
   /^\/admin\/(?:lease|drain)$/,
