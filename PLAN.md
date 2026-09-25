@@ -87,8 +87,13 @@ without one.
 | Evaluation and benchmarking: `bench`, `evals`, `perplexity`, EvalDB, eval tasks | n/a (experiments; the in-package bench harness moves out) | n/a | `/fit` measured fields stay null | not app verbs | status page shows dashes | n/a | Runs outside this repository, consuming the published packages and driving the app through its public HTTP and CLI surface; results are published as datasets or quoted as text in docs |
 | Dataset `verified_code` execution | n/a | 501 at submit; template visible as unavailable | 501 | n/a | done | n/a | An owned sandboxed executor; main's `spawnSync` of generated Python is not to be ported |
 | Pi terminal: `pi`, `harness pi` | n/a | chat backend reusable | n/a | held (`pi-terminal`, `harness-pi` not ported) | n/a | n/a | Held by Josh |
-| Docs surface and gates | n/a | n/a | served surface documented only in `--help` and READMEs | same | same | n/a | Recreate main's `docs/reference/*` homes (cli, server-api, server-config, models, benchmarks, environment, distribution, training, memory) with the surface and hygiene gates; quotable numbers are text in the benchmarks doc |
+| Docs surface and gates | n/a | n/a | served surface documented only in `--help` and READMEs | same | same | n/a | Per ARCHITECTURE: generate inventories from source as build-only output with a coverage gate (the CLI reference from the command table, the server API from the route handlers' registered surfaces, the server configuration from the serve options and runtime keys), and write the explanations by hand (models, environment, training, memory, distribution, troubleshooting; quotable numbers as text with provenance in a benchmarks page). No STATUS file, docs map, or ledgers are restored. |
 | Installation and release | n/a | n/a | n/a | bundle done (relocatable executable, opt-in verified) | n/a | n/a | Bun, Homebrew, curl-script and source-checkout install paths; signing and notarization stay a release step |
 
-- [ ] Every row above reaches all-done or carries a recorded drop decision. Exit:
-  the row is deleted; no capability main shipped is retired silently.
+- [ ] Completion: Josh could delete main without losing a capability it shipped.
+  Exit: every row above is all-done or carries a recorded decision and is deleted;
+  the verify items above close against pinned published goldens or are recorded
+  decisions; main's user flows (CLI verbs, HTTP protocols, web chat, jobs,
+  installed and compiled artifacts, existing user data) are accepted with real
+  weights; documentation follows ARCHITECTURE (generated inventories, handwritten
+  explanations, no ledgers); no capability main shipped is retired silently.
