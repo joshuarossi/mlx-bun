@@ -140,6 +140,16 @@ lone/concurrent deterministic completion, stream cancellation, and shutdown.
 It never downloads weights; missing native libraries or an invalid supplied
 checkpoint fail. This is a behavior check, not an oracle or performance claim.
 
+`server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
+Responses-history counters for `GET /stats`; `GET /fit` uses the public hub fit
+functions and the served artifact metadata. Predictions remain advisory and do
+not impose an admission limit. GLM reports its existing explicit memory plan.
+Historical EvalDB measurements have no migrated owner, so measurement fields
+remain null; old machine-specific GLM throughput constants are not reported as
+measurements for the current server. The dashboard shows an unavailable marker
+when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
+synthetic counters and CPU fit inputs without a model or native MLX.
+
 ## Web chat backend
 
 `src/chat/protocol.ts` owns browser messages. `backend.ts` owns a per-server
@@ -227,8 +237,19 @@ repository documentation paths. Merely starting the app does not create a vault.
 
 [Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
 and real local Git history; [article tests](tests/memory/article.test.ts) cover
-parsing and round trips. Synthesis, memory tools, and scheduling remain separate
-migration work; the chat backend still receives no memory integration.
+parsing and round trips. `query.ts` owns deterministic article navigation;
+`tools.ts` owns the read-only Pi definitions and prompt hint. CLI composition
+passes the same vault root to REST and chat and supplies a skill directory
+(default `~/.mlx-bun/skills`). `ServeOptions.memoryPaths` permits isolated app
+composition without adding CLI flags. Missing vaults expose no memory tools and
+create no skill files. Bundled skills are package assets; standalone binary
+embedding remains part of the release migration.
+
+[Tool tests](tests/memory/tools.test.ts) exercise temporary vaults, and the
+[SDK test](tests/chat-runtime.test.ts) executes a memory tool through a real
+read-only Pi session with a synthetic loopback model. Synthesis, nightly
+scheduling, and the memory CLI remain unavailable; status and skill guidance
+say so explicitly. No read tool starts those lifecycles.
 
 ## Jobs, quantization, and fine-tuning
 
@@ -297,3 +318,11 @@ datasets publish as dataset repos. Uploads need no model execution lease.
 [Publishing tests](tests/server/publishing-routes.test.ts) use temporary token
 storage and an injected uploader; they never read installed credentials or
 publish to Hugging Face.
+
+## Web hub
+
+`server/hub-routes.ts` owns the web hub list/search and restart-required response.
+Local rows consume registry and fit APIs; search remains request-owned and
+cancels with its caller. Download stays 501 until its background task has an
+explicit cancellation and shutdown owner. Selecting a model returns a restart
+command, preserving main's behavior without claiming a live switch.
