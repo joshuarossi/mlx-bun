@@ -50,8 +50,11 @@ shared scheduler support before the app can serve diffusion models.
 
 `engine/cache-services` composes the library prompt cache and persistence. Its
 default is 8 GB of RAM with plain KV; SSD storage requires an explicit directory.
-The returned continuation services and adapter namespace are borrowed by the
-engine. Pass its `close` through the owned `beforeModelDispose` hook so shutdown
+Composition must pass the returned `continuationServices` to
+`binding.gateway.configureContinuation` and supply `promptCache`,
+`resolvedKvScheme`, `stateCodecs`, `adapterNamespace`, and checkpoint availability
+as gateway options. The engine borrows these services; construction alone does
+not attach them. Pass `close` through the owned `beforeModelDispose` hook so shutdown
 drains execution, flushes persistence, clears cache state, then frees the model.
 `flush` also supports explicit durability checks while the app is running.
 Cache policy tests inject storage and allocator ports; real SSD/numerical runs
