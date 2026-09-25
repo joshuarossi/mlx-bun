@@ -48,7 +48,7 @@ cleanup() {
   [ -z "$LINK" ] || rm -f "$LINK"
   rm -f "$APP_ROOT/next" "$APP_ROOT/rollback"
   if [ "$COMPLETE" = 0 ] && [ -n "$STAGE" ]; then rm -rf "$STAGE"; fi
-  rm -f "$APP_ROOT/lock/pid"
+  rm -f "$APP_ROOT/lock/pid" "$APP_ROOT/lock/inspection-error"
   rmdir "$APP_ROOT/lock"
 }
 trap cleanup EXIT
@@ -98,29 +98,23 @@ SWITCHED=1
 mv -fh "$LINK" "$BIN_DIR/mlx-bun"
 LINK=""; COMPLETE=1
 
-# A running Bun executable re-execs its canonical path for managed jobs. Keep
-# every in-use bundle, not just the previous install. Inspect executable names,
-# never command arguments, and retain all old bundles if inspection fails.
-PROCESSES=""
-if ! PROCESSES="$(/bin/ps -axww -o comm=)" || [ -z "$PROCESSES" ]; then
-  echo "Warning: cannot inspect running executables; keeping older bundles." >&2
-  CAN_PRUNE=0
-else
-  CAN_PRUNE=1
-fi
+# Keep executable files available to running apps and their children. Inspect vnodes,
+# not argv[0]: users launch through PATH or the command symlink. lsof's exit 1
+# with no output or diagnostic means no matches; every other uncertain result
+# retains the bundle. +w restores warnings suppressed by -t. Keep diagnostics
+# inside the already-owned install lock.
 bundle_running() {
-  while IFS= read -r executable; do
-    case "$executable" in "$1/"*) return 0;; esac
-  done <<EOF
-$PROCESSES
-EOF
-  return 1
+  INSPECTION_STATUS=0
+  USERS="$(/usr/sbin/lsof -t +w +D "$1" 2>"$APP_ROOT/lock/inspection-error")" || INSPECTION_STATUS=$?
+  if [ -n "$USERS" ]; then return 0; fi
+  if [ "$INSPECTION_STATUS" = 1 ] && [ ! -s "$APP_ROOT/lock/inspection-error" ]; then return 1; fi
+  echo "Warning: cannot inspect running app files in $1; keeping this older bundle." >&2
+  return 0
 }
 # Also retain the immediate previous bundle for rollback. Never follow symlinks.
 for old in "$APP_ROOT"/bundle.*; do
   [ "$old" = "$STAGE" ] && continue
   [ "$old" = "$APP_ROOT/$PREVIOUS" ] && continue
-  [ "$CAN_PRUNE" = 1 ] || continue
   if [ -d "$old" ] && [ ! -L "$old" ]; then
     if bundle_running "$old"; then
       echo "Keeping running app bundle: $old" >&2
