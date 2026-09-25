@@ -227,6 +227,25 @@ expert I/O and video helpers. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`
 from the repository root.
 
+## Measuring direct generation
+
+`bun packages/inference/scripts/bench.ts --help` describes the source-checkout
+benchmark. Supply a local model and a frozen JSON array of prompt token IDs.
+The worker uses the public `generate` API and fresh request state, with greedy
+sampling and the model/tokenizer EOS IDs. It records each warmup separately,
+all generated IDs, prefill/decode timings, whole-request wall time, first-token
+latency, and active/cache/peak memory. The timed region follows main's
+`scripts/bench/native.ts`; loading and hashing are outside it.
+
+For migration comparisons, run main and branch sequentially in AB/BA order with
+identical settings on the same quiet machine. Check token identity and completion
+before comparing timings. Machine load and VM snapshots are evidence, not an
+automatic quiet-machine guarantee. Keep raw reports outside Git; record only
+curated paired results with their source, artifact, native and machine provenance.
+The tool records these identities (`--hash-weights` includes full weight hashes)
+and preserves completed samples if a later request fails. It does not run Python,
+launch a server, download models or measure HTTP performance.
+
 ## Sampling, embeddings, and adapters
 
 `@mlx-bun/inference/sampling` exposes `makeSampler`, `makeLogitsProcessors`,

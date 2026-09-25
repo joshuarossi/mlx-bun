@@ -42,7 +42,7 @@ export function parseNativeBenchArgs(argv: string[]): NativeBenchOptions {
 }
 
 export function validatePromptIds(value: unknown, vocabSize: number): number[] {
-  if (!Array.isArray(value) || value.length === 0 ||
+  if (!Number.isSafeInteger(vocabSize) || vocabSize <= 0 || !Array.isArray(value) || value.length === 0 ||
       value.some((v) => !Number.isInteger(v) || v < 0 || v >= vocabSize))
     throw new Error("prompt file must contain a nonempty JSON array of in-vocabulary token IDs");
   return value as number[];
