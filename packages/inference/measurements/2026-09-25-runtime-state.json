@@ -486,7 +486,8 @@
         "Fixed token IDs, batch one, eager model-forward path; no generation, compilation or performance claim.",
         "The mixed reference is the documented per-path composition, not all OptiQ serve defaults.",
         "This adds context 1536 only; earlier contexts remain recorded above rather than being rerun.",
-        "Persisted restoration is compared to uninterrupted Bun state; Python supplies forward/state reference, not a persistence format."
+        "Persisted restoration is compared to uninterrupted Bun state; Python supplies forward/state reference, not a persistence format.",
+        "branchDirty was true only because packages/inference/dist and packages/mlx/dist were untracked links to staged native builds. The recorded tracked diff is empty (SHA-256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855); numerical source matches the recorded commit."
       ]
     }
   ]
