@@ -16,7 +16,7 @@ export function createHfCredentials(options: HfTokenOptions & { tokenFile?: stri
           return saved.token.trim();
       } catch { /* Missing or malformed app settings fall back to shared credentials. */ }
       const env = environment();
-      return hfToken({ environment: { HOME: env.HOME, HF_TOKEN: env.HF_TOKEN?.trim() || undefined },
+      return hfToken({ environment: { HOME: env.HOME || homedir(), HF_TOKEN: env.HF_TOKEN?.trim() || undefined },
         cacheTokenPath: options.cacheTokenPath });
     },
     save(token: string): void {
