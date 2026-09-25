@@ -1,5 +1,15 @@
 /* eslint-disable */
 // AUTO-PORTED VERBATIM from MLX quantized.h + steel/* (github.com/ml-explore/mlx).
+// Member functions of the copied structs (MMATile, BlockMMA, BlockLoader,
+// QuantizedBlockLoader, TransformAdd/Axpby) carry an explicit `thread` qualifier on
+// `this`, matching upstream PR #3963 ("Fix implicit thread address space qualifier
+// becoming explicit in metal 4.1", in MLX >= v0.32.2). MSL 4.1 -- what MLX's JIT
+// selects on macOS 27 (mlx/backend/metal/device.cpp get_metal_version) -- no longer
+// treats the implicit `this` of an unqualified member function as `thread`, so
+// frag_at's `thread frag_type&` return, tile_matmad's `thread MMATile&` params and
+// the `thread`-qualified MMATile() ctor stop binding ("constructor for BlockMMA<...>
+// must explicitly initialize the member 'Atile'"). Compile-only: no arithmetic,
+// layout or dispatch change. MSL <= 4.0 and MLX's precompiled metallib are unaffected.
 export const STEEL_QMM_HEADER = String.raw`// mlx metal_kernel preamble provides METAL_FUNC + using namespace metal; we add
 // the steel macros, type_traits + integral_constant (each self-manages its own
 // #pragma METAL internals enable/disable), then the GEMM-specific structs.
@@ -211,7 +221,7 @@ struct TransformNone {
 
 template <typename OutT, typename InT>
 struct TransformAdd {
-  TransformAdd(const float, const float) {}
+  TransformAdd(const float, const float) thread {}
 
   static METAL_FUNC OutT apply(InT x) {
     return static_cast<OutT>(x);
@@ -227,14 +237,14 @@ struct TransformAxpby {
   const float alpha;
   const float beta;
 
-  TransformAxpby(const float alpha_, const float beta_)
+  TransformAxpby(const float alpha_, const float beta_) thread
       : alpha(alpha_), beta(beta_) {}
 
   static METAL_FUNC OutT apply(InT x) {
     return static_cast<OutT>(x);
   }
 
-  METAL_FUNC OutT apply(InT x, OutT c) const {
+  METAL_FUNC OutT apply(InT x, OutT c) const thread {
     return static_cast<OutT>(
         x * static_cast<InT>(alpha) + (static_cast<OutT>(beta) * c));
   }
@@ -399,7 +409,7 @@ struct QuantizedBlockLoader {
       const int src_ld_,
       threadgroup T* dst_,
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]])
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread
       : src_ld(src_ld_),
         tile_stride(
             reduction_dim ? BCOLS_PACKED * bytes_per_pack
@@ -415,7 +425,7 @@ struct QuantizedBlockLoader {
         scales(scales_ + bi * src_ld / group_size),
         biases(biases_ + bi * src_ld / group_size) {}
 
-  void load_unsafe() const {
+  void load_unsafe() const thread {
     if (BCOLS_PACKED * BROWS < tgp_size && bi >= BROWS) {
       return;
     }
@@ -428,7 +438,7 @@ struct QuantizedBlockLoader {
     }
   }
 
-  void load_safe(short2 src_tile_dim) const {
+  void load_safe(short2 src_tile_dim) const thread {
     if (BCOLS_PACKED * BROWS < tgp_size && bi >= BROWS) {
       return;
     }
@@ -458,7 +468,7 @@ struct QuantizedBlockLoader {
     }
   }
 
-  void next() {
+  void next() thread {
     src += tile_stride;
     if (reduction_dim == 1) {
       if (group_steps > 1) {
@@ -527,7 +537,7 @@ struct BlockLoader {
       const int src_ld_,
       threadgroup T* dst_,
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]])
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread
       : src_ld(src_ld_),
         tile_stride(reduction_dim ? BCOLS : BROWS * src_ld),
         thread_idx(simd_group_id * 32 + simd_lane_id),
@@ -538,7 +548,7 @@ struct BlockLoader {
 
   /* Apply operation to threadgroup without bound checking */
   template <typename UnaryOp>
-  METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const {
+  METAL_FUNC void apply_inplace_op(thread const UnaryOp& op) const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
       STEEL_PRAGMA_UNROLL
@@ -549,7 +559,7 @@ struct BlockLoader {
   }
 
   /* Load from device memory into threadgroup memory - without bound checking */
-  METAL_FUNC void load_unsafe() const {
+  METAL_FUNC void load_unsafe() const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < BROWS; i += TROWS) {
       *((threadgroup ReadVector*)(&dst[i * dst_ld])) =
@@ -558,7 +568,7 @@ struct BlockLoader {
   }
 
   /* Load from device memory into threadgroup memory - with bound checking */
-  METAL_FUNC void load_safe(short2 src_tile_dim) const {
+  METAL_FUNC void load_safe(short2 src_tile_dim) const thread {
     src_tile_dim = src_tile_dim - short2(bj, bi);
 
     // Skip loading if thread has no valid reads
@@ -606,7 +616,7 @@ struct BlockLoader {
   }
 
   /* Iteration helper */
-  METAL_FUNC void next() {
+  METAL_FUNC void next() thread {
     src += tile_stride;
   }
 };
@@ -832,24 +842,24 @@ struct MMATile {
 
   METAL_FUNC MMATile() thread {}
 
-  METAL_FUNC constexpr void clear() {
+  METAL_FUNC constexpr void clear() thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kNumFrags; ++i) {
       val_frags[i] = frag_type(0);
     }
   }
 
-  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) {
+  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) thread {
     return val_frags[i * kTileCols + j];
   }
 
   METAL_FUNC constexpr const thread frag_type& frag_at(
       const short i,
-      const short j) const {
+      const short j) const thread {
     return val_frags[i * kTileCols + j];
   }
 
-  METAL_FUNC mat_type mat_at(const short i, const short j) {
+  METAL_FUNC mat_type mat_at(const short i, const short j) thread {
     mat_type val_mat;
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < kElemsPerFrag; ++ii) {
@@ -858,16 +868,16 @@ struct MMATile {
     return val_mat;
   }
 
-  METAL_FUNC thread elem_type* elems() {
+  METAL_FUNC thread elem_type* elems() thread {
     return reinterpret_cast<thread elem_type*>(val_frags);
   }
 
-  METAL_FUNC const thread elem_type* elems() const {
+  METAL_FUNC const thread elem_type* elems() const thread {
     return reinterpret_cast<const thread elem_type*>(val_frags);
   }
 
   template <typename U, int w_x, int w_y, int str_x, int str_y>
-  METAL_FUNC void load(const threadgroup U* src) {
+  METAL_FUNC void load(const threadgroup U* src) thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -884,7 +894,7 @@ struct MMATile {
   }
 
   template <typename U, int w_x, int w_y, int str_x, int str_y>
-  METAL_FUNC void store(threadgroup U* dst) const {
+  METAL_FUNC void store(threadgroup U* dst) const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -901,7 +911,7 @@ struct MMATile {
   }
 
   template <typename U, int w_x, int w_y>
-  METAL_FUNC void load(const device U* src, const int ld) {
+  METAL_FUNC void load(const device U* src, const int ld) thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -916,7 +926,7 @@ struct MMATile {
   }
 
   template <typename U, int w_x, int w_y>
-  METAL_FUNC void store(device U* dst, const int ld) const {
+  METAL_FUNC void store(device U* dst, const int ld) const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -932,7 +942,7 @@ struct MMATile {
 
   template <typename U, int w_x, int w_y>
   METAL_FUNC void
-  load_safe(const device U* src, const int ld, const short2 src_tile_dims) {
+  load_safe(const device U* src, const int ld, const short2 src_tile_dims) thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -952,7 +962,7 @@ struct MMATile {
 
   template <typename U, int w_x, int w_y>
   METAL_FUNC void
-  store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const {
+  store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -975,7 +985,7 @@ struct MMATile {
       device U* dst,
       const int ld,
       const short2 start,
-      const short2 stop) const {
+      const short2 stop) const thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -1075,7 +1085,7 @@ struct BlockMMA {
   /* Constructor */
   METAL_FUNC BlockMMA(
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]]) {
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread {
     // Determine thread position in simdgroup matrix
     short tm = kFragSize * (simd_group_id / WN);
     short tn = kFragSize * (simd_group_id % WN);
@@ -1093,7 +1103,7 @@ struct BlockMMA {
   }
 
   /* (BM, BK) X (BK, BN) multiply accumulate function */
-  METAL_FUNC void mma(const threadgroup T* As, const threadgroup T* Bs) {
+  METAL_FUNC void mma(const threadgroup T* As, const threadgroup T* Bs) thread {
     // Adjust for simdgroup and thread location
     As += As_offset;
     Bs += Bs_offset;
@@ -1120,7 +1130,7 @@ struct BlockMMA {
   }
 
   /* Store results from simdgroup_matrix results into device memory */
-  METAL_FUNC void store_result(device U* D, const int ldd) {
+  METAL_FUNC void store_result(device U* D, const int ldd) thread {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1134,7 +1144,7 @@ struct BlockMMA {
   }
 
   METAL_FUNC void
-  store_result_slice(device U* D, const int ldd, short2 start, short2 stop) {
+  store_result_slice(device U* D, const int ldd, short2 start, short2 stop) thread {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1154,7 +1164,7 @@ struct BlockMMA {
   }
 
   METAL_FUNC void
-  store_result_safe(device U* D, const int ldd, short2 dst_tile_dims) {
+  store_result_safe(device U* D, const int ldd, short2 dst_tile_dims) thread {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1173,7 +1183,7 @@ struct BlockMMA {
 
   /* Apply epilogue */
   template <typename UnaryEpilogue>
-  METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) {
+  METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) thread {
     // Loop over all simdgroup tiles
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1187,7 +1197,7 @@ struct BlockMMA {
       const device U* C,
       const int ldc,
       const int fdc,
-      thread const BinaryEpilogue& epilogue_op) {
+      thread const BinaryEpilogue& epilogue_op) thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
 
@@ -1216,7 +1226,7 @@ struct BlockMMA {
       const int ldc,
       const int fdc,
       short2 dst_tile_dims,
-      thread const BinaryEpilogue& epilogue_op) {
+      thread const BinaryEpilogue& epilogue_op) thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
     dst_tile_dims -= short2(sn, sm);
@@ -1261,7 +1271,7 @@ struct BlockMMA {
       const device U* C,
       const int ldc,
       const int fdc,
-      thread const Epilogue& epilogue_op) const {
+      thread const Epilogue& epilogue_op) const thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
     D += (sm)*ldd + sn;
@@ -1294,7 +1304,7 @@ struct BlockMMA {
       const int ldc,
       const int fdc,
       short2 dst_tile_dims,
-      thread const Epilogue& epilogue_op) const {
+      thread const Epilogue& epilogue_op) const thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
     D += (sm)*ldd + sn;

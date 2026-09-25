@@ -22,14 +22,12 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
 - [ ] Finish restoring main's training checks: `diffusion-lora.test.ts` (needs a
-  cached diffusion checkpoint named by an explicit variable) is not yet ported,
-  and the flash-CCE STEEL kernel no longer compiles against the bundled MLX
-  Metal headers on the current toolchain (`BlockMMA` constructor must
-  initialize `Atile`), which fails main's own fused-CE research test on main's
-  runtime with the same native library; the ported matrix records that. Exit:
-  the diffusion test is restored under the same opt-in gating, and the
-  flash-CCE path either compiles again (native rebuild or kernel fix with a
-  paired check against the fused path) or ORPO's default head is decided.
+  cached diffusion checkpoint named by an explicit variable) is not yet ported.
+  Exit: the diffusion test is restored under the same opt-in gating. (The
+  flash-CCE STEEL kernels compile again: the copied steel header now carries
+  upstream MLX's explicit `thread` qualifiers for MSL 4.1, and the ported
+  fused-CE matrix passes in full against the fused head; main still carries
+  the unqualified header.)
 
 ## Optimize after the full draft
 
