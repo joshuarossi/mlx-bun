@@ -41,12 +41,9 @@ export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = l
     for (const name of ["model_dir", "data_dir", "adapter_path"])
       if (typeof config[name] !== "string" || !config[name]) throw new Error(`finetune job: missing ${name}`);
     signal?.throwIfAborted();
-    // The trainer has no cancellation seam. The owner observes the abort at
-    // each progress event (every step at steps_per_report 1) and unwinds
-    // through the trainer's own finally blocks; the cleanup below then
-    // releases the model, weights and wired limit. Neither the final adapter
-    // nor an in-flight checkpoint save is completed on that path.
-    const observe: typeof emit = signal ? event => { signal.throwIfAborted(); emit(event); } : emit;
+    // The trainer cancels cooperatively at its step boundaries: started
+    // checkpoint writes complete, earlier checkpoints stay, no final adapter is
+    // written; the cleanup below then releases the model, weights and wired limit.
     const r = await runtime();
     const { modelDir, dataDir, cfg } = parseFinetuneConfig(config, r.defaults);
     emit({ type: "stage", stage: "load", progress: 0.01, message: `loading model ${modelDir}` });
@@ -74,7 +71,7 @@ export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = l
       // Training observations already have the app event shape: pass every
       // field through unchanged. The job owner alone emits terminal lifecycle
       // events; a trainer stage named "done" remains an ordinary stage.
-      result = await r.train(model, tokenizer, template, dataDir, cfg, observe);
+      result = await r.train(model, tokenizer, template, dataDir, cfg, emit, { signal });
     } catch (error) { return cleanupFailure(error, cleanup); }
     cleanup();
     return { outputPath: result.adapterPath };

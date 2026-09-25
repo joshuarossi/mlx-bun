@@ -257,7 +257,9 @@ export async function trainLora(
   dataDir: string,
   cfg: TrainConfig,
   emit: TrainingProgressCallback,
+  control: { signal?: AbortSignal } = {},
 ): Promise<TrainResult> {
+  const boundary = () => stepBoundary(control.signal);
   emit({ type: "stage", stage: "setup", progress: 0.02, message: "resolving ranks" });
 
   // Mixed-precision rank scaling: feed the per-layer bits (from the loaded
@@ -380,12 +382,21 @@ export async function trainLora(
   };
 
   try {
-    const result =
-      cfg.method === "dpo"
-        ? await dpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect)
-        : cfg.method === "orpo"
-          ? await orpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect)
-          : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect);
+    let result: { numIters: number };
+    try {
+      result =
+        cfg.method === "dpo"
+          ? await dpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary)
+          : cfg.method === "orpo"
+            ? await orpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary)
+            : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary);
+    } catch (error) {
+      // Cancellation or failure: checkpoint writes already started complete
+      // before the adapter is released; no final adapter is written, and
+      // checkpoints saved earlier stay on disk.
+      await Promise.allSettled(checkpointSaves);
+      throw error;
+    }
 
     await Promise.all(checkpointSaves);
 
@@ -447,6 +458,15 @@ export async function trainLora(
 // Evidence: seg-isolation-smoke.ts (deleted 2026-08-23; git history); note in segmented.ts.
 // ---------------------------------------------------------------------------
 
+/** Cooperative boundary between optimizer steps: one event-loop turn so pending
+ * signals and I/O dispatch, then the caller's cancellation. It never runs inside
+ * a step, so numerics are untouched; a cancelled run rejects with the signal's
+ * reason after started checkpoint writes have completed. */
+async function stepBoundary(signal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  signal?.throwIfAborted();
+}
+
 // ---------------------------------------------------------------------------
 // SFT loop
 // ---------------------------------------------------------------------------
@@ -459,6 +479,7 @@ async function sftLoop(
   cfg: TrainConfig,
   lora: TrainableLora,
   emit: TrainingProgressCallback,
+  boundary: () => Promise<void>,
 ): Promise<{ numIters: number }> {
   emit({ type: "stage", stage: "data", progress: 0.05, message: "loading SFT dataset" });
   const train = await loadSftDataset(`${dataDir}/train.jsonl`, tok, tmpl);
@@ -570,6 +591,7 @@ async function sftLoop(
 
   try {
     for (let step = 1; step <= cfg.iters; step++) {
+      await boundary();
       if (MEM_LOG) resetPeakMemory();
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through
@@ -698,6 +720,7 @@ async function dpoLoop(
   cfg: TrainConfig,
   lora: TrainableLora,
   emit: TrainingProgressCallback,
+  boundary: () => Promise<void>,
 ): Promise<{ numIters: number }> {
   emit({ type: "stage", stage: "data", progress: 0.05, message: "loading DPO dataset" });
   const train = await loadDpoDataset(`${dataDir}/train.jsonl`, tok, tmpl, cfg.maxSeqLen);
@@ -735,6 +758,7 @@ async function dpoLoop(
 
   try {
     for (let step = 1; step <= cfg.iters; step++) {
+      await boundary();
       if (schedule) opt.lr = schedule(step);
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through
@@ -825,6 +849,7 @@ async function orpoLoop(
   cfg: TrainConfig,
   lora: TrainableLora,
   emit: TrainingProgressCallback,
+  boundary: () => Promise<void>,
 ): Promise<{ numIters: number }> {
   emit({ type: "stage", stage: "data", progress: 0.05, message: "loading preference dataset" });
   const train = await loadDpoDataset(`${dataDir}/train.jsonl`, tok, tmpl, cfg.maxSeqLen);
@@ -962,6 +987,7 @@ async function orpoLoop(
   };
   try {
     for (let step = 1; step <= cfg.iters; step++) {
+      await boundary();
       if (schedule) opt.lr = schedule(step);
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through

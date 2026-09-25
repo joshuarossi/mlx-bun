@@ -114,12 +114,13 @@ test("quantized ORPO retains the submitted optimized head policy", async () => {
   expect(configs[0]).toMatchObject({ orpoFlashCe: true, orpoPrefixShared: true });
 });
 
-test("a cancelled runner unwinds at the next progress event and still releases every resource", async () => {
+test("a cancelled runner hands its signal to the trainer's step boundary and still releases every resource", async () => {
   const { r, calls } = runtime(), controller = new AbortController(), events: JobEvent[] = [];
-  r.train = async (_model, _tokenizer, _template, _dir, _config, emit) => {
+  r.train = async (_model, _tokenizer, _template, _dir, _config, emit, control) => {
     emit!({ type: "metric", kind: "train", step: 1, loss: 0.5 });
     controller.abort(new Error("training cancelled"));
-    emit!({ type: "metric", kind: "train", step: 2, loss: 0.4 }); // the observer throws here
+    control?.signal?.throwIfAborted(); // the trainer's boundary before step 2
+    emit!({ type: "metric", kind: "train", step: 2, loss: 0.4 });
     throw new Error("unreachable: the trainer must have unwound");
   };
   await expect(createFinetuneRunner(async () => r)(event => events.push(event), { ...paths, method: "sft" }, controller.signal))

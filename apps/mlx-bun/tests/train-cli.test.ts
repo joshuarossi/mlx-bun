@@ -405,6 +405,12 @@ test("runWatch draws on the alternate screen, stops on q or the external signal,
     await runWatch(dir, { terminal: { write: text => { finished.push(text); }, size: () => ({ columns: 80, rows: 24 }) }, signal: done.signal,
       sleep: async ms => { expect(ms).toBe(1000); done.abort(); } });
     expect(strip(finished[1]!)).toContain("complete");
+    // A failure while attaching (resize registration) still detaches keys and leaves the alternate screen.
+    const partial: string[] = []; let detachedKeys = 0;
+    const failing: WatchTerminal = { write: text => { partial.push(text); }, size: () => ({ columns: 80, rows: 24 }),
+      keys: () => () => { detachedKeys++; }, onResize: () => { throw new Error("resize unsupported"); } };
+    await expect(runWatch(dir, { terminal: failing })).rejects.toThrow("resize unsupported");
+    expect(detachedKeys).toBe(1); expect(partial.at(-1)).toBe(ALT_OFF);
     await expect(runWatch("/nonexistent", { terminal: piped })).rejects.toThrow(
       "no metrics.jsonl in /nonexistent — is this an mlx-bun training run dir?\n(the trainer writes /nonexistent/metrics.jsonl as it runs; point train-watch at the --adapter dir)");
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -472,4 +478,25 @@ test("the spawned CLI prints help, usage errors, refusals, and a dry-run plan wi
     const fused = await cli(home, "fuse", snapshot, "--adapter", adapter, "--save-path", join(home, "fused"));
     expect(fused.code).toBe(1); expect(fused.out).toContain("fuse failed:"); expect(existsSync(join(home, "fused"))).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+test("the process terminal restores the raw and paused state it found when keys detach", async () => {
+  const { processTerminal } = await import("../src/finetune/watch");
+  const calls: string[] = [];
+  function fakeStdin(raw: boolean, paused: boolean) {
+    const state = { raw, paused };
+    return { isTTY: true, get isRaw() { return state.raw; }, isPaused: () => state.paused,
+      setRawMode(on: boolean) { state.raw = on; calls.push(`raw:${on}`); },
+      resume() { state.paused = false; calls.push("resume"); }, pause() { state.paused = true; calls.push("pause"); },
+      on() { calls.push("on"); }, off() { calls.push("off"); } } as unknown as NodeJS.ReadStream;
+  }
+  const stdout = { write() { return true; }, on() {}, off() {}, columns: 80, rows: 24 } as unknown as NodeJS.WriteStream;
+  const detach = processTerminal({ stdin: fakeStdin(false, true), stdout }).keys!(() => {});
+  expect(calls).toEqual(["raw:true", "resume", "on"]);
+  detach();
+  expect(calls.slice(3)).toEqual(["off", "raw:false", "pause"]);
+  // Already raw and flowing: detaching leaves it raw and flowing.
+  calls.length = 0;
+  processTerminal({ stdin: fakeStdin(true, false), stdout }).keys!(() => {})();
+  expect(calls).toEqual(["raw:true", "resume", "on", "off", "raw:true"]);
 });

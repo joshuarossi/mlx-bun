@@ -512,15 +512,22 @@ export interface WatchOptions {
   sleep?(ms: number, signal: AbortSignal): Promise<void>;
 }
 
-function processTerminal(): WatchTerminal {
-  const stdin = process.stdin, stdout = process.stdout;
+/** The process terminal. Exported for tests with an injectable stdin/stdout:
+ *  detaching keys restores the raw and paused state found on attach. */
+export function processTerminal(io: { stdin: NodeJS.ReadStream; stdout: NodeJS.WriteStream } = { stdin: process.stdin, stdout: process.stdout }): WatchTerminal {
+  const { stdin, stdout } = io;
   return {
     write: (text) => { stdout.write(text); },
     size: () => ({ columns: stdout.columns ?? 100, rows: stdout.rows ?? 30 }),
     keys: stdin.isTTY ? (onKey) => {
       const listener = (b: Buffer) => onKey(b.toString());
+      const wasRaw = stdin.isRaw === true, wasPaused = stdin.isPaused();
       stdin.setRawMode(true); stdin.resume(); stdin.on("data", listener);
-      return () => { stdin.off("data", listener); stdin.setRawMode(false); stdin.pause(); };
+      return () => {
+        stdin.off("data", listener);
+        stdin.setRawMode(wasRaw);
+        if (wasPaused) stdin.pause();
+      };
     } : undefined,
     onResize: (listener) => { stdout.on("resize", listener); return () => { stdout.off("resize", listener); }; },
   };
@@ -558,10 +565,13 @@ export async function runWatch(adapterDir: string, options: WatchOptions = {}): 
     if (frame !== lastRender) { term.write(frame); lastRender = frame; }
   };
 
-  term.write(ALT_ON + CLEAR);
-  const detachKeys = term.keys?.((key) => { if (key === "q" || key === "\x03" /* ^C */) stop(); });
-  const detachResize = term.onResize?.(() => { lastRender = ""; });
+  // Every setup step is inside the restoring scope: a failure after the
+  // alternate screen or keys attached still detaches and restores.
+  let detachKeys: (() => void) | undefined, detachResize: (() => void) | undefined, altScreen = false;
   try {
+    term.write(ALT_ON + CLEAR); altScreen = true;
+    detachKeys = term.keys?.((key) => { if (key === "q" || key === "\x03" /* ^C */) stop(); });
+    detachResize = term.onResize?.(() => { lastRender = ""; });
     // Poll the file; reparse fully each tick (it's small, single-digit MB) — keeps
     // the loop dead simple and robust to truncation/rotation. Once the run is
     // done the final frame stays up on a slow poll until the viewer quits.
@@ -573,8 +583,11 @@ export async function runWatch(adapterDir: string, options: WatchOptions = {}): 
       await sleep(st.done ? 1000 : 250, quit.signal);
     }
   } finally {
-    detachKeys?.(); detachResize?.();
-    options.signal?.removeEventListener("abort", stop);
-    term.write(ALT_OFF);
+    try { detachKeys?.(); } finally {
+      try { detachResize?.(); } finally {
+        options.signal?.removeEventListener("abort", stop);
+        if (altScreen) term.write(ALT_OFF);
+      }
+    }
   }
 }

@@ -11,7 +11,7 @@ It saves mountable adapters at `config.adapterPath`. `TrainingProgress` describe
 training observations; an app maps them into its own job events. Callbacks run
 synchronously and must not throw. Training borrows the model exclusively and
 mutates its adapter/training state; do not infer concurrently on that graph.
-`trainDiffusionLora` returns caller-owned LoRA parameters to save and dispose.
+`trainDiffusionLora` returns caller-owned LoRA parameters to save and dispose. An optional seventh argument `{ signal }` cancels cooperatively at the next step boundary: the run rejects with the signal's reason, checkpoint writes already started are completed first, checkpoints saved earlier remain on disk, and no final adapter is written. Steps themselves are never interrupted, so numerics are unchanged.
 
 | Module | Owns |
 | --- | --- |
