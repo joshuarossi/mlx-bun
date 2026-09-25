@@ -36,7 +36,7 @@ export async function publicLibrarySurface(directories: string[]): Promise<Packa
 }
 
 /** Check serialized output, not just the input list handed to the generator. */
-export function assertLibraryCoverage(project: JSONOutput.ProjectReflection, expected: PackageSurface[]): number {
+export function assertLibraryCoverage(project: JSONOutput.ProjectReflection, expected: PackageSurface[], revision: string): number {
   const declarations = new Map<number, JSONOutput.DeclarationReflection | JSONOutput.ReferenceReflection>();
   function visit(node: JSONOutput.ContainerReflection) {
     for (const child of node.children ?? []) { declarations.set(child.id, child); visit(child); }
@@ -66,7 +66,7 @@ export function assertLibraryCoverage(project: JSONOutput.ProjectReflection, exp
           target = resolved;
         }
         const sources = [...(target.sources ?? []), ...(target.signatures ?? []).flatMap(item => item.sources ?? [])];
-        if (!sources.some(source => source.url === `https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/${source.fileName}#L${source.line}`))
+        if (!sources.some(source => source.url === `https://github.com/joshuarossi/mlx-bun/blob/${revision}/${source.fileName}#L${source.line}`))
           throw new Error(`${name}.${exported.name}: missing API source link`);
       }
       count += symbols.length;

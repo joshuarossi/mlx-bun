@@ -18,8 +18,13 @@ this site does not keep a second copy of them.
 
 The library API uses TypeDoc to render exported types, overloads, members,
 JSDoc, and source links at `/api/`. Package manifests supply the entry points;
-a separate TypeScript checker compares the generated output against every
-public subpath and exported symbol, including aliases and star re-exports.
+an independent TypeScript-checker coverage implementation runs inside the
+API generator and compares its output against every public subpath and exported
+symbol, including aliases and star re-exports. It is not a standalone command.
+Current manifests use string `.ts` export targets; conditional exports and
+wildcards fail loudly until the coverage implementation supports them.
+Source links use a valid `GITHUB_SHA` in CI or the local Git commit; only source
+trees outside Git fall back to the refactor branch.
 HTML and reflection JSON are build output, never committed. Generation parses
 source without importing library code or loading native libraries. TypeDoc can
 warn about references to non-exported types; their owning source remains linked.

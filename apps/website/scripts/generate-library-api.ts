@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Application, EntryPointStrategy, normalizePath } from "typedoc";
@@ -14,7 +15,22 @@ export async function libraryPackages(repository = root): Promise<string[]> {
   return packages.sort();
 }
 
-export async function generateLibraryApi(repository = root, destination = resolve(import.meta.dir, "..")): Promise<void> {
+/** CI links to the checked-out build commit; local builds use their checkout.
+ * An unpacked source tree has no commit, so only that case uses the branch. */
+export function sourceRevision(repository: string, githubSha = process.env.GITHUB_SHA): string {
+  const valid = (value: string | undefined): value is string => !!value && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value);
+  if (valid(githubSha)) return githubSha;
+  const head = spawnSync("git", ["-C", repository, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" });
+  if (head.error) throw head.error;
+  const revision = head.stdout.trim();
+  if (head.status === 0 && valid(revision)) return revision;
+  const inside = spawnSync("git", ["-C", repository, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" });
+  if (inside.error) throw inside.error;
+  if (inside.status !== 0 && inside.stderr.includes("not a git repository")) return "refactor/monorepo";
+  throw new Error("Cannot resolve the documentation source commit in this Git checkout");
+}
+
+export async function generateLibraryApi(repository = root, destination = resolve(import.meta.dir, ".."), revision = sourceRevision(repository)): Promise<void> {
   const directories = await libraryPackages(repository);
   const app = await Application.bootstrap({
     name: "mlx-bun library API", entryPoints: directories,
@@ -23,7 +39,7 @@ export async function generateLibraryApi(repository = root, destination = resolv
     packageOptions: {
       readme: "none", alwaysCreateEntryPointModule: true,
       excludeReferences: false, excludeInternal: false,
-      gitRevision: "refactor/monorepo",
+      gitRevision: revision,
       disableGit: true, basePath: repository, displayBasePath: repository,
       sourceLinkTemplate: "https://github.com/joshuarossi/mlx-bun/blob/{gitRevision}/{path}#L{line}",
     },
@@ -37,7 +53,7 @@ export async function generateLibraryApi(repository = root, destination = resolv
   // Use import specifiers as module names, including the package root.
   for (const pkg of packages) for (const module of pkg.children ?? [])
     module.name = pkg.name + (module.name ? `/${module.name}` : "");
-  const symbols = assertLibraryCoverage(app.serializer.projectToObject(project, normalizePath(repository)), expected);
+  const symbols = assertLibraryCoverage(app.serializer.projectToObject(project, normalizePath(repository)), expected, revision);
   await app.generateDocs(project, resolve(destination, "public/api"));
   await app.generateJson(project, resolve(destination, ".astro/library-api.json"));
   console.log(`Verified ${expected.length} library packages and ${symbols} exported symbols across ${expected.reduce((n, pkg) => n + pkg.modules.size, 0)} public entry points.`);
