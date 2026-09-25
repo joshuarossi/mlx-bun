@@ -9,6 +9,17 @@
         "typescript": "6.0.3",
       },
     },
+    "apps/mlx-bun": {
+      "name": "mlx-bun",
+      "version": "0.0.0",
+      "bin": {
+        "mlx-bun": "./src/cli/main.ts",
+      },
+      "dependencies": {
+        "@mlx-bun/hub": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+      },
+    },
     "packages/hub": {
       "name": "@mlx-bun/hub",
       "version": "0.0.0",
@@ -66,6 +77,8 @@
     "fflate": ["fflate@0.8.3", "", {}, "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="],
 
     "iobuffer": ["iobuffer@6.0.1", "", {}, "sha512-SZWYkWNfjIXIBYSDpXDYIgshqtbOPsi4lviawAEceR1Kqk+sHDlcQjWrzNQsii80AyBY0q5c8HCTNjqo74ul+Q=="],
+
+    "mlx-bun": ["mlx-bun@workspace:apps/mlx-bun"],
 
     "typescript": ["typescript@6.0.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="],
 

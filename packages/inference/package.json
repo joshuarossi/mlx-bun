@@ -78,7 +78,8 @@
     "./contracts/mlx": "./src/contracts/mlx/index.ts",
     "./artifacts/config": "./src/artifacts/config.ts",
     "./models/support": "./src/models/support.ts",
-    "./state/kv-scheme": "./src/state/kv-scheme.ts"
+    "./state/kv-scheme": "./src/state/kv-scheme.ts",
+    "./artifacts/glm52/memory": "./src/artifacts/glm52/memory.ts"
   },
   "files": [
     "src",
