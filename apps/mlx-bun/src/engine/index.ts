@@ -1,4 +1,3 @@
-import { cleanupFailure } from "@mlx-bun/inference/runtime/resources";
 import { GenerationGateway, disposeUnstartedRequest } from "./generation-gateway";
 import { createSessionCompletionEngine } from "./session-completion-engine";
 import { createPreparationExecutor } from "./preparation";
@@ -13,18 +12,22 @@ export * from "./generation-gateway";
 export * from "./completion";
 export * from "./preparation";
 export * from "./session-completion-engine";
+export * from "./cache-services";
 
-/** Takes ownership of context. Close cancels sessions, drains work, then releases
- * the context. A supplied binding keeps replacement graphs independent of the
- * built-in model classes. No server is started here. */
+/** Takes ownership of context and beforeModelDispose. Close cancels sessions,
+ * drains work, then runs the hook and releases the context. A supplied binding
+ * keeps replacement graphs independent of the built-in model classes. No server is started here. */
 export async function createAppEngine(context: LoadedModelContext, options: {
   capacity: number; binding?: ModelBinding;
   gateway?: ConstructorParameters<typeof GenerationGateway>[2];
+  /** Owned cleanup, invoked once after execution drains and before model release,
+   * including construction failure. Use for cache flush and cache disposal. */
+  beforeModelDispose?: () => void | Promise<unknown>;
 }) {
-  let gateway: GenerationGateway;
+  let createdGateway: GenerationGateway | undefined;
   try {
     const binding = await modelServingBinding(context, options.binding);
-    gateway = new GenerationGateway(binding.gateway, options.capacity, options.gateway);
+    const gateway = createdGateway = new GenerationGateway(binding.gateway, options.capacity, options.gateway);
     const completion = createSessionCompletionEngine(gateway, disposeUnstartedRequest);
     const preparation = createPreparationExecutor((work, signal) => gateway.runPreparation(work, signal), options.capacity);
     let closing: Promise<void> | undefined;
@@ -32,11 +35,21 @@ export async function createAppEngine(context: LoadedModelContext, options: {
       context, binding, gateway, completion, preparation,
       close() {
         return closing ??= (async () => {
-          preparation.close();
-          try { await completion.close(); }
-          finally { try { await gateway.close(); } finally { context.dispose(); } }
+          await releaseAll([() => preparation.close(), () => completion.close(),
+            () => gateway.close(), () => options.beforeModelDispose?.(), () => context.dispose()]);
         })();
       },
     };
-  } catch (error) { return cleanupFailure(error, () => context.dispose()); }
+  } catch (error) {
+    await releaseAll([() => createdGateway?.close(), () => options.beforeModelDispose?.(),
+      () => context.dispose()], [error]);
+    throw error;
+  }
+}
+
+/** Attempt owned asynchronous releases in order, preserving every failure. */
+async function releaseAll(releases: readonly (() => void | Promise<unknown>)[], errors: unknown[] = []): Promise<void> {
+  for (const release of releases) { try { await release(); } catch (error) { errors.push(error); } }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) throw new AggregateError(errors, "app engine cleanup failed");
 }

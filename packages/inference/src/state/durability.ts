@@ -162,6 +162,10 @@ export class SsdDurabilityCoordinator {
       flushedSnapshots += results.filter(result => result.status === "fulfilled" && result.value === "stored").length;
     }
     await this.spillQueue.drain();
+    // A background failure may have rearmed its retry while flush waited.
+    // Forced attempts below own retries now; no timer may outlive this flush.
+    for (const timer of this.#timers.values()) clearTimeout(timer);
+    this.#timers.clear();
 
     // Flush dirty entries serially without a second queue of snapshots.
     // Attempt each record version once. Missing state stays dirty, so a

@@ -122,7 +122,8 @@ test("closing the app drains borrowed execution before disposing the model", asy
       kick() {}, async close() { events.push("group closed"); },
     }; },
   } } as unknown as ModelBinding;
-  const engine = await createAppEngine(host, { capacity: 1, binding: supplied });
+  const engine = await createAppEngine(host, { capacity: 1, binding: supplied,
+    beforeModelDispose() { events.push("cache closed"); } });
   const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false,
     userSeed: false, kvQuant: false, turboQuant: false, hasLogitsExtras: false,
     hasGrammar: false, wantsLogprobs: false, hasDraft: false };
@@ -130,7 +131,7 @@ test("closing the app drains borrowed execution before disposing the model", asy
   await entered.promise; const closing = engine.close();
   await Promise.resolve(); expect(events).toEqual([]);
   finish.resolve(); await run; await closing;
-  expect(events).toEqual(["execution stopped", "group closed", "model disposed"]);
+  expect(events).toEqual(["execution stopped", "group closed", "cache closed", "model disposed"]);
 });
 
 test("compiled runner retirement is idempotent and never allocates an absent runner", async () => {
