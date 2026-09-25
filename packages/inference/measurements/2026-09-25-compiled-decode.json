@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "kind": "compiled-decode-parity",
+  "date": "2026-09-25",
+  "branchCommit": "8c4f7abe6eb6160ae78b1436c33b2155930c6dd5",
+  "mainCommit": "02d723a2875153196f8c6c10bce2daf6f0044655",
+  "sourceTreesClean": true,
+  "testSha256": "9bb0157b0444fdcc7f888b0aa508d8e1e5bd5a3779b315fbf508107e31cd3fc0",
+  "externalRun": "mlx-compiled-parity-natural-u1aqxqa2",
+  "machine": {
+    "name": "Josh M1 Max MacBook Pro",
+    "chip": "Apple M1 Max",
+    "ramBytes": 34359738368,
+    "os": "macOS27.0(26A428)",
+    "bun": "1.4.2"
+  },
+  "nativeSha256": {
+    "libmlxc.dylib": "35596c4a4031a755c19b203bec95f180b5b4e4f8a9bdf131ca4fe45ce050ddd9",
+    "libmlx.dylib": "a7254c2a63f6bf01ce7d033ff8c880f30eeb399e3d0df2f2333a47ff47db517f",
+    "libjaccl.dylib": "74f53f3e5deff38eaec4be0d555ebb8614f73dc28c861dfefb0449430e29f457",
+    "mlx.metallib": "a19618258e2a215d0d0ac3056174a6e066818bb6cdecb50062cc9316076ebe43"
+  },
+  "configuration": {
+    "batch": 1,
+    "forcedTokens": [
+      911,
+      604,
+      607,
+      610
+    ],
+    "forcedPrefixChunk": 128,
+    "compiled": [
+      false,
+      true
+    ],
+    "kv": [
+      "plain",
+      "artifact mixed"
+    ],
+    "additional12BTrajectoryKv": [
+      "uniform4bit/group64",
+      "uniform8bit/group64 fault recovery"
+    ],
+    "maxTrajectoryTokens": {
+      "e4b": 24,
+      "12B": 32
+    },
+    "environment": "Fresh bun --no-env-file subprocess per tree/family. Ambient MLX_BUN_* removed; explicit cached model path and identical native bundle. Test scopes compiled decode on/off."
+  },
+  "cases": [
+    {
+      "family": "e4b",
+      "artifact": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+      "snapshot": "98d7dc6a93ae05583e8a10018c8099459b58aeeb",
+      "artifactMetadata": {
+        "config.json": "20bd7d4bed1e8098cb3e341e8db37d43ac0e2a1006802875c688df43dbeb3134",
+        "kv_config.json": "413411c8193e8922e2f92f3fce2415d1fc19f97b315b9fab60e9026cb2dce2ba"
+      },
+      "weights": [
+        {
+          "file": "model-00001-of-00002.safetensors",
+          "bytes": 3505995882,
+          "sha256": "fb4e163a7254d9dd66d5e6f0d1e893b949d56ab5390d429777adc38752457154"
+        },
+        {
+          "file": "model-00002-of-00002.safetensors",
+          "bytes": 3023979920,
+          "sha256": "9fcd2f2cfcfb7cd025351071a80af947c9249c1a112b7ffc32163bfab9507f99"
+        },
+        {
+          "file": "optiq_vision.safetensors",
+          "bytes": 956351330,
+          "sha256": "b464374ed691e1de16706126b5d31db4c1b85330365b41042451ab260543ee68"
+        }
+      ],
+      "forcedContexts": [
+        256,
+        576
+      ],
+      "trajectoryContexts": [
+        691
+      ],
+      "matchingReportRows": 12,
+      "passingTests": 6,
+      "unexpectedRetraces": 0,
+      "reports": {
+        "main-e4b.json": "2ec547078f82ea57b626e1fabbce039b0a6d8c2e3110df4c5fae1d04ae507fa9",
+        "branch-e4b-local.json": "c3d56995b9a81067428888b5fd40d4e38b0774ac21929a76165fa8ea9859382f"
+      },
+      "logs": {
+        "main-e4b.log": "4be5bc5b834393eb497db5af73a335183d6140874d4b4b9e903ef347ee76cf9e",
+        "branch-e4b-local.log": "02bddcb3c0ad532699596e5a6cfc95431a2d0a68e390b29c14b22072784aae9b"
+      }
+    },
+    {
+      "family": "12B",
+      "artifact": "mlx-community/gemma-4-12B-it-OptiQ-4bit",
+      "snapshot": "5b1101065d2094c8f12aa87fee80e0afa5b292b7",
+      "artifactMetadata": {
+        "config.json": "a9eb82640fbc1f4c1bcc57d6d657f1f192b00f7187b1fdd8657a3e1568d703a0",
+        "kv_config.json": "da38d18d32a7d4ce86b0e678a6d7574f250c5d5a12c680cda176cc9677dc73a9"
+      },
+      "weights": [
+        {
+          "file": "model-00001-of-00002.safetensors",
+          "bytes": 5349856755,
+          "sha256": "348558c33cc1910f36123b00476142c92a6e234d291e3b51e32be3924a4bd30f"
+        },
+        {
+          "file": "model-00002-of-00002.safetensors",
+          "bytes": 3510027171,
+          "sha256": "df076d7ce133395f261902f4be5ff6104efacb2bcf02b8c74887501725cca1ec"
+        },
+        {
+          "file": "optiq_vision.safetensors",
+          "bytes": 104760998,
+          "sha256": "b2fbe9f0cc38ad1214029ad2b5f3f06de6eed6ccfdccf28eb70259c5c018d7e1"
+        }
+      ],
+      "forcedContexts": [
+        512,
+        1088
+      ],
+      "trajectoryContexts": [
+        590,
+        1094
+      ],
+      "matchingReportRows": 18,
+      "passingTests": 9,
+      "unexpectedRetraces": 0,
+      "reports": {
+        "main-12B.json": "b9b47226facf84701842954b363bcce5bbe6bc931daa04d1631f36cc96cca7d3",
+        "branch-12B-local.json": "da5b9ffe129947fbc4c28594c8fd3cdb6967875eac00a44293b9d735a2a6a957"
+      },
+      "logs": {
+        "main-12B.log": "99e2baf928b7c1259e29eb402d9d4a79614583ccc9055be964abcc58861c8f05",
+        "branch-12B-local.log": "b406e99bb6c11bf9dc71fda8846118b145ed9e8d73702429f5a353bf6c16261b"
+      }
+    }
+  ],
+  "comparison": "Original dtype, shape and full native logit bytes match compiled versus eager for eight model/KV/context cases, four forced steps each. Six greedy trajectories and12B injected segment-failure recovery match eager. All30 report rows match main exactly. Activation counters checked; no unexpected retraces.",
+  "reference": "Historical Bun main; this record makes no additional Python-oracle claim.",
+  "harness": {
+    "source": "packages/inference/tests/parity/compiled-decode.test.ts",
+    "sourceSha256": "9bb0157b0444fdcc7f888b0aa508d8e1e5bd5a3779b315fbf508107e31cd3fc0",
+    "trees": {
+      "branch": {
+        "commit": "8c4f7abe6eb6160ae78b1436c33b2155930c6dd5",
+        "dirty": false,
+        "test": "branch.test.ts",
+        "sha256": "3e81f748b9b0543f51c9d4973ba6c733c413946acba1bb52f661ea49d674c4df"
+      },
+      "main": {
+        "commit": "02d723a2875153196f8c6c10bce2daf6f0044655",
+        "dirty": false,
+        "test": "main.test.ts",
+        "sha256": "296adede5aed10ab47a83073d13e04909b5dc61baf1d0f6f57558015af6e511f"
+      }
+    },
+    "adapters": {
+      "main-state.ts": "0b6f46b7a3ef749e4e91ae0b0473c38d30fea00af9751be9c6db465ec75728d5",
+      "main-artifacts.ts": "b292d472506ab773b9f7aab6de8fa29004bb93c48147555370dbc182671f72d2",
+      "main-input.ts": "8d0c49a66c395178e7d6088b07fad74f87916a84313960517c6b0a0c5d5ac705",
+      "main-mlx.ts": "6a4f81f51aebfb9aeff2d73891959bcf322805ed6fd90db4027c5f7cb29db419"
+    }
+  },
+  "limits": [
+    "Dense Gemma12B and KV-sharing/per-layer-input e4b only; no MoE, media, batching or performance claim.",
+    "Fault recovery proves greedy trajectory parity; full-logit comparisons exercise successful compiled steps.",
+    "Initial synthetic greedy prompt returned EOS immediately; restored main natural prompts rather than suppressing EOS. Prior failed evidence remains external.",
+    "Initial worktree scope link loaded MLX from the base checkout, so the fault interception patched a different class. Corrected ignored link to this worktree and reran both branch families (the -local reports). No numerical source changed."
+  ]
+}

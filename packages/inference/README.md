@@ -124,6 +124,12 @@ The forced-token full-logit matrix uses deterministic IDs independently of EOS. 
 compiled-versus-ordinary checks, not an external-oracle or performance claim.
 Runtime compilation overrides stay inside the test; this adds no application option.
 
+The [2026-09-25 compiled comparison](measurements/2026-09-25-compiled-decode.json)
+records 15 passing real-weight tests on the M1 Max: eight full-logit cases, six
+greedy trajectories, and one injected-failure recovery. All 30 captured report
+rows match historical main exactly. The record names the artifacts, source and
+native hashes, and the corrected local dependency resolution used for verification.
+
 ## Direct library use
 
 See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
