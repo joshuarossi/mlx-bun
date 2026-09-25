@@ -114,6 +114,30 @@ physical cache planes, and live/restored continuation match exactly; no layout
 normalization or numerical change was needed. Compilation and performance are
 not exercised by this run.
 
+### Compiled decode verification
+
+The opt-in `tests/parity/compiled-decode.test.ts` accepts local checkpoint paths
+through `MLX_BUN_COMPILED_GEMMA_E4B` and `MLX_BUN_COMPILED_GEMMA12B`. Run it with
+`bun --no-env-file test packages/inference/tests/parity/compiled-decode.test.ts`
+from the root. Each unset path skips that family; a supplied invalid path fails.
+The checkpoints must include their existing mixed-KV configuration. No model or
+reference data is downloaded.
+
+The test compares native full-logit bytes for identical fixed tokens with plain
+and artifact-configured KV, both before and after the sliding window fills.
+Greedy trajectories and dense Gemma's mid-segment failure recovery use main's
+original tokenizer-rendered prompts (12B targets 600/1100 tokens; e4b targets 700).
+Those checks require actual compiled-step activation and zero unexpected retraces.
+The forced-token full-logit matrix uses deterministic IDs independently of EOS. These are
+compiled-versus-ordinary checks, not an external-oracle or performance claim.
+Runtime compilation overrides stay inside the test; this adds no application option.
+
+The [2026-09-25 compiled comparison](measurements/2026-09-25-compiled-decode.json)
+records 15 passing real-weight tests on the M1 Max: eight full-logit cases, six
+greedy trajectories, and one injected-failure recovery. All 30 captured report
+rows match historical main exactly. The record names the artifacts, source and
+native hashes, and the corrected local dependency resolution used for verification.
+
 ## Direct library use
 
 See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
