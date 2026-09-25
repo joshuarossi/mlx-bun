@@ -147,7 +147,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory });
-    const status = createStatusRoutes({ context, caches, gateway: engine.gateway,
+    const status = createStatusRoutes({ owner: "serve", context, caches, gateway: engine.gateway,
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
       ssdCacheDir: options.cache.ssdCacheDir });
