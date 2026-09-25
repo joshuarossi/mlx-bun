@@ -61,6 +61,7 @@
     "./models/vision/siglip": "./src/models/vision/siglip.ts",
     "./embeddings/vision": "./src/embeddings/vision.ts",
     "./transcription": "./src/transcription/index.ts",
+    "./transcription/format": "./src/transcription/whisper/format.ts",
     "./generation/speculative": "./src/generation/speculative/index.ts",
     "./generation/speculative/dspark": "./src/generation/speculative/dspark/generate.ts",
     "./generation/speculative/dflash": "./src/generation/speculative/dspark/generate-dflash.ts",

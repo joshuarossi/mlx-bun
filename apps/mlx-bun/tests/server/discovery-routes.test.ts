@@ -66,3 +66,28 @@ test("downloads serves the composition's progress rows when supplied", async () 
   const request = new Request("http://local/downloads");
   expect(await (await routes.handle(new URL(request.url), request))!.json()).toEqual({ downloads: rows });
 });
+
+test("a configured Whisper companion is listed beside the chat model and the API index names the audio routes", async () => {
+  const context = { modelId: "test/model", model: { config: { modelType: "llama", text: { maxPositionEmbeddings: 8192 } } },
+    template: { supportsThinking: false }, genDefaults: {}, draft: null } as unknown as LoadedModelContext;
+  const registry = () => ({ async scan() { return 0; }, listCanonical: () => [], close() {} });
+  const binding = { discovery: { adapters: false, training: false, dsa: true, embeddings: false } };
+  const get = async (routes: ReturnType<typeof createDiscoveryRoutes>, path: string) => {
+    const request = new Request(`http://local${path}`);
+    return (await routes.handle(new URL(request.url), request))!.json();
+  };
+  const withWhisper = createDiscoveryRoutes(context, binding, 7000, async () => ({ id: "org/whisper", resident: true }), registry);
+  const listed = await get(withWhisper, "/v1/models");
+  expect(listed.data).toEqual([
+    expect.objectContaining({ id: "test/model", capabilities: expect.objectContaining({ transcription: true }) }),
+    { id: "org/whisper", object: "model", created: 7, owned_by: "mlx-bun", transcription: true, resident: true,
+      capabilities: { transcription: true, translation: true, chat_completions: false } },
+  ]);
+  expect((await get(withWhisper, "/v1/models/org/whisper")).data).toHaveLength(1);
+  const without = createDiscoveryRoutes(context, binding, 7000, async () => null, registry);
+  const alone = await get(without, "/v1/models");
+  expect(alone.data).toHaveLength(1);
+  expect(alone.data[0].capabilities.transcription).toBe(false);
+  const index = await get(without, "/v1");
+  expect(index.endpoints).toEqual(expect.arrayContaining(["POST /v1/audio/transcriptions", "POST /v1/audio/translations"]));
+});

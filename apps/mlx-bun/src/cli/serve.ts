@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { fit } from "@mlx-bun/hub/fit";
 import type { CommandArgs } from "./args";
-import { resolveModelAuto } from "./model-selection";
+import { defaultWhisperModel, resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
@@ -16,6 +16,7 @@ import type { PiBackendPaths } from "../chat/pi-backend";
 import type { DraftKind } from "../engine/model-host";
 import type { DownloadOwner } from "../hub/downloads";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
+import type { TranscriptionService } from "../engine/transcription-service";
 
 export interface ServeOptions {
   query: string | null;
@@ -39,6 +40,11 @@ export interface ServeOptions {
   draft?: { model?: string; modelDir?: string; kind?: DraftKind; numTokens?: number; ngramMax?: number; ngramMin?: number };
   /** Main's `--mtp on|off`: GLM-5.2 native MTP drafter; other families ignore it. */
   mtp?: boolean;
+  /** Main's `--whisper-*` and `--preload`: the speech-to-text companion. `model`
+   * is the query as typed; startup resolves it into `modelDir`/`modelId` before
+   * loading. Without one, the first downloaded Whisper checkpoint is resolved on
+   * the first audio request. `preload` applies to the transcription-only server. */
+  whisper?: { model?: string; modelDir?: string; modelId?: string; idleUnloadSec?: number; resident?: boolean; preload?: boolean };
   readOnly: boolean;
   noOpen: boolean;
   cache: CacheServiceOptions;
@@ -128,6 +134,17 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     console.warn("--ngram-max/--ngram-min only apply with --draft-kind ngram — ignored");
   const mtpRaw = value("mtp");
   if (mtpRaw !== undefined && !["on", "off", "1", "0", "true", "false"].includes(mtpRaw)) throw new Error(`--mtp expects on|off (got "${mtpRaw}")`);
+  // Main's speech-to-text companion: explicit checkpoint + residency policy.
+  const whisperModel = value("whisper-model");
+  if (whisperModel !== undefined && !whisperModel.trim()) throw new Error("--whisper-model expects a path or query");
+  const whisperIdleRaw = value("whisper-idle-unload");
+  const whisperIdle = whisperIdleRaw === undefined ? undefined : Number(whisperIdleRaw);
+  if (whisperIdle !== undefined && (!whisperIdleRaw!.trim() || !Number.isFinite(whisperIdle) || whisperIdle < 0))
+    throw new Error(`--whisper-idle-unload expects seconds >= 0 (got "${whisperIdleRaw}")`);
+  const whisperResident = args.values["whisper-resident"] === true, preload = args.values.preload === true;
+  const whisper = whisperModel !== undefined || whisperIdle !== undefined || whisperResident || preload
+    ? { ...(whisperModel !== undefined ? { model: whisperModel } : {}), ...(whisperIdle !== undefined ? { idleUnloadSec: whisperIdle } : {}),
+      ...(whisperResident ? { resident: true } : {}), ...(preload ? { preload: true } : {}) } : undefined;
   const draft = draftModel !== undefined || draftKind !== undefined || numDraftTokens !== undefined || ngramMax !== undefined || ngramMin !== undefined
     ? { ...(draftModel !== undefined ? { model: draftModel } : {}), ...(draftKind ? { kind: draftKind } : {}),
       ...(numDraftTokens !== undefined ? { numTokens: numDraftTokens } : {}),
@@ -162,6 +179,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(adapterDir ? { adapterDir } : {}),
     ...(draft ? { draft } : {}),
     ...(mtpRaw !== undefined ? { mtp: ["on", "1", "true"].includes(mtpRaw) } : {}),
+    ...(whisper ? { whisper } : {}),
     readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
   };
@@ -217,7 +235,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     import("../server/management-routes"), import("../server/adapter-routes"),
     import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"), import("../server/cache-routes"),
   ]);
-  const [{ createDownloadOwner }, { Registry }] = await Promise.all([import("../hub/downloads"), import("@mlx-bun/hub/registry")]);
+  const [{ createDownloadOwner }, { Registry }, { TranscriptionService }, { createAudioRoutes }] = await Promise.all([
+    import("../hub/downloads"), import("@mlx-bun/hub/registry"), import("../engine/transcription-service"), import("../server/audio-routes")]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
   const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1",
@@ -326,9 +345,25 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       },
       onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
     });
+    // Main's speech-to-text companion: an explicit --whisper-model, else the
+    // first downloaded Whisper checkpoint, resolved once on the first audio
+    // request (a later download needs a restart, as in main). The weights load
+    // per take and release per the --whisper-* policy; every take runs under
+    // the gateway's exclusive lock so it never overlaps chat generation.
+    let transcription: Promise<TranscriptionService | null> | undefined;
+    const transcriptionService = () => transcription ??= (async () => {
+      const whisper = options.whisper ?? {};
+      const record = whisper.modelDir ? { path: whisper.modelDir, repoId: whisper.modelId ?? whisper.modelDir } : await defaultWhisperModel();
+      if (!record) return null;
+      return new TranscriptionService({ modelDir: record.path, modelId: record.repoId,
+        idleUnloadSec: whisper.idleUnloadSec, resident: whisper.resident,
+        exclusive: (fn, signal) => engine.gateway.runExclusive(fn, undefined, signal) });
+    })();
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory, downloads: downloads.snapshot,
+      transcription: async () => { const service = await transcriptionService(); return service ? { id: service.modelId, resident: service.resident } : null; },
       ...(defaultAdapter ? { defaultAdapter } : {}) });
+    const audio = createAudioRoutes({ service: transcriptionService });
     const status = createStatusRoutes({ owner: "serve", context, caches, gateway: engine.gateway,
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
@@ -356,6 +391,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const closeApp = async () => {
       const errors: unknown[] = [];
       try { await jobs.close(); } catch (error) { errors.push(error); }
+      // Whisper weights release before the chat model; in-flight takes drained with the listener.
+      try { (await transcription)?.close(); } catch (error) { errors.push(error); }
       try { await engine.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
@@ -376,7 +413,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const datasetRunner = createDatasetRunner();
     const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
-    const routes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await hub.handle(request) ?? await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+    const routes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await hub.handle(request) ?? await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await audio.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
       await quantizeRoutes.handle(request) ?? await datasetRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await adapterArtifacts.handle(request) ?? await publishing.handle(request) ?? await completions.handle(request) };
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       memory: () => createMemorySurface(memoryPaths.vault, memoryPaths.skills),
@@ -384,6 +421,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template.supportsThinking,
+      transcription: async () => (await transcriptionService()) !== null,
       genDefaults: {
         temperature: options.request.defaultTemperature ?? context.genDefaults.temperature ?? null,
         topP: options.request.defaultTopP ?? context.genDefaults.topP ?? null,
@@ -412,6 +450,37 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     finally { restoreProcess(); }
     throw error;
   }
+}
+
+/** Transcription-only composition (main's `serve <whisper checkpoint>`): the
+ * audio routes plus `/v1`, `/v1/models`, `/health`, and `/stats` over the Whisper
+ * checkpoint alone; no chat model, prompt cache, jobs, or web app. `--preload`
+ * loads the weights before the listener binds; otherwise the first request
+ * pages them in. Every take runs one at a time inside the service. */
+export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
+  const [{ TranscriptionService }, { createAudioRoutes }, { createTranscriptionServerRoutes }, { startServer }] = await Promise.all([
+    import("../engine/transcription-service"), import("../server/audio-routes"), import("../server/transcription-server"), import("../server/start"),
+  ]);
+  const whisper = options.whisper ?? {};
+  const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId,
+    idleUnloadSec: whisper.idleUnloadSec, resident: whisper.resident });
+  let cleanup: (() => void) | undefined = () => service.close();
+  try {
+    if (whisper.preload) await service.ensureLoaded();
+    const audio = createAudioRoutes({ service: async () => service });
+    const info = createTranscriptionServerRoutes(service, { startedAt: Date.now() });
+    // startServer owns service cleanup on entry, including a bind failure.
+    cleanup = undefined;
+    const listener = await startServer({
+      routes: { handle: async request => await audio.handle(request) ?? await info.handle(request) },
+      web: () => null,
+      // No chat model: a WebSocket session fails to start and its transport closes.
+      chat: () => ({ async start() { throw new Error("transcription-only server has no chat model"); }, async handle() {}, dispose() {} }),
+      closeEngine: async () => service.close(),
+    }, { port: options.port, hostname: options.hostname });
+    return { port: listener.server.port!, close: listener.close,
+      downloads: { active: [], start() { throw new Error("transcription-only server owns no downloads"); } } };
+  } catch (error) { cleanup?.(); throw error; }
 }
 
 export interface SignalPort {
@@ -451,6 +520,7 @@ export function browserUrl(hostname: string, port: number): string {
 export interface ServeDependencies {
   resolve: typeof resolveModelAuto;
   start: typeof startModelServer;
+  startTranscription: typeof startTranscriptionServer;
   interactive: boolean;
   open(url: string): void | Promise<void>;
   log(message: string): void;
@@ -459,7 +529,7 @@ export interface ServeDependencies {
   error(error: unknown): void;
 }
 const defaults: ServeDependencies = {
-  resolve: resolveModelAuto, start: startModelServer, interactive: !!process.stdout.isTTY,
+  resolve: resolveModelAuto, start: startModelServer, startTranscription: startTranscriptionServer, interactive: !!process.stdout.isTTY,
   async open(url) { const child = Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); if (await child.exited !== 0) throw new Error("Browser could not be opened"); },
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
   error: error => console.error(error instanceof Error ? error.message : String(error)),
@@ -481,14 +551,28 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     selection = await deps.resolve(options.query, {}, startup.signal);
     // A signal that landed during selection must not start a native load.
     startup.signal.throwIfAborted();
-    // Main resolves the draft model like the main model (a query never downloads).
-    if (options.draft?.model) {
-      const draft = await deps.resolve(options.draft.model, {}, startup.signal);
-      startup.signal.throwIfAborted();
-      options = { ...options, draft: { ...options.draft, modelDir: draft.m.path } };
+    if (selection.m.modelType === "whisper") {
+      // Main: a Whisper checkpoint as the main model starts the transcription-only server.
+      deps.log(`Serving ${selection.m.repoId} as a transcription-only server${options.whisper?.preload ? " (loading the weights first)" : ""}`);
+      running = await deps.startTranscription(selection.m, options);
+    } else {
+      // Main resolves the draft model like the main model (a query never downloads).
+      if (options.draft?.model) {
+        const draft = await deps.resolve(options.draft.model, {}, startup.signal);
+        startup.signal.throwIfAborted();
+        options = { ...options, draft: { ...options.draft, modelDir: draft.m.path } };
+      }
+      // Main resolves --whisper-model the same way and refuses a non-Whisper checkpoint before loading.
+      if (options.whisper?.model) {
+        const whisper = await deps.resolve(options.whisper.model, {}, startup.signal);
+        startup.signal.throwIfAborted();
+        if (whisper.m.modelType !== "whisper")
+          throw new Error(`--whisper-model ${options.whisper.model} resolved to ${whisper.m.repoId} (model_type ${whisper.m.modelType}), not a Whisper checkpoint`);
+        options = { ...options, whisper: { ...options.whisper, modelDir: whisper.m.path, modelId: whisper.m.repoId } };
+      }
+      deps.log(`Loading ${selection.m.repoId}${selection.picked ? " (auto-selected)" : ""}`);
+      running = await deps.start(selection.m, options);
     }
-    deps.log(`Loading ${selection.m.repoId}${selection.picked ? " (auto-selected)" : ""}`);
-    running = await deps.start(selection.m, options);
     // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.
     const rawTimeout = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
     removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error,
@@ -502,6 +586,13 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     try { running.downloads.start(selection.recommended); } catch (error) { deps.error(error); }
   }
   const url = browserUrl(options.hostname, running.port);
+  if (selection.m.modelType === "whisper") {
+    // No web app: nothing to open. Residency is the policy the flags set.
+    const idle = options.whisper?.idleUnloadSec ?? 0;
+    const residency = options.whisper?.resident ? "always resident" : idle === 0 ? "released after every take" : `idle unload ${idle}s`;
+    deps.log(`POST ${url.replace("/#/chat", "/v1/audio/transcriptions")} (${residency}; ${options.whisper?.preload ? "loaded" : "loads on first request"})\nStop: Ctrl+C`);
+    return app;
+  }
   deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {
     try { await deps.open(url); } catch (error) { deps.error(error); }

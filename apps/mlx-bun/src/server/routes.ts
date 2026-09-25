@@ -18,7 +18,7 @@ import type { PromptTokenHistory } from "./generated-token-history";
 import type { ModelPromptBuilder } from "./prompt-contracts";
 import { admit, errorResponse, respondJson, respondStream, type ErrorFormatter } from "./http";
 import { chatCompletionJson, chatCompletionStream, textCompletionJson, textCompletionStream } from "./openai-wire";
-import { createDiscoveryRoutes } from "./discovery-routes";
+import { createDiscoveryRoutes, type TranscriptionInfo } from "./discovery-routes";
 import { anthropicToChatBody, chatJsonToAnthropic, createAnthropicStreamProtocol, type AnthropicRequest } from "./anthropic";
 
 import { ResponseStore, resolveResponsesConversation, responsesToChatBody, chatJsonToResponses,
@@ -52,6 +52,8 @@ export function createCompletionRoutes(engine: {
   responseHistory?: ResponseHistory;
   /** Progress rows for `GET /downloads`; the default is the hub package's process tracker. */
   downloads?: () => readonly DownloadStatus[];
+  /** The Whisper companion `/v1/models` lists beside the chat model; absent means none is configured. */
+  transcription?: () => Promise<TranscriptionInfo | null>;
 }) {
   const ctx = engine.context;
   const responseHistory = options.responseHistory ?? new ResponseStore();
@@ -61,7 +63,7 @@ export function createCompletionRoutes(engine: {
     options.defaultAdapter, engine.preparation, options.buildPrompt);
   const text = new TextCompletionStage(ctx, prep, options.contextLimit, options.defaultGeneratedTokens, options.defaultAdapter, engine.preparation);
   const inference = new InferenceStage(new CompletionExecutor(engine.completion));
-  const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), undefined, undefined, options.downloads);
+  const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), options.transcription, undefined, options.downloads);
   const applyCacheSession = (body: ChatRequestParams, request: Request, original: unknown = body) => {
     const fields = original as { session_id?: unknown; prompt_cache_key?: unknown };
     const session = typeof fields.session_id === "string" ? fields.session_id :
