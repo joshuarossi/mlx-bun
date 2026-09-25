@@ -110,6 +110,12 @@ test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous
     const base = new URL(`http://127.0.0.1:${app.port}`);
     expect((await fetch(base)).headers.get("content-type")).toContain("text/html");
     expect((await fetch(new URL("/health", base))).status).toBe(200);
+    const stats = await fetch(new URL("/stats", base));
+    expect(stats.status).toBe(200);
+    expect((await stats.json()).batch).toMatchObject({ mode: "batch", batched: true });
+    const fit = await fetch(new URL("/fit", base));
+    expect(fit.status).toBe(200);
+    expect((await fit.json()).report.max_safe_context).toBeGreaterThan(0);
     const post = (path: string, body: unknown) => fetch(new URL(path, base), { method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const body = { messages: [{ role: "user", content: "Say hello in one sentence." }], max_tokens: 8, temperature: 0 };
