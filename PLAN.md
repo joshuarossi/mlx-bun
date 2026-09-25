@@ -18,6 +18,21 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   [state record](packages/inference/measurements/2026-09-25-runtime-state.json)
   verifies the existing composition; keep that implementation unchanged during
   this refactor and do not imply blanket OptiQ serve compatibility.
+- [ ] Extend training preservation beyond the
+  [preservation-checked short MiniCPM SFT/DPO/ORPO paths](packages/training/measurements/2026-09-25-training-preservation.json).
+  Cover other model families and specialized training paths before claiming
+  their numerical preservation; synthetic native tests do not close this item.
+- [ ] Restore main's remaining training checks in their owning packages:
+  `tests/parity/train-e2e.test.ts`, `train-batch-e2e.test.ts`,
+  `train-orpo-e2e.test.ts`, `train-regularization-e2e.test.ts`, and
+  `diffusion-lora.test.ts`; `tests/research/train-orpo-chunked.test.ts` and
+  `train-orpo-fused-ce.test.ts`; and `tests/unit/train-autograd.test.ts`.
+  Exit: the seven model tests use explicit caller-supplied cached artifacts,
+  skip before native loading when not opted in, and retain their loss, gradient,
+  adapter reload, batching, regularization, and specialized-head checks without
+  importing old goldens or fixtures. The weight-free ValueAndGrad/Vjp
+  finite-difference test belongs in `@mlx-bun/mlx` and must run in native Mac CI.
+
 ## Optimize after the full draft
 
 - [ ] Run paired same-machine performance comparisons against main using the
@@ -34,9 +49,11 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   Anthropic messages, Responses, audio, hub/browser model switching, session
   search/export, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
-- [ ] Migrate the training numerical core into its own library before enabling
-  finetune jobs; app request policy and orchestration stay in the app. Verify
-  fixed-seed adapter outputs and loss trajectories against main before merge.
+- [ ] Preserve main's `src/train/job.ts` resolved configuration in the finetune
+  producer. Exit: per-method behavior snapshots cover SFT/DPO/ORPO learning
+  rates, ORPO segment/chunk sizes, flash/shared-prefix defaults, and disabling
+  flash/fused CE on unquantized bases. These are app policy, not library defaults.
+
 - [ ] Migrate the server, engine host, web app, and job orchestration into
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
