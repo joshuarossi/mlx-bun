@@ -21,4 +21,10 @@ to the executable source instead of maintaining another copy of the code here.
 The scoped packages are the new publishing structure. Until the refactor is
 released, follow the repository's packed-package verification workflow or use
 the workspace; do not assume these development APIs exist in the released
-`mlx-bun` package. Complete generated API reference is still follow-up work.
+`mlx-bun` package.
+
+The [generated library API](/api/) lists every public package subpath, resolved
+exports, signatures, and API comments. Start at a package root for high-level
+entry points, or choose a component subpath for lower-level composition. Source
+links lead to the owning implementation. Ownership and disposal obligations
+belong in those API comments; the reference includes only what the code documents.
