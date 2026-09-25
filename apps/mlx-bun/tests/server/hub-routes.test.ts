@@ -107,3 +107,14 @@ test("model selection preserves main's restart answer and never claims a loaded 
   expect(await routes.handle(request("/api/hub/download", { method: "POST" }))).toBeNull();
   expect(await routes.handle(request("/api/hub/local", { method: "POST" }))).toBeNull();
 });
+
+
+test("cancellation during an empty registry scan returns 499 and closes the registry", async () => {
+  const controller = new AbortController();
+  let closed = 0;
+  const routes = createHubRoutes({ createRegistry: () => ({
+    scan: async () => { controller.abort(); return 0; }, listCanonical: () => [], close: () => { closed++; },
+  }) });
+  expect((await routes.handle(request("/api/hub/local", { signal: controller.signal })))!.status).toBe(499);
+  expect(closed).toBe(1);
+});

@@ -47,6 +47,7 @@ export function createHubRoutes(options: HubRouteOptions = {}) {
             request.signal.throwIfAborted();
             models.push(await localRow(model));
           }
+          request.signal.throwIfAborted();
           return Response.json({ ok: true, models });
         } finally { registry.close(); }
       }
