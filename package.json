@@ -9,8 +9,9 @@
     "packages/*"
   ],
   "scripts": {
-    "typecheck": "bun run --filter '@mlx-bun/*' typecheck",
-    "test": "bun run --filter '@mlx-bun/*' test"
+    "typecheck": "bun run --filter '@mlx-bun/*' typecheck && tsc --project scripts/tsconfig.json",
+    "test": "bun run --filter '@mlx-bun/*' test",
+    "verify:packages": "bun scripts/verify-packages.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

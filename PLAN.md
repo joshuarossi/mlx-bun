@@ -17,15 +17,6 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.
 
-## Make the developer contract reproducible
-
-- [ ] Source README examples from executable examples or existing behavior tests;
-  run them in CI alongside typechecking and the architecture gate. Exit: displayed
-  examples have one tested source and missing native prerequisites are explicit.
-- [ ] Integrate the existing packed-package consumer checks into repeatable release
-  validation. Exit: clean Bun projects import both high-level and component APIs
-  and exercise bundled natives without depending on the checkout.
-
 ## Migrate applications after library verification
 
 - [ ] Agree app ownership before adding files. Move Pi protocols, job contracts,

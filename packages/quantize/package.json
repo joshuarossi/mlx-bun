@@ -1,0 +1,40 @@
+{
+  "name": "@mlx-bun/quantize",
+  "version": "0.0.0",
+  "description": "Quantization for MLX checkpoints on Apple Silicon: calibration, sensitivity, mixed-precision allocation, rotation, Trellis packing, and safetensors output",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./quantizer": "./src/quantizer.ts",
+    "./allocator": "./src/allocator.ts",
+    "./sensitivity": "./src/sensitivity.ts",
+    "./calibration": "./src/calibration.ts",
+    "./rotate": "./src/rotate.ts",
+    "./weight-transform": "./src/weight-transform.ts",
+    "./trellis": "./src/trellis.ts",
+    "./config-writer": "./src/config-writer.ts",
+    "./atomic-output": "./src/atomic-output.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/inference": "workspace:*",
+    "@mlx-bun/mlx": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}
