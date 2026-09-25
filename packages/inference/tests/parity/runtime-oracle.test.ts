@@ -52,6 +52,14 @@ describe("runtime report comparison (CPU only)", () => {
     legacy.rows.pop();
     expect(() => compareReports(report(), legacy, plan, true)).toThrow("missing or extra");
   });
+  test("state validation is explicit in the plan and report", () => {
+    expect(parsePlan({ ...plan, kv: "artifact", restore: true })).toMatchObject({ kv: "artifact", restore: true });
+    for (const patch of [{ kv: "automatic" }, { restore: "true" }, { restore: false }])
+      expect(() => parsePlan({ ...plan, ...patch })).toThrow();
+    const restorePlan = parsePlan({ ...plan, restore: true });
+    expect(() => compareReports(report(), report(), restorePlan)).toThrow("did not verify restored continuation");
+    compareReports({ ...report(), restorationVerified: true }, report(), restorePlan);
+  });
   test("help does not load native libraries", () => {
     const proc = Bun.spawnSync([process.execPath, resolve(import.meta.dir, "../../scripts/runtime-oracle.ts"), "--help"],
       { env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });

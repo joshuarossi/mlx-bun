@@ -1,0 +1,378 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-state-parity",
+  "date": "2026-09-25",
+  "externalRun": "mlx-state-parity-m64tqc_z",
+  "branchCommit": "a4464756c8fcfa9ce43450f603ee3fe0bee93eac",
+  "mainCommit": "02d723a2875153196f8c6c10bce2daf6f0044655",
+  "reference": {
+    "python": "3.14.5",
+    "mlx": "0.32.2",
+    "mlx-metal": "0.32.2",
+    "mlx-lm": "0.31.3",
+    "mlx-optiq": "0.2.7",
+    "pythonAdapterSha256": "2fb646c7e5f3a18d6d865dca6fc44dff54188d87311d0605c221e544ba1ae04d",
+    "mainAdapterSha256": "6c43da34142d103d96dec93c6ffcd711309aa8c33a8df9a836e2d355e5621858",
+    "adaptation": "Main worker uses the same validation sequence with imports pointing to historical main; Python runtime-oracle adds the existing OptiQ post-forward mixed-KV hook and flattens its quantized tuples. Both adapters remain external. Python verifies live continuation, not Bun persistence."
+  },
+  "cases": [
+    {
+      "name": "minicpm-plain",
+      "artifact": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+      "snapshot": "664aabaed233c653f82716d8dc822234d0091f78",
+      "configSha256": "94b1ac84fc7333f4beccd73766543c150d7c005d1fb2e8eaecee2326f8d83227",
+      "weightHashes": {
+        "model.safetensors": "88bb686ed4a28f7c2065e27aabef7669f84961ac47c83efe2d003436c179e2e4"
+      },
+      "plan": {
+        "restore": true,
+        "runtime": "0.32.2",
+        "contexts": [
+          0,
+          64,
+          320
+        ],
+        "lengths": [
+          1,
+          8,
+          128
+        ],
+        "prefixChunk": 128
+      },
+      "mainMatchedCases": 9,
+      "restoredContinuationMatchedCases": 9,
+      "reports": {
+        "branch": "094bb2d08136f9d4c7b09207d059df3d3c349239de83ac87c0d6d5d94ba10041",
+        "main": "0c11eba6fd61fd813a245df60270942dfa8ebc27f06c5204eee0512fb72f17ee",
+        "python": "bc034fd8f6aec39ec9f90c1aeeed1caed713efc58453e85f4cfc32b6046c86d5"
+      },
+      "oracleMatchedCases": 9,
+      "oracleMismatches": []
+    },
+    {
+      "name": "minicpm-mixed",
+      "artifact": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+      "snapshot": "664aabaed233c653f82716d8dc822234d0091f78",
+      "configSha256": "94b1ac84fc7333f4beccd73766543c150d7c005d1fb2e8eaecee2326f8d83227",
+      "weightHashes": {
+        "model.safetensors": "88bb686ed4a28f7c2065e27aabef7669f84961ac47c83efe2d003436c179e2e4"
+      },
+      "plan": {
+        "kv": "artifact",
+        "restore": true,
+        "runtime": "0.32.2",
+        "contexts": [
+          0,
+          64,
+          320
+        ],
+        "lengths": [
+          1,
+          8,
+          128
+        ],
+        "prefixChunk": 128
+      },
+      "mainMatchedCases": 9,
+      "restoredContinuationMatchedCases": 9,
+      "reports": {
+        "branch": "3ddb0d30dfb3c9c693e3ca0fa2467f4882d8c59d0a5076e665ca939ce985dee3",
+        "main": "9475ef6d531905ae2787abece1b4af66fb64f06e2c86e07be973048cae38563e",
+        "python": "d06db8602d58398aebd5a1ff2f4058e4f6c357042160259a902870494cd6b259"
+      },
+      "kvConfigSha256": "8551a2851e4d1f3a25730f685f01bd437b8797c7b6f6ac29ebb864e159e5a634",
+      "oracleMatchedCases": 4,
+      "oracleMismatches": [
+        {
+          "context": 64,
+          "appendLength": 8,
+          "differentFields": [
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 64,
+          "appendLength": 128,
+          "differentFields": [
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 320,
+          "appendLength": 1,
+          "differentFields": [
+            "prefix",
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 320,
+          "appendLength": 8,
+          "differentFields": [
+            "prefix",
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 320,
+          "appendLength": 128,
+          "differentFields": [
+            "prefix",
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gemma-plain",
+      "artifact": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+      "snapshot": "98d7dc6a93ae05583e8a10018c8099459b58aeeb",
+      "configSha256": "20bd7d4bed1e8098cb3e341e8db37d43ac0e2a1006802875c688df43dbeb3134",
+      "weightHashes": {
+        "model-00001-of-00002.safetensors": "fb4e163a7254d9dd66d5e6f0d1e893b949d56ab5390d429777adc38752457154",
+        "model-00002-of-00002.safetensors": "9fcd2f2cfcfb7cd025351071a80af947c9249c1a112b7ffc32163bfab9507f99",
+        "optiq_vision.safetensors": "b464374ed691e1de16706126b5d31db4c1b85330365b41042451ab260543ee68"
+      },
+      "plan": {
+        "restore": true,
+        "runtime": "0.32.2",
+        "contexts": [
+          0,
+          64,
+          320
+        ],
+        "lengths": [
+          1,
+          8,
+          128
+        ],
+        "prefixChunk": 128
+      },
+      "mainMatchedCases": 9,
+      "restoredContinuationMatchedCases": 9,
+      "reports": {
+        "branch": "7fafdd90bf5352376387420f095a6f4d8c71700c6d870b424d928be4567ad4ba",
+        "main": "83c0ec8352e40a0704156400b8aefc3c47bd098440a4c3e40b9533c4023bb88b",
+        "python": "b2b43eb1fe7e3048727fc0501d5b5b2360655218829411976c1c0fb9430e52c4"
+      },
+      "oracleMatchedCases": 9,
+      "oracleMismatches": []
+    },
+    {
+      "name": "gemma-mixed",
+      "artifact": "mlx-community/gemma-4-e4b-it-OptiQ-4bit",
+      "snapshot": "98d7dc6a93ae05583e8a10018c8099459b58aeeb",
+      "configSha256": "20bd7d4bed1e8098cb3e341e8db37d43ac0e2a1006802875c688df43dbeb3134",
+      "weightHashes": {
+        "model-00001-of-00002.safetensors": "fb4e163a7254d9dd66d5e6f0d1e893b949d56ab5390d429777adc38752457154",
+        "model-00002-of-00002.safetensors": "9fcd2f2cfcfb7cd025351071a80af947c9249c1a112b7ffc32163bfab9507f99",
+        "optiq_vision.safetensors": "b464374ed691e1de16706126b5d31db4c1b85330365b41042451ab260543ee68"
+      },
+      "plan": {
+        "kv": "artifact",
+        "restore": true,
+        "runtime": "0.32.2",
+        "contexts": [
+          0,
+          64,
+          320
+        ],
+        "lengths": [
+          1,
+          8,
+          128
+        ],
+        "prefixChunk": 128
+      },
+      "mainMatchedCases": 9,
+      "restoredContinuationMatchedCases": 9,
+      "reports": {
+        "branch": "da789115299ffc481ad132fe627ae5636b578644dd6d4f9aae97b84ee0553278",
+        "main": "32f2e68d82ac9f9f1c679c155dc04f794a83dee1ea8a342a54e0fc6f0ef6d943",
+        "python": "8c653c6f03632739c9b939c3e3e105527e7922cd72f7268d4b74ca81f6513a9b"
+      },
+      "kvConfigSha256": "413411c8193e8922e2f92f3fce2415d1fc19f97b315b9fab60e9026cb2dce2ba",
+      "oracleMatchedCases": 4,
+      "oracleMismatches": [
+        {
+          "context": 64,
+          "appendLength": 8,
+          "differentFields": [
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 64,
+          "appendLength": 128,
+          "differentFields": [
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 320,
+          "appendLength": 1,
+          "differentFields": [
+            "prefix",
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 320,
+          "appendLength": 8,
+          "differentFields": [
+            "prefix",
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        },
+        {
+          "context": 320,
+          "appendLength": 128,
+          "differentFields": [
+            "prefix",
+            "logits",
+            "state",
+            "continuation",
+            "continuationState"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "trellis-plain",
+      "artifact": "mlx-bun/qwen38-trellis-global-exit5-h39-q4b-v2",
+      "snapshot": "local",
+      "configSha256": "4f810d56164b8e83deb2c8e4fddc0b3321221724f8bedb2103d1395f15934cd3",
+      "weightHashes": {
+        "model-00001-of-00006.safetensors": "f6dce21f3ce09576d460e10a411d95b1c6351fefabda5bb4e48a89105df30089",
+        "model-00002-of-00006.safetensors": "5c37b8c5e668646efc92f10d02497d07420732ddeaeadb3486600630caeebcc1",
+        "model-00003-of-00006.safetensors": "1678468a98ed8b368abe248463c8e38d6a03536cdce203b77daace571f4fc5ce",
+        "model-00004-of-00006.safetensors": "a3e0e7c1e93af738b6a3e5cfbcc00cbc7ebf95c487735c426621e1994ee6adea",
+        "model-00005-of-00006.safetensors": "38e0d3f3f96167d2dcf668704ea234b272e811805fbe3427d94df2198335a790",
+        "model-00006-of-00006.safetensors": "b5b822c29a9151ba210af99644687518a0b5b5f6721acd388dcfd423638acfc0"
+      },
+      "plan": {
+        "restore": true,
+        "runtime": "0.32.2",
+        "contexts": [
+          0,
+          64,
+          320
+        ],
+        "lengths": [
+          1,
+          8,
+          128
+        ],
+        "prefixChunk": 128
+      },
+      "mainMatchedCases": 9,
+      "restoredContinuationMatchedCases": 9,
+      "reports": {
+        "branch": "02745818315b1ea86560211b25a65cae2a5c80a13e0cdfaa39a49f26331d6a32",
+        "main": "c4d27ba23e84de5b3dcd4802f30fb860e73fa0b4fe64fe070b5a85e9a0b22f05"
+      },
+      "oracle": "unavailable for packed Trellis; main migration reference only"
+    }
+  ],
+  "limits": [
+    "Synthetic fixed token IDs, batch one; no quality or throughput claim.",
+    "No compiled decode, sliding-window wrap or generation checkpoint/sampler restoration.",
+    "Trellis is compared to main only; stock mlx-lm does not load the packed artifact.",
+    "Mixed KV does not meet the external oracle contract for all cases; the same mismatch occurs on main. No tolerance or numerical change was introduced."
+  ],
+  "machine": {
+    "chip": "Apple M1 Max",
+    "ramBytes": 34359738368,
+    "os": "27.0.0",
+    "macOS": "27.0",
+    "build": "26A428",
+    "bun": "1.4.2",
+    "name": "M1-Max-32GiB-development"
+  },
+  "nativeHashes": {
+    "libmlxc.dylib": "35596c4a4031a755c19b203bec95f180b5b4e4f8a9bdf131ca4fe45ce050ddd9",
+    "libmlx.dylib": "a7254c2a63f6bf01ce7d033ff8c880f30eeb399e3d0df2f2333a47ff47db517f",
+    "libjaccl.dylib": "74f53f3e5deff38eaec4be0d555ebb8614f73dc28c861dfefb0449430e29f457",
+    "mlx.metallib": "a19618258e2a215d0d0ac3056174a6e066818bb6cdecb50062cc9316076ebe43"
+  },
+  "runtimeEnvironment": {
+    "MLX_BUN_COMPILED_DECODE": "0",
+    "MLX_BUN_TEST_RUNTIME_ORACLE": "1"
+  },
+  "status": "corrected by the appended reference-dispatch clarification; original measurements retained",
+  "corrections": [
+    {
+      "date": "2026-09-25",
+      "corrects": "Initial mixed-KV oracle interpretation in this record; original report hashes and outcomes remain unchanged.",
+      "cause": "The original adapter installed mixed-KV conversion but not fused attention. Historical mlx-bun deliberately uses stock mlx-lm quantized attention for one query and the OptiQ tiled implementation for supported multi-query input. OptiQ fused install alone also changes one-query decode, so neither whole-upstream default represents that composition.",
+      "reference": "External composed adapter delegates unchanged arithmetic to stock mlx-lm for query length one and OptiQ fused_quant_sdpa for larger queries. This verifies the documented per-path library contract, not equality with all defaults of optiq serve.",
+      "pythonComposedAdapterSha256": "60a10963f358de243255a497f8d7013f7aad22ad8a01a2adf9df08cdd4055423",
+      "pythonFusedOnlyAdapterSha256": "bee0680e89c3f80fa32b63944fe5e028e57ac190a7ea652f67dafd8bac3f4a4f",
+      "results": [
+        {
+          "name": "minicpm-mixed",
+          "defaultLibraryVsComposedReferenceMatchedCases": 9,
+          "allUnfusedControlVsStockReferenceMatchedCases": 9,
+          "unfusedControlRestoredContinuationMatchedCases": 9,
+          "unfusedControlRuntimeEnvironment": {
+            "MLX_BUN_COMPILED_DECODE": "0",
+            "MLX_BUN_NO_FUSED_SDPA": "1",
+            "MLX_BUN_TEST_RUNTIME_ORACLE": "1"
+          },
+          "unfusedControlCommit": "30256cccefa62324dc0d40edf25e2236bfeed860",
+          "fusedOnlyUpstreamMatchedCases": 0,
+          "reports": {
+            "python-composed": "aa3e66e70e797942641980801c32e6e0b5b69943d484333d61bfe208c030ba5f",
+            "python-fused": "64552047229cb8e889f7e99ccb12c5598639edc28377cd8af16e0f8d823c8cae",
+            "branch-unfused": "f35c5a7916a57550e5f257161e7c5d05e572cce868b0d998fd82947600a98215"
+          }
+        },
+        {
+          "name": "gemma-mixed",
+          "defaultLibraryVsComposedReferenceMatchedCases": 9,
+          "allUnfusedControlVsStockReferenceMatchedCases": 9,
+          "unfusedControlRestoredContinuationMatchedCases": 9,
+          "unfusedControlRuntimeEnvironment": {
+            "MLX_BUN_COMPILED_DECODE": "0",
+            "MLX_BUN_NO_FUSED_SDPA": "1",
+            "MLX_BUN_TEST_RUNTIME_ORACLE": "1"
+          },
+          "unfusedControlCommit": "30256cccefa62324dc0d40edf25e2236bfeed860",
+          "fusedOnlyUpstreamMatchedCases": 0,
+          "reports": {
+            "python-composed": "b7496cd0642f4b642f42cf6b91688f64186341ab3379b8f6f819ddbf61d10725",
+            "python-fused": "e47ef79f74ba814860b1215312f1dcbf47df6a02fb6da234c905db199c4f5383",
+            "branch-unfused": "8c6a17b609bbe41ef72b1dafa1b0c75c06f6240b66db6fbfb94a562bd55caea4"
+          }
+        }
+      ]
+    }
+  ]
+}

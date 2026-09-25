@@ -3,8 +3,8 @@
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readdir } from "node:fs/promises";
-import { cpus, hostname, release, totalmem } from "node:os";
+import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { cpus, hostname, release, totalmem, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { MlxArray } from "@mlx-bun/mlx/array";
@@ -16,6 +16,8 @@ export interface Plan {
   contexts: number[];
   lengths: number[];
   prefixChunk: number;
+  kv?: "artifact";
+  restore?: true;
 }
 export const sha = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const object = (v: unknown): Record<string, unknown> => {
@@ -37,7 +39,9 @@ export function parsePlan(value: unknown): Plan {
     assert.equal(new Set(result).size, result.length, "duplicate cases");
     return result;
   }
-  return { model: resolve(p.model), runtime: p.runtime, contexts: numbers(p.contexts, 0),
+  assert(p.kv === undefined || p.kv === "artifact", 'kv must be "artifact" or omitted (plain)');
+  assert(p.restore === undefined || p.restore === true, "restore must be true or omitted");
+  return { ...(p.kv ? { kv: p.kv as "artifact" } : {}), ...(p.restore ? { restore: true as const } : {}), model: resolve(p.model), runtime: p.runtime, contexts: numbers(p.contexts, 0),
     lengths: numbers(p.lengths, 1), prefixChunk: integer(p.prefixChunk, 1) };
 }
 
@@ -101,6 +105,7 @@ function firstDifference(a: unknown, b: unknown, path: string): string | null {
  * Legacy references have no configuration provenance; accepting those is explicit. */
 export function compareReports(actual: unknown, reference: unknown, plan: Plan, allowUnrecordedConfig = false): void {
   const a = validateReport(actual, plan), b = validateReport(reference, plan);
+  if (plan.restore) assert.equal(a.restorationVerified, true, "actual report did not verify restored continuation");
   const environment = (r: Record<string, unknown>) => r.provenance ? object(r.provenance).runtimeEnvironment : undefined;
   const ae = environment(a), be = environment(b);
   if (ae === undefined || be === undefined) {
@@ -162,6 +167,7 @@ export async function emit(plan: Plan, planBytes: Uint8Array, hashWeights: boole
   assert.equal(ffi.MLX_VERSION, plan.runtime);
   const record = await provenance(planBytes, plan.model, ffi.LIBMLXC_PATH, hashWeights);
   const configSha256 = sha(await Bun.file(join(plan.model, "config.json")).bytes());
+  const stateApi = plan.kv || plan.restore ? await import("@mlx-bun/inference/state") : null;
   function array(value: MlxArray) {
     const contiguous = ops.contiguous(value);
     try { return { shape: contiguous.shape, dtype: ffi.DTYPE_NAMES[contiguous.dtype], sha256: sha(contiguous.rawBytesView()) }; }
@@ -187,7 +193,11 @@ export async function emit(plan: Plan, planBytes: Uint8Array, hashWeights: boole
   const weights = await Weights.open(plan.model);
   const rows = [];
   try {
-    const model = createModel(weights, await loadModelConfig(plan.model));
+    const config = await loadModelConfig(plan.model);
+    const model = createModel(weights, config);
+    if (plan.kv) assert(config.kvQuant?.length, "artifact has no mixed-KV configuration");
+    const maintain = plan.kv ? stateApi!.createKvMaintenance({ kvConfig: config.kvQuant!, quantizedKvStart: 0 }) : (_: Cache[]) => {};
+    if (plan.kv) Object.assign(record.artifact, { kvConfigSha256: sha(await Bun.file(join(plan.model, "kv_config.json")).bytes()), kvConfig: config.kvQuant });
     function forward(ids: number[], caches: Cache[]) {
       const input = ops.fromInt32(ids, [1, ids.length]);
       try { return model.forwardHidden(input, caches); } finally { input.dispose(); }
@@ -202,6 +212,7 @@ export async function emit(plan: Plan, planBytes: Uint8Array, hashWeights: boole
           try {
             for (const cache of caches) groups.push({ cache, planes: cache.state() });
             ops.evalAll([hidden, ...groups.flatMap(group => group.planes)]);
+            maintain(caches);
           } finally {
             for (const { cache, planes } of groups) if (cache.stateNeedsDispose)
               for (const plane of planes) plane.dispose();
@@ -213,11 +224,43 @@ export async function emit(plan: Plan, planBytes: Uint8Array, hashWeights: boole
         let logits: MlxArray;
         try { logits = model.logitsFromHidden(hidden); } finally { hidden.dispose(); }
         let current;
-        try { current = { logits: array(logits), state: state(caches, context + m) }; }
+        try { ops.evalAll([logits]); maintain(caches); current = { logits: array(logits), state: state(caches, context + m) }; }
         finally { logits.dispose(); }
-        const next = model.forward([911], caches);
-        try { rows.push({ context, m, prefix, ...current, continuation: array(next), continuationState: state(caches, context + m + 1) }); }
-        finally { next.dispose(); }
+        const directory = plan.restore ? await mkdtemp(join(tmpdir(), "mlx-parity-state-")) : null;
+        let restored: ReturnType<NonNullable<typeof stateApi>["loadKvCache"]> | undefined;
+        try {
+          if (directory) {
+            const tokens = [...Array.from({ length: context }, (_, i) => 100 + i * 7 % 1000),
+              ...Array.from({ length: m }, (_, i) => 600 + i * 3)];
+            const path = join(directory, "state.kv");
+            const meta = { modelId: configSha256, configFingerprint: sha(JSON.stringify({ configSha256, kv: plan.kv, spec: config.kvQuant })) };
+            stateApi!.saveKvCache(path, tokens, caches, meta);
+            restored = stateApi!.loadKvCache(path, model, { ...meta, verify: true });
+            assert.deepEqual(restored.tokens, tokens, "restored token prefix");
+            assert.deepEqual(state(restored.caches, context + m), current.state, "restored live state");
+          }
+          const next = model.forward([911], caches);
+          let row;
+          try {
+            ops.evalAll([next]); maintain(caches);
+            row = { context, m, prefix, ...current, continuation: array(next), continuationState: state(caches, context + m + 1) };
+          } finally { next.dispose(); }
+          if (restored) {
+            const resumed = model.forward([911], restored.caches);
+            try {
+              ops.evalAll([resumed]); maintain(restored.caches);
+              assert.deepEqual(array(resumed), row.continuation, "restored continuation logits");
+              assert.deepEqual(state(restored.caches, context + m + 1), row.continuationState, "restored continuation state");
+            } finally { resumed.dispose(); }
+          }
+          rows.push(row);
+        } finally {
+          if (restored) {
+            for (const cache of restored.caches) cache.dispose();
+            stateApi!.disposeAttachments(restored.attachments);
+          }
+          if (directory) await rm(directory, { recursive: true, force: true });
+        }
       } finally {
         for (const cache of caches) cache.dispose();
         ffi.synchronize(gpuStream); ffi.clearCache();
@@ -225,7 +268,7 @@ export async function emit(plan: Plan, planBytes: Uint8Array, hashWeights: boole
     }
   } finally { weights.dispose(); ffi.synchronize(gpuStream); ffi.clearCache(); }
   return { runtime: ffi.MLX_VERSION, library: ffi.LIBMLXC_PATH, configSha256, rows,
-    activeAfter: ffi.activeMemory(), provenance: record };
+    activeAfter: ffi.activeMemory(), provenance: record, ...(plan.restore ? { restorationVerified: true } : {}) };
 }
 
 const help = `Full logits and live-state parity (local weights, no downloads).
@@ -233,14 +276,20 @@ const help = `Full logits and live-state parity (local weights, no downloads).
   bun packages/inference/scripts/runtime-oracle.ts compare --plan plan.json --actual actual.json --reference reference.json [--allow-unrecorded-config]
 Plan: {model: absolute directory, runtime: MLX version, contexts: nonnegative integers,
        lengths: positive integers, prefixChunk: positive integer}.
+Use bun --no-env-file on both trees to avoid project-local dotenv overrides.
 Use a context larger than prefixChunk to exercise chunked prefill. Input IDs follow
 main's runtime-oracle worker: prefix 100+(position*7)%1000, append 600+position*3,
 continuation 911. The vocabulary must contain these IDs. Every grid and live cache
-plane is hashed without dtype conversion. No tolerance, generation, KV conversion,
-persistence or compiled decode is exercised. Runtime overrides are recorded, not
+plane is hashed without dtype conversion. No tolerance, generation or compiled decode is exercised.
+Optional plan kv:"artifact" applies the checkpoint's kv_config.json after each
+forward (never quantizing empty caches). Optional restore:true verifies persisted
+state and continuation against the live path for every case, with tensor hashes
+checked on load. Temporary checkpoints are removed after each case. Runtime overrides are recorded, not
 reset. Compare requires matching recorded settings unless explicitly accepting a
 legacy reference whose environment you have verified externally. A matching config
 hash alone does not establish identical weights: use --hash-weights for evidence.
+Match the reference dispatch as well as KV bits: this library uses stock quantized
+attention for one query and the OptiQ tiled path for supported multi-query input.
 Reports/plan files belong outside Git. Run external references separately; check
 that training is inactive first. No built-in timeout or Python invocation.\n`;
 if (import.meta.main) {
