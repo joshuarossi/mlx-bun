@@ -206,6 +206,21 @@ test("--upload-repo resolves the write token before any work and publishes only 
       .rejects.toThrow(`the converted model is intact at ${out} — retry with: mlx-bun upload --path ${out} --upload-repo org/quant`);
     expect(failed.lines.at(-1)).toBe("fail: upload failed: 403 forbidden");
     expect(failed.lines.some(line => line.startsWith("box: ● convert complete"))).toBe(true);
+    // Cancellation during the push reaches the publisher; the artifact stays and the retry hint prints.
+    const controller = new AbortController(), reason = new Error("convert cancelled");
+    const cancelled = harness();
+    let observed: AbortSignal | undefined;
+    cancelled.deps.publish = (request) => new Promise((_, reject) => {
+      observed = request.signal;
+      request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true });
+      controller.abort(reason);
+    });
+    await expect(runConvert(parse(local, "-q", "--upload-repo", "org/quant", "--mlx-path", `${out}-cancel`), cancelled.deps, controller.signal))
+      .rejects.toBe(reason);
+    expect(observed).toBe(controller.signal);
+    expect(cancelled.lines.some(line => line.startsWith("box: ● convert complete"))).toBe(true);
+    expect(cancelled.lines.slice(-2)).toEqual(["fail: upload cancelled",
+      `the converted model is intact at ${out}-cancel — retry with: mlx-bun upload --path ${out}-cancel --upload-repo org/quant`]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

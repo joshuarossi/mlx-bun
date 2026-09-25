@@ -7,6 +7,8 @@ export interface PublishRequest {
   private?: boolean;
   sourcePath?: string;
   jobId?: string;
+  /** Cancels the upload; see `@mlx-bun/hub/upload` for what an abort can and cannot undo. */
+  signal?: AbortSignal;
 }
 
 /** App policy chooses an artifact and credentials; hub owns the upload protocol.
@@ -24,7 +26,7 @@ export function createPublisher(options: {
     if (!source) throw new Error("no source dir (pass job_id or source_path)");
     return (options.upload ?? uploadFolder)(source, request.repoId, {
       repoType: request.kind === "dataset" ? "dataset" : "model",
-      private: !!request.private, token,
+      private: !!request.private, token, ...(request.signal ? { signal: request.signal } : {}),
     });
   };
 }

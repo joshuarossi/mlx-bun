@@ -149,10 +149,13 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   signal?.throwIfAborted();
   const uploading = deps.step(`uploading ${outDir} → ${uploadRepo}`);
   let uploaded: { url: string };
-  try { uploaded = await deps.publish({ kind: "quantize", repoId: uploadRepo, sourcePath: outDir }); }
+  try { uploaded = await deps.publish({ kind: "quantize", repoId: uploadRepo, sourcePath: outDir, signal }); }
   catch (error) {
+    // The converted model is complete either way; only the push is undone or unfinished.
+    const hint = `the converted model is intact at ${outDir} — retry with: mlx-bun upload --path ${outDir} --upload-repo ${uploadRepo}`;
+    if (signal?.aborted) { uploading.fail("upload cancelled"); deps.log(hint); throw signal.reason; }
     uploading.fail(`upload failed: ${message(error)}`);
-    throw new Error(`the converted model is intact at ${outDir} — retry with: mlx-bun upload --path ${outDir} --upload-repo ${uploadRepo}`);
+    throw new Error(hint);
   }
   uploading.done(`uploaded ${style.bold(uploaded.url)}`);
 }

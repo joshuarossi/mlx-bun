@@ -31,7 +31,7 @@ export function createPublishingRoutes(options: {
       if (body.private != null && typeof body.private !== "boolean") return error("private must be a boolean");
       const result = await options.publish({ kind: push![1] as PublishRequest["kind"], repoId: body.repo_id,
         private: body.private as boolean | undefined, sourcePath: body.source_path as string | undefined,
-        jobId: body.job_id as string | undefined });
+        jobId: body.job_id as string | undefined, signal: request.signal });
       return Response.json({ ok: true, url: result.url });
     } catch (failure) {
       if (request.signal.aborted) return error("Request cancelled", 499);
