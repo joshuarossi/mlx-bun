@@ -170,7 +170,7 @@ export function pairReports(runs: { tree: "main" | "branch"; report: any }[]) {
     assert.equal(tree, ["main", "branch", "branch", "main"][i % 4], "expected AB/BA process order");
     assert.equal(r.complete, true, "incomplete run");
     assert(typeof r.sourceCommit === "string" && /^[a-f0-9]{40}$/.test(r.sourceCommit), "missing source revision");
-    assert(r.dirty !== true, "dirty source cannot establish a reproducible pair");
+    assert.equal(r.dirty, false, "explicit clean source provenance required");
     if (commits.has(tree)) assert.equal(r.sourceCommit, commits.get(tree), "source changed between blocks");
     commits.set(tree, r.sourceCommit);
     for (const key of ["artifact", "configSha256", "promptSha256", "host", "chip"])
@@ -208,7 +208,7 @@ export function pairReports(runs: { tree: "main" | "branch"; report: any }[]) {
     return { median: ordered.length % 2 ? ordered[mid]! : (ordered[mid - 1]! + ordered[mid]!) / 2,
       min: ordered[0]!, max: ordered.at(-1)! };
   };
-  return { order: runs.map(r => r.tree), sourceCommits: Object.fromEntries(commits), tokens: expectedTokens,
+  return { order: runs.map(r => r.tree), machineStates: runs.map(({ tree, report }) => ({ tree, before: report.machineBefore, after: report.machineAfter })), sourceCommits: Object.fromEntries(commits), tokens: expectedTokens,
     trees: Object.fromEntries((["main", "branch"] as const).map(tree => [tree, {
       samples: samples[tree].length,
       wallMs: distribution(samples[tree].map(s => s.wallMs)),

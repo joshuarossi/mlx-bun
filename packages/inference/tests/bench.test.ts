@@ -61,6 +61,7 @@ test("pairing refuses token drift, missing evidence and mismatched settings befo
     (r: any) => { r[1].report.samples[0].wallMs = NaN; },
     (r: any) => { r[1].report.samples[0].engineTiming.cachedTokens = 1; },
     (r: any) => { r[1].report.dirty = true; },
+    (r: any) => { delete r[0].report.dirty; },
     (r: any) => { r[1].report.samples[0].startedAt = r[0].report.samples[0].startedAt; },
     (r: any) => { r[2].report.sourceCommit = "c".repeat(40); },
     (r: any) => { [r[0], r[1]] = [r[1], r[0]]; },
