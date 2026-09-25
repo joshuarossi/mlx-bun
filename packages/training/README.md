@@ -51,8 +51,13 @@ compares fixed-seed MiniCPM5-1B training against main: three SFT steps, two DPO
 steps, and two ORPO steps. Step metrics, every saved A/B tensor, and full-sequence
 logits on a seven-token probe after adapter reload match exactly. These runs cover rank-2 adapters on
 the last layer's query/value projections, batch size one, and short sequences.
-The 47 native tests also pass, and every public entry imports from installed
+The native tests also pass, and every public entry imports from installed
 package archives. This establishes migration preservation for those paths;
 Gemma and diffusion, checkpointed/segmented/shared-prefix/fused/flash paths,
 warm starts, intermediate checkpoints, and adapter fusion/export still need
 real-weight evidence. It is not an independent training-oracle or performance claim.
+
+[Adapter merge ownership tests](tests/native/merge.test.ts) additionally check
+exact synthetic merged tensors and cleanup after source, materialization,
+concatenation, and native-map allocation failures. This is a resource-lifetime
+check; real-model adapter fusion/export remains separate verification.

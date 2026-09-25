@@ -115,6 +115,7 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
   const spillQueue = tiered?.spillQueue;
   const durability = tiered?.durability;
   let stopDemotion: (() => void) | undefined;
+  const stopIdleDemotion = () => { const stop = stopDemotion; stopDemotion = undefined; stop?.(); };
   try {
     if (runtime.value("MLX_BUN_CACHE_RETENTION") === "cost-size") promptCache.retention = deps.costSizeRetention();
     const rawQueueGb = Number(runtime.value("MLX_BUN_SSD_SPILL_QUEUE_GB"));
@@ -162,13 +163,14 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
     let closing: Promise<DurabilityFlushResult> | undefined;
     return { promptCache, resolvedKvScheme, kvScheme: resolvedKvScheme.generationOptions,
       stateCodecs, checkpoints: store, continuationServices, adapterNamespace, stats, flush,
+      /** Stop new background demotion before draining active requests. */
+      stopIdleDemotion,
       /** Call only after all execution borrowers have drained. Clears RAM even
        * when persistence fails; durable:false is returned to the shutdown owner. */
       close(): Promise<DurabilityFlushResult> {
         return closing ??= (async () => {
           let result: DurabilityFlushResult | undefined; const errors: unknown[] = [];
-          try { stopDemotion?.(); } catch (error) { errors.push(error); }
-          stopDemotion = undefined;
+          try { stopIdleDemotion(); } catch (error) { errors.push(error); }
           try { result = await flush(); } catch (error) { errors.push(error); }
           try { promptCache.clear(); } catch (error) { errors.push(error); }
           if (errors.length === 1) throw errors[0];
@@ -179,7 +181,7 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
     };
   } catch (error) {
     const errors: unknown[] = [error];
-    try { stopDemotion?.(); } catch (cleanup) { errors.push(cleanup); }
+    try { stopIdleDemotion(); } catch (cleanup) { errors.push(cleanup); }
     try { promptCache.clear(); } catch (cleanup) { errors.push(cleanup); }
     if (errors.length > 1) throw new AggregateError(errors, "cache construction and cleanup failed");
     throw error;
