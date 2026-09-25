@@ -130,8 +130,16 @@ class DiffRouter {
     normed.dispose();
     const part = ops.argpartitionAxis(scores, this.numExperts - this.topK, -1);
     const [T] = scores.shape as [number, number];
-    const indices = part.slice([0, this.numExperts - this.topK], [T, this.numExperts]);
+    const sliced = part.slice([0, this.numExperts - this.topK], [T, this.numExperts]);
     part.dispose();
+    // The top-k indices derive from `scores`, so under value_and_grad they sit
+    // on the tape and MLX's gather VJP refuses a cotangent for indices
+    // ("Cannot calculate VJP with respect to indices"). Integer indices carry
+    // no gradient; stopping them here keeps the forward bit-identical and lets
+    // the value gather still backpropagate into `scores`. (Main's copy of this
+    // router lacks the stop and fails the same way under MLX 0.32.2.)
+    const indices = ops.stopGradient(sliced);
+    sliced.dispose();
     let w = ops.takeAlongAxis(scores, indices, -1);
     scores.dispose();
     w = disposing(w, ops.softmaxAxis(w, -1, true));

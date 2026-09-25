@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import "../jobs/executable";
 import { commandInvocation, help, isCommand, parseCommand } from "./args";
 import { renderHelp } from "./terminal";
 import pkg from "../../package.json" with { type: "json" };
