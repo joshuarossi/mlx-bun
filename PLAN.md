@@ -13,6 +13,11 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
   settings. Exit: reproducible comparisons meet the numerical contracts, with
   source revisions, external oracle versions, and curated evidence in approved
   docs; synthetic tests alone do not close this item.
+- [ ] Confirm the long-term mixed-KV reference contract for single-query decode:
+  the documented stock mlx-lm path or OptiQ serve's fused default. The
+  [state record](packages/inference/measurements/2026-09-25-runtime-state.json)
+  verifies the existing composition; keep that implementation unchanged during
+  this refactor and do not imply blanket OptiQ serve compatibility.
 - [ ] Run paired same-machine performance comparisons against main using the
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.
