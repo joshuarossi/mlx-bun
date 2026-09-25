@@ -26,7 +26,9 @@ inputs so callers can reuse that precedence without mutating process state.
 reason at the next checkpoint (metadata request, lock attempt, Range retry,
 streamed chunk, or final publish) after pending writes settle, so the
 `.incomplete` prefix resumes on the next run; the blob rename, the revision ref,
-and the tracker's completion are never published after an abort. The
+and the tracker's completion are never published after an abort. `onStatus`
+hands the caller the live tracker row once the listing and preflight succeed,
+so a caller can show one lifecycle from its own admission onward. The
 [download tests](tests/download.test.ts) run every path against a local fake Hub.
 Uploads never resolve credentials implicitly. The app chooses its token and
 passes it to `createRepo` or `uploadFolder` from `@mlx-bun/hub/upload`.

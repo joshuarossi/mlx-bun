@@ -24,7 +24,7 @@ function fakeHub(files: FakeFile[]) {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const url = new URL(request.url);
     seen.push({ path: url.pathname, range: request.headers.get("range") });
-    if (/^\/api\/models\/.+\/revision\/[^/]+$/.test(url.pathname)) {
+    if (/^\/api\/models\/org\/tiny\/revision\/[^/]+$/.test(url.pathname)) {
       if (holdMetadata) await holdMetadata.promise;
       return Response.json({ sha: COMMIT, siblings: files.map(file => file.lfs
         ? { rfilename: file.name, size: file.bytes.length, blobId: "f".repeat(40), lfs: { sha256: sha256(file.bytes), size: file.bytes.length } }
@@ -174,4 +174,22 @@ test("a paused stream is abortable while waiting for the next chunk, and the par
   expect(statSync(`${blob}.incomplete`).size).toBe(CHUNK);
   expect(existsSync(join(fixture.repoDir, "refs", "main"))).toBe(false);
   expectComplete(fixture, await fixture.download());
+});
+
+test("onStatus hands the caller the live tracker row after listing and preflight, and never before a failure there", async () => {
+  const fixture = setup();
+  const seen: unknown[] = [];
+  const snapshot = await fixture.download({ onStatus: status => {
+    seen.push({ ...status });
+    expect(status.state).toBe("active");
+    expect(status.totalBytes).toBe(fixture.files.reduce((sum, file) => sum + file.bytes.length, 0));
+    expect(downloadsSnapshot().at(-1)).toBe(status);
+  } });
+  expectComplete(fixture, snapshot);
+  expect(seen).toHaveLength(1);
+  const missing = setup();
+  let statuses = 0;
+  await expect(downloadModel("org/absent", { cacheDir: missing.cacheDir, endpoint: missing.hub.endpoint, token: null,
+    onStatus: () => { statuses++; } })).rejects.toThrow("HF API 404");
+  expect(statuses).toBe(0);
 });

@@ -55,3 +55,14 @@ test("discovery releases its registry when scanning fails", async () => {
   expect((await (await run.get("/v1/models"))!.json()).data).toHaveLength(1);
   expect(run.scans()).toBe(2); expect(run.closes()).toBe(2);
 });
+
+test("downloads serves the composition's progress rows when supplied", async () => {
+  const context = { modelId: "test/model", model: { config: { modelType: "llama", text: { maxPositionEmbeddings: 8192 } } },
+    template: { supportsThinking: false }, genDefaults: {}, draft: null } as unknown as LoadedModelContext;
+  const rows = [{ repoId: "org/tiny", state: "active" as const, currentFile: null, receivedBytes: 0, totalBytes: 0,
+    filesDone: 0, filesTotal: 0, bytesPerSec: 0, startedAt: 5, finishedAt: null }];
+  const routes = createDiscoveryRoutes(context, { discovery: { adapters: false, training: false, dsa: true, embeddings: false } },
+    1, undefined, undefined, () => rows);
+  const request = new Request("http://local/downloads");
+  expect(await (await routes.handle(new URL(request.url), request))!.json()).toEqual({ downloads: rows });
+});

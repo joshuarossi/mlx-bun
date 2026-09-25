@@ -138,3 +138,57 @@ test("shutdown mid-transfer keeps a resumable partial that a later start complet
     await second.close();
   } finally { pause?.resolve(); await server.stop(true); }
 });
+
+const row = (repoId: string, over: Partial<Awaited<ReturnType<typeof downloadsSnapshot>>[number]> = {}) => ({
+  repoId, state: "active" as const, currentFile: null, receivedBytes: 0, totalBytes: 0, filesDone: 0, filesTotal: 0,
+  bytesPerSec: 0, startedAt: Date.now(), finishedAt: null, ...over });
+
+test("snapshot shows one row per transfer from admission through the tracker's live row to completion", async () => {
+  const tracker: ReturnType<typeof row>[] = [];
+  let publish: ((status: ReturnType<typeof row>) => void) | undefined;
+  const finish = Promise.withResolvers<string>();
+  const completed = Promise.withResolvers<void>();
+  const owner = createDownloadOwner({ tracker: () => tracker, onComplete: () => { completed.resolve(); },
+    download: (_repo, options) => { publish = options.onStatus!; return finish.promise; } });
+  owner.start("org/tiny");
+  expect(owner.snapshot()).toEqual([expect.objectContaining({ repoId: "org/tiny", state: "active", totalBytes: 0, receivedBytes: 0 })]);
+  const live = row("org/tiny", { totalBytes: 200, filesTotal: 2 });
+  tracker.push(live); publish!(live);
+  expect(owner.snapshot()).toEqual([live]);
+  live.receivedBytes = 50;
+  expect(owner.snapshot()[0]).toMatchObject({ receivedBytes: 50, totalBytes: 200 });
+  live.state = "done"; live.finishedAt = Date.now();
+  finish.resolve("/snap");
+  await completed.promise; await drained(owner);
+  expect(owner.snapshot()).toEqual([live]);
+  tracker.splice(0);
+  expect(owner.snapshot()).toEqual([live]);
+  await owner.close();
+});
+
+test("snapshot carries terminal rows for transfers that fail or are cancelled before the tracker has one", async () => {
+  const failed = Promise.withResolvers<void>();
+  const owner = createDownloadOwner({ tracker: () => [], onFailure: () => failed.resolve(),
+    download: async repo => { if (repo === "org/missing") throw new Error("HF API 404 for org/missing@main");
+      return new Promise<string>((_, reject) => { /* cancelled at close */ void reject; }); } });
+  owner.start("org/missing");
+  await failed.promise; await drained(owner);
+  expect(owner.snapshot()).toEqual([expect.objectContaining({ repoId: "org/missing", state: "error", error: "HF API 404 for org/missing@main" })]);
+  expect(owner.snapshot()[0]!.finishedAt).not.toBeNull();
+  const never = createDownloadOwner({ tracker: () => [], download: (_repo, options) => new Promise<string>((_, reject) => {
+    options.signal!.addEventListener("abort", () => reject(options.signal!.reason)); }) });
+  never.start("org/slow");
+  await never.close();
+  expect(never.snapshot()).toEqual([expect.objectContaining({ repoId: "org/slow", state: "error", error: "server is shutting down" })]);
+  await owner.close();
+});
+
+test("snapshot keeps tracker rows this owner did not start and retains only five settled rows of its own", async () => {
+  const foreign = row("startup/model", { totalBytes: 10, receivedBytes: 10, state: "done" });
+  const owner = createDownloadOwner({ tracker: () => [foreign], download: async () => { throw new Error("no"); } });
+  for (let index = 0; index < 7; index++) { owner.start(`org/r${index}`); await drained(owner); }
+  const rows = owner.snapshot();
+  expect(rows[0]).toBe(foreign);
+  expect(rows.slice(1).map(entry => entry.repoId)).toEqual(["org/r2", "org/r3", "org/r4", "org/r5", "org/r6"]);
+  await owner.close();
+});

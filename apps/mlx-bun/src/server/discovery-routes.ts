@@ -3,6 +3,7 @@ import pkgJson from "../../package.json" with { type: "json" };
 import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import { fit } from "@mlx-bun/hub/fit";
 import { Registry } from "@mlx-bun/hub/registry";
+import type { DownloadStatus } from "@mlx-bun/hub/download";
 
 const pkgVersion = (pkgJson as { version: string }).version;
 
@@ -41,6 +42,8 @@ export function createDiscoveryRoutes(
   startedAt: number,
   transcription: () => Promise<TranscriptionInfo | null> = async () => null,
   createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => new Registry(),
+  /** Progress rows for `/downloads`; the default is the hub package's process tracker. */
+  downloads?: () => readonly DownloadStatus[],
 ): DiscoveryRoutes {
   let libraryCache: { at: number; rows: unknown[] } | null = null;
 
@@ -100,8 +103,8 @@ export function createDiscoveryRoutes(
         }
 
         case "downloads": {
-          const { downloadsSnapshot } = await import("@mlx-bun/hub/download");
-          return Response.json({ downloads: downloadsSnapshot() });
+          const rows = downloads ? downloads() : (await import("@mlx-bun/hub/download")).downloadsSnapshot();
+          return Response.json({ downloads: rows });
         }
 
         case "api-index":

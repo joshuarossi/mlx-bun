@@ -52,6 +52,10 @@ export interface DownloadOptions {
    * stays resumable, and nothing is published (blob rename, refs, or tracker
    * completion) once the signal has fired. */
   signal?: AbortSignal;
+  /** Receives this transfer's live tracker row once the listing and disk
+   * preflight succeed; the row then updates in place until the transfer
+   * settles. Not called when the transfer fails or is aborted before that. */
+  onStatus?: (status: DownloadStatus) => void;
 }
 
 export interface DownloadSpacePlan {
@@ -499,6 +503,7 @@ export async function downloadModel(
     bytesPerSec: 0, startedAt: Date.now(), finishedAt: null,
   };
   downloadLog.push(status);
+  opts.onStatus?.(status);
   let doneBytes = 0;
   // Rolling ~5 s window of (time, receivedBytes) samples for the rate.
   const samples: Array<[number, number]> = [];
