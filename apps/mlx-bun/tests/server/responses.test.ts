@@ -162,6 +162,22 @@ const parseFrames = (frames: string[]) =>
   });
 
 describe("ResponsesStreamTranslator", () => {
+  test("failed semantic streams end with response.failed and never publish completed history", () => {
+    let completed = 0;
+    const protocol = createResponsesStreamProtocol("m", null, () => { completed++; });
+    const frames = parseFrames([
+      ...protocol.start(), ...protocol.addEvents([{ type: "content", text: "partial" }]),
+      ...protocol.error("broken"), ...protocol.finish("stop", { prompt_tokens: 3, completion_tokens: 1 }),
+    ]);
+    const created = frames.find(frame => frame.event === "response.created")!.data.response;
+    const failed = frames.at(-1)!;
+    expect(failed.event).toBe("response.failed");
+    expect(failed.data.response).toMatchObject({ id: created.id, status: "failed",
+      error: { code: "server_error", message: "broken" }, usage: { input_tokens: 3, output_tokens: 1 } });
+    expect(failed.data.response.output[0].content[0].text).toBe("partial");
+    expect(frames.map(frame => frame.event)).not.toContain("response.completed"); expect(completed).toBe(0);
+  });
+
   test("semantic completion events bypass OpenAI SSE serialization", () => {
     let captured: Record<string, unknown> = {};
     const protocol = createResponsesStreamProtocol(

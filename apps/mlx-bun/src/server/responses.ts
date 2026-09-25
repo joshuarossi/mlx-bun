@@ -815,7 +815,7 @@ export function createResponsesStreamProtocol(
 ): CompletionStreamProtocol {
   const translator = new ResponsesStreamTranslator(model, previousResponseId);
   const chunk = (delta: Record<string, unknown>) => ({ choices: [{ delta }] });
-  let failed = false;
+  let failure: string | undefined;
   return {
     start: () => translator.addChunk(chunk({ role: "assistant", content: "" })),
     addEvents(events: CompletionEvent[]) {
@@ -832,18 +832,19 @@ export function createResponsesStreamProtocol(
       });
     },
     finish(reason, usage) {
-      // The shared HTTP sink finishes after reporting a generation error.
-      // Failed output must not become resumable history or a completed event.
-      if (failed) return [];
-      const frames = [
-        ...translator.addChunk({ choices: [{ delta: {}, finish_reason: reason }], usage }),
-        ...translator.finalize(),
-      ];
+      const frames = translator.addChunk({ choices: [{ delta: {}, finish_reason: reason }], usage });
+      // The shared sink finishes after reporting an error. Give clients a
+      // terminal response without saving failed output as resumable history.
+      if (failure !== undefined) return [...frames, sse("response.failed", {
+        type: "response.failed", response: { ...translator.finalResponse(), status: "failed",
+          error: { code: "server_error", message: failure } },
+      })];
+      frames.push(...translator.finalize());
       onComplete(translator.finalResponse());
       return frames;
     },
     error(message) {
-      failed = true;
+      failure = message;
       return [sse("error", {
         type: "error",
         code: "server_error",
