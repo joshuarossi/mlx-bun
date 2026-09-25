@@ -511,6 +511,7 @@ are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
 
 `bun run verify:binary` builds into temporary storage, relocates the directory,
+installs it through the curl installer using a local archive and temporary home,
 and checks the actual CLI and managed child plus a compiled consumer for web,
 memory, synthetic registry/fit, native path resolution and Photon initialization.
 The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
@@ -520,3 +521,34 @@ also starts the actual relocated executable, checks its web assets, `/stats`,
 the supplied weights through a temporary HF snapshot symlink and isolates the
 child's home, caches, and chat storage; it never copies or downloads weights.
 This is a local build artifact, not signing/notarization or release publishing.
+
+[`scripts/install.sh`](../../scripts/install.sh) installs a complete release
+bundle under `${MLX_BUN_INSTALL_DIR:-$HOME/.mlx-bun}/app-install/` and links
+`~/.local/bin/mlx-bun`. `MLX_BUN_VERSION` selects `latest` or a pinned tag.
+The installer validates the files and version before switching its `current`
+symlink and retains the old app on failure. Successful updates keep the current
+and immediate previous bundles, plus any older bundle used by a running app.
+Other older owned bundles and stale stages are removed on the next install;
+vnode inspection keeps bundles used by apps launched through PATH or symlinks,
+and an inconclusive inspection retains the affected bundle. Restart running
+apps after an upgrade before starting new managed jobs: the job runner currently
+resolves its executable lazily and can select the new build. Capturing executable
+identity at startup is tracked in [PLAN](../../PLAN.md). A later install prunes
+old bundles after their processes exit.
+Sessions, wiki, credentials, and legacy flat installation files
+outside `app-install/` stay intact. A custom `MLX_BUN_INSTALL_DIR` relocates only
+the installed bundle; application data still lives under `~/.mlx-bun`.
+A concurrent install is blocked by `app-install/lock`; after an interrupted
+installer, remove the reported absolute lock directory only after confirming
+its recorded PID is no longer an installer. Run the script with `--help` for usage.
+The public installer must not deploy before a compatible release bundle exists;
+older release archives lack the newly required license and notice files.
+
+`bun scripts/prepare-homebrew.ts /path/to/mlx-bun-v<version>-arm64.tar.gz`
+prepares a local `mlx-bun.rb` beside the archive, with its version, release URL,
+and SHA256. The formula installs the entire bundle in `libexec` and symlinks its
+command into `bin`. Preparation checks archive members; release verification
+must additionally check that its binary version matches the archive filename.
+Preparation does not install, sign, notarize, publish, or
+update the tap. [Installer tests](tests/install.test.ts) use local archives and
+temporary homes, including reinstall and failure paths, without network access.
