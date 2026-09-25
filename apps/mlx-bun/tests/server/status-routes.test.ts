@@ -49,7 +49,7 @@ test("stats preserves the wire counters and observes changes without execution o
 test("SSD stats expose live store and combined persistence counters with unlimited cap encoded as null", async () => {
   const input = fixture(); input.ssdCacheDir = "/injected/cache";
   input.caches.checkpoints = { entries: 7, totalBytes: 8, maxBytes: Infinity,
-    stats: { restores: 9, spills: 10, restoreMsLast: 10.7 }, longestDurablePrefixTokens: 11 } as NonNullable<Input["caches"]["checkpoints"]>;
+    stats: { restores: 9, spills: 10, restoreMsLast: 10.7 }, longestDurablePrefixTokens: 11 };
   const body = await get(createStatusRoutes(input), "/stats");
   expect(body.ssd_cache).toEqual({ dir: "/injected/cache", entries: 7, bytes: 8, max_bytes: null,
     restores: 9, spills: 10, restore_ms_last: 11, demotions: 13, pending_snapshots: 2,
@@ -75,7 +75,7 @@ test("fit reuses hub estimates at maximum and typical context with the served ar
 });
 
 test("a negative fit estimate stays advisory and never invents an enforced context cap", async () => {
-  const input = fixture(); input.context.model.weightsBytes = 100e9;
+  const input = fixture(); input.context.model = { ...input.context.model, weightsBytes: 100e9 };
   const routes = createStatusRoutes(input);
   expect((await get(routes, "/fit")).report.fits).toBe(false);
   expect((await get(routes, "/stats")).admission.enforced_context_tokens).toBeNull();

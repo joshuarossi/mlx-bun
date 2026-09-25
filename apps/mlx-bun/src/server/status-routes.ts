@@ -10,7 +10,9 @@ type PromptCounters = Pick<CacheServices["promptCache"], "size" | "totalBytes" |
   "hits" | "misses" | "sessionHits" | "sessionMisses" | "prefixScans" |
   "objectHits" | "objectMisses" | "objectRestores" | "demotions">;
 type DiskCounters = Pick<NonNullable<CacheServices["checkpoints"]>, "entries" | "totalBytes" |
-  "maxBytes" | "stats" | "longestDurablePrefixTokens">;
+  "maxBytes" | "longestDurablePrefixTokens"> & {
+    stats: Pick<NonNullable<CacheServices["checkpoints"]>["stats"], "restores" | "spills" | "restoreMsLast">;
+  };
 
 /** Read-only HTTP views borrow counters and metadata. They neither open model
  * storage nor acquire execution leases, and fit estimates never set admission. */
@@ -18,7 +20,8 @@ export function createStatusRoutes(input: {
   context: Pick<LoadedModelContext, "modelId" | "glmMemoryPlan"> & {
     model: Pick<LoadedModelContext["model"], "config" | "weightsBytes">;
   };
-  caches: Pick<CacheServices, "resolvedKvScheme" | "stats"> & {
+  caches: Pick<CacheServices, "stats"> & {
+    resolvedKvScheme: Pick<CacheServices["resolvedKvScheme"], "fitOptions" | "describe">;
     promptCache: PromptCounters; checkpoints: DiskCounters | null;
   };
   gateway: Pick<GenerationGateway, "activeRows" | "pendingRows" | "submittedRows" | "kvBytes">;
