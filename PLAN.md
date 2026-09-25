@@ -26,6 +26,9 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 
 ## Migrate the application
 
+- [ ] Wire the migrated chat backend into the server and browser; inject memory
+  tools, skill paths, and prompt context from their real app owner. The chat
+  adapter currently leaves memory disabled and starts no server by itself.
 - [ ] Migrate the server, engine host, web app, and job orchestration into
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
