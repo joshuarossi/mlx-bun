@@ -100,7 +100,7 @@ and cancellation as chat completions; no second service is created.
 `responses.ts` owns Responses translation and its process-local, one-hour,
 32 MiB history. Successful JSON and SSE requests retain input, output, and
 instructions for `previous_response_id`; failed or cancelled requests do not.
-A generation error ends SSE without a misleading completion event. Composition
+A generation error ends SSE with `response.failed`, without a misleading completion event. Composition
 may supply `responseHistory` to replace the store; no isolated-worker forwarding
 or duplicate completion service is involved.
 
