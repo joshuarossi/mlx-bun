@@ -376,6 +376,8 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
   const close = () => closed ??= (async () => { try { await running?.close(); } finally { removeSignals(); } })();
   try {
     selection = await deps.resolve(options.query, {}, startup.signal);
+    // A signal that landed during selection must not start a native load.
+    startup.signal.throwIfAborted();
     deps.log(`Loading ${selection.m.repoId}${selection.picked ? " (auto-selected)" : ""}`);
     running = await deps.start(selection.m, options);
     // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.

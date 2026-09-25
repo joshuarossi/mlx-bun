@@ -432,3 +432,11 @@ test("a signal during model load closes the app once it exists, opens no browser
   expect(run.signals.listenerCount("SIGINT")).toBe(0); expect(run.signals.listenerCount("SIGTERM")).toBe(0);
   await app.close(); expect(run.closes()).toBe(1);
 });
+
+test("a signal that lands during selection but leaves it resolved still stops before the model loads", async () => {
+  const run = runtime();
+  await expect(runServe(parseCommand("serve", []), { ...run.dependencies,
+    resolve: async () => { run.signals.emit("SIGINT"); return { m: model, picked: true }; } })).rejects.toThrow("startup cancelled by signal");
+  expect(run.starts).toEqual([]); expect(run.opens).toEqual([]);
+  expect(run.signals.listenerCount("SIGINT")).toBe(0); expect(run.signals.listenerCount("SIGTERM")).toBe(0);
+});
