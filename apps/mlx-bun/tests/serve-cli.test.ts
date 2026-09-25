@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { parseCommand } from "../src/cli/args";
-import { browserUrl, installShutdownHandlers, parseServeOptions, runServe, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { browserUrl, installShutdownHandlers, parseServeOptions, resolveServingLimits, runServe, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
 const model = { repoId: "example/model", path: "/model" } as ModelRecord;
@@ -43,6 +43,25 @@ test("the existing runtime context cap is validated and explicit CLI context tak
     try { expect(() => parse()).toThrow("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer"); }
     finally { restore(); }
   }
+});
+
+test("loaded GLM plans supply context/output defaults and intersect explicit or profile context caps", () => {
+  const plan = { contextTokens: 8192, maxGenerationTokens: 2048 };
+  expect(resolveServingLimits(parse(), plan)).toEqual({ contextLimit: 8192, defaultGeneratedTokens: 2048 });
+  expect(resolveServingLimits(parse("--ctx", "16384"), plan)).toEqual({ contextLimit: 8192, defaultGeneratedTokens: 2048 });
+  expect(resolveServingLimits(parse("--ctx", "4096", "--max-tokens", "512"), plan))
+    .toEqual({ contextLimit: 4096, defaultGeneratedTokens: 512 });
+  // Main lets an explicit default generation cap override the plan default.
+  expect(resolveServingLimits(parse("--max-tokens", "3000"), plan).defaultGeneratedTokens).toBe(3000);
+  const restore = configureRuntime({ MLX_BUN_RD_CONTEXT_LIMIT: "1024" });
+  try { expect(resolveServingLimits(parse(), plan)).toEqual({ contextLimit: 1024, defaultGeneratedTokens: 2048 }); }
+  finally { restore(); }
+});
+
+test("ordinary models receive no inferred context or generation cap from GLM composition", () => {
+  expect(resolveServingLimits(parse())).toEqual({ contextLimit: null, defaultGeneratedTokens: undefined });
+  expect(resolveServingLimits(parse("--ctx", "4096", "--max-tokens", "512"), null))
+    .toEqual({ contextLimit: 4096, defaultGeneratedTokens: 512 });
 });
 
 test("invalid serving input fails before model selection", async () => {

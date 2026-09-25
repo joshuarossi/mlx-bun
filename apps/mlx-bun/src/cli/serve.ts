@@ -3,6 +3,7 @@ import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
+import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
 import type { RequestPrepOptions } from "../server/request-prep";
 
 export interface ServeOptions {
@@ -79,6 +80,19 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   };
 }
 
+/** Main's loaded-model limits constrain the context window; an explicit output
+ * cap overrides the model plan's default without changing its context budget. */
+export function resolveServingLimits(
+  options: Pick<ServeOptions, "contextLimit" | "defaultGeneratedTokens">,
+  plan?: Pick<Glm52MemoryPlan, "contextTokens" | "maxGenerationTokens"> | null,
+) {
+  return {
+    contextLimit: options.contextLimit === null ? plan?.contextTokens ?? null
+      : Math.min(options.contextLimit, plan?.contextTokens ?? Infinity),
+    defaultGeneratedTokens: options.defaultGeneratedTokens ?? plan?.maxGenerationTokens,
+  };
+}
+
 export interface RunningApp { port: number; close(): Promise<void> }
 
 /** CLI composition owns resources until each explicit ownership transfer. */
@@ -118,12 +132,12 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
+    const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const routes = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
-      defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
+      kvScheme: caches.kvScheme, ...limits, tokenHistory });
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
-      contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
+      contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template.supportsThinking,
       genDefaults: {
