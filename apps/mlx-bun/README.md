@@ -22,6 +22,8 @@ deletion. Cache location and Hugging Face credentials follow the
 [hub library](../../packages/hub/README.md). This workspace remains private
 while app licensing and release packaging are decided.
 
+## Engine
+
 `src/engine/` owns loaded model lifetimes, preparation admission and the shared
 continuous scheduler. `createAppEngine` takes ownership of its model context;
 closing drains execution before releasing compiled runners, adapters, drafts,
@@ -47,6 +49,28 @@ drains execution, flushes persistence, clears cache state, then frees the model.
 `flush` also supports explicit durability checks while the app is running.
 Cache policy tests inject storage and allocator ports; real SSD/numerical runs
 remain separate verification.
+
+## Server seams
+
+`server/routes.ts` composes chat/text completion, embedding, and discovery
+handlers over an injected engine. Its `handle(Request)` returns a response or
+`null` for the next application surface; it never opens a socket or closes the
+borrowed engine. Application startup owns those lifetimes.
+
+Inside `server/`, request parsing and prompt preparation precede the single-use
+admission plan. The completion executor consumes the engine contract; the sink
+and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
+`prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` adapts
+HTTP content parts to the library's numerical input builders. Grammar and media
+work enter the engine's preparation domain before allocating native resources.
+Text-only protocol work loads no MLX library.
+
+The [request pipeline](tests/server/pipeline.test.ts) and
+[HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
+including cancellation and ownership cleanup. Real-weight media and generation
+verification remains separate; these tests prove the HTTP/engine boundary.
+Server listening, application startup, additional API surfaces, and the web UI
+are subsequent migration slices.
 
 ## Web chat backend
 
@@ -74,3 +98,11 @@ paths, and its prompt hint through `PiBackendOptions.memory`. Download context
 is an optional callback from app composition. Browser assets and HTTP/WebSocket
 route wiring remain separate migration work. Standalone Pi integration remains
 deferred. The protocol exposes no serial-serving lane selection.
+
+App composition can supply `PiBackendOptions.paths` (`cwd`, `agentDir`,
+`sessionDir`, `toolApprovalsFile`) to isolate runtime settings and transcripts.
+Omitting them preserves the installed app locations. These are composition
+options, not CLI switches. The [SDK smoke test](tests/chat-runtime.test.ts)
+uses temporary paths and a fixed loopback SSE response to exercise real Pi
+startup, provider hooks, streaming, cancellation, and transcript persistence
+without a model or access to the installed app's chat storage.
