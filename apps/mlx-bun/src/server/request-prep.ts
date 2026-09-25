@@ -27,7 +27,7 @@ import {
   resolveHlg,
   type ChatRequestParams,
 } from "./chat-request";
-import type { ModelContext } from "../engine/model-host";
+import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import type { PromptTokenHistory } from "./generated-token-history";
 import { selectToolStreamMode, ToolAwareStream, type ToolStreamMode } from "./token-streams";
 

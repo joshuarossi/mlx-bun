@@ -11,7 +11,7 @@ import {
   type ChatRequestParams,
 } from "./chat-request";
 import type { InferenceRequest } from "./inference-request";
-import type { ModelContext } from "../engine/model-host";
+import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import type { BuiltPrompt, ModelPromptBuilder, PromptNativeWork } from "./prompt-contracts";
 import { modelPromptBuilder } from "./prompt-builder";
 import { RequestError } from "./pipeline";

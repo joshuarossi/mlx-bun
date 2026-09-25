@@ -164,7 +164,7 @@ export async function loadContext(
   opts: LoadContextOptions<ServedModelInfo> = {},
 ): Promise<LoadedModelContext> {
   const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
-  const { resolveModelProfile } = await import("@mlx-bun/inference/models");
+  const { resolveModelProfile } = await import("@mlx-bun/inference/models/profile");
   const config = await loadModelConfig(modelDir);
   const profile = resolveModelProfile(config, opts.profiles);
   if (opts.implementations) {
@@ -239,7 +239,10 @@ export async function loadContext(
           `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
         );
     }
-    if (!glm) model = createModel(weights!, config, profile);
+    if (!glm) {
+      model = createModel(weights!, config, profile);
+      if ("dispose" in model && typeof model.dispose === "function") owned.add(model);
+    }
     const tokenizer = await loadTokenizer(modelDir);
     // Generation must stop on the tokenizer's eos_token — the chat turn
     // terminator (e.g. Qwen <|im_end|> = 248046). Some configs (Qwen3.5-4B)
@@ -388,6 +391,14 @@ export async function loadContext(
     if (draft) owned.add(draft.provider);
     const adapters = new AdapterManager(model);
     owned.add({ dispose() { disposeResources(adapters.list().map(({ id }) => ({ dispose() { adapters.unmount(id); } }))); } });
+    // Compiled runners borrow graph constants and weights. Retire them first,
+    // after the owning engine has drained, including if later loading fails.
+    const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");
+    if (model instanceof Gemma4Model) {
+      const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
+      const gemma = model;
+      owned.add({ dispose() { CompiledDecode.release(gemma); } });
+    }
     const context = {
       draft,
       model,
@@ -469,7 +480,7 @@ export async function makeVisionLoader(
  *  to load is a capability gap, not a fatal error: returns null and the
  *  request is answered with a 400 (the loader is cleared so we don't retry
  *  a known-bad load every request). */
-export function getVisionTower(ctx: ModelContext): VisionEncoder | null {
+export function getVisionTower(ctx: LoadedModelContext): VisionEncoder | null {
   if (ctx.vision) return ctx.vision;
   if (!ctx.loadVision) return null;
   try {
@@ -511,7 +522,7 @@ export async function makeAudioLoader(
  *  degrade. A failed load is not retried every request. (The stub-sidecar
  *  case — the local 12B state — never gets here: makeAudioLoader checks the
  *  sidecar header and returns a null loader.) */
-export function getAudioTower(ctx: ModelContext): AudioTower | null {
+export function getAudioTower(ctx: LoadedModelContext): AudioTower | null {
   if (ctx.audio) return ctx.audio;
   if (!ctx.loadAudio) return null;
   try {

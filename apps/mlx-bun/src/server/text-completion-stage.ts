@@ -4,7 +4,7 @@
 // special-token handling, exactly mlx-lm's `tokenizer.encode(request.prompt)`).
 // Same admission / adapter / lane path as chat; no tool router or thinking
 // splitter (raw text in, raw text out).
-import type { ModelContext } from "../engine/model-host";
+import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import type { TextCompletionRequest } from "./chat-request";
 import type { InferenceRequest } from "./inference-request";
 import { RequestError } from "./pipeline";

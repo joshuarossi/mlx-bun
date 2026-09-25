@@ -87,7 +87,8 @@
     "./runtime/resources": "./src/runtime/resources.ts",
     "./execution/request-policy": "./src/execution/request-policy.ts",
     "./models/diffusion-gemma/vision": "./src/models/diffusion-gemma/vision.ts",
-    "./input/tool-call": "./src/input/tool-call.ts"
+    "./input/tool-call": "./src/input/tool-call.ts",
+    "./models/profile": "./src/models/profile.ts"
   },
   "files": [
     "src",

@@ -2,7 +2,7 @@ import type { PromptCache } from "@mlx-bun/inference/state";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { createPromptResponseTrace } from "@mlx-bun/inference/runtime/trace";
-import type { ModelContext } from "../engine/model-host";
+import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import type { CompletionEngine } from "../engine/completion";
 import type { ModelBinding } from "../engine/model-binding";
 import type { GenerationGateway } from "../engine/generation-gateway";

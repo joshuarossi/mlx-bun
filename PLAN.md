@@ -30,6 +30,10 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
   application contracts and policy stay out of the inference library.
+- [ ] Complete app shared-execution support for denoising and any model-specific
+  media/cache capability gaps. The engine's CPU lifecycle and single/concurrent
+  scheduling seams are tested; real-weight app execution still needs verification.
+  Exit: supported app modalities use the shared scheduler without hidden serial fallback.
 - [ ] Preserve continuous batching as the serving default, including single
   requests. Keep compilation choices inside specialized graph layers, without
   serial-only or compilation switches on the new app surface. Exit: the full

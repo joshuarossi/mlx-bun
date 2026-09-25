@@ -1,6 +1,6 @@
 import type { ModelBinding } from "../engine/model-binding";
 import pkgJson from "../../package.json" with { type: "json" };
-import type { ModelContext } from "../engine/model-host";
+import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import { fit } from "@mlx-bun/hub/fit";
 
 const pkgVersion = (pkgJson as { version: string }).version;

@@ -1,4 +1,4 @@
-import type { ModelContext } from "../engine/model-host";
+import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import type { ModelPromptBuilder } from "./prompt-contracts";
 export function modelPromptBuilder(context: ModelContext): ModelPromptBuilder {
   return async (body, tools, ownership, prep, nativeWork, objects) => {

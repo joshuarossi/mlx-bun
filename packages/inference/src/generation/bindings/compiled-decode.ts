@@ -30,6 +30,7 @@
 // adapters (their weights would bake into the trace as constants),
 // unknown cache classes, diverged cache offsets.
 
+import { disposeResources } from "../../runtime/resources";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -363,6 +364,7 @@ export class CompiledDecode {
    *  drift. Surfaced loudly; tests assert on it. */
   static unexpectedRetraces = 0;
 
+  #disposed = false;
   #closures = new Map<string, CompiledFunction>();
   /** Segmented mode: per layout key, one closure per segment (null for
    *  empty middle segments, which are identity). */
@@ -397,6 +399,13 @@ export class CompiledDecode {
     return r;
   }
 
+  /** Release an existing model-owned runner without materializing constants or
+   * creating a new native closure. Call only after all borrowers have stopped. */
+  static release(model: Gemma4Model): void {
+    const runner = runners.get(model);
+    if (runner) runner.dispose();
+  }
+
   /** Compilable this step? (Cheap; checked per generation setup.) */
   static supports(caches: Cache[]): boolean {
     return caches.every(
@@ -414,6 +423,7 @@ export class CompiledDecode {
    *  async_eval. Throws on unsupported state — caller falls back to the
    *  uncompiled path (any growth already done is benign). */
   step(cur: MlxArray, caches: Cache[]): { logits: MlxArray; evalWith: MlxArray[] } {
+    if (this.#disposed) throw new Error("compiled decode runner is disposed");
     const offset0 = caches[0]!.offset;
     for (const c of caches)
       if (c.offset !== offset0)
@@ -699,10 +709,14 @@ export class CompiledDecode {
 
   /** Free compiled closures (model unload). */
   dispose(): void {
-    for (const c of this.#closures.values()) c.dispose();
+    if (this.#disposed) return;
+    this.#disposed = true;
+    if (runners.get(this.model) === this) runners.delete(this.model);
+    const closures = [...this.#closures.values(), ...[...this.#segClosures.values()].flat()]
+      .filter((closure): closure is CompiledFunction => closure !== null);
     this.#closures.clear();
-    for (const arr of this.#segClosures.values())
-      for (const c of arr) c?.dispose();
     this.#segClosures.clear();
+    this.#broken.clear();
+    disposeResources(closures);
   }
 }

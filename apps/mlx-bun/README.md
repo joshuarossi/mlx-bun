@@ -22,9 +22,24 @@ deletion. Cache location and Hugging Face credentials follow the
 [hub library](../../packages/hub/README.md). This workspace remains private
 while app licensing and release packaging are decided.
 
-## Server and engine seams
+## Engine
 
-`engine/` owns loaded models, lazy towers, continuous scheduling, and disposal.
+`src/engine/` owns loaded model lifetimes, preparation admission and the shared
+continuous scheduler. `createAppEngine` takes ownership of its model context;
+closing drains execution before releasing compiled runners, adapters, drafts,
+model constants and weights. Replacement models can provide their own binding.
+HTTP parsing, response formatting and web policy belong above this boundary.
+
+[Engine behavior tests](tests/engine/model-host.test.ts) verify injected model
+loading and lifecycle without native MLX. The gateway and session tests beside
+it cover cancellation, output delivery and the same scheduler path at capacity
+one and greater. These are CPU checks, not real-weight numerical verification.
+The first engine slice reports unsupported shared-execution capabilities rather
+than running a hidden serial path. The library's denoising method still needs
+shared scheduler support before the app can serve diffusion models.
+
+## Server seams
+
 `server/routes.ts` composes chat/text completion, embedding, and discovery
 handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
