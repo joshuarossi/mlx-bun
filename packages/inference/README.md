@@ -119,6 +119,52 @@ compiled-versus-ordinary checks, not an external-oracle or performance claim.
 Runtime compilation overrides stay inside the test; this adds no application option.
 
 
+### Scheduler continuation and specialized-path checks
+
+The opt-in [continuation test](tests/parity/ordinary-continuation.test.ts) takes
+`MLX_BUN_TEST_CONTINUATION_MODEL=/cached/checkpoint`. It compares uninterrupted
+and interrupted/restarted B1/B4 generation, including pending tokens, seeded
+sampling history, byte-identical checkpoint planes, and actual restored-row
+counts. `MLX_BUN_TEST_CONTINUATION_ADAPTER=/cached/adapter` adds adapter-context
+and cache-namespace isolation without bundled fixtures. The existing KV matrix
+uses `MLX_BUN_TEST_CONTINUATION_KV=bf16|4|8|per-layer|turbo`,
+`MLX_BUN_TEST_CONTINUATION_KV_START=0` (or `prompt+N`), and
+`MLX_BUN_TEST_CONTINUATION_INTERRUPT=6` (6–15).
+
+The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
+`MLX_BUN_TEST_PADDED_PREFILL_MODEL` and `MLX_BUN_TEST_PADDED_PREFILL_REFERENCE`.
+The external JSON report is `{ runtime, configSha256, rows }`, where `rows` is
+main's padded-prefill oracle output: prompts, padding side, chunk counts,
+recurrent-state hashes, four per-row logit hashes, and row offsets. The test
+requires all 18 cases (36 with `MLX_BUN_TEST_PADDED_PREFILL_WIDE=1`), then compares
+full float32 logit bytes via SHA-256 and recurrent state through three continuation
+steps. Generate the reference outside this repository on the same machine with
+the pinned oracle and identical weights; this test never starts Python.
+`MLX_BUN_TEST_PADDED_FULL_LAYOUT=affine|turbo`,
+`MLX_BUN_TEST_SPECULATIVE_ROTATING_LAYOUT=1`, or
+`MLX_BUN_TEST_PADDED_ROTATING_LAYOUT=1` exercise the corresponding pre-conversion
+cache layouts against the same plain-KV reference, not quantized arithmetic.
+
+The [Trellis specialization test](tests/parity/trellis-shared-m.test.ts) takes
+`MLX_BUN_TEST_TRELLIS_MODEL=/cached/packed-qwen`. It preserves main's variant
+comparison: `MLX_BUN_TRELLIS_AB_VARIANT` (default 7) against
+`MLX_BUN_TRELLIS_AB_BASELINE` (default 6). Use variant 13 against baseline 12
+for the optimized expansion path. M=1–5 compares complete logits, recurrent/KV
+state and continuation; variant 13 also checks M=16/128/512 with the last-position
+head. These are exact within-artifact specialization checks, not a Python oracle
+or timing claim.
+
+Run each file with `bun --no-env-file test <file>` and exclusive GPU access.
+Unset required paths skip before native imports; supplied invalid model paths
+fail. These migrated tests still need coordinated real-weight acceptance.
+They extend rather than repeat [#61](https://github.com/joshuarossi/mlx-bun/pull/61)
+(MiniCPM/Gemma plain and mixed state restore; Trellis against main),
+[#62](https://github.com/joshuarossi/mlx-bun/pull/62) (Gemma e4b window-wrap state
+restore), and [#64](https://github.com/joshuarossi/mlx-bun/pull/64) (compiled
+Gemma e4b/12B). Those completed comparisons do not cover scheduler sampling
+recovery, padded cohorts, or this real-model Trellis variant matrix.
+
+
 ## Direct library use
 
 See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
