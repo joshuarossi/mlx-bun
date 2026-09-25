@@ -13,12 +13,6 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   settings. Exit: opt-in comparisons meet the numerical contracts against pinned
   published golden revisions that record source revisions and oracle versions;
   synthetic tests alone do not close this item.
-- [ ] Run the migrated opt-in scheduler-continuation, padded-prefill, and Trellis
-  specialization gates in `packages/inference/tests/parity/`. Exit: uninterrupted
-  versus interrupted/restarted B1/B4 sampling and state agree; complete padded
-  cohorts match an externally supplied same-machine oracle report; packed Qwen
-  variants preserve full logits, recurrent/KV state and continuation. Use explicit
-  cached artifacts and references, and preserve main's assertions.
 - [ ] Confirm the long-term mixed-KV reference contract for single-query decode:
   the documented stock mlx-lm path or OptiQ serve's fused default. The opt-in
   state comparison verifies the existing composition; keep that implementation unchanged during
