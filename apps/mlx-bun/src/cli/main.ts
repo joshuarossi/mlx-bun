@@ -5,7 +5,9 @@ import pkg from "../../package.json" with { type: "json" };
 
 try {
   const { command, args } = commandInvocation(process.argv.slice(2));
-  if (["--version", "-v", "version"].includes(command ?? "")) {
+  if (command === "__job") {
+    process.exit(await (await import("./job-entry")).runJobEntry(args[0]));
+  } else if (["--version", "-v", "version"].includes(command ?? "")) {
     console.log(`mlx-bun ${pkg.version}`);
   } else if (command === "help" || command === "--help" || command === "-h") {
     console.log(renderHelp(help(args[0])));

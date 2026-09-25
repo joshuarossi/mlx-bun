@@ -152,3 +152,26 @@ build script and runtime fallback share `web/build.ts`. Static HTML, theme, mani
 escaping, attachments, panels, and interactions without a live server.
 [Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
 headers. The packed consumer check verifies the same assets after installation.
+
+
+## Jobs and quantization
+
+`jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,
+and managed subprocess lifetimes. `quantize/` owns submitted quantization policy
+and CPU-only model inspection; the numerical work uses `@mlx-bun/quantize`.
+`cli/job-entry.ts` resolves the producer in the child process. HTTP parsing and
+wire responses stay in `server/job-routes.ts` and `server/quantize-routes.ts`.
+
+Composition injects the engine execution lease. A job drains active inference
+and holds that lease until its child exits and output streams finish; inference
+then resumes. As in main's direct-process server, resident model weights and
+caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
+admission waits, terminates active children, and awaits them before closing the
+store and engine. Opening the app does not create the job database until a job
+route is used. Dataset, finetune, and artifact publishing remain separate work.
+
+[Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
+paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
+[Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
+and output naming with an injected numerical operation. They do not run or
+establish parity for actual checkpoint quantization.
