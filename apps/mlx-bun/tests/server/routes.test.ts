@@ -4,6 +4,7 @@ import type { CompletionEngine } from "../../src/engine/completion";
 import { UnsupportedExecutionError } from "../../src/engine/completion";
 import { createCompletionRoutes } from "../../src/server/routes";
 import { errorResponse } from "../../src/server/http";
+import { startServer } from "../../src/server/start";
 
 const execution = { method: "autoregressive", mechanism: "continuous" as const, pagedKv: false, promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false, reasons: [] };
 type RouteEngine = Parameters<typeof createCompletionRoutes>[0];
@@ -67,7 +68,7 @@ test("invalid requests return 400 before scheduling and unmatched routes remain 
   expect(await health.json()).toEqual({ status: "ok" });
   const index = await (await routes.handle(new Request("http://local/v1")))!.json();
   expect(index.endpoints).toContain("POST /v1/chat/completions");
-  expect(index.endpoints).not.toContain("POST /v1/messages");
+  expect(index.endpoints).toContain("POST /v1/messages");
 });
 
 test("embeddings retain their OpenAI shape and run under engine exclusivity", async () => {
@@ -159,4 +160,113 @@ test("unknown thrown values produce a 500 without secondary errors; cancellation
     }
     expect(logs).toHaveBeenCalledTimes(4);
   } finally { logs.mockRestore(); }
+});
+
+
+test("Messages JSON and SSE use the shared engine and preserve usage and session affinity", async () => {
+  const run = harness();
+  const body = { messages: [{ role: "user", content: "hi" }], max_tokens: 2, temperature: 0.2, top_p: 0.8 };
+  const json = (await run.routes.handle(request("/v1/messages", body, { "x-session-affinity": "anthropic-session" })))!;
+  expect(json.status).toBe(200);
+  const result = await json.json();
+  expect(result).toMatchObject({ type: "message", role: "assistant", model: "test/model",
+    content: [{ type: "text", text: "t1 t2" }], usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 1 } });
+  expect(run.seen[0]![1]).toMatchObject({ cacheSessionId: "anthropic-session", maxTokens: 2, temperature: 0.2, topP: 0.8 });
+  const stream = (await run.routes.handle(request("/v1/messages", { ...body, stream: true })))!;
+  expect(stream.headers.get("content-type")).toBe("text/event-stream");
+  const wire = await stream.text();
+  expect(wire).toContain("event: message_start");
+  expect(wire).toContain("event: content_block_delta");
+  expect(wire).toContain('"output_tokens":2');
+  expect(wire).toContain("event: message_stop");
+  expect(wire).not.toContain("[DONE]");
+  expect(run.placements()).toBe(2);
+});
+
+for (const stream of [false, true]) test(`Messages capability admission precedes protocol output (${stream})`, async () => {
+  let disposed = 0;
+  const failure = new UnsupportedExecutionError("example", "denoising", ["method-requires-serial"]);
+  const run = harness(undefined, { place: () => { throw failure; },
+    buildPrompt: async (_body, _tools, ownership) => {
+      ownership.own({ dispose: () => { disposed++; } });
+      return { promptIds: [7], vision: undefined, startInThinking: false, probeStableLen: false, diffusionPixels: null };
+    } });
+  const response = (await run.routes.handle(request("/v1/messages", { messages: [{ role: "user", content: "hi" }], stream })))!;
+  expect(response.status).toBe(501);
+  expect(response.headers.get("content-type")).toContain("application/json");
+  expect(await response.json()).toEqual({ type: "error", error: { type: "api_error", message: failure.message,
+    code: "unsupported_execution", reasons: ["method-requires-serial"] } });
+  expect(run.placements()).toBe(1); expect(run.seen).toHaveLength(0); expect(disposed).toBe(1);
+});
+
+test("Messages malformed requests retain their protocol error envelope", async () => {
+  const run = harness();
+  for (const body of [null, [], {}, { messages: [] }]) {
+    const response = (await run.routes.handle(request("/v1/messages", body)))!;
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ type: "error", error: { type: "invalid_request_error" } });
+  }
+  expect(run.seen).toHaveLength(0);
+});
+
+for (const phase of ["preparation", "json"] as const) test(`Messages client abort during ${phase} uses a protocol 499`, async () => {
+  const entered = Promise.withResolvers<void>(), abort = new AbortController();
+  const wait = <T>(signal?: AbortSignal): Promise<T> => {
+    entered.resolve();
+    return new Promise((_, reject) => {
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+      if (signal!.aborted) reject(signal!.reason);
+    });
+  };
+  const run = harness(phase === "json" ? async (...args) => wait(args[6]) : undefined, phase === "preparation" ? {
+    preparation: { run: <T>(_work: () => Promise<T>, signal?: AbortSignal) => wait<T>(signal) },
+    buildPrompt: async (_body, _tools, _ownership, _prep, nativeWork) => nativeWork!(async () => ({
+      promptIds: [7], vision: undefined, startInThinking: false, probeStableLen: false, diffusionPixels: null,
+    })),
+  } : {});
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const pending = run.routes.handle(request("/v1/messages", { messages: [{ role: "user", content: "hi" }] }, {}, abort.signal));
+    await entered.promise; abort.abort(null);
+    const response = (await pending)!;
+    expect(response.status).toBe(499);
+    expect(await response.json()).toEqual({ type: "error", error: {
+      message: "request cancelled", type: "invalid_request_error", code: "request_cancelled",
+    } });
+    expect(logs).not.toHaveBeenCalled();
+  } finally { logs.mockRestore(); }
+});
+
+test("Messages listener disconnect cancels execution and permits the next request", async () => {
+  const entered = Promise.withResolvers<void>(), cancelled = Promise.withResolvers<void>();
+  let count = 0, closed = 0;
+  const run = harness(async (_ids, _opts, token, _vision, _shape, _placement, signal) => {
+    if (++count === 1) {
+      entered.resolve();
+      await new Promise<void>((_, reject) => {
+        const abort = () => { cancelled.resolve(); reject(signal!.reason); };
+        signal!.addEventListener("abort", abort, { once: true });
+        if (signal!.aborted) abort();
+      });
+    }
+    await token(1);
+    return { promptTokens: 3, cachedTokens: 0, generatedTokens: 1, prefillTps: 0, decodeTps: 0, prefillMs: 0, decodeMs: 0, cacheTokens: [7, 8, 9, 1] };
+  });
+  const listener = await startServer({ routes: run.routes, web: () => null,
+    chat: () => ({ async start() {}, async handle() {}, dispose() {} }),
+    closeEngine: async () => { closed++; },
+  }, { port: 0 });
+  const abort = new AbortController();
+  try {
+    const url = new URL("/v1/messages", listener.server.url);
+    const response = await fetch(url, { method: "POST", signal: abort.signal,
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }], stream: true }) });
+    expect(response.status).toBe(200);
+    const first = await response.body!.getReader().read();
+    expect(new TextDecoder().decode(first.value)).toContain("message_start");
+    await entered.promise; abort.abort(); await cancelled.promise;
+    const next = await fetch(url, { method: "POST", body: JSON.stringify({ messages: [{ role: "user", content: "again" }] }) });
+    expect(next.status).toBe(200); expect((await next.json()).type).toBe("message");
+  } finally { abort.abort(); await listener.close(); }
+  expect(closed).toBe(1);
 });
