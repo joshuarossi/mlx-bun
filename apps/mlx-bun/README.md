@@ -452,6 +452,7 @@ are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
 
 `bun run verify:binary` builds into temporary storage, relocates the directory,
+installs it through the curl installer using a local archive and temporary home,
 and checks the actual CLI and managed child plus a compiled consumer for web,
 memory, synthetic registry/fit, native path resolution and Photon initialization.
 The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
@@ -467,11 +468,16 @@ bundle under `${MLX_BUN_INSTALL_DIR:-$HOME/.mlx-bun}/app-install/` and links
 `~/.local/bin/mlx-bun`. `MLX_BUN_VERSION` selects `latest` or a pinned tag.
 The installer validates the files and version before switching its `current`
 symlink and retains the old app on failure. Successful updates keep the current
-and immediate previous bundles and remove older owned bundles and stale stages.
-Restart a running app before another upgrade: its managed jobs re-execute the
-original binary path, so it needs that previous bundle until it exits.
+and immediate previous bundles, plus any older bundle used by a running app.
+Other older owned bundles and stale stages are removed on the next install;
+if process inspection fails, all older bundles are retained. Managed jobs can
+still re-execute a running app's original binary across repeated upgrades.
 Sessions, wiki, credentials, and legacy flat installation files
-outside `app-install/` stay intact. Run the script with `--help` for usage.
+outside `app-install/` stay intact. A custom `MLX_BUN_INSTALL_DIR` relocates only
+the installed bundle; application data still lives under `~/.mlx-bun`.
+A concurrent install is blocked by `app-install/lock`; after an interrupted
+installer, remove the reported absolute lock directory only after confirming
+its recorded PID is no longer an installer. Run the script with `--help` for usage.
 The public installer must not deploy before a compatible release bundle exists;
 older release archives lack the newly required license and notice files.
 

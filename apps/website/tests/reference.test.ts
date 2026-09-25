@@ -2,27 +2,42 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { help } from "../../mlx-bun/src/cli/args";
 import { CLI_SOURCE, INSTALLER_SOURCE, commandReference, generateReference, helpReference, renderCommandReference } from "../scripts/generate-reference";
 
 const root = resolve(import.meta.dir, "../../..");
+
+async function liveHelp(command?: string): Promise<string> {
+  const child = Bun.spawn([process.execPath, "--no-env-file", "apps/mlx-bun/src/cli/main.ts", ...(command ? [command] : []), "--help"], {
+    cwd: root, env: { ...process.env, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const deadline = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    return stdout;
+  } finally { clearTimeout(deadline); if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; }
+}
 
 test("generated CLI covers the real help's complete command and option sets", async () => {
   const source = await readFile(resolve(root, CLI_SOURCE), "utf8");
   const commands = commandReference(source), common = helpReference(source);
   // An independent consumer of the live table: CLI help, not the generator's
   // AST traversal. A newly parsed verb/flag must appear in both references.
-  const section = help().split("Commands:\n")[1]!.split("\n\nOptions:")[0]!;
+  const globalHelp = await liveHelp();
+  const section = globalHelp.split("Commands:\n")[1]!.split("\n\nOptions:")[0]!;
   const names = [...section.matchAll(/^  ([a-z][a-z-]*)\s/gm)].map(match => match[1]!);
   expect(commands.map(command => command.name).sort()).toEqual(names.sort());
   const helpFlags = (text: string) => [...text.matchAll(/^\s+((?:-[a-z], )?--[a-z][a-z-]*)/gm)]
     .flatMap(match => match[1]!.split(", ")).sort();
-  expect(common.global.flatMap(option => option.flags).sort()).toEqual(helpFlags(help()));
+  expect(common.global.flatMap(option => option.flags).sort()).toEqual(helpFlags(globalHelp));
   const rendered = renderCommandReference(commands, common);
   const globalSection = rendered.split("## Global options\n")[1]!.split("\n## ")[0]!;
-  for (const flag of helpFlags(help())) expect(globalSection).toContain(`\`${flag}\``);
+  for (const flag of helpFlags(globalHelp)) expect(globalSection).toContain(`\`${flag}\``);
   for (const command of commands) {
-    const flags = helpFlags(help(command.name));
+    const flags = helpFlags(await liveHelp(command.name));
     expect([...command.options.flatMap(option => [ `--${option.name}`, ...(option.short ? [`-${option.short}`] : []) ]),
       ...common.shared.flatMap(option => option.flags)].sort()).toEqual(flags);
     const ownSection = rendered.split(`## ${command.name}\n`)[1]!.split("\n## ")[0]!;

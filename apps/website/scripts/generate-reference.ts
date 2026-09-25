@@ -90,7 +90,7 @@ export function renderCommandReference(commands: CommandReference[], help: HelpR
   return `---\ntitle: CLI reference\ndescription: Commands and options generated from the application's parser table and help.\n---\n\n` +
     `Generated at build time from [the CLI command table and help](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/${CLI_SOURCE}). ` +
     `These are the refactor's current commands. Released versions can differ; use the installed command's \`--help\`.\n\n` +
-    `## Global options\n\nUsage: \`mlx-bun [options]\`\n\n| Option | Description |\n| --- | --- |\n${help.global.map(helpRow).join("\n")}\n\n` +
+    `## Global options\n\nUsage: \`mlx-bun [options]\`\n\nAn option-first invocation starts the server; use the serve options below.\n\n| Option | Description |\n| --- | --- |\n${help.global.map(helpRow).join("\n")}\n\n` +
     commands.map(command => `## ${command.name}\n\n${command.description}\n\n` +
       `Usage: \`mlx-bun ${command.name}${command.positional ? ` ${command.positional}` : ""} [options]\`\n\n` +
       `| Option | Description |\n| --- | --- |\n` + [...command.options.map(option =>

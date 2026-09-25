@@ -20,7 +20,7 @@ async function run(command: string[], env = process.env) {
   } finally { clearTimeout(deadline); }
 }
 async function fixture() {
-  const home = await mkdtemp(join(tmpdir(), "mlx install "));
+  const home = await mkdtemp(join(tmpdir(), "mlx install [test]. "));
   const tools = join(home, "tools"); await mkdir(tools);
   await writeFile(join(tools, "curl"), `#!/bin/sh
 set -eu
@@ -52,8 +52,8 @@ exec /bin/mv "$@"
     expect((await run(["tar", "-czf", path, "-C", directory, "."])).code).toBe(0);
     return path;
   }
-  async function install(path: string, options: NodeJS.ProcessEnv = {}) {
-    return run(["/bin/sh", installer], { ...process.env, HOME: home, PATH: `${tools}:/usr/bin:/bin`,
+  async function install(path: string, options: NodeJS.ProcessEnv = {}, script = installer) {
+    return run(["/bin/sh", script], { ...process.env, HOME: home, PATH: `${tools}:/usr/bin:/bin`,
       MLX_BUN_INSTALL_DIR: undefined, MLX_BUN_VERSION: "latest", TEST_ARCHIVE: path, ...options });
   }
   return { home, tools, installRoot, app, bin, archive, install, close: () => rm(home, { recursive: true, force: true }) };
@@ -167,7 +167,7 @@ test("an installer lock prevents competing updates without removing its owner's 
     const original = await readlink(join(f.app, "current"));
     await mkdir(join(f.app, "lock")); await writeFile(join(f.app, "lock/pid"), "123");
     const result = await f.install(archive);
-    expect(result.code).not.toBe(0); expect(result.err).toContain("app-install/lock exists");
+    expect(result.code).not.toBe(0); expect(result.err).toContain(`${f.app}/lock exists (installer PID 123)`);
     expect(await readFile(join(f.app, "lock/pid"), "utf8")).toBe("123");
     expect(await readlink(join(f.app, "current"))).toBe(original);
   } finally { await f.close(); }
@@ -191,3 +191,85 @@ test("Homebrew preparation derives version, URL and checksum from a complete loc
     await expect(prepareHomebrew(join(f.home, "random.tgz"))).rejects.toThrow("Expected");
   } finally { await f.close(); }
 });
+
+
+test("a running oldest bundle survives repeated upgrades and is pruned after exit", async () => {
+  const f = await fixture();
+  let child: ReturnType<typeof Bun.spawn> | undefined;
+  try {
+    expect((await f.install(await f.archive("1.0.0"))).code).toBe(0);
+    const oldest = await realpath(join(f.app, "current"));
+    // Real compiled Bun process: comm must contain its literal path, including
+    // spaces and regex metacharacters, rather than command arguments.
+    const source = join(f.home, "idle.ts");
+    await writeFile(source, `if (process.argv.includes("--probe")) console.log("reentry ok");
+else { console.log("ready"); await Bun.stdin.text();
+  const child = Bun.spawnSync([process.execPath, "--probe"]);
+  process.stdout.write(child.stdout); process.exit(child.exitCode); }
+`);
+    expect((await run([process.execPath, "build", "--compile", source, "--outfile", join(oldest, "mlx-bun")])).code).toBe(0);
+    child = Bun.spawn([join(oldest, "mlx-bun")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+    const processes = await run(["/bin/ps", "-axww", "-o", "comm="]);
+    expect(processes.out.split("\n")).toContain(join(oldest, "mlx-bun"));
+    expect((await f.install(await f.archive("1.0.1"))).code).toBe(0);
+    expect(child.exitCode).toBeNull();
+    const third = await f.install(await f.archive("1.0.2"));
+    expect(third.code, third.err).toBe(0);
+    expect(third.err).toContain(`Keeping running app bundle: ${oldest}`);
+    expect(await readdir(oldest)).toContain("mlx-bun");
+    expect(child.exitCode).toBeNull();
+    (child.stdin as import("bun").FileSink).write("go");
+    (child.stdin as import("bun").FileSink).end();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("reentry ok");
+    reader.releaseLock();
+    expect(await child.exited).toBe(0); child = undefined;
+    expect((await f.install(await f.archive("1.0.3"))).code).toBe(0);
+    await expect(readdir(oldest)).rejects.toThrow("ENOENT");
+    expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(2);
+  } finally {
+    if (child) { child.kill(); await child.exited; }
+    await f.close();
+  }
+}, 30000);
+
+test("failed process inspection keeps all older bundles", async () => {
+  const f = await fixture();
+  try {
+    expect((await f.install(await f.archive("1.0.0"))).code).toBe(0);
+    const oldest = await realpath(join(f.app, "current"));
+    expect((await f.install(await f.archive("1.0.1"))).code).toBe(0);
+    // Inject a failed system command in a temporary copy; production always
+    // uses /bin/ps, so neither PATH nor user arguments can override inspection.
+    const script = join(f.home, "failed-process-inspection.sh");
+    const source = await readFile(installer, "utf8");
+    expect(source.split("/bin/ps -axww -o comm=")).toHaveLength(2);
+    await writeFile(script, source.replace("/bin/ps -axww -o comm=", "false"));
+    const result = await f.install(await f.archive("1.0.2"), {}, script);
+    expect(result.code, result.err).toBe(0);
+    expect(result.err).toContain("cannot inspect running executables; keeping older bundles");
+    expect(await readdir(oldest)).toContain("mlx-bun");
+    expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(3);
+  } finally { await f.close(); }
+}, 30000);
+
+test("a legacy command earlier on PATH is reported instead of suggesting it runs the new app", async () => {
+  const f = await fixture();
+  try {
+    const legacy = join(f.tools, "mlx-bun");
+    await writeFile(legacy, "#!/bin/sh\necho legacy\n"); await chmod(legacy, 0o755);
+    const result = await f.install(await f.archive("1.0.0"), {
+      PATH: `${f.tools}:${join(f.home, ".local/bin")}:/usr/bin:/bin`,
+    });
+    expect(result.code, result.err).toBe(0);
+    expect(result.err).toContain(`mlx-bun on PATH resolves to ${legacy}`);
+    expect(result.out).not.toContain("Run: mlx-bun");
+    expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.0.0\n");
+    await rm(legacy);
+    const again = await f.install(await f.archive("1.0.1"), {
+      PATH: `${f.tools}:${join(f.home, ".local/bin")}:/usr/bin:/bin`,
+    });
+    expect(again.out).toContain("Run: mlx-bun"); expect(again.err).toBe("");
+  } finally { await f.close(); }
+}, 30000);

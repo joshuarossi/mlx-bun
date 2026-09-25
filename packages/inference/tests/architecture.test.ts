@@ -203,7 +203,7 @@ test("all library and app workspaces follow their declared DAG and inference lay
   expect(await inspectWorkspaces(workspace)).toEqual([]);
 });
 
-test("the website has explicit source domains and cannot import app internals", async () => {
+test("the website has explicit source domains and rejects undeclared app dependencies", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-site-boundaries-"));
   const write = (path: string, text: string) => {
     mkdirSync(dirname(resolve(root, path)), { recursive: true }); writeFileSync(resolve(root, path), text);
