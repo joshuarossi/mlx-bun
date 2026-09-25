@@ -106,6 +106,22 @@ single-query decode. The record preserves the initial mismatched-reference
 results and appends the corrected comparison. Trellis's reference is main, not
 mlx-lm. These checks do not close the broader verification gate in PLAN.
 
+### Compiled decode verification
+
+The opt-in `tests/parity/compiled-decode.test.ts` accepts local checkpoint paths
+through `MLX_BUN_COMPILED_GEMMA_E4B` and `MLX_BUN_COMPILED_GEMMA12B`. Run it with
+`bun --no-env-file test packages/inference/tests/parity/compiled-decode.test.ts`
+from the root. Each unset path skips that family; a supplied invalid path fails.
+The checkpoints must include their existing mixed-KV configuration. No model or
+reference data is downloaded.
+
+The test compares native full-logit bytes for identical fixed tokens with plain
+and artifact-configured KV, both before and after the sliding window fills.
+It separately checks greedy trajectories, actual compiled-step activation, zero
+unexpected retraces, and dense Gemma's mid-segment failure recovery. These are
+compiled-versus-ordinary checks, not an external-oracle or performance claim.
+Runtime compilation overrides stay inside the test; this adds no application option.
+
 ## Direct library use
 
 See [Qwen3 loading and generation](examples/qwen3-generate.ts). Run it from the
