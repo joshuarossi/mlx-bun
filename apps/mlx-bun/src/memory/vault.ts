@@ -1,8 +1,8 @@
 // Markdown memory vault: filesystem reads, search, links, history, and initialization.
 
-import { access, lstat, mkdir, readdir, readFile, readlink, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readdir, readFile, readlink, realpath, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { isFenceLine } from "./article";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
@@ -1079,6 +1079,13 @@ export interface SetupResult {
   alreadySetUp: boolean;
 }
 
+export class VaultPathError extends Error {
+  constructor(path: string) {
+    super(`vault initialization path must stay inside the vault: ${path}`);
+    this.name = "VaultPathError";
+  }
+}
+
 /** Idempotent: create dirs, write README + Meta pages (only if missing — never
  *  clobber user edits), git init + initial commit. Safe to re-run. */
 export async function setupVault(root = vaultRoot()): Promise<SetupResult> {
@@ -1097,6 +1104,25 @@ export async function setupVault(root = vaultRoot()): Promise<SetupResult> {
   };
 
   await ensureDir(root);
+  const canonicalRoot = await realpath(root);
+  // Validate write destinations before creating children. Reference documents
+  // may intentionally link outside the vault for reads; only their containing
+  // directory is a write target. Dangling symlinks cannot establish confinement.
+  for (const target of ["articles", "Reference", "Meta", "Talk", "README.md", ".gitignore", ".git",
+    ...Object.keys(META_PAGES).map(filename => join("Meta", filename))]) {
+    let current = resolve(root);
+    for (const segment of target.split(sep)) {
+      current = join(current, segment);
+      let info;
+      try { info = await lstat(current); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") break; throw error; }
+      if (!info.isSymbolicLink()) continue;
+      let destination: string;
+      try { destination = await realpath(current); }
+      catch { throw new VaultPathError(current); }
+      if (destination !== canonicalRoot && !destination.startsWith(canonicalRoot + sep)) throw new VaultPathError(current);
+    }
+  }
   for (const sub of ["articles", "Reference", "Meta", "Talk"]) await ensureDir(join(root, sub));
   await writeIfMissing(join(root, "README.md"), README);
   // The vault is pure markdown — the synthesis DB lives in the rebuildable

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, writeFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryRoutes } from "../../src/server/memory-routes";
@@ -212,6 +212,41 @@ describe("GET /api/memory/diff", () => {
 });
 
 describe("POST /api/memory/init", () => {
+  test("invalid JSON shapes and path types return 400 without initializing a vault", async () => {
+    const fresh = join(root, "not-created");
+    routeRoot = fresh;
+    for (const body of ["null", "[]", "42", "{", JSON.stringify({ path: 42 }), JSON.stringify({ path: null })]) {
+      const res = await call(new Request("http://x/api/memory/init", { method: "POST", body }));
+      expect(res.status).toBe(400); expect((await res.json()).ok).toBe(false);
+      await expect(access(fresh)).rejects.toThrow();
+    }
+  });
+
+  test("initialization cannot write through an escaping child directory or dangling file symlink", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "mlxbun-memrest-outside-"));
+    try {
+      await symlink(outside, join(root, "Meta"));
+      const init = () => call(new Request("http://x/api/memory/init", { method: "POST", body: "{}" }));
+      expect((await init()).status).toBe(400);
+      expect(await readdir(outside)).toEqual([]);
+      await rm(join(root, "Meta"));
+      await symlink(join(outside, "new-file.md"), join(root, "README.md"));
+      expect((await init()).status).toBe(400);
+      expect(await readdir(outside)).toEqual([]);
+    } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+
+  test("initialization preserves intentional read-only Reference document symlinks", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "mlxbun-memrest-reference-"));
+    try {
+      await writeFile(join(outside, "guide.md"), "# External guide\n\nRead-only reference.\n");
+      await symlink(join(outside, "guide.md"), join(root, "Reference", "External_Guide.md"));
+      expect((await call(new Request("http://x/api/memory/init", { method: "POST", body: "{}" }))).status).toBe(200);
+      const read = await call(new URL("http://x/api/memory/article?name=Reference/External_Guide"));
+      expect((await read.json()).content).toContain("Read-only reference.");
+    } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+
   test("creates a fresh vault at an explicit path (delegates to setupVault)", async () => {
     const fresh = await mkdtemp(join(tmpdir(), "mlxbun-memrest-init-"));
     await rm(fresh, { recursive: true, force: true }); // setupVault creates it

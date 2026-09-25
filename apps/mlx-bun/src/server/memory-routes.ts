@@ -4,7 +4,7 @@ import { dirname, resolve, sep } from "node:path";
 import {
   vaultRoot, vaultStatus, listArticles, listReferenceDocs, readArticle,
   searchArticles, getArticleLinks, resolveArticleRelPath, articleHistory, articleDiff,
-  setupVault, type VaultStatus,
+  setupVault, VaultPathError, type VaultStatus,
 } from "../memory/vault";
 import { parseInfobox, parseLead, parseSeriesBanner, articleStructure } from "../memory/article";
 
@@ -214,12 +214,16 @@ export function createMemoryRoutes(options: { root?: () => string } = {}) {
   }
 
   async function handleMemoryInit(request: Request): Promise<Response> {
-    let body: { path?: string } = {};
+    let parsed: unknown = {};
     try {
-      body = (await request.json()) as { path?: string };
+      const text = await request.text();
+      if (text.trim()) parsed = JSON.parse(text);
     } catch {
-      // empty body is fine — defaults to getRoot()
+      return jsonErr("invalid JSON body");
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return jsonErr("body must be an object");
+    if ("path" in parsed && parsed.path !== undefined && typeof parsed.path !== "string") return jsonErr("path must be a string");
+    const body = parsed as { path?: string };
     const root = body.path && body.path.trim() ? body.path.trim() : getRoot();
     if (!(await isAllowedVaultTarget(root))) {
       return jsonErr("path must be under the memory vault root or a temp directory", 400);
@@ -229,7 +233,7 @@ export function createMemoryRoutes(options: { root?: () => string } = {}) {
       const st = await vaultStatus(res.root);
       return jsonOk({ result: res, status: st });
     } catch (e) {
-      return jsonErr((e as Error).message, 500);
+      return jsonErr((e as Error).message, e instanceof VaultPathError ? 400 : 500);
     }
   }
 
