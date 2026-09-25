@@ -6,8 +6,7 @@ import type { createCompletionRoutes } from "./routes";
 // owning handler is mounted; unknown routes remain 404.
 const pending = [
   /^\/v1\/(?:messages|responses|audio\/(?:transcriptions|translations|speech)|adapters(?:\/[^/]+)?|memory\/synthesize)$/,
-  /^\/api\/settings\/(?:hf-token|tool-approvals)$/,
-  /^\/api\/gc\/(?:plan|execute)$/,
+  /^\/api\/settings\/hf-token$/,
   /^\/api\/jobs(?:\/[^/]+(?:\/stream)?)?$/,
   /^\/api\/quantize\/(?:inspect|resolve-folder|submit|push)$/,
   /^\/api\/finetune\/(?:inspect-dataset|submit|merge|export|push)$/,

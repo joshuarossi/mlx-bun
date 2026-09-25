@@ -4,6 +4,7 @@ import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { RequestPrepOptions } from "../server/request-prep";
+import type { PiBackendPaths } from "../chat/pi-backend";
 
 export interface ServeOptions {
   query: string | null;
@@ -17,6 +18,8 @@ export interface ServeOptions {
   noOpen: boolean;
   cache: CacheServiceOptions;
   request: RequestPrepOptions;
+  /** App composition only; shares Pi storage with its settings routes. */
+  chatPaths?: PiBackendPaths;
 }
 
 /** Validate before opening a registry, loading a model, or creating a listener. */
@@ -85,10 +88,11 @@ export interface RunningApp { port: number; close(): Promise<void> }
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }] = await Promise.all([
+    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createManagementRoutes }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
+    import("../server/management-routes"),
   ]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
@@ -118,11 +122,15 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
-    const routes = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
+    const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
       defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
+    const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
+      toolApprovalsFile: options.chatPaths?.toolApprovalsFile });
+    const routes = { handle: async (request: Request) => await management.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
+      paths: options.chatPaths,
       contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template.supportsThinking,
