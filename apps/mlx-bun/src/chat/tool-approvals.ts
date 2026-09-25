@@ -2,7 +2,7 @@
 // with mode0600; absent, corrupt, or unknown-version data means ask again.
 
 import { mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 /** Honor the app home at call time so isolated callers can choose their store. */
@@ -41,10 +41,10 @@ const EMPTY: ToolApprovalsFileV1 = { version: 1, allows: {} };
  * approval gate — a config-file bug must never make mutating tools MORE
  * permissive by accident, and "ask every time" is the safe failure mode.
  */
-export function loadToolApprovals(): ToolApprovalsFile {
+export function loadToolApprovals(path = configPath()): ToolApprovalsFile {
   let raw: string;
   try {
-    raw = readFileSync(configPath(), "utf8");
+    raw = readFileSync(path, "utf8");
   } catch {
     return { ...EMPTY, allows: {} };
   }
@@ -84,36 +84,34 @@ function migrate(parsed: unknown): ToolApprovalsFile {
   return { ...EMPTY, allows: {} };
 }
 
-function saveToolApprovals(file: ToolApprovalsFile): void {
-  const dir = join(home(), ".mlx-bun");
-  mkdirSync(dir, { recursive: true });
-  const path = configPath();
+function saveToolApprovals(file: ToolApprovalsFile, path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(file, null, 2) + "\n", { mode: 0o600 });
   chmodSync(path, 0o600); // writeFileSync's mode is masked by umask on create
 }
 
 /** Whether `toolName` is currently in the durable always-allow set. */
-export function isToolAlwaysAllowed(toolName: string): boolean {
-  return loadToolApprovals().allows[toolName] === true;
+export function isToolAlwaysAllowed(toolName: string, path?: string): boolean {
+  return loadToolApprovals(path).allows[toolName] === true;
 }
 
 /** Persist "always allow this tool" for `toolName`. Idempotent. */
-export function setToolAlwaysAllowed(toolName: string): ToolApprovalsFile {
-  const file = loadToolApprovals();
+export function setToolAlwaysAllowed(toolName: string, path = configPath()): ToolApprovalsFile {
+  const file = loadToolApprovals(path);
   file.allows[toolName] = true;
-  saveToolApprovals(file);
+  saveToolApprovals(file, path);
   return file;
 }
 
 /** Revoke a previously-granted always-allow (settings UI "forget" action). */
-export function revokeToolAlwaysAllowed(toolName: string): ToolApprovalsFile {
-  const file = loadToolApprovals();
+export function revokeToolAlwaysAllowed(toolName: string, path = configPath()): ToolApprovalsFile {
+  const file = loadToolApprovals(path);
   delete file.allows[toolName];
-  saveToolApprovals(file);
+  saveToolApprovals(file, path);
   return file;
 }
 
 /** Full always-allow set, for a settings-panel listing. */
-export function listAlwaysAllowedTools(): string[] {
-  return Object.keys(loadToolApprovals().allows).sort();
+export function listAlwaysAllowedTools(path?: string): string[] {
+  return Object.keys(loadToolApprovals(path).allows).sort();
 }

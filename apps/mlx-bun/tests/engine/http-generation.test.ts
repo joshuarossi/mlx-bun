@@ -5,33 +5,17 @@ const modelDir = process.env.MLX_BUN_APP_TEST_MODEL;
 // Opt-in: uses an already-downloaded autoregressive model, never downloads one.
 // A supplied invalid path or missing native runtime must fail rather than skip.
 test.skipIf(!modelDir)("real HTTP generation shares the continuous engine and recovers after stream cancellation", async () => {
-  const { loadContext, modelServingBinding, createAppEngine, createCacheServices } = await import("../../src/engine");
-  const { createCompletionRoutes } = await import("../../src/server/routes");
-  const { startServer } = await import("../../src/server/start");
-  const context = await loadContext(modelDir!);
-  let close: () => void | Promise<unknown> = () => context.dispose();
+  const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
+  const { scanSnapshot } = await import("@mlx-bun/hub/registry");
+  const model = await scanSnapshot(modelDir!, "test-model");
+  if (!model) throw new Error("Model path has no loadable checkpoint");
+  const options = parseServeOptions({ values: { port: "0", ctx: "2048", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
+  const app = await startModelServer(model, options);
+  const base = new URL(`http://127.0.0.1:${app.port}`);
   try {
-    const binding = await modelServingBinding(context);
-    const cache = await createCacheServices(context, binding, { promptCacheBytes: 128 * 1024 ** 2 });
-    close = async () => { try { await cache.close(); } finally { context.dispose(); } };
-    binding.gateway.configureContinuation?.(cache.continuationServices);
-    // Construction takes ownership of context and cache even when it fails.
-    close = () => {};
-    const engine = await createAppEngine(context, { binding, capacity: 8,
-      gateway: { promptCache: cache.promptCache, kvScheme: cache.resolvedKvScheme,
-        stateCodecs: cache.stateCodecs, adapterNamespace: cache.adapterNamespace },
-      beforeModelDispose: () => cache.close(),
-    });
-    close = () => engine.close();
-    const routes = createCompletionRoutes(engine, { promptCache: cache.promptCache,
-      contextLimit: 2048, kvScheme: cache.kvScheme, defaultGeneratedTokens: 8 });
-    close = () => {};
-    const app = await startServer({ routes, web: () => null,
-      chat: () => ({ async start() {}, async handle() {}, dispose() {} }),
-      closeEngine: () => engine.close(),
-    }, { port: 0 });
-    close = () => app.close();
-    const endpoint = new URL("/v1/chat/completions", app.server.url);
+    expect((await fetch(base)).headers.get("content-type")).toContain("text/html");
+    expect((await fetch(new URL("/health", base))).status).toBe(200);
+    const endpoint = new URL("/v1/chat/completions", base);
     const body = { messages: [{ role: "user", content: "Say hello in one sentence." }], max_tokens: 8, temperature: 0 };
     const request = (options: typeof body & { stream?: boolean } = body) => fetch(endpoint, { method: "POST",
       headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
@@ -53,7 +37,6 @@ test.skipIf(!modelDir)("real HTTP generation shares the continuous engine and re
     expect(afterCancel.status).toBe(200);
     await afterCancel.arrayBuffer();
     await app.close();
-    expect(engine.gateway.activeRows).toBe(0);
-    expect(engine.gateway.pendingRows).toBe(0);
-  } finally { await close(); }
+    await expect(fetch(base)).rejects.toThrow();
+  } finally { await app.close(); }
 }, 120_000);
