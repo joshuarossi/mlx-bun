@@ -1,12 +1,10 @@
 #!/usr/bin/env bun
-import { help, isCommand, parseCommand } from "./args";
+import { commandInvocation, help, isCommand, parseCommand } from "./args";
 import { renderHelp } from "./terminal";
 import pkg from "../../package.json" with { type: "json" };
 
 try {
-  const [first, ...rest] = process.argv.slice(2);
-  const command = !first || (first.startsWith("--") && !["--help", "--version"].includes(first)) ? "serve" : first;
-  const args = command === "serve" && first !== "serve" ? process.argv.slice(2) : rest;
+  const { command, args } = commandInvocation(process.argv.slice(2));
   if (["--version", "-v", "version"].includes(command ?? "")) {
     console.log(`mlx-bun ${pkg.version}`);
   } else if (command === "help" || command === "--help" || command === "-h") {
@@ -26,6 +24,6 @@ try {
     }
   }
 } catch (error) {
-  console.error(error instanceof Error ? (process.env.MLX_BUN_DEBUG ? error.stack ?? error.message : error.message) : String(error));
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }

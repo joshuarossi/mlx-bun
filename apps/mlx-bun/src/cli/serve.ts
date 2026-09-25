@@ -72,10 +72,10 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
     capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
-    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? profileLimit,
+    contextLimit: profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
-    readOnly: args.values["read-only"] === true, noOpen: args.values["no-open"] === true,
+    readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
   };
 }
@@ -148,7 +148,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, closeEngine: () => engine.close() }, {
+    const listener = await startServer({ routes, web, chat, beforeDrain: () => caches.stopIdleDemotion(), closeEngine: () => engine.close() }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;
@@ -209,7 +209,7 @@ const defaults: ServeDependencies = {
   resolve: resolveModelAuto, start: startModelServer, interactive: !!process.stdout.isTTY,
   async open(url) { const child = Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); if (await child.exited !== 0) throw new Error("Browser could not be opened"); },
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
-  error: error => console.error(error instanceof Error ? (process.env.MLX_BUN_DEBUG ? error.stack ?? error.message : error.message) : String(error)),
+  error: error => console.error(error instanceof Error ? error.message : String(error)),
 };
 
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<RunningApp> {

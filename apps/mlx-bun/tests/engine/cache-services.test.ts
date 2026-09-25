@@ -150,3 +150,18 @@ test("engine construction failure preserves the original error and attempts hook
   }
   expect(f.events).toEqual(["cache close", "model dispose"]);
 });
+
+
+test("stopping idle demotion before request drain preserves caches until final close", async () => {
+  await withTokenizer(async directory => {
+    const f = setup(); f.context.model.config.modelDir = directory;
+    const cache = await createCacheServices(f.context, f.binding, { ssdCacheDir: directory }, f.deps);
+    cache.stopIdleDemotion(); cache.stopIdleDemotion();
+    expect(f.events.filter(event => event === "timer stop")).toHaveLength(1);
+    expect(f.events).not.toContain("cache clear");
+    expect(f.events).not.toContain("prefix flush");
+    await cache.close();
+    expect(f.events.filter(event => event === "timer stop")).toHaveLength(1);
+    expect(f.events).toContain("prefix flush"); expect(f.events).toContain("cache clear");
+  });
+});

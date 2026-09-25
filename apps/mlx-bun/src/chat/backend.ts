@@ -67,6 +67,8 @@ export function makeChatWebSocketHandler(factory: ChatBackendFactory): {
           if (!stopped && !connection?.closed) error(socket, cause);
           connections.delete(socket);
           if (connection) await release(connection);
+          // Failed startup must not leave an untracked transport blocking listener drain.
+          socket.close(1011, "Chat startup failed");
         }
       },
       async message(socket, raw) {
@@ -93,7 +95,10 @@ export function makeChatWebSocketHandler(factory: ChatBackendFactory): {
     dispose() {
       return closing ??= (async () => {
         stopped = true;
-        for (const connection of connections.values()) void release(connection);
+        for (const [socket, connection] of [...connections]) {
+          void release(connection);
+          try { socket.close(1001, "Server shutting down"); } catch (error) { cleanupErrors.push(error); }
+        }
         connections.clear();
         await Promise.all([...disposing]);
         // Cancel first, then join work that can acquire/release resources after
