@@ -22,7 +22,7 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
   try {
     expect(await (await fetch(app.server.url)).text()).toBe("web");
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
-    for (const path of ["/api/settings/hf-token", "/api/quantize/push", "/api/dataset/submit", "/api/memory/status", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats"]) {
+    for (const path of ["/api/settings/hf-token", "/api/quantize/push", "/api/dataset/push", "/api/memory/status", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats"]) {
       const response = await fetch(new URL(path, app.server.url));
       expect(response.status).toBe(501);
       expect((await response.json()).error.type).toBe("not_implemented");

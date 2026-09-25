@@ -29,10 +29,13 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 - [ ] Inject memory tools, skill paths, and prompt context into web chat from
   their real app owner. The composed Pi backend currently leaves memory disabled.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
-  their owners migrate: memory read/init and synthesis; dataset and finetune;
+  their owners migrate: memory read/init and synthesis; dataset publishing and finetune;
   artifact publishing; adapter management; settings and GC; lease/drain/cache admin;
   Anthropic messages, Responses, audio, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
+- [ ] Migrate an owned generated-code execution facility before enabling the
+  `verified_code` dataset template. Its metadata currently states unavailable
+  and submission returns 501; the other twelve templates are enabled.
 - [ ] Migrate the training numerical core into its own library before enabling
   finetune jobs; app request policy and orchestration stay in the app. Verify
   fixed-seed adapter outputs and loss trajectories against main before merge.

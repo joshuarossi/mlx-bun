@@ -10,7 +10,7 @@ const pending = [
   /^\/api\/gc\/(?:plan|execute)$/,
   /^\/api\/quantize\/push$/,
   /^\/api\/finetune\/(?:inspect-dataset|submit|merge|export|push)$/,
-  /^\/api\/dataset\/(?:templates|submit|push)$/,
+  /^\/api\/dataset\/push$/,
   /^\/api\/memory\/(?:status|list|search|article|links|history|diff|init)$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
   /^\/(?:generate|signal|fit|stats|curves|dag)$/,
