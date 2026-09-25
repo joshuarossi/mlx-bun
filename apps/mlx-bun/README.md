@@ -167,8 +167,7 @@ then resumes. As in main's direct-process server, resident model weights and
 caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
 admission waits, terminates active children, and awaits them before closing the
 store and engine. Opening the app does not create the job database until a job
-route is used. Dataset generation, adapter mounting, and artifact
-publishing remain separate work. A fine-tuning job selects its own model path;
+route is used. Dataset generation and adapter mounting remain separate work. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
