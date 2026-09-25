@@ -1,12 +1,15 @@
 /** Owns the browser's static files. The application mounts this alongside
  * HTTP and WebSocket handlers; creating it neither opens a socket nor imports
- * an inference engine. The package's prepack builds the generated JS. */
+ * an inference engine. Prepack supplies generated JS; source checkouts build
+ * it in memory when absent, without requiring writable installation files. */
 export async function createWebHandler() {
   const publicFile = (name: string) => Bun.file(new URL(`./public/${name}`, import.meta.url)).text();
   const script = Bun.file(new URL("../../dist/web/app.js", import.meta.url));
-  if (!await script.exists()) throw new Error("Web bundle missing; run bun run --filter mlx-bun build:web");
+  const appSource = await script.exists()
+    ? script.text()
+    : import("./build").then(({ buildWebBundle }) => buildWebBundle());
   const [html, app, highlight, theme, manifest, icon, worker] = await Promise.all([
-    publicFile("app.html"), script.text(), publicFile("vendor/hljs.js"), publicFile("vendor/hljs-theme.css"),
+    publicFile("app.html"), appSource, publicFile("vendor/hljs.js"), publicFile("vendor/hljs-theme.css"),
     publicFile("manifest.webmanifest"), publicFile("icon.svg"), publicFile("sw.js"),
   ]);
   const cache = "public, max-age=3600";

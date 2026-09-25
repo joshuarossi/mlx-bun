@@ -213,13 +213,14 @@ describe("CompletionExecutor", () => {
     });
   });
 
-  test("releases prepared resources when placement fails before generation", async () => {
+  for (const phase of ["execute", "preflight", "preflight-cleanup-failure"]) test(`releases rejected placement resources during ${phase}`, async () => {
     let disposals = 0;
+    const failure = new Error("placement failed"), cleanup = new Error("cleanup failed");
     const ownership = new RequestOwnership();
-    ownership.own({ dispose: () => { disposals++; } });
+    ownership.own({ dispose: () => { disposals++; if (phase === "preflight-cleanup-failure") throw cleanup; } });
     const engine: CompletionEngine = {
       place() {
-        throw new Error("placement failed");
+        throw failure;
       },
       run() {
         throw new Error("generation must not start");
@@ -251,8 +252,17 @@ describe("CompletionExecutor", () => {
       idToToken: String,
     });
 
-    await expect(new CompletionExecutor(engine).execute(prepared))
-      .rejects.toThrow("placement failed");
+    const executor = new CompletionExecutor(engine);
+    if (phase === "execute") await expect(executor.execute(prepared)).rejects.toBe(failure);
+    else {
+      let caught: unknown;
+      try { executor.place(prepared); } catch (error) { caught = error; }
+      if (phase === "preflight-cleanup-failure") {
+        expect(caught).toBeInstanceOf(AggregateError);
+        expect((caught as AggregateError).errors).toEqual([failure, cleanup]);
+      } else expect(caught).toBe(failure);
+      await expect(executor.execute(prepared)).rejects.toThrow("already been executed");
+    }
     expect(disposals).toBe(1);
   });
 

@@ -61,12 +61,16 @@ export function createCompletionRoutes(engine: {
           } }, { status: 400 });
           let body: { input?: unknown; instruction?: unknown };
           try { body = await request.json(); }
-          catch { return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 }); }
+          catch (error) {
+            if (request.signal.aborted) return errorResponse(error, url.pathname, undefined, request.signal);
+            return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
+          }
           const inputs = Array.isArray(body?.input) ? body.input : body?.input != null ? [body.input] : [];
           if (!inputs.length || !inputs.every(input => typeof input === "string"))
             return Response.json({ error: { message: "`input` must be a string or array of strings", type: "invalid_request_error" } }, { status: 400 });
           const instruction = typeof body.instruction === "string" ? body.instruction : undefined;
           const results = await engine.gateway.runExclusive(async () => embed(inputs, instruction), undefined, request.signal);
+          request.signal.throwIfAborted();
           const total = results.reduce((sum, result) => sum + result.tokens, 0);
           return Response.json({ object: "list", model: ctx.modelId,
             data: results.map((result, index) => ({ object: "embedding", index, embedding: Array.from(result.vector) })),
@@ -83,7 +87,8 @@ export function createCompletionRoutes(engine: {
           if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid JSON body");
           body = parsed;
         } catch {
-          trace?.finish("error", { stage: "body_parse" });
+          trace?.finish(request.signal.aborted ? "abort" : "error", { stage: "body_parse" });
+          if (request.signal.aborted) return errorResponse(request.signal.reason, url.pathname, undefined, request.signal);
           return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
         } finally { closeParse?.(); }
         const session = typeof body.session_id === "string" ? body.session_id :
@@ -93,13 +98,13 @@ export function createCompletionRoutes(engine: {
         else { delete body.session_id; delete body.prompt_cache_key; }
         const admitted = await admit(inference, () => chatRoute
           ? chat.run(new ChatRequest(body), id, request.signal)
-          : text.run(new TextCompletionRequest(body), id, request.signal), trace, chatRoute ? "chat request" : "text completion");
+          : text.run(new TextCompletionRequest(body), id, request.signal), trace, chatRoute ? "chat request" : "text completion", undefined, request.signal);
         if ("response" in admitted) return admitted.response;
         const meta = { id, created: Math.floor(Date.now() / 1000), model: ctx.modelId };
         return body.stream
           ? respondStream(inference, admitted.admitted, chatRoute ? chatCompletionStream(meta) : textCompletionStream(meta), request.signal, trace)
           : respondJson(inference, admitted.admitted, result => chatRoute ? chatCompletionJson(result, meta) : textCompletionJson(result, meta), request.signal, trace);
-      } catch (error) { return errorResponse(error, url.pathname); }
+      } catch (error) { return errorResponse(error, url.pathname, undefined, request.signal); }
     },
   };
 }

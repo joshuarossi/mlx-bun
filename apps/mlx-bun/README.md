@@ -133,7 +133,9 @@ during migration; preserving their UI does not claim their backend is ready.
 and returns a `Request → Response | null` handler for application composition.
 It opens no listener. `bun run --filter mlx-bun build:web` creates ignored
 `dist/web/app.js`; prepack generates and includes that file, so installed apps
-need no build step. Static HTML, theme, manifest, worker, and icon live in
+need no build step. A source checkout with no generated bundle compiles the
+browser entry in memory on startup, without writing installation files. The
+build script and runtime fallback share `web/build.ts`. Static HTML, theme, manifest, worker, and icon live in
 `src/web/public/`. The vendored highlight.js bundle retains its BSD license in
 `public/vendor/hljs-LICENSE`; its existing header records upstream provenance.
 
