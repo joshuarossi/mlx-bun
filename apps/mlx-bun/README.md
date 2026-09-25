@@ -154,7 +154,9 @@ and CPU-only model inspection; the numerical work uses `@mlx-bun/quantize`.
 runner loads the chosen model and invokes `@mlx-bun/training`. Library defaults
 are supplied to the app mapper, which preserves main's ORPO recipe and bf16
 head fallback. The child restores its wired-memory limit and releases its model
-and weights on completion or failure.
+and weights on completion or failure. Training progress passes through unchanged
+to job events, preserving metrics, adapter paths, and stage fields; the job owner
+alone emits the terminal lifecycle event.
 `cli/job-entry.ts` resolves the producer in the child process. HTTP parsing and
 wire responses stay in `server/job-routes.ts`, `server/quantize-routes.ts`, and
 `server/finetune-routes.ts`.

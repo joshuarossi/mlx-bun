@@ -63,6 +63,9 @@ export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = l
       const oldLimit = r.setWiredLimit(r.recommendedLimit());
       // Reverse cleanup order: synchronize, restore wired memory, model, weights.
       owned.push({ dispose: () => { r.setWiredLimit(oldLimit); } }, { dispose: () => r.synchronize() });
+      // Training observations already have the app event shape: pass every
+      // field through unchanged. The job owner alone emits terminal lifecycle
+      // events; a trainer stage named "done" remains an ordinary stage.
       result = await r.train(model, tokenizer, template, dataDir, cfg, emit);
     } catch (error) { return cleanupFailure(error, cleanup); }
     cleanup();
