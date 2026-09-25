@@ -38,6 +38,26 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.
 
+## Improvements identified during migration
+
+Record concrete improvements here as they are discovered, with the current
+limitation and the responsible library or app domain. Preserve shipped behavior
+first; an improvement is not permission to redesign its implementation during
+migration. Existing migration gaps remain required work in the feature table.
+
+- [ ] Generalize paged KV across supported models that use KV attention (Josh's
+  target). The app's shared paged path currently supports Gemma4 only; other
+  families report an unsupported-execution error. Cache storage, block allocation,
+  row operations, snapshots and lifecycle belong to the cache library domain
+  (currently `packages/inference/src/state/`, including `state/paged/`). Model
+  graphs supply attention/cache bindings through lower-level contracts; numerical
+  paged-attention kernels remain in `kernels/`, and execution owns scheduling.
+  Extend those seams rather than put model switches in the cache implementation.
+  Check mixed recurrent/KV models explicitly: recurrent state is not itself a KV
+  cache. Exit: supported KV attention paths use the cache contract with real-model
+  numerical, continuation, cancellation and batched-execution coverage. This
+  records the ownership and target; it does not introduce a new package now.
+
 ## Migrate the application
 
 - [ ] Migrate the server, engine host, web app, and job orchestration into
@@ -78,7 +98,7 @@ without one.
 | Memory synthesis (nightly pipeline) | n/a (app-owned; main's synthesize/pipeline/stages/cluster/db/schedule not migrated) | partial (loopback completion client and tracked jobs exist from datasets) | 501 (`/v1/memory/synthesize`) | missing (`memory`, `setup`) | read panel done; synthesize button hits 501 | n/a (port main's pipeline/cluster/db tests) | Memory owner runs synthesis over the continuous engine client, never main's serial fallback; then verbs and schedule; `scheduleStatus` then reports real state |
 | Live model switching, isolation, model pool | n/a | missing (main's `isolate`, `parent-application`, `responses-client`; `--isolate`, `--model-pool`, `--unix`) | restart answer done (`/api/hub/serve`); 501 (`/admin/lease`, `/admin/drain`, `/engine`) | flags absent | hub panel done | n/a | Decided (Josh): isolation and pooling stay as optional capabilities, off by default with a pool cap of 1, and web chat works under isolation (main answered 501 there). Owning implementation, after the CLI batch: I1 splits the app composition into persistent CPU state (web, Pi, Responses history, memory, jobs, downloads, credentials, sessions, settings) and model-scoped HTTP composition (native binding, caches, grammar, media, adapters, status) with no behavior change; I2 adds worker mode on a Unix socket with private admin lease/drain/health and packaged child re-execution through the `__job`-style entry; I3 adds the parent proxy behind `--isolate` (restart budget, 502 `engine_unavailable`, drain, shutdown, parent-owned Pi over loopback HTTP and parent-owned Responses history, `/engine`) with browser stream/stop/crash/reconnect acceptance in the same change; I4 adds the exact-id LRU pool behind `--model-pool` with serialized cold starts, drained eviction, library invalidation reaching live hosts, GC protecting every resident or loading model, Pi `local` as the default-worker alias, and job leases spanning all workers until child exit and log drain. Keeps the existing HTTP boundary; tensor-bearing engine calls are never transported. |
 | Speculative decoding: draft models, n-gram, MTP, DSpark/DFlash | done (`generation/speculative`, MTP models and state) | partial (draft slot in the host; grouped draft required; ungrouped shapes report the typed capability error) | rides completions | done (`--draft-model`, `--draft-kind`, `--num-draft-tokens`, `--ngram-*`, `--mtp`; `--preload` is a Whisper flag, tracked in the audio row) | n/a | partial (opt-in ngram prompt-lookup run on MiniCPM with telemetry and exactness; no paired two-model or MTP run) | Shared execution for ungrouped drafts; paired two-model and MTP runs measured in the performance pass |
-| Paged KV | done (`kernels/attention/paged`, `state/paged`) | partial (Gemma4 only; others report the typed error) | rides completions | done (`--paged-kv`, `--paged-kv-block-size`, env mirror) | n/a | partial (opt-in Gemma4 paged completion and the non-Gemma4 typed error; no paired numerical run) | Batched paged path for non-Gemma4, or an explicit drop decision |
+| Paged KV | done (`kernels/attention/paged`, `state/paged`) | partial (Gemma4 only; others report the typed error) | rides completions | done (`--paged-kv`, `--paged-kv-block-size`, env mirror) | n/a | partial (opt-in Gemma4 paged completion and the non-Gemma4 typed error; no paired numerical run) | Preserve main's supported paged paths through shared execution; broader model support and cache ownership are tracked in Improvements identified during migration |
 | Serial-only request shapes: universal Gemma2 masks, sliding-attention caches, media without batched input, non-batchable quantized and Turbo KV, grammar with batching off, DiffusionGemma denoising | done (models exist, incl. `diffusion-gemma`, `universal`) | typed `UnsupportedExecutionError` per shape | 501 envelope | `generate` prints the error, exit 1 | n/a | per shape, when supported | Shared-scheduler support per shape (to support, not dropped); DiffusionGemma needs a denoising plan in the batched executor; resolve `--kv-quant turbo`, `--fused-sdpa`, `--l1`/`--l2`/`--l3` with layer policy |
 | Evaluation and benchmarking: `bench`, `evals`, `perplexity`, EvalDB, eval tasks | n/a (experiments; the in-package bench harness moves out) | n/a | `/fit` measured fields stay null | not app verbs | status page shows dashes | n/a | Runs outside this repository, consuming the published packages and driving the app through its public HTTP and CLI surface; results are published as datasets or quoted as text in docs |
 | Dataset `verified_code` execution | n/a | 501 at submit; template visible as unavailable | 501 | n/a | done | n/a | An owned sandboxed executor; main's `spawnSync` of generated Python is not to be ported |
