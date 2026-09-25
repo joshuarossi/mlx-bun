@@ -30,6 +30,8 @@ export interface ServeOptions {
   forceWire?: boolean;
   expertOffload?: boolean;
   allowPrivateMedia?: boolean;
+  /** Main's `--adapter`/`--adapter-path`: mounted at startup as the default adapter. */
+  adapterDir?: string;
   readOnly: boolean;
   noOpen: boolean;
   cache: CacheServiceOptions;
@@ -87,6 +89,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
       width: number("hlg-width", 0, 100) ?? 4, shoulder: number("hlg-shoulder", 0, 100) ?? 4,
       toe: number("hlg-toe", 0, 100) ?? 6, pivotOffset: number("hlg-pivot-offset", 0, 100) ?? 6, pivot: "top" } } : {}),
   };
+  const adapterDir = value("adapter") ?? value("adapter-path");
+  if (adapterDir !== undefined && !adapterDir.trim()) throw new Error("--adapter expects a directory");
   const memoryBudget = number("memory-budget");
   const contextTokens = number("context-length", 1, Number.MAX_SAFE_INTEGER, true);
   const host = value("host") ?? "127.0.0.1";
@@ -100,7 +104,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   return {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
-    capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
+    // Main's --decode-concurrency is an alias of --batch: the same continuous capacity, never a serial lane.
+    capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? number("decode-concurrency", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
     contextLimit: profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
@@ -108,6 +113,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(contextTokens !== undefined ? { contextTokens } : {}),
     forceWire: args.values["force-wire"] === true, expertOffload: args.values["expert-offload"] === true,
     allowPrivateMedia: args.values["allow-private-media"] === true,
+    ...(adapterDir ? { adapterDir } : {}),
     readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
   };
@@ -186,6 +192,20 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     cleanup = () => context.dispose();
     requireChatTemplate(context);
+    // Main: a startup adapter mounts before any request and becomes the default
+    // for requests without an adapter field (an explicit adapter, including
+    // "none", still wins); a bad adapter fails startup and releases the model.
+    let defaultAdapter: string | undefined;
+    if (options.adapterDir) {
+      const directory = options.adapterDir.replace(/\/+$/, "");
+      try {
+        const info = await context.adapters.mount(directory.split("/").pop()!, directory);
+        defaultAdapter = info.id;
+        console.log(`[serve] adapter ${info.id} mounted (${info.mountedLayers} layers) · default for requests (select others via \`adapter\`)`);
+      } catch (error) {
+        throw new Error(`adapter mount failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const binding = await modelServingBinding(context);
     // Main: the plan's allocator reserve, else the explicit budget, caps the
     // allocator for the whole process and bounds optional cache residency.
@@ -232,7 +252,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
     });
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, ...limits, tokenHistory, downloads: downloads.snapshot });
+      kvScheme: caches.kvScheme, ...limits, tokenHistory, downloads: downloads.snapshot,
+      ...(defaultAdapter ? { defaultAdapter } : {}) });
     const status = createStatusRoutes({ owner: "serve", context, caches, gateway: engine.gateway,
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),

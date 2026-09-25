@@ -12,6 +12,9 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 test("serving defaults to continuous capacity eight; capacity one uses the same engine options", () => {
   expect(parse()).toMatchObject({ query: null, capacity: 8, port: 8080, hostname: "127.0.0.1", contextLimit: null, cache: { kvQuant: "off" }, request: {} });
   expect(parse("--batch", "1").capacity).toBe(1);
+  expect(parse("--decode-concurrency", "3").capacity).toBe(3);
+  expect(parse("--batch", "2", "--decode-concurrency", "5").capacity).toBe(2);
+  expect(() => parse("--decode-concurrency", "0")).toThrow();
   expect(() => parse("--serial")).toThrow();
   expect(() => parse("--compiled-decode", "on")).toThrow();
 });
@@ -320,13 +323,15 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     const config = { text: { numHiddenLayers: 2, numAttentionHeads: 8, numKeyValueHeads: 2, headDim: 64, globalHeadDim: 64,
       numGlobalKeyValueHeads: 2, attentionKEqV: false, layerTypes: ["full_attention", "sliding_attention"], slidingWindow: 1024,
       maxPositionEmbeddings: 32768, enableMoeBlock: false } };
+    let mountFails = false;
     const context = { modelId: "test", model: { config, weightsBytes: 2e9 }, glmMemoryPlan: null, tokenizer: {},
-      template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
+      template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); },
+      adapters: { async mount(id, dir) { events.push("mount " + id + " " + dir); if (mountFails) throw new Error("adapter_config.json missing"); return { id, mountedLayers: 3 }; } } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
       adapterNamespace() {}, checkpoints: null, continuationServices: {},
       stopIdleDemotion() {}, async close() { return { durable: true }; } };
     const expected = fit(config, 2e9, 1, undefined, undefined, 0, 8e9, undefined).maxSafeContext;
-    let loadOptions, cacheOptions, statusBudget, contextLimit;
+    let loadOptions, cacheOptions, statusBudget, contextLimit, defaultAdapter;
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async (path, id, options) => { loadOptions = options; events.push("load wire=" + runtimeValue("MLX_BUN_FORCE_WIRE") + " media=" + runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA")); return context; },
       modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
@@ -341,7 +346,7 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
-      contextLimit = options.contextLimit; return { handle: async () => null, invalidateLibrary() {} };
+      contextLimit = options.contextLimit; defaultAdapter = options.defaultAdapter; return { handle: async () => null, invalidateLibrary() {} };
     } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes(input) { statusBudget = input.memoryBudgetBytes; return { handle: async () => null }; } }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
@@ -356,38 +361,45 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
-      "--force-wire", "--allow-private-media", "--expert-offload", "--no-open"]));
+      "--force-wire", "--allow-private-media", "--expert-offload", "--adapter", "/unused/adapters/my-lora/", "--no-open"]));
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options);
-    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "allocator 8000000000"]);
+    // The adapter mounts right after the model loads, before the allocator, caches, or engine exist.
+    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
+    assert.equal(defaultAdapter, "my-lora");
     assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, glm: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096 } });
     assert.equal(cacheOptions.allocatorLimitBytes, 8e9);
     assert.equal(statusBudget, 8e9);
     assert.equal(contextLimit, expected);
     await running.close();
     // Process settings restore only after the engine released the model.
-    assert.deepEqual(events.slice(4), ["model close", "restore offload", "allocator 77"]);
+    assert.deepEqual(events.slice(5), ["model close", "restore offload", "allocator 77"]);
     assert.equal(limit, 77);
     assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
     assert.equal(runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA"), undefined);
+    // A bad adapter fails startup with main's message and releases the model before anything else was created.
+    events.length = 0; mountFails = true;
+    await assert.rejects(startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options), /adapter mount failed: adapter_config.json missing/);
+    assert.deepEqual(events, ["load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "model close"]);
+    mountFails = false;
     events.length = 0;
     const dense = await startModelServer({ path: "/dense", repoId: "dense", expertsBytes: 0 }, options);
-    assert.deepEqual(events, ["load wire=1 media=1", "allocator 8000000000"]);
+    assert.deepEqual(events, ["load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
     await dense.close();
-    assert.deepEqual(events.slice(2), ["model close", "allocator 77"]);
+    assert.deepEqual(events.slice(3), ["model close", "allocator 77"]);
     // A closed app's repeated close never resets a later app's process settings.
     events.length = 0;
     const later = await startModelServer({ path: "/later", repoId: "later", expertsBytes: 5 }, options);
     await dense.close(); await running.close();
-    assert.deepEqual(events, ["offload /later", "activate /offload", "load wire=1 media=1", "allocator 8000000000"]);
+    assert.deepEqual(events, ["offload /later", "activate /offload", "load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
     assert.equal(limit, 8e9);
     await later.close();
-    assert.deepEqual(events.slice(4), ["model close", "restore offload", "allocator 77"]);
+    assert.deepEqual(events.slice(5), ["model close", "restore offload", "allocator 77"]);
     // Startup failure after activation and the allocator limit restores both.
     events.length = 0;
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { await input.closeEngine(); throw new Error("bind failed"); } }));
     await assert.rejects(startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options), /bind failed/);
-    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "allocator 8000000000", "model close", "restore offload", "allocator 77"]);
+    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000", "model close", "restore offload", "allocator 77"]);
     assert.equal(limit, 77);
     assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
   `;
@@ -395,7 +407,7 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-  expect(stderr.replace(/^--expert-offload ignored.*$/m, "").trim()).toBe(""); expect(code).toBe(0);
+  expect(stderr.replace(/^--expert-offload ignored.*$/gm, "").trim()).toBe(""); expect(code).toBe(0);
 });
 
 test("a recommended background download is handed to the app's owner after startup; a refused start is reported", async () => {
@@ -439,4 +451,12 @@ test("a signal that lands during selection but leaves it resolved still stops be
     resolve: async () => { run.signals.emit("SIGINT"); return { m: model, picked: true }; } })).rejects.toThrow("startup cancelled by signal");
   expect(run.starts).toEqual([]); expect(run.opens).toEqual([]);
   expect(run.signals.listenerCount("SIGINT")).toBe(0); expect(run.signals.listenerCount("SIGTERM")).toBe(0);
+});
+
+test("a startup adapter directory is accepted under both spellings and validated before model selection", () => {
+  expect(parse("--adapter", "/adapters/my-lora").adapterDir).toBe("/adapters/my-lora");
+  expect(parse("--adapter-path", "/adapters/other").adapterDir).toBe("/adapters/other");
+  expect(parse("--adapter", "/a", "--adapter-path", "/b").adapterDir).toBe("/a");
+  expect(parse()).not.toHaveProperty("adapterDir");
+  expect(() => parse("--adapter", " ")).toThrow("--adapter expects a directory");
 });
