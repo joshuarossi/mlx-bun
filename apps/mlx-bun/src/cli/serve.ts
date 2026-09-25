@@ -13,6 +13,7 @@ import type { CacheServiceOptions } from "../engine/cache-services";
 import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { PiBackendPaths } from "../chat/pi-backend";
+import type { DraftKind } from "../engine/model-host";
 import type { DownloadOwner } from "../hub/downloads";
 
 export interface ServeOptions {
@@ -32,6 +33,11 @@ export interface ServeOptions {
   allowPrivateMedia?: boolean;
   /** Main's `--adapter`/`--adapter-path`: mounted at startup as the default adapter. */
   adapterDir?: string;
+  /** Main's speculative-decoding flags. `model` is the query as typed; startup
+   * resolves it like the main model into `modelDir` before loading. */
+  draft?: { model?: string; modelDir?: string; kind?: DraftKind; numTokens?: number; ngramMax?: number; ngramMin?: number };
+  /** Main's `--mtp on|off`: GLM-5.2 native MTP drafter; other families ignore it. */
+  mtp?: boolean;
   readOnly: boolean;
   noOpen: boolean;
   cache: CacheServiceOptions;
@@ -95,6 +101,36 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   };
   const adapterDir = value("adapter") ?? value("adapter-path");
   if (adapterDir !== undefined && !adapterDir.trim()) throw new Error("--adapter expects a directory");
+  // Main's speculative flags, validated before model selection with its messages.
+  const draftModel = value("draft-model");
+  if (draftModel !== undefined && !draftModel.trim()) throw new Error("--draft-model expects a path or query");
+  const numDraftRaw = value("num-draft-tokens");
+  const numDraftTokens = numDraftRaw === undefined ? undefined : Number(numDraftRaw);
+  if (numDraftTokens !== undefined && (!Number.isInteger(numDraftTokens) || numDraftTokens < 1))
+    throw new Error(`--num-draft-tokens expects an integer >= 1 (got "${numDraftRaw}")`);
+  const draftKinds: DraftKind[] = ["dspark", "deepspec", "assistant", "two-model", "ngram", "mtp"];
+  const draftKindRaw = value("draft-kind");
+  if (draftKindRaw !== undefined && !draftKinds.includes(draftKindRaw as DraftKind))
+    throw new Error(`--draft-kind expects two-model|assistant|dspark|deepspec|mtp|ngram (got "${draftKindRaw}")`);
+  const draftKind = draftKindRaw as DraftKind | undefined;
+  const ngramInt = (name: string): number | undefined => {
+    const raw = value(name);
+    if (raw === undefined) return undefined;
+    const parsed = Number(raw);
+    if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`--${name} expects an integer >= 1 (got "${raw}")`);
+    return parsed;
+  };
+  const ngramMax = ngramInt("ngram-max"), ngramMin = ngramInt("ngram-min");
+  if (ngramMax !== undefined && ngramMin !== undefined && ngramMin > ngramMax)
+    throw new Error(`--ngram-min (${ngramMin}) must be <= --ngram-max (${ngramMax})`);
+  if ((ngramMax !== undefined || ngramMin !== undefined) && draftKind !== "ngram")
+    console.warn("--ngram-max/--ngram-min only apply with --draft-kind ngram — ignored");
+  const mtpRaw = value("mtp");
+  if (mtpRaw !== undefined && !["on", "off", "1", "0", "true", "false"].includes(mtpRaw)) throw new Error(`--mtp expects on|off (got "${mtpRaw}")`);
+  const draft = draftModel !== undefined || draftKind !== undefined || numDraftTokens !== undefined || ngramMax !== undefined || ngramMin !== undefined
+    ? { ...(draftModel !== undefined ? { model: draftModel } : {}), ...(draftKind ? { kind: draftKind } : {}),
+      ...(numDraftTokens !== undefined ? { numTokens: numDraftTokens } : {}),
+      ...(ngramMax !== undefined ? { ngramMax } : {}), ...(ngramMin !== undefined ? { ngramMin } : {}) } : undefined;
   const memoryBudget = number("memory-budget");
   const contextTokens = number("context-length", 1, Number.MAX_SAFE_INTEGER, true);
   const host = value("host") ?? "127.0.0.1";
@@ -118,6 +154,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     forceWire: args.values["force-wire"] === true, expertOffload: args.values["expert-offload"] === true,
     allowPrivateMedia: args.values["allow-private-media"] === true,
     ...(adapterDir ? { adapterDir } : {}),
+    ...(draft ? { draft } : {}),
+    ...(mtpRaw !== undefined ? { mtp: ["on", "1", "true"].includes(mtpRaw) } : {}),
     readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
   };
@@ -187,13 +225,25 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
         restoreOffload = activateExpertOffload(await ensureOffloadFile(model.path, message => console.log(`[serve] expert offload: ${message}`)));
       }
     }
+    const draft = options.draft ?? {};
     const context = await loadContext(model.path, model.repoId, {
       ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
       // Main's GLM resource plan inputs; other families ignore this block.
       glm: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
         ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
-        ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}) },
+        ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
+        ...(options.mtp !== undefined ? { enableMtp: options.mtp } : {}) },
+      // Main's gate: a draft model, or the model-free ngram kind, or mtp alone
+      // (the host resolves the bundled <model>/mtp/ companion).
+      ...(draft.modelDir || draft.kind === "ngram" || draft.kind === "mtp" ? {
+        ...(draft.modelDir ? { draftModelDir: draft.modelDir } : {}),
+        ...(draft.numTokens !== undefined ? { numDraftTokens: draft.numTokens } : {}),
+        ...(draft.kind ? { draftKind: draft.kind } : {}),
+        ...(draft.ngramMax !== undefined ? { ngramMax: draft.ngramMax } : {}),
+        ...(draft.ngramMin !== undefined ? { ngramMin: draft.ngramMin } : {}) } : {}),
     });
+    if (draft.modelDir) console.log(`[serve] draft: ${draft.modelDir.split("/").filter(Boolean).at(-1)}`);
+    else if (draft.kind === "ngram") console.log("[serve] draft: ngram (prompt lookup)");
     cleanup = () => context.dispose();
     requireChatTemplate(context);
     // Main: a startup adapter mounts before any request and becomes the default
@@ -395,7 +445,7 @@ const defaults: ServeDependencies = {
 };
 
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<RunningApp> {
-  const options = parseServeOptions(args);
+  let options = parseServeOptions(args);
   const deps = { ...defaults, ...supplied };
   // A signal before the app exists cancels selection (a starter download stays
   // resumable) and, once the model has loaded, closes the app right away; the
@@ -410,6 +460,12 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     selection = await deps.resolve(options.query, {}, startup.signal);
     // A signal that landed during selection must not start a native load.
     startup.signal.throwIfAborted();
+    // Main resolves the draft model like the main model (a query never downloads).
+    if (options.draft?.model) {
+      const draft = await deps.resolve(options.draft.model, {}, startup.signal);
+      startup.signal.throwIfAborted();
+      options = { ...options, draft: { ...options.draft, modelDir: draft.m.path } };
+    }
     deps.log(`Loading ${selection.m.repoId}${selection.picked ? " (auto-selected)" : ""}`);
     running = await deps.start(selection.m, options);
     // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.
