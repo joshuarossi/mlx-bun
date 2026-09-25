@@ -43,6 +43,10 @@ const commands = {
     "paged-kv-block-size": { type: "string", description: "Tokens per KV block with --paged-kv, integer >= 1 [default: 256]" },
     adapter: { type: "string", description: "Mount a LoRA adapter directory at startup as the default for requests without an adapter field" },
     "adapter-path": { type: "string", description: "Alias for --adapter (mlx_lm spelling)" },
+    "whisper-model": { type: "string", description: "Whisper checkpoint (path or cached query) for /v1/audio/* beside the chat model [default: the first downloaded whisper model, resolved on the first request]; serving a Whisper checkpoint ALONE starts a transcription-only server" },
+    "whisper-idle-unload": { type: "string", description: "Seconds the Whisper weights stay loaded after a take; 0 releases them right after every take [default: 0]" },
+    "whisper-resident": { type: "boolean", description: "Never release the Whisper weights" },
+    preload: { type: "boolean", description: "Transcription-only server: load the Whisper weights before listening instead of on the first request" },
     "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
   } },
   generate: { description: "Generate text once from a local model", positional: "[query] [prompt]", options: {

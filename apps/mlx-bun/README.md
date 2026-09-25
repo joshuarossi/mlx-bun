@@ -442,6 +442,65 @@ closes, leaving resumable partials and publishing nothing. Selecting a model
 returns a restart command, preserving main's behavior without claiming a live
 switch.
 
+## Audio transcription
+
+`engine/transcription-service.ts` owns the Whisper checkpoint's residency
+(main's `TranscriptionService`). The weights load on the first take through
+the library's public `openWhisperModel`, `loadWhisperTokenizer`, and
+`WhisperTranscriber`; takes run one at a time (FIFO) and, in the full server,
+inside the generation gateway's exclusive lock, so decoding never overlaps
+chat generation. Residency follows main's flags: `--whisper-idle-unload <s>`
+(default `0`: release right after every take; the next take pages the weights
+back in from the OS file cache) and `--whisper-resident` (never release).
+`mlx_bun.timings.load_ms` in every response is non-zero exactly when that
+request paged the weights in. Loading, the Silero VAD gate, and audio decoding
+are an injected runtime, so the [service tests](tests/engine/transcription-service.test.ts)
+prove the lifecycle (lazy load, idle timer, resident mode, unload-after-take,
+FIFO takes, sessions, close) with a fake clock and no weights.
+
+`server/audio-routes.ts` serves main's speech-to-text surface:
+`POST /v1/audio/transcriptions` and `POST /v1/audio/translations` (multipart
+`file` or JSON base64/`data:` URL; `language`, `prompt`, `response_format`
+`json` | `verbose_json` | `text` | `srt` | `vtt`, `temperature`, `stream`
+server-sent events, `timestamp_granularities[]`, and main's non-standard
+`beam_size`, `vocabulary`, `condition_on_previous_text`, `no_speech_threshold`,
+`without_timestamps`, `vad`/`vad_threshold`/`vad_min_speech_ms`/`vad_trim`,
+`faithful`, `audio_ctx`); streaming dictation sessions (`POST /v1/audio/sessions`,
+`POST /v1/audio/sessions/<id>/audio` with `audio/pcm;rate=16000` float32 or any
+CoreAudio container, `POST /v1/audio/sessions/<id>/finish`,
+`DELETE /v1/audio/sessions/<id>`; unknown ids 404, a finished session 409, more
+than 64 open sessions 429); and `POST /admin/transcription/unload`, which pages
+the weights out and returns `unloaded` with the stats block (`resident`, `loads`,
+`unloads`, `requests`, `last_load_ms`, `idle_unload_sec`). Errors keep main's
+statuses: 400 for fields, undecodable audio, and clips under 0.1 s; 415 for the
+content type; 499 on client cancel; 503 `model_unavailable` with the
+`mlx-bun get` hint when no Whisper checkpoint is on disk. The group is mounted
+only with a service provider; the app composition always supplies one.
+
+`serve.ts` composes the companion: `--whisper-model <path|query>` resolves like
+the main model and refuses a non-Whisper checkpoint before loading; without it
+the first downloaded `whisper` checkpoint is looked up once, on the first audio
+request (as in main, a checkpoint downloaded later needs a restart).
+`GET /v1/models` lists the companion (`transcription: true`, `resident`) beside
+the chat model, whose `capabilities.transcription` reports whether one exists;
+the web chat's `ready.transcription` probe (the hold-to-talk mic) reads the
+same provider. Shutdown closes the service (timer cancelled, weights released)
+before the chat model. Serving a Whisper checkpoint as the main model starts
+the transcription-only server: the audio routes plus `/v1`, `/v1/models`,
+`/health`, and `/stats` (the last two carry the `transcription` stats block),
+with no chat model, prompt cache, jobs, web app, or browser open; `--preload`
+loads the weights before the listener binds. The
+[route tests](tests/server/audio-routes.test.ts) cover parsing, every response
+format, streaming, sessions over the real service with a fake runtime, and the
+transcription-only discovery routes; the [serve tests](tests/serve-cli.test.ts)
+cover the flags, both `runServe` branches, and both compositions. The opt-in
+[transcription test](tests/engine/transcription.test.ts)
+(`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_WHISPER_MODEL=<snapshot directory>`)
+serves a real checkpoint, transcribes a synthesized tone, and pages the weights
+out through the unload route; transcript parity against mlx-whisper is the
+library's contract, not this app check. The `transcribe` and `dictate` verbs
+and microphone capture are not ported yet ([PLAN](../../PLAN.md)).
+
 ## Standalone bundle
 
 After staging the root native setup, run `bun run build:binary` from the root.
