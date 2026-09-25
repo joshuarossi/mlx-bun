@@ -15,7 +15,7 @@ const pending = [
   /^\/api\/finetune\/(?:merge|export|push)$/,
   /^\/api\/dataset\/push$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
-  /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
+  /^\/(?:generate|signal|curves|curve-terrain|dag|engine)$/,
 ];
 export function pendingRoute(path: string): boolean { return pending.some(pattern => pattern.test(path)); }
 

@@ -117,6 +117,8 @@ export function createDiscoveryRoutes(
               "POST /v1/embeddings",
               "GET /v1/models",
               "GET /health",
+              "GET /stats",
+              "GET /fit",
               "GET /library",
               "GET /downloads",
             ],

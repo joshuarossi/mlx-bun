@@ -117,6 +117,16 @@ lone/concurrent deterministic completion, stream cancellation, and shutdown.
 It never downloads weights; missing native libraries or an invalid supplied
 checkpoint fail. This is a behavior check, not an oracle or performance claim.
 
+`server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
+Responses-history counters for `GET /stats`; `GET /fit` uses the public hub fit
+functions and the served artifact metadata. Predictions remain advisory and do
+not impose an admission limit. GLM reports its existing explicit memory plan.
+Historical EvalDB measurements have no migrated owner, so measurement fields
+remain null; old machine-specific GLM throughput constants are not reported as
+measurements for the current server. The dashboard shows an unavailable marker
+when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
+synthetic counters and CPU fit inputs without a model or native MLX.
+
 ## Web chat backend
 
 `src/chat/protocol.ts` owns browser messages. `backend.ts` owns a per-server

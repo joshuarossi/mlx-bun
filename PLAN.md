@@ -51,7 +51,7 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   their owners migrate: memory synthesis; dataset publishing and adapter merge/export;
   artifact publishing; HF credential settings; lease/drain/cache admin;
   audio, hub/browser model switching, session
-  search/export, curve terrain, generate, signal, fit and stats.
+  search/export, curve terrain, generate and signal.
   Each slice removes its matching placeholder when its real handler lands.
 - [ ] Migrate an owned generated-code execution facility before enabling the
   `verified_code` dataset template. Its metadata currently states unavailable

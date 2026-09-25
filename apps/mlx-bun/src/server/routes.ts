@@ -69,6 +69,8 @@ export function createCompletionRoutes(engine: {
   };
   return {
     invalidateLibrary: discovery.invalidateLibrary,
+    responseStats: () => ({ entries: responseHistory.size, bytes: responseHistory.totalBytes,
+      max_bytes: responseHistory.maxBytes, ttl_ms: responseHistory.ttlMs }),
     /** null means another app surface may handle this request. */
     async handle(request: Request): Promise<Response | null> {
       const url = new URL(request.url);

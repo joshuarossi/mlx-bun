@@ -46,6 +46,15 @@ function request(path: string, body: unknown, headers: Record<string, string> = 
   return new Request(`http://local${path}`, { method: "POST", body: JSON.stringify(body), headers, signal });
 }
 
+test("response history exposes current read-only counters to status composition", async () => {
+  const store = new ResponseStore();
+  const { routes } = harness(undefined, { responseHistory: store });
+  expect(routes.responseStats()).toEqual({ entries: 0, bytes: 0, max_bytes: store.maxBytes, ttl_ms: store.ttlMs });
+  await routes.handle(request("/v1/responses", { input: "hello" }));
+  expect(routes.responseStats()).toEqual({ entries: 1, bytes: store.totalBytes, max_bytes: store.maxBytes, ttl_ms: store.ttlMs });
+  expect(routes.responseStats().bytes).toBeGreaterThan(0);
+});
+
 test("chat and text routes preserve wire shapes and session affinity through the continuous engine", async () => {
   const { routes, seen } = harness();
   const response = (await routes.handle(request("/v1/chat/completions", { messages: [{ role: "user", content: "hi" }] }, { "x-session-affinity": "session-a" })))!;
