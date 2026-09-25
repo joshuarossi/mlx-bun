@@ -2,6 +2,7 @@ import { appendFileSync } from "node:fs";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { JobEvent } from "./protocol";
 import type { JobStore } from "./db";
+import { executablePath } from "./executable";
 
 export interface SubmitResult { jobId: string; outputPath?: string; }
 
@@ -31,7 +32,7 @@ export interface SubprocessOpts {
   acquire: (signal: AbortSignal) => Promise<DisposableResource>;
   /** Child entry supplied by application composition. */
   entry: string;
-  /** Defaults to the current Bun runtime. */
+  /** Defaults to the executable captured at startup (Bun for source execution). */
   bin?: string;
   /** Override process creation for deterministic failure-path tests. */
   spawn?: typeof Bun.spawn;
@@ -60,7 +61,7 @@ export function submitSubprocess(
     jobId: row.id,
     entry: opts.entry,
     compiled: opts.entry.includes("$bunfs"),
-    bin: opts.bin ?? process.execPath,
+    bin: opts.bin ?? executablePath,
     spawn: opts.spawn ?? Bun.spawn,
     onComplete: opts.onComplete,
     acquire: opts.acquire,
@@ -82,7 +83,7 @@ function spawnNow(item: QueuedSpawn): void {
   // a file-backed DB.
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    proc = spawn(item.compiled ? [process.execPath, "__job", jobId] : [bin, entry, jobId], {
+    proc = spawn(item.compiled ? [bin, "__job", jobId] : [bin, entry, jobId], {
       stdout: "pipe",
       stderr: "pipe",
       env: {

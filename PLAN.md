@@ -21,14 +21,6 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   preservation-checked short MiniCPM SFT/DPO/ORPO paths.
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
-- [ ] Finish restoring main's training checks: `diffusion-lora.test.ts` is
-  ported to `packages/training/tests/native/diffusion-lora.test.ts`, opted in
-  with `MLX_BUN_TRAINING_DIFFUSION_MODEL`; real-weight acceptance is pending a
-  coordinated GPU slot. Exit: that run passes on the cached checkpoint. (The
-  flash-CCE STEEL kernels compile again: the copied steel header now carries
-  upstream MLX's explicit `thread` qualifiers for MSL 4.1, and the ported
-  fused-CE matrix passes in full against the fused head; main still carries
-  the unqualified header.)
 
 ## Optimize after the full draft
 
@@ -107,8 +99,8 @@ without one.
 | Pi terminal: `pi`, `harness pi` | n/a | chat backend reusable | n/a | held (`pi-terminal`, `harness-pi` not ported) | n/a | n/a | Held by Josh |
 | Embedding API: `mlx-bun/client` and `mlx-bun/engine` (`createCompletionClient`, `createDirectHost`, `openIsolatedHost`) | n/a | missing (no app export; `startModelServer` is the only host entry) | n/a | n/a | n/a | n/a | Preserve as public app exports with new homes in the isolation series: the direct host from the I1 composition split, the isolated host from I3, the completion client over the existing HTTP boundary; package exports and consumer tests in the verifier |
 | Existing-user data compatibility: prior-format sessions, jobs, settings, vault, caches; memory Reference symlinks that point into the main checkout | n/a | missing (no diagnosis) | n/a | n/a | n/a | n/a | Diagnosis and migration that preserve user edits, with prior-format inputs generated in-test (no fixtures committed); acceptance on an isolated copy of real user data; before deleting the old checkout, inventory and preserve user-selected ignored adapters/checkpoints and other local artifacts outside it, because Git history cannot recover ignored files |
-| Docs surface and gates | n/a | n/a | served surface documented only in `--help` and READMEs | same | same | n/a | Per ARCHITECTURE: generate inventories from source as build-only output with a coverage gate (the CLI reference from the command table, the server API from the route handlers' registered surfaces, the server configuration from the serve options and runtime keys), and write the explanations by hand (models, environment, training, memory, distribution, troubleshooting; quotable numbers as text with provenance in a benchmarks page). No STATUS file, docs map, or ledgers are restored. |
-| Installation and release | n/a | n/a | n/a | bundle, launchers, safe installer, formula and staged release preparation implemented | n/a | n/a | Complete the release acceptance checks below; website/generated references and public installer delivery must follow a compatible bundle release; prior-data compatibility. Capture the original compiled executable identity at startup for managed jobs and isolated workers; verify the first child after repeated symlink upgrades uses the original build (the current job runner first reads Bun's lazy `process.execPath` at submission). No actual release. |
+| Docs surface and gates | n/a | n/a | HTTP/config inventories pending | CLI inventory generated from source | site and legacy redirects implemented | n/a | Per ARCHITECTURE: generate inventories from source as build-only output with a coverage gate (the server API from the route handlers' registered surfaces, the server configuration from the serve options and runtime keys), and write the explanations by hand (models, environment, training, memory, distribution, troubleshooting; quotable numbers as text with provenance in a benchmarks page). No STATUS file, docs map, or ledgers are restored. |
+| Installation and release | n/a | n/a | n/a | bundle, launchers, safe installer, formula and staged release preparation implemented | n/a | n/a | Complete the release acceptance checks below; public installer delivery must follow a compatible bundle release; prior-data compatibility. No actual release. |
 
 ## Release acceptance
 
