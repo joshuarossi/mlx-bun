@@ -36,10 +36,14 @@ async function loadRuntime(): Promise<FinetuneRuntime> {
 }
 
 export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = loadRuntime): JobRunner {
-  return async (emit, config) => {
+  return async (emit, config, signal) => {
     // Reject incomplete jobs without loading MLX or creating any resources.
     for (const name of ["model_dir", "data_dir", "adapter_path"])
       if (typeof config[name] !== "string" || !config[name]) throw new Error(`finetune job: missing ${name}`);
+    signal?.throwIfAborted();
+    // The trainer cancels cooperatively at its step boundaries: started
+    // checkpoint writes complete, earlier checkpoints stay, no final adapter is
+    // written; the cleanup below then releases the model, weights and wired limit.
     const r = await runtime();
     const { modelDir, dataDir, cfg } = parseFinetuneConfig(config, r.defaults);
     emit({ type: "stage", stage: "load", progress: 0.01, message: `loading model ${modelDir}` });
@@ -54,6 +58,7 @@ export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = l
     const cleanup = () => disposeResources(owned.splice(0).reverse());
     let result: Awaited<ReturnType<typeof trainLora>>;
     try {
+      signal?.throwIfAborted();
       const weights = await r.openWeights(modelDir);
       owned.push(weights);
       const model = r.createModel(weights, modelConfig);
@@ -66,7 +71,7 @@ export function createFinetuneRunner(runtime: () => Promise<FinetuneRuntime> = l
       // Training observations already have the app event shape: pass every
       // field through unchanged. The job owner alone emits terminal lifecycle
       // events; a trainer stage named "done" remains an ordinary stage.
-      result = await r.train(model, tokenizer, template, dataDir, cfg, emit);
+      result = await r.train(model, tokenizer, template, dataDir, cfg, emit, { signal });
     } catch (error) { return cleanupFailure(error, cleanup); }
     cleanup();
     return { outputPath: result.adapterPath };

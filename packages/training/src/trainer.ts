@@ -247,9 +247,16 @@ function createLoraOptimizer(
   );
 }
 
-/** Run a LoRA fine-tune. Emits per-step train metrics, periodic val metrics,
- *  and a final stage:done with the adapter path + applied ranks. Saves the
- *  adapter (last + best-on-val) and returns where it landed. */
+/** Train a LoRA adapter on the caller's model. Obligations of the `control.signal`
+ * seam: cancellation is observed only at boundaries (entry, before every optimizer
+ * step, and once more after the last step once every checkpoint write has
+ * completed), so a step is never interrupted and numerics are unchanged; a
+ * cancellation observed at a boundary rejects with the signal's reason, detaches
+ * the caller's model, releases the LoRA leaves after any checkpoint write that
+ * borrowed them has settled, keeps checkpoints saved earlier on disk, and writes
+ * no final adapter. Starting the final save is the commit point: a signal that
+ * arrives after it does not stop the complete save, and the run reports success.
+ * Every exit, including failure, leaves the model detached from training. */
 export async function trainLora(
   model: RuntimeModel,
   tok: LoadedTokenizer,
@@ -257,7 +264,11 @@ export async function trainLora(
   dataDir: string,
   cfg: TrainConfig,
   emit: TrainingProgressCallback,
+  control: { signal?: AbortSignal } = {},
 ): Promise<TrainResult> {
+  const boundary = () => stepBoundary(control.signal);
+  // Entry boundary: a cancellation already pending does no setup at all.
+  control.signal?.throwIfAborted();
   emit({ type: "stage", stage: "setup", progress: 0.02, message: "resolving ranks" });
 
   // Mixed-precision rank scaling: feed the per-layer bits (from the loaded
@@ -290,6 +301,10 @@ export async function trainLora(
     message: `ranks (${cfg.rankScaling}): ${rankSpread}` });
 
   const lora = buildTrainableLora(model, ranks, cfg.scale, cfg.seed, cfg.rsLora);
+  // From here every exit, including cancellation, detaches the caller's model
+  // and releases the LoRA leaves (see the finally below).
+  let attached = false;
+  try {
   // Warm-start: continue from a saved adapter/checkpoint's weights (optimizer + LR
   // schedule restart fresh). Must run before the optimizer is built (below) so it
   // tracks the loaded leaves. Rank/targets must match the checkpoint.
@@ -299,6 +314,7 @@ export async function trainLora(
       message: `warm-start: loaded ${n} LoRA targets from ${cfg.warmStartAdapter} (optimizer + LR schedule restart)` });
   }
   attachForTraining(model, lora, "train");
+  attached = true;
   model.loraState.dropoutRate = cfg.loraDropout; // per-step seed set inside the loop
   // Training-mode fused GeGLU (Gemma e4b): kernel forward + hand-derived vjp, so
   // autograd flows and the backward recomputes the gelu from the primal instead
@@ -379,18 +395,31 @@ export async function trainLora(
     emit(e);
   };
 
-  try {
-    const result =
-      cfg.method === "dpo"
-        ? await dpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect)
-        : cfg.method === "orpo"
-          ? await orpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect)
-          : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect);
+    let result: { numIters: number };
+    try {
+      result =
+        cfg.method === "dpo"
+          ? await dpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary)
+          : cfg.method === "orpo"
+            ? await orpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary)
+            : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary);
+      await Promise.all(checkpointSaves);
+      // Boundary before the commit point: a cancellation observed here, after
+      // the last step and after every checkpoint write has completed, writes
+      // no final adapter. Once the final save below starts it runs to
+      // completion and the run reports success.
+      await boundary();
+    } catch (error) {
+      // Cancellation or failure: checkpoint writes already started complete
+      // before the adapter is released; no final adapter is written, and
+      // checkpoints saved earlier stay on disk.
+      await Promise.allSettled(checkpointSaves);
+      throw error;
+    }
 
-    await Promise.all(checkpointSaves);
-
-    // Final save (last adapter).
+    // Final save (last adapter): the commit point.
     detachTraining(model, lora);
+    attached = false;
     await saveAdapter(lora, cfg.adapterPath, saveCfg, appliedRanks);
 
     // Durable, structured run record alongside the adapter (only when we kept
@@ -433,6 +462,9 @@ export async function trainLora(
     });
     return { adapterPath: cfg.adapterPath, appliedRanks, numIters: result.numIters };
   } finally {
+    // The caller's model leaves training mode on every exit; the LoRA leaves
+    // are released after any checkpoint write that borrowed them has settled.
+    if (attached) detachTraining(model, lora);
     disposeLora(lora);
   }
 }
@@ -447,6 +479,15 @@ export async function trainLora(
 // Evidence: seg-isolation-smoke.ts (deleted 2026-08-23; git history); note in segmented.ts.
 // ---------------------------------------------------------------------------
 
+/** Cooperative boundary between optimizer steps: one event-loop turn so pending
+ * signals and I/O dispatch, then the caller's cancellation. It never runs inside
+ * a step, so numerics are untouched; a cancelled run rejects with the signal's
+ * reason after started checkpoint writes have completed. */
+async function stepBoundary(signal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  signal?.throwIfAborted();
+}
+
 // ---------------------------------------------------------------------------
 // SFT loop
 // ---------------------------------------------------------------------------
@@ -459,6 +500,7 @@ async function sftLoop(
   cfg: TrainConfig,
   lora: TrainableLora,
   emit: TrainingProgressCallback,
+  boundary: () => Promise<void>,
 ): Promise<{ numIters: number }> {
   emit({ type: "stage", stage: "data", progress: 0.05, message: "loading SFT dataset" });
   const train = await loadSftDataset(`${dataDir}/train.jsonl`, tok, tmpl);
@@ -570,6 +612,7 @@ async function sftLoop(
 
   try {
     for (let step = 1; step <= cfg.iters; step++) {
+      await boundary();
       if (MEM_LOG) resetPeakMemory();
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through
@@ -698,6 +741,7 @@ async function dpoLoop(
   cfg: TrainConfig,
   lora: TrainableLora,
   emit: TrainingProgressCallback,
+  boundary: () => Promise<void>,
 ): Promise<{ numIters: number }> {
   emit({ type: "stage", stage: "data", progress: 0.05, message: "loading DPO dataset" });
   const train = await loadDpoDataset(`${dataDir}/train.jsonl`, tok, tmpl, cfg.maxSeqLen);
@@ -735,6 +779,7 @@ async function dpoLoop(
 
   try {
     for (let step = 1; step <= cfg.iters; step++) {
+      await boundary();
       if (schedule) opt.lr = schedule(step);
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through
@@ -825,6 +870,7 @@ async function orpoLoop(
   cfg: TrainConfig,
   lora: TrainableLora,
   emit: TrainingProgressCallback,
+  boundary: () => Promise<void>,
 ): Promise<{ numIters: number }> {
   emit({ type: "stage", stage: "data", progress: 0.05, message: "loading preference dataset" });
   const train = await loadDpoDataset(`${dataDir}/train.jsonl`, tok, tmpl, cfg.maxSeqLen);
@@ -962,6 +1008,7 @@ async function orpoLoop(
   };
   try {
     for (let step = 1; step <= cfg.iters; step++) {
+      await boundary();
       if (schedule) opt.lr = schedule(step);
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through

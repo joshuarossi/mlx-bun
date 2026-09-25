@@ -114,6 +114,26 @@ test("quantized ORPO retains the submitted optimized head policy", async () => {
   expect(configs[0]).toMatchObject({ orpoFlashCe: true, orpoPrefixShared: true });
 });
 
+test("a cancelled runner hands its signal to the trainer's step boundary and still releases every resource", async () => {
+  const { r, calls } = runtime(), controller = new AbortController(), events: JobEvent[] = [];
+  r.train = async (_model, _tokenizer, _template, _dir, _config, emit, control) => {
+    emit!({ type: "metric", kind: "train", step: 1, loss: 0.5 });
+    controller.abort(new Error("training cancelled"));
+    control?.signal?.throwIfAborted(); // the trainer's boundary before step 2
+    emit!({ type: "metric", kind: "train", step: 2, loss: 0.4 });
+    throw new Error("unreachable: the trainer must have unwound");
+  };
+  await expect(createFinetuneRunner(async () => r)(event => events.push(event), { ...paths, method: "sft" }, controller.signal))
+    .rejects.toThrow("training cancelled");
+  expect(events.filter(event => event.type === "metric")).toEqual([{ type: "metric", kind: "train", step: 1, loss: 0.5 }]);
+  expect(calls).toEqual(["limit:100", "sync", "limit:20", "model", "weights"]);
+  // Aborted before start: the runtime is never loaded and nothing is created.
+  const early = new AbortController(); early.abort(new Error("stop"));
+  let loaded = false;
+  await expect(createFinetuneRunner(async () => { loaded = true; return r; })(() => {}, paths, early.signal)).rejects.toThrow("stop");
+  expect(loaded).toBe(false);
+});
+
 test("load failure releases already-owned resources without changing the wired limit", async () => {
   const { r, calls } = runtime();
   r.loadTokenizer = async () => { throw new Error("tokenizer failed"); };

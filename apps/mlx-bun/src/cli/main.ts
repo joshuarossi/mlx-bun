@@ -37,6 +37,16 @@ try {
         if (command === "upload") await (await import("./upload")).runUpload(parsed, {}, cancellation.signal);
         else await (await import("./inference")).runInference(command, parsed, {}, cancellation.signal);
       } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+    } else if (command === "train" || command === "fuse" || command === "train-watch") {
+      const { runTrain, runFuse, runTrainWatch } = await import("./train");
+      const cancellation = new AbortController();
+      const stop = () => cancellation.abort(new Error(`${command === "train" ? "training" : command === "fuse" ? "fuse" : "watch"} cancelled`));
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
+      try {
+        if (command === "train") await runTrain(parsed, {}, cancellation.signal);
+        else if (command === "fuse") await runFuse(parsed, {}, cancellation.signal);
+        else await runTrainWatch(parsed, {}, cancellation.signal);
+      } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
     } else {
       const { runHub } = await import("./hub");
       await runHub(command, parsed);

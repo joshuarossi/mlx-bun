@@ -65,5 +65,7 @@ export function recordRouting(layer: number, indices: MlxArray): void {
 const expertTracePath = runtimeValue("MLX_BUN_EXPERT_TRACE");
 if (expertTracePath) beginExpertTrace(expertTracePath);
 
+// The trace is flushed on process exit. No signal handler lives here: an
+// importing application owns SIGINT/SIGTERM (graceful drain, cancellation),
+// and a library handler that exits would preempt it.
 process.on("exit", () => { try { endExpertTrace(); } catch { /* best-effort */ } });
-process.on("SIGINT", () => { endExpertTrace(); process.exit(0); });

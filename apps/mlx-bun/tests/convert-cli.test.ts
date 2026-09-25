@@ -333,7 +333,7 @@ test("the spawned CLI renders help, refuses usage errors with main's messages, a
   const home = mkdtempSync(join(tmpdir(), "mlx-convert-cli-"));
   try {
     const overview = await cli(home, "--help");
-    expect(overview.code).toBe(0); expect(overview.out).toContain("convert  Quantize an HF model");
+    expect(overview.code).toBe(0); expect(overview.out).toMatch(/convert\s+Quantize an HF model/);
     const help = await cli(home, "convert", "--help");
     expect(help.code).toBe(0); expect(help.err).toBe("");
     for (const marker of ["Usage: mlx-bun convert [repo-or-path] [options]", "-q, --quantize", "-d, --dequantize", "--hf-path <value>",
