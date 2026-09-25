@@ -97,6 +97,7 @@ test("different gate/up bit widths preserve the split compiled activation tail",
   } finally { swiglu.dispose(); }
 }, 30_000);
 
+// This dtype/variant matrix also compiles Metal kernels on a cold runner.
 test("baseline and vector expansion agree for supported output and scale dtypes", () => {
   for (const k of [2, 3, 4]) {
     using w = weights(k);
@@ -108,4 +109,4 @@ test("baseline and vector expansion agree for supported output and scale dtypes"
       }
     }
   }
-});
+}, 30_000);
