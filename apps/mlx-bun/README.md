@@ -111,6 +111,14 @@ paths, and its prompt hint through `PiBackendOptions.memory`. Download context
 is an optional callback from app composition. Standalone Pi integration remains
 deferred. The protocol exposes no serial-serving lane selection.
 
+App composition can supply `PiBackendOptions.paths` (`cwd`, `agentDir`,
+`sessionDir`, `toolApprovalsFile`) to isolate runtime settings and transcripts.
+Omitting them preserves the installed app locations. These are composition
+options, not CLI switches. The [SDK smoke test](tests/chat-runtime.test.ts)
+uses temporary paths and a fixed loopback SSE response to exercise real Pi
+startup, provider hooks, streaming, cancellation, and transcript persistence
+without a model or access to the installed app's chat storage.
+
 ## Browser app
 
 `src/web/browser/` preserves the existing chat, model, training, quantization,
