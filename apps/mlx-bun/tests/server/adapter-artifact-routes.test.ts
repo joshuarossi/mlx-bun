@@ -89,7 +89,7 @@ test("export writes the public CPU-only manifest into an injected temporary outp
   expect(await Bun.file(join(body.export_path, "manifest.json")).json()).toEqual(body.manifest);
   expect(events).toEqual([]);
   expect(pendingRoute("/api/finetune/export")).toBe(false);
-  expect(pendingRoute("/api/finetune/push")).toBe(true);
+  expect(pendingRoute("/api/finetune/push")).toBe(false);
 });
 
 test("export preserves omitted method and generated default path, and reports write failures", async () => {

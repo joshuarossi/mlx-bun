@@ -70,7 +70,7 @@ test("resolve-folder locates a cached snapshot and unrelated producer routes rem
   const routes = createQuantizeRoutes({ submit() { throw new Error("not submitted"); } });
   const response = await routes.handle(new Request("http://x/api/model/resolve-folder", { method: "POST", body: JSON.stringify({ folder_name: "models--example--model" }) }));
   expect(await response!.json()).toEqual({ ok: true, path: snapshot, repo_id: "example/model" });
-  for (const path of ["/api/dataset/submit", "/api/finetune/submit", "/api/quantize/push"]) {
+  for (const path of ["/api/dataset/submit", "/api/finetune/submit"]) {
     expect(await routes.handle(new Request(`http://x${path}`, { method: "POST" }))).toBeNull();
   }
   expect((await routes.handle(new Request("http://x/api/quantize/submit", { method: "POST", body: "{}" })))?.status).toBe(400);

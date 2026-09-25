@@ -229,7 +229,7 @@ then resumes. As in main's direct-process server, resident model weights and
 caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
 admission waits, terminates active children, and awaits them before closing the
 store and engine. Opening the app does not create the job database until a job
-route is used. Artifact publishing remains separate work. A fine-tuning job selects its own model path;
+route is used. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
@@ -253,11 +253,24 @@ cancels requests and retry waits and joins tasks before closing job storage.
 
 Twelve templates are enabled. `verified_code` remains visible with an unavailable
 explanation and returns 501 until generated-code execution has a migrated owner.
-Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
+[Dataset tests](tests/dataset/lifecycle.test.ts)
 use temporary storage and synthetic HTTP responses, without a model or download.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;
 export writes a CPU-only manifest without taking that lock. Both preserve the
 existing output roots and prefixes, with unique suffixes so simultaneous requests
-cannot overwrite each other's artifacts. Publishing remains separate migration work.
+cannot overwrite each other's artifacts.
+
+`publishing/credentials.ts` owns the app's `~/.mlx-bun/hf.json` token file (mode
+0600). Resolution prefers the saved token, then `HF_TOKEN`, then the shared HF
+cache through the hub resolver. Explicit paths and environment isolate tests
+and embedded consumers. Settings responses expose presence only.
+`publishing/upload.ts` selects an explicit source or the supplied job's output
+and passes resolved credentials to the public hub uploader. HTTP shapes and
+errors belong to `server/publishing-routes.ts`; CLI composition supplies the
+read-only job lookup. Quantized models and adapters publish as model repos;
+datasets publish as dataset repos. Uploads need no model execution lease.
+[Publishing tests](tests/server/publishing-routes.test.ts) use temporary token
+storage and an injected uploader; they never read installed credentials or
+publish to Hugging Face.

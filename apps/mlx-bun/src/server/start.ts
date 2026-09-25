@@ -9,10 +9,6 @@ const pending = [
   /^\/api\/hub\/(?:local|search|download|serve)$/,
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
-  /^\/api\/settings\/hf-token$/,
-  /^\/api\/quantize\/push$/,
-  /^\/api\/finetune\/push$/,
-  /^\/api\/dataset\/push$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
   /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
 ];
