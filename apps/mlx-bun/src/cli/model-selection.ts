@@ -97,3 +97,16 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
     return { m: chosen, picked: true, ...(recommended ? { recommended } : {}) };
   } finally { registry.close(); }
 }
+
+/** The default Whisper companion: the first downloaded `whisper` checkpoint
+ * (scanning an empty index), or null when none is on disk. Resolved lazily on
+ * the first audio request, as in main, so a chat-only serve never scans for it. */
+export async function defaultWhisperModel(registry: () => Pick<Registry, "list" | "listCanonical" | "scan" | "close"> = () => new Registry()): Promise<ModelRecord | null> {
+  const open = registry();
+  try {
+    if (open.list().length === 0) await open.scan();
+    return open.listCanonical().find(model => model.modelType === "whisper") ?? null;
+  } catch {
+    return null;
+  } finally { open.close(); }
+}

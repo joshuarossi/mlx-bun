@@ -35,7 +35,7 @@ The process-wide settings an app applies (offload routing, the allocator limit,
 the runtime switches) are restored after its engine releases the model, on close
 and on startup failure, so a later app in the same process starts from what it
 found; offload restore only redirects routing and never unmaps borrowed weights.
-`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the model loads, before any request, under the directory's basename as its id; it becomes the default for requests without an `adapter` field, an explicit `adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad directory fails startup with `adapter mount failed: …` after releasing the model. The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces a three-step adapter with the fine-tune producer and serves with it. Main's speculative flags are restored with its validation: `--draft-model` resolves like the main model (a query never downloads) and its kind is auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min` (ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2. The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with ngram drafting and checks the speculation telemetry and exactness against a plain run. `--paged-kv` (env mirror `MLX_BUN_PAGED_KV=1`) with `--paged-kv-block-size` (only alongside paging) sets the paged KV request default; Gemma4-family requests use the paged path and other families answer the typed capability error, never a hidden serial lane. The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both.
+`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the model loads, before any request, under the directory's basename as its id; it becomes the default for requests without an `adapter` field, an explicit `adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad directory fails startup with `adapter mount failed: …` after releasing the model. The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces a three-step adapter with the fine-tune producer and serves with it. Main's speculative flags are restored with its validation: `--draft-model` resolves like the main model (a query never downloads) and its kind is auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min` (ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2. The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with ngram drafting and checks the speculation telemetry and exactness against a plain run. `--paged-kv` (env mirror `MLX_BUN_PAGED_KV=1`) with `--paged-kv-block-size` (only alongside paging) sets the paged KV request default; Gemma4-family requests use the paged path and other families answer the typed capability error, never a hidden serial lane. Startup rejects paging combined with a loaded draft, per-layer KV quantization, or TurboQuant; bf16 and uniform KV4/KV8 remain supported. The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both family outcomes.
 
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this
@@ -442,6 +442,65 @@ closes, leaving resumable partials and publishing nothing. Selecting a model
 returns a restart command, preserving main's behavior without claiming a live
 switch.
 
+## Audio transcription
+
+`engine/transcription-service.ts` owns the Whisper checkpoint's residency
+(main's `TranscriptionService`). The weights load on the first take through
+the library's public `openWhisperModel`, `loadWhisperTokenizer`, and
+`WhisperTranscriber`; takes run one at a time (FIFO) and, in the full server,
+inside the generation gateway's exclusive lock, so decoding never overlaps
+chat generation. Residency follows main's flags: `--whisper-idle-unload <s>`
+(default `0`: release right after every take; the next take pages the weights
+back in from the OS file cache) and `--whisper-resident` (never release).
+`mlx_bun.timings.load_ms` in every response is non-zero exactly when that
+request paged the weights in. Loading, the Silero VAD gate, and audio decoding
+are an injected runtime, so the [service tests](tests/engine/transcription-service.test.ts)
+prove the lifecycle (lazy load, idle timer, resident mode, unload-after-take,
+FIFO takes, sessions, close) with a fake clock and no weights.
+
+`server/audio-routes.ts` serves main's speech-to-text surface:
+`POST /v1/audio/transcriptions` and `POST /v1/audio/translations` (multipart
+`file` or JSON base64/`data:` URL; `language`, `prompt`, `response_format`
+`json` | `verbose_json` | `text` | `srt` | `vtt`, `temperature`, `stream`
+server-sent events, `timestamp_granularities[]`, and main's non-standard
+`beam_size`, `vocabulary`, `condition_on_previous_text`, `no_speech_threshold`,
+`without_timestamps`, `vad`/`vad_threshold`/`vad_min_speech_ms`/`vad_trim`,
+`faithful`, `audio_ctx`); streaming dictation sessions (`POST /v1/audio/sessions`,
+`POST /v1/audio/sessions/<id>/audio` with `audio/pcm;rate=16000` float32 or any
+CoreAudio container, `POST /v1/audio/sessions/<id>/finish`,
+`DELETE /v1/audio/sessions/<id>`; unknown ids 404, a finished session 409, more
+than 64 open sessions 429); and `POST /admin/transcription/unload`, which pages
+the weights out and returns `unloaded` with the stats block (`resident`, `loads`,
+`unloads`, `requests`, `last_load_ms`, `idle_unload_sec`). Errors keep main's
+statuses: 400 for fields, undecodable audio, and clips under 0.1 s; 415 for the
+content type; 499 on client cancel; 503 `model_unavailable` with the
+`mlx-bun get` hint when no Whisper checkpoint is on disk. The group is mounted
+only with a service provider; the app composition always supplies one.
+
+`serve.ts` composes the companion: `--whisper-model <path|query>` resolves like
+the main model and refuses a non-Whisper checkpoint before loading; without it
+the first downloaded `whisper` checkpoint is looked up once, on the first audio
+request (as in main, a checkpoint downloaded later needs a restart).
+`GET /v1/models` lists the companion (`transcription: true`, `resident`) beside
+the chat model, whose `capabilities.transcription` reports whether one exists;
+the web chat's `ready.transcription` probe (the hold-to-talk mic) reads the
+same provider. Shutdown closes the service (timer cancelled, weights released)
+before the chat model. Serving a Whisper checkpoint as the main model starts
+the transcription-only server: the audio routes plus `/v1`, `/v1/models`,
+`/health`, and `/stats` (the last two carry the `transcription` stats block),
+with no chat model, prompt cache, jobs, web app, or browser open; `--preload`
+loads the weights before the listener binds. The
+[route tests](tests/server/audio-routes.test.ts) cover parsing, every response
+format, streaming, sessions over the real service with a fake runtime, and the
+transcription-only discovery routes; the [serve tests](tests/serve-cli.test.ts)
+cover the flags, both `runServe` branches, and both compositions. The opt-in
+[transcription test](tests/engine/transcription.test.ts)
+(`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_WHISPER_MODEL=<snapshot directory>`)
+serves a real checkpoint, transcribes a synthesized tone, and pages the weights
+out through the unload route; transcript parity against mlx-whisper is the
+library's contract, not this app check. The `transcribe` and `dictate` verbs
+and microphone capture are not ported yet ([PLAN](../../PLAN.md)).
+
 ## Standalone bundle
 
 After staging the root native setup, run `bun run build:binary` from the root.
@@ -452,6 +511,7 @@ are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
 
 `bun run verify:binary` builds into temporary storage, relocates the directory,
+installs it through the curl installer using a local archive and temporary home,
 and checks the actual CLI and managed child plus a compiled consumer for web,
 memory, synthetic registry/fit, native path resolution and Photon initialization.
 The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
@@ -467,11 +527,20 @@ bundle under `${MLX_BUN_INSTALL_DIR:-$HOME/.mlx-bun}/app-install/` and links
 `~/.local/bin/mlx-bun`. `MLX_BUN_VERSION` selects `latest` or a pinned tag.
 The installer validates the files and version before switching its `current`
 symlink and retains the old app on failure. Successful updates keep the current
-and immediate previous bundles and remove older owned bundles and stale stages.
-Restart a running app before another upgrade: its managed jobs re-execute the
-original binary path, so it needs that previous bundle until it exits.
+and immediate previous bundles, plus any older bundle used by a running app.
+Other older owned bundles and stale stages are removed on the next install;
+vnode inspection keeps bundles used by apps launched through PATH or symlinks,
+and an inconclusive inspection retains the affected bundle. Restart running
+apps after an upgrade before starting new managed jobs: the job runner currently
+resolves its executable lazily and can select the new build. Capturing executable
+identity at startup is tracked in [PLAN](../../PLAN.md). A later install prunes
+old bundles after their processes exit.
 Sessions, wiki, credentials, and legacy flat installation files
-outside `app-install/` stay intact. Run the script with `--help` for usage.
+outside `app-install/` stay intact. A custom `MLX_BUN_INSTALL_DIR` relocates only
+the installed bundle; application data still lives under `~/.mlx-bun`.
+A concurrent install is blocked by `app-install/lock`; after an interrupted
+installer, remove the reported absolute lock directory only after confirming
+its recorded PID is no longer an installer. Run the script with `--help` for usage.
 The public installer must not deploy before a compatible release bundle exists;
 older release archives lack the newly required license and notice files.
 
