@@ -13,7 +13,7 @@
       "name": "mlx-bun",
       "version": "0.0.0",
       "bin": {
-        "mlx-bun": "./src/cli/main.ts",
+        "mlx-bun": "./bin/mlx-bun.mjs",
       },
       "dependencies": {
         "@earendil-works/pi-ai": "0.80.3",
