@@ -30,7 +30,10 @@ fi
 [ -f "$APP_ROOT/.installer-owned" ] || fail "app-install already exists and is not installer-owned"
 
 # Never reclaim a lock while another installer might be using this directory.
-mkdir "$APP_ROOT/lock" 2>/dev/null || fail "app-install/lock exists; remove it only after confirming no installer is running"
+if ! mkdir "$APP_ROOT/lock" 2>/dev/null; then
+  OWNER="$(cat "$APP_ROOT/lock/pid" 2>/dev/null || echo unknown)"
+  fail "$APP_ROOT/lock exists (installer PID $OWNER); remove this lock directory only after confirming that installer is no longer running"
+fi
 printf '%s\n' "$$" > "$APP_ROOT/lock/pid"
 STAGE=""; LINK=""; SWITCHED=0; COMPLETE=0; PREVIOUS=""
 cleanup() {
@@ -79,7 +82,7 @@ for file in mlx-bun libmlxc.dylib libmlx.dylib libjaccl.dylib mlx.metallib \
   [ -f "$STAGE/$file" ] && [ -s "$STAGE/$file" ] || fail "incomplete bundle: $file"
 done
 [ -x "$STAGE/mlx-bun" ] || fail "bundle executable is not executable"
-ACTUAL="$(MLX_BUN_LIBMLXC=/nonexistent/installer-check "$STAGE/mlx-bun" --version)"
+ACTUAL="$(MLX_BUN_LIBMLXC=/nonexistent/installer-check "$STAGE/mlx-bun" --version </dev/null)"
 printf '%s\n' "$ACTUAL" | grep -Eq '^mlx-bun [0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?$' || fail "invalid bundle version"
 [ "$VERSION" = latest ] || [ "$ACTUAL" = "mlx-bun ${VERSION#v}" ] || fail "expected $VERSION, got $ACTUAL"
 
@@ -95,17 +98,44 @@ SWITCHED=1
 mv -fh "$LINK" "$BIN_DIR/mlx-bun"
 LINK=""; COMPLETE=1
 
-# Keep the immediate previous bundle: a running Bun executable re-execs its
-# canonical old path for managed jobs. Restart it before another upgrade.
-# Do not follow symlinks, including a previous current outside this directory.
+# A running Bun executable re-execs its canonical path for managed jobs. Keep
+# every in-use bundle, not just the previous install. Inspect executable names,
+# never command arguments, and retain all old bundles if inspection fails.
+PROCESSES=""
+if ! PROCESSES="$(/bin/ps -axww -o comm=)" || [ -z "$PROCESSES" ]; then
+  echo "Warning: cannot inspect running executables; keeping older bundles." >&2
+  CAN_PRUNE=0
+else
+  CAN_PRUNE=1
+fi
+bundle_running() {
+  while IFS= read -r executable; do
+    case "$executable" in "$1/"*) return 0;; esac
+  done <<EOF
+$PROCESSES
+EOF
+  return 1
+}
+# Also retain the immediate previous bundle for rollback. Never follow symlinks.
 for old in "$APP_ROOT"/bundle.*; do
   [ "$old" = "$STAGE" ] && continue
   [ "$old" = "$APP_ROOT/$PREVIOUS" ] && continue
-  if [ -d "$old" ] && [ ! -L "$old" ]; then rm -rf "$old"; fi
+  [ "$CAN_PRUNE" = 1 ] || continue
+  if [ -d "$old" ] && [ ! -L "$old" ]; then
+    if bundle_running "$old"; then
+      echo "Keeping running app bundle: $old" >&2
+    else
+      rm -rf "$old"
+    fi
+  fi
 done
 echo "Installed $ACTUAL at $BIN_DIR/mlx-bun"
-[ -z "$PREVIOUS" ] || echo "If mlx-bun is running, restart it before your next upgrade."
-case ":$PATH:" in
-  *":$BIN_DIR:"*) echo "Run: mlx-bun";;
-  *) printf 'Add to PATH: export PATH="%s:$PATH"\n' "$BIN_DIR";;
-esac
+RESOLVED="$(command -v mlx-bun || true)"
+if [ "$RESOLVED" = "$BIN_DIR/mlx-bun" ]; then
+  echo "Run: mlx-bun"
+elif [ -n "$RESOLVED" ]; then
+  echo "Warning: mlx-bun on PATH resolves to $RESOLVED, not the new installation." >&2
+  printf 'Use "%s/mlx-bun" or prepend PATH: export PATH="%s:$PATH"\n' "$BIN_DIR" "$BIN_DIR"
+else
+  printf 'Add to PATH: export PATH="%s:$PATH"\n' "$BIN_DIR"
+fi
