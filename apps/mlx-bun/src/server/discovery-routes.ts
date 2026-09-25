@@ -2,6 +2,7 @@ import type { ModelBinding } from "../engine/model-binding";
 import pkgJson from "../../package.json" with { type: "json" };
 import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import { fit } from "@mlx-bun/hub/fit";
+import { Registry } from "@mlx-bun/hub/registry";
 
 const pkgVersion = (pkgJson as { version: string }).version;
 
@@ -39,6 +40,7 @@ export function createDiscoveryRoutes(
   binding: Pick<ModelBinding, "discovery">,
   startedAt: number,
   transcription: () => Promise<TranscriptionInfo | null> = async () => null,
+  createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => new Registry(),
 ): DiscoveryRoutes {
   let libraryCache: { at: number; rows: unknown[] } | null = null;
 
@@ -51,10 +53,10 @@ export function createDiscoveryRoutes(
       switch (matchDiscoveryRoute(request.method, url.pathname)) {
         case "library": {
           if (url.searchParams.get("refresh") === "1" || !libraryCache || Date.now() - libraryCache.at > 30_000) {
-            const { Registry, visionCapable, audioCapable } = await import("@mlx-bun/hub/registry");
+            const { visionCapable, audioCapable } = await import("@mlx-bun/hub/registry");
             const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
             const { supportTier } = await import("@mlx-bun/inference/models/support");
-            const registry = new Registry();
+            const registry = createRegistry();
             try {
             await registry.scan();
             const rows = [];
@@ -179,11 +181,11 @@ export function createDiscoveryRoutes(
               capabilities: { transcription: true, translation: true, chat_completions: false },
             });
           try {
-            const { Registry, visionCapable } = await import("@mlx-bun/hub/registry");
+            const { visionCapable } = await import("@mlx-bun/hub/registry");
             const { supportTier } = await import("@mlx-bun/inference/models/support");
-            const registry = new Registry();
+            const registry = createRegistry();
             try {
-              if (registry.list().length === 0) await registry.scan();
+              if (registry.listCanonical().length === 0) await registry.scan();
               for (const model of registry.listCanonical()) {
                 if (model.repoId === ctx.modelId || model.repoId === stt?.id) continue;
                 const tier = supportTier(model.modelType, model.repoId);
