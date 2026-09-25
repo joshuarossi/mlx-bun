@@ -20,6 +20,29 @@ const post = (path: string, body: unknown, signal?: AbortSignal) => new Request(
 });
 const noUpload = async (): Promise<never> => { throw new Error("unexpected upload"); };
 
+test("main's saved HF token authorizes a push without being rewritten or exposed by settings", async () => {
+  const { root, environment } = storage();
+  const tokenFile = join(root, ".mlx-bun", "hf.json");
+  mkdirSync(join(root, ".mlx-bun"));
+  // saveHfToken at 02d723a wrote this shape; do not use the new writer to seed it.
+  const bytes = JSON.stringify({ token: "prior-test-token", savedAt: "2026-09-24T12:00:00.000Z" }, null, 2) + "\n";
+  writeFileSync(tokenFile, bytes, { mode: 0o600 });
+  environment.HF_TOKEN = "different-environment-token";
+  const credentials = createHfCredentials({ environment });
+  const uploads: unknown[] = [];
+  const routes = createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
+    getJob: () => ({ output_path: "/previous/adapter" }),
+    upload: async (source, repo, options) => { uploads.push({ source, repo, token: options.token }); return { ok: true, url: "https://huggingface.co/test/adapter" }; },
+  }) });
+  const settings = await routes.handle(new Request("http://local/api/settings/hf-token"));
+  expect(await settings!.json()).toEqual({ ok: true, hasToken: true });
+  const pushed = await routes.handle(post("/api/finetune/push", { repo_id: "test/adapter", job_id: "prior-job" }));
+  expect(pushed!.status).toBe(200);
+  expect(uploads).toEqual([{ source: "/previous/adapter", repo: "test/adapter", token: "prior-test-token" }]);
+  expect(readFileSync(tokenFile, "utf8")).toBe(bytes);
+  expect(statSync(tokenFile).mode & 0o777).toBe(0o600);
+});
+
 test("saved token wins over trimmed environment and shared HF cache without touching user storage", () => {
   const { credentials, environment, tokenFile, cacheTokenPath } = storage();
   expect(credentials.get()).toBeNull();

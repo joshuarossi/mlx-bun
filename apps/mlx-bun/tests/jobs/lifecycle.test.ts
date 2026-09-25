@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -53,6 +54,61 @@ test("the host opens storage lazily, marks zombies, and refuses work after close
   await host.close(); await host.close();
   expect(host.signal.aborted).toBe(true);
   expect(() => host.ensureStore()).toThrow("closed");
+});
+
+test("main's persisted job rows and logs survive reopening through the app host and HTTP routes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-prior-jobs-")); roots.push(root);
+  const path = join(root, "jobs.sqlite");
+  // Frozen disk format from 02d723a: generate it independently of JobStore so
+  // an incompatible constructor/schema change cannot silently update the input.
+  const prior = new Database(path);
+  prior.exec(`CREATE TABLE jobs (
+    id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
+    config_json TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0, message TEXT,
+    log_path TEXT NOT NULL, output_path TEXT, error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')), ended_at TEXT
+  ); CREATE INDEX idx_jobs_status_started ON jobs(status, started_at DESC);`);
+  const config = JSON.stringify({ model_dir: "/old/model", method: "sft", iters: 3 });
+  const output = join(root, "retained-adapter"), log = join(root, "completed.log");
+  const events = [{ type: "metric", kind: "train", step: 3, loss: 1.25 },
+    { type: "done", ts: 1_790_251_260_000, output_dir: output, summary: { iters: 3 } }];
+  writeFileSync(log, events.map(event => JSON.stringify(event)).join("\n") + "\n");
+  try {
+    const insert = prior.prepare("INSERT INTO jobs VALUES (?, 'finetune', ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    insert.run("job_0000000000000001", "done", config, 1, "finished", log, output, null, "2026-09-24 12:00:00", "2026-09-24 12:01:00");
+    insert.run("job_0000000000000002", "failed", config, 0.5, "step 2", log, output, "old failure", "2026-09-24 11:00:00", "2026-09-24 11:01:00");
+    for (const [status, id] of [["queued", "job_0000000000000003"], ["running", "job_0000000000000004"]] as const)
+      insert.run(id, status, config, 0, null, join(root, `${status}.log`), null, null, "2026-09-24 10:00:00", null);
+  } finally { prior.close(); }
+  const host = createJobHost({ entry: "unused", acquire: async () => { throw new Error("must not execute old jobs"); },
+    createStore: () => new JobStore(path, join(root, "new-logs")) });
+  const routes = createJobRoutes(host);
+  try {
+    const response = await routes.handle(new Request("http://local/api/jobs/job_0000000000000001"));
+    expect(response!.status).toBe(200);
+    const { ok, job } = await response!.json();
+    expect(ok).toBe(true);
+    expect(job).toEqual({ id: "job_0000000000000001", kind: "finetune", status: "done", config_json: config,
+      progress: 1, message: "finished", log_path: log, output_path: output, error: null,
+      started_at: "2026-09-24 12:00:00", ended_at: "2026-09-24 12:01:00" });
+    const listing = await (await routes.handle(new Request("http://local/api/jobs?kind=finetune")))!.json();
+    expect(listing.jobs).toHaveLength(4);
+    expect(host.ensureStore().get("job_0000000000000002")).toMatchObject({ status: "failed", error: "old failure", output_path: output });
+    for (const id of ["job_0000000000000003", "job_0000000000000004"])
+      expect(host.ensureStore().get(id)).toMatchObject({ status: "zombie", config_json: config });
+    const stream = await routes.handle(new Request("http://local/api/jobs/job_0000000000000001/stream"));
+    const replay = (await stream!.text()).split("\n\n").filter(frame => !frame.startsWith("event: end"))
+      .flatMap(frame => frame.split("\n").filter(line => line.startsWith("data: ")).map(line => JSON.parse(line.slice(6))));
+    expect(replay).toEqual(events);
+    const newJob = host.ensureStore().create("dataset", { template: "instruction" });
+    expect(newJob.status).toBe("queued");
+    expect(host.ensureStore().get("job_0000000000000001")).toEqual(job);
+  } finally { await host.close(); }
+  const reopened = new JobStore(path, join(root, "new-logs"));
+  try {
+    expect(reopened.get("job_0000000000000001")?.output_path).toBe(output);
+    expect(reopened.get("job_0000000000000002")?.error).toBe("old failure");
+  } finally { reopened.close(); }
 });
 
 test("listener shutdown cancels a live job stream and joins its child before releasing the engine", async () => {

@@ -6,6 +6,7 @@
 // several registry rows. listCanonical() collapses to the refs/main snapshot.
 
 import { afterAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,43 @@ import { Registry, audioCapable, visionCapable } from "../src/registry";
 
 const hubs: string[] = [];
 afterAll(() => { for (const h of hubs) rmSync(h, { recursive: true, force: true }); });
+
+test("main's registry can resolve cached revisions and capabilities without rescanning", () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-prior-registry-")); hubs.push(root);
+  const path = join(root, "registry.sqlite"), prior = new Database(path);
+  // Persisted schema from 02d723a, deliberately independent of Registry's
+  // constructor and scan writer. No model bytes or old checkout are needed.
+  prior.exec(`CREATE TABLE models (
+    path TEXT PRIMARY KEY, repo_id TEXT NOT NULL, model_type TEXT NOT NULL,
+    param_count INTEGER, size_bytes INTEGER NOT NULL, sidecar_bytes INTEGER NOT NULL DEFAULT 0,
+    experts_bytes INTEGER NOT NULL DEFAULT 0, quant_bits INTEGER, quant_group_size INTEGER, quant_mode TEXT,
+    has_vision_sidecar INTEGER NOT NULL, vision_config_type TEXT, has_audio_config INTEGER NOT NULL DEFAULT 0,
+    has_audio_tower INTEGER NOT NULL DEFAULT 0, has_kv_config INTEGER NOT NULL, has_tool_template INTEGER NOT NULL,
+    num_layers INTEGER, hidden_size INTEGER, vocab_size INTEGER, license TEXT, scanned_at INTEGER NOT NULL
+  );`);
+  const repo = "test/prior-gemma", snap = (revision: string) => join(root, "models--test--prior-gemma", "snapshots", revision);
+  try {
+    for (const [revision, scannedAt] of [["old", 200], ["canonical", 100]] as const) {
+      mkdirSync(snap(revision), { recursive: true });
+      prior.prepare("INSERT INTO models VALUES (?, ?, 'gemma4', 1000, 2048, 512, 0, 4, 64, 'affine', 1, 'gemma4_vision', 1, 1, 1, 1, 2, 64, 128, 'gemma', ?)")
+        .run(snap(revision), repo, scannedAt);
+    }
+    setRef(root, repo, "main", "canonical");
+  } finally { prior.close(); }
+  const registry = new Registry(path);
+  try {
+    expect(registry.list()).toHaveLength(2);
+    expect(registry.listCanonical()).toHaveLength(1);
+    const model = registry.resolve("prior-gemma");
+    expect(model).toEqual({ path: snap("canonical"), repoId: repo, modelType: "gemma4", paramCount: 1000,
+      sizeBytes: 2048, sidecarBytes: 512, expertsBytes: 0, quantBits: 4, quantGroupSize: 64, quantMode: "affine",
+      hasVisionSidecar: true, visionConfigType: "gemma4_vision", hasAudioConfig: true, hasAudioTower: true,
+      hasKvConfig: true, hasToolTemplate: true, numLayers: 2, hiddenSize: 64, vocabSize: 128,
+      license: "gemma", scannedAt: 100 });
+    expect(visionCapable(model)).toBe(true); expect(audioCapable(model)).toBe(true);
+    expect(registry.listCanonical({ vision: true, maxBytes: 2048, query: "prior-gemma" })).toEqual([model]);
+  } finally { registry.close(); }
+});
 
 /** Minimal VALID safetensors bytes: 8-byte LE header length + JSON header
  *  naming `tensors` (2 bytes of bf16 data each). Enough for the registry's
