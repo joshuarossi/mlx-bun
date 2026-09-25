@@ -3,14 +3,16 @@ import { makeChatWebSocketHandler } from "../chat/backend";
 import type { createCompletionRoutes } from "./routes";
 
 // Temporary migration responses for known surfaces. Remove each entry when its
-// owning handler is mounted; unknown routes remain 404.
+// owning handler is mounted; unknown routes remain 404. Main's lab pages
+// (/generate, /signal, /curves, /curve-terrain, /dag) are not product surface
+// and answer 404. Lease, drain, and /engine wait on the isolation decision.
 const pending = [
   /^\/v1\/(?:audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
   /^\/api\/hub\/download$/,
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
-  /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
-  /^\/(?:generate|signal|curves|curve-terrain|dag|engine)$/,
+  /^\/admin\/(?:lease|drain)$/,
+  /^\/engine$/,
 ];
 export function pendingRoute(path: string): boolean { return pending.some(pattern => pattern.test(path)); }
 

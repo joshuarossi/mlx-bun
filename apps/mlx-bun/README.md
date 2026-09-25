@@ -11,7 +11,9 @@ Use `serve --help` for accepted options. A terminal session opens the browser
 unless `--no-open` is supplied. Startup without a model selects a cached model;
 if none is supported, it downloads the starter and then the recommended model.
 Known unfinished features return HTTP 501 during migration; their remaining
-work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404.
+work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404, as do
+main's lab pages (`/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`):
+they are not product surface.
 
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this
@@ -91,7 +93,13 @@ Composition must pass the returned `continuationServices` to
 as gateway options. The engine borrows these services; construction alone does
 not attach them. Pass `close` through the owned `beforeModelDispose` hook so shutdown
 drains execution, flushes persistence, clears cache state, then frees the model.
-`flush` also supports explicit durability checks while the app is running.
+`flush` also supports explicit durability checks while the app is running:
+`server/cache-routes.ts` serves main's `POST /admin/cache/flush` (200 with the
+durability counters plus `entries` and `longest_durable_prefix_tokens`, 503
+with the same counters when anything remains pending or failed) and
+`POST /admin/cache/session/close` (`closed` reports whether a string
+`session_id` was supplied; closing drops the session's cache association and
+never deletes checkpoints, and it never waits for a flush in progress).
 Cache policy tests inject storage and allocator ports; real SSD/numerical runs
 remain separate verification.
 

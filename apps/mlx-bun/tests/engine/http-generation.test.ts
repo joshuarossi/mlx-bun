@@ -139,7 +139,7 @@ test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous
   mkdirSync(cwd); mkdirSync(join(vault, "articles"), { recursive: true });
   writeFileSync(join(vault, "articles", "Travel.md"), "# Travel\n\nTravel preferences.\n\n## Preference\n\nTake the early train.\n");
   const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true,
-    thinking: "off" }, positionals: [] });
+    thinking: "off", "ssd-cache": join(root, "ssd") }, positionals: [] });
   // Pi includes its system prompt and actual tool schemas. This is a
   // programmatic test budget, not a new serving CLI flag or product default.
   options.contextLimit = 16_384;
@@ -187,6 +187,23 @@ test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous
     const liveStats = await json(liveStatsResponse);
     expect(liveStats.prompt_cache.hits).toBeGreaterThanOrEqual(2);
     expect(liveStats.admission.weights_bytes).toBeGreaterThan(0);
+    // Cache administration over the live SSD tier: a session-bound request, a
+    // durable flush with main's counters, then main's session-close answers.
+    const sessionResponse = await request({ ...body, session_id: "smoke-session" } as typeof body);
+    expect(sessionResponse.status).toBe(200);
+    expect((await json(sessionResponse)).choices).toEqual(baseline.choices);
+    const flushResponse = await post("/admin/cache/flush", {});
+    expect(flushResponse.status).toBe(200);
+    const flushed = await json(flushResponse);
+    expect(flushed).toMatchObject({ durable: true, pendingSpills: 0, failedSpills: 0 });
+    expect(flushed.entries).toBeGreaterThan(0);
+    expect(flushed.longest_durable_prefix_tokens).toBeGreaterThan(0);
+    expect((await json(await fetch(new URL("/stats", base), { signal }))).ssd_cache.entries).toBe(flushed.entries);
+    expect(await json(await post("/admin/cache/session/close", { session_id: "smoke-session" }))).toEqual({ closed: true });
+    expect(await json(await post("/admin/cache/session/close", {}))).toEqual({ closed: false });
+    const afterClose = await request({ ...body, session_id: "smoke-session" } as typeof body);
+    expect(afterClose.status).toBe(200);
+    expect((await json(afterClose)).choices).toEqual(baseline.choices);
     const stream = await request({ ...body, max_tokens: 128, stream: true });
     expect(stream.status).toBe(200);
     const reader = stream.body!.getReader();
@@ -239,6 +256,19 @@ test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous
     expect(entries.some(entry => entry.type === "message" && entry.message?.role === "user" && contentText(entry.message.content) === chat.prompt)).toBe(true);
     expect(entries.some(entry => entry.type === "message" && entry.message?.role === "assistant" && contentText(entry.message.content).trim() === chat.text.trim())).toBe(true);
     expect(readFileSync(join(root, "skills", "memory", "SKILL.md"), "utf8")).toContain("name: memory");
+    // Restart on the same SSD directory: the flushed prefix restores from disk
+    // with identical output before any RAM entry exists.
+    app = await startModelServer(model, options);
+    const restarted = new URL(`http://127.0.0.1:${app.port}`);
+    const restored = await fetch(new URL("/v1/chat/completions", restarted), { method: "POST", signal,
+      headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    expect(restored.status).toBe(200);
+    const restoredBody = await json(restored);
+    expect(restoredBody.choices).toEqual(baseline.choices);
+    expect(restoredBody.usage.prompt_tokens_details.cached_tokens).toBeGreaterThan(0);
+    const restoredStats = await json(await fetch(new URL("/stats", restarted), { signal }));
+    expect(restoredStats.ssd_cache.restores).toBeGreaterThanOrEqual(1);
+    await app.close();
   } finally {
     clearTimeout(timer); budget.abort();
     try { await app?.close(); } finally { rmSync(root, { recursive: true, force: true }); }
