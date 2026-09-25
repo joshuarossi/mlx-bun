@@ -151,6 +151,19 @@ test("a real CPU-only child entry records an unsupported producer failure withou
   expect(await Bun.file(store.get(jobId)!.log_path).text()).toContain('"type":"failed"');
 });
 
+test("a real finetune child validates its config and persists failure before native model loading", async () => {
+  const { store } = fresh(); let released = false;
+  const entry = new URL("../../src/cli/job-entry.ts", import.meta.url).pathname;
+  const { jobId } = submitSubprocess(store, "finetune", {}, undefined, { entry,
+    acquire: async () => ({ dispose() { released = true; } }) });
+  await until(() => released);
+  expect(store.get(jobId)?.status).toBe("failed");
+  expect(store.get(jobId)?.error).toContain("finetune job: missing model_dir");
+  const log = await Bun.file(store.get(jobId)!.log_path).text();
+  expect(log).toContain('"type":"started"');
+  expect(log).toContain('"type":"failed"');
+});
+
 for (const dispatch of ["direct", "cli"] as const) test(`${dispatch} child exits after terminal persistence even with a lingering producer handle`, async () => {
   const { root, store } = fresh(), row = store.create("unsupported", {});
   const preload = join(root, "keepalive.ts");
