@@ -1,3 +1,4 @@
+import { defaultSessionDir } from "./session-files";
 import { mkdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -959,7 +960,7 @@ export function createPiBackend(options: PiBackendOptions): ChatBackendFactory {
     paths: {
       cwd: options.paths?.cwd ?? process.cwd(),
       agentDir: options.paths?.agentDir ?? join(homedir(), ".mlx-bun", "pi-sessions"),
-      sessionDir: options.paths?.sessionDir ?? join(homedir(), ".mlx-bun", "sessions"),
+      sessionDir: options.paths?.sessionDir ?? defaultSessionDir(),
       toolApprovalsFile: options.paths?.toolApprovalsFile,
     },
     modelId: options.modelId ?? PI_LOCAL_MODEL_ID,

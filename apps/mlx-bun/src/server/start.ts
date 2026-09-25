@@ -7,7 +7,6 @@ import type { createCompletionRoutes } from "./routes";
 const pending = [
   /^\/v1\/(?:audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
   /^\/api\/hub\/(?:local|search|download|serve)$/,
-  /^\/api\/sessions\/(?:search|export)$/,
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
   /^\/api\/settings\/hf-token$/,

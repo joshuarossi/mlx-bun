@@ -143,6 +143,17 @@ paths, and its prompt hint through `PiBackendOptions.memory`. Download context
 is an optional callback from app composition. Standalone Pi integration remains
 deferred. The protocol exposes no serial-serving lane selection.
 
+`chat/session-search.ts` reads Pi JSONL transcripts for body search; the sibling
+`session-files.ts` owns confined reads and the shared default directory.
+`server/session-routes.ts` owns search/export HTTP responses. Startup passes the
+same resolved session directory to Pi and these routes. Searches retain main's
+case-insensitive Unicode snippets and limits; export returns valid raw JSONL
+entries while skipping partial lines. Lexical and resolved paths must stay in
+the configured directory, including symlink targets. No index or background
+lifecycle is created. [Session tests](tests/session-search.test.ts) use temporary
+trees, and the [Pi smoke test](tests/chat-runtime.test.ts) searches and exports a
+transcript written by the real SDK in app-supplied paths.
+
 App composition can supply `PiBackendOptions.paths` (`cwd`, `agentDir`,
 `sessionDir`, `toolApprovalsFile`) to isolate runtime settings and transcripts.
 Omitting them preserves the installed app locations. These are composition
