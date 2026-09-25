@@ -1,9 +1,10 @@
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
+import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
-import { browserUrl, installShutdownHandlers, parseServeOptions, resolveServingLimits, runServe, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { browserUrl, installShutdownHandlers, parseServeOptions, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
 const model = { repoId: "example/model", path: "/model" } as ModelRecord;
@@ -526,4 +527,62 @@ test("paged KV follows main's flag and env mirror, with the block size only alon
   const restore = configureRuntime({ MLX_BUN_PAGED_KV: "1" });
   try { expect(parse().request.pagedKv).toEqual({}); expect(parse("--paged-kv-block-size", "128").request.pagedKv).toEqual({ blockSize: 128 }); }
   finally { restore(); }
+});
+
+test("paged startup validates the resolved KV codec and loaded draft, preserving explicit overrides", () => {
+  const config = [{ layerIdx: 0, bits: 4, groupSize: 64 }];
+  const validate = (input: Parameters<typeof resolveKvScheme>[0], hasDraft = false, paged = true) =>
+    validatePagedServingOptions(paged ? {} : undefined, resolveKvScheme(input).generationOptions, hasDraft);
+  for (const override of ["off", 4, 8] as const)
+    expect(() => validate({ override, config })).not.toThrow();
+  // Config mode without a sidecar resolves to bf16, just as on main.
+  expect(() => validate({ override: "config", config: null })).not.toThrow();
+  expect(() => validate({ override: "config", config: [] })).not.toThrow();
+  expect(() => validate({ override: "config", config })).toThrow("per-layer and TurboQuant pages are not implemented");
+  expect(() => validate({ turboQuant: { kBits: 4, vBits: 3 } })).toThrow("per-layer and TurboQuant pages are not implemented");
+  expect(() => validate({ override: "off" }, true)).toThrow("cannot combine with --draft-model");
+  expect(() => validate({ override: "config", config }, true, false)).not.toThrow();
+  expect(() => validate({ turboQuant: { kBits: 4, vBits: 3 } }, true, false)).not.toThrow();
+});
+
+test("incompatible paged startup closes caches and the loaded model before engine or listener ownership", async () => {
+  // Keep native-free startup mocks private to this process.
+  const app = new URL("../", import.meta.url).pathname;
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
+    import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+    const app = ${JSON.stringify(app)}, events = [];
+    const context = { modelId: "test", model: { config: { modelType: "gemma4" } },
+      template: {}, draft: null, dispose() { events.push("model close"); } };
+    let scheme;
+    mock.module(app + "src/engine/index.ts", () => ({
+      loadContext: async () => context,
+      modelServingBinding: async () => ({ gateway: { configureContinuation() { events.push("continuation"); } } }),
+      createCacheServices: async () => ({ resolvedKvScheme: scheme, kvScheme: scheme.generationOptions,
+        async close() { events.push("cache close"); return { durable: true }; } }),
+      createAppEngine: async () => { events.push("engine"); throw new Error("must not construct engine"); },
+    }));
+    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
+    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend() { throw new Error("must not construct chat"); } }));
+    mock.module(app + "src/server/start.ts", () => ({ startServer() { events.push("listener"); throw new Error("must not bind"); } }));
+    const { parseServeOptions, startModelServer } = await import(app + "src/cli/serve.ts");
+    const options = parseServeOptions({ values: { "paged-kv": true, "force-wire": true }, positionals: [] });
+    const beforeWire = runtimeValue("MLX_BUN_FORCE_WIRE");
+    for (const [input, draft, message] of [
+      [{ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] }, null, /per-layer and TurboQuant/],
+      [{ turboQuant: { kBits: 4, vBits: 3 } }, null, /per-layer and TurboQuant/],
+      [{ override: "off" }, { provider: {}, numDraftTokens: 3 }, /cannot combine with --draft-model/],
+    ]) {
+      scheme = resolveKvScheme(input); context.draft = draft; events.length = 0;
+      await assert.rejects(startModelServer({ path: "/unused", repoId: "test" }, options), message);
+      assert.deepEqual(events, ["cache close", "model close"]);
+      assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), beforeWire);
+    }
+  `;
+  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
+    env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
+  const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  expect({ code, stdout, stderr }).toEqual({ code: 0, stdout: "", stderr: "" });
 });

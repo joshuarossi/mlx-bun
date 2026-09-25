@@ -15,6 +15,7 @@ import type { RequestPrepOptions } from "../server/request-prep";
 import type { PiBackendPaths } from "../chat/pi-backend";
 import type { DraftKind } from "../engine/model-host";
 import type { DownloadOwner } from "../hub/downloads";
+import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 
 export interface ServeOptions {
   query: string | null;
@@ -191,6 +192,20 @@ export interface RunningApp {
   close(): Promise<void>;
 }
 
+/** Validate resolved startup policy before handing resources to the engine.
+ * Paging must not silently replace a selected KV codec or draft provider. */
+export function validatePagedServingOptions(
+  pagedKv: RequestPrepOptions["pagedKv"],
+  kvScheme: Pick<KvSchemeOptions, "kvConfig" | "turboQuant">,
+  hasDraft: boolean,
+): void {
+  if (!pagedKv) return;
+  if (kvScheme.kvConfig?.length || kvScheme.turboQuant)
+    throw new Error("--paged-kv supports bf16 and uniform affine KV4/KV8; per-layer and TurboQuant pages are not implemented.");
+  if (hasDraft)
+    throw new Error("--paged-kv cannot combine with --draft-model in v1.");
+}
+
 /** CLI composition owns resources until each explicit ownership transfer. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
@@ -281,6 +296,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       if (!result.durable) console.warn(`[server] cache flush incomplete: ${result.pendingSnapshots} snapshots, ${result.pendingSpills} spills, ${result.failedSpills} failed`);
     };
     cleanup = async () => { try { await closeCaches(); } finally { context.dispose(); } };
+    validatePagedServingOptions(options.request.pagedKv, caches.kvScheme, !!context.draft);
     binding.gateway.configureContinuation?.(caches.continuationServices);
     // createAppEngine takes ownership even when its constructor rejects.
     cleanup = undefined;
