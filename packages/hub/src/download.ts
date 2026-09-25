@@ -110,6 +110,7 @@ export interface HfTokenOptions {
 export function hfToken(options: HfTokenOptions = {}): string | null {
   const environment = options.environment ?? process.env;
   if (environment.HF_TOKEN) return environment.HF_TOKEN;
+  if (!options.cacheTokenPath && !environment.HOME) return null;
   try {
     return readFileSync(options.cacheTokenPath ?? `${environment.HOME}/.cache/huggingface/token`, "utf8").trim() || null;
   } catch {

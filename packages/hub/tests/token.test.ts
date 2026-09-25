@@ -29,3 +29,20 @@ test("missing or empty cache tokens yield null", () => {
   writeFileSync(path, " \n");
   expect(hfToken({ environment: {}, cacheTokenPath: path })).toBeNull();
 });
+
+test("an environment without HOME never reads a token relative to the working directory", () => {
+  const root = temporary();
+  for (const directory of ["undefined/.cache/huggingface", ".cache/huggingface"]) {
+    mkdirSync(join(root, directory), { recursive: true });
+    writeFileSync(join(root, directory, "token"), "unintended-token");
+  }
+  const modulePath = Bun.resolveSync("@mlx-bun/hub/download", import.meta.dir);
+  const child = Bun.spawnSync([process.execPath, "--no-env-file", "-e", `
+    import { hfToken } from ${JSON.stringify(modulePath)};
+    for (const environment of [{}, { HOME: "" }]) {
+      if (hfToken({ environment }) !== null) throw new Error("read a CWD token");
+    }
+  `], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(0);
+  expect(child.stderr.toString()).toBe("");
+});

@@ -4,7 +4,9 @@ import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
+import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
 import type { RequestPrepOptions } from "../server/request-prep";
+import type { PiBackendPaths } from "../chat/pi-backend";
 
 export interface ServeOptions {
   query: string | null;
@@ -18,6 +20,8 @@ export interface ServeOptions {
   noOpen: boolean;
   cache: CacheServiceOptions;
   request: RequestPrepOptions;
+  /** App composition only; shares Pi storage with its settings routes. */
+  chatPaths?: PiBackendPaths;
 }
 
 /** Validate before opening a registry, loading a model, or creating a listener. */
@@ -72,11 +76,24 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
     capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
-    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? profileLimit,
+    contextLimit: profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
-    readOnly: args.values["read-only"] === true, noOpen: args.values["no-open"] === true,
+    readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
+  };
+}
+
+/** Main's loaded-model limits constrain the context window; an explicit output
+ * cap overrides the model plan's default without changing its context budget. */
+export function resolveServingLimits(
+  options: Pick<ServeOptions, "contextLimit" | "defaultGeneratedTokens">,
+  plan?: Pick<Glm52MemoryPlan, "contextTokens" | "maxGenerationTokens"> | null,
+) {
+  return {
+    contextLimit: options.contextLimit === null ? plan?.contextTokens ?? null
+      : Math.min(options.contextLimit, plan?.contextTokens ?? Infinity),
+    defaultGeneratedTokens: options.defaultGeneratedTokens ?? plan?.maxGenerationTokens,
   };
 }
 
@@ -85,11 +102,12 @@ export interface RunningApp { port: number; close(): Promise<void> }
 /** CLI composition owns resources until each explicit ownership transfer. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
-    { createCompletionRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }] = await Promise.all([
-    import("../engine"), import("../server/routes"), import("../server/start"),
+    { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
+    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createManagementRoutes }, { createAdapterRoutes }] = await Promise.all([
+    import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
+    import("../server/management-routes"), import("../server/adapter-routes"),
   ]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
@@ -119,12 +137,16 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
+    const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
-      defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
-    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }, { createFinetuneRoutes }, { createAdapterArtifactRoutes },
+      kvScheme: caches.kvScheme, ...limits, tokenHistory });
+    const adapters = createAdapterRoutes(context, engine.gateway);
+    const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
+      toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
+    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }, { createDatasetRoutes }, { createDatasetRunner }, { createFinetuneRoutes }, { createAdapterArtifactRoutes },
       { createHfCredentials }, { createPublisher }, { createPublishingRoutes }] = await Promise.all([
-      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"), import("../server/finetune-routes"), import("../server/adapter-artifact-routes"),
+      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
+      import("../server/dataset-routes"), import("../dataset/job"), import("../server/finetune-routes"), import("../server/adapter-artifact-routes"),
       import("../publishing/credentials"), import("../publishing/upload"), import("../server/publishing-routes"),
     ]);
     const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
@@ -139,16 +161,21 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     };
     cleanup = closeApp;
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs), finetuneRoutes = createFinetuneRoutes(jobs);
+    const memory = createMemoryRoutes();
     const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway);
     const credentials = createHfCredentials();
     const publishing = createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),
     }) });
-    const routes = { handle: async (request: Request) => await jobRoutes.handle(request) ??
-      await quantizeRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await adapterArtifacts.handle(request) ?? await publishing.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
+    const datasetRunner = createDatasetRunner();
+    const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
+      submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
+    const routes = { handle: async (request: Request) => await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+      await quantizeRoutes.handle(request) ?? await datasetRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await adapterArtifacts.handle(request) ?? await publishing.handle(request) ?? await completions.handle(request) };
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
-      contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
+      paths: options.chatPaths,
+      contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template.supportsThinking,
       genDefaults: {
@@ -159,7 +186,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, closeEngine: closeApp }, {
+    const listener = await startServer({ routes, web, chat,
+      beforeDrain: async () => { try { caches.stopIdleDemotion(); } finally { await jobs.close(); } },
+      closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;
@@ -220,7 +249,7 @@ const defaults: ServeDependencies = {
   resolve: resolveModelAuto, start: startModelServer, interactive: !!process.stdout.isTTY,
   async open(url) { const child = Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); if (await child.exited !== 0) throw new Error("Browser could not be opened"); },
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
-  error: error => console.error(error instanceof Error ? (process.env.MLX_BUN_DEBUG ? error.stack ?? error.message : error.message) : String(error)),
+  error: error => console.error(error instanceof Error ? error.message : String(error)),
 };
 
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<RunningApp> {

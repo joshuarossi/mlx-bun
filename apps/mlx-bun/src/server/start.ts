@@ -5,13 +5,13 @@ import type { createCompletionRoutes } from "./routes";
 // Temporary migration responses for known surfaces. Remove each entry when its
 // owning handler is mounted; unknown routes remain 404.
 const pending = [
-  /^\/v1\/(?:messages|responses|audio\/(?:transcriptions|translations|speech)|adapters(?:\/[^/]+)?|memory\/synthesize)$/,
-  /^\/api\/settings\/tool-approvals$/,
-  /^\/api\/gc\/(?:plan|execute)$/,
-  /^\/api\/dataset\/(?:templates|submit)$/,
-  /^\/api\/memory\/(?:status|list|search|article|links|history|diff|init)$/,
+  /^\/v1\/(?:messages|responses|audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
+  /^\/api\/hub\/(?:local|search|download|serve)$/,
+  /^\/api\/sessions\/(?:search|export)$/,
+  /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
+  /^\/admin\/transcription\/unload$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
-  /^\/(?:generate|signal|fit|stats|curves|dag|engine)$/,
+  /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
 ];
 export function pendingRoute(path: string): boolean { return pending.some(pattern => pattern.test(path)); }
 
@@ -22,6 +22,9 @@ export async function startServer(input: {
   routes: Pick<ReturnType<typeof createCompletionRoutes>, "handle">;
   web(request: Request): Response | null;
   chat: ChatBackendFactory;
+  /** Stop background producers and cancel managed jobs while the engine is alive,
+   * before waiting for HTTP/SSE responses to drain. */
+  beforeDrain?(): void | Promise<void>;
   closeEngine(): Promise<void>;
 }, options: { port?: number; hostname?: string } = {}) {
   const chat = makeChatWebSocketHandler(input.chat);
@@ -31,8 +34,9 @@ export async function startServer(input: {
   const close = () => closing ??= (async () => {
     stopped = true;
     const errors: unknown[] = [];
+    try { await input.beforeDrain?.(); } catch (error) { errors.push(error); }
     try { await chat.dispose(); } catch (error) { errors.push(error); }
-    try { await server?.stop(true); } catch (error) { errors.push(error); }
+    try { await server?.stop(false); } catch (error) { errors.push(error); }
     try { await input.closeEngine(); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors, "server cleanup failed");
   })();

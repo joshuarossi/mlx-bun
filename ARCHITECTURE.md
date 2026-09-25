@@ -98,6 +98,10 @@ Browser code consumes only its own modules and the leaf chat/job protocols.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
 other domains with their first migrated consumers and explicit dependency rules.
 
+`memory/` owns Markdown vault storage, initialization, and article semantics.
+Its HTTP adapter belongs to `server/`; composition supplies reference sources
+explicitly rather than deriving them from repository layout.
+
 Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.
 
@@ -108,11 +112,13 @@ host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
 
-`jobs/` owns persisted job state and subprocess/lease lifetimes; `quantize/`
+`jobs/` owns persisted job state, in-process tasks, and subprocess/lease lifetimes; `quantize/`
 owns quantization job policy and consumes jobs contracts plus public libraries.
 The CLI composes producers and child entry paths, so jobs infrastructure imports
 neither producer implementations nor engine internals. HTTP adapters consume
-these domains from `server/`.
+these domains from `server/`. `dataset/` owns templates, JSONL production, and
+HTTP clients; its loopback requests enter the server scheduler without holding
+an exclusive execution lease.
 
 `publishing/` owns app credential storage and artifact/source selection. Server
 routes parse settings and push requests; CLI composition supplies a read-only
