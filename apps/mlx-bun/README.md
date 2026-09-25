@@ -13,6 +13,15 @@ if none is supported, it downloads the starter and then the recommended model.
 Known unfinished features return HTTP 501 during migration; their remaining
 work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404.
 
+Shutdown stops background cache demotion, closes chat sessions, drains active
+HTTP responses, then flushes caches and releases the engine. The CLI bounds this
+with a 120-second deadline; cleanup failures or deadline expiry exit with code 1
+(main exited 0 on timeout). SSD sub-options without `--ssd-cache` now fail before
+model loading instead of warning and being ignored. The existing
+`MLX_BUN_RD_CONTEXT_LIMIT` cap remains supported and is intersected with a loaded
+GLM memory plan; this draft adds no serving context or read-only CLI flags.
+Programmatic composition still accepts explicit context and read-only policy.
+
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
 `hub.ts` owns model-management presentation; `terminal.ts` owns formatting.
 `model-selection.ts` owns automatic selection policy; `serve.ts` composes the
@@ -66,6 +75,17 @@ remain separate verification.
 handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
+
+`server/management-routes.ts` owns tool-approval settings and confirmed cache
+cleanup over the existing chat and hub libraries. Startup shares
+`ServeOptions.chatPaths.toolApprovalsFile` with Pi and the settings routes.
+GC requires an explicit `yes: true`, uses the hub's conservative plan, closes
+its registry after rescanning, and invalidates discovery even if a rescan fails
+after deletion. Execution returns 409 if the plan would remove the active model
+snapshot, including a model reached through a symlink. Planning/execution errors
+use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
+use isolated approval files and synthetic caches with native MLX blocked.
+Hugging Face credential and upload routes remain deferred.
 
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
@@ -144,6 +164,28 @@ escaping, attachments, panels, and interactions without a live server.
 [Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
 headers. The packed consumer check verifies the same assets after installation.
 
+`server/adapter-routes.ts` presents available and resident adapters and mounts or
+unmounts through the engine execution lock. It borrows the engine; no HTTP
+handler owns tensors. Serving with an adapter still uses the shared scheduler
+and reports 501 for unsupported batched capabilities.
+
+## Memory vault
+
+`src/memory/article.ts` owns Markdown article structure; `vault.ts` owns vault
+initialization, filesystem reads, search, links, and Git history. The default
+vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
+`server/memory-routes.ts` exposes the read/init HTTP surface through
+`createMemoryRoutes({ root })`; CLI startup composes it before model routes.
+Initialization is explicit and idempotent, and its path stays confined to the
+vault or temporary trees. Existing article/Talk directory links remain usable;
+initialization confines its actual write targets. Reference seeding defaults to
+none; composition can pass explicit `referenceSources` without inferring old
+repository documentation paths. Merely starting the app does not create a vault.
+
+[Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
+and real local Git history; [article tests](tests/memory/article.test.ts) cover
+parsing and round trips. Synthesis, memory tools, and scheduling remain separate
+migration work; the chat backend still receives no memory integration.
 
 ## Jobs, quantization, and fine-tuning
 
@@ -167,7 +209,7 @@ then resumes. As in main's direct-process server, resident model weights and
 caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
 admission waits, terminates active children, and awaits them before closing the
 store and engine. Opening the app does not create the job database until a job
-route is used. Dataset generation, adapter mounting, and artifact
+route is used. Dataset generation, adapter mounting/merge/export, and artifact
 publishing remain separate work. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
@@ -180,6 +222,20 @@ establish parity for actual checkpoint quantization.
 explicit overrides, dataset inspection, HTTP submission, progress, and resource
 cleanup with a fake native runtime. These CPU checks do not extend the numerical
 claims in the [training evidence](../../packages/training/README.md).
+
+## Dataset jobs
+
+`dataset/` owns the existing template inputs, generation, Hugging Face import,
+and 90/10 JSONL split. `server/dataset-routes.ts` owns template discovery and
+submission; CLI composition supplies the bound loopback port and runner. Jobs
+run in-process and call the normal HTTP inference surface, so each inference
+request uses continuous batching without an exclusive GPU lease. Shutdown
+cancels requests and retry waits and joins tasks before closing job storage.
+
+Twelve templates are enabled. `verified_code` remains visible with an unavailable
+explanation and returns 501 until generated-code execution has a migrated owner.
+Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
+use temporary storage and synthetic HTTP responses, without a model or download.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;

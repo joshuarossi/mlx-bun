@@ -43,11 +43,20 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 
 - [ ] Inject memory tools, skill paths, and prompt context into web chat from
   their real app owner. The composed Pi backend currently leaves memory disabled.
+  Restore the browser memory-chip/tool-name check with that slice and preserve
+  read-only tool permissions through the injected memory surface.
+- [ ] Migrate the memory CLI commands and nightly scheduling with their owning
+  synthesis lifecycle; read/init routes alone do not enable background work.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
-  their owners migrate: memory read/init and synthesis; dataset generation and
-  artifact publishing; adapter management; settings and GC; lease/drain/cache admin;
-  Anthropic messages, Responses, audio, generate, signal, fit and stats.
+  their owners migrate: memory synthesis; dataset publishing;
+  artifact publishing; HF credential settings; lease/drain/cache admin;
+  Anthropic messages, Responses, audio, hub/browser model switching, session
+  search/export, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
+- [ ] Migrate an owned generated-code execution facility before enabling the
+  `verified_code` dataset template. Its metadata currently states unavailable
+  and submission returns 501; the other twelve templates are enabled.
+
 - [ ] Migrate the server, engine host, web app, and job orchestration into
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
@@ -67,6 +76,22 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   serial-only or compilation switches on the new app surface. Exit: the full
   draft preserves main's behavior and cancellation/streaming contracts before
   the subsequent performance pass.
+- [ ] Restore deferred serving inputs with their app owners, keeping the existing
+  main behavior rather than silently retiring capabilities:
+  - Engine admission: `--memory-budget`, `--force-wire`, `--context-length`,
+    `--expert-offload`; paged scheduling: `--paged-kv`, `--paged-kv-block-size`;
+    mixed-KV composition: `--kv-quant turbo`.
+  - Speculative/model loading: `--draft-model`, `--draft-kind`,
+    `--num-draft-tokens`, `--ngram-max`, `--ngram-min`, `--mtp`, `--preload`;
+    adapter defaults: `--adapter`, `--adapter-path`.
+  - Process/listener ownership: `--unix`, `--isolate`, `--model-pool`,
+    `MLX_BUN_SHUTDOWN_TIMEOUT_MS`; transcription: `--whisper-model`,
+    `--whisper-idle-unload`, `--whisper-resident`; request media policy:
+    `--allow-private-media`; media preprocessing: the `--hlg-*` family.
+  - Resolve parity-route compatibility (`--l1`, `--l2`, removed `--l3` error,
+    `--fused-sdpa`) with specialized-layer policy. Serial-only and compilation
+    controls (`--compiled-decode`, `--compiled-activations`) are intentionally
+    absent under Josh's decision; this does not authorize dropping the other inputs.
 - [ ] Preserve the `mlx-bun` terminal experience and Bun, Homebrew, curl-script,
   and source-checkout installation paths. Add generated surface reference and
   coverage checks with the CLI/server migration. Exit: the app and its install

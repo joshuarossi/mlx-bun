@@ -8,7 +8,6 @@ const commands = {
     host: { type: "string", description: "Bind address [default: 127.0.0.1]" },
     port: { type: "string", description: "Listen port; 0 chooses a free port [default: 8080]" },
     batch: { type: "string", description: "Continuous batching capacity, including at 1 [default: 8]" },
-    ctx: { type: "string", description: "Explicit context-token limit; otherwise use the model limit" },
     "max-tokens": { type: "string", description: "Default completion cap when a request omits one" },
     thinking: { type: "string", description: "Default thinking mode: on | off; requests may override" },
     temperature: { type: "string", description: "Default sampling temperature [0..5]" },
@@ -23,7 +22,6 @@ const commands = {
     "ssd-cache-verify": { type: "boolean", description: "Verify tensor hashes on SSD restores" },
     "ssd-demote-idle": { type: "string", description: "Idle seconds before SSD demotion; 0 disables [default: 300]" },
     "generation-checkpoint": { type: "string", description: "Checkpoint every N generated tokens; requires --ssd-cache" },
-    "read-only": { type: "boolean", description: "Disable mutating chat tools" },
     "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
   } },
   get: { description: "Download a model from Hugging Face (resumable, verified)", positional: "<org/repo | substring>", options: {
@@ -49,6 +47,13 @@ const commands = {
 export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
 export function isCommand(name: string): name is Command { return Object.hasOwn(commands, name); }
+
+/** Bare and option-first invocations start the app; explicit verbs keep their arguments. */
+export function commandInvocation(argv: string[]): { command: string; args: string[] } {
+  const [first, ...rest] = argv;
+  const command = !first || (first.startsWith("--") && !["--help", "--version"].includes(first)) ? "serve" : first;
+  return { command, args: command === "serve" && first !== "serve" ? argv : rest };
+}
 
 export function parseCommand(command: Command, args: string[]): CommandArgs {
   const options: Record<string, { type: "string" | "boolean" }> = commands[command].options;
