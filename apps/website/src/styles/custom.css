@@ -1,0 +1,22 @@
+/* Shared product typography and accents; Starlight owns navigation/layout. */
+:root {
+  --sl-font: 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --sl-font-mono: 'SF Mono', ui-monospace, Menlo, monospace;
+}
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #0a2540;
+  --sl-color-accent: #0a84ff;
+  --sl-color-accent-high: #64d2ff;
+  --sl-color-text-accent: #3a9bff;
+  --sl-color-bg: #000;
+  --sl-color-bg-nav: #000;
+  --sl-color-bg-sidebar: #000;
+}
+:root[data-theme='light'] {
+  --sl-color-accent: #0066cc;
+  --sl-color-text-accent: #0066cc;
+  --sl-color-accent-high: #003a75;
+  --sl-color-bg: #fbfbfd;
+}
+body { -webkit-font-smoothing: antialiased; }
+.sl-markdown-content :is(h1, h2, h3) { letter-spacing: -0.025em; }
