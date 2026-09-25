@@ -1,3 +1,4 @@
+import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
 // DOM-level unit tests for the pure/DOM-facing parts of the src/web/src/*
 // module split (plan §7/§9 Phase 2). Covers exactly the four things the
 // task calls out:
@@ -1407,4 +1408,8 @@ describe("ui-catalog.ts: route/view validation", () => {
     expect(resolveRouteId("#/quantize")).toBe("quantize");
     expect(resolveRouteId("nonexistent")).toBeNull();
   });
+});
+
+it("memory provenance chips cover every callable memory and reference tool", () => {
+  expect([...MEMORY_CHIP_TOOL_NAMES].sort()).toEqual([...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES].sort());
 });

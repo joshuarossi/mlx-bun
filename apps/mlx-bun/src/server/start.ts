@@ -5,15 +5,10 @@ import type { createCompletionRoutes } from "./routes";
 // Temporary migration responses for known surfaces. Remove each entry when its
 // owning handler is mounted; unknown routes remain 404.
 const pending = [
-  /^\/v1\/(?:messages|responses|audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
+  /^\/v1\/(?:audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
   /^\/api\/hub\/download$/,
-  /^\/api\/sessions\/(?:search|export)$/,
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
-  /^\/api\/settings\/hf-token$/,
-  /^\/api\/quantize\/push$/,
-  /^\/api\/finetune\/(?:merge|export|push)$/,
-  /^\/api\/dataset\/push$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
   /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
 ];

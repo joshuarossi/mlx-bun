@@ -1,0 +1,14 @@
+import { createMemoryTools, isMemoryEnabled, memoryIndexHint, MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "./tools";
+import { materializeMemorySkill } from "./skills";
+
+/** Composition supplies both paths. Missing vaults expose no tools or skill and
+ * create no files; each session checks again so explicit initialization is seen. */
+export async function createMemorySurface(root: string, skillsRoot: string) {
+  if (!await isMemoryEnabled(root)) return undefined;
+  return {
+    toolNames: [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES],
+    customTools: createMemoryTools(root),
+    skillPaths: [materializeMemorySkill(skillsRoot)],
+    hint: await memoryIndexHint(root),
+  };
+}
