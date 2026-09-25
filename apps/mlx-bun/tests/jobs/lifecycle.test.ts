@@ -123,6 +123,19 @@ test("a real CPU-only child entry records an unsupported producer failure withou
   expect(await Bun.file(store.get(jobId)!.log_path).text()).toContain('"type":"failed"');
 });
 
+test("a real finetune child validates its config and persists failure before native model loading", async () => {
+  const { store } = fresh(); let released = false;
+  const entry = new URL("../../src/cli/job-entry.ts", import.meta.url).pathname;
+  const { jobId } = submitSubprocess(store, "finetune", {}, undefined, { entry,
+    acquire: async () => ({ dispose() { released = true; } }) });
+  await until(() => released);
+  expect(store.get(jobId)?.status).toBe("failed");
+  expect(store.get(jobId)?.error).toContain("finetune job: missing model_dir");
+  const log = await Bun.file(store.get(jobId)!.log_path).text();
+  expect(log).toContain('"type":"started"');
+  expect(log).toContain('"type":"failed"');
+});
+
 test("queued persistence failure still joins the child before closing its store and engine", async () => {
   const { store } = fresh(); const running = child(); const events: string[] = [];
   running.proc.kill = () => { events.push("kill"); };
