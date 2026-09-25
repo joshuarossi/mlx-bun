@@ -79,12 +79,12 @@ class PiBackend implements ChatBackend {
   /** Per-connection invariants, built once in start() and reused across
    *  session switches (new chat / resume / fork). */
   private provider?: ReturnType<typeof buildPiProvider>;
-  private readonly cwd = process.cwd();
-  private readonly agentDir = join(homedir(), ".mlx-bun", "pi-sessions");
+  private readonly cwd: string;
+  private readonly agentDir: string;
   /** Where web-chat session files live (pi's own JSONL format). Shared by
    *  create/continueRecent/open/fork/list/delete so they all see one set.
    *  This is the durable transcript store the nightly memory pipeline reads. */
-  private readonly sessionDir = join(homedir(), ".mlx-bun", "sessions");
+  private readonly sessionDir: string;
 
   /** callId -> resolve(decision). Pending browser approvals in flight. */
   private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision, editedArgs?: Record<string, unknown>, alwaysAllow?: boolean) => void>();
@@ -94,13 +94,18 @@ class PiBackend implements ChatBackend {
   constructor(
     private readonly emit: SendFrame,
     private readonly opts: {
+      paths: Required<Pick<PiBackendPaths, "cwd" | "agentDir" | "sessionDir">> & PiBackendPaths;
       port: number | (() => number); modelId: string; contextWindow: number; readOnly: boolean;
       vision: boolean; audio: boolean; thinking: boolean; genDefaults: ReadyGenDefaults;
       transcription: () => Promise<boolean>;
       memory?: () => Promise<MemorySurface | undefined>;
       downloadsSnapshot?: () => readonly { state: string; repoId: string }[];
     },
-  ) {}
+  ) {
+    this.cwd = opts.paths.cwd;
+    this.agentDir = opts.paths.agentDir;
+    this.sessionDir = opts.paths.sessionDir;
+  }
 
   /** Build the provider, resume the most recent chat, and start streaming. */
   async start(): Promise<void> {
@@ -654,7 +659,7 @@ class PiBackend implements ChatBackend {
       // THIS machine checked the box, persisting to ~/.mlx-bun/tool-
       // approvals.json (chat/tool-approvals.ts). Skip the round-trip entirely
       // — no card, no wait, matching every session and every browser tab.
-      if (isToolAlwaysAllowed(tool)) return undefined;
+      if (isToolAlwaysAllowed(tool, this.opts.paths.toolApprovalsFile)) return undefined;
 
       const decision = await this.requestApproval(event);
       if (decision.decision === "deny") {
@@ -670,7 +675,7 @@ class PiBackend implements ChatBackend {
       // example extension does it).
       applyEditedArgs(event.input as Record<string, unknown>, decision.editedArgs);
       if (decision.alwaysAllow) {
-        setToolAlwaysAllowed(tool);
+        setToolAlwaysAllowed(tool, this.opts.paths.toolApprovalsFile);
         this.sendToolApprovals();
       }
       return undefined; // allow
@@ -721,7 +726,7 @@ class PiBackend implements ChatBackend {
    *  change), so the settings panel can list/forget approvals without a
    *  separate REST round-trip. */
   private sendToolApprovals(): void {
-    this.send({ type: "tool_approvals", alwaysAllow: listAlwaysAllowedTools() });
+    this.send({ type: "tool_approvals", alwaysAllow: listAlwaysAllowedTools(this.opts.paths.toolApprovalsFile) });
   }
 
   private onSessionEvent(event: AgentSessionEvent): void {
@@ -922,7 +927,16 @@ class PiBackend implements ChatBackend {
   }
 }
 
+/** App-owned persistence locations; omitted paths retain the installed app defaults. */
+export interface PiBackendPaths {
+  cwd?: string;
+  agentDir?: string;
+  sessionDir?: string;
+  toolApprovalsFile?: string;
+}
+
 export interface PiBackendOptions {
+  paths?: PiBackendPaths;
   /** Resolved on connection so a server binding port zero can report its actual port. */
   port: number | (() => number);
   modelId?: string;
@@ -942,6 +956,12 @@ export interface PiBackendOptions {
 export function createPiBackend(options: PiBackendOptions): ChatBackendFactory {
   const resolved = {
     ...options,
+    paths: {
+      cwd: options.paths?.cwd ?? process.cwd(),
+      agentDir: options.paths?.agentDir ?? join(homedir(), ".mlx-bun", "pi-sessions"),
+      sessionDir: options.paths?.sessionDir ?? join(homedir(), ".mlx-bun", "sessions"),
+      toolApprovalsFile: options.paths?.toolApprovalsFile,
+    },
     modelId: options.modelId ?? PI_LOCAL_MODEL_ID,
     contextWindow: options.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     readOnly: options.readOnly ?? false,
