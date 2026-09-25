@@ -86,16 +86,19 @@ public library exports. Model discovery, acquisition, and fit remain in
 `engine/` owns loaded models and continuous scheduling. `server/` consumes its
 completion, preparation, and model-binding interfaces; HTTP request shapes,
 prompt policy, and JSON/SSE remain server-owned. The server borrows the engine,
-while application startup owns closing it. Add web and job domains with their
-first migrated consumers and explicit dependency rules; do not invent shared
-utilities or placeholder contracts ahead of those consumers.
+while application startup owns closing it. `chat/` owns the WebSocket backend
+and its Pi adapter; `web/` owns browser modules, static assets, and compilation.
+Browser code consumes only its own modules and the leaf chat/job protocols.
+`jobs/protocol.ts` currently owns the browser's job events; job orchestration
+is still pending. Add other domains with their first migrated consumers and
+explicit dependency rules.
 
 Standalone Pi integration is deferred pending Josh's decision. The web app
-may use Pi as its agentic component when that surface migrates.
+uses Pi through the app-owned chat adapter.
 
 Application contracts migrate with their owning apps: Pi UI/provider protocols,
-job runner types, engine host, and completion clients. Within the apps, Pi
-protocols belong to the Pi integration, job contracts to job orchestration, and
+job runner types, engine host, and completion clients. Within the apps, browser chat
+protocols belong to chat, job contracts to job orchestration, and
 host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
