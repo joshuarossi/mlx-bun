@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -172,4 +172,21 @@ test("malformed HTTP inputs never submit a child or inspect arbitrary non-string
   for (const body of [null, [], {}, { ...paths, model_dir: 3 }, { ...paths, adapter_path: [] }])
     expect((await routes.handle(post("submit", body)))?.status).toBe(400);
   expect((await routes.handle(post("inspect-dataset", { path: [] })))?.status).toBe(400);
+});
+
+test("default adapter outputs are distinct for two submissions in the same millisecond", async () => {
+  const calls: unknown[][] = [];
+  const routes = createFinetuneRoutes({ submit(...args) { calls.push(args); return { jobId: `job_${calls.length}` }; } });
+  const clock = spyOn(Date, "now").mockReturnValue(123);
+  try {
+    const body = { model_dir: paths.model_dir, data_dir: paths.data_dir };
+    const first = await (await routes.handle(post("submit", body)))!.json();
+    const second = await (await routes.handle(post("submit", body)))!.json();
+    expect(first.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
+    expect(second.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
+    expect(first.adapter_path).not.toBe(second.adapter_path);
+    expect(calls.map(call => call[2])).toEqual([first.adapter_path, second.adapter_path]);
+    await routes.handle(post("submit", { ...body, adapter_path: "/chosen/output" }));
+    expect(calls[2]?.[2]).toBe("/chosen/output");
+  } finally { clock.mockRestore(); }
 });

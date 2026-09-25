@@ -9,7 +9,7 @@ export interface FinetuneRouteDeps {
 
 /** HTTP owns request/output-path policy; the job child owns training. */
 export function createFinetuneRoutes(deps: FinetuneRouteDeps,
-  defaultAdapterPath = () => join(homedir(), ".cache/mlx-bun/adapters", `adapter-${Date.now()}`)) {
+  defaultAdapterPath = () => join(homedir(), ".cache/mlx-bun/adapters", `adapter-${Date.now()}-${crypto.randomUUID()}`)) {
   return { async handle(request: Request): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     if (request.method !== "POST" || !["/api/finetune/inspect-dataset", "/api/finetune/submit"].includes(path)) return null;
