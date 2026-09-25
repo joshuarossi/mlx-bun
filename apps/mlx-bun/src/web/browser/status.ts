@@ -231,7 +231,7 @@ export function createStatusController() {
       $("st-tps").textContent = f.typical_decode_tps.toFixed(1);
       $("st-tps-cap").textContent = "at " + num(f.typical_context_tokens) + " context · " + (r.predicted_decode_tps || 0).toFixed(1) + " tok/s at the " + num(f.context_tokens) + " max (full-KV reads)";
     } else {
-      $("st-tps").textContent = (r.predicted_decode_tps || 0).toFixed(1);
+      $("st-tps").textContent = r.predicted_decode_tps == null ? "—" : r.predicted_decode_tps.toFixed(1);
     }
     $("st-m-ram").textContent = gb(f.machine && f.machine.ram_bytes);
     $("st-m-bw").textContent = (f.machine && f.machine.bandwidth_gbs || "—") + " GB/s";

@@ -10,7 +10,7 @@ const pending = [
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
-  /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
+  /^\/(?:generate|signal|curves|curve-terrain|dag|engine)$/,
 ];
 export function pendingRoute(path: string): boolean { return pending.some(pattern => pattern.test(path)); }
 

@@ -109,10 +109,10 @@ export interface RunningApp { port: number; close(): Promise<void> }
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }] = await Promise.all([
+    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
-    import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
+    import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"), import("../server/status-routes"),
     import("../server/management-routes"), import("../server/adapter-routes"),
     import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"),
   ]);
@@ -147,6 +147,10 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory });
+    const status = createStatusRoutes({ owner: "serve", context, caches, gateway: engine.gateway,
+      diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
+      capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
+      ssdCacheDir: options.cache.ssdCacheDir });
     const hub = createHubRoutes();
     const adapters = createAdapterRoutes(context, engine.gateway);
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
@@ -182,7 +186,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const datasetRunner = createDatasetRunner();
     const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
-    const routes = { handle: async (request: Request) => await hub.handle(request) ?? await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+    const routes = { handle: async (request: Request) => await status.handle(request) ?? await hub.handle(request) ?? await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
       await quantizeRoutes.handle(request) ?? await datasetRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await adapterArtifacts.handle(request) ?? await publishing.handle(request) ?? await completions.handle(request) };
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       memory: () => createMemorySurface(memoryPaths.vault, memoryPaths.skills),
