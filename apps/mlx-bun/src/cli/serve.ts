@@ -85,10 +85,10 @@ export interface RunningApp { port: number; close(): Promise<void> }
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }] = await Promise.all([
+    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createAdapterRoutes }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
-    import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
+    import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"), import("../server/adapter-routes"),
   ]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
@@ -121,6 +121,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const routes = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
       defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
+    const adapters = createAdapterRoutes(context, engine.gateway);
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
@@ -134,7 +135,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, closeEngine: () => engine.close() }, {
+    const listener = await startServer({ routes: { handle: async request => await adapters.handle(request) ?? routes.handle(request) }, web, chat, closeEngine: () => engine.close() }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;
