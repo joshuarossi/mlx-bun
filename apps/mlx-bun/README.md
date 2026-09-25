@@ -24,6 +24,10 @@ the serving process; `--expert-offload` builds `<model>/.mlx-bun-offload` on fir
 use and activates it before construction for MoE models, while dense models log
 and continue; the `--hlg-*` family sets the HLG sampling default; and
 `MLX_BUN_SHUTDOWN_TIMEOUT_MS` (finite, positive, else 120 s) bounds shutdown.
+The process-wide settings an app applies (offload routing, the allocator limit,
+the runtime switches) are restored after its engine releases the model, on close
+and on startup failure, so a later app in the same process starts from what it
+found; offload restore only redirects routing and never unmaps borrowed weights.
 Startup adapter mounting (`--adapter`) follows in its own change.
 
 Shutdown stops background cache demotion, closes chat sessions, drains active

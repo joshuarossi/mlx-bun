@@ -36,12 +36,20 @@ let mm: MmapFile | null = null;
 let manifest: Map<string, OffloadEntry> | null = null;
 
 /** Open the offload file at `dir` (experts.bin + manifest.json) and route
- *  expert weights through it. Call BEFORE the model is constructed. */
-export function activateExpertOffload(dir: string): void {
+ *  expert weights through it. Call BEFORE the model is constructed.
+ *
+ *  Routing is process-global. The returned function restores the routing that
+ *  was active before this call, so an owner that activated a file for one
+ *  model can stop later loads from resolving against it. It never unmaps:
+ *  weights already created from the mapping keep borrowing its bytes for the
+ *  process lifetime (see `expertOffloadArray`). */
+export function activateExpertOffload(dir: string): () => void {
   const parsed = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")) as OffloadManifest;
+  const previous = { mm, manifest };
   manifest = new Map(parsed.tensors.map((t) => [t.name, t]));
   mm = MmapFile.open(`${dir}/experts.bin`, "ro");
   process.stderr.write(`[expert-offload] mmap ${dir}/experts.bin (${parsed.tensors.length} tensors)\n`);
+  return () => { mm = previous.mm; manifest = previous.manifest; };
 }
 
 export function isExpertOffload(): boolean {

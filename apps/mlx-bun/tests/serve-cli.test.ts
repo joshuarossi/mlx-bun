@@ -330,10 +330,11 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
       createCacheServices: async (_context, _binding, options) => { cacheOptions = options; return cache; },
       createAppEngine: async () => ({ gateway: {}, async close() { context.dispose(); } }),
     }));
-    mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); return 0; } }));
+    let limit = 77;
+    mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
     mock.module("@mlx-bun/inference/artifacts", () => ({
       async ensureOffloadFile(path) { events.push("offload " + path); return "/offload"; },
-      activateExpertOffload(dir) { events.push("activate " + dir); },
+      activateExpertOffload(dir) { events.push("activate " + dir); return () => events.push("restore offload"); },
     }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
@@ -360,14 +361,26 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     assert.equal(statusBudget, 8e9);
     assert.equal(contextLimit, expected);
     await running.close();
+    // Process settings restore only after the engine released the model.
+    assert.deepEqual(events.slice(4), ["model close", "restore offload", "allocator 77"]);
+    assert.equal(limit, 77);
     assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
     assert.equal(runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA"), undefined);
     events.length = 0;
     const dense = await startModelServer({ path: "/dense", repoId: "dense", expertsBytes: 0 }, options);
     assert.deepEqual(events, ["load wire=1 media=1", "allocator 8000000000"]);
     await dense.close();
+    assert.deepEqual(events.slice(2), ["model close", "allocator 77"]);
+    // Startup failure after activation and the allocator limit restores both.
+    events.length = 0;
+    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { await input.closeEngine(); throw new Error("bind failed"); } }));
+    await assert.rejects(startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options), /bind failed/);
+    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "allocator 8000000000", "model close", "restore offload", "allocator 77"]);
+    assert.equal(limit, 77);
+    assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
   `;
-  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
+  // Bare workspace specifiers in the script resolve from the app directory, whatever the runner's cwd.
+  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect(stderr.replace(/^--expert-offload ignored.*$/m, "").trim()).toBe(""); expect(code).toBe(0);

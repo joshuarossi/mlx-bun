@@ -148,6 +148,12 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1",
     ...(options.forceWire ? { MLX_BUN_FORCE_WIRE: "1" } : {}),
     ...(options.allowPrivateMedia ? { MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" } : {}) });
+  // Process-wide settings this app applies (offload routing, allocator limit,
+  // runtime switches) are restored only after its engine has released the
+  // model, on close and on startup failure alike, so a later app in the same
+  // process starts from the state it found. Offload restore never unmaps.
+  let restoreOffload: (() => void) | undefined, restoreAllocator: (() => void) | undefined;
+  const restoreProcess = () => { try { restoreOffload?.(); } finally { try { restoreAllocator?.(); } finally { restoreRuntime(); } } };
   let cleanup: (() => void | Promise<unknown>) | undefined;
   try {
     if (options.expertOffload) {
@@ -156,7 +162,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       if (model.expertsBytes === 0) console.warn("--expert-offload ignored: this model has no experts (dense)");
       else {
         const { ensureOffloadFile, activateExpertOffload } = await import("@mlx-bun/inference/artifacts");
-        activateExpertOffload(await ensureOffloadFile(model.path, message => console.log(`[serve] expert offload: ${message}`)));
+        restoreOffload = activateExpertOffload(await ensureOffloadFile(model.path, message => console.log(`[serve] expert offload: ${message}`)));
       }
     }
     const context = await loadContext(model.path, model.repoId, {
@@ -172,7 +178,11 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     // Main: the plan's allocator reserve, else the explicit budget, caps the
     // allocator for the whole process and bounds optional cache residency.
     const allocatorLimitBytes = context.glmMemoryPlan?.lineItems?.allocatorReserveBytes ?? options.memoryBudgetBytes;
-    if (allocatorLimitBytes) (await import("@mlx-bun/mlx/ffi")).setMemoryLimit(allocatorLimitBytes);
+    if (allocatorLimitBytes) {
+      const { setMemoryLimit } = await import("@mlx-bun/mlx/ffi");
+      const previous = setMemoryLimit(allocatorLimitBytes);
+      restoreAllocator = () => { setMemoryLimit(previous); };
+    }
     const caches = await createCacheServices(context, binding, { ...options.cache,
       ...(allocatorLimitBytes ? { allocatorLimitBytes } : {}) });
     const closeCaches = async () => {
@@ -279,11 +289,11 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;
-    return { port: boundPort, async close() { try { await listener.close(); } finally { restoreRuntime(); } } };
+    return { port: boundPort, async close() { try { await listener.close(); } finally { restoreProcess(); } } };
   } catch (error) {
     try { await cleanup?.(); }
     catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
-    finally { restoreRuntime(); }
+    finally { restoreProcess(); }
     throw error;
   }
 }
