@@ -21,3 +21,30 @@ installed package artifact, without building or loading native libraries.
 deletion. Cache location and Hugging Face credentials follow the
 [hub library](../../packages/hub/README.md). This workspace remains private
 while app licensing and release packaging are decided.
+
+## Web chat backend
+
+`src/chat/protocol.ts` owns browser messages. `backend.ts` owns a per-server
+WebSocket lifecycle behind the `ChatBackend` interface and a send-frame callback.
+The Pi implementation in `pi-backend.ts` calls the application's loopback HTTP
+API; it imports no server, engine, or native numerical implementation.
+`history.ts`, `events.ts`, and `policy.ts` own transcript operations, event
+translation, and chat policy; the tool modules own app navigation, web retrieval,
+and durable approval choices. Pi dependencies stay in this app workspace.
+
+Composition supplies the backend factory to `makeChatWebSocketHandler`, mounts
+its `websocket` handler, and awaits its `dispose()` on shutdown. Each connection
+gets an independent agent session. Abort and approval messages remain available
+while a prompt is running. Shutdown cancels each backend, waits for pending
+startup and message cleanup, then reports any peer disposal failures. Pi waits
+for the agent to become idle and for an in-flight session replacement before
+releasing its runtime. The [lifecycle examples](tests/chat-backend.test.ts)
+exercise startup failure, disconnects, cancellation, and shutdown without a
+server or native libraries; [chat behavior tests](tests/chat-policy.test.ts)
+cover history, sampling scopes, thinking events, tool-loop policy, and UI tools.
+
+Memory is disabled until its app owner supplies tool definitions, names, skill
+paths, and its prompt hint through `PiBackendOptions.memory`. Download context
+is an optional callback from app composition. Browser assets and HTTP/WebSocket
+route wiring remain separate migration work. Standalone Pi integration remains
+deferred. The protocol exposes no serial-serving lane selection.
