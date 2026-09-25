@@ -89,9 +89,8 @@ prompt policy, and JSON/SSE remain server-owned. The server borrows the engine,
 while application startup owns closing it. `chat/` owns the WebSocket backend
 and its Pi adapter; `web/` owns browser modules, static assets, and compilation.
 Browser code consumes only its own modules and the leaf chat/job protocols.
-`jobs/protocol.ts` currently owns the browser's job events; job orchestration
-is still pending. Add other domains with their first migrated consumers and
-explicit dependency rules.
+`jobs/protocol.ts` owns the browser's job events and runner contracts. Add
+other domains with their first migrated consumers and explicit dependency rules.
 
 Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.

@@ -26,19 +26,8 @@ const spawnQueue: QueuedSpawn[] = [];
 let activeSpawn: QueuedSpawn | undefined;
 const closedStores = new WeakSet<JobStore>();
 
-/** True while a GPU (subprocess) job is running — the server gates token
- *  generation on this so quantize/finetune don't fight live inference. */
-export function isGpuBusy(): boolean {
-  return gpuLeaseHolder !== null;
-}
-
-/** The job id currently holding the GPU lease, or null. */
-export function currentGpuJob(): string | null {
-  return gpuLeaseHolder;
-}
-
 export interface SubprocessOpts {
-  /** Host execution lease, held until child exit (including crashes). */
+  /** Host execution lease, held until child exit and log drain (including crashes). */
   acquire: (signal: AbortSignal) => Promise<DisposableResource>;
   /** Child entry supplied by application composition. */
   entry: string;
