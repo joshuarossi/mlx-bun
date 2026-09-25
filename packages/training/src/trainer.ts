@@ -260,6 +260,8 @@ export async function trainLora(
   control: { signal?: AbortSignal } = {},
 ): Promise<TrainResult> {
   const boundary = () => stepBoundary(control.signal);
+  // Entry boundary: a cancellation already pending does no setup at all.
+  control.signal?.throwIfAborted();
   emit({ type: "stage", stage: "setup", progress: 0.02, message: "resolving ranks" });
 
   // Mixed-precision rank scaling: feed the per-layer bits (from the loaded
@@ -292,6 +294,10 @@ export async function trainLora(
     message: `ranks (${cfg.rankScaling}): ${rankSpread}` });
 
   const lora = buildTrainableLora(model, ranks, cfg.scale, cfg.seed, cfg.rsLora);
+  // From here every exit, including cancellation, detaches the caller's model
+  // and releases the LoRA leaves (see the finally below).
+  let attached = false;
+  try {
   // Warm-start: continue from a saved adapter/checkpoint's weights (optimizer + LR
   // schedule restart fresh). Must run before the optimizer is built (below) so it
   // tracks the loaded leaves. Rank/targets must match the checkpoint.
@@ -301,6 +307,7 @@ export async function trainLora(
       message: `warm-start: loaded ${n} LoRA targets from ${cfg.warmStartAdapter} (optimizer + LR schedule restart)` });
   }
   attachForTraining(model, lora, "train");
+  attached = true;
   model.loraState.dropoutRate = cfg.loraDropout; // per-step seed set inside the loop
   // Training-mode fused GeGLU (Gemma e4b): kernel forward + hand-derived vjp, so
   // autograd flows and the backward recomputes the gelu from the primal instead
@@ -381,7 +388,6 @@ export async function trainLora(
     emit(e);
   };
 
-  try {
     let result: { numIters: number };
     try {
       result =
@@ -390,6 +396,12 @@ export async function trainLora(
           : cfg.method === "orpo"
             ? await orpoLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary)
             : await sftLoop(model, tok, tmpl, dataDir, cfg, lora, collect, boundary);
+      await Promise.all(checkpointSaves);
+      // Boundary before the commit point: a cancellation observed here, after
+      // the last step and after every checkpoint write has completed, writes
+      // no final adapter. Once the final save below starts it runs to
+      // completion and the run reports success.
+      await boundary();
     } catch (error) {
       // Cancellation or failure: checkpoint writes already started complete
       // before the adapter is released; no final adapter is written, and
@@ -398,10 +410,9 @@ export async function trainLora(
       throw error;
     }
 
-    await Promise.all(checkpointSaves);
-
-    // Final save (last adapter).
+    // Final save (last adapter): the commit point.
     detachTraining(model, lora);
+    attached = false;
     await saveAdapter(lora, cfg.adapterPath, saveCfg, appliedRanks);
 
     // Durable, structured run record alongside the adapter (only when we kept
@@ -444,6 +455,9 @@ export async function trainLora(
     });
     return { adapterPath: cfg.adapterPath, appliedRanks, numIters: result.numIters };
   } finally {
+    // The caller's model leaves training mode on every exit; the LoRA leaves
+    // are released after any checkpoint write that borrowed them has settled.
+    if (attached) detachTraining(model, lora);
     disposeLora(lora);
   }
 }
