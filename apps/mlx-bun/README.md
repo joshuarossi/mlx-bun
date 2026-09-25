@@ -461,3 +461,20 @@ also starts the actual relocated executable, checks its web assets, `/stats`,
 the supplied weights through a temporary HF snapshot symlink and isolates the
 child's home, caches, and chat storage; it never copies or downloads weights.
 This is a local build artifact, not signing/notarization or release publishing.
+
+[`scripts/install.sh`](../../scripts/install.sh) installs a complete release
+bundle under `${MLX_BUN_INSTALL_DIR:-$HOME/.mlx-bun}/app-install/` and links
+`~/.local/bin/mlx-bun`. `MLX_BUN_VERSION` selects `latest` or a pinned tag.
+The installer validates the files and version before switching its `current`
+symlink, retains the old app on failure, and removes obsolete owned bundles
+after success. Sessions, wiki, credentials, and legacy flat installation files
+outside `app-install/` stay intact. Run the script with `--help` for usage.
+The public installer must not deploy before a compatible release bundle exists;
+older release archives lack the newly required license and notice files.
+
+`bun scripts/prepare-homebrew.ts /path/to/mlx-bun-v<version>-arm64.tar.gz`
+prepares a local `mlx-bun.rb` beside the archive, with its version, release URL,
+and SHA256. The formula installs the entire bundle in `libexec` and symlinks its
+command into `bin`. Preparation does not install, sign, notarize, publish, or
+update the tap. [Installer tests](tests/install.test.ts) use local archives and
+temporary homes, including reinstall and failure paths, without network access.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildBinary, compileApp } from "./build-binary";
@@ -127,8 +127,8 @@ try {
     assert(notices.includes(source), `relocated bundle must retain the complete ${name} notices`);
   }
   const env = { ...process.env, MLX_BUN_LIBMLXC: "", MLX_BUN_EXPERT_IO_DYLIB: "", MLX_BUN_FRAME_EXTRACT: "" };
-  async function run(command: string[]): Promise<string> {
-    const child = Bun.spawn(command, { cwd: scratch, env, stdout: "pipe", stderr: "pipe" });
+  async function run(command: string[], environment: NodeJS.ProcessEnv = env): Promise<string> {
+    const child = Bun.spawn(command, { cwd: scratch, env: environment, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
     assert.equal(code, 0, `${command[0]} failed: ${out}\n${err}`);
     return out;
@@ -137,5 +137,29 @@ try {
   assert((await run([executable, "--version"])).startsWith("mlx-bun "));
   assert((await run([executable, "--help"])).includes("Usage: mlx-bun"));
   console.log(await run([join(relocated, "verify-consumer"), scratch]));
+  // Exercise the same real binaries through the installer's directory and
+  // command symlinks. The curl stub supplies our local archive, never a network.
+  const installHome = join(temporary, "install home"), transport = join(temporary, "transport");
+  await mkdir(installHome); await mkdir(transport);
+  const archive = join(temporary, "bundle.tar.gz");
+  await run(["tar", "-czf", archive, "-C", relocated, "."]);
+  const curl = join(transport, "curl");
+  await writeFile(curl, `#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then shift; output="$1"; fi
+  shift
+done
+cp "$MLX_BUN_TEST_ARCHIVE" "$output"
+`);
+  await chmod(curl, 0o755);
+  const version = JSON.parse(await readFile(join(root, "apps/mlx-bun/package.json"), "utf8")).version;
+  await run(["/bin/sh", join(root, "scripts/install.sh")], { ...env, HOME: installHome,
+    PATH: `${transport}:${process.env.PATH}`, MLX_BUN_INSTALL_DIR: join(installHome, ".mlx-bun"),
+    MLX_BUN_VERSION: `v${version}`, MLX_BUN_TEST_ARCHIVE: archive });
+  assert.equal(await run([join(installHome, ".local/bin/mlx-bun"), "--version"]), `mlx-bun ${version}\n`);
+  const installedScratch = join(temporary, "installed consumer"); await mkdir(installedScratch);
+  console.log(await run([join(installHome, ".mlx-bun/app-install/current/verify-consumer"), installedScratch]));
+  console.log("Local installer: actual compiled app, assets and managed child passed through installed symlinks (CPU only).");
   if (model) await verifyModel(executable, model, scratch, env);
 } finally { await rm(temporary, { recursive: true, force: true }); }
