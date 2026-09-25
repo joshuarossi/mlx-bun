@@ -178,6 +178,8 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], remembered = [];
+    const memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
+    const memorySurface = { readOnly: true, toolNames: [], customTools: [], skillPaths: [], hint: "memory" };
     const chatPaths = { toolApprovalsFile: "/unused/approvals.json", sessionDir: ${JSON.stringify(sessionDir) ?? "undefined"} };
     const { defaultSessionDir } = await import(app + "src/chat/session-files.ts");
     let sessionsDirectory;
@@ -190,7 +192,7 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
     const binding = { gateway: { configureContinuation(services) {
       assert.equal(services, cache.continuationServices); events.push("continuation");
     } } };
-    let engine, listenerInput;
+    let engine, listenerInput, memoryCallback;
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async () => context, modelServingBinding: async () => binding, createCacheServices: async () => cache,
       createAppEngine: async (supplied, options) => {
@@ -219,12 +221,19 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
       assert.equal(options.servedModelPath, "/unused"); assert.equal(typeof options.invalidateLibrary, "function");
       return { handle: async () => null };
     } }));
+    mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async (root, skills) => {
+      assert.equal(root, memoryPaths.vault); assert.equal(skills, memoryPaths.skills); return memorySurface;
+    } }));
+    mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes(options) {
+      assert.equal(options.root(), memoryPaths.vault); return { handle: async () => null };
+    } }));
     mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes(directory) {
       sessionsDirectory = directory; assert.equal(directory, chatPaths.sessionDir ?? defaultSessionDir());
       return { handle: async () => null };
     } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
+      assert.equal(typeof options.memory, "function"); memoryCallback = options.memory;
       assert.equal(options.contextWindow, 8192); assert.equal(options.readOnly, true); assert.deepEqual(options.paths, { ...chatPaths, sessionDir: sessionsDirectory }); return () => {};
     } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
@@ -234,9 +243,10 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
     const { startModelServer } = await import(app + "src/cli/serve.ts");
     const running = await startModelServer({ path: "/unused", repoId: "test" }, {
       query: null, hostname: "127.0.0.1", port: 0, capacity: 8, contextLimit: null,
-      readOnly: true, noOpen: true, chatPaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
+      readOnly: true, noOpen: true, chatPaths, memoryPaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
     });
     assert.equal(running.port, 1234);
+    assert.equal(await memoryCallback(), memorySurface);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
     await running.close();
     assert.deepEqual(events.slice(-3), ["timer stop", "cache close", "model close"]);
