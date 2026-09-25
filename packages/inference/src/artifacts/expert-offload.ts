@@ -44,10 +44,14 @@ let manifest: Map<string, OffloadEntry> | null = null;
  *  weights already created from the mapping keep borrowing its bytes for the
  *  process lifetime (see `expertOffloadArray`). */
 export function activateExpertOffload(dir: string): () => void {
+  // Resolve both halves before touching either global: a failed open leaves
+  // whatever routing was active untouched.
   const parsed = JSON.parse(readFileSync(`${dir}/manifest.json`, "utf8")) as OffloadManifest;
+  const next = new Map(parsed.tensors.map((t) => [t.name, t]));
+  const mapping = MmapFile.open(`${dir}/experts.bin`, "ro");
   const previous = { mm, manifest };
-  manifest = new Map(parsed.tensors.map((t) => [t.name, t]));
-  mm = MmapFile.open(`${dir}/experts.bin`, "ro");
+  manifest = next;
+  mm = mapping;
   process.stderr.write(`[expert-offload] mmap ${dir}/experts.bin (${parsed.tensors.length} tensors)\n`);
   return () => { mm = previous.mm; manifest = previous.manifest; };
 }

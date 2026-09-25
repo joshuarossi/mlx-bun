@@ -152,8 +152,13 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   // runtime switches) are restored only after its engine has released the
   // model, on close and on startup failure alike, so a later app in the same
   // process starts from the state it found. Offload restore never unmaps.
-  let restoreOffload: (() => void) | undefined, restoreAllocator: (() => void) | undefined;
-  const restoreProcess = () => { try { restoreOffload?.(); } finally { try { restoreAllocator?.(); } finally { restoreRuntime(); } } };
+  // The restore runs once: a repeated close must not undo a later app's settings.
+  let restoreOffload: (() => void) | undefined, restoreAllocator: (() => void) | undefined, restored = false;
+  const restoreProcess = () => {
+    if (restored) return;
+    restored = true;
+    try { restoreOffload?.(); } finally { try { restoreAllocator?.(); } finally { restoreRuntime(); } }
+  };
   let cleanup: (() => void | Promise<unknown>) | undefined;
   try {
     if (options.expertOffload) {

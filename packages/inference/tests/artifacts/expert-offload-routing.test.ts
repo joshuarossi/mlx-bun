@@ -45,3 +45,16 @@ test("activation routes expert weights through the file; restore returns the pre
   if (!before) expect(expertOffloadArray(name)).toBeNull();
   fromA?.dispose(); fromB?.dispose();
 });
+
+test("a failed activation leaves the active routing untouched", async () => {
+  const name = "model.layers.0.switch_glu.up";
+  const a = model({ [name]: [1, 2, 3, 4] });
+  await buildOffloadFile(a, join(a, "offload"));
+  const restoreA = activateExpertOffload(join(a, "offload"));
+  try {
+    const broken = mkdtempSync(join(tmpdir(), "mlx-offload-broken-")); roots.push(broken);
+    writeFileSync(join(broken, "manifest.json"), JSON.stringify({ page: 16384, model: broken, totalBytes: 0, tensors: [] }));
+    expect(() => activateExpertOffload(broken)).toThrow();
+    expect(expertOffloadArray(name)?.shape).toEqual([4]);
+  } finally { restoreA(); }
+});

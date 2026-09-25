@@ -347,8 +347,9 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => {} }));
-    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => ({ server: { port: 1234 },
-      close: async () => { await input.beforeDrain(); await input.closeEngine(); } }) }));
+    // Like the real listener, close is idempotent: one drain and one engine release.
+    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing;
+      return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await input.closeEngine(); })() }; } }));
     const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
@@ -371,6 +372,14 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     assert.deepEqual(events, ["load wire=1 media=1", "allocator 8000000000"]);
     await dense.close();
     assert.deepEqual(events.slice(2), ["model close", "allocator 77"]);
+    // A closed app's repeated close never resets a later app's process settings.
+    events.length = 0;
+    const later = await startModelServer({ path: "/later", repoId: "later", expertsBytes: 5 }, options);
+    await dense.close(); await running.close();
+    assert.deepEqual(events, ["offload /later", "activate /offload", "load wire=1 media=1", "allocator 8000000000"]);
+    assert.equal(limit, 8e9);
+    await later.close();
+    assert.deepEqual(events.slice(4), ["model close", "restore offload", "allocator 77"]);
     // Startup failure after activation and the allocator limit restores both.
     events.length = 0;
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { await input.closeEngine(); throw new Error("bind failed"); } }));
