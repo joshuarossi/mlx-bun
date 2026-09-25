@@ -28,16 +28,17 @@ function fixture({ gemma = false, rows = 3, valid = 1 } = {}) {
 
 function harness(modelDir: string, run?: JobRunner) {
   const logs: string[] = [], selections: (string | null)[] = [], runs: { cfg: Record<string, unknown>; signal?: AbortSignal }[] = [];
+  const selectionSignals: (AbortSignal | undefined)[] = [];
   let resets = 0, clock = 1_000;
   const deps: TrainDependencies = {
-    resolve: async query => { selections.push(query); return { m: { path: modelDir, repoId: "example/model" }, picked: query === null }; },
+    resolve: async (query, signal) => { selections.push(query); selectionSignals.push(signal); return { m: { path: modelDir, repoId: "example/model" }, picked: query === null }; },
     inspect: inspectDataset,
     runner: () => async (emit, cfg, signal) => { runs.push({ cfg, signal }); return run ? run(emit, cfg, signal) : { outputPath: String(cfg.adapter_path) }; },
     memory: async () => ({ peak: () => 3 * 2 ** 30, reset: () => { resets++; } }),
     exists: existsSync, readText: path => Bun.file(path).text(),
     log: line => logs.push(line), home: () => "/home/test", now: () => (clock += 1500),
   };
-  return { deps, logs, selections, runs, resets: () => resets, text: () => strip(logs.join("\n")) };
+  return { deps, logs, selections, selectionSignals, runs, resets: () => resets, text: () => strip(logs.join("\n")) };
 }
 
 // Captured from main src/train/trainer.ts: a test input, never a second
@@ -499,4 +500,13 @@ test("the process terminal restores the raw and paused state it found when keys 
   calls.length = 0;
   processTerminal({ stdin: fakeStdin(true, false), stdout }).keys!(() => {})();
   expect(calls).toEqual(["raw:true", "resume", "on", "off", "raw:true"]);
+});
+
+test("train hands its cancellation signal to model selection so a starter download can be cancelled", async () => {
+  const f = fixture();
+  try {
+    const controller = new AbortController(), run = harness(f.modelDir);
+    await runTrain(parse("--data", f.dataDir, "--dry-run"), run.deps, controller.signal);
+    expect(run.selectionSignals).toEqual([controller.signal]);
+  } finally { f.dispose(); }
 });

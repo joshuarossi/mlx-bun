@@ -139,7 +139,8 @@ function planLines(plan: TrainPlan, model: SelectedModel, picked: boolean,
 }
 
 export interface TrainDependencies {
-  resolve(query: string | null): Promise<{ m: SelectedModel; picked: boolean }>;
+  /** Model selection; the signal cancels a starter download it may start. */
+  resolve(query: string | null, signal?: AbortSignal): Promise<{ m: SelectedModel; picked: boolean }>;
   inspect: typeof inspectDataset;
   runner(): JobRunner;
   /** Peak-memory reader; null when the native binding is unavailable. */
@@ -151,7 +152,7 @@ export interface TrainDependencies {
   now(): number;
 }
 const trainDefaults: TrainDependencies = {
-  resolve: query => resolveModelAuto(query),
+  resolve: (query, signal) => resolveModelAuto(query, {}, signal),
   inspect: inspectDataset,
   runner: () => createFinetuneRunner(),
   async memory() {
@@ -173,7 +174,7 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
   const deps = { ...trainDefaults, ...supplied };
   const parsed = parseTrainArgs(args, deps.exists);
   signal?.throwIfAborted();
-  const { m, picked } = await deps.resolve(parsed.query);
+  const { m, picked } = await deps.resolve(parsed.query, signal);
   const isGemma = (await deps.readText(`${m.path}/config.json`)).toLowerCase().includes("gemma");
   const plan = trainPlan(parsed, m, isGemma, deps.home());
 
