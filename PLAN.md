@@ -21,16 +21,15 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   preservation-checked short MiniCPM SFT/DPO/ORPO paths.
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
-- [ ] Restore main's remaining training checks in their owning packages:
-  `tests/parity/train-e2e.test.ts`, `train-batch-e2e.test.ts`,
-  `train-orpo-e2e.test.ts`, `train-regularization-e2e.test.ts`, and
-  `diffusion-lora.test.ts`; `tests/research/train-orpo-chunked.test.ts` and
-  `train-orpo-fused-ce.test.ts`; and `tests/unit/train-autograd.test.ts`.
-  Exit: the seven model tests use explicit caller-supplied cached artifacts,
-  skip before native loading when not opted in, and retain their loss, gradient,
-  adapter reload, batching, regularization, and specialized-head checks without
-  importing old goldens or fixtures. The weight-free ValueAndGrad/Vjp
-  finite-difference test belongs in `@mlx-bun/mlx` and must run in native Mac CI.
+- [ ] Finish restoring main's training checks: `diffusion-lora.test.ts` (needs a
+  cached diffusion checkpoint named by an explicit variable) is not yet ported,
+  and the flash-CCE STEEL kernel no longer compiles against the bundled MLX
+  Metal headers on the current toolchain (`BlockMMA` constructor must
+  initialize `Atile`), which fails main's own fused-CE research test on main's
+  runtime with the same native library; the ported matrix records that. Exit:
+  the diffusion test is restored under the same opt-in gating, and the
+  flash-CCE path either compiles again (native rebuild or kernel fix with a
+  paired check against the fused path) or ORPO's default head is decided.
 
 ## Optimize after the full draft
 
