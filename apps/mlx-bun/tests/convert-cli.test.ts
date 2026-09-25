@@ -309,7 +309,11 @@ test("a failed child and the real job entry without native MLX both fail cleanly
   const { quantizeInChild } = await import("../src/cli/convert");
   try {
     await expect(quantizeInChild({ src_dir: "/unused" }, out, () => {}, undefined, { spawn: childSpawn("process.exit(3)") })).rejects.toThrow("exited 3");
-    await expect(quantizeInChild({ src_dir: root, bits: 4, group_size: 64, mode: "affine" }, out, () => {})).rejects.toThrow(/native|libmlxc|dlopen/);
+    // The real job entry over the real store and log paths, with native MLX blocked in the child's own
+    // environment regardless of the runner's, so the job fails for that reason wherever it runs.
+    const blocked = ((command: string[], options: Parameters<typeof Bun.spawn>[1]) =>
+      Bun.spawn(command, { ...options, env: { ...options?.env, MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" } })) as unknown as typeof Bun.spawn;
+    await expect(quantizeInChild({ src_dir: root, bits: 4, group_size: 64, mode: "affine" }, out, () => {}, undefined, { spawn: blocked })).rejects.toThrow(/native|libmlxc|dlopen/);
     expect(existsSync(out)).toBe(false);
     expect(readdirSync(root).filter(name => name.startsWith(".out.convert-"))).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
