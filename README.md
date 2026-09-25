@@ -18,7 +18,7 @@ and optional in-process execution.
 [`@mlx-bun/quantize`](packages/quantize/README.md) owns checkpoint quantization: calibration, sensitivity, mixed-precision allocation, rotation, and Trellis packing.
 [`@mlx-bun/training`](packages/training/README.md) owns LoRA and preference training, optimizers, losses, and adapter production.
 [`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry, Hugging Face downloads, and memory fit.
-[`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces; hub commands are migrated first.
+[`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces; startup composes the migrated engine, HTTP API, and browser chat.
 See [the architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.
 Remaining migration work is in [PLAN.md](PLAN.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and review expectations;
@@ -31,8 +31,9 @@ script, or a source checkout. Each installation provides the `mlx-bun` terminal
 command. `bunx mlx-bun` also runs the app without a permanent installation.
 
 These installation paths will be preserved during the migration. This branch
-currently runs the [hub CLI commands](apps/mlx-bun/README.md); default server and
-web startup and release installation tooling are still being migrated.
+now runs the [terminal app and web chat](apps/mlx-bun/README.md) from source.
+Some API surfaces still return 501 while their owners migrate; release
+installation tooling remains open work.
 
 ## Development
 

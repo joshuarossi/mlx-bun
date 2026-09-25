@@ -2,6 +2,28 @@ import { parseArgs } from "node:util";
 
 // One small source for parsing and help; no command registration framework.
 const commands = {
+  serve: { description: "Serve a local model with continuous batching and the web app", positional: "[query]", options: {
+    model: { type: "string", description: "Model directory or cached registry query (overrides positional query)" },
+    query: { type: "string", description: "Cached model query when no positional/model override is supplied" },
+    host: { type: "string", description: "Bind address [default: 127.0.0.1]" },
+    port: { type: "string", description: "Listen port; 0 chooses a free port [default: 8080]" },
+    batch: { type: "string", description: "Continuous batching capacity, including at 1 [default: 8]" },
+    "max-tokens": { type: "string", description: "Default completion cap when a request omits one" },
+    thinking: { type: "string", description: "Default thinking mode: on | off; requests may override" },
+    temperature: { type: "string", description: "Default sampling temperature [0..5]" },
+    temp: { type: "string", description: "Alias for --temperature" },
+    "top-p": { type: "string", description: "Default nucleus sampling [0..1]" },
+    "top-k": { type: "string", description: "Default top-k sampling" },
+    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 [default: off]" },
+    "kv-budget": { type: "string", description: "Aggregate batch KV budget, decimal GB; unset means no budget" },
+    "prompt-cache": { type: "string", description: "RAM prompt cache cap, GiB; 0 disables [default: 8 GB]" },
+    "ssd-cache": { type: "string", description: "Optional durable prompt-cache directory" },
+    "ssd-cache-max": { type: "string", description: "SSD cap, GiB; 0 means unlimited" },
+    "ssd-cache-verify": { type: "boolean", description: "Verify tensor hashes on SSD restores" },
+    "ssd-demote-idle": { type: "string", description: "Idle seconds before SSD demotion; 0 disables [default: 300]" },
+    "generation-checkpoint": { type: "string", description: "Checkpoint every N generated tokens; requires --ssd-cache" },
+    "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
+  } },
   get: { description: "Download a model from Hugging Face (resumable, verified)", positional: "<org/repo | substring>", options: {
     revision: { type: "string", description: "Git revision [default: main]" },
   } },
@@ -26,6 +48,13 @@ export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
 export function isCommand(name: string): name is Command { return Object.hasOwn(commands, name); }
 
+/** Bare and option-first invocations start the app; explicit verbs keep their arguments. */
+export function commandInvocation(argv: string[]): { command: string; args: string[] } {
+  const [first, ...rest] = argv;
+  const command = !first || (first.startsWith("--") && !["--help", "--version"].includes(first)) ? "serve" : first;
+  return { command, args: command === "serve" && first !== "serve" ? argv : rest };
+}
+
 export function parseCommand(command: Command, args: string[]): CommandArgs {
   const options: Record<string, { type: "string" | "boolean" }> = commands[command].options;
   const parsed = parseArgs({ args, options, allowPositionals: true, strict: true });
@@ -37,7 +66,7 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
 }
 
 export function help(command?: string): string {
-  if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(8)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nThe server and default startup are still being migrated on this branch.`;
+  if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun [options]\n       mlx-bun serve [query] [options]\n       mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(8)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nWith no command, start the server and web app using a cached model.\nRun mlx-bun serve --help for serving options.`;
   if (!isCommand(command)) throw new Error(`Unknown command: ${command}`);
   const info = commands[command];
   return `mlx-bun ${command} — ${info.description}\n\nUsage: mlx-bun ${command} ${info.positional} [options]\n\nOptions:\n${Object.entries(info.options).map(([name, option]) => `  ${(`--${name}` + (option.type === "string" ? " <value>" : "")).padEnd(24)} ${option.description}`).join("\n")}\n  -h, --help               Show help`;
