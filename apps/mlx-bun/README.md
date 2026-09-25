@@ -212,8 +212,7 @@ then resumes. As in main's direct-process server, resident model weights and
 caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
 admission waits, terminates active children, and awaits them before closing the
 store and engine. Opening the app does not create the job database until a job
-route is used. Dataset generation, adapter mounting/merge/export, and artifact
-publishing remain separate work. A fine-tuning job selects its own model path;
+route is used. Artifact publishing remains separate work. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
@@ -239,3 +238,9 @@ Twelve templates are enabled. `verified_code` remains visible with an unavailabl
 explanation and returns 501 until generated-code execution has a migrated owner.
 Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
 use temporary storage and synthetic HTTP responses, without a model or download.
+
+Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
+Merge uses the public training library while holding the engine execution lock;
+export writes a CPU-only manifest without taking that lock. Both preserve the
+existing output roots and prefixes, with unique suffixes so simultaneous requests
+cannot overwrite each other's artifacts. Publishing remains separate migration work.

@@ -12,7 +12,7 @@ const pending = [
   /^\/admin\/transcription\/unload$/,
   /^\/api\/settings\/hf-token$/,
   /^\/api\/quantize\/push$/,
-  /^\/api\/finetune\/(?:merge|export|push)$/,
+  /^\/api\/finetune\/push$/,
   /^\/api\/dataset\/push$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
   /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
