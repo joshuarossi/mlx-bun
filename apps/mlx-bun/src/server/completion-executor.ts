@@ -205,7 +205,27 @@ function combineControl(
 /** Owns one completion attempt from admission through terminal accounting.
  * Model math and scheduling policy remain in the supplied CompletionEngine. */
 export class CompletionExecutor {
+  readonly #placements = new WeakMap<PreparedCompletion, GenerationPlacement>();
   constructor(private readonly engine: CompletionEngine) {}
+
+  /** Resolve capability gaps before a transport commits streaming headers.
+   * A rejected placement releases the prepared request's owned resources. */
+  place(prepared: PreparedCompletion): GenerationPlacement {
+    const input = preparedData.get(prepared);
+    if (!input) throw new Error("prepared completion has already been executed");
+    const existing = this.#placements.get(prepared);
+    if (existing) return existing;
+    try {
+      const placement = this.engine.place(input.plan.shape, input.plan.options);
+      if (placement.shape !== input.plan.shape)
+        throw new Error("generation placement does not belong to this request shape");
+      this.#placements.set(prepared, placement);
+      return placement;
+    } catch (error) {
+      preparedData.delete(prepared);
+      return cleanupFailure(error, () => input.plan.dispose());
+    }
+  }
 
   async execute(
     prepared: PreparedCompletion,
@@ -229,7 +249,8 @@ export class CompletionExecutor {
     try {
       if (usageProgress) control.onUsageProgress!(usageProgress);
       const closePlacement = control.trace?.begin("completion.placement");
-      const enginePlacement = this.engine.place(planned.shape, planned.options);
+      const enginePlacement = this.#placements.get(prepared) ?? this.engine.place(planned.shape, planned.options);
+      this.#placements.delete(prepared);
       closePlacement?.();
       if (enginePlacement.shape !== planned.shape)
         throw new Error("generation placement does not belong to this request shape");
