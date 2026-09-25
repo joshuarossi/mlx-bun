@@ -6,10 +6,10 @@ import { basename, dirname, join, resolve } from "node:path";
 const workspace = resolve(import.meta.dir, "..");
 const args = process.argv.slice(2);
 if (args.includes("--help")) {
-  console.log("Usage: bun scripts/verify-packages.ts [--keep]\nPack workspace libraries, install into a temporary Bun project, import every public entry,\nand run model-free consumer tests and examples against bundled natives.\nRequires staged native artifacts; does not download models or publish packages.\n--keep retains the temporary project for inspection.");
+  console.log("Usage: bun scripts/verify-packages.ts [--keep] [--app-only]\nPack workspace libraries and the app, install into a temporary Bun project, import every public entry,\nand run model-free consumer tests and examples against bundled natives.\nRequires staged native artifacts; does not download models or publish packages.\n--keep retains the temporary project for inspection.\n--app-only checks the installed CLI without building or loading native libraries.");
   process.exit(0);
 }
-if (args.some(arg => arg !== "--keep")) throw new Error("Unknown option; use --help");
+if (args.some(arg => arg !== "--keep" && arg !== "--app-only")) throw new Error("Unknown option; use --help");
 const scratch = await mkdtemp(join(tmpdir(), "mlx-package-consumer-"));
 const consumer = join(scratch, "consumer"), archives = join(scratch, "archives");
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("MLX_BUN_")));
@@ -28,15 +28,15 @@ try {
   await mkdir(consumer); await mkdir(archives);
   const packages: { name: string; entries: string[] }[] = [];
   const dependencies: Record<string, string> = {};
-  for (const path of [...new Bun.Glob("packages/*/package.json").scanSync(workspace)].sort()) {
+  for (const path of [...new Bun.Glob("{packages,apps}/*/package.json").scanSync(workspace)].sort()) {
     const manifest = JSON.parse(await readFile(join(workspace, path), "utf8"));
-    if (manifest.private) continue;
+    if (manifest.private && !manifest.bin) continue;
     const directory = dirname(join(workspace, path));
     const archive = join(archives, `${basename(directory)}.tgz`);
     console.log(`Packing ${manifest.name}`);
-    await run([process.execPath, "pm", "pack", "--filename", archive, "--quiet"], directory);
+    await run([process.execPath, "pm", "pack", "--filename", archive, "--quiet", ...(args.includes("--app-only") ? ["--ignore-scripts"] : [])], directory);
     dependencies[manifest.name] = `file:${archive}`;
-    const entries = Object.keys(manifest.exports).map(key => {
+    const entries = Object.keys(manifest.exports ?? {}).map(key => {
       assert(key === "." || key.startsWith("./"), `Unsupported export key: ${key}`);
       assert(!key.includes("*"), "Enumerate wildcard exports before adding them to the public surface");
       return key === "." ? manifest.name : manifest.name + key.slice(1);
@@ -48,41 +48,55 @@ try {
     private: true, type: "module", dependencies, overrides: dependencies,
   }, null, 2));
   await run([process.execPath, "install", "--ignore-scripts"], consumer);
-  const entries = packages.flatMap(pkg => pkg.entries);
-  await Bun.write(join(consumer, "imports.ts"), `
-import { realpathSync } from "node:fs";
-import assert from "node:assert/strict";
-const root = realpathSync(import.meta.dir) + "/";
-for (const name of ${JSON.stringify(entries)}) {
-  assert(realpathSync(Bun.resolveSync(name, import.meta.dir)).startsWith(root), name + " escapes the installed consumer");
-  await import(name);
-}
-console.log("Imported ${entries.length} public entrypoints from installed archives");
-`);
-  console.log((await run([process.execPath, "imports.ts"], consumer)).trim());
-
-  // Reuse behavioral tests, rather than keeping a second consumer implementation.
-  const tests = {
-    mlx: ["mlx-abi.test.ts", "compile.test.ts", "metal-kernel.test.ts"],
-    inference: ["models/qwen3.test.ts", "kernels/trellis-vector-expand.test.ts", "execution/expert-io-native.test.ts"],
-  };
-  for (const [name, files] of Object.entries(tests)) {
-    const installed = join(consumer, "node_modules", "@mlx-bun", name);
-    assert((await realpath(installed)).startsWith((await realpath(consumer)) + "/"), "Installed package is a workspace link");
-    const destination = join(consumer, "packages", name);
-    // Examples come from the tarball, so forgetting to publish them fails here.
-    await cp(join(installed, "examples"), join(destination, "examples"), { recursive: true });
-    for (const file of files) {
-      const target = join(destination, "tests", file);
-      await mkdir(dirname(target), { recursive: true });
-      await cp(join(workspace, "packages", name, "tests", file), target);
-    }
+  // Exercise the installed bin and reuse its behavior tests against the tarball.
+  const appEntry = join(consumer, "node_modules/mlx-bun/src/cli/main.ts");
+  assert((await realpath(appEntry)).startsWith((await realpath(consumer)) + "/"), "Installed app is a workspace link");
+  const help = await run([join(consumer, "node_modules/.bin/mlx-bun"), "--help"], consumer);
+  assert(help.includes("Usage: mlx-bun"));
+  await mkdir(join(consumer, "app-tests"));
+  await cp(join(workspace, "apps/mlx-bun/tests/hub-cli.test.ts"), join(consumer, "app-tests/hub-cli.test.ts"));
+  env.MLX_BUN_TEST_CLI = appEntry;
+  console.log((await run([process.execPath, "test", "app-tests"], consumer)).trim());
+  delete env.MLX_BUN_TEST_CLI;
+  if (args.includes("--app-only")) {
+    console.log("Packed app passed CPU-only consumer tests.");
+  } else {
+    const entries = packages.flatMap(pkg => pkg.entries);
+    await Bun.write(join(consumer, "imports.ts"), `
+  import { realpathSync } from "node:fs";
+  import assert from "node:assert/strict";
+  const root = realpathSync(import.meta.dir) + "/";
+  for (const name of ${JSON.stringify(entries)}) {
+    assert(realpathSync(Bun.resolveSync(name, import.meta.dir)).startsWith(root), name + " escapes the installed consumer");
+    await import(name);
   }
-  const output = await run([process.execPath, "test", "packages"], consumer);
-  if (output.trim()) console.log(output.trim());
-  await run([process.execPath, "node_modules/@mlx-bun/mlx/examples/arrays.ts"], consumer);
-  await run([process.execPath, "node_modules/@mlx-bun/inference/examples/trellis-expand.ts"], consumer);
-  console.log("Packed libraries passed consumer tests and executable examples.");
+  console.log("Imported ${entries.length} public entrypoints from installed archives");
+  `);
+    console.log((await run([process.execPath, "imports.ts"], consumer)).trim());
+
+    // Reuse behavioral tests, rather than keeping a second consumer implementation.
+    const tests = {
+      mlx: ["mlx-abi.test.ts", "compile.test.ts", "metal-kernel.test.ts"],
+      inference: ["models/qwen3.test.ts", "kernels/trellis-vector-expand.test.ts", "execution/expert-io-native.test.ts"],
+    };
+    for (const [name, files] of Object.entries(tests)) {
+      const installed = join(consumer, "node_modules", "@mlx-bun", name);
+      assert((await realpath(installed)).startsWith((await realpath(consumer)) + "/"), "Installed package is a workspace link");
+      const destination = join(consumer, "packages", name);
+      // Examples come from the tarball, so forgetting to publish them fails here.
+      await cp(join(installed, "examples"), join(destination, "examples"), { recursive: true });
+      for (const file of files) {
+        const target = join(destination, "tests", file);
+        await mkdir(dirname(target), { recursive: true });
+        await cp(join(workspace, "packages", name, "tests", file), target);
+      }
+    }
+    const output = await run([process.execPath, "test", "packages"], consumer);
+    if (output.trim()) console.log(output.trim());
+    await run([process.execPath, "node_modules/@mlx-bun/mlx/examples/arrays.ts"], consumer);
+    await run([process.execPath, "node_modules/@mlx-bun/inference/examples/trellis-expand.ts"], consumer);
+    console.log("Packed libraries and app passed consumer tests and executable examples.");
+  }
 } finally {
   if (args.includes("--keep")) console.log(`Consumer project retained: ${scratch}`);
   else await rm(scratch, { recursive: true, force: true });
