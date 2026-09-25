@@ -267,3 +267,17 @@ Twelve templates are enabled. `verified_code` remains visible with an unavailabl
 explanation and returns 501 until generated-code execution has a migrated owner.
 Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
 use temporary storage and synthetic HTTP responses, without a model or download.
+
+## Standalone bundle
+
+After staging the root native setup, run `bun run build:binary` from the root.
+`dist/bundle/` contains the executable, native libraries/helpers, and Pi's Photon
+WASM sidecar. Move the whole directory together. Web assets and the memory skill
+are embedded; source checkouts retain their existing asset readers and browser
+build fallback. No terminal Pi assets are included.
+
+`bun run verify:binary` builds into temporary storage, relocates the directory,
+and checks the actual CLI and managed child plus a compiled consumer for web,
+memory, synthetic registry/fit, native path resolution and Photon initialization.
+It performs no MLX/GPU operation or remote download. Mac CI runs this check.
+This is a local build artifact, not signing/notarization or release publishing.

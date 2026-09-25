@@ -4,7 +4,9 @@
  * it in memory when absent, without requiring writable installation files. */
 export async function createWebHandler() {
   const publicFile = (name: string) => Bun.file(new URL(`./public/${name}`, import.meta.url)).text();
-  const script = Bun.file(new URL("../../dist/web/app.js", import.meta.url));
+  const standalone = import.meta.filename.startsWith("/$bunfs/");
+  const script = Bun.file(new URL(standalone ? "./app.js" : "../../dist/web/app.js", import.meta.url));
+  if (standalone && !await script.exists()) throw new Error("Standalone app is missing its embedded browser bundle; rebuild with build:binary.");
   const appSource = await script.exists()
     ? script.text()
     : import("./build").then(({ buildWebBundle }) => buildWebBundle());

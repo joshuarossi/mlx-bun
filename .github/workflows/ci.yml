@@ -34,3 +34,5 @@ jobs:
       - name: Exercise training numerics with staged native libraries
         run: bun run --filter @mlx-bun/training test:native
       - run: bun run verify:packages
+      - name: Verify relocated standalone app without GPU execution
+        run: bun run verify:binary
