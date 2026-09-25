@@ -22,6 +22,8 @@ deletion. Cache location and Hugging Face credentials follow the
 [hub library](../../packages/hub/README.md). This workspace remains private
 while app licensing and release packaging are decided.
 
+## Engine
+
 `src/engine/` owns loaded model lifetimes, preparation admission and the shared
 continuous scheduler. `createAppEngine` takes ownership of its model context;
 closing drains execution before releasing compiled runners, adapters, drafts,
@@ -35,6 +37,28 @@ one and greater. These are CPU checks, not real-weight numerical verification.
 The first engine slice reports unsupported shared-execution capabilities rather
 than running a hidden serial path. The library's denoising method still needs
 shared scheduler support before the app can serve diffusion models.
+
+## Server seams
+
+`server/routes.ts` composes chat/text completion, embedding, and discovery
+handlers over an injected engine. Its `handle(Request)` returns a response or
+`null` for the next application surface; it never opens a socket or closes the
+borrowed engine. Application startup owns those lifetimes.
+
+Inside `server/`, request parsing and prompt preparation precede the single-use
+admission plan. The completion executor consumes the engine contract; the sink
+and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
+`prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` adapts
+HTTP content parts to the library's numerical input builders. Grammar and media
+work enter the engine's preparation domain before allocating native resources.
+Text-only protocol work loads no MLX library.
+
+The [request pipeline](tests/server/pipeline.test.ts) and
+[HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
+including cancellation and ownership cleanup. Real-weight media and generation
+verification remains separate; these tests prove the HTTP/engine boundary.
+Server listening, application startup, additional API surfaces, and the web UI
+are subsequent migration slices.
 
 ## Web chat backend
 
