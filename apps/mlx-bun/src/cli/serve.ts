@@ -1,3 +1,4 @@
+import { requireChatTemplate } from "../engine/model-host";
 import { createHubRoutes } from "../server/hub-routes";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -123,6 +124,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   try {
     const context = await loadContext(model.path, model.repoId);
     cleanup = () => context.dispose();
+    requireChatTemplate(context);
     const binding = await modelServingBinding(context);
     const caches = await createCacheServices(context, binding, options.cache);
     const closeCaches = async () => {

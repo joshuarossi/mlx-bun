@@ -20,6 +20,13 @@ try {
     if (command === "serve") {
       const { runServe } = await import("./serve");
       await runServe(parsed);
+    } else if (command === "generate" || command === "embed") {
+      const { runInference } = await import("./inference");
+      const cancellation = new AbortController();
+      const stop = () => cancellation.abort(new Error("inference cancelled"));
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
+      try { await runInference(command, parsed, {}, cancellation.signal); }
+      finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
     } else {
       const { runHub } = await import("./hub");
       await runHub(command, parsed);

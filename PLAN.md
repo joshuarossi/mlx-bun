@@ -55,8 +55,7 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   and submission returns 501; the other twelve templates are enabled.
 
 - [ ] Migrate the server, engine host, web app, and job orchestration into
-  `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
-  commands are the first slice. Exit: app consumers use public library APIs;
+  `apps/mlx-bun`, keeping their interfaces in the consuming domains. Exit: app consumers use public library APIs;
   application contracts and policy stay out of the inference library.
 - [ ] Complete shared-execution support for all shapes main supported through its
   serial fallback: model caches without batch conversion (including Gemma2 masks

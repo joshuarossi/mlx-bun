@@ -149,7 +149,7 @@ export function createDiscoveryRoutes(
             context_window:
               ctx.glmMemoryPlan?.contextTokens ??
               ctx.model.config.text.maxPositionEmbeddings,
-            reasoning: ctx.template.supportsThinking,
+            reasoning: ctx.template?.supportsThinking ?? false,
             vision: !!(ctx.vision || ctx.loadVision),
             audio: !!(ctx.audio || ctx.loadAudio),
             batch_mode: "batch",

@@ -1,3 +1,5 @@
+import { requireChatTemplate } from "../engine/model-host";
+import { textPrompt } from "./text-prompt";
 // Per-request preparation shared by every completion surface (chat,
 // raw text, /signal, /generate): request → GenerateOptions with the
 // server/model defaults folded in, chat-template rendering + prompt ids,
@@ -54,6 +56,7 @@ export function createRequestPrep(input: {
   tokenHistory?: PromptTokenHistory;
 }) {
   const { ctx, serverOptions, kvScheme, defaultGeneratedTokens } = input;
+  requireChatTemplate(ctx);
 
   // XTC never removes EOS or the newline token: mlx_lm.server passes
   // [tokenizer.eos_token_id, tokenizer.encode("\n")] as xtc_special_tokens.
@@ -193,11 +196,8 @@ export function createRequestPrep(input: {
     tools: ToolDefinition[] | null,
   ): { ids: number[]; startInThinking: boolean } => {
     const opts = templateOptionsFor(req, tools);
-    const rendered = ctx.template.render(normalizeMessages(req.messages), opts);
-    const ids = ctx.tokenizer.encode(rendered);
-    // template includes <bos>; tokenizer post-processor also prepends one
-    const trimmed = ids[0] === ids[1] && ids[0] === ctx.tokenizer.bosTokenId ? ids.slice(1) : ids;
-    return { ids: input.tokenHistory?.resolve(rendered, trimmed) ?? trimmed,
+    const { rendered, ids } = textPrompt(ctx.template, ctx.tokenizer, normalizeMessages(req.messages), opts);
+    return { ids: input.tokenHistory?.resolve(rendered, ids) ?? ids,
       startInThinking: promptEndsInOpenThink(rendered) };
   };
 

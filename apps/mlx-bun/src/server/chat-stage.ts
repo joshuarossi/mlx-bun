@@ -188,7 +188,7 @@ export class ChatStage {
         router: prep.toolRouter(tools, fillSession ? () => fillSession!.noteParseFailure() : undefined),
         stopper: new StopMatcher(options.stopSequences),
         thinking: new ThinkingTagSplitter(
-          ctx.template.thinkingFormat === "think-tag",
+          ctx.template?.thinkingFormat === "think-tag",
           startInThinking,
         ),
         collectToolCalls: true,

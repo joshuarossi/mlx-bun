@@ -24,6 +24,24 @@ const commands = {
     "generation-checkpoint": { type: "string", description: "Checkpoint every N generated tokens; requires --ssd-cache" },
     "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
   } },
+  generate: { description: "Generate text once from a local model", positional: "[query] [prompt]", options: {
+    query: { type: "string", description: "Cached model query when no positional query is supplied" },
+    prompt: { type: "string", description: "Prompt text (or second positional argument)" },
+    raw: { type: "boolean", description: "Skip the chat template and tokenize the prompt verbatim" },
+    "max-tokens": { type: "string", description: "Completion cap [default: 256]" },
+    temperature: { type: "string", description: "Sampling temperature [default: 0]" },
+    temp: { type: "string", description: "Alias for --temperature" },
+    "top-p": { type: "string", description: "Nucleus sampling" },
+    "top-k": { type: "string", description: "Top-k sampling" },
+    seed: { type: "string", description: "Sampler seed" },
+    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 [default: off]" },
+  } },
+  embed: { description: "Embed local text and print vectors", positional: "[query] [text]", options: {
+    query: { type: "string", description: "Cached model query; defaults to the first downloaded embedding model" },
+    text: { type: "string", description: "Text to embed; otherwise second positional or nonempty stdin lines" },
+    instruct: { type: "string", description: "Query instruction; omit for document embeddings" },
+    json: { type: "boolean", description: "Print one OpenAI-style embedding list instead of one vector per line" },
+  } },
   get: { description: "Download a model from Hugging Face (resumable, verified)", positional: "<org/repo | substring>", options: {
     revision: { type: "string", description: "Git revision [default: main]" },
   } },
@@ -52,13 +70,13 @@ export function isCommand(name: string): name is Command { return Object.hasOwn(
 export function commandInvocation(argv: string[]): { command: string; args: string[] } {
   const [first, ...rest] = argv;
   const command = !first || (first.startsWith("--") && !["--help", "--version"].includes(first)) ? "serve" : first;
-  return { command, args: command === "serve" && first !== "serve" ? argv : rest };
+  return { command: command === "gen" ? "generate" : command, args: command === "serve" && first !== "serve" ? argv : rest };
 }
 
 export function parseCommand(command: Command, args: string[]): CommandArgs {
   const options: Record<string, { type: "string" | "boolean" }> = commands[command].options;
   const parsed = parseArgs({ args, options, allowPositionals: true, strict: true });
-  const max = commands[command].positional ? 1 : 0;
+  const max = command === "generate" || command === "embed" ? 2 : commands[command].positional ? 1 : 0;
   if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
   if (commands[command].positional.startsWith("<") && !parsed.positionals.length)
     throw new Error(`usage: mlx-bun ${command} ${commands[command].positional}`);
@@ -66,6 +84,7 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
 }
 
 export function help(command?: string): string {
+  if (command === "gen") command = "generate";
   if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun [options]\n       mlx-bun serve [query] [options]\n       mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(8)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nWith no command, start the server and web app using a cached model.\nRun mlx-bun serve --help for serving options.`;
   if (!isCommand(command)) throw new Error(`Unknown command: ${command}`);
   const info = commands[command];
