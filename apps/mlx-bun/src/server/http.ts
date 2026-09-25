@@ -134,6 +134,7 @@ export function respondStream(
             },
             onUsageProgress: (usage) => { latestUsage = usage; },
           });
+          generationSignal.throwIfAborted();
           emit(protocol.finish(result.finishReason, openAiSummaryUsage(result)));
           trace?.mark("response.final_write");
         } catch (e) {

@@ -46,7 +46,7 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
   their owners migrate: memory read/init and synthesis; dataset and finetune;
   artifact publishing; adapter management; settings and GC; lease/drain/cache admin;
-  Responses, audio, hub/browser model switching, session
+  audio, hub/browser model switching, session
   search/export, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
 - [ ] Preserve main's `src/train/job.ts` resolved configuration in the finetune
