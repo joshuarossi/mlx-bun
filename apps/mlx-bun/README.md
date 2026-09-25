@@ -344,9 +344,10 @@ the resident inference model's adapter/training capabilities do not gate it.
 presentation over this producer and the public training library. `train`
 validates main's flags before any model resolution, preflights the dataset,
 prints the plan, and drives `createFinetuneRunner` in-process (`--dry-run` stops
-at the plan). SIGINT/SIGTERM abort the run at the next progress event; the
-trainer has no cancellation seam, so a cancelled run releases its resources but
-writes no final adapter. `train-watch` (`finetune/watch.ts`) tails the trainer's
+at the plan). SIGINT/SIGTERM abort at the next optimizer-step boundary, after any
+checkpoint writes already started have completed. Cancellation detaches training
+state and releases its resources; completed checkpoints remain usable. A final
+save already started is allowed to finish and is reported as success. `train-watch` (`finetune/watch.ts`) tails the trainer's
 `<adapter>/metrics.jsonl`. `fuse` merges an adapter through `fuseAdapter` and
 refuses the mlx_lm.fuse flags main refused; the merge cannot be interrupted, so
 a signal arriving during it lets the output finish rather than leaving a partial
@@ -369,13 +370,15 @@ the user's jobs or credentials. The opt-in
 [managed-jobs acceptance](tests/engine/managed-jobs.test.ts) runs a real
 `mlx-bun serve` process under a temporary HOME and `HF_HUB_CACHE` with the
 cached model named by `MLX_BUN_APP_TEST_MODEL`: a quantize job whose artifact
-appears in the library, inference after its lease, a three-step SFT job with a
+appears in the library and reloads for a short generation, inference after its
+lease, a three-step SFT job with a
 periodic checkpoint, a long job cancelled by shutdown (child terminated, row
-terminal, checkpoint kept, no final adapter, bounded progress), and a restart
-on the same storage; then a spawned `train` interrupted by SIGINT at a step
+terminal, complete checkpoint metadata kept, no final adapter, bounded progress),
+and a restart on the same storage that mounts the preserved checkpoint; then a spawned `train` interrupted by SIGINT at a step
 boundary, and, with a cached bf16 snapshot named by
-`MLX_BUN_APP_TEST_BF16_MODEL`, a `convert` interrupted mid-sweep and a complete
-uniform conversion. It downloads nothing.
+`MLX_BUN_APP_TEST_BF16_MODEL`, a `convert` interrupted after its durable job log
+reaches the Probing/Sensitivity stage and a complete uniform conversion whose
+output reloads and generates. It downloads nothing.
 
 ## Dataset jobs
 

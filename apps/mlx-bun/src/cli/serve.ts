@@ -256,7 +256,10 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
       acquire: signal => engine.gateway.acquireExecutionLease(signal),
       onComplete: () => completions.invalidateLibrary(),
-      ...(storage.jobsDb ? { createStore: () => new JobStore(storage.jobsDb, storage.jobsLogs ?? join(dirname(storage.jobsDb!), "jobs")) } : {}),
+      ...(storage.jobsDb !== undefined || storage.jobsLogs !== undefined ? {
+        createStore: () => new JobStore(storage.jobsDb,
+          storage.jobsLogs ?? (storage.jobsDb !== undefined ? join(dirname(storage.jobsDb), "jobs") : undefined)),
+      } : {}),
     });
     const closeApp = async () => {
       const errors: unknown[] = [];

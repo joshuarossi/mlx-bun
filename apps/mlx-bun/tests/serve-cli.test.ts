@@ -172,7 +172,11 @@ test("bare and option-first CLI invocations dispatch to serve without loading a 
     expect(commandInvocation([command])).toEqual({ command, args: [] });
 });
 
-for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup attaches caches, token history, and shared session paths before listener ownership (${sessionDir ?? "default"})`, async () => {
+for (const [sessionDir, jobPaths, expectedStore] of [
+  [undefined, { jobsDb: "/unused/store/jobs.sqlite" }, "store /unused/store/jobs.sqlite /unused/store/jobs"],
+  ["/unused/custom-sessions", { jobsDb: "/unused/store/jobs.sqlite", jobsLogs: "/unused/custom-logs" }, "store /unused/store/jobs.sqlite /unused/custom-logs"],
+  [undefined, { jobsLogs: "/unused/custom-logs" }, "store undefined /unused/custom-logs"],
+] as const) test(`startup attaches caches, token history, and shared storage paths before listener ownership (${JSON.stringify(jobPaths)})`, async () => {
   // Isolate module mocks in a child so other engine tests always see real modules.
   const app = new URL("../", import.meta.url).pathname;
   const script = `
@@ -234,7 +238,7 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
       return { handle: async () => null };
     } }));
     // Storage seams: the job store, credential file, and artifact root follow composition, not HOME.
-    const storagePaths = { jobsDb: "/unused/store/jobs.sqlite", credentialsFile: "/unused/hf.json", artifactRoot: "/unused/artifacts" };
+    const storagePaths = { ...${JSON.stringify(jobPaths)}, credentialsFile: "/unused/hf.json", artifactRoot: "/unused/artifacts" };
     let storeFactory;
     mock.module(app + "src/jobs/db.ts", () => ({ JobStore: class { constructor(db, logs) { events.push("store " + db + " " + logs); } } }));
     mock.module(app + "src/jobs/host.ts", () => ({ createJobHost(options) { storeFactory = options.createStore;
@@ -264,7 +268,7 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
     assert.equal(await memoryCallback(), memorySurface);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
     storeFactory();
-    assert.equal(events.pop(), "store /unused/store/jobs.sqlite /unused/store/jobs");
+    assert.equal(events.pop(), ${JSON.stringify(expectedStore)});
     await running.close();
     assert.deepEqual(events.slice(-4), ["timer stop", "jobs close", "cache close", "model close"]);
   `;
