@@ -92,8 +92,3 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   and source-checkout installation paths. Add generated surface reference and
   coverage checks with the CLI/server migration. Exit: the app and its install
   paths work from release artifacts, with documented public surfaces matching code.
-
-- [ ] Embed browser assets and bundled memory skills in the standalone compiled
-  binary and verify it runs outside a source checkout. Current loading uses
-  file-backed package assets; file URLs do not establish compiled-binary support.
-  Keep generated browser bundles out of Git.

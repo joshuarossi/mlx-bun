@@ -11,7 +11,9 @@
   "scripts": {
     "typecheck": "bun run --filter '*' typecheck && tsc --project scripts/tsconfig.json",
     "test": "bun run --filter '*' test",
-    "verify:packages": "bun scripts/verify-packages.ts"
+    "verify:packages": "bun scripts/verify-packages.ts",
+    "build:binary": "bun scripts/build-binary.ts",
+    "verify:binary": "bun scripts/verify-binary.ts"
   },
   "devDependencies": {
     "@types/bun": "1.3.14",

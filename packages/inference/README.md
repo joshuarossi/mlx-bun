@@ -436,3 +436,9 @@ logits and hidden states, including the existing padded-batch masks. The origina
 perplexity over caller-provided token rows; `klPerToken` compares supplied logits.
 Neither requires an evaluation dataset registry or runner. Tool-call parsing is
 available from `input`; template/schema fill compilation lives in `generation/fill`.
+
+Standalone app bundles keep the expert-I/O library and frame extractor beside
+the executable. Explicit `MLX_BUN_EXPERT_IO_DYLIB` / `MLX_BUN_FRAME_EXTRACT`
+overrides take precedence; ordinary source/package execution resolves the
+package's `dist/native` directory. The app bundle verification covers relocation
+without loading native numerical code.

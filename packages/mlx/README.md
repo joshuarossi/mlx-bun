@@ -56,3 +56,8 @@ Consumers do not download them on first use. For local native development,
 
 From this package directory, `bun pm pack --destination /tmp` validates the
 native files and creates an archive. This package has not been published yet.
+
+Standalone Bun executables resolve `MLX_BUN_LIBMLXC` first, then `libmlxc.dylib`
+beside the executable, then this package's `dist/native`. Source/package execution
+never searches beside the Bun executable. Keep the native companion libraries
+and Metal library together; the app's bundle builder copies the staged files.

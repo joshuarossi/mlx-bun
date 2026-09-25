@@ -326,3 +326,22 @@ Local rows consume registry and fit APIs; search remains request-owned and
 cancels with its caller. Download stays 501 until its background task has an
 explicit cancellation and shutdown owner. Selecting a model returns a restart
 command, preserving main's behavior without claiming a live switch.
+
+## Standalone bundle
+
+After staging the root native setup, run `bun run build:binary` from the root.
+`dist/bundle/` contains the executable, native libraries/helpers, and Pi's Photon
+WASM sidecar. Move the whole directory together. Web assets and the memory skill
+are embedded; source checkouts retain their existing asset readers and browser
+build fallback. No terminal Pi assets are included.
+
+`bun run verify:binary` builds into temporary storage, relocates the directory,
+and checks the actual CLI and managed child plus a compiled consumer for web,
+memory, synthetic registry/fit, native path resolution and Photon initialization.
+The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
+With exclusive GPU access, `bun run verify:binary --model /path/to/cached-model`
+also starts the actual relocated executable, checks its web assets, `/stats`,
+`/fit`, and a chat completion, then requires a clean SIGTERM exit. It discovers
+the supplied weights through a temporary HF snapshot symlink and isolates the
+child's home, caches, and chat storage; it never copies or downloads weights.
+This is a local build artifact, not signing/notarization or release publishing.
