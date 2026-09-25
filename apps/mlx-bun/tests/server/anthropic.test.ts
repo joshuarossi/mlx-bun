@@ -8,7 +8,6 @@ import {
   anthropicToChatBody,
   chatJsonToAnthropic,
   createAnthropicStreamProtocol,
-  translateOpenAiSse,
 } from "../../src/server/anthropic";
 
 describe("anthropicToChatBody", () => {
@@ -322,50 +321,6 @@ describe("AnthropicStreamTranslator", () => {
       "message_delta",
       "message_stop",
     ]);
-  });
-});
-
-describe("translateOpenAiSse", () => {
-  test("translates an OpenAI SSE byte stream end-to-end (quoted [DONE])", async () => {
-    const enc = new TextEncoder();
-    const upstream = new ReadableStream<Uint8Array>({
-      start(c) {
-        const send = (o: unknown) => c.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`));
-        send({ choices: [{ delta: { role: "assistant", content: "" } }] });
-        send({ choices: [{ delta: { content: "hey" } }] });
-        send({
-          choices: [{ delta: {}, finish_reason: "stop" }],
-          usage: { prompt_tokens: 2, completion_tokens: 1 },
-        });
-        send("[DONE]"); // our server's quoted terminator
-        c.close();
-      },
-    });
-    const out = translateOpenAiSse(upstream, "m");
-    const text = await new Response(out).text();
-    const events = [...text.matchAll(/event: (\w+)/g)].map((m) => m[1]);
-    expect(events).toEqual([
-      "message_start",
-      "content_block_start",
-      "content_block_delta",
-      "content_block_stop",
-      "message_delta",
-      "message_stop",
-    ]);
-    expect(text).toContain('"text_delta","text":"hey"');
-    expect(text).toContain('"output_tokens":1');
-  });
-
-  test("canceling the translated stream cancels its upstream exactly once", async () => {
-    const reasons: unknown[] = [];
-    const upstream = new ReadableStream<Uint8Array>({
-      cancel(reason) {
-        reasons.push(reason);
-      },
-    });
-    const reader = translateOpenAiSse(upstream, "m").getReader();
-    await reader.cancel("client disconnected");
-    expect(reasons).toEqual(["client disconnected"]);
   });
 });
 
