@@ -5,7 +5,7 @@ loads a local model and serves the browser app, Pi web chat, and OpenAI-compatib
 completions through one continuous scheduler. Model-management commands remain
 available separately: `get`, `scan`, `ls`, `fit`, and `gc`.
 
-After the root native setup, run `bun run --filter mlx-bun build:web`, then
+After the root native setup, run
 `bun apps/mlx-bun/src/cli/main.ts serve --model <cached-model-or-directory>`.
 Use `serve --help` for accepted options. A terminal session opens the browser
 unless `--no-open` is supplied. Startup without a model selects a cached model;
