@@ -139,17 +139,27 @@ chat, closes connections, drains execution, flushes caches, and releases the
 model. Its [listener tests](tests/server-start.test.ts) exercise real loopback
 sockets without native MLX. The opt-in [model test](tests/engine/http-generation.test.ts)
 uses `MLX_BUN_APP_TEST_MODEL=<cached-directory>` to exercise actual app startup,
-lone/concurrent deterministic completion, stream cancellation, and shutdown.
+lone/concurrent deterministic completion, live cache counters, stream cancellation,
+Messages JSON, Responses JSON with a chained follow-up, and a real Pi WebSocket
+turn with session persistence and replay. All chat, vault, and skill paths are
+temporary; HTTP and WebSocket waits share a bounded network budget before shutdown.
+The cached checkpoint used for this smoke is `mlx-community/MiniCPM5-1B-OptiQ-4bit`,
+revision `664aabaed233c653f82716d8dc822234d0091f78`.
 It never downloads weights; missing native libraries or an invalid supplied
-checkpoint fail. This is a behavior check, not an oracle or performance claim.
+checkpoint fail. This checks HTTP/Pi behavior, not quantize jobs, a compiled-binary
+lifecycle, numerical parity, or performance.
 
 `server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
 Responses-history counters for `GET /stats`; `GET /fit` uses the public hub fit
 functions and the served artifact metadata. Predictions remain advisory and do
-not impose an admission limit. GLM reports its existing explicit memory plan.
+not impose an admission limit. GLM admission accounting uses its actual explicit
+memory plan rather than the generic resident-weight estimate. Batch mode remains
+continuous even at capacity one. Pending SSD counters include the generation
+checkpoint queue as well as prompt-cache persistence work.
 Historical EvalDB measurements have no migrated owner, so measurement fields
 remain null; old machine-specific GLM throughput constants are not reported as
-measurements for the current server. The dashboard shows an unavailable marker
+measurements for the current server or CLI fit output. The library retains those
+historical constants. The dashboard shows an unavailable marker
 when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
 synthetic counters and CPU fit inputs without a model or native MLX.
 
