@@ -80,6 +80,14 @@ try {
   env.MLX_BUN_TEST_CLI = appEntry;
   console.log((await run([process.execPath, "test", "app-tests"], consumer)).trim());
   delete env.MLX_BUN_TEST_CLI;
+  // Preserve source-relative imports while exercising only the installed app
+  // and library artifacts, including the one-shot engine composition.
+  const installedTests = join(consumer, "node_modules/mlx-bun/tests");
+  await mkdir(installedTests, { recursive: true });
+  await cp(join(workspace, "apps/mlx-bun/tests/inference-cli.test.ts"), join(installedTests, "inference-cli.test.ts"));
+  env.MLX_BUN_LIBMLXC = "/does-not-exist";
+  try { console.log((await run([process.execPath, "test", "./node_modules/mlx-bun/tests/inference-cli.test.ts"], consumer)).trim()); }
+  finally { delete env.MLX_BUN_LIBMLXC; }
   // Public hub protocol tests run against the installed tarball, including
   // --app-only: local mock HTTP and explicit temporary token inputs, no MLX.
   await mkdir(join(consumer, "hub-tests"));

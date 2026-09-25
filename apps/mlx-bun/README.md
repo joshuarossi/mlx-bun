@@ -49,6 +49,8 @@ verbatim. Main's greedy sampling, 256-token default cap, optional sampler/KV
 settings, and unfiltered generated text are CLI policy. Model-author serving
 sampling defaults do not replace them. Tier, serial, and compiled switches are
 not exposed; execution uses the same continuous engine at capacity one.
+TurboQuant KV options remain unavailable until shared execution supports them;
+`generate --help` lists the currently accepted settings.
 
 `mlx-bun embed [query] --text "…"` prints a vector per text, or one OpenAI-style
 list with `--json`. Without text it reads nonempty stdin lines; `--instruct`
@@ -61,7 +63,8 @@ The model host allows a missing template for these consumers; serving still
 requires one. Shared text prompt construction preserves the CLI's explicit
 no-added-specials encoding and HTTP's existing duplicate-BOS correction.
 Both commands close the owned engine after success, failure, or cancellation.
-[CPU examples](tests/inference-cli.test.ts) cover behavior and composition;
+[CPU examples](tests/inference-cli.test.ts) cover behavior and composition and
+run against the installed artifact in `verify-packages --app-only`;
 real-weight correctness and speed remain separate verification.
 
 ## Engine
