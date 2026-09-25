@@ -1,4 +1,4 @@
-# Library architecture
+# Architecture
 
 mlx-bun provides local AI on Apple Silicon. Bun workspaces contain applications
 in `apps/` and importable libraries in `packages/`. The current target is macOS
@@ -16,6 +16,11 @@ needs a separate installation or release boundary.
 - Keep one inference package with enforced internal boundaries. Split a package
   when a consumer needs that boundary, not merely because a directory exists.
 - Preserve behavior during migration; numerical optimization is separate work.
+  A specialized model graph composes layers and kernels; its layers own whether
+  operations compile. Keep this implementation choice out of app options.
+- The app uses continuous batching by default, including a single request. Do
+  not add a separate serial serving lane. Preserve main's application behavior
+  while giving each domain a clear owner; benchmark the full draft afterward.
 - Python reference oracles run externally. This repository has no Python
   dependency, venv, oracle setup script, or Python dependency lock. Gather
   comparison data externally and record curated evidence in approved docs.
@@ -63,13 +68,27 @@ These do not give their dependencies permission to import back upward.
 
 The exact direct-dependency rules live in
 [`architecture.test.ts`](packages/inference/tests/architecture.test.ts).
-The test discovers every `packages/*/src` directory and parses its TypeScript
+The test discovers every `packages/*/src` and `apps/*/src` directory and parses its TypeScript
 and JavaScript. Package manifests declare dependencies; cross-package imports
 must use public exports, and package dependencies must form a DAG. Within
 inference, the stricter layer rules also apply. The gate rejects module cycles
-across all libraries, including type-only cycles. Static imports, re-exports,
+across libraries and apps, including type-only cycles. Libraries cannot depend
+on apps; app domains also have explicit dependency directions. Static imports, re-exports,
 import types, dynamic imports, and `require` are checked. New inference source
 directories need an explicit layer owner in this gate.
+
+## Application ownership
+
+`apps/mlx-bun` owns the runnable terminal application and its server and web
+surfaces. Its `cli/` domain parses arguments and presents results, consuming
+public library exports. Model discovery, acquisition, and fit remain in
+`@mlx-bun/hub`; numerical inference remains in `@mlx-bun/inference`.
+Only `cli/` exists so far. Add server, engine-host, web, and job domains with
+their first migrated consumers and explicit dependency rules; do not invent
+shared utilities or placeholder contracts ahead of those consumers.
+
+Standalone Pi integration is deferred pending Josh's decision. The web app
+may use Pi as its agentic component when that surface migrates.
 
 Application contracts migrate with their owning apps: Pi UI/provider protocols,
 job runner types, engine host, and completion clients. Within the apps, Pi

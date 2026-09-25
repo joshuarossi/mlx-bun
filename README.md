@@ -17,8 +17,8 @@ and optional in-process execution.
 [`@mlx-bun/inference`](packages/inference/README.md) owns inference graphs, kernels, layers, input processing, and state.
 [`@mlx-bun/quantize`](packages/quantize/README.md) owns checkpoint quantization: calibration, sensitivity, mixed-precision allocation, rotation, and Trellis packing.
 [`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry, Hugging Face downloads, and memory fit.
-`apps/` will be created with its first application.
-See [the library architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.
+[`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces; hub commands are migrated first.
+See [the architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.
 Remaining migration work is in [PLAN.md](PLAN.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and review expectations;
 agents start at [AGENTS.md](AGENTS.md).
@@ -30,7 +30,8 @@ script, or a source checkout. Each installation provides the `mlx-bun` terminal
 command. `bunx mlx-bun` also runs the app without a permanent installation.
 
 These installation paths will be preserved during the migration. This branch
-does not yet contain the app or its installation tooling.
+currently runs the [hub CLI commands](apps/mlx-bun/README.md); default server and
+web startup and release installation tooling are still being migrated.
 
 ## Development
 
@@ -44,8 +45,8 @@ Follow the [MLX package setup](packages/mlx/README.md#development) to build or
 stage its native libraries. Build the inference package's native expert I/O and video helper with
 `bun run --filter @mlx-bun/inference build:native`. Then run `bun run typecheck`
 and `bun run test`.
-Run `bun run verify:packages` to pack the libraries, install them into a clean
-temporary Bun project, and exercise public imports, examples, and bundled natives.
+Run `bun run verify:packages` to pack the libraries and app, install them into a clean
+temporary Bun project, and exercise the CLI, public imports, examples, and bundled natives.
 Use `bun scripts/verify-packages.ts --help` for options.
 
 Mac CI runs typechecking, the model-free tests, and this consumer check.

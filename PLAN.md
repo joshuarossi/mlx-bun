@@ -1,7 +1,7 @@
 # Refactor plan
 
-Open work only; delete a block when its exit criteria are met. New files need
-Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARCHITECTURE.md).
+Open work only; delete a block when its exit criteria are met. Josh has authorized the library and application migration through a first full
+draft; keep changes focused and reviewed. Standalone Pi integration is deferred. Ownership and documentation rules live in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Verify the migrated library
 
@@ -18,16 +18,23 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
   [state record](packages/inference/measurements/2026-09-25-runtime-state.json)
   verifies the existing composition; keep that implementation unchanged during
   this refactor and do not imply blanket OptiQ serve compatibility.
+## Optimize after the full draft
+
 - [ ] Run paired same-machine performance comparisons against main using the
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.
 
-## Migrate applications after library verification
+## Migrate the application
 
-- [ ] Agree app ownership before adding files. Move Pi protocols, job contracts,
-  engine host, and completion clients into their respective app domains; recover
-  their originals from `src/contracts/` in the historical source. Exit: apps consume
-  library interfaces without app contracts or upward imports inside the library.
+- [ ] Migrate the server, engine host, web app, and job orchestration into
+  `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
+  commands are the first slice. Exit: app consumers use public library APIs;
+  application contracts and policy stay out of the inference library.
+- [ ] Preserve continuous batching as the serving default, including single
+  requests. Keep compilation choices inside specialized graph layers, without
+  serial-only or compilation switches on the new app surface. Exit: the full
+  draft preserves main's behavior and cancellation/streaming contracts before
+  the subsequent performance pass.
 - [ ] Preserve the `mlx-bun` terminal experience and Bun, Homebrew, curl-script,
   and source-checkout installation paths. Add generated surface reference and
   coverage checks with the CLI/server migration. Exit: the app and its install
