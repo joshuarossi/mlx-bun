@@ -237,8 +237,8 @@ CPU-only comparison: bench.ts pair --main A1.json --branch B1.json --branch B2.j
 Requires complete AB/BA blocks, matching artifact/weight hashes, prompt/EOS/options,
 recorded runtime environment and machine, and identical tokens in every warmup and
 sample. Retains order and reports median/min/max; never infers a regression threshold.
-Legacy main reports must have their missing runtimeEnvironment and weightHashes
-recorded externally from the actual launch/environment and artifact; retain the raw
+Legacy main reports must have their missing runtimeEnvironment, weightHashes and
+explicit dirty:false recorded externally from the actual launch/source/artifact; retain the raw
 report alongside that annotated copy. Do not invent unrecorded settings.`);
   else try {
     const args = process.argv.slice(2);
