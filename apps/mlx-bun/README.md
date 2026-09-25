@@ -1,12 +1,22 @@
 # mlx-bun app
 
-The runnable terminal app, server, and web surfaces live here. The first slice
-provides model-management commands: `get`, `scan`, `ls`, `fit`, and `gc`.
-Server and default web startup are still being migrated; running without a
-command reports that limitation instead of silently doing something else.
+The runnable terminal app, server, and web surfaces live here. Default startup
+loads a local model and serves the browser app, Pi web chat, and OpenAI-compatible
+completions through one continuous scheduler. Model-management commands remain
+available separately: `get`, `scan`, `ls`, `fit`, and `gc`.
+
+After the root native setup, run `bun run --filter mlx-bun build:web`, then
+`bun apps/mlx-bun/src/cli/main.ts serve --model <cached-model-or-directory>`.
+Use `serve --help` for accepted options. A terminal session opens the browser
+unless `--no-open` is supplied. Startup without a model selects a cached model;
+if none is supported, it downloads the starter and then the recommended model.
+Known unfinished features return HTTP 501 during migration; their remaining
+work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404.
 
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
 `hub.ts` owns model-management presentation; `terminal.ts` owns formatting.
+`model-selection.ts` owns automatic selection policy; `serve.ts` composes the
+model, cache, engine, HTTP routes, browser assets, and Pi backend.
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
 
@@ -66,8 +76,14 @@ The [request pipeline](tests/server/pipeline.test.ts) and
 [HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
 including cancellation and ownership cleanup. Real-weight media and generation
 verification remains separate; these tests prove the HTTP/engine boundary.
-Server listening, application startup, additional API surfaces, and the web UI
-are subsequent migration slices.
+`server/start.ts` mounts HTTP, browser, and WebSocket handlers. Shutdown cancels
+chat, closes connections, drains execution, flushes caches, and releases the
+model. Its [listener tests](tests/server-start.test.ts) exercise real loopback
+sockets without native MLX. The opt-in [model test](tests/engine/http-generation.test.ts)
+uses `MLX_BUN_APP_TEST_MODEL=<cached-directory>` to exercise actual app startup,
+lone/concurrent deterministic completion, stream cancellation, and shutdown.
+It never downloads weights; missing native libraries or an invalid supplied
+checkpoint fail. This is a behavior check, not an oracle or performance claim.
 
 ## Web chat backend
 
@@ -92,8 +108,7 @@ cover history, sampling scopes, thinking events, tool-loop policy, and UI tools.
 
 Memory is disabled until its app owner supplies tool definitions, names, skill
 paths, and its prompt hint through `PiBackendOptions.memory`. Download context
-is an optional callback from app composition. Browser assets and HTTP/WebSocket
-route wiring remain separate migration work. Standalone Pi integration remains
+is an optional callback from app composition. Standalone Pi integration remains
 deferred. The protocol exposes no serial-serving lane selection.
 
 ## Browser app
