@@ -163,3 +163,44 @@ build script and runtime fallback share `web/build.ts`. Static HTML, theme, mani
 escaping, attachments, panels, and interactions without a live server.
 [Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
 headers. The packed consumer check verifies the same assets after installation.
+
+
+## Memory vault
+
+`src/memory/article.ts` owns Markdown article structure; `vault.ts` owns vault
+initialization, filesystem reads, search, links, and Git history. The default
+vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
+`server/memory-routes.ts` exposes the read/init HTTP surface through
+`createMemoryRoutes({ root })`; CLI startup composes it before model routes.
+Initialization is explicit and idempotent, and its path stays confined to the
+vault or temporary trees. Existing article/Talk directory links remain usable;
+initialization confines its actual write targets. Reference seeding defaults to
+none; composition can pass explicit `referenceSources` without inferring old
+repository documentation paths. Merely starting the app does not create a vault.
+
+[Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
+and real local Git history; [article tests](tests/memory/article.test.ts) cover
+parsing and round trips. Synthesis, memory tools, and scheduling remain separate
+migration work; the chat backend still receives no memory integration.
+
+## Jobs and quantization
+
+`jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,
+and managed subprocess lifetimes. `quantize/` owns submitted quantization policy
+and CPU-only model inspection; the numerical work uses `@mlx-bun/quantize`.
+`cli/job-entry.ts` resolves the producer in the child process. HTTP parsing and
+wire responses stay in `server/job-routes.ts` and `server/quantize-routes.ts`.
+
+Composition injects the engine execution lease. A job drains active inference
+and holds that lease until its child exits and output streams finish; inference
+then resumes. As in main's direct-process server, resident model weights and
+caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
+admission waits, terminates active children, and awaits them before closing the
+store and engine. Opening the app does not create the job database until a job
+route is used. Dataset, finetune, and artifact publishing remain separate work.
+
+[Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
+paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
+[Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
+and output naming with an injected numerical operation. They do not run or
+establish parity for actual checkpoint quantization.

@@ -28,3 +28,34 @@ export type JobEvent =
   | { type: "done"; ts: number; output_dir?: string; summary?: unknown; n_train?: number; n_valid?: number; [k: string]: unknown }
   | { type: "failed"; error: string; ts: number };
 
+/** Sink a job calls to report progress. Implementations append to the log
+ *  file and (for stage/metric events carrying `progress`/`message`) update
+ *  the SQLite row. Never throws — a logging failure must not kill a job. */
+export type Emit = (e: JobEvent) => void;
+
+/** The unit of work. Returns an optional output path recorded on the row.
+ *  Receives the parsed `config` from the submit request. */
+export type JobRunner = (
+  emit: Emit,
+  config: Record<string, unknown>,
+) => Promise<{ outputPath?: string } | void>;
+
+/** Job kinds in the system. */
+export type JobKind = "quantize" | "finetune" | "dataset";
+
+export type JobStatus = "queued" | "running" | "done" | "failed" | "zombie";
+
+/** A persisted job row (shape returned by the HTTP `GET /api/jobs/:id`). */
+export interface JobRow {
+  id: string;
+  kind: string;
+  status: JobStatus;
+  config_json: string;
+  progress: number;
+  message: string | null;
+  log_path: string;
+  output_path: string | null;
+  error: string | null;
+  started_at: string;
+  ended_at: string | null;
+}

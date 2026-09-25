@@ -217,7 +217,7 @@ test("startup attaches continuation/cache services and token history before list
     } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
       listenerInput = input; events.push("listener");
-      return { server: { port: 1234 }, close: async () => { input.beforeDrain(); await input.closeEngine(); } };
+      return { server: { port: 1234 }, close: async () => { await input.beforeDrain(); await input.closeEngine(); } };
     } }));
     const { startModelServer } = await import(app + "src/cli/serve.ts");
     const running = await startModelServer({ path: "/unused", repoId: "test" }, {

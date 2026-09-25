@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
@@ -101,9 +102,9 @@ export interface RunningApp { port: number; close(): Promise<void> }
 /** CLI composition owns resources until each explicit ownership transfer. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
-    { createCompletionRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
+    { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
     { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createManagementRoutes }] = await Promise.all([
-    import("../engine"), import("../server/routes"), import("../server/start"),
+    import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
     import("../server/management-routes"),
@@ -141,7 +142,24 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       kvScheme: caches.kvScheme, ...limits, tokenHistory });
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
       toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
-    const routes = { handle: async (request: Request) => await management.handle(request) ?? await completions.handle(request) };
+    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }] = await Promise.all([
+      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
+    ]);
+    const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
+      acquire: signal => engine.gateway.acquireExecutionLease(signal),
+      onComplete: () => completions.invalidateLibrary(),
+    });
+    const closeApp = async () => {
+      const errors: unknown[] = [];
+      try { await jobs.close(); } catch (error) { errors.push(error); }
+      try { await engine.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "application cleanup failed");
+    };
+    cleanup = closeApp;
+    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
+    const memory = createMemoryRoutes();
+    const routes = { handle: async (request: Request) => await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+      await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       paths: options.chatPaths,
@@ -156,7 +174,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, beforeDrain: () => caches.stopIdleDemotion(), closeEngine: () => engine.close() }, {
+    const listener = await startServer({ routes, web, chat,
+      beforeDrain: async () => { try { caches.stopIdleDemotion(); } finally { await jobs.close(); } },
+      closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;

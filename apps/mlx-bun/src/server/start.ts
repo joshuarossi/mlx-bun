@@ -11,12 +11,9 @@ const pending = [
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
   /^\/admin\/transcription\/unload$/,
   /^\/api\/settings\/hf-token$/,
-  /^\/api\/jobs(?:\/[^/]+(?:\/stream)?)?$/,
-  /^\/api\/quantize\/(?:inspect|resolve-folder|submit|push)$/,
+  /^\/api\/quantize\/push$/,
   /^\/api\/finetune\/(?:inspect-dataset|submit|merge|export|push)$/,
   /^\/api\/dataset\/(?:templates|submit|push)$/,
-  /^\/api\/model\/resolve-folder$/,
-  /^\/api\/memory\/(?:status|list|search|article|links|history|diff|init)$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
   /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
 ];
