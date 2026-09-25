@@ -124,7 +124,12 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       acquire: signal => engine.gateway.acquireExecutionLease(signal),
       onComplete: () => completions.invalidateLibrary(),
     });
-    const closeApp = async () => { try { await jobs.close(); } finally { await engine.close(); } };
+    const closeApp = async () => {
+      const errors: unknown[] = [];
+      try { await jobs.close(); } catch (error) { errors.push(error); }
+      try { await engine.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "application cleanup failed");
+    };
     cleanup = closeApp;
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
     const routes = { handle: async (request: Request) => await jobRoutes.handle(request) ??

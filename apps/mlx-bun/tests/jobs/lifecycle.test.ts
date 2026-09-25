@@ -123,12 +123,13 @@ test("a real CPU-only child entry records an unsupported producer failure withou
   expect(await Bun.file(store.get(jobId)!.log_path).text()).toContain('"type":"failed"');
 });
 
-test("the child process exits after terminal persistence even with a lingering producer handle", async () => {
+for (const dispatch of ["direct", "cli"] as const) test(`${dispatch} child exits after terminal persistence even with a lingering producer handle`, async () => {
   const { root, store } = fresh(), row = store.create("unsupported", {});
   const preload = join(root, "keepalive.ts");
   writeFileSync(preload, "setInterval(() => {}, 1000);\n");
   const child = Bun.spawn([process.execPath, "--no-env-file", "--preload", preload,
-    new URL("../../src/cli/job-entry.ts", import.meta.url).pathname, row.id], {
+    ...(dispatch === "direct" ? [new URL("../../src/cli/job-entry.ts", import.meta.url).pathname, row.id]
+      : [new URL("../../src/cli/main.ts", import.meta.url).pathname, "__job", row.id])], {
     env: { ...process.env, MLX_BUN_LIBMLXC: "/does-not-exist", MLX_BUN_JOBS_DB: store.dbPath, MLX_BUN_JOBS_DIR: store.logsDir },
     stdout: "ignore", stderr: "ignore",
   });
