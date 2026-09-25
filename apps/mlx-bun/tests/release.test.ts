@@ -62,7 +62,9 @@ test("unsigned preparation reports pending publication decisions and creates com
     const checksum = createHash("sha256").update(archive).digest("hex");
     expect(await readFile(join(dir, "mlx-bun-v0.0.0-arm64.tar.gz.sha256"), "utf8")).toBe(`${checksum}  mlx-bun-v0.0.0-arm64.tar.gz\n`);
     expect(await readFile(join(dir, "mlx-bun-arm64.tar.gz.sha256"), "utf8")).toBe(`${checksum}  mlx-bun-arm64.tar.gz\n`);
-    expect(await readFile(join(dir, "mlx-bun.rb"), "utf8")).toContain(checksum);
+    const formula = await readFile(join(dir, "mlx-bun.rb"), "utf8");
+    expect(formula).toStartWith("# UNSIGNED LOCAL PREPARATION ONLY; do not publish this formula.\n");
+    expect(formula).toContain(checksum);
     expect(Object.keys(state.files)).toContain("LICENSE"); expect(Object.keys(state.files)).toContain("THIRD_PARTY_NOTICES.md");
     expect(f.commands.some(command => ["codesign", "security", "xcrun", "gh", "npm"].includes(command[0]!))).toBe(false);
     await expect(packageRelease(f.output, f.execute)).rejects.toThrow("Accepted notarization");
@@ -132,6 +134,10 @@ test("Accepted evidence is bound to bundle bytes and checked again before packag
     await notarizeRelease(f.output, "MOCK_PROFILE", f.execute);
     await packageRelease(f.output, f.execute);
     expect(await readdir(join(f.output, "release"))).toContain("mlx-bun.rb");
+    const formula = await readFile(join(f.output, "release/mlx-bun.rb"), "utf8");
+    expect(formula).toStartWith("# Generated from mlx-bun-v0.0.0-arm64.tar.gz;");
+    expect(formula).not.toContain("UNSIGNED LOCAL PREPARATION ONLY");
+    expect(await readFile(join(f.output, "unsigned/mlx-bun.rb"), "utf8")).toStartWith("# UNSIGNED LOCAL PREPARATION ONLY;");
     await writeFile(join(f.output, "bundle/LICENSE"), "changed");
     await expect(packageRelease(f.output, f.execute)).rejects.toThrow("Bundle changed");
   } finally { await f.close(); }

@@ -74,7 +74,7 @@ async function checked(directory: string): Promise<Preparation> {
 async function versionCheck(directory: string, version: string, execute: Run) {
   assert.equal(await execute([join(directory, "mlx-bun"), "--version"]), `mlx-bun ${version}\n`, "Binary version differs from app manifest/archive version");
 }
-async function archiveBundle(directory: string, version: string, output: string, execute: Run, expected: Record<string, string>) {
+async function archiveBundle(directory: string, version: string, output: string, execute: Run, expected: Record<string, string>, kind: "unsigned" | "release") {
   await versionCheck(directory, version, execute);
   assert.deepEqual(await bundleFiles(directory), expected, "Bundle changed before archiving");
   const files = Object.keys(expected);
@@ -86,7 +86,9 @@ async function archiveBundle(directory: string, version: string, output: string,
     await copyFile(join(output, versioned), join(output, stable));
     const checksum = sha(await readFile(join(output, versioned)));
     for (const name of [versioned, stable]) await writeFile(join(output, `${name}.sha256`), `${checksum}  ${name}\n`);
-    await prepareHomebrew(join(output, versioned));
+    const formula = await prepareHomebrew(join(output, versioned));
+    if (kind === "unsigned") await writeFile(formula,
+      "# UNSIGNED LOCAL PREPARATION ONLY; do not publish this formula.\n" + await readFile(formula, "utf8"));
   } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
 }
 
@@ -114,7 +116,7 @@ export async function prepareRelease(directory: string, root = workspace, execut
   }
   assert.equal(manifests.find(manifest => manifest.name === app.name)?.version, app.version, "App version changed during preparation");
   const state: Preparation = { version: app.version, stage: "unsigned", files: await bundleFiles(bundle), publication: publicationPlan(manifests) };
-  await archiveBundle(bundle, app.version, join(directory, "unsigned"), execute, state.files);
+  await archiveBundle(bundle, app.version, join(directory, "unsigned"), execute, state.files, "unsigned");
   await save(directory, state);
   return state;
 }
@@ -160,7 +162,7 @@ export async function notarizeRelease(directory: string, profile: string, execut
 export async function packageRelease(directory: string, execute: Run = run) {
   const state = await checked(directory);
   assert(state.stage === "accepted" && state.notarization?.status === "Accepted", "Accepted notarization is required; unsigned artifacts are local preparation only");
-  await archiveBundle(join(directory, "bundle"), state.version, join(directory, "release"), execute, state.files);
+  await archiveBundle(join(directory, "bundle"), state.version, join(directory, "release"), execute, state.files, "release");
 }
 
 if (import.meta.main) {
