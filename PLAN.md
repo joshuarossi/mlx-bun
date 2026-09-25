@@ -17,11 +17,6 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.
 
-## Make the developer contract reproducible
-
-- [ ] Establish short contributor and agent entry guidance with the verification
-  tooling. Exit: rules and commands have one home, with no duplicated status ledger.
-
 ## Migrate applications after library verification
 
 - [ ] Agree app ownership before adding files. Move Pi protocols, job contracts,
