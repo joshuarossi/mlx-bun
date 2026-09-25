@@ -169,12 +169,6 @@ export type ServerMessage =
   | { type: "tool_approval_request"; callId: string; tool: string; args: unknown }
   | { type: "tool_update"; callId: string; chunk: unknown }
   | { type: "tool_end"; callId: string; ok: boolean; result: unknown }
-  // `lane`: the serving lane the just-finished turn ran on (serial /
-  // serial+spec / batched), correlated via the lane registry keyed by the
-  // AssistantMessage's responseId (the pi SDK's own usage parsing drops
-  // custom fields — see src/serve/lane-registry.ts). Absent when the turn
-  // produced no assistant message with a responseId (e.g. an aborted turn
-  // before any model call) — never guessed client-side (risk #5).
   | { type: "turn_end" }
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
   // Replay a session's transcript (rebuilds the thread); and the sidebar list.
