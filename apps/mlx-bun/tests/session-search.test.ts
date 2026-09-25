@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,69 @@ import {
 
 import { isUnderSessionDir } from "../src/chat/session-files";
 import { createSessionRoutes } from "../src/server/session-routes";
+import { createPiBackend } from "../src/chat/pi-backend";
+import type { ServerMessage } from "../src/chat/protocol";
+
+test("a main-era Pi v3 transcript resumes with its tool results and remains searchable and exportable", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-prior-chat-"));
+  const cwd = join(root, "project"), sessionDir = join(root, "sessions");
+  mkdirSync(cwd); mkdirSync(sessionDir);
+  const path = join(sessionDir, "2026-09-24T12-00-00-000Z_prior.jsonl");
+  const timestamp = "2026-09-24T12:00:00.000Z";
+  const usage = { input: 8, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 11,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+  // Main used Pi 0.80.3's v3 JSONL. Freeze its persisted shape rather than
+  // letting today's SessionManager writer manufacture a compatible input.
+  const entries = [
+    { type: "session", version: 3, id: "prior-session", timestamp, cwd },
+    { type: "model_change", id: "model", parentId: null, timestamp, provider: "mlx-bun", modelId: "local" },
+    { type: "thinking_level_change", id: "thinking", parentId: "model", timestamp, thinkingLevel: "off" },
+    { type: "session_info", id: "name", parentId: "thinking", timestamp, name: "Saved travel preferences" },
+    { type: "message", id: "user", parentId: "name", timestamp,
+      message: { role: "user", content: [{ type: "text", text: "Which train do I prefer?" }], timestamp: 1_790_251_200_000 } },
+    { type: "message", id: "tool-call", parentId: "user", timestamp,
+      message: { role: "assistant", content: [{ type: "thinking", thinking: "Consult saved preferences." },
+        { type: "toolCall", id: "call-1", name: "memory_section", arguments: { stem: "Travel", anchor: "preference" } }],
+        api: "openai-completions", provider: "mlx-bun", model: "local", usage, stopReason: "toolUse", timestamp: 1_790_251_201_000 } },
+    { type: "message", id: "tool-result", parentId: "tool-call", timestamp,
+      message: { role: "toolResult", toolCallId: "call-1", toolName: "memory_section", isError: false,
+        content: [{ type: "text", text: "Take the early train." }], timestamp: 1_790_251_202_000 } },
+    { type: "message", id: "answer", parentId: "tool-result", timestamp,
+      message: { role: "assistant", content: [{ type: "text", text: "You prefer the early train." }],
+        api: "openai-completions", provider: "mlx-bun", model: "local", usage, stopReason: "stop", timestamp: 1_790_251_203_000 } },
+  ];
+  const bytes = jsonl(entries);
+  writeFileSync(path, bytes);
+  const frames: ServerMessage[] = [];
+  // No prompt is sent: opening and replaying a saved chat needs neither a
+  // listener nor a model, and every SDK storage path is in the temporary root.
+  const backend = createPiBackend({ port: 1, readOnly: true,
+    paths: { cwd, agentDir: join(root, "agent"), sessionDir, toolApprovalsFile: join(root, "approvals.json") },
+  })(frame => frames.push(frame));
+  try {
+    await backend.start();
+    await backend.handle({ type: "open_session", path });
+    expect(frames.filter(frame => frame.type === "error")).toEqual([]);
+    const sessions = frames.filter(frame => frame.type === "sessions").at(-1)!;
+    expect(sessions.activePath).toBe(path);
+    expect(sessions.items.find(item => item.path === path)).toMatchObject({ id: "prior-session", title: "Saved travel preferences" });
+    const history = frames.filter(frame => frame.type === "history").at(-1)!;
+    expect(history.items).toEqual([
+      { role: "user", text: "Which train do I prefer?", tools: [], entryId: "user" },
+      { role: "assistant", text: "", thinking: "Consult saved preferences.", tools: [{ callId: "call-1", name: "memory_section",
+        args: { stem: "Travel", anchor: "preference" }, result: "Take the early train." }] },
+      { role: "assistant", text: "You prefer the early train.", tools: [] },
+    ]);
+    const routes = createSessionRoutes(sessionDir);
+    const searched = await routes.handle(new Request("http://local/api/sessions/search?q=early"));
+    const found = await searched!.json();
+    expect(found.results).toHaveLength(1);
+    expect(found.results[0]).toMatchObject({ sessionPath: path, sessionTitle: "Saved travel preferences" });
+    const exported = await routes.handle(new Request(`http://local/api/sessions/export?${new URLSearchParams({ path })}`));
+    expect(await exported!.json()).toEqual({ ok: true, path, entries });
+    expect(readFileSync(path, "utf8")).toBe(bytes);
+  } finally { try { await backend.dispose(); } finally { rmSync(root, { recursive: true, force: true }); } }
+});
 
 function jsonl(entries: unknown[]): string {
   return entries.map((e) => JSON.stringify(e)).join("\n") + "\n";
