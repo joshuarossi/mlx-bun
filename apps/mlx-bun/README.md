@@ -470,8 +470,12 @@ The installer validates the files and version before switching its `current`
 symlink and retains the old app on failure. Successful updates keep the current
 and immediate previous bundles, plus any older bundle used by a running app.
 Other older owned bundles and stale stages are removed on the next install;
-if process inspection fails, all older bundles are retained. Managed jobs can
-still re-execute a running app's original binary across repeated upgrades.
+vnode inspection keeps bundles used by apps launched through PATH or symlinks,
+and an inconclusive inspection retains the affected bundle. Restart running
+apps after an upgrade before starting new managed jobs: the job runner currently
+resolves its executable lazily and can select the new build. Capturing executable
+identity at startup is tracked in [PLAN](../../PLAN.md). A later install prunes
+old bundles after their processes exit.
 Sessions, wiki, credentials, and legacy flat installation files
 outside `app-install/` stay intact. A custom `MLX_BUN_INSTALL_DIR` relocates only
 the installed bundle; application data still lives under `~/.mlx-bun`.
