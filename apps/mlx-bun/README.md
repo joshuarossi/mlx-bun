@@ -22,6 +22,8 @@ deletion. Cache location and Hugging Face credentials follow the
 [hub library](../../packages/hub/README.md). This workspace remains private
 while app licensing and release packaging are decided.
 
+## Engine
+
 `src/engine/` owns loaded model lifetimes, preparation admission and the shared
 continuous scheduler. `createAppEngine` takes ownership of its model context;
 closing drains execution before releasing compiled runners, adapters, drafts,
@@ -35,6 +37,40 @@ one and greater. These are CPU checks, not real-weight numerical verification.
 The first engine slice reports unsupported shared-execution capabilities rather
 than running a hidden serial path. The library's denoising method still needs
 shared scheduler support before the app can serve diffusion models.
+
+`engine/cache-services` composes the library prompt cache and persistence. Its
+default is 8 GB of RAM with plain KV; SSD storage requires an explicit directory.
+Composition must pass the returned `continuationServices` to
+`binding.gateway.configureContinuation` and supply `promptCache`,
+`resolvedKvScheme`, `stateCodecs`, `adapterNamespace`, and checkpoint availability
+as gateway options. The engine borrows these services; construction alone does
+not attach them. Pass `close` through the owned `beforeModelDispose` hook so shutdown
+drains execution, flushes persistence, clears cache state, then frees the model.
+`flush` also supports explicit durability checks while the app is running.
+Cache policy tests inject storage and allocator ports; real SSD/numerical runs
+remain separate verification.
+
+## Server seams
+
+`server/routes.ts` composes chat/text completion, embedding, and discovery
+handlers over an injected engine. Its `handle(Request)` returns a response or
+`null` for the next application surface; it never opens a socket or closes the
+borrowed engine. Application startup owns those lifetimes.
+
+Inside `server/`, request parsing and prompt preparation precede the single-use
+admission plan. The completion executor consumes the engine contract; the sink
+and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
+`prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` adapts
+HTTP content parts to the library's numerical input builders. Grammar and media
+work enter the engine's preparation domain before allocating native resources.
+Text-only protocol work loads no MLX library.
+
+The [request pipeline](tests/server/pipeline.test.ts) and
+[HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
+including cancellation and ownership cleanup. Real-weight media and generation
+verification remains separate; these tests prove the HTTP/engine boundary.
+Server listening, application startup, additional API surfaces, and the web UI
+are subsequent migration slices.
 
 ## Web chat backend
 
@@ -70,3 +106,25 @@ options, not CLI switches. The [SDK smoke test](tests/chat-runtime.test.ts)
 uses temporary paths and a fixed loopback SSE response to exercise real Pi
 startup, provider hooks, streaming, cancellation, and transcript persistence
 without a model or access to the installed app's chat storage.
+
+## Browser app
+
+`src/web/browser/` preserves the existing chat, model, training, quantization,
+dataset, memory, and status UI. Browser code imports only local browser modules
+and the data-only chat/job protocols. Unported backend features may return 501
+during migration; preserving their UI does not claim their backend is ready.
+
+`src/web/assets.ts` provides `createWebHandler()`, which loads the static payloads
+and returns a `Request → Response | null` handler for application composition.
+It opens no listener. `bun run --filter mlx-bun build:web` creates ignored
+`dist/web/app.js`; prepack generates and includes that file, so installed apps
+need no build step. A source checkout with no generated bundle compiles the
+browser entry in memory on startup, without writing installation files. The
+build script and runtime fallback share `web/build.ts`. Static HTML, theme, manifest, worker, and icon live in
+`src/web/public/`. The vendored highlight.js bundle retains its BSD license in
+`public/vendor/hljs-LICENSE`; its existing header records upstream provenance.
+
+[Browser behavior tests](tests/web/browser.test.ts) cover streaming rendering,
+escaping, attachments, panels, and interactions without a live server.
+[Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
+headers. The packed consumer check verifies the same assets after installation.

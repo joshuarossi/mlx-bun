@@ -45,7 +45,7 @@ function layer(path: string, owner: Library): Layer | undefined {
 }
 
 // Add a domain only with its first consumer; app roots do not become a loophole.
-const appDomains: Record<string, string[]> = { cli: ["engine"], engine: [], chat: [] };
+const appDomains: Record<string, string[]> = { cli: ["engine"], engine: [], server: ["engine"], chat: [], jobs: [], web: ["chat", "jobs"] };
 function appDomain(path: string, owner: Library): string {
   const domain = relative(owner.source, path).split("/")[0]!;
   if (!(domain in appDomains)) throw new Error(`Unclassified app source: ${relative(owner.source, path)}`);
@@ -142,6 +142,8 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
   for (const [file, source] of sources) {
     const owner = ownerOf(file)!;
     if (owner.app) appDomain(file, owner);
+    if (owner.app && ["chat/protocol.ts", "jobs/protocol.ts"].includes(relative(owner.source, file)) && references(source).length)
+      violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
     for (const { specifier, line } of references(source)) {
@@ -151,6 +153,8 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       if (specifier.startsWith(".") && resolve(dirname(file), specifier) === resolve(owner.source, "../package.json")) continue;
       const dependency = owner.dependencies.find(name => specifier === name || specifier.startsWith(`${name}/`));
       const isExternal = external.has(specifier) || (dependency !== undefined && !names.includes(dependency));
+      const browser = owner.app && relative(owner.source, file).startsWith("web/browser/");
+      if (browser && isExternal) { violations.push(`${at}: browser cannot import ${specifier}`); continue; }
       if (isExternal) {
         if (from === "portable" || from === "mlx-contracts" ||
             (from !== undefined && dependency && packageOwners[dependency] !== from))
@@ -162,6 +166,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       const actual = specifier.endsWith(".js") && sources.has(resolve(dirname(file), specifier))
         ? resolve(dirname(file), specifier) : target;
       if (!actual || !sources.has(actual)) { violations.push(`${at}: unresolved or unclassified import ${specifier}`); continue; }
+      if (browser && !(actual.startsWith(resolve(owner.source, "web/browser") + "/") ||
+          actual === resolve(owner.source, "chat/protocol.ts") || actual === resolve(owner.source, "jobs/protocol.ts")))
+        violations.push(`${at}: browser may import only browser modules and data protocols (${specifier})`);
       const targetOwner = ownerOf(actual)!;
       const to = layer(actual, targetOwner);
       if (owner.app && owner === targetOwner) {
@@ -278,5 +285,29 @@ test("apps consume declared public library exports and libraries never depend on
     expect((await inspectWorkspaces(root)).some(item => item.includes("libraries cannot depend on apps"))).toBe(true);
     write("apps/example/src/mystery.ts", "export const hidden = true;");
     await expect(inspectWorkspaces(root)).rejects.toThrow("Unclassified app source");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("browser code can consume data protocols but cannot reach backend modules or platform imports", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-browser-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  try {
+    write("apps/example/package.json", JSON.stringify({ name: "browser-example", type: "module" }));
+    write("apps/example/src/chat/protocol.ts", "export type Message = string;");
+    write("apps/example/src/jobs/protocol.ts", "export type Job = string;");
+    write("apps/example/src/chat/backend.ts", "export const backend = true;");
+    write("apps/example/src/web/assets.ts", "export const assets = true;");
+    const entry = "apps/example/src/web/browser/main.ts";
+    write(entry, 'import type { Message } from "../../chat/protocol"; import type { Job } from "../../jobs/protocol";');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    for (const specifier of ["node:fs", "bun", "../../chat/backend", "../assets"]) {
+      write(entry, `import * as backend from ${JSON.stringify(specifier)};`);
+      expect((await inspectWorkspaces(root)).some(item => item.includes("browser"))).toBe(true);
+    }
+    write(entry, 'import type { Message } from "../../chat/protocol";');
+    write("apps/example/src/chat/protocol.ts", 'export type Message = string; import "./backend";');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("data protocols cannot import"))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
