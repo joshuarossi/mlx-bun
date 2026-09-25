@@ -94,25 +94,11 @@ tensor integrity, the saved token prefix, live planes and continuation against
 the uninterrupted path; it does not restore sampling or execution sessions.
 Temporary checkpoints are removed after each case.
 
-The [2026-09-25 state comparison](measurements/2026-09-25-runtime-state.json)
-records the exact model snapshots, weight/native/reference hashes and per-case
-outcomes. MiniCPM and Gemma plain KV match the external oracle; all tested paths,
-including their mixed KV and Trellis, match main and preserve saved continuation.
-Mixed KV matches the documented composition: stock mlx-lm attention for one
-query and OptiQ tiled attention for supported multi-query input. The separately
-verified all-unfused control matches the stock reference. This is not a claim of
-identity with every default of `optiq serve`, whose fused install also affects
-single-query decode. The record preserves the initial mismatched-reference
-results and appends the corrected comparison. Trellis's reference is main, not
-mlx-lm. These checks do not close the broader verification gate in PLAN.
-
-The same record includes a later window-wrap run at `7b8dcd7`: Gemma e4b
-plain and artifact mixed KV each match main and their respective external
-references in three additional cases (context 1536, append 1/8/128, chunk 128).
-The model's 512-token sliding window has wrapped before the append. Full logits,
-physical cache planes, and live/restored continuation match exactly; no layout
-normalization or numerical change was needed. Compilation and performance are
-not exercised by this run.
+Oracle goldens and recorded comparisons are published outside this repository;
+run the tool against a pinned golden revision or regenerate one. A mixed-KV
+comparison must use the documented per-path composition (stock mlx-lm attention
+for one query, OptiQ tiled attention for multi-query input), not every default of
+`optiq serve`, whose fused install also changes single-query decode.
 
 ### Compiled decode verification
 
@@ -132,11 +118,6 @@ The forced-token full-logit matrix uses deterministic IDs independently of EOS. 
 compiled-versus-ordinary checks, not an external-oracle or performance claim.
 Runtime compilation overrides stay inside the test; this adds no application option.
 
-The [2026-09-25 compiled comparison](measurements/2026-09-25-compiled-decode.json)
-records 15 passing real-weight tests on the M1 Max: eight full-logit cases, six
-greedy trajectories, and one injected-failure recovery. All 30 captured report
-rows match historical main exactly. The record names the artifacts, source and
-native hashes, and the corrected local dependency resolution used for verification.
 
 ## Direct library use
 
@@ -306,34 +287,6 @@ expert I/O and video helpers. Set up
 that package's native artifacts, then run `bun run typecheck` and `bun run test`
 from the repository root.
 
-## Measuring direct generation
-
-`bun packages/inference/scripts/bench.ts --help` describes the source-checkout
-benchmark. Supply a local model and a frozen JSON array of prompt token IDs.
-The worker uses the public `generate` API and fresh request state, with greedy
-sampling and the model/tokenizer EOS IDs. It records each warmup separately,
-all generated IDs, prefill/decode timings, whole-request wall time, first-token
-latency, and active/cache/peak memory. The timed region follows main's
-`scripts/bench/native.ts`; loading and hashing are outside it.
-
-For migration comparisons, run main and branch sequentially in AB/BA order with
-identical settings on the same quiet machine; use `bun --no-env-file` for both
-trees so project-local dotenv files cannot add overrides. The CPU-only `pair`
-command checks complete AB/BA ordering, matching settings, weight hashes and all
-tokens (warmups included), then reports median/min/max timing and memory.
-Main's old reports need explicit external metadata annotations; retain their
-unchanged originals and record where the missing fields came from. Machine load and VM snapshots are evidence, not an
-automatic quiet-machine guarantee. Keep raw reports outside Git; record only
-curated paired results with their source, artifact, native and machine provenance.
-The tool records these identities (`--hash-weights` includes full weight hashes)
-and preserves completed samples if a later request fails. It does not run Python,
-launch a server, download models or measure HTTP performance.
-
-The [2026-09-25 Trellis measurement](measurements/2026-09-25-trellis-generation.json)
-records a complete paired run and its distribution, identities and limits. All
-warmup and sample tokens matched. The machine had swap in use, so this is
-validation of the tooling and diagnostic migration evidence, not completion of
-the clean-machine performance gate.
 
 ## Sampling, embeddings, and adapters
 

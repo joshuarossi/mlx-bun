@@ -10,16 +10,15 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   against their applicable external oracle and main. Keep Python environments, setup,
   and reference generation outside this repository. Cover logits, state
   continuation, and relevant specialized paths under identical artifacts and
-  settings. Exit: reproducible comparisons meet the numerical contracts, with
-  source revisions, external oracle versions, and curated evidence in approved
-  docs; synthetic tests alone do not close this item.
+  settings. Exit: opt-in comparisons meet the numerical contracts against pinned
+  published golden revisions that record source revisions and oracle versions;
+  synthetic tests alone do not close this item.
 - [ ] Confirm the long-term mixed-KV reference contract for single-query decode:
-  the documented stock mlx-lm path or OptiQ serve's fused default. The
-  [state record](packages/inference/measurements/2026-09-25-runtime-state.json)
-  verifies the existing composition; keep that implementation unchanged during
+  the documented stock mlx-lm path or OptiQ serve's fused default. The opt-in
+  state comparison verifies the existing composition; keep that implementation unchanged during
   this refactor and do not imply blanket OptiQ serve compatibility.
 - [ ] Extend training preservation beyond the
-  [preservation-checked short MiniCPM SFT/DPO/ORPO paths](packages/training/measurements/2026-09-25-training-preservation.json).
+  preservation-checked short MiniCPM SFT/DPO/ORPO paths.
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
 - [ ] Restore main's remaining training checks in their owning packages:
