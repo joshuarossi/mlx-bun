@@ -250,6 +250,12 @@ The tool records these identities (`--hash-weights` includes full weight hashes)
 and preserves completed samples if a later request fails. It does not run Python,
 launch a server, download models or measure HTTP performance.
 
+The [2026-09-25 Trellis measurement](measurements/2026-09-25-trellis-generation.json)
+records a complete paired run and its distribution, identities and limits. All
+warmup and sample tokens matched. The machine had swap in use, so this is
+validation of the tooling and diagnostic migration evidence, not completion of
+the clean-machine performance gate.
+
 ## Sampling, embeddings, and adapters
 
 `@mlx-bun/inference/sampling` exposes `makeSampler`, `makeLogitsProcessors`,

@@ -1,0 +1,388 @@
+{
+  "schemaVersion": 1,
+  "kind": "paired-library-generation",
+  "date": "2026-09-25",
+  "classification": "diagnostic; clean-machine performance gate remains open",
+  "externalRun": "mlx-library-bench-akd0s3e6/no-dotenv",
+  "machine": {
+    "name": "M1-Max-32GiB-development",
+    "chip": "Apple M1 Max",
+    "ramBytes": 34359738368,
+    "macOS": "27.0",
+    "osBuild": "26A428",
+    "bun": "1.4.2"
+  },
+  "sourceCommits": {
+    "main": "02d723a2875153196f8c6c10bce2daf6f0044655",
+    "branch": "f3d8e7a086a916eabacb4b6a1ca13fd43fa73717"
+  },
+  "artifact": {
+    "repository": "mlx-bun/qwen38-trellis-global-exit5-h39-q4b-v2",
+    "snapshot": "local",
+    "configSha256": "4f810d56164b8e83deb2c8e4fddc0b3321221724f8bedb2103d1395f15934cd3",
+    "indexSha256": "be4a509b5fc55b66f4dcdae9dbd5c9a8424b49b13d87fee9c46028b9ef0bec5f",
+    "weightHashes": {
+      "model-00001-of-00006.safetensors": "f6dce21f3ce09576d460e10a411d95b1c6351fefabda5bb4e48a89105df30089",
+      "model-00002-of-00006.safetensors": "5c37b8c5e668646efc92f10d02497d07420732ddeaeadb3486600630caeebcc1",
+      "model-00003-of-00006.safetensors": "1678468a98ed8b368abe248463c8e38d6a03536cdce203b77daace571f4fc5ce",
+      "model-00004-of-00006.safetensors": "a3e0e7c1e93af738b6a3e5cfbcc00cbc7ebf95c487735c426621e1994ee6adea",
+      "model-00005-of-00006.safetensors": "38e0d3f3f96167d2dcf668704ea234b272e811805fbe3427d94df2198335a790",
+      "model-00006-of-00006.safetensors": "b5b822c29a9151ba210af99644687518a0b5b5f6721acd388dcfd423638acfc0"
+    }
+  },
+  "native": {
+    "runtime": "0.32.2",
+    "hashes": {
+      "libmlxc.dylib": "35596c4a4031a755c19b203bec95f180b5b4e4f8a9bdf131ca4fe45ce050ddd9",
+      "libmlx.dylib": "a7254c2a63f6bf01ce7d033ff8c880f30eeb399e3d0df2f2333a47ff47db517f",
+      "libjaccl.dylib": "74f53f3e5deff38eaec4be0d555ebb8614f73dc28c861dfefb0449430e29f457",
+      "mlx.metallib": "a19618258e2a215d0d0ac3056174a6e066818bb6cdecb50062cc9316076ebe43"
+    },
+    "mainHashesVerifiedEqual": true
+  },
+  "configuration": {
+    "runtimeEnvironment": {
+      "MLX_BUN_COMPILED_DECODE": "0",
+      "MLX_BUN_TRELLIS_VARIANT": "13"
+    },
+    "automaticDotenvLoading": false,
+    "batch": 1,
+    "contextLength": 128,
+    "promptIds": [
+      100,
+      107,
+      114,
+      121,
+      128,
+      135,
+      142,
+      149,
+      156,
+      163,
+      170,
+      177,
+      184,
+      191,
+      198,
+      205,
+      212,
+      219,
+      226,
+      233,
+      240,
+      247,
+      254,
+      261,
+      268,
+      275,
+      282,
+      289,
+      296,
+      303,
+      310,
+      317,
+      324,
+      331,
+      338,
+      345,
+      352,
+      359,
+      366,
+      373,
+      380,
+      387,
+      394,
+      401,
+      408,
+      415,
+      422,
+      429,
+      436,
+      443,
+      450,
+      457,
+      464,
+      471,
+      478,
+      485,
+      492,
+      499,
+      506,
+      513,
+      520,
+      527,
+      534,
+      541,
+      548,
+      555,
+      562,
+      569,
+      576,
+      583,
+      590,
+      597,
+      604,
+      611,
+      618,
+      625,
+      632,
+      639,
+      646,
+      653,
+      660,
+      667,
+      674,
+      681,
+      688,
+      695,
+      702,
+      709,
+      716,
+      723,
+      730,
+      737,
+      744,
+      751,
+      758,
+      765,
+      772,
+      779,
+      786,
+      793,
+      800,
+      807,
+      814,
+      821,
+      828,
+      835,
+      842,
+      849,
+      856,
+      863,
+      870,
+      877,
+      884,
+      891,
+      898,
+      905,
+      912,
+      919,
+      926,
+      933,
+      940,
+      947,
+      954,
+      961,
+      968,
+      975,
+      982,
+      989
+    ],
+    "promptSha256": "3dc655dedb17cd46562a8cbc00d4c7dca378a8ebbbeafd4f58365d1ee99c1b49",
+    "maxTokens": 64,
+    "temperature": 0,
+    "eosTokenIds": [
+      248044,
+      248046
+    ],
+    "prefillChunk": 128,
+    "kv": "default plain attention KV and recurrent state",
+    "warmupsPerProcess": 1,
+    "samplesPerProcess": 5,
+    "allocatorClearBeforeRequest": false
+  },
+  "order": [
+    "main",
+    "branch",
+    "branch",
+    "main"
+  ],
+  "validation": {
+    "allWarmupAndSampleTokensIdentical": true,
+    "tokensPerSample": 64,
+    "tokensSha256": "a562264cfe6b5dedbfe18081a2167f6ecc48b0a309cb8d2483ba4a09f6178967",
+    "cleanSourceAtEveryLaunch": true,
+    "mainLegacyAnnotation": "Launch environment and clean Git status captured before each process; artifact hashes verified against both branch pre-run hashes and a final rehash. Raw reports retained unchanged."
+  },
+  "results": {
+    "main": {
+      "samples": 10,
+      "wallMs": {
+        "median": 7258.125250000001,
+        "min": 7195.494458000001,
+        "max": 7347.085499999999
+      },
+      "firstTokenMs": {
+        "median": 1422.426375000001,
+        "min": 1370.767832999998,
+        "max": 1503.9482090000001
+      },
+      "prefillMs": {
+        "median": 1422.3102919999983,
+        "min": 1370.612250000002,
+        "max": 1503.8134580000005
+      },
+      "decodeMs": {
+        "median": 5837.4125209999975,
+        "min": 5824.4540830000005,
+        "max": 5845.621999999996
+      },
+      "peakBytes": {
+        "median": 11405048937,
+        "min": 11382389865,
+        "max": 11409587305
+      },
+      "activeAfterBytes": {
+        "median": 10863327389,
+        "min": 10863327389,
+        "max": 10863327389
+      },
+      "cacheAfterBytes": {
+        "median": 263583350,
+        "min": 263583342,
+        "max": 263599734
+      }
+    },
+    "branch": {
+      "samples": 10,
+      "wallMs": {
+        "median": 7263.265770500002,
+        "min": 7220.046833,
+        "max": 7343.638916999997
+      },
+      "firstTokenMs": {
+        "median": 1435.0169999999998,
+        "min": 1377.262834000001,
+        "max": 1507.5529999999999
+      },
+      "prefillMs": {
+        "median": 1434.9286454999965,
+        "min": 1377.1159580000021,
+        "max": 1507.4119580000042
+      },
+      "decodeMs": {
+        "median": 5834.394229000001,
+        "min": 5825.7699589999975,
+        "max": 5851.22925
+      },
+      "peakBytes": {
+        "median": 11408276585,
+        "min": 11381668969,
+        "max": 11408276585
+      },
+      "activeAfterBytes": {
+        "median": 10863327389,
+        "min": 10863327389,
+        "max": 10863327389
+      },
+      "cacheAfterBytes": {
+        "median": 263583342,
+        "min": 263583342,
+        "max": 263599734
+      }
+    }
+  },
+  "reports": {
+    "A1.json": "ce7a6e2846b329f8cfacc35014c061dd2c71d265dc9193d75791b8fd1c227259",
+    "A1.annotated.json": "86168907af2be575c58f9bc720d93f6385b753e8adc0c888ccdfa5a42af12feb",
+    "B1.json": "0386c25b4970212219052543f993725f6a3c8843f2dfd1b0a8ce40efde4b56d9",
+    "B2.json": "f291a0c8c6cb0e45a76694540e67013dd9650a162cb8e1813aa9ca207ef217f3",
+    "A2.json": "b8da749f8a2afcc8e17eb9264970dc867d7aa6e369477a25cfed8a3f4af49d4a",
+    "A2.annotated.json": "ee63826ca9eec425c33fc0a6c8b49e132b106b99dcd441801982a2a14057eafd",
+    "launches.json": "317c715b893b71150da831023f0173ccc4fb218b82d1f29a2a472e2bd4b1e3f2",
+    "paired.json": "1e565cc2b4321c98a17a8b7c4512a16d02549c40e2ad86279078a5f9f1bfa7a4"
+  },
+  "limits": [
+    "Main preflight reported swap in use; first run also observed a background CPU process. These are diagnostic samples, not quiet-machine performance evidence.",
+    "One synthetic 128-token prompt and 64 generated tokens; not task-quality, long-context, compiled-decode or HTTP measurements.",
+    "No regression threshold is inferred. Identical tokens do not by themselves prove logit parity."
+  ],
+  "machineConditions": [
+    {
+      "run": "A1",
+      "machineBefore": {
+        "at": "2026-09-25T00:45:43.307Z",
+        "loadAvg1m": 4.56,
+        "swapUsedMB": 11897,
+        "ok": false,
+        "problems": [
+          "swap in use: 11897 MB (> 512 MB) \u2014 reboot before benchmarking",
+          "big process: 10 MB \u2014 /usr/libexec/opendirectoryd (59% cpu)"
+        ]
+      },
+      "machineAfter": {
+        "at": "2026-09-25T00:46:31.507Z",
+        "loadAvg1m": 3.81,
+        "swapUsedMB": 11889,
+        "ok": false,
+        "problems": [
+          "swap in use: 11889 MB (> 512 MB) \u2014 reboot before benchmarking"
+        ]
+      }
+    },
+    {
+      "run": "B1",
+      "machineBefore": {
+        "at": "2026-09-25T00:46:39.282Z",
+        "loadAverage": [
+          4.5419921875,
+          4.30712890625,
+          4.1982421875
+        ],
+        "swap": "total = 13312.00M  used = 11889.00M  free = 1423.00M  (encrypted)"
+      },
+      "machineAfter": {
+        "at": "2026-09-25T00:47:25.600Z",
+        "loadAverage": [
+          4.37744140625,
+          4.23046875,
+          4.1708984375
+        ],
+        "swap": "total = 13312.00M  used = 11881.00M  free = 1431.00M  (encrypted)"
+      }
+    },
+    {
+      "run": "B2",
+      "machineBefore": {
+        "at": "2026-09-25T00:47:33.539Z",
+        "loadAverage": [
+          4.3125,
+          4.22216796875,
+          4.16796875
+        ],
+        "swap": "total = 13312.00M  used = 11881.00M  free = 1431.00M  (encrypted)"
+      },
+      "machineAfter": {
+        "at": "2026-09-25T00:48:20.268Z",
+        "loadAverage": [
+          4.52734375,
+          4.24658203125,
+          4.17578125
+        ],
+        "swap": "total = 13312.00M  used = 11873.00M  free = 1439.00M  (encrypted)"
+      }
+    },
+    {
+      "run": "A2",
+      "machineBefore": {
+        "at": "2026-09-25T00:48:20.655Z",
+        "loadAvg1m": 4.53,
+        "swapUsedMB": 11873,
+        "ok": false,
+        "problems": [
+          "swap in use: 11873 MB (> 512 MB) \u2014 reboot before benchmarking",
+          "big process: 10 MB \u2014 /usr/libexec/opendirectoryd (55% cpu)"
+        ]
+      },
+      "machineAfter": {
+        "at": "2026-09-25T00:49:07.962Z",
+        "loadAvg1m": 4.27,
+        "swapUsedMB": 11865,
+        "ok": false,
+        "problems": [
+          "swap in use: 11865 MB (> 512 MB) \u2014 reboot before benchmarking"
+        ]
+      }
+    }
+  ]
+}
