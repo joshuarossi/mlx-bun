@@ -1,0 +1,214 @@
+import type { ModelBinding } from "../engine/model-binding";
+import pkgJson from "../../package.json" with { type: "json" };
+import type { ModelContext } from "../engine/model-host";
+import { fit } from "@mlx-bun/hub/fit";
+
+const pkgVersion = (pkgJson as { version: string }).version;
+
+export type DiscoveryRoute =
+  | "library"
+  | "downloads"
+  | "api-index"
+  | "health"
+  | "models";
+
+export function matchDiscoveryRoute(method: string, pathname: string): DiscoveryRoute | null {
+  if (method !== "GET") return null;
+  switch (pathname) {
+    case "/library": return "library";
+    case "/downloads": return "downloads";
+    case "/v1": return "api-index";
+    case "/health": return "health";
+    case "/v1/models": return "models";
+    default: return pathname.startsWith("/v1/models/") ? "models" : null;
+  }
+}
+
+export interface DiscoveryRoutes {
+  handle(url: URL, request: Request): Promise<Response | null>;
+  invalidateLibrary(): void;
+}
+
+export interface TranscriptionInfo {
+  id: string;
+  resident: boolean;
+}
+
+export function createDiscoveryRoutes(
+  ctx: ModelContext,
+  binding: Pick<ModelBinding, "discovery">,
+  startedAt: number,
+  transcription: () => Promise<TranscriptionInfo | null> = async () => null,
+): DiscoveryRoutes {
+  let libraryCache: { at: number; rows: unknown[] } | null = null;
+
+  return {
+    invalidateLibrary() {
+      libraryCache = null;
+    },
+
+    async handle(url, request) {
+      switch (matchDiscoveryRoute(request.method, url.pathname)) {
+        case "library": {
+          if (url.searchParams.get("refresh") === "1" || !libraryCache || Date.now() - libraryCache.at > 30_000) {
+            const { Registry, visionCapable, audioCapable } = await import("@mlx-bun/hub/registry");
+            const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
+            const { supportTier } = await import("@mlx-bun/inference/models/support");
+            const registry = new Registry();
+            try {
+            await registry.scan();
+            const rows = [];
+            for (const model of registry.listCanonical()) {
+              const tier = supportTier(model.modelType, model.repoId);
+              const supported = tier !== null;
+              let assessment = null;
+              try {
+                const config = await loadModelConfig(model.path);
+                const result = fit(
+                  config,
+                  model.sizeBytes,
+                  8192,
+                  undefined,
+                  undefined,
+                  model.expertsBytes,
+                );
+                assessment = {
+                  fits: result.fits,
+                  max_safe_context: result.maxSafeContext,
+                  predicted_decode_tps: result.predictedDecodeTps,
+                };
+              } catch {}
+              rows.push({
+                repo_id: model.repoId,
+                model_type: model.modelType,
+                size_bytes: model.sizeBytes,
+                quant_bits: model.quantBits,
+                vision: visionCapable(model),
+                audio: audioCapable(model),
+                supported,
+                support_tier: tier,
+                serving: model.repoId === ctx.modelId,
+                assessment,
+              });
+            }
+            libraryCache = { at: Date.now(), rows };
+            } finally { registry.close(); }
+          }
+          return Response.json({ models: libraryCache.rows });
+        }
+
+        case "downloads": {
+          const { downloadsSnapshot } = await import("@mlx-bun/hub/download");
+          return Response.json({ downloads: downloadsSnapshot() });
+        }
+
+        case "api-index":
+          return Response.json({
+            name: "mlx-bun",
+            version: pkgVersion,
+            model: ctx.modelId,
+            endpoints: [
+              "POST /v1/chat/completions",
+              "POST /v1/completions",
+              "POST /v1/embeddings",
+              "GET /v1/models",
+              "GET /health",
+              "GET /library",
+              "GET /downloads",
+            ],
+          });
+
+        case "health":
+          return new Response('{"status": "ok"}', {
+            headers: { "content-type": "application/json" },
+          });
+
+        case "models": {
+          const filterId = url.pathname.length > "/v1/models/".length - 1
+            ? decodeURIComponent(url.pathname.slice("/v1/models/".length))
+            : null;
+          const created = Math.floor(startedAt / 1000);
+          const genDefaults = {
+            temperature: ctx.genDefaults.temperature ?? null,
+            top_p: ctx.genDefaults.topP ?? null,
+            top_k: ctx.genDefaults.topK ?? null,
+          };
+          const capabilities = binding.discovery;
+          const stt = await transcription();
+          const data: Array<Record<string, unknown>> = [{
+            id: ctx.modelId,
+            object: "model",
+            created,
+            owned_by: "mlx-bun",
+            context_window:
+              ctx.glmMemoryPlan?.contextTokens ??
+              ctx.model.config.text.maxPositionEmbeddings,
+            reasoning: ctx.template.supportsThinking,
+            vision: !!(ctx.vision || ctx.loadVision),
+            audio: !!(ctx.audio || ctx.loadAudio),
+            batch_mode: "continuous",
+            tools: true,
+            structured_output: true,
+            embeddings: capabilities.embeddings,
+            adapters: false,
+            training: false,
+            dsa: capabilities.dsa,
+            mtp: ctx.draft?.provider.id === "glm52-native-mtp",
+            capabilities: {
+              chat_completions: true,
+              text_completions: true,
+              anthropic_messages: false,
+              responses: false,
+              streaming: true,
+              tools: true,
+              structured_output: true,
+              logprobs: true,
+              embeddings: capabilities.embeddings,
+              vision: !!(ctx.vision || ctx.loadVision),
+              audio: !!(ctx.audio || ctx.loadAudio),
+              adapters: false,
+              training: false,
+              transcription: stt !== null,
+            },
+            gen_defaults: genDefaults,
+          }];
+          if (stt)
+            data.push({
+              id: stt.id, object: "model", created, owned_by: "mlx-bun",
+              transcription: true, resident: stt.resident,
+              capabilities: { transcription: true, translation: true, chat_completions: false },
+            });
+          try {
+            const { Registry, visionCapable } = await import("@mlx-bun/hub/registry");
+            const { supportTier } = await import("@mlx-bun/inference/models/support");
+            const registry = new Registry();
+            try {
+              if (registry.list().length === 0) await registry.scan();
+              for (const model of registry.listCanonical()) {
+                if (model.repoId === ctx.modelId || model.repoId === stt?.id) continue;
+                const tier = supportTier(model.modelType, model.repoId);
+                if (tier === null) continue;
+                data.push({
+                  id: model.repoId,
+                  object: "model",
+                  created,
+                  vision: visionCapable(model),
+                  tier,
+                });
+              }
+            } finally {
+              registry.close();
+            }
+          } catch {}
+          return Response.json({
+            object: "list",
+            data: filterId ? data.filter((model) => model.id === filterId) : data,
+          });
+        }
+
+        default:
+          return null;
+      }
+    },
+  };
+}

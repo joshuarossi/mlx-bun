@@ -18,6 +18,7 @@
       "dependencies": {
         "@mlx-bun/hub": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/mlx": "workspace:*",
       },
     },
     "packages/hub": {
