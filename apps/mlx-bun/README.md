@@ -71,7 +71,7 @@ remain separate verification.
 
 ## Server seams
 
-`server/routes.ts` composes chat/text completion, embedding, and discovery
+`server/routes.ts` composes chat/text completion, Anthropic Messages, embedding, and discovery
 handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
@@ -93,7 +93,10 @@ and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
 `prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` adapts
 HTTP content parts to the library's numerical input builders. Grammar and media
 work enter the engine's preparation domain before allocating native resources.
-Text-only protocol work loads no MLX library.
+Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
+requests and semantic completion events, including tools, thinking, and usage.
+Its JSON and SSE paths use the same preparation, capability admission, scheduler,
+and cancellation as chat completions; no second service is created.
 
 The [request pipeline](tests/server/pipeline.test.ts) and
 [HTTP examples](tests/server/routes.test.ts) execute with an injected engine,
