@@ -32,7 +32,7 @@ The process-wide settings an app applies (offload routing, the allocator limit,
 the runtime switches) are restored after its engine releases the model, on close
 and on startup failure, so a later app in the same process starts from what it
 found; offload restore only redirects routing and never unmaps borrowed weights.
-Startup adapter mounting (`--adapter`) follows in its own change.
+`--adapter <dir>` (alias `--adapter-path`) mounts a LoRA adapter right after the model loads, before any request, under the directory's basename as its id; it becomes the default for requests without an `adapter` field, an explicit `adapter` (including `"none"`) still wins, `/v1/adapters` lists it, and a bad directory fails startup with `adapter mount failed: …` after releasing the model. The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces a three-step adapter with the fine-tune producer and serves with it.
 
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this

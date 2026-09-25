@@ -8,6 +8,7 @@ const commands = {
     host: { type: "string", description: "Bind address [default: 127.0.0.1]" },
     port: { type: "string", description: "Listen port; 0 chooses a free port [default: 8080]" },
     batch: { type: "string", description: "Continuous batching capacity, including at 1 [default: 8]" },
+    "decode-concurrency": { type: "string", description: "Alias for --batch (main's spelling); the same continuous capacity" },
     "max-tokens": { type: "string", description: "Default completion cap when a request omits one" },
     thinking: { type: "string", description: "Default thinking mode: on | off; requests may override" },
     temperature: { type: "string", description: "Default sampling temperature [0..5]" },
@@ -32,6 +33,8 @@ const commands = {
     "hlg-shoulder": { type: "string", description: "HLG highlight rolloff scale, nats [default: 4]" },
     "hlg-toe": { type: "string", description: "HLG shadow rolloff scale, nats [default: 6]" },
     "hlg-pivot-offset": { type: "string", description: "HLG pivot: nats below the top token [default: 6]" },
+    adapter: { type: "string", description: "Mount a LoRA adapter directory at startup as the default for requests without an adapter field" },
+    "adapter-path": { type: "string", description: "Alias for --adapter (mlx_lm spelling)" },
     "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
   } },
   generate: { description: "Generate text once from a local model", positional: "[query] [prompt]", options: {
