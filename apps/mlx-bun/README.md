@@ -185,4 +185,17 @@ Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;
 export writes a CPU-only manifest without taking that lock. Both preserve the
 existing output roots and prefixes, with unique suffixes so simultaneous requests
-cannot overwrite each other's artifacts. Publishing remains separate migration work.
+cannot overwrite each other's artifacts.
+
+`publishing/credentials.ts` owns the app's `~/.mlx-bun/hf.json` token file (mode
+0600). Resolution prefers the saved token, then `HF_TOKEN`, then the shared HF
+cache through the hub resolver. Explicit paths and environment isolate tests
+and embedded consumers. Settings responses expose presence only.
+`publishing/upload.ts` selects an explicit source or the supplied job's output
+and passes resolved credentials to the public hub uploader. HTTP shapes and
+errors belong to `server/publishing-routes.ts`; CLI composition supplies the
+read-only job lookup. Quantized models and adapters publish as model repos;
+datasets publish as dataset repos. Uploads need no model execution lease.
+[Publishing tests](tests/server/publishing-routes.test.ts) use temporary token
+storage and an injected uploader; they never read installed credentials or
+publish to Hugging Face.

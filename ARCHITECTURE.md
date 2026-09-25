@@ -114,6 +114,11 @@ The CLI composes producers and child entry paths, so jobs infrastructure imports
 neither producer implementations nor engine internals. HTTP adapters consume
 these domains from `server/`.
 
+`publishing/` owns app credential storage and artifact/source selection. Server
+routes parse settings and push requests; CLI composition supplies a read-only
+job lookup. The hub library owns the upload protocol and receives an explicit
+token, without importing application storage or jobs.
+
 Extract a shared app-contract package only when the app consumers require it.
 
 ## Changing or replacing a piece
