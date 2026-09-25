@@ -16,21 +16,17 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
   while (!predicate()) { if (Date.now() > deadline) throw new Error("timed out waiting"); await Bun.sleep(1); }
 }
 
-test("resolution: the env override as given, then beside the executable, then the staged build, then a compile", async () => {
+test("resolution: the env override as given, then beside the executable, then the staged build, otherwise unavailable without compiling", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mlx-mic-resolve-"));
   try {
     const sibling = join(dir, MIC_CAPTURE_BINARY), staged = join(dir, "staged", MIC_CAPTURE_BINARY);
-    let compiled = 0;
-    const compile = async () => { compiled++; return null; };
-    expect(await resolveMicCapture({ explicit: "/explicit/mic", sibling, staged, compile })).toBe("/explicit/mic");
-    expect(await resolveMicCapture({ sibling, staged, compile })).toBeNull();
-    expect(compiled).toBe(1);
+    expect(await resolveMicCapture({ explicit: "/explicit/mic", sibling, staged })).toBe("/explicit/mic");
+    expect(await resolveMicCapture({ sibling, staged })).toBeNull();
     mkdirSync(dirname(staged), { recursive: true }); writeFileSync(staged, "");
-    expect(await resolveMicCapture({ sibling, staged, compile })).toBe(staged);
+    expect(await resolveMicCapture({ sibling, staged })).toBe(staged);
     writeFileSync(sibling, "");
-    expect(await resolveMicCapture({ sibling, staged, compile })).toBe(sibling);
-    expect(await resolveMicCapture({ sibling: null, staged, compile })).toBe(staged);
-    expect(compiled).toBe(1);
+    expect(await resolveMicCapture({ sibling, staged })).toBe(sibling);
+    expect(await resolveMicCapture({ sibling: null, staged })).toBe(staged);
     const restore = configureRuntime({ MLX_BUN_MIC_CAPTURE: "/from/env" });
     try { expect(defaultMicCaptureCandidates()).toMatchObject({ explicit: "/from/env", sibling: null, staged: MIC_CAPTURE_STAGED }); }
     finally { restore(); }

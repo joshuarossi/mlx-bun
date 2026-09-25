@@ -13,14 +13,15 @@
   "files": [
     "bin",
     "src",
-    "native",
-    "dist/web"
+    "dist/web",
+    "dist/native"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --project tsconfig.browser.json",
     "test": "bun test",
     "build:web": "bun scripts/build-web.ts",
-    "prepack": "bun run build:web"
+    "prepack": "bun run build:web && bun run build:native",
+    "build:native": "sh scripts/build-native.sh"
   },
   "dependencies": {
     "@mlx-bun/hub": "workspace:*",

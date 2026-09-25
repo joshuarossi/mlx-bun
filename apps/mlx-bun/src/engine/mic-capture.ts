@@ -2,17 +2,16 @@
 // (native/mic-capture.swift → `mlx-bun-mic-capture`), yields 16 kHz float32
 // PCM chunks and hotkey down/up events. Main's `src/audio/mic-capture.ts`.
 // Resolution mirrors the library's frame extractor: env override → beside the
-// standalone executable → the app's staged dist/native → dev-compile from
-// source with swiftc. Stopping ends the sidecar's stdin (its own exit path),
-// terminates it, and joins it, so no capture process outlives the verb.
+// standalone executable → the app's staged dist/native. Stopping ends the
+// sidecar's stdin, terminates it, and joins it, so no capture process outlives
+// the verb.
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 
 export const MIC_CAPTURE_BINARY = "mlx-bun-mic-capture";
 const APP_ROOT = join(import.meta.dir, "..", "..");
-export const MIC_CAPTURE_SOURCE = join(APP_ROOT, "native", "mic-capture.swift");
 export const MIC_CAPTURE_STAGED = join(APP_ROOT, "dist", "native", MIC_CAPTURE_BINARY);
 
 export interface MicCaptureCandidates {
@@ -20,23 +19,8 @@ export interface MicCaptureCandidates {
   explicit?: string;
   /** Beside the executable; only meaningful for the standalone binary. */
   sibling: string | null;
-  /** `scripts/build-native.sh` output, also the dev-compile target. */
+  /** Published package asset, staged explicitly by `build:native`. */
   staged: string;
-  /** Build from source on first use; null without the source or swiftc. */
-  compile(): Promise<string | null>;
-}
-
-let devCompile: Promise<string | null> | null = null;
-function compileFromSource(): Promise<string | null> {
-  return devCompile ??= (async () => {
-    if (!existsSync(MIC_CAPTURE_SOURCE)) return null;
-    try {
-      mkdirSync(dirname(MIC_CAPTURE_STAGED), { recursive: true });
-      const proc = Bun.spawn(["swiftc", "-O", MIC_CAPTURE_SOURCE, "-o", MIC_CAPTURE_STAGED], { stdout: "ignore", stderr: "ignore" });
-      if (await proc.exited === 0 && existsSync(MIC_CAPTURE_STAGED)) return MIC_CAPTURE_STAGED;
-    } catch { /* no swiftc */ }
-    return null;
-  })();
 }
 
 export function defaultMicCaptureCandidates(): MicCaptureCandidates {
@@ -44,7 +28,6 @@ export function defaultMicCaptureCandidates(): MicCaptureCandidates {
     explicit: runtimeValue("MLX_BUN_MIC_CAPTURE"),
     sibling: import.meta.filename.startsWith("/$bunfs/") ? join(dirname(process.execPath), MIC_CAPTURE_BINARY) : null,
     staged: MIC_CAPTURE_STAGED,
-    compile: compileFromSource,
   };
 }
 
@@ -52,7 +35,7 @@ export async function resolveMicCapture(candidates: MicCaptureCandidates = defau
   if (candidates.explicit) return candidates.explicit;
   if (candidates.sibling && existsSync(candidates.sibling)) return candidates.sibling;
   if (existsSync(candidates.staged)) return candidates.staged;
-  return candidates.compile();
+  return null;
 }
 
 export type MicEvent =
@@ -80,7 +63,7 @@ export interface MicCaptureOptions {
 
 export async function startMicCapture(options: MicCaptureOptions = {}): Promise<MicCapture> {
   const bin = await (options.resolve ?? resolveMicCapture)();
-  if (!bin) throw new Error(`microphone capture needs the ${MIC_CAPTURE_BINARY} sidecar (build: apps/mlx-bun/scripts/build-native.sh, needs swiftc)`);
+  if (!bin) throw new Error(`microphone capture needs the ${MIC_CAPTURE_BINARY} sidecar (reinstall the app, or in a source checkout run: bun run --filter mlx-bun build:native)`);
   const args = [bin, "--rate", "16000"];
   if (options.hotkey != null) args.push("--hotkey", String(options.hotkey));
   const proc = Bun.spawn(args, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });

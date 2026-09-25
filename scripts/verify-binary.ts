@@ -126,7 +126,7 @@ try {
     assert(source.trim().length > 0, `${name} source notices must not be empty`);
     assert(notices.includes(source), `relocated bundle must retain the complete ${name} notices`);
   }
-  const env = { ...process.env, MLX_BUN_LIBMLXC: "", MLX_BUN_EXPERT_IO_DYLIB: "", MLX_BUN_FRAME_EXTRACT: "" };
+  const env = { ...process.env, MLX_BUN_LIBMLXC: "", MLX_BUN_EXPERT_IO_DYLIB: "", MLX_BUN_FRAME_EXTRACT: "", MLX_BUN_MIC_CAPTURE: "" };
   async function run(command: string[], environment: NodeJS.ProcessEnv = env): Promise<string> {
     const child = Bun.spawn(command, { cwd: scratch, env: environment, stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);

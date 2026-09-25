@@ -58,7 +58,8 @@ The [executable behavior examples](tests/hub-cli.test.ts) demonstrate scanning,
 listing, fit estimates, and safe GC against a temporary synthetic cache with
 native MLX blocked. Run them with `bun run --filter mlx-bun test`.
 `bun scripts/verify-packages.ts --app-only` repeats those tests through an
-installed package artifact, without building or loading native libraries.
+installed package artifact, compiling only the app microphone helper and never
+loading MLX or accessing audio.
 
 `gc` previews changes unless `--yes` is supplied; `--dry-run` always prevents
 deletion. Cache location and Hugging Face credentials follow the
@@ -523,8 +524,10 @@ spawns the AVAudioEngine sidecar (`native/mic-capture.swift` →
 `mlx-bun-mic-capture`: 16 kHz mono float32 PCM on stdout; `ready`, `hotkey
 down`, `hotkey up`, and `error:` lines on stderr; macOS asks for Microphone
 permission on first use), resolved from `MLX_BUN_MIC_CAPTURE`, beside the
-standalone executable, `dist/native/` (`scripts/build-native.sh`), or compiled
-from source with swiftc on first use. Enter starts and stops a take (`q` or
+standalone executable, or the package's `dist/native/`. Source checkouts stage it
+explicitly with `bun run --filter mlx-bun build:native` (requires swiftc);
+`prepack` builds it into the published artifact. Runtime never compiles helpers.
+Enter starts and stops a take (`q` or
 Ctrl-C quits); `--hotkey [keycode]` holds a key instead (default 61, Right
 Option; needs Input Monitoring). Every 250 ms of audio feeds a transcription
 session while you speak, so the text lands about one window after the take
@@ -547,12 +550,13 @@ spawn the CLI for help and error paths; they also run against the installed
 artifact in `verify-packages --app-only`. The
 [mic capture tests](tests/engine/mic-capture.test.ts) cover resolution, the
 sidecar protocol, and the terminate-and-join with shell stand-ins. A real
-microphone and real weights are exercised only by hand; the standalone bundle
-does not stage the sidecar yet ([PLAN](../../PLAN.md)).
+microphone is exercised only by hand; package and relocated-bundle verification
+resolve the shipped helper and run `--help` before any audio initialization.
 
 ## Standalone bundle
 
-After staging the root native setup, run `bun run build:binary` from the root.
+After staging the root native setup and the app helper with
+`bun run --filter mlx-bun build:native`, run `bun run build:binary` from the root.
 `dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
 WASM sidecar, the project license, and combined MLX/inference third-party notices.
 Move the whole directory together. Web assets and the memory skill
@@ -562,7 +566,8 @@ build fallback. No terminal Pi assets are included.
 `bun run verify:binary` builds into temporary storage, relocates the directory,
 installs it through the curl installer using a local archive and temporary home,
 and checks the actual CLI and managed child plus a compiled consumer for web,
-memory, synthetic registry/fit, native path resolution and Photon initialization.
+memory, synthetic registry/fit, native path resolution, microphone helper help,
+and Photon initialization.
 The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
 With exclusive GPU access, `bun run verify:binary --model /path/to/cached-model`
 also starts the actual relocated executable, checks its web assets, `/stats`,

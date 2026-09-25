@@ -46,7 +46,8 @@ bun install
 
 Follow the [MLX package setup](packages/mlx/README.md#development) to build or
 stage its native libraries. Build the inference package's native expert I/O and video helper with
-`bun run --filter @mlx-bun/inference build:native`. Run `bun run link-cli` to link
+`bun run --filter @mlx-bun/inference build:native` and the app microphone helper
+with `bun run --filter mlx-bun build:native` (swiftc). Run `bun run link-cli` to link
 this checkout's `mlx-bun` command into `${BUN_INSTALL:-$HOME/.bun}/bin`;
 keep that directory on PATH. The link follows changes in this checkout.
 Then run `bun run typecheck`

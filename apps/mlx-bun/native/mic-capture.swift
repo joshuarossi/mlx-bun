@@ -11,6 +11,12 @@ import AVFoundation
 import CoreGraphics
 import Foundation
 
+// Keep help before audio initialization: package checks must never open the mic.
+if CommandLine.arguments.dropFirst().contains("--help") {
+    print("Usage: mlx-bun-mic-capture [--rate 16000] [--hotkey <keycode>]")
+    exit(0)
+}
+
 var rate: Double = 16000
 var hotkey: Int64? = nil
 var args = Array(CommandLine.arguments.dropFirst())

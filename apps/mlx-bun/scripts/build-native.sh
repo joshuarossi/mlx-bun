@@ -1,8 +1,13 @@
 #!/bin/sh
 # Build the microphone capture sidecar for `mlx-bun dictate`
 # (native/mic-capture.swift → dist/native/mlx-bun-mic-capture). A source
-# checkout also compiles it on first use; ship it beside the executable.
+# checkout builds explicitly; packages ship the staged binary.
 set -eu
+if [ "${1:-}" = "--help" ]; then
+  echo "Usage: sh apps/mlx-bun/scripts/build-native.sh [output-file]"
+  echo "Compile the microphone helper with swiftc; no microphone access or downloads."
+  exit 0
+fi
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 OUT="${1:-$ROOT/dist/native/mlx-bun-mic-capture}"
 DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
