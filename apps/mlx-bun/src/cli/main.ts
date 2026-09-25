@@ -15,6 +15,14 @@ try {
     throw new Error(`Unknown command: ${command}. Use mlx-bun --help.`);
   } else if (args.includes("--help") || args.includes("-h")) {
     console.log(renderHelp(help(command)));
+  } else if (command === "convert") {
+    const { parseConvertArgs, runConvert } = await import("./convert");
+    const parsed = parseConvertArgs(args);
+    const cancellation = new AbortController();
+    const stop = () => cancellation.abort(new Error("convert cancelled"));
+    process.on("SIGINT", stop); process.on("SIGTERM", stop);
+    try { await runConvert(parsed, {}, cancellation.signal); }
+    finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
   } else {
     const parsed = parseCommand(command, args);
     if (command === "serve") {

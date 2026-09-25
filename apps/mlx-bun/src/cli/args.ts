@@ -77,7 +77,26 @@ const commands = {
     "upload-repo": { type: "string", description: "Hub repo id, org/name or bare name (required)" },
     private: { type: "boolean", description: "Create the repo as private (mlx-bun extension)" },
   } },
-} satisfies Record<string, { description: string; positional: string; usage?: string; options: Record<string, { type: "string" | "boolean"; description: string }> }>;
+  convert: { description: "Quantize an HF model into a local MLX snapshot (mlx_lm.convert counterpart)", positional: "[repo-or-path]", options: {
+    "hf-path": { type: "string", description: "Source model: local path, downloaded model, or HF repo id (fetched first); --model and the positional are aliases" },
+    model: { type: "string", description: "Alias for --hf-path" },
+    "mlx-path": { type: "string", description: "Output directory; must not already exist [default: mlx_model]" },
+    quantize: { type: "boolean", short: "q", description: "Quantize the model (uniform affine)" },
+    "q-bits": { type: "string", description: "Bits per weight: 4 or 8 [default: 4]" },
+    "q-group-size": { type: "string", description: "Quantization group size: 32 or 64 [default: 64]" },
+    "upload-repo": { type: "string", description: "Push the converted model to this Hugging Face repo afterwards (write token checked first)" },
+    "target-bpw": { type: "string", description: "Mixed precision target bits-per-weight, e.g. 4.5: OptiQ sensitivity sweep + per-layer knapsack; implies -q" },
+    "candidate-bits": { type: "string", description: "Comma list the knapsack may pick from [default: 4,8]" },
+    "calibration-mix": { type: "string", description: "\"optiq\" or a JSONL path [default: optiq]" },
+    "n-calibration": { type: "string", description: "Calibration samples [default: 2]" },
+    "rotate-weights": { type: "boolean", description: "Fold the model's offline TurboQuant rotation before quantization (auto-detects Llama/Qwen3.5/Qwen MTP)" },
+    "rotation-seed": { type: "string", description: "Deterministic rotation seed [default: 42]" },
+    "q-mode": { type: "string", description: "Quantization mode; only affine is supported [default: affine]" },
+    dtype: { type: "string", description: "Not supported (mlx_lm.convert flag); exits with an error" },
+    dequantize: { type: "boolean", short: "d", description: "Not supported (mlx_lm.convert flag); exits with an error" },
+    "quant-predicate": { type: "string", description: "Not supported (mlx-lm recipe); use --target-bpw for mixed precision" },
+  } },
+} satisfies Record<string, { description: string; positional: string; usage?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
 export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
 export function isCommand(name: string): name is Command { return Object.hasOwn(commands, name); }
@@ -95,7 +114,7 @@ export function usage(command: Command): string {
 }
 
 export function parseCommand(command: Command, args: string[]): CommandArgs {
-  const options: Record<string, { type: "string" | "boolean" }> = commands[command].options;
+  const options: Record<string, { type: "string" | "boolean"; short?: string }> = commands[command].options;
   let parsed: CommandArgs;
   try { parsed = parseArgs({ args, options, allowPositionals: true, strict: true }); }
   catch (error) {
@@ -115,5 +134,5 @@ export function help(command?: string): string {
   if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun [options]\n       mlx-bun serve [query] [options]\n       mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(8)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nWith no command, start the server and web app using a cached model.\nRun mlx-bun serve --help for serving options.`;
   if (!isCommand(command)) throw new Error(`Unknown command: ${command}`);
   const info = commands[command];
-  return `mlx-bun ${command} — ${info.description}\n\nUsage: mlx-bun ${command} ${info.positional} [options]\n\nOptions:\n${Object.entries(info.options).map(([name, option]) => `  ${(`--${name}` + (option.type === "string" ? " <value>" : "")).padEnd(24)} ${option.description}`).join("\n")}\n  -h, --help               Show help`;
+  return `mlx-bun ${command} — ${info.description}\n\nUsage: mlx-bun ${command} ${info.positional} [options]\n\nOptions:\n${Object.entries(info.options).map(([name, option]: [string, { type: string; description: string; short?: string }]) => `  ${((option.short ? `-${option.short}, ` : "") + `--${name}` + (option.type === "string" ? " <value>" : "")).padEnd(24)} ${option.description}`).join("\n")}\n  -h, --help               Show help`;
 }

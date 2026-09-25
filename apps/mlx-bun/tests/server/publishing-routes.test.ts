@@ -78,13 +78,28 @@ test("each push kind forwards its source, repo, privacy and resolved token using
     const response = await routes.handle(post(`/api/${kind}/push`, { repo_id: "org/result", source_path: "/explicit", job_id: "ignored", private: true }));
     expect(response!.status).toBe(200);
     expect(await response!.json()).toEqual({ ok: true, url: "https://huggingface.co/org/result" });
-    expect(calls.at(-1)).toEqual(["/explicit", "org/result", { repoType: kind === "dataset" ? "dataset" : "model", private: true, token: "write-secret" }]);
+    expect(calls.at(-1)).toEqual(["/explicit", "org/result", { repoType: kind === "dataset" ? "dataset" : "model", private: true, token: "write-secret", signal: expect.any(AbortSignal) }]);
     expect(pendingRoute(`/api/${kind}/push`)).toBe(false);
   }
   expect(lookups).toEqual([]);
   await routes.handle(post("/api/finetune/push", { repo_id: "org/result", job_id: "job-1" }));
   expect(lookups).toEqual(["job-1"]);
-  expect(calls.at(-1)).toEqual(["/job-output", "org/result", { repoType: "model", private: false, token: "write-secret" }]);
+  expect(calls.at(-1)).toEqual(["/job-output", "org/result", { repoType: "model", private: false, token: "write-secret", signal: expect.any(AbortSignal) }]);
+});
+
+test("a cancelled push request aborts the uploader through its signal and answers 499", async () => {
+  const { credentials } = storage(); credentials.save("write-secret");
+  const controller = new AbortController();
+  let observed: AbortSignal | undefined;
+  const publish = createPublisher({ credentials, getJob: () => null, upload: (_source, _repo, options) => new Promise((_, reject) => {
+    observed = options.signal;
+    options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+    controller.abort(new Error("client went away"));
+  }) });
+  const routes = createPublishingRoutes({ credentials, publish });
+  const response = await routes.handle(post("/api/quantize/push", { repo_id: "org/result", source_path: "/explicit" }, controller.signal));
+  expect(response!.status).toBe(499);
+  expect(observed).toBe(controller.signal);
 });
 
 test("missing tokens, source outputs and upload failures preserve the error envelope", async () => {
