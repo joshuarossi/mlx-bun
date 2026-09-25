@@ -20,6 +20,7 @@
         "@earendil-works/pi-coding-agent": "0.80.3",
         "@mlx-bun/hub": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/mlx": "workspace:*",
         "typebox": "1.1.38",
       },
     },

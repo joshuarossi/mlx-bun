@@ -129,3 +129,5 @@ async function legacyForwardWithTaps(
     if (!work) m.hiddenTap = previousTap;
   }
 }
+
+export { bindLegacyDraftTarget } from "./draft-target";
