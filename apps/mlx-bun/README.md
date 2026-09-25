@@ -76,6 +76,17 @@ handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
 
+`server/management-routes.ts` owns tool-approval settings and confirmed cache
+cleanup over the existing chat and hub libraries. Startup shares
+`ServeOptions.chatPaths.toolApprovalsFile` with Pi and the settings routes.
+GC requires an explicit `yes: true`, uses the hub's conservative plan, closes
+its registry after rescanning, and invalidates discovery even if a rescan fails
+after deletion. Execution returns 409 if the plan would remove the active model
+snapshot, including a model reached through a symlink. Planning/execution errors
+use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
+use isolated approval files and synthetic caches with native MLX blocked.
+Hugging Face credential and upload routes remain deferred.
+
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
 and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
