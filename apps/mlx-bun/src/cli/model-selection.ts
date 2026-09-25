@@ -45,10 +45,11 @@ const defaults: ModelSelectionDependencies = {
 };
 
 /** Resolve a path/query, or select a cached supported model. An empty supported
- * cache gets the starter first, then e4b in the background, matching main. */
-export async function resolveModelAuto(query: string | null, supplied: Partial<ModelSelectionDependencies> = {}): Promise<{
-  m: ModelRecord; picked: boolean; background?: Promise<void>;
-}> {
+ * cache gets the starter first, as in main; the larger recommended model is
+ * returned for the caller to fetch in the background under its own owner.
+ * `signal` cancels the starter download (its partial stays resumable). */
+export async function resolveModelAuto(query: string | null, supplied: Partial<ModelSelectionDependencies> = {},
+  signal?: AbortSignal): Promise<{ m: ModelRecord; picked: boolean; recommended?: string }> {
   const deps = { ...defaults, ...supplied };
   if (query && existsSync(join(query, "config.json"))) {
     const directory = resolve(query);
@@ -64,11 +65,13 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
     if (query) return { m: registry.resolve(query), picked: false };
     const supported = () => registry.list().filter(model => isSupportedModelRecord(model.modelType, model.repoId));
     let candidates = supported();
-    let background: Promise<void> | undefined;
+    let recommended: string | undefined;
     if (candidates.length === 0) {
+      signal?.throwIfAborted();
       deps.log(`Downloading starter model ${STARTER_REPO_ID}`);
       const reported = new Map<string, number>();
       await deps.download(STARTER_REPO_ID, {
+        signal,
         onProgress(file, received, total) {
           // Keep redirected startup logs bounded while still showing large transfers.
           const bucket = total ? Math.floor(received / total * 10) : Math.floor(received / 100_000_000);
@@ -80,13 +83,10 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
       });
       await registry.scan();
       deps.log(`Starter ready; downloading ${DEFAULT_REPO_ID} in the background for the next start.`);
-      background = deps.download(DEFAULT_REPO_ID).then(async () => {
-        const refreshed = deps.registry();
-        try { await refreshed.scan(); } finally { refreshed.close(); }
-        deps.log(`Background download complete: ${DEFAULT_REPO_ID} (used on next start)`);
-      }).catch(() => { /* resumable; next start retries if still needed */ });
+      recommended = DEFAULT_REPO_ID;
       candidates = supported();
     }
+    signal?.throwIfAborted();
     const machine = deps.machine();
     const assessments = new Map<string, { full: boolean; coexist: boolean }>();
     for (const model of candidates) assessments.set(model.repoId, await deps.assess(model, machine));
@@ -94,6 +94,6 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
       model => assessments.get(model.repoId)?.full ?? false,
       model => assessments.get(model.repoId)?.coexist ?? false);
     if (!chosen) throw new Error("No downloaded supported model fits this machine — pick one explicitly (mlx-bun ls).");
-    return { m: chosen, picked: true, ...(background ? { background } : {}) };
+    return { m: chosen, picked: true, ...(recommended ? { recommended } : {}) };
   } finally { registry.close(); }
 }

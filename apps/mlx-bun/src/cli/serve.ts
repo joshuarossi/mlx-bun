@@ -13,6 +13,7 @@ import type { CacheServiceOptions } from "../engine/cache-services";
 import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { PiBackendPaths } from "../chat/pi-backend";
+import type { DownloadOwner } from "../hub/downloads";
 
 export interface ServeOptions {
   query: string | null;
@@ -129,7 +130,13 @@ export function resolveServingLimits(
   };
 }
 
-export interface RunningApp { port: number; close(): Promise<void> }
+export interface RunningApp {
+  port: number;
+  /** The app's transfer owner: startup hands it the recommended background
+   * download; shutdown aborts and joins whatever it still carries. */
+  downloads: Pick<DownloadOwner, "start" | "active">;
+  close(): Promise<void>;
+}
 
 /** CLI composition owns resources until each explicit ownership transfer. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
@@ -216,10 +223,11 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     // discovery and chat; completion refreshes the registry and discovery, and
     // shutdown joins every transfer before the engine closes.
     const downloads = createDownloadOwner({
-      onComplete: async () => {
+      onComplete: async repoId => {
         const registry = new Registry();
         try { await registry.scan(); } finally { registry.close(); }
         completions.invalidateLibrary();
+        console.log(`[hub] download complete: ${repoId}`);
       },
       onFailure: (repoId, error) => console.error(`[hub] download of ${repoId} failed: ${error instanceof Error ? error.message : String(error)}`),
     });
@@ -294,7 +302,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;
-    return { port: boundPort, async close() { try { await listener.close(); } finally { restoreProcess(); } } };
+    return { port: boundPort, downloads, async close() { try { await listener.close(); } finally { restoreProcess(); } } };
   } catch (error) {
     try { await cleanup?.(); }
     catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
@@ -357,19 +365,35 @@ const defaults: ServeDependencies = {
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<RunningApp> {
   const options = parseServeOptions(args);
   const deps = { ...defaults, ...supplied };
-  const { m, picked } = await deps.resolve(options.query);
-  deps.log(`Loading ${m.repoId}${picked ? " (auto-selected)" : ""}`);
-  const running = await deps.start(m, options);
+  // A signal before the app exists cancels selection (a starter download stays
+  // resumable) and, once the model has loaded, closes the app right away; the
+  // shutdown handlers take over as soon as the listener is up.
+  const startup = new AbortController();
+  const cancelStartup = () => startup.abort(new Error("startup cancelled by signal"));
+  deps.signals.on("SIGINT", cancelStartup); deps.signals.on("SIGTERM", cancelStartup);
+  let running: RunningApp | undefined, selection: Awaited<ReturnType<typeof resolveModelAuto>> | undefined, removeSignals = () => {};
   let closed: Promise<void> | undefined;
-  const close = () => closed ??= (async () => { try { await running.close(); } finally { removeSignals(); } })();
-  // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.
-  const rawTimeout = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
-  const removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error,
-    ...(Number.isFinite(rawTimeout) && rawTimeout > 0 ? { timeoutMs: rawTimeout } : {}) });
+  const close = () => closed ??= (async () => { try { await running?.close(); } finally { removeSignals(); } })();
+  try {
+    selection = await deps.resolve(options.query, {}, startup.signal);
+    deps.log(`Loading ${selection.m.repoId}${selection.picked ? " (auto-selected)" : ""}`);
+    running = await deps.start(selection.m, options);
+    // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.
+    const rawTimeout = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
+    removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error,
+      ...(Number.isFinite(rawTimeout) && rawTimeout > 0 ? { timeoutMs: rawTimeout } : {}) });
+  } finally { deps.signals.removeListener("SIGINT", cancelStartup); deps.signals.removeListener("SIGTERM", cancelStartup); }
+  const app: RunningApp = { port: running.port, downloads: running.downloads, close };
+  if (startup.signal.aborted) { await close(); return app; }
+  if (selection.recommended) {
+    // Main started this transfer during selection and dropped its handle; the
+    // app's owner now carries it, reports it on /downloads, and joins it at shutdown.
+    try { running.downloads.start(selection.recommended); } catch (error) { deps.error(error); }
+  }
   const url = browserUrl(options.hostname, running.port);
-  deps.log(`Serving ${m.repoId} with continuous batching (capacity ${options.capacity})\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
+  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {
     try { await deps.open(url); } catch (error) { deps.error(error); }
   }
-  return { port: running.port, close };
+  return app;
 }

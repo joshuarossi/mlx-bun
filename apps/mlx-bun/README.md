@@ -9,7 +9,11 @@ After the root native setup, run
 `bun apps/mlx-bun/src/cli/main.ts serve --model <cached-model-or-directory>`.
 Use `serve --help` for accepted options. A terminal session opens the browser
 unless `--no-open` is supplied. Startup without a model selects a cached model;
-if none is supported, it downloads the starter and then the recommended model.
+if none is supported, it downloads the starter, then hands the recommended model
+to the app's download owner as a background transfer, visible on `GET /downloads`
+and joined at shutdown. A signal before the app exists cancels selection (a
+starter download stays resumable); a signal during model load closes the app as
+soon as it is up. Shutdown handlers are installed as soon as the listener binds.
 Known unfinished features return HTTP 501 during migration; their remaining
 work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404, as do
 main's lab pages (`/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`):
