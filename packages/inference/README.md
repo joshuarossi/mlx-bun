@@ -238,8 +238,12 @@ latency, and active/cache/peak memory. The timed region follows main's
 `scripts/bench/native.ts`; loading and hashing are outside it.
 
 For migration comparisons, run main and branch sequentially in AB/BA order with
-identical settings on the same quiet machine. Check token identity and completion
-before comparing timings. Machine load and VM snapshots are evidence, not an
+identical settings on the same quiet machine; use `bun --no-env-file` for both
+trees so project-local dotenv files cannot add overrides. The CPU-only `pair`
+command checks complete AB/BA ordering, matching settings, weight hashes and all
+tokens (warmups included), then reports median/min/max timing and memory.
+Main's old reports need explicit external metadata annotations; retain their
+unchanged originals and record where the missing fields came from. Machine load and VM snapshots are evidence, not an
 automatic quiet-machine guarantee. Keep raw reports outside Git; record only
 curated paired results with their source, artifact, native and machine provenance.
 The tool records these identities (`--hash-weights` includes full weight hashes)

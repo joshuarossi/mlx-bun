@@ -152,17 +152,105 @@ export async function benchmark(options: NativeBenchOptions): Promise<void> {
   console.log(JSON.stringify({ report: jsonPath, complete: report.complete, samples: report.samples.length }));
 }
 
+export function pairReports(runs: { tree: "main" | "branch"; report: any }[]) {
+  assert(runs.length >= 4 && runs.length % 4 === 0, "supply complete main/branch/branch/main blocks");
+  const first = runs[0]!.report;
+  const baseline = (r: any) => ({ artifact: r.artifact, configSha256: r.configSha256,
+    indexSha256: r.indexSha256, promptSha256: r.promptSha256, promptIds: r.promptIds,
+    eosTokenIds: r.eosTokenIds, runtimeEnvironment: r.runtimeEnvironment, weightHashes: r.weightHashes,
+    host: r.host, chip: r.chip, ramBytes: r.ramBytes,
+    tokens: r.options?.tokens, samples: r.options?.samples, warmup: r.options?.warmup,
+    prefillChunk: r.options?.prefillChunk, clearBeforeRequest: r.options?.clearBeforeRequest });
+  let expectedTokens: number[] | undefined;
+  let previousEnd = -Infinity;
+  const commits = new Map<string, string>();
+  const samples: Record<"main" | "branch", NativeBenchSample[]> = { main: [], branch: [] };
+  for (let i = 0; i < runs.length; i++) {
+    const { tree, report: r } = runs[i]!;
+    assert.equal(tree, ["main", "branch", "branch", "main"][i % 4], "expected AB/BA process order");
+    assert.equal(r.complete, true, "incomplete run");
+    assert(typeof r.sourceCommit === "string" && /^[a-f0-9]{40}$/.test(r.sourceCommit), "missing source revision");
+    assert(r.dirty !== true, "dirty source cannot establish a reproducible pair");
+    if (commits.has(tree)) assert.equal(r.sourceCommit, commits.get(tree), "source changed between blocks");
+    commits.set(tree, r.sourceCommit);
+    for (const key of ["artifact", "configSha256", "promptSha256", "host", "chip"])
+      assert(typeof r[key] === "string" && r[key].length > 0, `missing ${key}`);
+    assert(Array.isArray(r.promptIds) && r.promptIds.length > 0 && Array.isArray(r.eosTokenIds), "missing prompt/EOS IDs");
+    assert(r.runtimeEnvironment && typeof r.runtimeEnvironment === "object" && !Array.isArray(r.runtimeEnvironment), "runtime environment must be recorded");
+    assert(r.weightHashes && Object.keys(r.weightHashes).length > 0 && Object.values(r.weightHashes).every(h => typeof h === "string" && /^[a-f0-9]{64}$/.test(h)), "full weight hashes required");
+    assert.deepEqual(baseline(r), baseline(first), "pair configuration differs");
+    assert(Number.isSafeInteger(r.options.samples) && r.options.samples > 0 && Number.isSafeInteger(r.options.warmup) && r.options.warmup >= 0, "invalid sample counts");
+    assert(Array.isArray(r.samples) && r.samples.length === r.options.samples, "missing samples");
+    assert(Array.isArray(r.warmups) && r.warmups.length === r.options.warmup, "missing warmups");
+    for (const sample of [...r.warmups, ...r.samples]) {
+      const start = Date.parse(sample.startedAt), end = Date.parse(sample.completedAt);
+      assert(Number.isFinite(start) && Number.isFinite(end) && start >= previousEnd && end >= start,
+        "measurement timestamps must establish sequential AB/BA order");
+      previousEnd = end;
+      assert(Array.isArray(sample.tokens) && sample.tokens.every((n: unknown) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0), "invalid generated IDs");
+      expectedTokens ??= sample.tokens;
+      assert.deepEqual(sample.tokens, expectedTokens, "generated tokens differ; timing comparison refused");
+      assert(sample.tokens.length <= r.options.tokens, "too many generated tokens");
+      assert.equal(sample.finishReason, sample.tokens.length < r.options.tokens ? "stop" : "length", "invalid finish reason");
+      for (const value of [sample.wallMs, sample.peakBytes, sample.memoryBefore?.activeBytes, sample.memoryBefore?.cacheBytes,
+        sample.memoryAfter?.activeBytes, sample.memoryAfter?.cacheBytes, sample.engineTiming?.prefillMs, sample.engineTiming?.decodeMs])
+        assert(typeof value === "number" && Number.isFinite(value) && value >= 0, "missing or invalid measurement");
+      assert(sample.firstTokenMs === null && sample.tokens.length === 0 ||
+        typeof sample.firstTokenMs === "number" && Number.isFinite(sample.firstTokenMs) && sample.firstTokenMs >= 0 && sample.firstTokenMs <= sample.wallMs, "invalid first-token latency");
+      assert.equal(sample.engineTiming.generatedTokens, sample.tokens.length, "engine/token count mismatch");
+      assert.equal(sample.engineTiming.cachedTokens, 0, "expected fresh request state");
+    }
+    samples[tree].push(...r.samples);
+  }
+  const distribution = (values: number[]) => {
+    assert(values.length > 0, "empty measurement distribution");
+    const ordered = [...values].sort((a, b) => a - b), mid = Math.floor(ordered.length / 2);
+    return { median: ordered.length % 2 ? ordered[mid]! : (ordered[mid - 1]! + ordered[mid]!) / 2,
+      min: ordered[0]!, max: ordered.at(-1)! };
+  };
+  return { order: runs.map(r => r.tree), sourceCommits: Object.fromEntries(commits), tokens: expectedTokens,
+    trees: Object.fromEntries((["main", "branch"] as const).map(tree => [tree, {
+      samples: samples[tree].length,
+      wallMs: distribution(samples[tree].map(s => s.wallMs)),
+      firstTokenMs: samples[tree].some(s => s.firstTokenMs === null) ? null : distribution(samples[tree].map(s => s.firstTokenMs!)),
+      prefillMs: distribution(samples[tree].map(s => s.engineTiming!.prefillMs)),
+      decodeMs: distribution(samples[tree].map(s => s.engineTiming!.decodeMs)),
+      peakBytes: distribution(samples[tree].map(s => s.peakBytes)),
+      activeAfterBytes: distribution(samples[tree].map(s => s.memoryAfter!.activeBytes)),
+      cacheAfterBytes: distribution(samples[tree].map(s => s.memoryAfter!.cacheBytes)),
+    }])) };
+}
+
 if (import.meta.main) {
   if (process.argv.includes("--help")) console.log(`Measure direct library generation with local weights (no downloads).
   bun packages/inference/scripts/bench.ts --model-path DIR --prompt-ids ids.json --json report.json
     [--tokens 64] [--samples 5] [--warmup 1] [--prefill-chunk 2048]
     [--clear-before-request] [--hash-weights]
+Use bun --no-env-file for both trees to avoid project-local dotenv overrides.
 Use the same frozen prompt IDs, artifact, EOS and runtime overrides for both trees.
 Run processes sequentially in AB/BA order on a quiet machine with no training.
 Keep every warmup and sample; inspect tokens before comparing timings. Reports are
 external artifacts, never committed raw. Weight hashing streams files before timing.
 No Python, server, native build or model download is started by this tool.
-This is a library measurement, not an HTTP benchmark or automatic speed claim.`);
-  else try { await benchmark(parseNativeBenchArgs(process.argv.slice(2))); }
+This is a library measurement, not an HTTP benchmark or automatic speed claim.
+CPU-only comparison: bench.ts pair --main A1.json --branch B1.json --branch B2.json --main A2.json
+Requires complete AB/BA blocks, matching artifact/weight hashes, prompt/EOS/options,
+recorded runtime environment and machine, and identical tokens in every warmup and
+sample. Retains order and reports median/min/max; never infers a regression threshold.
+Legacy main reports must have their missing runtimeEnvironment and weightHashes
+recorded externally from the actual launch/environment and artifact; retain the raw
+report alongside that annotated copy. Do not invent unrecorded settings.`);
+  else try {
+    const args = process.argv.slice(2);
+    if (args[0] === "pair") {
+      const runs: { tree: "main" | "branch"; report: unknown }[] = [];
+      for (let i = 1; i < args.length; i += 2) {
+        const label = args[i];
+        assert((label === "--main" || label === "--branch") && args[i + 1], "pair expects labeled report files");
+        runs.push({ tree: label === "--main" ? "main" : "branch", report: await Bun.file(args[i + 1]!).json() });
+      }
+      console.log(JSON.stringify(pairReports(runs), null, 2));
+    } else await benchmark(parseNativeBenchArgs(args));
+  }
   catch (error) { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; }
 }
