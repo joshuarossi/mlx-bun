@@ -125,12 +125,13 @@ async function readJson<T>(res: Response, signal?: AbortSignal): Promise<T> {
 }
 
 /** Turn a transport-level HTTP failure into a clear, actionable error. */
-async function httpError(action: string, res: Response): Promise<Error> {
+async function httpError(action: string, res: Response, signal?: AbortSignal): Promise<Error> {
   let detail = "";
   try {
     detail = (await res.text()).slice(0, 300);
   } catch {
-    /* ignore */
+    // An unreadable error body is still that error; an abort while reading it is cancellation.
+    signal?.throwIfAborted();
   }
   const hints: Record<number, string> = {
     401: "unauthorized — your HF token is missing, invalid, or expired (need a *write* token)",
@@ -219,7 +220,7 @@ export async function createRepo(
   if (res.status === 409) {
     return { url: `${base}/${repoType === "dataset" ? "datasets/" : ""}${repoId}` };
   }
-  throw await httpError("create repo", res);
+  throw await httpError("create repo", res, opts.signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +300,7 @@ async function preupload(
       })),
     }),
   }, signal);
-  if (!res.ok) throw await httpError("preupload", res);
+  if (!res.ok) throw await httpError("preupload", res, signal);
   const json = await readJson<{ files?: PreuploadEntry[] }>(res, signal);
   const map = new Map<string, PreuploadEntry>();
   for (const e of json.files ?? []) map.set(e.path, e);
@@ -349,7 +350,7 @@ async function uploadLfsFiles(
       objects: items.map((i) => ({ oid: i.oid, size: i.file.size })),
     }),
   }, signal);
-  if (!batchRes.ok) throw await httpError("LFS batch", batchRes);
+  if (!batchRes.ok) throw await httpError("LFS batch", batchRes, signal);
   const batch = await readJson<{ objects?: LfsObject[] }>(batchRes, signal);
 
   const byOid = new Map(items.map((i) => [i.oid, i]));
@@ -372,7 +373,7 @@ async function uploadLfsFiles(
       headers: { ...(upload.header ?? {}) },
       body: new Blob([Uint8Array.from(item.bytes)]),
     }, signal);
-    if (!putRes.ok) throw await httpError(`LFS upload of ${item.file.repoPath}`, putRes);
+    if (!putRes.ok) throw await httpError(`LFS upload of ${item.file.repoPath}`, putRes, signal);
     onProgress?.(item.file.repoPath, item.file.size, item.file.size);
 
     // Optional verify step (S3 transfers often request it).
@@ -387,7 +388,7 @@ async function uploadLfsFiles(
         },
         body: JSON.stringify({ oid: obj.oid, size: item.file.size }),
       }, signal);
-      if (!vRes.ok) throw await httpError(`LFS verify of ${item.file.repoPath}`, vRes);
+      if (!vRes.ok) throw await httpError(`LFS verify of ${item.file.repoPath}`, vRes, signal);
     }
   }
 }
@@ -450,7 +451,7 @@ async function commit(
     },
     body: ndjson,
   }, signal);
-  if (!res.ok) throw await httpError("commit", res);
+  if (!res.ok) throw await httpError("commit", res, signal);
   let json: { commitOid?: string; commitUrl?: string } = {};
   try {
     json = (await res.json()) as { commitOid?: string; commitUrl?: string };

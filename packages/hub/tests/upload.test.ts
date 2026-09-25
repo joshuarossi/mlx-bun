@@ -402,6 +402,16 @@ describe("cancellation while reading a held response body", () => {
     writeFileSync(join(dir, "config.json"), "{}");
     return dir;
   };
+  test("an abort while a held error body is being read rejects with the signal's reason, not the HTTP error", async () => {
+    const abort = new AbortController(), reason = new Error("review cancellation");
+    const held = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+      setTimeout(() => abort.abort(reason), 50);
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("server ")); } }),
+        { status: 500, headers: { "content-type": "text/plain" } });
+    } });
+    try { await expect(createRepo("test/review", { token: null, baseUrl: held.url.href, signal: abort.signal })).rejects.toBe(reason); }
+    finally { await held.stop(true); }
+  });
   for (const target of ["create", "commit"] as const) {
     test(`an abort while the ${target} response body is held rejects with the signal's reason`, async () => {
       const dir = files();
