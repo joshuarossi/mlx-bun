@@ -67,7 +67,7 @@ Cells: `done` · `partial` · `missing` · `501` (route stubbed) · `n/a` · `he
 Evidence means an opt-in real-weight test that passes against a pinned published
 golden or regenerates it; synthetic tests never fill it. This repository carries
 code, tests, and documentation; goldens, records, and benchmark data are published
-datasets, and experiments live in a separate lab repository. Serial-only and
+datasets; experiments and benchmarks live outside it. Serial-only and
 compilation switches stay absent by Josh's decision; nothing else here is dropped
 without one.
 
@@ -84,9 +84,9 @@ without one.
 | Training CLI | done (training package incl. fuse, merge, export; dropped parity tests tracked above) | done (finetune job, merge and export routes) | done | missing (`train`, `train-watch` dashboard, `fuse`) | done (finetune panel) | done for short MiniCPM SFT/DPO/ORPO; other paths tracked above | Thin verbs over the job host and training API |
 | Quantize CLI | done | done (quantize job) | done | missing (`convert`, main's mlx_lm.convert counterpart) | done | done for uniform and mixed MiniCPM; rotation and Trellis unverified | `convert` verb over the same producer |
 | Publishing CLI | done (hub upload) | n/a | done (push routes, HF settings) | missing (`upload`; main's `cli-upload` test) | done | n/a | Verb over the app publishing orchestration |
-| Evaluation and benchmarking: `bench`, `evals`, `perplexity`, EvalDB, eval tasks | n/a (experiments; the in-package bench harness moves out) | n/a | `/fit` measured fields stay null | not app verbs | status page shows dashes | n/a | A separate lab repository consumes the published packages and drives the app through its public HTTP and CLI surface; its data is published as datasets; the performance pass runs there |
+| Evaluation and benchmarking: `bench`, `evals`, `perplexity`, EvalDB, eval tasks | n/a (experiments; the in-package bench harness moves out) | n/a | `/fit` measured fields stay null | not app verbs | status page shows dashes | n/a | Runs outside this repository, consuming the published packages and driving the app through its public HTTP and CLI surface; results are published as datasets or quoted as text in docs |
 | Dataset `verified_code` execution | n/a | 501 at submit; template visible as unavailable | 501 | n/a | done | n/a | An owned sandboxed executor; main's `spawnSync` of generated Python is not to be ported |
-| Lab pages: `/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`, expert-trace, paged-kv lab | n/a | n/a | should be 404 (not product surface; currently in the 501 list) | n/a | `/dag` probe degrades | n/a | Out of the product: drop the placeholders; the Curve Designer and traces belong to the lab repository if kept |
+| Lab pages: `/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`, expert-trace, paged-kv lab | n/a | n/a | should be 404 (not product surface; currently in the 501 list) | n/a | `/dag` probe degrades | n/a | Out of the product: drop the placeholders; keep the Curve Designer and traces outside this repository if wanted |
 | Cache admin | done (durability flush, session close) | done (`flush` in cache services) | 501 (`/admin/cache/flush`, `/admin/cache/session/close`) | n/a | n/a | n/a | Two thin routes; the documented SSD durability boundary |
 | Pi terminal: `pi`, `harness pi` | n/a | chat backend reusable | n/a | held (`pi-terminal`, `harness-pi` not ported) | n/a | n/a | Held by Josh |
 | Docs surface and gates | n/a | n/a | served surface documented only in `--help` and READMEs | same | same | n/a | Recreate main's `docs/reference/*` homes (cli, server-api, server-config, models, benchmarks, environment, distribution, training, memory) with the surface and hygiene gates; quotable numbers are text in the benchmarks doc |
