@@ -1,14 +1,14 @@
-// Opt-in with real weights: a small adapter trained through the CLI is mounted
-// at startup with `--adapter`, listed on /v1/adapters, and used as the default
-// for requests without an adapter field; a bad directory fails startup.
+// Opt-in with real weights: a small adapter produced by the app's fine-tune
+// producer is mounted at startup with `--adapter`, listed on /v1/adapters, and
+// used as the default for requests without an adapter field; a bad directory
+// fails startup.
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import type { RunningApp } from "../../src/cli/serve";
 
 const modelDir = process.env.MLX_BUN_APP_TEST_MODEL;
-const entry = resolve(import.meta.dir, "../../src/cli/main.ts");
 
 test.skipIf(!modelDir)("a startup adapter is mounted before serving, defaults requests, and a bad directory fails startup", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-startup-adapter-")), data = join(root, "data"), adapter = join(root, "adapters", "cli-lora");
@@ -16,10 +16,12 @@ test.skipIf(!modelDir)("a startup adapter is mounted before serving, defaults re
   writeFileSync(join(data, "train.jsonl"), Array.from({ length: 4 }, (_, i) => JSON.stringify({ text: `Example ${i}: the quick brown fox jumps over the lazy dog.` }) + "\n").join(""));
   let app: RunningApp | undefined;
   try {
-    const train = Bun.spawn([process.execPath, "--no-env-file", entry, "train", modelDir!, "--data", data, "--method", "sft", "--iters", "3", "--seq", "128", "--adapter", adapter],
-      { stdout: "pipe", stderr: "pipe", env: { ...process.env, HOME: root, HF_HUB_OFFLINE: "1", NO_COLOR: "1" } });
-    const [trainOut, trainErr, trainCode] = await Promise.all([new Response(train.stdout).text(), new Response(train.stderr).text(), train.exited]);
-    expect(trainCode, `train exited ${trainCode}\n${trainOut}\n${trainErr}`).toBe(0);
+    // The same producer the fine-tune job runs, in-process: it loads and releases its own model.
+    const { createFinetuneRunner } = await import("../../src/finetune/job");
+    const steps: number[] = [];
+    await createFinetuneRunner()(event => { if (event.type === "metric" && event.kind === "train") steps.push(event.step); },
+      { model_dir: modelDir, data_dir: data, adapter_path: adapter, method: "sft", iters: 3, max_seq_length: 128, steps_per_report: 1 });
+    expect(steps).toEqual([1, 2, 3]);
     expect(existsSync(join(adapter, "adapters.safetensors"))).toBe(true);
     const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
     const { scanSnapshot } = await import("@mlx-bun/hub/registry");
