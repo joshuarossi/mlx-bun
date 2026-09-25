@@ -43,8 +43,8 @@ test("paired summaries retain ABBA order and exclude warmups from distributions"
   const runs = pair(); runs[0]!.report.warmups[0]!.wallMs = 999;
   const result = pairReports(runs);
   expect(result.order).toEqual(["main", "branch", "branch", "main"]);
-  expect(result.trees.main.wallMs).toEqual({ median: 11.5, min: 10, max: 13 });
-  expect(result.trees.branch.samples).toBe(2);
+  expect(result.trees.main!.wallMs).toEqual({ median: 11.5, min: 10, max: 13 });
+  expect(result.trees.branch!.samples).toBe(2);
 });
 test("pairing refuses token drift, missing evidence and mismatched settings before timing", () => {
   const mutations = [
