@@ -8,6 +8,7 @@ import { submitSubprocess, closeSubprocessJobs } from "../../src/jobs/runner";
 import { makeEmit } from "../../src/jobs/events";
 import { streamJobResponse, tailJob } from "../../src/jobs/sse";
 import { createJobRoutes } from "../../src/server/job-routes";
+import type { JobEvent } from "../../src/jobs/protocol";
 
 const stores: JobStore[] = [], roots: string[] = [];
 function fresh() {
@@ -17,6 +18,13 @@ function fresh() {
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(r => resolve = r); return { promise, resolve }; }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+async function terminals(store: JobStore, jobId: string) {
+  const events = [];
+  for await (const event of tailJob(store, jobId)) {
+    if (event.type === "done" || event.type === "failed") events.push(event);
+  }
+  return events;
+}
 async function until(check: () => boolean) {
   const end = Date.now() + 3000;
   while (!check()) { if (Date.now() > end) throw new Error("timed out"); await Bun.sleep(5); }
@@ -60,6 +68,7 @@ test("a queued child waits for admission and holds the lease until process exit"
   first.exit.resolve(1); await until(() => events.includes("spawn2"));
   expect(events).toEqual(["spawn1", "release1", "spawn2"]);
   expect(store.get(one.jobId)?.status).toBe("failed");
+  expect(await terminals(store, one.jobId)).toMatchObject([{ type: "failed", error: "exited 1" }]);
   second.exit.resolve(1); await until(() => events.includes("release2"));
 });
 
@@ -72,6 +81,8 @@ test("spawn and admission failure release ownership and let the next job proceed
   const last = submitSubprocess(store, "quantize", {}, undefined, { entry: "child.ts", acquire: async () => ({ dispose() {} }), spawn: next.spawn });
   await until(() => store.get(rejected.jobId)?.status === "failed");
   expect(store.get(fail.jobId)?.error).toContain("spawn failed"); expect(released).toBe(1);
+  expect(await terminals(store, fail.jobId)).toMatchObject([{ type: "failed", error: "Error: spawn failed" }]);
+  expect(await terminals(store, rejected.jobId)).toMatchObject([{ type: "failed", error: "Error: admission denied" }]);
   next.exit.resolve(1); await until(() => store.get(last.jobId)?.status === "failed");
 });
 
@@ -84,6 +95,8 @@ test("close cancels admission and queued jobs without spawning", async () => {
   const first = submitSubprocess(store, "quantize", {}, undefined, opts), second = submitSubprocess(store, "quantize", {}, undefined, opts);
   await tick(); await closeSubprocessJobs(store);
   expect(spawned).toBe(0); expect(store.get(first.jobId)?.status).toBe("failed"); expect(store.get(second.jobId)?.status).toBe("failed");
+  expect(await terminals(store, first.jobId)).toMatchObject([{ type: "failed", error: "Error: job host closed" }]);
+  expect(await terminals(store, second.jobId)).toMatchObject([{ type: "failed", error: "job host closed" }]);
 });
 
 test("close awaits child death and its final stdout before releasing the lease", async () => {
@@ -162,7 +175,28 @@ test("SSE disconnect and host cancellation stop polling a nonterminal job", asyn
   await reader.cancel();
   const controller = new AbortController();
   const ended = streamJobResponse(store, row.id, controller.signal).text(); controller.abort();
-  await ended;
+  const output = await ended;
+  expect(output).not.toContain('"type":"done"');
+  expect(output).not.toContain('"type":"failed"');
   const tail = tailJob(store, row.id, { signal: controller.signal });
   expect((await tail[Symbol.asyncIterator]().next()).done).toBe(true);
+});
+
+test("terminal row recovery covers the status-before-log race without duplicating replayed events", async () => {
+  const { store } = fresh();
+  for (const status of ["done", "failed"] as const) {
+    const row = store.create("quantize", {}, "/temporary/output");
+    store.setStatus(row.id, status, { error: status === "failed" ? "producer failed" : undefined,
+      endedAt: "2026-09-25 00:00:00" });
+    // Pause the simulated child between its SQLite terminal write and emit.
+    const expected: JobEvent = status === "done"
+      ? { type: "done", ts: Date.UTC(2026, 8, 25), output_dir: "/temporary/output" }
+      : { type: "failed", ts: Date.UTC(2026, 8, 25), error: "producer failed" };
+    expect(await terminals(store, row.id)).toEqual([expected]);
+    const logged = { ...expected, ts: Date.UTC(2026, 8, 25) + 1 };
+    makeEmit(store, row.id, row.log_path)(logged);
+    expect(await terminals(store, row.id)).toEqual([logged]);
+    const sse = await streamJobResponse(store, row.id).text();
+    expect(sse.indexOf(`"type":"${status}"`)).toBeLessThan(sse.indexOf("event: end"));
+  }
 });

@@ -36,6 +36,15 @@ export async function* tailJob(
 
   let offset = 0;
   let buf = "";
+  let terminalSeen = false;
+  const eventFromLine = (line: string): JobEvent | undefined => {
+    const event = JSON.parse(line) as JobEvent;
+    if (event.type === "done" || event.type === "failed") {
+      if (terminalSeen) return undefined;
+      terminalSeen = true;
+    }
+    return event;
+  };
 
   for (;;) {
     if (opts.signal?.aborted) return;
@@ -52,7 +61,8 @@ export async function* tailJob(
         buf = buf.slice(nl + 1);
         if (!line) continue;
         try {
-          yield JSON.parse(line) as JobEvent;
+          const event = eventFromLine(line);
+          if (event) yield event;
         } catch {
           // partial / corrupt line: re-buffer it and wait for more bytes
           buf = line + "\n" + buf;
@@ -63,8 +73,8 @@ export async function* tailJob(
 
     if (!follow || opts.signal?.aborted) return;
 
-    const status = store.get(jobId)?.status;
-    if (status && TERMINAL.has(status)) {
+    const finalRow = store.get(jobId);
+    if (finalRow && TERMINAL.has(finalRow.status)) {
       // Drain any bytes written between the last read and the terminal flip.
       const f = Bun.file(logPath);
       const sz = await f.size;
@@ -75,7 +85,22 @@ export async function* tailJob(
       for (const line of buf.split("\n")) {
         const s = line.trim();
         if (!s) continue;
-        try { yield JSON.parse(s) as JobEvent; } catch { /* drop trailing partial */ }
+        try {
+          const event = eventFromLine(s);
+          if (event) yield event;
+        } catch { /* drop trailing partial */ }
+      }
+      if (opts.signal?.aborted) return;
+      // A crash/admission failure may only update SQLite. A child can also
+      // publish terminal status just before appending its terminal log event.
+      // Clients need a terminal event in either case, before the SSE end marker.
+      if (!terminalSeen) {
+        const endedAt = finalRow.ended_at ? Date.parse(finalRow.ended_at.replace(" ", "T") + "Z") : NaN;
+        const ts = Number.isFinite(endedAt) ? endedAt : Date.now();
+        yield finalRow.status === "done"
+          ? { type: "done", ts, output_dir: finalRow.output_path ?? undefined }
+          : { type: "failed", ts, error: finalRow.error ??
+              (finalRow.status === "zombie" ? "job interrupted by a previous process exit" : "job failed") };
       }
       return;
     }
