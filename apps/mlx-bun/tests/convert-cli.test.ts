@@ -219,7 +219,7 @@ test("--upload-repo resolves the write token before any work and publishes only 
       .rejects.toBe(reason);
     expect(observed).toBe(controller.signal);
     expect(cancelled.lines.some(line => line.startsWith("box: ● convert complete"))).toBe(true);
-    expect(cancelled.lines.slice(-2)).toEqual(["fail: upload cancelled",
+    expect(cancelled.lines.slice(-2)).toEqual(["fail: upload cancelled", "log: " +
       `the converted model is intact at ${out}-cancel — retry with: mlx-bun upload --path ${out}-cancel --upload-repo org/quant`]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
