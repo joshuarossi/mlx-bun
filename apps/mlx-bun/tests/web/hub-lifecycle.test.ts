@@ -7,7 +7,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gitBlobSha1 } from "@mlx-bun/hub/download";
+import { downloadsSnapshot, gitBlobSha1 } from "@mlx-bun/hub/download";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 import { createDownloadOwner } from "../../src/hub/downloads";
 import { createDiscoveryRoutes } from "../../src/server/discovery-routes";
@@ -28,9 +28,9 @@ function fakeHub() {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname === "/api/models") return Response.json([
-      { id: "org/tiny", downloads: 3, likes: 1, tags: ["mlx"] }, { id: "org/missing", downloads: 0, likes: 0, tags: ["mlx"] }]);
-    if (url.pathname.startsWith("/api/models/org/missing/")) return new Response("Repository not found", { status: 404 });
-    if (url.pathname.startsWith("/api/models/org/tiny/")) {
+      { id: "lifecycle/tiny", downloads: 3, likes: 1, tags: ["mlx"] }, { id: "lifecycle/missing", downloads: 0, likes: 0, tags: ["mlx"] }]);
+    if (url.pathname.startsWith("/api/models/lifecycle/missing/")) return new Response("Repository not found", { status: 404 });
+    if (url.pathname.startsWith("/api/models/lifecycle/tiny/")) {
       if (metadata) await metadata.promise;
       return Response.json({ sha: COMMIT, siblings: [
         { rfilename: "config.json", size: config.length, blobId: gitBlobSha1(config) },
@@ -57,7 +57,11 @@ async function until(predicate: () => boolean, what: string, ms = 5_000) {
 test("Download button: slow listing shows preparing, then progress, then done; a listing failure shows its error", async () => {
   const hub = fakeHub();
   const cacheDir = mkdtempSync(join(tmpdir(), "mlx-hub-lifecycle-")); cleanups.push(() => rmSync(cacheDir, { recursive: true, force: true }));
-  const owner = createDownloadOwner({ transfer: { cacheDir, endpoint: hub.endpoint, token: null } });
+  // The hub tracker is process-global and other suites leave rows in it; this
+  // test reads only its own repo identities from it. Foreign-row inclusion is
+  // covered by the owner's unit tests.
+  const owner = createDownloadOwner({ transfer: { cacheDir, endpoint: hub.endpoint, token: null },
+    tracker: () => downloadsSnapshot().filter(row => row.repoId.startsWith("lifecycle/")) });
   const context = { modelId: "test/model", model: { config: { modelType: "llama", text: { maxPositionEmbeddings: 8192 } } },
     template: { supportsThinking: false }, genDefaults: {}, draft: null } as unknown as LoadedModelContext;
   const discovery = createDiscoveryRoutes(context, { discovery: { adapters: false, training: false, dsa: true, embeddings: false } },
@@ -78,31 +82,31 @@ test("Download button: slow listing shows preparing, then progress, then done; a
   const served = async () => (await (await browserFetch(new URL("/downloads", base))).json()).downloads as { repoId: string; state: string; totalBytes: number; error?: string }[];
 
   await runSearch("tiny");
-  expect(button("org/tiny").textContent).toBe("Download");
-  button("org/tiny").click();
-  await until(() => actions("org/tiny") === "downloading…", "download admission");
-  expect(owner.active).toEqual(["org/tiny"]);
+  expect(button("lifecycle/tiny").textContent).toBe("Download");
+  button("lifecycle/tiny").click();
+  await until(() => actions("lifecycle/tiny") === "downloading…", "download admission");
+  expect(owner.active).toEqual(["lifecycle/tiny"]);
   // The listing is still pending: the tracker has no row, the owner's does.
-  expect(await served()).toEqual([expect.objectContaining({ repoId: "org/tiny", state: "active", totalBytes: 0 })]);
+  expect(await served()).toEqual([expect.objectContaining({ repoId: "lifecycle/tiny", state: "active", totalBytes: 0 })]);
   await pollDownloads();
-  expect(actions("org/tiny")).toBe("preparing…");
+  expect(actions("lifecycle/tiny")).toBe("preparing…");
 
   hub.releaseMetadata();
-  await until(() => owner.snapshot().some(row => row.repoId === "org/tiny" && row.totalBytes > 0 && row.receivedBytes > 0), "tracker progress");
+  await until(() => owner.snapshot().some(row => row.repoId === "lifecycle/tiny" && row.totalBytes > 0 && row.receivedBytes > 0), "tracker progress");
   await pollDownloads();
-  expect(actions("org/tiny")).toMatch(/^\d+%$/);
+  expect(actions("lifecycle/tiny")).toMatch(/^\d+%$/);
   hub.releasePause();
   await until(() => owner.active.length === 0, "transfer completion");
   await pollDownloads();
-  expect(actions("org/tiny")).toBe("done — reload to serve");
-  expect(await served()).toEqual([expect.objectContaining({ repoId: "org/tiny", state: "done" })]);
+  expect(actions("lifecycle/tiny")).toBe("done — reload to serve");
+  expect(await served()).toEqual([expect.objectContaining({ repoId: "lifecycle/tiny", state: "done" })]);
 
-  button("org/missing").click();
-  await until(() => actions("org/missing") === "downloading…", "second admission");
+  button("lifecycle/missing").click();
+  await until(() => actions("lifecycle/missing") === "downloading…", "second admission");
   await until(() => owner.active.length === 0, "listing failure");
   await pollDownloads();
-  expect(actions("org/missing")).toContain("HF API 404");
+  expect(actions("lifecycle/missing")).toContain("HF API 404");
   expect(await served()).toEqual([
-    expect.objectContaining({ repoId: "org/tiny", state: "done" }),
-    expect.objectContaining({ repoId: "org/missing", state: "error", error: expect.stringContaining("HF API 404") })]);
+    expect.objectContaining({ repoId: "lifecycle/tiny", state: "done" }),
+    expect.objectContaining({ repoId: "lifecycle/missing", state: "error", error: expect.stringContaining("HF API 404") })]);
 }, 20_000);

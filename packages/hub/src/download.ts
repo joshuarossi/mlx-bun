@@ -503,7 +503,6 @@ export async function downloadModel(
     bytesPerSec: 0, startedAt: Date.now(), finishedAt: null,
   };
   downloadLog.push(status);
-  opts.onStatus?.(status);
   let doneBytes = 0;
   // Rolling ~5 s window of (time, receivedBytes) samples for the rate.
   const samples: Array<[number, number]> = [];
@@ -516,6 +515,9 @@ export async function downloadModel(
   };
 
   try {
+    // Inside the settlement scope: a throwing caller settles the row like any
+    // other transfer failure instead of leaving it active forever.
+    opts.onStatus?.(status);
     for (const f of listing.files) {
       const blobId = f.lfs?.sha256 ?? f.blobId;
       if (!blobId) throw new Error(`no blob id for ${f.rfilename} (API response missing ?blobs=true data)`);

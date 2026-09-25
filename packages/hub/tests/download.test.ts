@@ -193,3 +193,11 @@ test("onStatus hands the caller the live tracker row after listing and preflight
     onStatus: () => { statuses++; } })).rejects.toThrow("HF API 404");
   expect(statuses).toBe(0);
 });
+
+test("a throwing onStatus rejects the transfer and leaves the tracker row terminal, not active", async () => {
+  const fixture = setup();
+  await expect(fixture.download({ onStatus: () => { throw new Error("caller failed"); } })).rejects.toThrow("caller failed");
+  expect(downloadsSnapshot().at(-1)).toMatchObject({ repoId: "org/tiny", state: "error", error: "caller failed" });
+  expect(existsSync(join(fixture.repoDir, "refs", "main"))).toBe(false);
+  expectComplete(fixture, await fixture.download());
+});
