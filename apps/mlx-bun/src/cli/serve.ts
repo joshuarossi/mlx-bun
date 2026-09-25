@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { defaultSessionDir } from "../chat/session-files";
 import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { fit } from "@mlx-bun/hub/fit";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -21,6 +22,13 @@ export interface ServeOptions {
   contextLimit: number | null;
   defaultGeneratedTokens?: number;
   kvBudgetBytes?: number;
+  /** Main's `--memory-budget`, decimal bytes: the usable envelope for load, admission, and the allocator. */
+  memoryBudgetBytes?: number;
+  /** Main's `--context-length`: GLM-5.2 resource-plan reservation; other families ignore it. */
+  contextTokens?: number;
+  forceWire?: boolean;
+  expertOffload?: boolean;
+  allowPrivateMedia?: boolean;
   readOnly: boolean;
   noOpen: boolean;
   cache: CacheServiceOptions;
@@ -65,12 +73,21 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   }
   const temperature = number("temperature", 0, 5) ?? number("temp", 0, 5);
   const topP = number("top-p", 0, 1), topK = number("top-k", 0, 1_000_000);
+  const hlg = value("hlg-sampling");
+  if (hlg !== undefined && !["on", "off", "1", "0", "true", "false"].includes(hlg))
+    throw new Error("--hlg-sampling expects on|off");
   const request: RequestPrepOptions = {
     ...(thinking !== undefined ? { defaultThinking: ["on", "1", "true"].includes(thinking) } : {}),
     ...(temperature !== undefined ? { defaultTemperature: temperature } : {}),
     ...(topP !== undefined ? { defaultTopP: topP } : {}),
     ...(topK !== undefined ? { defaultTopK: topK } : {}),
+    // Main's HLG knobs in nats; the mid gain folds from --temperature.
+    ...(hlg !== undefined && ["on", "1", "true"].includes(hlg) ? { hlg: { enabled: true,
+      width: number("hlg-width", 0, 100) ?? 4, shoulder: number("hlg-shoulder", 0, 100) ?? 4,
+      toe: number("hlg-toe", 0, 100) ?? 6, pivotOffset: number("hlg-pivot-offset", 0, 100) ?? 6, pivot: "top" } } : {}),
   };
+  const memoryBudget = number("memory-budget");
+  const contextTokens = number("context-length", 1, Number.MAX_SAFE_INTEGER, true);
   const host = value("host") ?? "127.0.0.1";
   if (!host.trim()) throw new Error("--host expects an address");
   const kvBudget = number("kv-budget");
@@ -86,20 +103,28 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     contextLimit: profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
+    ...(memoryBudget ? { memoryBudgetBytes: memoryBudget * 1e9 } : {}),
+    ...(contextTokens !== undefined ? { contextTokens } : {}),
+    forceWire: args.values["force-wire"] === true, expertOffload: args.values["expert-offload"] === true,
+    allowPrivateMedia: args.values["allow-private-media"] === true,
     readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
   };
 }
 
 /** Main's loaded-model limits constrain the context window; an explicit output
- * cap overrides the model plan's default without changing its context budget. */
+ * cap overrides the model plan's default without changing its context budget.
+ * An explicit memory budget makes the admission estimate's safe context the
+ * enforced ceiling, as in main; without one only a GLM plan or profile cap applies. */
 export function resolveServingLimits(
-  options: Pick<ServeOptions, "contextLimit" | "defaultGeneratedTokens">,
+  options: Pick<ServeOptions, "contextLimit" | "defaultGeneratedTokens" | "memoryBudgetBytes">,
   plan?: Pick<Glm52MemoryPlan, "contextTokens" | "maxGenerationTokens"> | null,
+  admission?: { maxSafeContext: number } | null,
 ) {
+  const budgetLimit = options.memoryBudgetBytes !== undefined && admission ? admission.maxSafeContext : plan?.contextTokens ?? null;
   return {
-    contextLimit: options.contextLimit === null ? plan?.contextTokens ?? null
-      : Math.min(options.contextLimit, plan?.contextTokens ?? Infinity),
+    contextLimit: options.contextLimit === null ? budgetLimit
+      : Math.min(options.contextLimit, budgetLimit ?? Infinity),
     defaultGeneratedTokens: options.defaultGeneratedTokens ?? plan?.maxGenerationTokens,
   };
 }
@@ -120,14 +145,36 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   const [{ createDownloadOwner }, { Registry }] = await Promise.all([import("../hub/downloads"), import("@mlx-bun/hub/registry")]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
-  const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1" });
+  const restoreRuntime = configureRuntime({ MLX_BUN_NO_FUSED_SDPA: options.cache.kvQuant === "config" ? "0" : "1",
+    ...(options.forceWire ? { MLX_BUN_FORCE_WIRE: "1" } : {}),
+    ...(options.allowPrivateMedia ? { MLX_BUN_ALLOW_PRIVATE_MEDIA: "1" } : {}) });
   let cleanup: (() => void | Promise<unknown>) | undefined;
   try {
-    const context = await loadContext(model.path, model.repoId);
+    if (options.expertOffload) {
+      // Main: dense models log and continue; MoE experts route through the
+      // page-aligned file built on first use, activated before construction.
+      if (model.expertsBytes === 0) console.warn("--expert-offload ignored: this model has no experts (dense)");
+      else {
+        const { ensureOffloadFile, activateExpertOffload } = await import("@mlx-bun/inference/artifacts");
+        activateExpertOffload(await ensureOffloadFile(model.path, message => console.log(`[serve] expert offload: ${message}`)));
+      }
+    }
+    const context = await loadContext(model.path, model.repoId, {
+      ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
+      // Main's GLM resource plan inputs; other families ignore this block.
+      glm: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
+        ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
+        ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}) },
+    });
     cleanup = () => context.dispose();
     requireChatTemplate(context);
     const binding = await modelServingBinding(context);
-    const caches = await createCacheServices(context, binding, options.cache);
+    // Main: the plan's allocator reserve, else the explicit budget, caps the
+    // allocator for the whole process and bounds optional cache residency.
+    const allocatorLimitBytes = context.glmMemoryPlan?.lineItems?.allocatorReserveBytes ?? options.memoryBudgetBytes;
+    if (allocatorLimitBytes) (await import("@mlx-bun/mlx/ffi")).setMemoryLimit(allocatorLimitBytes);
+    const caches = await createCacheServices(context, binding, { ...options.cache,
+      ...(allocatorLimitBytes ? { allocatorLimitBytes } : {}) });
     const closeCaches = async () => {
       const result = await caches.close();
       if (!result.durable) console.warn(`[server] cache flush incomplete: ${result.pendingSnapshots} snapshots, ${result.pendingSpills} spills, ${result.failedSpills} failed`);
@@ -147,7 +194,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
-    const limits = resolveServingLimits(options, context.glmMemoryPlan);
+    const admission = context.glmMemoryPlan ?? fit(context.model.config, context.model.weightsBytes, 1,
+      undefined, undefined, 0, options.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
+    const limits = resolveServingLimits(options, context.glmMemoryPlan, admission);
     // Web-started transfers outlive their request. The owner's rows feed
     // discovery and chat; completion refreshes the registry and discovery, and
     // shutdown joins every transfer before the engine closes.
@@ -164,7 +213,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const status = createStatusRoutes({ owner: "serve", context, caches, gateway: engine.gateway,
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats, artifact: model,
       capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
-      ssdCacheDir: options.cache.ssdCacheDir });
+      ssdCacheDir: options.cache.ssdCacheDir, memoryBudgetBytes: options.memoryBudgetBytes });
     const hub = createHubRoutes({ downloads });
     const cacheAdmin = createCacheRoutes(caches);
     const adapters = createAdapterRoutes(context, engine.gateway);
@@ -298,7 +347,10 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
   const running = await deps.start(m, options);
   let closed: Promise<void> | undefined;
   const close = () => closed ??= (async () => { try { await running.close(); } finally { removeSignals(); } })();
-  const removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error });
+  // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.
+  const rawTimeout = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
+  const removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error,
+    ...(Number.isFinite(rawTimeout) && rawTimeout > 0 ? { timeoutMs: rawTimeout } : {}) });
   const url = browserUrl(options.hostname, running.port);
   deps.log(`Serving ${m.repoId} with continuous batching (capacity ${options.capacity})\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {

@@ -4,6 +4,7 @@ export * from "./weights";
 export * from "./safetensors";
 export { MmapFile } from "./mmap";
 export * from "./expert-offload";
+export * from "./expert-offload-build";
 export * from "./fingerprint";
 export * from "./identity";
 export * from "./weight-audit";

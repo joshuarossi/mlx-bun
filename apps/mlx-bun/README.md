@@ -15,6 +15,17 @@ work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404, as do
 main's lab pages (`/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`):
 they are not product surface.
 
+Main's admission and runtime flags keep their units and semantics: `--memory-budget`
+(decimal GB) is the usable envelope for model load, request admission, the process
+allocator limit, optional cache residency, and `/stats.admission.memory_budget_bytes`;
+`--context-length` feeds the GLM-5.2 resource plan and other families ignore it;
+`--force-wire` and `--allow-private-media` set their library runtime switches for
+the serving process; `--expert-offload` builds `<model>/.mlx-bun-offload` on first
+use and activates it before construction for MoE models, while dense models log
+and continue; the `--hlg-*` family sets the HLG sampling default; and
+`MLX_BUN_SHUTDOWN_TIMEOUT_MS` (finite, positive, else 120 s) bounds shutdown.
+Startup adapter mounting (`--adapter`) follows in its own change.
+
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this
 with a 120-second deadline; cleanup failures or deadline expiry exit with code 1
