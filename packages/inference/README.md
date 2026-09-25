@@ -150,6 +150,8 @@ cache layouts against the same plain-KV reference, not quantized arithmetic.
 The [Gemma2 batching test](tests/models/universal/gemma2-batching.test.ts) runs
 synthetic mask checks with `MLX_BUN_GEMMA2_NATIVE=1`; add
 `MLX_BUN_GEMMA2_MODEL=/cached/gemma2` for real B1/B2/B4 continuous lifecycle checks.
+Supplying a model or reference without the native opt-in, a reference without a
+model, or an invalid model config fails before native initialization.
 `MLX_BUN_GEMMA2_REFERENCE=/external/report.json` adds full-logit and KV hashes
 against same-shaped pinned Python runs. The reference uses upstream Gemma2
 and `BatchKVCache`, adding only a GQA axis to the upstream row mask. B1 is

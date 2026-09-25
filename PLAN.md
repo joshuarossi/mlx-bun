@@ -63,8 +63,8 @@ migration. Existing migration gaps remain required work in the feature table.
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. Exit: app consumers use public library APIs;
   application contracts and policy stay out of the inference library.
 - [ ] Complete shared-execution support for all shapes main supported through its
-  serial fallback: model caches without batch conversion (including Gemma2 masks
-  and sliding-attention caches); media without a batched input binding; adapters
+  serial fallback: Gemma2 advanced compositions; model caches without batch
+  conversion (including sliding-attention caches); media without a batched input binding; adapters
   without batched adapter support; non-batchable quantized KV and TurboQuant KV;
   grammar with batching disabled; remaining speculative target/cache combinations
   supported by main; and denoising. All seven built-in draft providers already

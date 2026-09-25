@@ -1,18 +1,84 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import * as ops from "@mlx-bun/mlx/ops";
-import { Dtype, MLX_VERSION } from "@mlx-bun/mlx/ffi";
-import { UniversalDenseModel } from "../../../src/models/universal/dense";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { MlxArray } from "@mlx-bun/mlx/array";
+import type { UniversalDenseModel } from "../../../src/models/universal/dense";
 import type { ModelConfig } from "../../../src/artifacts/config";
 import type { Weights } from "../../../src/artifacts/weights";
 import type { Cache, Mask } from "../../../src/contracts/mlx/cache";
-import { BatchedKVCache } from "../../../src/state/batched-kv";
-import { createCausalMask } from "../../../src/kernels/attention/masks";
 
 // Native numerical tests are explicit: CPU-only planning/CI never initializes
 // model tensors. All synthetic weights exist in memory, not tracked fixtures.
 const native = process.env.MLX_BUN_GEMMA2_NATIVE === "1";
+const artifact = process.env.MLX_BUN_GEMMA2_MODEL;
+const referencePath = process.env.MLX_BUN_GEMMA2_REFERENCE;
+if ((artifact !== undefined || referencePath !== undefined) && !native)
+  throw new Error("Gemma2 MODEL/REFERENCE requires MLX_BUN_GEMMA2_NATIVE=1");
+if (referencePath !== undefined && !artifact)
+  throw new Error("MLX_BUN_GEMMA2_REFERENCE requires MLX_BUN_GEMMA2_MODEL");
+if (artifact !== undefined) {
+  if (!artifact || !await Bun.file(`${artifact}/config.json`).exists())
+    throw new Error(`unavailable Gemma2 model config: ${artifact}`);
+  let config: unknown;
+  try { config = await Bun.file(`${artifact}/config.json`).json(); }
+  catch { throw new Error(`invalid Gemma2 model config JSON: ${artifact}`); }
+  if (!config || typeof config !== "object" || !("model_type" in config) || config.model_type !== "gemma2")
+    throw new Error(`Gemma2 acceptance requires model_type gemma2: ${artifact}`);
+}
+if (referencePath !== undefined) {
+  if (!referencePath || !await Bun.file(referencePath).exists())
+    throw new Error(`unavailable Gemma2 reference: ${referencePath}`);
+  try { await Bun.file(referencePath).json(); }
+  catch { throw new Error(`invalid Gemma2 reference JSON: ${referencePath}`); }
+}
+
+test("Gemma2 opt-in errors fail before native initialization", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gemma2-opt-in-"));
+  const env = { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent/mlx-native-must-not-load",
+    MLX_BUN_GEMMA2_NATIVE: undefined, MLX_BUN_GEMMA2_MODEL: undefined,
+    MLX_BUN_GEMMA2_REFERENCE: undefined };
+  const probe = (overrides: NodeJS.ProcessEnv) => Bun.spawnSync([process.execPath,
+    "--no-env-file", "test", import.meta.path, "--test-name-pattern", "^Gemma2 native acceptance requires"],
+    { env: { ...env, ...overrides }, stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+  try {
+    const malformed = join(directory, "malformed"), wrong = join(directory, "wrong"), valid = join(directory, "valid");
+    for (const path of [malformed, wrong, valid]) await mkdir(path);
+    await writeFile(join(malformed, "config.json"), "{");
+    await writeFile(join(wrong, "config.json"), '{"model_type":"llama"}');
+    await writeFile(join(valid, "config.json"), '{"model_type":"gemma2"}');
+    const badReference = join(directory, "reference.json"); await writeFile(badReference, "{");
+    const absent = probe({});
+    expect(absent.exitCode, absent.stderr.toString()).toBe(0);
+    expect(absent.stderr.toString()).toContain("skip");
+    for (const [overrides, message] of [
+      [{ MLX_BUN_GEMMA2_MODEL: valid }, "requires MLX_BUN_GEMMA2_NATIVE=1"],
+      [{ MLX_BUN_GEMMA2_REFERENCE: badReference }, "requires MLX_BUN_GEMMA2_NATIVE=1"],
+      [{ MLX_BUN_GEMMA2_NATIVE: "1", MLX_BUN_GEMMA2_REFERENCE: badReference }, "REFERENCE requires MLX_BUN_GEMMA2_MODEL"],
+      [{ MLX_BUN_GEMMA2_NATIVE: "1", MLX_BUN_GEMMA2_MODEL: directory }, "unavailable Gemma2 model config"],
+      [{ MLX_BUN_GEMMA2_NATIVE: "1", MLX_BUN_GEMMA2_MODEL: malformed }, "invalid Gemma2 model config JSON"],
+      [{ MLX_BUN_GEMMA2_NATIVE: "1", MLX_BUN_GEMMA2_MODEL: wrong }, "requires model_type gemma2"],
+      [{ MLX_BUN_GEMMA2_NATIVE: "1", MLX_BUN_GEMMA2_MODEL: valid, MLX_BUN_GEMMA2_REFERENCE: directory + "/missing" }, "unavailable Gemma2 reference"],
+      [{ MLX_BUN_GEMMA2_NATIVE: "1", MLX_BUN_GEMMA2_MODEL: valid, MLX_BUN_GEMMA2_REFERENCE: badReference }, "invalid Gemma2 reference JSON"],
+    ] as const) {
+      const child = probe(overrides), output = child.stdout.toString() + child.stderr.toString();
+      expect(child.exitCode).not.toBe(0);
+      expect(output).toContain(message);
+      expect(output).not.toContain("mlx-native-must-not-load");
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+if (!native) {
+  test.skip("Gemma2 native acceptance requires MLX_BUN_GEMMA2_NATIVE=1", () => {});
+} else {
+const { MlxArray } = await import("@mlx-bun/mlx/array");
+const ops = await import("@mlx-bun/mlx/ops");
+const { Dtype, MLX_VERSION } = await import("@mlx-bun/mlx/ffi");
+const { UniversalDenseModel } = await import("../../../src/models/universal/dense");
+const { BatchedKVCache } = await import("../../../src/state/batched-kv");
+const { createCausalMask } = await import("../../../src/kernels/attention/masks");
 function fixture() {
   const raw = { model_type: "gemma2", hidden_size: 32, num_hidden_layers: 1,
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
@@ -127,7 +193,6 @@ describe.skipIf(!native)("Gemma2 manual attention native masks", () => {
   });
 });
 
-const artifact = process.env.MLX_BUN_GEMMA2_MODEL;
 test.skipIf(!native || !artifact)("cached Gemma2 preserves B1 and serves ragged B2/B4 with joins, retirement and cancellation", async () => {
   const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
   const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
@@ -227,7 +292,6 @@ test.skipIf(!native || !artifact)("cached Gemma2 preserves B1 and serves ragged 
 }, 600_000);
 
 
-const referencePath = process.env.MLX_BUN_GEMMA2_REFERENCE;
 test.skipIf(!native || !artifact || !referencePath)("real Gemma2 ragged B2/B4 logits and KV match the external same-shaped Python reference", async () => {
   const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
   const reference = await Bun.file(referencePath!).json();
@@ -276,3 +340,5 @@ test.skipIf(!native || !artifact || !referencePath)("real Gemma2 ragged B2/B4 lo
     }
   } finally { weights.dispose(); }
 }, 600_000);
+
+}
