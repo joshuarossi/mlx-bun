@@ -37,7 +37,7 @@ export interface AdmittedRequest {
 export type InferenceResult = CompletionSummary;
 
 export class InferenceStage {
-  constructor(private readonly executor: Pick<CompletionExecutor, "execute">) {}
+  constructor(private readonly executor: Pick<CompletionExecutor, "place" | "execute">) {}
 
   /** Admission: throws RequestError(400, memory_admission) when the prompt
    *  leaves no room to generate inside the safe context; otherwise clamps
@@ -60,6 +60,7 @@ export class InferenceStage {
             );
         },
       });
+      this.executor.place(prepared);
       return { requestId: request.requestId, warnings, prepared };
     } catch (error) {
       if (!(error instanceof CompletionRejected)) throw error;

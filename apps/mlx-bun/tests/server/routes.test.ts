@@ -1,11 +1,20 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { ModelContext } from "../../src/engine/model-host";
 import type { CompletionEngine } from "../../src/engine/completion";
+import { UnsupportedExecutionError } from "../../src/engine/completion";
 import { createCompletionRoutes } from "../../src/server/routes";
+import { errorResponse } from "../../src/server/http";
 
 const execution = { method: "autoregressive", mechanism: "continuous" as const, pagedKv: false, promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false, reasons: [] };
-function harness(run?: CompletionEngine["run"]) {
+type RouteEngine = Parameters<typeof createCompletionRoutes>[0];
+function harness(run?: CompletionEngine["run"], overrides: {
+  place?: CompletionEngine["place"];
+  preparation?: RouteEngine["preparation"];
+  runExclusive?: RouteEngine["gateway"]["runExclusive"];
+  buildPrompt?: Parameters<typeof createCompletionRoutes>[1]["buildPrompt"];
+} = {}) {
   const seen: Parameters<CompletionEngine["run"]>[] = [];
+  let placements = 0;
   const context = {
     modelId: "test/model", model: { config: { modelType: "qwen3", eosTokenIds: [0], text: { vocabSize: 16 } } },
     tokenizer: { encode: () => [7, 8, 9], decode: (ids: number[]) => ids.map(id => `t${id}`).join(" "), idToToken: (id: number) => `t${id}`, bosTokenId: null, eosTokenId: null },
@@ -13,7 +22,7 @@ function harness(run?: CompletionEngine["run"]) {
     adapters: { resolveSpec: () => [] }, genDefaults: {}, draft: null,
   } as unknown as ModelContext;
   const completion: CompletionEngine = {
-    place: shape => ({ shape, mechanism: "continuous", execution }),
+    place: (shape, options) => { placements++; return overrides.place?.(shape, options) ?? { shape, mechanism: "continuous", execution }; },
     async run(...args) {
       seen.push(args);
       if (run) return run(...args);
@@ -23,15 +32,15 @@ function harness(run?: CompletionEngine["run"]) {
   };
   let exclusive = 0;
   const routes = createCompletionRoutes({ context, completion,
-    preparation: { run: work => work() },
+    preparation: overrides.preparation ?? { run: work => work() },
     binding: { discovery: { adapters: false, training: false, dsa: false, embeddings: true },
       embed: inputs => inputs.map(input => ({ vector: Float32Array.from([1, 2]), tokens: input.length })) },
-    gateway: { async runExclusive(work, _session, signal) { signal?.throwIfAborted(); exclusive++; return work(); } },
-  }, { contextLimit: 100, promptCache: { peekPrefixLen: () => 0 } });
-  return { routes, seen, exclusive: () => exclusive };
+    gateway: { runExclusive: overrides.runExclusive ?? (async (work, _session, signal) => { signal?.throwIfAborted(); exclusive++; return work(); }) },
+  }, { contextLimit: 100, promptCache: { peekPrefixLen: () => 0 }, buildPrompt: overrides.buildPrompt });
+  return { routes, seen, exclusive: () => exclusive, placements: () => placements };
 }
-function request(path: string, body: unknown, headers: Record<string, string> = {}) {
-  return new Request(`http://local${path}`, { method: "POST", body: JSON.stringify(body), headers });
+function request(path: string, body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) {
+  return new Request(`http://local${path}`, { method: "POST", body: JSON.stringify(body), headers, signal });
 }
 
 test("chat and text routes preserve wire shapes and session affinity through the continuous engine", async () => {
@@ -77,6 +86,7 @@ test("SSE closes with usage and DONE; cancelling a reader reaches its engine sig
   const stream = await response.text();
   expect(response.headers.get("content-type")).toBe("text/event-stream");
   expect(stream).toContain('"role":"assistant"'); expect(stream).toContain('"completion_tokens":2'); expect(stream.endsWith("data: [DONE]\n\n")).toBe(true);
+  expect(successful.placements()).toBe(1);
   const entered = Promise.withResolvers<void>(), cancelled = Promise.withResolvers<void>();
   const blocked = harness(async (_ids, _opts, _token, _vision, _shape, _placement, signal) => {
     entered.resolve();
@@ -90,4 +100,63 @@ test("SSE closes with usage and DONE; cancelling a reader reaches its engine sig
   await entered.promise;
   await pending.body!.cancel("reader closed");
   await cancelled.promise;
+});
+
+for (const stream of [false, true]) test(`unsupported execution returns JSON 501 before opening a stream (${stream})`, async () => {
+  let disposed = 0;
+  const failure = new UnsupportedExecutionError("example", "denoising", ["method-requires-serial", "compiled-decode-unavailable-for-request"]);
+  const run = harness(undefined, { place: () => { throw failure; },
+    buildPrompt: async (_body, _tools, ownership) => {
+      ownership.own({ dispose: () => { disposed++; } });
+      return { promptIds: [7], vision: undefined, startInThinking: false, probeStableLen: false, diffusionPixels: null };
+    } });
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = (await run.routes.handle(request("/v1/chat/completions", { messages: [{ role: "user", content: "hi" }], stream })))!;
+    expect(response.status).toBe(501); expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({ error: { message: failure.message, type: "not_implemented", code: "unsupported_execution", reasons: ["method-requires-serial"] } });
+    expect(run.placements()).toBe(1); expect(run.seen).toHaveLength(0); expect(disposed).toBe(1);
+    expect(logs).not.toHaveBeenCalled();
+  } finally { logs.mockRestore(); }
+});
+
+for (const phase of ["preparation", "json", "embedding"] as const) test(`client abort during ${phase} returns 499 without 500 logging`, async () => {
+  const entered = Promise.withResolvers<void>(), abort = new AbortController();
+  const wait = <T>(signal?: AbortSignal): Promise<T> => {
+    entered.resolve();
+    return new Promise((_, reject) => {
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+      if (signal!.aborted) reject(signal!.reason);
+    });
+  };
+  const run = harness(phase === "json" ? async (...args) => wait(args[6]) : undefined, {
+    ...(phase === "preparation" ? {
+      preparation: { run: <T>(_work: () => Promise<T>, signal?: AbortSignal) => wait<T>(signal) },
+      buildPrompt: async (_body, _tools, _ownership, _prep, nativeWork) => nativeWork!(async () => ({
+        promptIds: [7], vision: undefined, startInThinking: false, probeStableLen: false, diffusionPixels: null,
+      })),
+    } satisfies Parameters<typeof harness>[1] : {}),
+    ...(phase === "embedding" ? { runExclusive: <T>(_work: () => Promise<T>, _trace?: unknown, signal?: AbortSignal) => wait<T>(signal) } : {}),
+  });
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const pending = run.routes.handle(request(phase === "embedding" ? "/v1/embeddings" : "/v1/chat/completions",
+      phase === "embedding" ? { input: "hi" } : { messages: [{ role: "user", content: "hi" }] }, {}, abort.signal));
+    await entered.promise; abort.abort(null);
+    const response = (await pending)!;
+    expect(response.status).toBe(499);
+    expect(await response.json()).toEqual({ error: { message: "request cancelled", type: "request_cancelled", code: "request_cancelled" } });
+    expect(logs).not.toHaveBeenCalled();
+  } finally { logs.mockRestore(); }
+});
+
+test("unknown thrown values produce a 500 without secondary errors; cancellation is signal-based", async () => {
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const error of [null, undefined, "request cancelled", Object.create(null)]) {
+      const response = errorResponse(error, "test");
+      expect(response.status).toBe(500); expect(typeof (await response.json()).error.message).toBe("string");
+    }
+    expect(logs).toHaveBeenCalledTimes(4);
+  } finally { logs.mockRestore(); }
 });
