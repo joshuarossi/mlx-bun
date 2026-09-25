@@ -68,10 +68,10 @@ test("gc previews by default, dry-run beats yes, and confirmed deletion updates 
 test("help and invalid input do not open a registry or fetch a model", async () => {
   const home = mkdtempSync(join(tmpdir(), "mlx-cli-empty-")), hub = join(home, "absent");
   try {
-    for (const command of ["get", "scan", "ls", "gc", "fit"]) {
+    for (const command of ["get", "scan", "ls", "gc", "fit", "serve"]) {
       expect((await cli(home, hub, command, "--help")).out).toContain(`Usage: mlx-bun ${command}`);
     }
-    for (const args of [["get"], ["get", "org/repo", "--unknown"], ["fit"], ["fit", "x", "--ctx", "-1"], ["ls", "--max-size"], ["unknown"], []]) {
+    for (const args of [["get"], ["get", "org/repo", "--unknown"], ["fit"], ["fit", "x", "--ctx", "-1"], ["ls", "--max-size"], ["unknown"], ["serve", "--batch", "0"], ["serve", "--serial"], ["serve", "--compiled-decode", "on"]]) {
       expect((await cli(home, hub, ...args)).code).toBe(1);
     }
     expect((await cli(home, hub, "--version")).out).toBe("mlx-bun 0.0.0\n");
