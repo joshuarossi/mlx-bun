@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,7 +64,7 @@ test("GC preview is read-only and confirmed execution rescans, closes, and inval
   const { root, hub, repo } = syntheticCache(), events: string[] = [];
   const db = join(root, "registry.sqlite");
   const before = new Registry(db); await before.scan(hub); expect(before.list()).toHaveLength(3); before.close();
-  const routes = createManagementRoutes({ hubDirectory: hub,
+  const routes = createManagementRoutes({ hubDirectory: hub, servedModelPath: join(repo, "snapshots/current"),
     createRegistry() {
       events.push("open"); const registry = new Registry(db);
       return { async scan(directory) { events.push("scan"); expect(directory).toBe(hub); return registry.scan(directory); },
@@ -87,9 +87,45 @@ test("a failed post-deletion registry scan still closes and invalidates discover
   const routes = createManagementRoutes({ hubDirectory: hub,
     createRegistry: () => ({ async scan() { events.push("scan"); throw new Error("rescan failed"); }, close() { events.push("close"); } }),
     invalidateLibrary() { events.push("invalidate"); } });
-  await expect(routes.handle(request("/api/gc/execute", "POST", { yes: true }))).rejects.toThrow("rescan failed");
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = (await routes.handle(request("/api/gc/execute", "POST", { yes: true })))!;
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(await response.json()).toEqual({ ok: false, error: "rescan failed" });
+  } finally { log.mockRestore(); }
   expect(events).toEqual(["scan", "close", "invalidate"]);
   expect(existsSync(join(repo, "snapshots/old"))).toBe(false);
+});
+
+test("GC refuses to prune an active superseded model, including a symlinked model path", async () => {
+  const { root, hub, repo } = syntheticCache();
+  const snapshot = join(repo, "snapshots/old"), alias = join(root, "active-model");
+  symlinkSync(snapshot, alias);
+  for (const servedModelPath of [snapshot, alias]) {
+    const routes = createManagementRoutes({ hubDirectory: hub, servedModelPath,
+      createRegistry() { throw new Error("must not rescan a rejected deletion"); },
+      invalidateLibrary() { throw new Error("must not invalidate without deletion"); } });
+    const response = (await routes.handle(request("/api/gc/execute", "POST", { yes: true })))!;
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ ok: false, error: expect.stringContaining("active model snapshot") });
+    for (const retained of ["snapshots/old", "blobs/old", "blobs/dead"])
+      expect(existsSync(join(repo, retained))).toBe(true);
+  }
+});
+
+test("GC planning failures use the management JSON error shape", async () => {
+  const hub = join(temporary(), "not-a-directory"); writeFileSync(hub, "invalid cache root");
+  const routes = createManagementRoutes({ hubDirectory: hub, invalidateLibrary() {} });
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (const req of [request("/api/gc/plan"), request("/api/gc/execute", "POST", { yes: true })]) {
+      const response = (await routes.handle(req))!;
+      expect(response.status).toBe(500);
+      expect(response.headers.get("content-type")).toContain("application/json");
+      expect(await response.json()).toMatchObject({ ok: false, error: expect.stringContaining("ENOTDIR") });
+    }
+  } finally { log.mockRestore(); }
 });
 
 test("management matches only its owned methods and leaves HF credentials and uploads deferred", async () => {

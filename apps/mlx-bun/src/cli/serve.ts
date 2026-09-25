@@ -126,7 +126,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
       defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
-      toolApprovalsFile: options.chatPaths?.toolApprovalsFile });
+      toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
     const routes = { handle: async (request: Request) => await management.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,

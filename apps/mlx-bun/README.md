@@ -72,7 +72,9 @@ cleanup over the existing chat and hub libraries. Startup shares
 `ServeOptions.chatPaths.toolApprovalsFile` with Pi and the settings routes.
 GC requires an explicit `yes: true`, uses the hub's conservative plan, closes
 its registry after rescanning, and invalidates discovery even if a rescan fails
-after deletion. The [management tests](tests/server/management-routes.test.ts)
+after deletion. Execution returns 409 if the plan would remove the active model
+snapshot, including a model reached through a symlink. Planning/execution errors
+use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
 use isolated approval files and synthetic caches with native MLX blocked.
 Hugging Face credential and upload routes remain deferred.
 
