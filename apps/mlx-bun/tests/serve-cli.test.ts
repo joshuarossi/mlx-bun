@@ -77,14 +77,16 @@ test("invalid serving input fails before model selection", async () => {
 
 function runtime(interactive = true) {
   const signals = new EventEmitter(), opens: string[] = [], exits: number[] = [], errors: unknown[] = [], starts: ServeOptions[] = [];
+  const downloads: string[] = [];
   let closes = 0;
   const dependencies: ServeDependencies = {
     resolve: async () => ({ m: model, picked: true }),
-    start: async (m, options) => { expect(m).toBe(model); starts.push(options); return { port: 4321, close: async () => { closes++; } }; },
+    start: async (m, options) => { expect(m).toBe(model); starts.push(options); return { port: 4321,
+      downloads: { start: repo => { downloads.push(repo); }, active: [] }, close: async () => { closes++; } }; },
     interactive, open: url => { opens.push(url); }, log() {}, signals,
     exit: code => { exits.push(code); }, error: error => { errors.push(error); },
   };
-  return { dependencies, signals, opens, exits, errors, starts, closes: () => closes };
+  return { dependencies, signals, opens, exits, errors, starts, downloads, closes: () => closes };
 }
 
 test("interactive startup opens the bound port and graceful shutdown drains exactly once", async () => {
@@ -246,6 +248,7 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
       readOnly: true, noOpen: true, chatPaths, memoryPaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
     });
     assert.equal(running.port, 1234);
+    assert.equal(typeof running.downloads.start, "function");
     assert.equal(await memoryCallback(), memorySurface);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
     await running.close();
@@ -287,7 +290,7 @@ test("MLX_BUN_SHUTDOWN_TIMEOUT_MS bounds serve's shutdown deadline; unusable val
     const run = runtime(false);
     const exited = Promise.withResolvers<void>();
     await runServe(parseCommand("serve", []), { ...run.dependencies,
-      start: async () => ({ port: 1, close: () => new Promise<void>(() => {}) }),
+      start: async () => ({ port: 1, downloads: { start() {}, active: [] }, close: () => new Promise<void>(() => {}) }),
       exit(code) { run.exits.push(code); exited.resolve(); } });
     run.signals.emit("SIGTERM");
     await exited.promise;
@@ -393,4 +396,47 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect(stderr.replace(/^--expert-offload ignored.*$/m, "").trim()).toBe(""); expect(code).toBe(0);
+});
+
+test("a recommended background download is handed to the app's owner after startup; a refused start is reported", async () => {
+  const run = runtime(false);
+  const app = await runServe(parseCommand("serve", []), { ...run.dependencies,
+    resolve: async () => ({ m: model, picked: true, recommended: "mlx-community/recommended" }) });
+  expect(run.downloads).toEqual(["mlx-community/recommended"]);
+  expect(run.errors).toEqual([]);
+  await app.close();
+  const refused = runtime(false), failure = new Error("a download for x is already in progress");
+  const running = await runServe(parseCommand("serve", []), { ...refused.dependencies,
+    resolve: async () => ({ m: model, picked: true, recommended: "x" }),
+    start: async () => ({ port: 1, downloads: { start: () => { throw failure; }, active: [] }, close: async () => {} }) });
+  expect(refused.errors).toEqual([failure]);
+  await running.close();
+});
+
+test("a signal during model selection cancels it with the startup reason and leaves no handlers or browser", async () => {
+  const run = runtime();
+  await expect(runServe(parseCommand("serve", []), { ...run.dependencies, resolve: async (_query, _supplied, signal) => {
+    run.signals.emit("SIGINT");
+    expect(signal?.aborted).toBe(true);
+    throw signal!.reason;
+  } })).rejects.toThrow("startup cancelled by signal");
+  expect(run.signals.listenerCount("SIGINT")).toBe(0); expect(run.signals.listenerCount("SIGTERM")).toBe(0);
+  expect(run.opens).toEqual([]); expect(run.starts).toEqual([]);
+});
+
+test("a signal during model load closes the app once it exists, opens no browser, and leaves no handlers", async () => {
+  const run = runtime();
+  const app = await runServe(parseCommand("serve", []), { ...run.dependencies,
+    start: async (m, options) => { run.signals.emit("SIGTERM"); return run.dependencies.start(m, options); } });
+  expect(run.closes()).toBe(1); expect(run.opens).toEqual([]); expect(run.downloads).toEqual([]);
+  expect(run.signals.listenerCount("SIGINT")).toBe(0); expect(run.signals.listenerCount("SIGTERM")).toBe(0);
+  await app.close(); expect(run.closes()).toBe(1);
+});
+
+test("a signal that lands during selection but leaves it resolved still stops before the model loads", async () => {
+  const run = runtime();
+  await expect(runServe(parseCommand("serve", []), { ...run.dependencies,
+    resolve: async () => { run.signals.emit("SIGINT"); return { m: model, picked: true }; } })).rejects.toThrow("startup cancelled by signal");
+  expect(run.starts).toEqual([]); expect(run.opens).toEqual([]);
+  expect(run.signals.listenerCount("SIGINT")).toBe(0); expect(run.signals.listenerCount("SIGTERM")).toBe(0);
 });

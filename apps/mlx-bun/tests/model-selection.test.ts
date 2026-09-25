@@ -42,18 +42,32 @@ test("automatic selection assesses only supported models and does not download w
   expect(run.assessed).toEqual(["supported"]); expect(run.downloads).toEqual([]); expect(run.closes()).toBe(1);
 });
 
-test("an empty supported cache gets the starter before starting the recommended background download", async () => {
+test("an empty supported cache gets the starter, then returns the recommended model for the caller to fetch", async () => {
   const run = selection([]);
-  let finishBackground!: () => void;
+  const signals: (AbortSignal | undefined)[] = [];
+  const controller = new AbortController();
   const result = await resolveModelAuto(null, { ...run.dependencies, download: async (repo, options) => {
-    if (repo === DEFAULT_REPO_ID) { run.downloads.push(repo); await new Promise<void>(resolve => { finishBackground = resolve; }); return `/${repo}`; }
-    return run.dependencies.download(repo, options);
-  } });
+    signals.push(options?.signal); return run.dependencies.download(repo, options);
+  } }, controller.signal);
   expect(result.m.repoId).toBe(STARTER_REPO_ID); expect(result.picked).toBe(true);
-  expect(run.downloads).toEqual([STARTER_REPO_ID, DEFAULT_REPO_ID]);
-  expect(run.closes()).toBe(1); expect(run.scans()).toBe(2);
-  finishBackground(); await result.background;
-  expect(run.closes()).toBe(2); expect(run.scans()).toBe(3);
+  expect(result.recommended).toBe(DEFAULT_REPO_ID);
+  expect(run.downloads).toEqual([STARTER_REPO_ID]);
+  expect(signals).toEqual([controller.signal]);
+  expect(run.closes()).toBe(1);
+});
+
+test("a cancelled selection rejects with the signal's reason before or during the starter download", async () => {
+  const run = selection([]);
+  const reason = new Error("startup cancelled by signal");
+  await expect(resolveModelAuto(null, run.dependencies, AbortSignal.abort(reason))).rejects.toBe(reason);
+  expect(run.downloads).toEqual([]); expect(run.closes()).toBe(1);
+  const controller = new AbortController();
+  const cancelled = selection([]);
+  await expect(resolveModelAuto(null, { ...cancelled.dependencies, download: (_repo, options) => new Promise((_, reject) => {
+    options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), { once: true });
+    controller.abort(reason);
+  }) }, controller.signal)).rejects.toBe(reason);
+  expect(cancelled.closes()).toBe(1);
 });
 
 test("starter failure closes the registry and never starts the background download", async () => {
