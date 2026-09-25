@@ -9,6 +9,14 @@ export const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", ...WEB_TOO
 /** Tools that require explicit per-call browser approval. */
 export const GATED_TOOLS = new Set(["bash", "edit", "write"]);
 
+/** Built-in mutation names cannot be reclassified by an injected surface.
+ * Unknown tools require approval rather than inheriting read-only privileges. */
+export function toolApprovalClass(tool: string, injectedReadOnly: ReadonlySet<string>): "read-only" | "approval" {
+  if (GATED_TOOLS.has(tool)) return "approval";
+  return READ_ONLY_TOOLS.has(tool) || injectedReadOnly.has(tool) ? "read-only" : "approval";
+}
+
+
 /**
  * The welcome assistant's tool allowlist: exactly `read` (a local file the user
  * points to) and `web_search` (current/external facts). Both are in

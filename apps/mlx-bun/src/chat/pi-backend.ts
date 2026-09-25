@@ -15,7 +15,7 @@ import { isToolAlwaysAllowed, setToolAlwaysAllowed, listAlwaysAllowedTools } fro
 import { initialSamplingScopeState, initialLoopHygieneState, buildWebChatSystemPrompt, WELCOME_TOOLS,
   WEB_CHAT_PROMPT_VERSION, webChatPromptFingerprint, webChatToolAllowlist, consumeForRequest,
   injectAdapter, injectSampling, injectSystemPrompt, ambientContextLine, decideBeforeToolCall,
-  recordToolCallOutcome, toolResultText, READ_ONLY_TOOLS, GATED_TOOLS, applyEditedArgs,
+  recordToolCallOutcome, toolResultText, toolApprovalClass, applyEditedArgs,
   applySetSampling, type SamplingScopeState, type LoopHygieneState } from "./policy";
 import { serializeHistory, findLastUserMessageEntry, userMessageSiblings, toSessionListItems,
   deepestLeafFrom, toPiImages } from "./history";
@@ -189,7 +189,7 @@ class PiBackend implements ChatBackend {
             // blocked before the approval gate ever sees it (see
             // installLoopHygieneHooks's doc comment).
             (pi) => this.installLoopHygieneHooks(pi),
-            (pi) => this.installApprovalGate(pi),
+            (pi) => this.installApprovalGate(pi, new Set(surface.readOnlyToolNames)),
             (pi) => this.installAdapterHook(pi),
             (pi) => this.installSystemPromptHook(pi),
             (pi) => this.installAppContextHook(pi),
@@ -635,7 +635,7 @@ class PiBackend implements ChatBackend {
     });
   }
 
-  private installApprovalGate(pi: ExtensionAPI): void {
+  private installApprovalGate(pi: ExtensionAPI, readOnlyTools: ReadonlySet<string>): void {
     pi.on("tool_call", async (event: ToolCallEvent) => {
       const tool = event.toolName;
       if (runtimeValue("MLX_BUN_PI_DEBUG")) {
@@ -643,18 +643,13 @@ class PiBackend implements ChatBackend {
       }
 
       // Read-only tools never need approval.
-      if (READ_ONLY_TOOLS.has(tool)) return undefined;
+      if (toolApprovalClass(tool, readOnlyTools) === "read-only") return undefined;
 
-      // Anything mutating is denied outright in read-only mode — before the
-      // durable always-allow list is even consulted, since --read-only is a
-      // server operator's hard constraint, not a per-tool user preference.
-      if (this.opts.readOnly && GATED_TOOLS.has(tool)) {
-        return { block: true, reason: "Read-only session: mutating tools are disabled." };
+      // Read-only sessions reject mutations and unclassified tools before
+      // consulting durable approvals. Injected names are scoped to this runtime.
+      if (this.opts.readOnly) {
+        return { block: true, reason: "Read-only session: only read-only tools are allowed." };
       }
-
-      // Non-gated, non-read-only tools (shouldn't happen with the shared pi
-      // surface, but be safe): allow.
-      if (!GATED_TOOLS.has(tool)) return undefined;
 
       // Durable "always allow this tool" (risk #6): a prior approval card on
       // THIS machine checked the box, persisting to ~/.mlx-bun/tool-

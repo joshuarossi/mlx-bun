@@ -6,6 +6,7 @@ import { materializeMemorySkill } from "./skills";
 export async function createMemorySurface(root: string, skillsRoot: string) {
   if (!await isMemoryEnabled(root)) return undefined;
   return {
+    readOnly: true as const,
     toolNames: [...MEMORY_TOOL_NAMES, ...REFERENCE_TOOL_NAMES],
     customTools: createMemoryTools(root),
     skillPaths: [materializeMemorySkill(skillsRoot)],
