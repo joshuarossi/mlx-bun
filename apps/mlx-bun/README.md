@@ -76,6 +76,17 @@ handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
 
+`server/management-routes.ts` owns tool-approval settings and confirmed cache
+cleanup over the existing chat and hub libraries. Startup shares
+`ServeOptions.chatPaths.toolApprovalsFile` with Pi and the settings routes.
+GC requires an explicit `yes: true`, uses the hub's conservative plan, closes
+its registry after rescanning, and invalidates discovery even if a rescan fails
+after deletion. Execution returns 409 if the plan would remove the active model
+snapshot, including a model reached through a symlink. Planning/execution errors
+use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
+use isolated approval files and synthetic caches with native MLX blocked.
+Hugging Face credential and upload routes remain deferred.
+
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
 and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
@@ -153,6 +164,28 @@ escaping, attachments, panels, and interactions without a live server.
 [Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
 headers. The packed consumer check verifies the same assets after installation.
 
+`server/adapter-routes.ts` presents available and resident adapters and mounts or
+unmounts through the engine execution lock. It borrows the engine; no HTTP
+handler owns tensors. Serving with an adapter still uses the shared scheduler
+and reports 501 for unsupported batched capabilities.
+
+## Memory vault
+
+`src/memory/article.ts` owns Markdown article structure; `vault.ts` owns vault
+initialization, filesystem reads, search, links, and Git history. The default
+vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
+`server/memory-routes.ts` exposes the read/init HTTP surface through
+`createMemoryRoutes({ root })`; CLI startup composes it before model routes.
+Initialization is explicit and idempotent, and its path stays confined to the
+vault or temporary trees. Existing article/Talk directory links remain usable;
+initialization confines its actual write targets. Reference seeding defaults to
+none; composition can pass explicit `referenceSources` without inferring old
+repository documentation paths. Merely starting the app does not create a vault.
+
+[Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
+and real local Git history; [article tests](tests/memory/article.test.ts) cover
+parsing and round trips. Synthesis, memory tools, and scheduling remain separate
+migration work; the chat backend still receives no memory integration.
 
 ## Jobs and quantization
 
