@@ -150,7 +150,46 @@ const commands = {
     "gguf-path": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
     "upload-repo": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
   } },
-} satisfies Record<string, { description: string; positional: string; usage?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
+  memory: { description: "Your local AI's personal wiki: inspect it and run synthesis", positional: "[subcommand] [args]",
+    usage: "usage: mlx-bun memory <subcommand> [args] [options]",
+    details: `A local, durable memory for the assistant: a wiki of Markdown articles
+(~/.mlx-bun/wiki) it reads to remember your projects, people, and history
+across sessions. It is yours: git-tracked, editable in any tool (Obsidian
+opens it as a vault), and it never leaves the machine. Synthesis
+(conversations -> articles) runs through a serving mlx-bun.
+
+Subcommands:
+  status             Path, article count, git state (the default)
+  open, browse [article]
+                     Open the wiki, or a specific article, in Obsidian
+                     (falls back to Finder / the default Markdown app)
+  list               List article titles + read-only Reference docs
+  search <query>     Search articles from the terminal
+  toc <article>      Print an article's headings + anchors
+  section <article> <anchor>
+                     Print one article section
+  links <article>    Show resolved outbound + inbound wikilinks
+  read <article>     Print an article (stem, e.g. Archie_Project)
+  synthesize         Run the FULL synthesis DAG now (--since, --model,
+                     --dry-run); also: pipeline, all
+  segment | extract | route | synthesize-stage
+                     Run ONE decomposed stage worker (--limit N —
+                     segment/extract/synthesize-stage only; --convs a,b).
+                     Each pulls its eligible work from the DB by state, walks
+                     oldest-conversation-first, persists, and exits — resumable,
+                     and runnable as separate concurrent processes on slices.
+  link               Deterministic cross-linking stage: inline-link first
+                     mentions + rebuild ## See also (--limit N; no model)`,
+    options: {
+    since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
+    model: { type: "string", description: "synthesize: synthesis model override (parsed; reserved)" },
+    "dry-run": { type: "boolean", description: "synthesize: plan the stages only, never write the vault" },
+    limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
+    convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
+    host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
+    port: { type: "string", description: "Port of that server [default: 8080]" },
+  } },
+} satisfies Record<string, { description: string; positional: string; usage?: string; details?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
 export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
 export function isCommand(name: string): name is Command { return Object.hasOwn(commands, name); }
@@ -177,7 +216,7 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
       throw new Error(usage(command));
     throw error;
   }
-  const max = command === "generate" || command === "embed" ? 2 : commands[command].positional ? 1 : 0;
+  const max = command === "memory" ? Infinity : command === "generate" || command === "embed" ? 2 : commands[command].positional ? 1 : 0;
   if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
   if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
   return parsed;
@@ -189,5 +228,6 @@ export function help(command?: string): string {
   if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun [options]\n       mlx-bun serve [query] [options]\n       mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(column)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nWith no command, start the server and web app using a cached model.\nRun mlx-bun serve --help for serving options.`;
   if (!isCommand(command)) throw new Error(`Unknown command: ${command}`);
   const info = commands[command];
-  return `mlx-bun ${command} — ${info.description}\n\nUsage: mlx-bun ${command} ${info.positional} [options]\n\nOptions:\n${Object.entries(info.options).map(([name, option]: [string, { type: string; description: string; short?: string }]) => `  ${((option.short ? `-${option.short}, ` : "") + `--${name}` + (option.type === "string" ? " <value>" : "")).padEnd(24)} ${option.description}`).join("\n")}\n  -h, --help               Show help`;
+  const details = (info as { details?: string }).details;
+  return `mlx-bun ${command} — ${info.description}\n\nUsage: mlx-bun ${command} ${info.positional} [options]\n${details ? `\n${details}\n` : ""}\nOptions:\n${Object.entries(info.options).map(([name, option]: [string, { type: string; description: string; short?: string }]) => `  ${((option.short ? `-${option.short}, ` : "") + `--${name}` + (option.type === "string" ? " <value>" : "")).padEnd(24)} ${option.description}`).join("\n")}\n  -h, --help               Show help`;
 }

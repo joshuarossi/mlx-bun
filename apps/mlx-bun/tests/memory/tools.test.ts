@@ -66,14 +66,15 @@ test("memory lookup, small reads, graph traversal and references stay bound to t
   expect(await call(root, "memory_list")).toContain("Orion_Camera");
 });
 
-test("memory status reports migration gaps without probing or advertising a scheduler", async () => {
+test("memory status advertises on-demand synthesis and reports the scheduler gap without probing it", async () => {
   const root = vault();
   const status = await call(root, "memory_status");
   expect(status).toContain(`- vault: ${root}`);
   expect(status).toContain("- articles: 2");
-  expect(status).toContain("- synthesis: unavailable during migration");
+  expect(status).toContain("- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun");
   expect(status).toContain("- nightly: unavailable during migration (schedule state is not inspected)");
-  expect(status).not.toContain("mlx-bun memory synthesize");
+  expect(status).not.toContain("mlx-bun memory schedule");
+  expect(status).not.toContain("launchd");
   expect(await memoryIndexHint(root)).toContain("2 articles plus 1 read-only");
 });
 

@@ -7,10 +7,17 @@ import {
   setupVault, VaultPathError, type VaultStatus, type ReferenceSource,
 } from "../memory/vault";
 import { parseInfobox, parseLead, parseSeriesBanner, articleStructure } from "../memory/article";
+import type { SynthesisEvent } from "../memory/events";
+import type { SynthesisSummary } from "../memory/pipeline";
+
+/** The synthesis entry composition mounts under GET /v1/memory/synthesize:
+ * main's `runSynthesis`, bound to the served vault and the loopback client. */
+export type MemorySynthesize = (options: { dryRun: boolean }, onEvent: (event: SynthesisEvent) => void) => Promise<SynthesisSummary>;
 
 /** Request-only memory API. The caller supplies the vault root; no model or
- * listener is created, and the handler owns no long-lived resources. */
-export function createMemoryRoutes(options: { root?: () => string; referenceSources?: readonly ReferenceSource[] } = {}) {
+ * listener is created, and the handler owns no long-lived resources. The
+ * synthesis route exists only when composition supplies `synthesize`. */
+export function createMemoryRoutes(options: { root?: () => string; referenceSources?: readonly ReferenceSource[]; synthesize?: MemorySynthesize } = {}) {
   const getRoot = options.root ?? vaultRoot;
   function jsonOk<T extends object>(body: T, init?: ResponseInit): Response {
     return Response.json({ ok: true, ...body }, init);
@@ -237,9 +244,46 @@ export function createMemoryRoutes(options: { root?: () => string; referenceSour
     }
   }
 
+  // ---- GET /v1/memory/synthesize?dry=1 ------------------------------------
+  //
+  // Runs the synthesis pipeline (the same job `mlx-bun memory synthesize`
+  // runs) and streams its progress as SSE: one `data:` line per event, then a
+  // `summary` event and `[DONE]`; a thrown error becomes an `error` event.
+  // `?dry=1` plans the stages without model calls or writes. Registered under
+  // `/v1/` for historical reasons; not part of the OpenAI surface.
+
+  function handleMemorySynthesize(url: URL, synthesize: MemorySynthesize): Response {
+    const dryRun = url.searchParams.get("dry") === "1";
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const send = (event: unknown) =>
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        try {
+          const summary = await synthesize({ dryRun }, (event) => send(event));
+          send({ type: "summary", ...summary });
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        } catch (error) {
+          send({ type: "error", message: (error as Error).message });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "content-type": "text/event-stream",
+        "cache-control": "no-cache",
+        connection: "keep-alive",
+      },
+    });
+  }
+
   return {
     async handle(request: Request): Promise<Response | null> {
       const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname === "/v1/memory/synthesize" && options.synthesize)
+        return handleMemorySynthesize(url, options.synthesize);
       switch (`${request.method} ${url.pathname}`) {
         case "GET /api/memory/status": return handleMemoryStatus();
         case "GET /api/memory/list": return handleMemoryList();

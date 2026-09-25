@@ -395,3 +395,55 @@ test("init rejects a symlink escaping the allowed vault and temporary trees", as
   }));
   expect(response.status).toBe(400);
 });
+
+
+describe("GET /v1/memory/synthesize (present only when composition supplies the pipeline)", () => {
+  function synthesizer() {
+    const calls: { dryRun: boolean }[] = [];
+    const routes = createMemoryRoutes({ root: () => routeRoot, synthesize: async (options, onEvent) => {
+      calls.push(options);
+      onEvent({ type: "stage", stage: "ingest", message: "ingest: planned (dry-run)" });
+      onEvent({ type: "done", message: "dry-run complete — no articles written." });
+      return { implemented: true, stages: ["ingest"], note: "dry-run: DAG wired; no model calls made." };
+    } });
+    return { calls, routes };
+  }
+
+  test("streams every event, then the summary and [DONE], as SSE; ?dry=1 plans only", async () => {
+    const { calls, routes: synth } = synthesizer();
+    const res = await synth.handle(new Request("http://x/v1/memory/synthesize?dry=1"));
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(200);
+    expect(res!.headers.get("content-type")).toBe("text/event-stream");
+    expect(res!.headers.get("cache-control")).toBe("no-cache");
+    const frames = (await res!.text()).split("\n\n").filter(Boolean);
+    expect(frames).toEqual([
+      'data: {"type":"stage","stage":"ingest","message":"ingest: planned (dry-run)"}',
+      'data: {"type":"done","message":"dry-run complete — no articles written."}',
+      'data: {"type":"summary","implemented":true,"stages":["ingest"],"note":"dry-run: DAG wired; no model calls made."}',
+      "data: [DONE]",
+    ]);
+    expect(calls).toEqual([{ dryRun: true }]);
+    await (await synth.handle(new Request("http://x/v1/memory/synthesize")))!.text();
+    expect(calls[1]).toEqual({ dryRun: false });
+  });
+
+  test("a pipeline failure becomes a terminal error event instead of a broken stream", async () => {
+    const failing = createMemoryRoutes({ root: () => routeRoot, synthesize: async (_options, onEvent) => {
+      onEvent({ type: "log", message: "operating on 0 conversation(s)" });
+      throw new Error("memory: no completion client configured");
+    } });
+    const res = await failing.handle(new Request("http://x/v1/memory/synthesize"));
+    const frames = (await res!.text()).split("\n\n").filter(Boolean);
+    expect(frames).toEqual([
+      'data: {"type":"log","message":"operating on 0 conversation(s)"}',
+      'data: {"type":"error","message":"memory: no completion client configured"}',
+    ]);
+  });
+
+  test("only GET is routed; the read-only factory without a pipeline still yields null", async () => {
+    const { routes: synth } = synthesizer();
+    expect(await synth.handle(new Request("http://x/v1/memory/synthesize", { method: "POST" }))).toBeNull();
+    expect(await routes.handle(new Request("http://x/v1/memory/synthesize"))).toBeNull();
+  });
+});
