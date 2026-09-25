@@ -1,20 +1,25 @@
 // Regularization knobs: LoRA+ (per-param LR in AdamW), rsLoRA (α/√rank scale),
 // and recompute-safe LoRA-input dropout. Pure/weight-free except where noted.
 
-import { describe, expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype } from "@mlx-bun/mlx/ffi";
-import * as ops from "@mlx-bun/mlx/ops";
-import { AdamW } from "../../src/optimizer";
-import { buildTrainableLora } from "../../src/lora-params";
-import { loraPlusLrScale } from "../../src/trainer";
-import { loraInputDropout } from "@mlx-bun/inference/layers/lora";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
+// The explicit native command and Mac CI opt in after staging MLX.
+// Ordinary discovery skips before loading native modules.
+const native = process.env.MLX_BUN_TEST_NATIVE === "1";
+type MlxArray = import("@mlx-bun/mlx/array").MlxArray;
+const { MlxArray } = native ? await import("@mlx-bun/mlx/array") : {} as typeof import("@mlx-bun/mlx/array");
+const { Dtype } = native ? await import("@mlx-bun/mlx/ffi") : {} as typeof import("@mlx-bun/mlx/ffi");
+const ops = native ? await import("@mlx-bun/mlx/ops") : {} as typeof import("@mlx-bun/mlx/ops");
+const { AdamW } = native ? await import("../../src/optimizer") : {} as typeof import("../../src/optimizer");
+const { buildTrainableLora } = native ? await import("../../src/lora-params") : {} as typeof import("../../src/lora-params");
+const { loraPlusLrScale } = native ? await import("../../src/trainer") : {} as typeof import("../../src/trainer");
+const { loraInputDropout } = native ? await import("@mlx-bun/inference/layers/lora") : {} as typeof import("@mlx-bun/inference/layers/lora");
 import type { RuntimeModel } from "@mlx-bun/inference/models";
 
 const f32 = (xs: number[]) => MlxArray.fromFloat32(new Float32Array(xs), [xs.length]);
 const read = (a: MlxArray) => a.toFloat32();
 
-describe("LoRA+ — AdamW per-param lrScale", () => {
+describe.skipIf(!native)("LoRA+ — AdamW per-param lrScale", () => {
   test("shared trainer policy scales every B leaf for SFT, DPO, and ORPO", () => {
     // flatParams is [A0,A1,A2,B0,B1,B2]. Every training method now constructs
     // AdamW through the same policy helper.
@@ -52,7 +57,7 @@ function stubModel(): RuntimeModel {
   return { loraTargets: () => map, loraState: { active: [] } } as unknown as RuntimeModel;
 }
 
-describe("rsLoRA — α/√rank effective scale", () => {
+describe.skipIf(!native)("rsLoRA — α/√rank effective scale", () => {
   test("each target's lw.scale = α/√rank; off → α", () => {
     const model = stubModel();
     const ranks = new Map([
@@ -69,8 +74,10 @@ describe("rsLoRA — α/√rank effective scale", () => {
   });
 });
 
-describe("LoRA-input dropout — recompute-deterministic", () => {
-  const x = MlxArray.fromFloat32(new Float32Array(4096).fill(1), [64, 64]);
+describe.skipIf(!native)("LoRA-input dropout — recompute-deterministic", () => {
+  let x: MlxArray;
+  beforeAll(() => { x = MlxArray.fromFloat32(new Float32Array(4096).fill(1), [64, 64]); });
+  afterAll(() => { x?.dispose(); });
 
   test("same (seed, id) reproduces the EXACT mask (recompute safety)", () => {
     const a = loraInputDropout(x, 0.3, 7, 2);

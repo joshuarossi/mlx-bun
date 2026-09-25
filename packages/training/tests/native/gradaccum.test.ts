@@ -7,15 +7,20 @@
 // demonstration over a real model lives in parity-gradaccum.ts (deleted 2026-08-23; git history).
 
 import { describe, expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import { activeMemory, clearCache } from "@mlx-bun/mlx/ffi";
-import * as ops from "@mlx-bun/mlx/ops";
-import { accumulateStep } from "../../src/trainer";
+
+// The explicit native command and Mac CI opt in after staging MLX.
+// Ordinary discovery skips before loading native modules.
+const native = process.env.MLX_BUN_TEST_NATIVE === "1";
+type MlxArray = import("@mlx-bun/mlx/array").MlxArray;
+const { MlxArray } = native ? await import("@mlx-bun/mlx/array") : {} as typeof import("@mlx-bun/mlx/array");
+const { activeMemory, clearCache } = native ? await import("@mlx-bun/mlx/ffi") : {} as typeof import("@mlx-bun/mlx/ffi");
+const ops = native ? await import("@mlx-bun/mlx/ops") : {} as typeof import("@mlx-bun/mlx/ops");
+const { accumulateStep } = native ? await import("../../src/trainer") : {} as typeof import("../../src/trainer");
 
 const vec = (xs: number[]) => MlxArray.fromFloat32(new Float32Array(xs), [xs.length]);
 const read = (a: MlxArray) => Array.from(a.toFloat32());
 
-describe("accumulateStep", () => {
+describe.skipIf(!native)("accumulateStep", () => {
   test("accumSteps=1 is a pass-through: loss + grads unchanged, afterMicroEval runs once", () => {
     let microCalls = 0;
     let afterCalls = 0;

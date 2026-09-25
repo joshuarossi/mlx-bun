@@ -86,9 +86,8 @@ export interface TrainConfig {
   segmentSize: number;
   /** Keep ALL eval-step checkpoints (full mountable adapters under
    *  checkpoints/step-<NNNNN>-val<loss>/) + write metrics.json. Off by default
-   *  so server finetune jobs and tests stay clean; the chunk-finetune script
-   *  turns it on so the best-ON-TASK checkpoint can be chosen by the real eval
-   *  afterward (val is only a proxy — we keep them all and let the eval pick). */
+   *  to limit output to the final adapter. Callers can retain intermediate
+   *  checkpoints for evaluation against their own task. */
   saveCheckpoints: boolean;
   /** Gradient clipping: scale grads so their global L2 norm ≤ this before the
    *  optimizer step (0 = off). Standard ORPO/DPO stability guard — without it a

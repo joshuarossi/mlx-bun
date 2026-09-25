@@ -36,13 +36,23 @@ exercise per-target rank selection. They need no native library or weights.
 `bun run --filter @mlx-bun/training test:native` runs the separate numerical
 optimizer, accumulation, batching, ORPO, and regularization tests; it uses MLX
 and must only run when GPU work is allowed.
+The native command opts in with `MLX_BUN_TEST_NATIVE=1`; Mac CI runs it after
+staging natives. Bare test discovery skips those tests before native imports.
+An explicitly requested native run fails if its native installation is missing.
+
+Inherited experimental selectors remain in the [trainer](src/trainer.ts),
+[segmented backward](src/segmented.ts), [loss](src/loss.ts), and
+[flash CCE kernel](src/kernels/flash-cce.ts). Record their `MLX_BUN_*` settings
+with numerical evidence. `MLX_BUN_MEM_LOG` and `MLX_BUN_SEG_MEM_LOG` enable
+diagnostic console output independently of the progress callback.
 
 The [migration preservation record](measurements/2026-09-25-training-preservation.json)
 compares fixed-seed MiniCPM5-1B training against main: three SFT steps, two DPO
 steps, and two ORPO steps. Step metrics, every saved A/B tensor, and full-sequence
-logits after adapter reload match exactly. These runs cover rank-2 adapters on
+logits on a seven-token probe after adapter reload match exactly. These runs cover rank-2 adapters on
 the last layer's query/value projections, batch size one, and short sequences.
 The 47 native tests also pass, and every public entry imports from installed
 package archives. This establishes migration preservation for those paths;
-other model families and specialized training paths still need real-weight
-evidence. It is not an independent training-oracle or performance claim.
+Gemma and diffusion, checkpointed/segmented/shared-prefix/fused/flash paths,
+warm starts, intermediate checkpoints, and adapter fusion/export still need
+real-weight evidence. It is not an independent training-oracle or performance claim.

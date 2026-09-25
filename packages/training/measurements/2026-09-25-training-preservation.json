@@ -418,17 +418,112 @@
       "assertions": 2829,
       "examplesPassed": true
     },
-    "sourcePreservation": "All 14 migrated implementation bodies match main after TypeScript transpilation and removing import declarations; comments/types are excluded, numerical and Metal source bodies are retained."
+    "sourcePreservation": "All 14 migrated implementation bodies match main after TypeScript transpilation and removing import declarations; comments/types are excluded, numerical and Metal source bodies are retained.",
+    "provenance": {
+      "cpuAndDag": "Producer-reported totals from tool output; original raw output was not archived.",
+      "nativeTraining": {
+        "path": "/tmp/mlx-training-native-tests.log",
+        "sha256": "809daf0b2a4c1aebafb6513c8bcef809371d9068aedd7a97e12a137e1a6b2f60",
+        "retention": "External local log, not archived in Git; no revision or environment metadata captured in this log."
+      },
+      "installedArtifacts": {
+        "path": "/tmp/mlx-training-packages.log",
+        "sha256": "27f2c2ceac87568834335c335fd8cd76922057daabf214d4011e9e3bff041925",
+        "retention": "External local log, not archived in Git; no revision or environment metadata captured in this log.",
+        "scope": "Historical 111-entry import count from the measured migration revision, before the later base merge added public exports; not a claim about the current head."
+      },
+      "typecheck": "Producer-observed success from tool output; original raw output was not archived.",
+      "sourcePreservation": "Producer-observed normalized AST comparison; original command output was not archived. Fable independently repeated it in the linked review."
+    }
   },
   "externalEvidence": {
     "directory": "/tmp/mlx-training-preservation-20912ba",
     "harnessSha256": "ef5f87fa225c917dbc385cd2d9a341001298907f7167511c6fd43c2163417066",
-    "retention": "Raw logs, checkpoint files, harness and tensor bytes remain outside Git; this record contains the compared values, hashes, input rows and reconstruction protocol."
+    "retention": "Raw logs, checkpoint files, harness and tensor bytes remain outside Git; this record contains the compared values, hashes, input rows and reconstruction protocol.",
+    "recordBuilder": {
+      "path": "/tmp/mlx-training-preservation-20912ba/record.ts",
+      "sha256": "8055d1d7df46b67c9d420db857c7df4fbc0b53cdc61355f5124e849c0ca0700b",
+      "role": "Collected raw result files and asserted exact pairs. Source revisions and supporting-check totals were manually supplied literals. protocol[2] was corrected after generation; this builder is not a byte-for-byte generator of the committed record."
+    }
   },
   "limitations": [
     "Only MiniCPM5-1B OptiQ 4-bit, last-layer q_proj/v_proj rank-2 adapters, batch 1 and short sequences are covered by these paired runs.",
     "Gemma, DiffusionGemma, segmented or checkpointed backward, shared-prefix preference training, fused/flash CCE, warm starts, intermediate checkpoints, export/fusion and longer or distributed runs require separate real-weight evidence.",
     "Synthetic native tests exercise additional primitive behavior but do not establish specialized graph preservation.",
     "There is no performance claim."
+  ],
+  "corrections": [
+    {
+      "date": "2026-09-25",
+      "reason": "Clarify provenance after independent review; comparison values and tensor hashes are unchanged.",
+      "dateConvention": "Record date is UTC. Local result-file modification timestamps fall on September 24 at UTC-06:00, i.e. September 25 UTC.",
+      "sourceRevisionEvidence": {
+        "capture": "The harness and result.json did not capture git revision, working directory or dirty state. branchCommit and mainCommit identify producer-observed source revisions, not values emitted by the harness.",
+        "branchReflogWindow": {
+          "revision": "20912ba059a8fe635f2db39d7ec6573a8b87b73e",
+          "from": "2026-09-24T22:10:28-06:00",
+          "until": "2026-09-24T22:17:15-06:00",
+          "nextRevision": "d752a01ba6ab45efcda49e68b681c2c1bac2b2a9"
+        },
+        "mainReflog": {
+          "revision": "02d723a2875153196f8c6c10bce2daf6f0044655",
+          "since": "2026-09-23T22:40:41-06:00"
+        },
+        "workingTree": "Producer observed an empty git status in the training worktree before the migrated paired runs. The per-process harness did not record dirty state, so this is an operator observation rather than independently captured run metadata.",
+        "laterSourceComparison": "At review, git diff --quiet 20912ba HEAD -- packages/training/src returned zero for HEAD 1c5ce3d5 (before this follow-up comment edit). Main working tree status was empty at that later inspection; that does not independently prove its earlier run-time dirty state.",
+        "originalResultMtimes": {
+          "first": "2026-09-25T04:12:06.871Z",
+          "last": "2026-09-25T04:14:55.958Z",
+          "meaning": "File metadata observed during review, not process start/end timestamps."
+        }
+      },
+      "originalEnvironment": {
+        "explicitSelection": {
+          "MLX_BUN_LIBMLXC": "/Users/joshrossi/Code/mlx-bun-training/packages/mlx/dist/native/libmlxc.dylib"
+        },
+        "workingDirectory": "/Users/joshrossi/Code/mlx-bun-training",
+        "workingDirectorySource": "Producer tool invocation, not harness output.",
+        "uncapturedSelectors": [
+          "MLX_BUN_TRAIN_ATTN",
+          "MLX_BUN_NO_FUSED_SDPA",
+          "MLX_BUN_FLASH_MIN_M",
+          "MLX_BUN_CCE_SG_SKIPDQ",
+          "MLX_BUN_CCE_SCALAR",
+          "MLX_BUN_CCE_LANE",
+          "MLX_BUN_CCE_BWD_SKIP_P2DQ",
+          "MLX_BUN_CCE_BWD_SKIP_P2",
+          "MLX_BUN_CCE_BWD_FILTER_EPS",
+          "MLX_BUN_CCE_BWD_BLOCK_EPS",
+          "MLX_BUN_CCE_NOSTEEL",
+          "MLX_BUN_CCE_BWD_NOSTEEL",
+          "MLX_BUN_CCE_BWD_SCALAR"
+        ],
+        "limitation": "Other ambient environment values and Bun dotenv loading were not captured or pinned by the original harness. Their original unset state cannot be established retrospectively."
+      },
+      "independentReproduction": {
+        "evidence": "https://github.com/joshuarossi/mlx-bun/pull/75#issuecomment-5826714005",
+        "review": "https://github.com/joshuarossi/mlx-bun/pull/75#issuecomment-5826775330",
+        "reviewer": "Fable",
+        "mainCommit": "02d723a2875153196f8c6c10bce2daf6f0044655",
+        "branchCommit": "1c5ce3d55c8e6c92e25e28ea71d7141651ad3955",
+        "environment": "Reviewer reports bun --no-env-file, all ambient MLX_BUN_* stripped, explicit same native bundle, and HF_HUB_OFFLINE=1.",
+        "unsetSelectors": [
+          "MLX_BUN_TRAIN_ATTN",
+          "MLX_BUN_NO_FUSED_SDPA",
+          "MLX_BUN_FLASH_MIN_M",
+          "MLX_BUN_CCE_SG_SKIPDQ",
+          "MLX_BUN_CCE_SCALAR",
+          "MLX_BUN_CCE_LANE",
+          "MLX_BUN_CCE_BWD_SKIP_P2DQ",
+          "MLX_BUN_CCE_BWD_SKIP_P2",
+          "MLX_BUN_CCE_BWD_FILTER_EPS",
+          "MLX_BUN_CCE_BWD_BLOCK_EPS",
+          "MLX_BUN_CCE_NOSTEEL",
+          "MLX_BUN_CCE_BWD_NOSTEEL",
+          "MLX_BUN_CCE_BWD_SCALAR"
+        ],
+        "result": "Reviewer independently reproduced all three pairings and matched original reports (except layout), all adapter bytes and all seven-token reload logits. This corroborates the recorded values under a pinned environment without claiming the original run captured that environment."
+      }
+    }
   ]
 }
