@@ -333,7 +333,9 @@ fill session and proposal interfaces.
   artifacts; it does not download them.
 - `transcription`: Whisper decoding, long-form and streaming transcription,
   word timing, and text/SRT/VTT formatting. Callers supply the Whisper graph,
-  tokenizer, and audio samples.
+  tokenizer, and audio samples. `transcription/format` exposes the
+  text/SRT/VTT/verbose-JSON formatters alone, without loading native MLX, for
+  HTTP layers that only shape responses.
 - `models/audio/conformer` and `models/audio/silero-vad`: existing audio encoder
   and voice-activity graphs.
 - `input/vision`: image decoding/preprocessing, multimodal prompt assembly,
