@@ -78,7 +78,11 @@ test("latest and pinned reinstalls replace only the owned bundle and keep user d
     expect(await readFile(join(f.home, "request-url"), "utf8")).toContain("releases/download/v1.2.4/mlx-bun-arm64.tar.gz");
     expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.2.4\n");
     expect(await readlink(join(f.app, "current"))).not.toBe(old);
-    expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(1);
+    expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(2);
+    expect((await run([join(f.app, old, "mlx-bun"), "--version"])).out).toBe("mlx-bun 1.2.3\n");
+    expect((await f.install(await f.archive("1.2.5"))).code).toBe(0);
+    expect((await readdir(f.app)).filter(name => name.startsWith("bundle."))).toHaveLength(2);
+    await expect(readFile(join(f.app, old, "mlx-bun"))).rejects.toThrow("ENOENT");
     for (const file of ["sessions/chat.jsonl", "wiki/article.md", "hf.json", "mlx-bun", "libmlx.dylib"])
       expect(await readFile(join(f.installRoot, file), "utf8")).toBe("preserved");
   } finally { await f.close(); }

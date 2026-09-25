@@ -95,13 +95,16 @@ SWITCHED=1
 mv -fh "$LINK" "$BIN_DIR/mlx-bun"
 LINK=""; COMPLETE=1
 
-# The locked, marked app-install directory owns bundle.* stages. Do not follow
-# symlinks, including a previous current pointing outside this directory.
+# Keep the immediate previous bundle: a running Bun executable re-execs its
+# canonical old path for managed jobs. Restart it before another upgrade.
+# Do not follow symlinks, including a previous current outside this directory.
 for old in "$APP_ROOT"/bundle.*; do
   [ "$old" = "$STAGE" ] && continue
+  [ "$old" = "$APP_ROOT/$PREVIOUS" ] && continue
   if [ -d "$old" ] && [ ! -L "$old" ]; then rm -rf "$old"; fi
 done
 echo "Installed $ACTUAL at $BIN_DIR/mlx-bun"
+[ -z "$PREVIOUS" ] || echo "If mlx-bun is running, restart it before your next upgrade."
 case ":$PATH:" in
   *":$BIN_DIR:"*) echo "Run: mlx-bun";;
   *) printf 'Add to PATH: export PATH="%s:$PATH"\n' "$BIN_DIR";;

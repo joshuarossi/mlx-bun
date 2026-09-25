@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildBinary, compileApp } from "./build-binary";
@@ -154,12 +154,19 @@ cp "$MLX_BUN_TEST_ARCHIVE" "$output"
 `);
   await chmod(curl, 0o755);
   const version = JSON.parse(await readFile(join(root, "apps/mlx-bun/package.json"), "utf8")).version;
-  await run(["/bin/sh", join(root, "scripts/install.sh")], { ...env, HOME: installHome,
+  const installEnvironment = { ...env, HOME: installHome,
     PATH: `${transport}:${process.env.PATH}`, MLX_BUN_INSTALL_DIR: join(installHome, ".mlx-bun"),
-    MLX_BUN_VERSION: `v${version}`, MLX_BUN_TEST_ARCHIVE: archive });
+    MLX_BUN_VERSION: `v${version}`, MLX_BUN_TEST_ARCHIVE: archive };
+  await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
   assert.equal(await run([join(installHome, ".local/bin/mlx-bun"), "--version"]), `mlx-bun ${version}\n`);
   const installedScratch = join(temporary, "installed consumer"); await mkdir(installedScratch);
   console.log(await run([join(installHome, ".mlx-bun/app-install/current/verify-consumer"), installedScratch]));
+  const previous = await readlink(join(installHome, ".mlx-bun/app-install/current"));
+  await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
+  // Managed jobs from a process started before the upgrade still use its old
+  // canonical executable. Exercise that retained bundle's actual reentry.
+  const previousScratch = join(temporary, "previous consumer"); await mkdir(previousScratch);
+  console.log(await run([join(installHome, ".mlx-bun/app-install", previous, "verify-consumer"), previousScratch]));
   console.log("Local installer: actual compiled app, assets and managed child passed through installed symlinks (CPU only).");
   if (model) await verifyModel(executable, model, scratch, env);
 } finally { await rm(temporary, { recursive: true, force: true }); }
