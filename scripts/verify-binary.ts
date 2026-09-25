@@ -38,7 +38,7 @@ async function verifyModel(executable: string, cachedModel: string, scratch: str
   // that could send jobs, credentials, memory or chat storage to the user's files.
   const env: NodeJS.ProcessEnv = { ...environment };
   for (const key of Object.keys(env)) if (/^(MLX_BUN_|HF_|HUGGING_FACE_|PI_|XDG_)/.test(key)) delete env[key];
-  Object.assign(env, { HOME: home, HF_HOME: join(home, ".cache/huggingface"), HF_HUB_CACHE: hub,
+  Object.assign(env, { HOME: home, HF_HOME: join(home, ".cache/huggingface"), HF_HUB_CACHE: hub, HF_HUB_OFFLINE: "1",
     XDG_CACHE_HOME: join(home, ".cache"), XDG_CONFIG_HOME: join(home, ".config"),
     XDG_DATA_HOME: join(home, ".local/share"), PI_CODING_AGENT_DIR: join(home, ".pi/agent"),
     TMPDIR: scratch, NO_COLOR: "1" });

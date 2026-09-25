@@ -117,6 +117,16 @@ lone/concurrent deterministic completion, stream cancellation, and shutdown.
 It never downloads weights; missing native libraries or an invalid supplied
 checkpoint fail. This is a behavior check, not an oracle or performance claim.
 
+`server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
+Responses-history counters for `GET /stats`; `GET /fit` uses the public hub fit
+functions and the served artifact metadata. Predictions remain advisory and do
+not impose an admission limit. GLM reports its existing explicit memory plan.
+Historical EvalDB measurements have no migrated owner, so measurement fields
+remain null; old machine-specific GLM throughput constants are not reported as
+measurements for the current server. The dashboard shows an unavailable marker
+when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
+synthetic counters and CPU fit inputs without a model or native MLX.
+
 ## Web chat backend
 
 `src/chat/protocol.ts` owns browser messages. `backend.ts` owns a per-server
@@ -240,8 +250,7 @@ then resumes. As in main's direct-process server, resident model weights and
 caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
 admission waits, terminates active children, and awaits them before closing the
 store and engine. Opening the app does not create the job database until a job
-route is used. Dataset generation, adapter mounting/merge/export, and artifact
-publishing remain separate work. A fine-tuning job selects its own model path;
+route is used. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
@@ -265,8 +274,35 @@ cancels requests and retry waits and joins tasks before closing job storage.
 
 Twelve templates are enabled. `verified_code` remains visible with an unavailable
 explanation and returns 501 until generated-code execution has a migrated owner.
-Dataset publishing remains pending. [Dataset tests](tests/dataset/lifecycle.test.ts)
+[Dataset tests](tests/dataset/lifecycle.test.ts)
 use temporary storage and synthetic HTTP responses, without a model or download.
+
+Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
+Merge uses the public training library while holding the engine execution lock;
+export writes a CPU-only manifest without taking that lock. Both preserve the
+existing output roots and prefixes, with unique suffixes so simultaneous requests
+cannot overwrite each other's artifacts.
+
+`publishing/credentials.ts` owns the app's `~/.mlx-bun/hf.json` token file (mode
+0600). Resolution prefers the saved token, then `HF_TOKEN`, then the shared HF
+cache through the hub resolver. Explicit paths and environment isolate tests
+and embedded consumers. Settings responses expose presence only.
+`publishing/upload.ts` selects an explicit source or the supplied job's output
+and passes resolved credentials to the public hub uploader. HTTP shapes and
+errors belong to `server/publishing-routes.ts`; CLI composition supplies the
+read-only job lookup. Quantized models and adapters publish as model repos;
+datasets publish as dataset repos. Uploads need no model execution lease.
+[Publishing tests](tests/server/publishing-routes.test.ts) use temporary token
+storage and an injected uploader; they never read installed credentials or
+publish to Hugging Face.
+
+## Web hub
+
+`server/hub-routes.ts` owns the web hub list/search and restart-required response.
+Local rows consume registry and fit APIs; search remains request-owned and
+cancels with its caller. Download stays 501 until its background task has an
+explicit cancellation and shutdown owner. Selecting a model returns a restart
+command, preserving main's behavior without claiming a live switch.
 
 ## Standalone bundle
 
