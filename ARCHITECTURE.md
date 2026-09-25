@@ -100,7 +100,10 @@ other domains with their first migrated consumers and explicit dependency rules.
 
 `memory/` owns Markdown vault storage, initialization, and article semantics.
 Its HTTP adapter belongs to `server/`; composition supplies reference sources
-explicitly rather than deriving them from repository layout.
+explicitly rather than deriving them from repository layout. Read-only memory
+tools and prompt context are built by `memory/` and injected into chat, with
+composition supplying the vault and bundled-skill destinations. Query navigation
+uses local article structure; scheduling and synthesis have separate lifecycles.
 
 Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.

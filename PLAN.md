@@ -41,10 +41,6 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 
 ## Migrate the application
 
-- [ ] Inject memory tools, skill paths, and prompt context into web chat from
-  their real app owner. The composed Pi backend currently leaves memory disabled.
-  Restore the browser memory-chip/tool-name check with that slice and preserve
-  read-only tool permissions through the injected memory surface.
 - [ ] Migrate the memory CLI commands and nightly scheduling with their owning
   synthesis lifecycle; read/init routes alone do not enable background work.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as

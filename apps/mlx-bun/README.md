@@ -169,8 +169,19 @@ repository documentation paths. Merely starting the app does not create a vault.
 
 [Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
 and real local Git history; [article tests](tests/memory/article.test.ts) cover
-parsing and round trips. Synthesis, memory tools, and scheduling remain separate
-migration work; the chat backend still receives no memory integration.
+parsing and round trips. `query.ts` owns deterministic article navigation;
+`tools.ts` owns the read-only Pi definitions and prompt hint. CLI composition
+passes the same vault root to REST and chat and supplies a skill directory
+(default `~/.mlx-bun/skills`). `ServeOptions.memoryPaths` permits isolated app
+composition without adding CLI flags. Missing vaults expose no memory tools and
+create no skill files. Bundled skills are package assets; standalone binary
+embedding remains part of the release migration.
+
+[Tool tests](tests/memory/tools.test.ts) exercise temporary vaults, and the
+[SDK test](tests/chat-runtime.test.ts) executes a memory tool through a real
+read-only Pi session with a synthetic loopback model. Synthesis, nightly
+scheduling, and the memory CLI remain unavailable; status and skill guidance
+say so explicitly. No read tool starts those lifecycles.
 
 ## Jobs and quantization
 

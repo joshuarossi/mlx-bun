@@ -178,6 +178,8 @@ test("startup attaches continuation/cache services and token history before list
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], remembered = [];
+    const memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
+    const memorySurface = { toolNames: [], customTools: [], skillPaths: [], hint: "memory" };
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 65536 } } },
       glmMemoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048 }, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
@@ -187,7 +189,7 @@ test("startup attaches continuation/cache services and token history before list
     const binding = { gateway: { configureContinuation(services) {
       assert.equal(services, cache.continuationServices); events.push("continuation");
     } } };
-    let engine, listenerInput;
+    let engine, listenerInput, memoryCallback;
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async () => context, modelServingBinding: async () => binding, createCacheServices: async () => cache,
       createAppEngine: async (supplied, options) => {
@@ -211,8 +213,15 @@ test("startup attaches continuation/cache services and token history before list
       assert.deepEqual(remembered, [[1, 2], [3, 4]]); assert.ok(options.tokenHistory);
       events.push("routes"); return { handle: async () => null };
     } }));
+    mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async (root, skills) => {
+      assert.equal(root, memoryPaths.vault); assert.equal(skills, memoryPaths.skills); return memorySurface;
+    } }));
+    mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes(options) {
+      assert.equal(options.root(), memoryPaths.vault); return { handle: async () => null };
+    } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
+      assert.equal(typeof options.memory, "function"); memoryCallback = options.memory;
       assert.equal(options.contextWindow, 8192); assert.equal(options.readOnly, true); return () => {};
     } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
@@ -222,9 +231,10 @@ test("startup attaches continuation/cache services and token history before list
     const { startModelServer } = await import(app + "src/cli/serve.ts");
     const running = await startModelServer({ path: "/unused", repoId: "test" }, {
       query: null, hostname: "127.0.0.1", port: 0, capacity: 8, contextLimit: null,
-      readOnly: true, noOpen: true, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
+      readOnly: true, noOpen: true, memoryPaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
     });
     assert.equal(running.port, 1234);
+    assert.equal(await memoryCallback(), memorySurface);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
     await running.close();
     assert.deepEqual(events.slice(-3), ["timer stop", "cache close", "model close"]);
