@@ -325,5 +325,54 @@
   "runtimeEnvironment": {
     "MLX_BUN_COMPILED_DECODE": "0",
     "MLX_BUN_TEST_RUNTIME_ORACLE": "1"
-  }
+  },
+  "status": "corrected by the appended reference-dispatch clarification; original measurements retained",
+  "corrections": [
+    {
+      "date": "2026-09-25",
+      "corrects": "Initial mixed-KV oracle interpretation in this record; original report hashes and outcomes remain unchanged.",
+      "cause": "The original adapter installed mixed-KV conversion but not fused attention. Historical mlx-bun deliberately uses stock mlx-lm quantized attention for one query and the OptiQ tiled implementation for supported multi-query input. OptiQ fused install alone also changes one-query decode, so neither whole-upstream default represents that composition.",
+      "reference": "External composed adapter delegates unchanged arithmetic to stock mlx-lm for query length one and OptiQ fused_quant_sdpa for larger queries. This verifies the documented per-path library contract, not equality with all defaults of optiq serve.",
+      "pythonComposedAdapterSha256": "60a10963f358de243255a497f8d7013f7aad22ad8a01a2adf9df08cdd4055423",
+      "pythonFusedOnlyAdapterSha256": "bee0680e89c3f80fa32b63944fe5e028e57ac190a7ea652f67dafd8bac3f4a4f",
+      "results": [
+        {
+          "name": "minicpm-mixed",
+          "defaultLibraryVsComposedReferenceMatchedCases": 9,
+          "allUnfusedControlVsStockReferenceMatchedCases": 9,
+          "unfusedControlRestoredContinuationMatchedCases": 9,
+          "unfusedControlRuntimeEnvironment": {
+            "MLX_BUN_COMPILED_DECODE": "0",
+            "MLX_BUN_NO_FUSED_SDPA": "1",
+            "MLX_BUN_TEST_RUNTIME_ORACLE": "1"
+          },
+          "unfusedControlCommit": "30256cccefa62324dc0d40edf25e2236bfeed860",
+          "fusedOnlyUpstreamMatchedCases": 0,
+          "reports": {
+            "python-composed": "aa3e66e70e797942641980801c32e6e0b5b69943d484333d61bfe208c030ba5f",
+            "python-fused": "64552047229cb8e889f7e99ccb12c5598639edc28377cd8af16e0f8d823c8cae",
+            "branch-unfused": "f35c5a7916a57550e5f257161e7c5d05e572cce868b0d998fd82947600a98215"
+          }
+        },
+        {
+          "name": "gemma-mixed",
+          "defaultLibraryVsComposedReferenceMatchedCases": 9,
+          "allUnfusedControlVsStockReferenceMatchedCases": 9,
+          "unfusedControlRestoredContinuationMatchedCases": 9,
+          "unfusedControlRuntimeEnvironment": {
+            "MLX_BUN_COMPILED_DECODE": "0",
+            "MLX_BUN_NO_FUSED_SDPA": "1",
+            "MLX_BUN_TEST_RUNTIME_ORACLE": "1"
+          },
+          "unfusedControlCommit": "30256cccefa62324dc0d40edf25e2236bfeed860",
+          "fusedOnlyUpstreamMatchedCases": 0,
+          "reports": {
+            "python-composed": "b7496cd0642f4b642f42cf6b91688f64186341ab3379b8f6f819ddbf61d10725",
+            "python-fused": "e47ef79f74ba814860b1215312f1dcbf47df6a02fb6da234c905db199c4f5383",
+            "branch-unfused": "8c6a17b609bbe41ef72b1dafa1b0c75c06f6240b66db6fbfb94a562bd55caea4"
+          }
+        }
+      ]
+    }
+  ]
 }

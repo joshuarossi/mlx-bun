@@ -98,9 +98,12 @@ The [2026-09-25 state comparison](measurements/2026-09-25-runtime-state.json)
 records the exact model snapshots, weight/native/reference hashes and per-case
 outcomes. MiniCPM and Gemma plain KV match the external oracle; all tested paths,
 including their mixed KV and Trellis, match main and preserve saved continuation.
-Mixed KV has an unresolved oracle mismatch shared with main: a multi-token append
-to already quantized state differs, including prefixes split into multiple chunks.
-The comparator continues to fail those cases. Trellis's reference is main, not
+Mixed KV matches the documented composition: stock mlx-lm attention for one
+query and OptiQ tiled attention for supported multi-query input. The separately
+verified all-unfused control matches the stock reference. This is not a claim of
+identity with every default of `optiq serve`, whose fused install also affects
+single-query decode. The record preserves the initial mismatched-reference
+results and appends the corrected comparison. Trellis's reference is main, not
 mlx-lm. These checks do not close the broader verification gate in PLAN.
 
 ## Direct library use

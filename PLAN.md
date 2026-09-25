@@ -13,10 +13,6 @@ Josh's approval. Ownership and documentation rules live in [ARCHITECTURE.md](ARC
   settings. Exit: reproducible comparisons meet the numerical contracts, with
   source revisions, external oracle versions, and curated evidence in approved
   docs; synthetic tests alone do not close this item.
-- [ ] Resolve the multi-token mixed-KV oracle mismatch recorded in the
-  [state comparison](packages/inference/measurements/2026-09-25-runtime-state.json).
-  Both main and the migrated library differ from the external reference; establish
-  the correct reference path before changing numerics or claiming full L2 parity.
 - [ ] Run paired same-machine performance comparisons against main using the
   same artifacts and configuration. Exit: decode, prefill, complete-request time,
   and memory evidence is recorded; regressions are resolved or explicitly reviewed.
