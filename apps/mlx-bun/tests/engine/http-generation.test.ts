@@ -1,25 +1,119 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { RunningApp } from "../../src/cli/serve";
+import type { ClientMessage, ServerMessage } from "../../src/chat/protocol";
 
 const modelDir = process.env.MLX_BUN_APP_TEST_MODEL;
 
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(part => part && typeof part === "object" &&
+    part.type === "text" && typeof part.text === "string" ? part.text : "").join("");
+}
+
+async function deadline<T>(promise: Promise<T>, description: string, milliseconds = 60_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), milliseconds);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+/** Real WebSocket → Pi SDK → loopback HTTP → shared model, without an external
+ * provider. All persistence belongs to the caller's temporary app paths. */
+async function webChatTurn(base: URL) {
+  const frames: ServerMessage[] = [];
+  const observers = new Set<() => void>();
+  const closed = Promise.withResolvers<void>();
+  let failure: Error | undefined, socketClosed = false;
+  const socket = new WebSocket(new URL("/ws/chat", base).href.replace("http:", "ws:"));
+  const notify = () => { for (const observer of [...observers]) observer(); };
+  socket.addEventListener("message", event => {
+    try {
+      const frame = JSON.parse(String(event.data)) as ServerMessage;
+      frames.push(frame);
+      if (frame.type === "error") failure = new Error(`Web chat error: ${frame.message}`);
+      if (frame.type === "tool_start") failure = new Error(`Simple greeting unexpectedly invoked ${frame.tool}`);
+    } catch (error) { failure = error as Error; }
+    notify();
+  });
+  socket.addEventListener("error", () => { failure = new Error("Web chat socket failed"); notify(); });
+  socket.addEventListener("close", () => { socketClosed = true; closed.resolve(); notify(); });
+  async function waitFor(predicate: () => boolean, description: string) {
+    let observer: (() => void) | undefined;
+    try {
+      await deadline(new Promise<void>((resolve, reject) => {
+        observer = () => {
+          if (failure) reject(failure);
+          else if (predicate()) resolve();
+          else if (socketClosed) reject(new Error(`Web chat closed before ${description}`));
+        };
+        observers.add(observer); observer();
+      }), description);
+    } finally { if (observer) observers.delete(observer); }
+  }
+  const send = (message: ClientMessage) => socket.send(JSON.stringify(message));
+  const prompt = "Reply with one short greeting. Do not use any tools.";
+  try {
+    await waitFor(() => frames.some(frame => frame.type === "ready"), "web chat ready");
+    send({ type: "set_thinking", enabled: false });
+    send({ type: "set_sampling", temperature: 0 });
+    send({ type: "prompt", text: prompt });
+    await waitFor(() => frames.some(frame => frame.type === "turn_end"), "real web chat turn");
+    expect(frames.some(frame => frame.type === "turn_start")).toBe(true);
+    const text = frames.flatMap(frame => frame.type === "text_delta" ? [frame.delta] : []).join("");
+    expect(text.trim().length).toBeGreaterThan(0);
+    expect(frames.filter(frame => frame.type === "error" || frame.type === "tool_approval_request")).toEqual([]);
+    await waitFor(() => frames.some(frame => frame.type === "sessions" &&
+      frame.items.some(item => item.path === frame.activePath)), "persisted session listing");
+    const listing = frames.findLast(frame => frame.type === "sessions" && frame.activePath);
+    if (listing?.type !== "sessions" || !listing.activePath) throw new Error("Missing active session path");
+    const beforeReplay = frames.length;
+    send({ type: "open_session", path: listing.activePath });
+    await waitFor(() => frames.slice(beforeReplay).some(frame => frame.type === "history" &&
+      frame.items.some(item => item.role === "user" && item.text === prompt) &&
+      frame.items.some(item => item.role === "assistant" && item.text.trim().length > 0)), "persisted chat replay");
+    return { prompt, text };
+  } finally {
+    socket.close(1000, "test complete");
+    await deadline(closed.promise, "web chat close", 5_000);
+  }
+}
+
 // Opt-in: uses an already-downloaded autoregressive model, never downloads one.
-// A supplied invalid path or missing native runtime must fail rather than skip.
-test.skipIf(!modelDir)("real HTTP generation shares the continuous engine and recovers after stream cancellation", async () => {
+// Imports that can load native MLX remain inside the skipped test body. A supplied
+// invalid model path or missing native runtime must fail rather than skip.
+test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous engine and persist an isolated session", async () => {
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
   const model = await scanSnapshot(modelDir!, "test-model");
   if (!model) throw new Error("Model path has no loadable checkpoint");
-  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
-  options.contextLimit = 2048; // Programmatic composition, not a serving CLI flag.
-  const app = await startModelServer(model, options);
-  const base = new URL(`http://127.0.0.1:${app.port}`);
+  const root = mkdtempSync(join(tmpdir(), "mlx-real-app-"));
+  const cwd = join(root, "project"), vault = join(root, "vault"), sessions = join(root, "sessions");
+  mkdirSync(cwd); mkdirSync(join(vault, "articles"), { recursive: true });
+  writeFileSync(join(vault, "articles", "Travel.md"), "# Travel\n\nTravel preferences.\n\n## Preference\n\nTake the early train.\n");
+  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true,
+    thinking: "off" }, positionals: [] });
+  // Pi includes its system prompt and actual tool schemas. This is a
+  // programmatic test budget, not a new serving CLI flag or product default.
+  options.contextLimit = 16_384;
+  options.readOnly = true;
+  options.chatPaths = { cwd, agentDir: join(root, "agent"), sessionDir: sessions, toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault, skills: join(root, "skills") };
+  let app: RunningApp | undefined;
   try {
+    app = await startModelServer(model, options);
+    const base = new URL(`http://127.0.0.1:${app.port}`);
     expect((await fetch(base)).headers.get("content-type")).toContain("text/html");
     expect((await fetch(new URL("/health", base))).status).toBe(200);
-    const endpoint = new URL("/v1/chat/completions", base);
+    const post = (path: string, body: unknown) => fetch(new URL(path, base), { method: "POST",
+      headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const body = { messages: [{ role: "user", content: "Say hello in one sentence." }], max_tokens: 8, temperature: 0 };
-    const request = (options: typeof body & { stream?: boolean } = body) => fetch(endpoint, { method: "POST",
-      headers: { "content-type": "application/json" }, body: JSON.stringify(options) });
+    const request = (options: typeof body & { stream?: boolean } = body) => post("/v1/chat/completions", options);
     const baselineResponse = await request();
     expect(baselineResponse.status).toBe(200);
     const baseline = await baselineResponse.json();
@@ -39,7 +133,45 @@ test.skipIf(!modelDir)("real HTTP generation shares the continuous engine and re
     const afterCancel = await request();
     expect(afterCancel.status).toBe(200);
     await afterCancel.arrayBuffer();
+
+    const messagesResponse = await post("/v1/messages", { ...body, model: "local" });
+    expect(messagesResponse.status).toBe(200);
+    const message = await messagesResponse.json();
+    expect(message.type).toBe("message"); expect(message.role).toBe("assistant");
+    expect(Array.isArray(message.content)).toBe(true);
+    expect(message.usage.input_tokens).toBeGreaterThan(0);
+    expect(message.usage.output_tokens).toBeGreaterThan(0);
+    expect(message.usage.output_tokens).toBeLessThanOrEqual(8);
+
+    const responseResponse = await post("/v1/responses", { model: "local", input: "Say hello in one sentence.", max_output_tokens: 8, temperature: 0 });
+    expect(responseResponse.status).toBe(200);
+    const response = await responseResponse.json();
+    expect(response.object).toBe("response"); expect(Array.isArray(response.output)).toBe(true);
+    expect(["completed", "incomplete"]).toContain(response.status);
+    expect(response.usage.input_tokens).toBeGreaterThan(0);
+    expect(response.usage.output_tokens).toBeGreaterThan(0);
+    expect(response.usage.output_tokens).toBeLessThanOrEqual(8);
+    const followupResponse = await post("/v1/responses", { model: "local", previous_response_id: response.id,
+      input: "Now say goodbye in one sentence.", max_output_tokens: 8, temperature: 0 });
+    expect(followupResponse.status).toBe(200);
+    const followup = await followupResponse.json();
+    expect(followup.object).toBe("response"); expect(followup.id).not.toBe(response.id);
+    expect(followup.previous_response_id).toBe(response.id);
+    expect(followup.usage.input_tokens).toBeGreaterThan(response.usage.input_tokens);
+    expect(followup.usage.output_tokens).toBeGreaterThan(0);
+    expect(followup.usage.output_tokens).toBeLessThanOrEqual(8);
+
+    const chat = await webChatTurn(base);
     await app.close();
     await expect(fetch(base)).rejects.toThrow();
-  } finally { await app.close(); }
-}, 120_000);
+    const transcripts = readdirSync(sessions).filter(name => name.endsWith(".jsonl"));
+    expect(transcripts).toHaveLength(1);
+    const entries = readFileSync(join(sessions, transcripts[0]!), "utf8").trim().split("\n")
+      .map(line => JSON.parse(line));
+    expect(entries.some(entry => entry.type === "message" && entry.message?.role === "user" && contentText(entry.message.content) === chat.prompt)).toBe(true);
+    expect(entries.some(entry => entry.type === "message" && entry.message?.role === "assistant" && contentText(entry.message.content).trim() === chat.text.trim())).toBe(true);
+    expect(readFileSync(join(root, "skills", "memory", "SKILL.md"), "utf8")).toContain("name: memory");
+  } finally {
+    try { await app?.close(); } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+}, 180_000);
