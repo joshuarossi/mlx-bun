@@ -13,7 +13,7 @@ const pending = [
   /^\/api\/dataset\/(?:templates|submit|push)$/,
   /^\/api\/memory\/(?:status|list|search|article|links|history|diff|init)$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
-  /^\/(?:generate|signal|fit|stats|curves|dag)$/,
+  /^\/(?:generate|signal|fit|stats|curves|dag|engine)$/,
 ];
 export function pendingRoute(path: string): boolean { return pending.some(pattern => pattern.test(path)); }
 
