@@ -182,4 +182,5 @@ claims in the [training evidence](../../packages/training/README.md).
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;
 export writes a CPU-only manifest without taking that lock. Both preserve the
-existing generated output paths. Publishing remains separate migration work.
+existing output roots and prefixes, with unique suffixes so simultaneous requests
+cannot overwrite each other's artifacts. Publishing remains separate migration work.

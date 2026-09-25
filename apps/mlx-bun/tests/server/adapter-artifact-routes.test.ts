@@ -1,5 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import type { GenerationGateway } from "../../src/engine/generation-gateway";
@@ -102,6 +102,72 @@ test("export preserves omitted method and generated default path, and reports wr
   expect(args[0]![0]).toStartWith(join(homedir(), ".cache/mlx-bun/exports/export-"));
   expect(args[0]!.slice(1)).toEqual(["org/base", "/trained", undefined]);
   expect(events).toEqual([]);
+});
+
+test("exports in the same millisecond retain separate manifests", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-adapter-export-")); roots.push(root);
+  const clock = spyOn(Date, "now").mockReturnValue(123456789);
+  try {
+    const routes = createAdapterArtifactRoutes(lock([]), { outputRoot: root });
+    const responses = await Promise.all(["first", "second"].map(name => routes.handle(post("export", {
+      base_model: `org/${name}`, adapter_path: `/trained/${name}`,
+    }))));
+    const bodies = await Promise.all(responses.map(response => {
+      expect(response!.status).toBe(200);
+      return response!.json();
+    }));
+    expect(bodies[0].export_path).not.toBe(bodies[1].export_path);
+    for (const [index, body] of bodies.entries()) {
+      expect(body.export_path).toStartWith(join(root, "exports/export-123456789-"));
+      expect(body.manifest.base_model).toBe(`org/${index === 0 ? "first" : "second"}`);
+      expect(await Bun.file(join(body.export_path, "manifest.json")).json()).toEqual(body.manifest);
+    }
+  } finally { clock.mockRestore(); }
+});
+
+test("merges queued in the same millisecond retain separate artifacts after serial admission", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-adapter-merge-")); roots.push(root);
+  const clock = spyOn(Date, "now").mockReturnValue(123456789);
+  let release!: () => void, allQueued!: () => void;
+  let tail = new Promise<void>(resolve => { release = resolve; });
+  const queued = new Promise<void>(resolve => { allQueued = resolve; });
+  let admissions = 0, calls = 0;
+  const gateway: Pick<GenerationGateway, "runExclusive"> = { runExclusive(work) {
+    const result = tail.then(work);
+    tail = result.then(() => {}, () => {});
+    if (++admissions === 2) allQueued();
+    return result;
+  } };
+  const routes = createAdapterArtifactRoutes(gateway, { outputRoot: root, merge: async (sources, output) => {
+    calls++;
+    mkdirSync(output, { recursive: true });
+    await Bun.write(join(output, "sources.json"), JSON.stringify(sources));
+    return { ...stats, sources };
+  } });
+  const pending = ["first", "second"].map(name => routes.handle(post("merge", {
+    adapter_a: `/${name}/a`, adapter_b: `/${name}/b`,
+  })));
+  try {
+    await queued;
+    expect(calls).toBe(0);
+    release();
+    const responses = await Promise.all(pending);
+    const bodies = await Promise.all(responses.map(response => {
+      expect(response!.status).toBe(200);
+      return response!.json();
+    }));
+    expect(calls).toBe(2);
+    expect(bodies[0].merged_path).not.toBe(bodies[1].merged_path);
+    for (const [index, body] of bodies.entries()) {
+      const name = index === 0 ? "first" : "second";
+      expect(body.merged_path).toStartWith(join(root, "adapters/merged-123456789-"));
+      expect(await Bun.file(join(body.merged_path, "sources.json")).json()).toEqual([`/${name}/a`, `/${name}/b`]);
+    }
+  } finally {
+    release();
+    await Promise.allSettled(pending);
+    clock.mockRestore();
+  }
 });
 
 test("invalid and pre-cancelled requests fail before lock acquisition or artifact writes", async () => {
