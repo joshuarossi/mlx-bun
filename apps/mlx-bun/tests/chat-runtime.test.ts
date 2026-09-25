@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPiBackend } from "../src/chat/pi-backend";
+import { createSessionRoutes } from "../src/server/session-routes";
 import type { AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
 import type { ServerMessage } from "../src/chat/protocol";
 
@@ -32,7 +33,10 @@ test("Pi startup, provider hooks, streamed reply, and transcripts stay in app-su
   const streaming = Promise.withResolvers<void>();
   const streamClosed = Promise.withResolvers<void>();
   let backend: ReturnType<ReturnType<typeof createPiBackend>> | undefined;
+  const sessions = createSessionRoutes(sessionDir);
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const sessionResponse = await sessions.handle(request);
+    if (sessionResponse) return sessionResponse;
     const body = await request.json() as Record<string, unknown>;
     requests.push({ path: new URL(request.url).pathname, body, headers: request.headers });
     const chunk = (delta: Record<string, unknown>, finish_reason: string | null) => ({
@@ -88,6 +92,13 @@ test("Pi startup, provider hooks, streamed reply, and transcripts stay in app-su
     const transcript = readFileSync(join(sessionDir, files[0]!), "utf8");
     expect(transcript).toContain("Isolated reply."); expect(transcript).toContain("Say a short greeting without tools.");
     expect(transcript).toContain(cwd);
+    const searched = await fetch(new URL("/api/sessions/search?q=Isolated", server.url));
+    const found = await searched.json();
+    expect(found.ok).toBe(true); expect(found.results).toHaveLength(1);
+    expect(found.results[0].sessionPath).toBe(join(sessionDir, files[0]!));
+    const exported = await fetch(new URL(`/api/sessions/export?${new URLSearchParams({ path: found.results[0].sessionPath })}`, server.url));
+    const saved = await exported.json();
+    expect(saved.ok).toBe(true); expect(JSON.stringify(saved.entries)).toContain("Isolated reply.");
     expect(existsSync(join(agentDir, "auth.json"))).toBe(false); // provider credentials stay in memory
     expect(JSON.parse(readFileSync(toolApprovalsFile, "utf8"))).toEqual({ version: 1, allows: { "test-tool": true } });
   } finally {

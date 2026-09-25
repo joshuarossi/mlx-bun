@@ -170,7 +170,7 @@ test("bare and option-first CLI invocations dispatch to serve without loading a 
     expect(commandInvocation([command])).toEqual({ command, args: [] });
 });
 
-test("startup attaches continuation/cache services and token history before listener ownership", async () => {
+for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup attaches caches, token history, and shared session paths before listener ownership (${sessionDir ?? "default"})`, async () => {
   // Isolate module mocks in a child so other engine tests always see real modules.
   const app = new URL("../", import.meta.url).pathname;
   const script = `
@@ -178,7 +178,9 @@ test("startup attaches continuation/cache services and token history before list
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], remembered = [];
-    const chatPaths = { toolApprovalsFile: "/unused/approvals.json" };
+    const chatPaths = { toolApprovalsFile: "/unused/approvals.json", sessionDir: ${JSON.stringify(sessionDir) ?? "undefined"} };
+    const { defaultSessionDir } = await import(app + "src/chat/session-files.ts");
+    let sessionsDirectory;
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 65536 } } },
       glmMemoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048 }, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
@@ -217,9 +219,13 @@ test("startup attaches continuation/cache services and token history before list
       assert.equal(options.servedModelPath, "/unused"); assert.equal(typeof options.invalidateLibrary, "function");
       return { handle: async () => null };
     } }));
+    mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes(directory) {
+      sessionsDirectory = directory; assert.equal(directory, chatPaths.sessionDir ?? defaultSessionDir());
+      return { handle: async () => null };
+    } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
-      assert.equal(options.contextWindow, 8192); assert.equal(options.readOnly, true); assert.equal(options.paths, chatPaths); return () => {};
+      assert.equal(options.contextWindow, 8192); assert.equal(options.readOnly, true); assert.deepEqual(options.paths, { ...chatPaths, sessionDir: sessionsDirectory }); return () => {};
     } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
       listenerInput = input; events.push("listener");
