@@ -96,6 +96,45 @@ const commands = {
     dequantize: { type: "boolean", short: "d", description: "Not supported (mlx_lm.convert flag); exits with an error" },
     "quant-predicate": { type: "string", description: "Not supported (mlx-lm recipe); use --target-bpw for mixed precision" },
   } },
+  train: { description: "Fine-tune a LoRA adapter on your data (sft | dpo | orpo)", positional: "[model]", options: {
+    query: { type: "string", description: "Model to fine-tune when no positional query is supplied (auto-picks the default model if omitted)" },
+    data: { type: "string", description: "Dataset dir with train.jsonl (+ optional valid.jsonl); rows are {prompt, chosen, rejected} for dpo/orpo, {messages|text} for sft  (required)" },
+    method: { type: "string", description: "sft | dpo | orpo  [default: orpo]" },
+    adapter: { type: "string", description: "Output adapter dir  [default: ~/.cache/mlx-bun/mlx-bun-finetunes/<method>-<model>]" },
+    iters: { type: "string", description: "Training iterations  [default: 100]" },
+    lr: { type: "string", description: "Learning rate  [default: orpo 1e-5 · dpo 5e-5 · sft 2e-4]" },
+    rank: { type: "string", description: "LoRA rank  [default: orpo 16 · else 8]" },
+    scale: { type: "string", description: "LoRA scale  [default: orpo 2.0 · else 1.0]" },
+    seq: { type: "string", description: "Max sequence length  [default: gemma 8192 · else 4096]" },
+    batch: { type: "string", description: "Batch size  [default: 1]" },
+    "grad-accum": { type: "string", description: "Gradient accumulation steps (effective batch = batch × grad-accum at batch-size-1 memory)  [default: 1]" },
+    "grad-clip": { type: "string", description: "Gradient-norm clip (0 = off)  [default: 1.0]" },
+    seed: { type: "string", description: "Data-shuffle / init seed  [default: 0]" },
+    "val-size": { type: "string", description: "Max validation examples per eval  [default: 256]" },
+    lambda: { type: "string", description: "ORPO odds-ratio weight  [default: 0.1]" },
+    "sft-scope": { type: "string", description: "ORPO chosen-NLL scope: full (paper/TRL-faithful, prompt+response) | response (pre-2026-07 runs, bit-exact)  [default: full]" },
+    seg: { type: "string", description: "Layers per segment (segmented backward; orpo default 2)" },
+    "save-every": { type: "string", description: "Crash-safe mountable checkpoint every n steps" },
+    resume: { type: "string", description: "Warm-start LoRA weights from a checkpoint/adapter dir" },
+    "no-flash": { type: "boolean", description: "Disable the flash-CCE Metal head (use the MLX fused head)" },
+    "no-prefix": { type: "boolean", description: "Disable prefix-sharing (two-forward branches)" },
+    "no-segment": { type: "boolean", description: "Disable the segmented backward (hold all activations)" },
+    "dry-run": { type: "boolean", description: "Inspect the dataset + print the resolved plan, don't train" },
+  } },
+  "train-watch": { description: "Live dashboard for a training run (tails <adapter-dir>/metrics.jsonl)", positional: "[adapter-dir]", options: {
+    adapter: { type: "string", description: "Adapter directory to watch; accepted for the positional  [default: ~/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5]" },
+  } },
+  fuse: { description: "Merge a LoRA adapter into the base weights (writes a standalone snapshot)", positional: "[model]", options: {
+    model: { type: "string", description: "Base model (registry query or a snapshot path); the mlx_lm.fuse spelling of the positional" },
+    adapter: { type: "string", description: "Adapter directory (adapters.safetensors + adapter_config.json)  [default: adapters]" },
+    "adapter-path": { type: "string", description: "mlx_lm.fuse alias for --adapter" },
+    "save-path": { type: "string", description: "Output model directory  [default: fused_model]" },
+    "de-quantize": { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+    dequantize: { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+    "export-gguf": { type: "boolean", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+    "gguf-path": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+    "upload-repo": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
+  } },
 } satisfies Record<string, { description: string; positional: string; usage?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
 export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
@@ -131,7 +170,8 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
 
 export function help(command?: string): string {
   if (command === "gen") command = "generate";
-  if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun [options]\n       mlx-bun serve [query] [options]\n       mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(8)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nWith no command, start the server and web app using a cached model.\nRun mlx-bun serve --help for serving options.`;
+  const column = Math.max(...Object.keys(commands).map(name => name.length));
+  if (!command) return `mlx-bun — local AI on Apple Silicon\n\nUsage: mlx-bun [options]\n       mlx-bun serve [query] [options]\n       mlx-bun <command> [options]\n\nCommands:\n${Object.entries(commands).map(([name, info]) => `  ${name.padEnd(column)} ${info.description}`).join("\n")}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nWith no command, start the server and web app using a cached model.\nRun mlx-bun serve --help for serving options.`;
   if (!isCommand(command)) throw new Error(`Unknown command: ${command}`);
   const info = commands[command];
   return `mlx-bun ${command} — ${info.description}\n\nUsage: mlx-bun ${command} ${info.positional} [options]\n\nOptions:\n${Object.entries(info.options).map(([name, option]: [string, { type: string; description: string; short?: string }]) => `  ${((option.short ? `-${option.short}, ` : "") + `--${name}` + (option.type === "string" ? " <value>" : "")).padEnd(24)} ${option.description}`).join("\n")}\n  -h, --help               Show help`;

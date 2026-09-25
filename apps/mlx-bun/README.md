@@ -340,6 +340,19 @@ store and engine. Opening the app does not create the job database until a job
 route is used. A fine-tuning job selects its own model path;
 the resident inference model's adapter/training capabilities do not gate it.
 
+`cli/train.ts` owns the `train`, `train-watch`, and `fuse` verbs as thin
+presentation over this producer and the public training library. `train`
+validates main's flags before any model resolution, preflights the dataset,
+prints the plan, and drives `createFinetuneRunner` in-process (`--dry-run` stops
+at the plan). SIGINT/SIGTERM abort the run at the next progress event; the
+trainer has no cancellation seam, so a cancelled run releases its resources but
+writes no final adapter. `train-watch` (`finetune/watch.ts`) tails the trainer's
+`<adapter>/metrics.jsonl`. `fuse` merges an adapter through `fuseAdapter` and
+refuses the mlx_lm.fuse flags main refused; the merge cannot be interrupted, so
+a signal arriving during it lets the output finish rather than leaving a partial
+directory. [Training CLI tests](tests/train-cli.test.ts) use injected
+dependencies and a spawned CLI with native MLX blocked.
+
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
 paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
 [Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding

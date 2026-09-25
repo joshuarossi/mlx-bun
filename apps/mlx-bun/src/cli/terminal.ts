@@ -68,17 +68,21 @@ export function step(text: string): Step {
   };
 }
 
-/** Rounded box with a gradient border. Lines may contain ANSI codes. */
-export function box(lines: string[], { pad = 1 }: { pad?: number } = {}): void {
+/** Rounded box with a gradient border, one output line per entry. Lines may contain ANSI codes. */
+export function boxLines(lines: string[], { pad = 1 }: { pad?: number } = {}): string[] {
   const visible = (s: string) => [...s.replace(/\x1b\[[0-9;]*m/g, "")].length;
   const width = Math.max(...lines.map(visible)) + pad * 2;
   const hue = (s: string) => (tty() ? fg(rampAt(0.15)) + s + RESET : s);
-  console.log(hue(`  ╭${"─".repeat(width)}╮`));
-  for (const l of lines) {
-    const fill = " ".repeat(width - visible(l) - pad * 2);
-    console.log(`${hue("  │")}${" ".repeat(pad)}${l}${fill}${" ".repeat(pad)}${hue("│")}`);
-  }
-  console.log(hue(`  ╰${"─".repeat(width)}╯`));
+  return [
+    hue(`  ╭${"─".repeat(width)}╮`),
+    ...lines.map((l) => `${hue("  │")}${" ".repeat(pad)}${l}${" ".repeat(width - visible(l) - pad * 2)}${" ".repeat(pad)}${hue("│")}`),
+    hue(`  ╰${"─".repeat(width)}╯`),
+  ];
+}
+
+/** Rounded box with a gradient border. Lines may contain ANSI codes. */
+export function box(lines: string[], options: { pad?: number } = {}): void {
+  for (const line of boxLines(lines, options)) console.log(line);
 }
 
 export interface Column {
