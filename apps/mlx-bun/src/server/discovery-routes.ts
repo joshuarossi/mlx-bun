@@ -112,6 +112,7 @@ export function createDiscoveryRoutes(
             endpoints: [
               "POST /v1/chat/completions",
               "POST /v1/completions",
+              "POST /v1/messages",
               "POST /v1/embeddings",
               "GET /v1/models",
               "GET /health",
@@ -159,7 +160,7 @@ export function createDiscoveryRoutes(
             capabilities: {
               chat_completions: true,
               text_completions: true,
-              anthropic_messages: false,
+              anthropic_messages: true,
               responses: false,
               streaming: true,
               tools: true,

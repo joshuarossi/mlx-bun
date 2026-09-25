@@ -15,9 +15,14 @@ import { InferenceStage } from "./inference-request";
 import { createRequestPrep, type RequestPrepOptions } from "./request-prep";
 import type { PromptTokenHistory } from "./generated-token-history";
 import type { ModelPromptBuilder } from "./prompt-contracts";
-import { admit, errorResponse, respondJson, respondStream } from "./http";
+import { admit, errorResponse, respondJson, respondStream, type ErrorFormatter } from "./http";
 import { chatCompletionJson, chatCompletionStream, textCompletionJson, textCompletionStream } from "./openai-wire";
 import { createDiscoveryRoutes } from "./discovery-routes";
+import { anthropicToChatBody, chatJsonToAnthropic, createAnthropicStreamProtocol, type AnthropicRequest } from "./anthropic";
+
+const anthropicError: ErrorFormatter = (status, message, body) => Response.json({ type: "error",
+  error: { ...body, type: status >= 500 ? "api_error" : "invalid_request_error", message },
+}, { status });
 
 /** HTTP adapters borrow the engine; the application owns its lifetime. No
  * socket, loaded model, cache, or scheduler is created by these routes. */
@@ -44,15 +49,49 @@ export function createCompletionRoutes(engine: {
   const text = new TextCompletionStage(ctx, prep, options.contextLimit, options.defaultGeneratedTokens, options.defaultAdapter, engine.preparation);
   const inference = new InferenceStage(new CompletionExecutor(engine.completion));
   const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now());
+  const applyCacheSession = (body: ChatRequestParams, request: Request, original: unknown = body) => {
+    const fields = original as { session_id?: unknown; prompt_cache_key?: unknown };
+    const session = typeof fields.session_id === "string" ? fields.session_id :
+      typeof fields.prompt_cache_key === "string" ? fields.prompt_cache_key :
+      request.headers.get("x-session-affinity") ?? request.headers.get("session_id") ?? undefined;
+    if (runtimeValue("MLX_BUN_SESSION_CACHE") !== "0") body.session_id = session;
+    else { delete body.session_id; delete body.prompt_cache_key; }
+  };
   return {
     invalidateLibrary: discovery.invalidateLibrary,
     /** null means another app surface may handle this request. */
     async handle(request: Request): Promise<Response | null> {
       const url = new URL(request.url);
+      const format = url.pathname === "/v1/messages" ? anthropicError : undefined;
       try {
         const discovered = await discovery.handle(url, request);
         if (discovered) return discovered;
         if (request.method !== "POST") return null;
+        if (url.pathname === "/v1/messages") {
+          let body: AnthropicRequest;
+          try {
+            body = await request.json();
+            if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("invalid JSON body");
+          } catch (error) {
+            return request.signal.aborted ? errorResponse(error, url.pathname, format, request.signal)
+              : anthropicError(400, "invalid JSON body", {});
+          }
+          let chatBody: ChatRequestParams;
+          try {
+            chatBody = anthropicToChatBody(body) as unknown as ChatRequestParams;
+            applyCacheSession(chatBody, request, body);
+          } catch (error) {
+            return anthropicError(400, error instanceof Error ? error.message : String(error), {});
+          }
+          const id = `chatcmpl-${crypto.randomUUID()}`;
+          const admitted = await admit(inference, () => chat.run(new ChatRequest(chatBody), id, request.signal),
+            undefined, "anthropic request", anthropicError, request.signal);
+          if ("response" in admitted) return admitted.response;
+          return body.stream
+            ? respondStream(inference, admitted.admitted, createAnthropicStreamProtocol(ctx.modelId), request.signal)
+            : respondJson(inference, admitted.admitted, result => chatJsonToAnthropic(chatCompletionJson(result,
+              { id, created: Math.floor(Date.now() / 1000), model: ctx.modelId }), ctx.modelId), request.signal, undefined, anthropicError);
+        }
         if (url.pathname === "/v1/embeddings") {
           const embed = engine.binding.embed?.bind(engine.binding);
           if (!embed) return Response.json({ error: {
@@ -91,11 +130,7 @@ export function createCompletionRoutes(engine: {
           if (request.signal.aborted) return errorResponse(request.signal.reason, url.pathname, undefined, request.signal);
           return Response.json({ error: { message: "invalid JSON body" } }, { status: 400 });
         } finally { closeParse?.(); }
-        const session = typeof body.session_id === "string" ? body.session_id :
-          typeof body.prompt_cache_key === "string" ? body.prompt_cache_key :
-          request.headers.get("x-session-affinity") ?? request.headers.get("session_id") ?? undefined;
-        if (runtimeValue("MLX_BUN_SESSION_CACHE") !== "0") body.session_id = session;
-        else { delete body.session_id; delete body.prompt_cache_key; }
+        applyCacheSession(body, request);
         const admitted = await admit(inference, () => chatRoute
           ? chat.run(new ChatRequest(body), id, request.signal)
           : text.run(new TextCompletionRequest(body), id, request.signal), trace, chatRoute ? "chat request" : "text completion", undefined, request.signal);
@@ -104,7 +139,7 @@ export function createCompletionRoutes(engine: {
         return body.stream
           ? respondStream(inference, admitted.admitted, chatRoute ? chatCompletionStream(meta) : textCompletionStream(meta), request.signal, trace)
           : respondJson(inference, admitted.admitted, result => chatRoute ? chatCompletionJson(result, meta) : textCompletionJson(result, meta), request.signal, trace);
-      } catch (error) { return errorResponse(error, url.pathname, undefined, request.signal); }
+      } catch (error) { return errorResponse(error, url.pathname, format, request.signal); }
     },
   };
 }

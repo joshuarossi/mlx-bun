@@ -5,7 +5,7 @@ import type { createCompletionRoutes } from "./routes";
 // Temporary migration responses for known surfaces. Remove each entry when its
 // owning handler is mounted; unknown routes remain 404.
 const pending = [
-  /^\/v1\/(?:messages|responses|audio\/(?:transcriptions|translations|speech)|adapters(?:\/[^/]+)?|memory\/synthesize)$/,
+  /^\/v1\/(?:responses|audio\/(?:transcriptions|translations|speech)|adapters(?:\/[^/]+)?|memory\/synthesize)$/,
   /^\/api\/hub\/(?:local|search|download|serve)$/,
   /^\/api\/sessions\/(?:search|export)$/,
   /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
