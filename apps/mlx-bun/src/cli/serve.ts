@@ -79,9 +79,9 @@ export interface RunningApp { port: number; close(): Promise<void> }
 /** CLI composition owns resources until each explicit ownership transfer. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
-    { createCompletionRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
+    { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
     { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }] = await Promise.all([
-    import("../engine"), import("../server/routes"), import("../server/start"),
+    import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
   ]);
@@ -113,9 +113,11 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
-    const routes = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
+    const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
       defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
+    const memory = createMemoryRoutes();
+    const routes = { handle: async (request: Request) => await memory.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
