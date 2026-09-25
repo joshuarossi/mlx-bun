@@ -389,6 +389,10 @@ for (const stream of [false, true]) test(`Responses generation failure is not co
       const wire = await response.text();
       expect(wire).toContain('event: error'); expect(wire).toContain('"code":"server_error"');
       expect(wire).not.toContain('event: response.completed');
+      const terminal = wire.trim().split("\n\n").at(-1)!;
+      expect(terminal).toStartWith("event: response.failed\n");
+      expect(JSON.parse(terminal.split("\ndata: ")[1]!).response).toMatchObject({ status: "failed",
+        error: { code: "server_error", message: "generation failed" }, usage: { output_tokens: 1 } });
     } else {
       expect(response.status).toBe(500);
       expect(await response.json()).toEqual({ error: { message: "generation failed", type: "server_error", param: null, code: null } });
