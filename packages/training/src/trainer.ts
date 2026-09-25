@@ -247,9 +247,16 @@ function createLoraOptimizer(
   );
 }
 
-/** Run a LoRA fine-tune. Emits per-step train metrics, periodic val metrics,
- *  and a final stage:done with the adapter path + applied ranks. Saves the
- *  adapter (last + best-on-val) and returns where it landed. */
+/** Train a LoRA adapter on the caller's model. Obligations of the `control.signal`
+ * seam: cancellation is observed only at boundaries (entry, before every optimizer
+ * step, and once more after the last step once every checkpoint write has
+ * completed), so a step is never interrupted and numerics are unchanged; a
+ * cancellation observed at a boundary rejects with the signal's reason, detaches
+ * the caller's model, releases the LoRA leaves after any checkpoint write that
+ * borrowed them has settled, keeps checkpoints saved earlier on disk, and writes
+ * no final adapter. Starting the final save is the commit point: a signal that
+ * arrives after it does not stop the complete save, and the run reports success.
+ * Every exit, including failure, leaves the model detached from training. */
 export async function trainLora(
   model: RuntimeModel,
   tok: LoadedTokenizer,
