@@ -11,23 +11,26 @@
 //   - a B=2 batched ValueAndGrad finite-difference check proving gradients
 //     flow through a LoRA-shaped graph with a batched input.
 
-import { describe, expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import { Dtype } from "@mlx-bun/mlx/ffi";
-import { ValueAndGrad } from "@mlx-bun/mlx/autograd";
-import { add, sub, mul, matmul, reshape, sumAxis, mulScalar } from "@mlx-bun/mlx/ops";
-import {
-  iterateSftBatches, iterateDpoBatches, rowLength, PAD_TO,
-  type SftExample, type DpoExample,
-} from "../../src/dataset";
-import { buildBatchedPadMask } from "@mlx-bun/inference/scoring";
-import { countResponseTokens } from "../../src/trainer";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+
+// The explicit native command and Mac CI opt in after staging MLX.
+// Ordinary discovery skips before loading native modules.
+const native = process.env.MLX_BUN_TEST_NATIVE === "1";
+type MlxArray = import("@mlx-bun/mlx/array").MlxArray;
+const { MlxArray } = native ? await import("@mlx-bun/mlx/array") : {} as typeof import("@mlx-bun/mlx/array");
+const { Dtype } = native ? await import("@mlx-bun/mlx/ffi") : {} as typeof import("@mlx-bun/mlx/ffi");
+const { ValueAndGrad } = native ? await import("@mlx-bun/mlx/autograd") : {} as typeof import("@mlx-bun/mlx/autograd");
+const { add, sub, mul, matmul, reshape, sumAxis, mulScalar } = native ? await import("@mlx-bun/mlx/ops") : {} as typeof import("@mlx-bun/mlx/ops");
+import type { SftExample, DpoExample } from "../../src/dataset";
+const { iterateSftBatches, iterateDpoBatches, rowLength, PAD_TO } = native ? await import("../../src/dataset") : {} as typeof import("../../src/dataset");
+const { buildBatchedPadMask } = native ? await import("@mlx-bun/inference/scoring") : {} as typeof import("@mlx-bun/inference/scoring");
+const { countResponseTokens } = native ? await import("../../src/trainer") : {} as typeof import("../../src/trainer");
 
 // ---------------------------------------------------------------------------
 // SFT batching
 // ---------------------------------------------------------------------------
 
-describe("iterateSftBatches B>1", () => {
+describe.skipIf(!native)("iterateSftBatches B>1", () => {
   // Distinct lengths so sort order is unambiguous: 3, 5, 8, 10.
   const ex = (len: number, promptLen: number): SftExample => ({
     ids: Array.from({ length: len }, (_, i) => i + 1), // 1..len (avoid 0=pad)
@@ -137,7 +140,7 @@ describe("iterateSftBatches B>1", () => {
 // DPO batching (_make_batch)
 // ---------------------------------------------------------------------------
 
-describe("iterateDpoBatches B>1", () => {
+describe.skipIf(!native)("iterateDpoBatches B>1", () => {
   const dex = (clen: number, cprompt: number, rlen: number, rprompt: number): DpoExample => ({
     chosenIds: Array.from({ length: clen }, (_, i) => i + 1),
     rejectedIds: Array.from({ length: rlen }, (_, i) => i + 1),
@@ -187,7 +190,7 @@ describe("iterateDpoBatches B>1", () => {
 // Batched padding-aware attention mask
 // ---------------------------------------------------------------------------
 
-describe("buildBatchedPadMask", () => {
+describe.skipIf(!native)("buildBatchedPadMask", () => {
   test("is [B,1,L,L] bool: causal AND key-within-valid-length per row", () => {
     const B = 2, L = 4;
     const validLengths = [4, 2]; // row0 full, row1 valid keys {0,1}
@@ -238,7 +241,7 @@ describe("buildBatchedPadMask", () => {
 // SFT loss mask boundary (mirrors loss.ts maskedCe) — excludes padding
 // ---------------------------------------------------------------------------
 
-describe("SFT loss mask excludes padding", () => {
+describe.skipIf(!native)("SFT loss mask excludes padding", () => {
   // Replicates the exact mask predicate from loss.ts maskedCe so the boundary
   // logic is unit-tested without a model: supervised iff
   //   (t+1 >= promptLen) AND (t+1 < length).
@@ -268,7 +271,7 @@ describe("SFT loss mask excludes padding", () => {
 // Batched autograd (B=2) — gradients flow through a LoRA-shaped graph
 // ---------------------------------------------------------------------------
 
-describe("batched ValueAndGrad (B=2)", () => {
+describe.skipIf(!native)("batched ValueAndGrad (B=2)", () => {
   const B = 2, IN = 6, RANK = 2, OUT = 6;
   const N = B * OUT;
 
@@ -280,8 +283,12 @@ describe("batched ValueAndGrad (B=2)", () => {
   const aData = det(IN * RANK, (i) => ((i * 7 + 3) % 11) / 11 - 0.5);
   const bData = det(RANK * OUT, (i) => ((i * 5 + 1) % 9) / 9 - 0.4);
 
-  const xConst = MlxArray.fromFloat32(xData, [B, IN]);
-  const yConst = MlxArray.fromFloat32(yData, [B, OUT]);
+  let xConst: MlxArray, yConst: MlxArray;
+  beforeAll(() => {
+    xConst = MlxArray.fromFloat32(xData, [B, IN]);
+    yConst = MlxArray.fromFloat32(yData, [B, OUT]);
+  });
+  afterAll(() => { xConst?.dispose(); yConst?.dispose(); });
 
   // loss = mean( (x + (x@A)@B - y)^2 ) over the WHOLE [B,OUT] batch.
   function buildLoss(a: MlxArray, b: MlxArray, x: MlxArray, y: MlxArray): MlxArray {

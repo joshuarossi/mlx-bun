@@ -10,13 +10,15 @@
 //   loss    = L_NLL + λ·L_OR
 
 import { describe, expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import * as ops from "@mlx-bun/mlx/ops";
-import { ValueAndGrad } from "@mlx-bun/mlx/autograd";
-import {
-  log1mexp, orpoLossFromLogps, combineFullNll, respSpanFromMask,
-  spanLogpMeanFromHidden, responseOnlyLogpMean,
-} from "../../src/loss";
+
+// The explicit native command and Mac CI opt in after staging MLX.
+// Ordinary discovery skips before loading native modules.
+const native = process.env.MLX_BUN_TEST_NATIVE === "1";
+type MlxArray = import("@mlx-bun/mlx/array").MlxArray;
+const { MlxArray } = native ? await import("@mlx-bun/mlx/array") : {} as typeof import("@mlx-bun/mlx/array");
+const ops = native ? await import("@mlx-bun/mlx/ops") : {} as typeof import("@mlx-bun/mlx/ops");
+const { ValueAndGrad } = native ? await import("@mlx-bun/mlx/autograd") : {} as typeof import("@mlx-bun/mlx/autograd");
+const { log1mexp, orpoLossFromLogps, combineFullNll, respSpanFromMask, spanLogpMeanFromHidden, responseOnlyLogpMean } = native ? await import("../../src/loss") : {} as typeof import("../../src/loss");
 
 const arr = (xs: number[]) => MlxArray.fromFloat32(new Float32Array(xs), [xs.length]);
 const scalar = (a: MlxArray) => a.toFloat32()[0]!;
@@ -36,7 +38,7 @@ function refOrpoLoss(lw: number[], lr: number[], lambda: number): number {
   return nll / B + lambda * (or / B);
 }
 
-describe("log1mexp", () => {
+describe.skipIf(!native)("log1mexp", () => {
   test("matches log(1-exp(x)) for well-negative x", () => {
     const x = arr([-1.0, -0.5, -2.0, -3.5]);
     const got = log1mexp(x);
@@ -56,7 +58,7 @@ describe("log1mexp", () => {
   });
 });
 
-describe("orpoLossFromLogps vs JS reference", () => {
+describe.skipIf(!native)("orpoLossFromLogps vs JS reference", () => {
   for (const lambda of [0.1, 0.5, 1.0]) {
     test(`λ=${lambda}`, () => {
       const lwv = [-0.5, -1.2, -0.8];
@@ -83,7 +85,7 @@ describe("orpoLossFromLogps vs JS reference", () => {
   });
 });
 
-describe("orpoLossFromLogps sft_scope regression pin (response scope BIT-IDENTICAL to pre-sft_scope)", () => {
+describe.skipIf(!native)("orpoLossFromLogps sft_scope regression pin (response scope BIT-IDENTICAL to pre-sft_scope)", () => {
   // Exact f32 values captured from the pre-change orpoLossFromLogps on this
   // machine (2026-07-01, before the nllFull parameter existed). The response
   // scope (nllFull absent) must reproduce them bit-for-bit: same ops, same
@@ -104,7 +106,7 @@ describe("orpoLossFromLogps sft_scope regression pin (response scope BIT-IDENTIC
   }
 });
 
-describe("orpoLossFromLogps with nllFull (sft_scope: full)", () => {
+describe.skipIf(!native)("orpoLossFromLogps with nllFull (sft_scope: full)", () => {
   test("L = meanAll(nllFull) + λ·L_OR — the OR term still uses response-only lw/lr", () => {
     const lwv = [-0.5, -1.2];
     const lrv = [-1.5, -1.0];
@@ -155,7 +157,7 @@ describe("orpoLossFromLogps with nllFull (sft_scope: full)", () => {
   });
 });
 
-describe("respSpanFromMask", () => {
+describe.skipIf(!native)("respSpanFromMask", () => {
   test("finds the contiguous supervised span (mask[t+1]==1 convention)", () => {
     // L=5 ids, prompt len 3 → mask [0,0,0,1,1]; T=4 input positions.
     expect(respSpanFromMask([0, 0, 0, 1, 1], 4)).toEqual({ startT: 2, M: 2 });
@@ -166,7 +168,7 @@ describe("respSpanFromMask", () => {
   });
 });
 
-describe("combineFullNll", () => {
+describe.skipIf(!native)("combineFullNll", () => {
   test("-(nP·pm + nR·lw)/(nP+nR), and -lw when there are no prompt predictions", () => {
     const pm = arr([-2.0]);
     const lw = arr([-0.5]);
@@ -182,7 +184,7 @@ describe("combineFullNll", () => {
   });
 });
 
-describe("sft_scope:'full' toy case (3-token prompt + 2-token response, hand-computed logits)", () => {
+describe.skipIf(!native)("sft_scope:'full' toy case (3-token prompt + 2-token response, hand-computed logits)", () => {
   // A fake head where hidden == vocab and logitsFromHidden is the identity, so
   // the "logits" ARE the constructed hidden values — NLL_full is computable by
   // hand: logp[t] = h[t][ids[t+1]] − log Σ_v exp(h[t][v]).
@@ -254,7 +256,7 @@ describe("sft_scope:'full' toy case (3-token prompt + 2-token response, hand-com
   });
 });
 
-describe("orpoLossFromLogps is differentiable through lw/lr", () => {
+describe.skipIf(!native)("orpoLossFromLogps is differentiable through lw/lr", () => {
   test("value_and_grad over [lw, lr] matches the value and gives finite grads", () => {
     const lwv = [-0.5, -1.2];
     const lrv = [-1.5, -1.0];

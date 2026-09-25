@@ -5,9 +5,14 @@
 //  (2) The t=1 update matches a hand-computed value (bias correction).
 
 import { describe, expect, test } from "bun:test";
-import { MlxArray } from "@mlx-bun/mlx/array";
-import * as ops from "@mlx-bun/mlx/ops";
-import { AdamW, warmupCosineSchedule } from "../../src/optimizer";
+
+// The explicit native command and Mac CI opt in after staging MLX.
+// Ordinary discovery skips before loading native modules.
+const native = process.env.MLX_BUN_TEST_NATIVE === "1";
+type MlxArray = import("@mlx-bun/mlx/array").MlxArray;
+const { MlxArray } = native ? await import("@mlx-bun/mlx/array") : {} as typeof import("@mlx-bun/mlx/array");
+const ops = native ? await import("@mlx-bun/mlx/ops") : {} as typeof import("@mlx-bun/mlx/ops");
+const { AdamW, warmupCosineSchedule } = native ? await import("../../src/optimizer") : {} as typeof import("../../src/optimizer");
 
 /** grad of f(p) = sum((p - target)^2) is 2(p - target). */
 function quadGrad(p: MlxArray, target: MlxArray): MlxArray {
@@ -17,7 +22,7 @@ function quadGrad(p: MlxArray, target: MlxArray): MlxArray {
   return g;
 }
 
-describe("AdamW", () => {
+describe.skipIf(!native)("AdamW", () => {
   test("converges on a quadratic", () => {
     const target = MlxArray.fromFloat32(new Float32Array([3, -2, 0.5, 5]), [4]);
     let p = MlxArray.fromFloat32(new Float32Array([0, 0, 0, 0]), [4]);
