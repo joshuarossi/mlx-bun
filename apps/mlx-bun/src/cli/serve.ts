@@ -1,3 +1,4 @@
+import { createHubRoutes } from "../server/hub-routes";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultSessionDir } from "../chat/session-files";
@@ -146,6 +147,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory });
+    const hub = createHubRoutes();
     const adapters = createAdapterRoutes(context, engine.gateway);
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
       toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
@@ -180,7 +182,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const datasetRunner = createDatasetRunner();
     const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
-    const routes = { handle: async (request: Request) => await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+    const routes = { handle: async (request: Request) => await hub.handle(request) ?? await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
       await quantizeRoutes.handle(request) ?? await datasetRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await adapterArtifacts.handle(request) ?? await publishing.handle(request) ?? await completions.handle(request) };
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       memory: () => createMemorySurface(memoryPaths.vault, memoryPaths.skills),

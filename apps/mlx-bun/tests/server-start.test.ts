@@ -30,8 +30,8 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
     expect(await (await fetch(new URL("/api/memory/status", app.server.url))).json()).toMatchObject({ ok: false, enabled: false, root });
     expect(existsSync(root)).toBe(false);
-    for (const path of ["/v1/memory/synthesize", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/local", "/api/hub/search", "/api/hub/download",
-      "/api/hub/serve", "/curve-terrain",
+    for (const path of ["/v1/memory/synthesize", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/download",
+      "/curve-terrain",
       "/v1/audio/sessions", "/v1/audio/sessions/session/audio", "/v1/audio/sessions/session/finish",
       "/admin/transcription/unload"]) {
 
@@ -39,7 +39,7 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
       expect(response.status).toBe(501);
       expect((await response.json()).error.type).toBe("not_implemented");
     }
-    for (const path of ["/unknown", "/api/quantize/nonsense", "/toString", "/api/sessions/search", "/api/sessions/export"]) {
+    for (const path of ["/unknown", "/api/quantize/nonsense", "/toString", "/api/sessions/search", "/api/sessions/export", "/api/hub/local", "/api/hub/search", "/api/hub/serve"]) {
       expect((await fetch(new URL(path, app.server.url))).status).toBe(404);
     }
     expect((await fetch(new URL("/ws/chat", app.server.url))).status).toBe(426);

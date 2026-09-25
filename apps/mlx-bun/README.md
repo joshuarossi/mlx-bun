@@ -285,3 +285,11 @@ datasets publish as dataset repos. Uploads need no model execution lease.
 [Publishing tests](tests/server/publishing-routes.test.ts) use temporary token
 storage and an injected uploader; they never read installed credentials or
 publish to Hugging Face.
+
+## Web hub
+
+`server/hub-routes.ts` owns the web hub list/search and restart-required response.
+Local rows consume registry and fit APIs; search remains request-owned and
+cancels with its caller. Download stays 501 until its background task has an
+explicit cancellation and shutdown owner. Selecting a model returns a restart
+command, preserving main's behavior without claiming a live switch.
