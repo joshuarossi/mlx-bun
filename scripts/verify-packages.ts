@@ -80,6 +80,14 @@ try {
   env.MLX_BUN_TEST_CLI = appEntry;
   console.log((await run([process.execPath, "test", "app-tests"], consumer)).trim());
   delete env.MLX_BUN_TEST_CLI;
+  // Public hub protocol tests run against the installed tarball, including
+  // --app-only: local mock HTTP and explicit temporary token inputs, no MLX.
+  await mkdir(join(consumer, "hub-tests"));
+  for (const file of ["upload.test.ts", "token.test.ts"])
+    await cp(join(workspace, "packages/hub/tests", file), join(consumer, "hub-tests", file));
+  env.MLX_BUN_LIBMLXC = "/does-not-exist";
+  try { console.log((await run([process.execPath, "test", "hub-tests"], consumer)).trim()); }
+  finally { delete env.MLX_BUN_LIBMLXC; }
   if (args.includes("--app-only")) {
     console.log("Packed app passed CPU-only consumer tests.");
   } else {
