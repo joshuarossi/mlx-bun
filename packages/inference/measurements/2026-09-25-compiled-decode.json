@@ -11,7 +11,7 @@
     "name": "Josh M1 Max MacBook Pro",
     "chip": "Apple M1 Max",
     "ramBytes": 34359738368,
-    "os": "macOS27.0(26A428)",
+    "os": "macOS 27.0 (26A428)",
     "bun": "1.4.2"
   },
   "nativeSha256": {
@@ -138,7 +138,7 @@
       }
     }
   ],
-  "comparison": "Original dtype, shape and full native logit bytes match compiled versus eager for eight model/KV/context cases, four forced steps each. Six greedy trajectories and12B injected segment-failure recovery match eager. All30 report rows match main exactly. Activation counters checked; no unexpected retraces.",
+  "comparison": "Original dtype, shape and full native logit bytes match compiled versus eager for eight model/KV/context cases, four forced steps each. Six greedy trajectories and 12B injected segment-failure recovery match eager. All 30 report rows match main exactly. Activation counters checked; no unexpected retraces.",
   "reference": "Historical Bun main; this record makes no additional Python-oracle claim.",
   "harness": {
     "source": "packages/inference/tests/parity/compiled-decode.test.ts",
@@ -165,7 +165,7 @@
     }
   },
   "limits": [
-    "Dense Gemma12B and KV-sharing/per-layer-input e4b only; no MoE, media, batching or performance claim.",
+    "Dense Gemma 12B and KV-sharing/per-layer-input e4b only; no MoE, media, batching or performance claim.",
     "Fault recovery proves greedy trajectory parity; full-logit comparisons exercise successful compiled steps.",
     "Initial synthetic greedy prompt returned EOS immediately; restored main natural prompts rather than suppressing EOS. Prior failed evidence remains external.",
     "Initial worktree scope link loaded MLX from the base checkout, so the fault interception patched a different class. Corrected ignored link to this worktree and reran both branch families (the -local reports). No numerical source changed."
