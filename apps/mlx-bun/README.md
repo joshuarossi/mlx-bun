@@ -13,6 +13,15 @@ if none is supported, it downloads the starter and then the recommended model.
 Known unfinished features return HTTP 501 during migration; their remaining
 work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404.
 
+Shutdown stops background cache demotion, closes chat sessions, drains active
+HTTP responses, then flushes caches and releases the engine. The CLI bounds this
+with a 120-second deadline; cleanup failures or deadline expiry exit with code 1
+(main exited 0 on timeout). SSD sub-options without `--ssd-cache` now fail before
+model loading instead of warning and being ignored. The existing
+`MLX_BUN_RD_CONTEXT_LIMIT` cap remains supported and is intersected with a loaded
+GLM memory plan; this draft adds no serving context or read-only CLI flags.
+Programmatic composition still accepts explicit context and read-only policy.
+
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
 `hub.ts` owns model-management presentation; `terminal.ts` owns formatting.
 `model-selection.ts` owns automatic selection policy; `serve.ts` composes the

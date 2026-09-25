@@ -18,6 +18,21 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   [state record](packages/inference/measurements/2026-09-25-runtime-state.json)
   verifies the existing composition; keep that implementation unchanged during
   this refactor and do not imply blanket OptiQ serve compatibility.
+- [ ] Extend training preservation beyond the
+  [preservation-checked short MiniCPM SFT/DPO/ORPO paths](packages/training/measurements/2026-09-25-training-preservation.json).
+  Cover other model families and specialized training paths before claiming
+  their numerical preservation; synthetic native tests do not close this item.
+- [ ] Restore main's remaining training checks in their owning packages:
+  `tests/parity/train-e2e.test.ts`, `train-batch-e2e.test.ts`,
+  `train-orpo-e2e.test.ts`, `train-regularization-e2e.test.ts`, and
+  `diffusion-lora.test.ts`; `tests/research/train-orpo-chunked.test.ts` and
+  `train-orpo-fused-ce.test.ts`; and `tests/unit/train-autograd.test.ts`.
+  Exit: the seven model tests use explicit caller-supplied cached artifacts,
+  skip before native loading when not opted in, and retain their loss, gradient,
+  adapter reload, batching, regularization, and specialized-head checks without
+  importing old goldens or fixtures. The weight-free ValueAndGrad/Vjp
+  finite-difference test belongs in `@mlx-bun/mlx` and must run in native Mac CI.
+
 ## Optimize after the full draft
 
 - [ ] Run paired same-machine performance comparisons against main using the
@@ -31,11 +46,14 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
   their owners migrate: memory read/init and synthesis; jobs, quantize, dataset
   and finetune; adapter management; HF credential settings; lease/drain/cache admin;
-  Anthropic messages, Responses, audio, generate, signal, fit and stats.
+  Anthropic messages, Responses, audio, hub/browser model switching, session
+  search/export, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
-- [ ] Migrate the training numerical core into its own library before enabling
-  finetune jobs; app request policy and orchestration stay in the app. Verify
-  fixed-seed adapter outputs and loss trajectories against main before merge.
+- [ ] Preserve main's `src/train/job.ts` resolved configuration in the finetune
+  producer. Exit: per-method behavior snapshots cover SFT/DPO/ORPO learning
+  rates, ORPO segment/chunk sizes, flash/shared-prefix defaults, and disabling
+  flash/fused CE on unquantized bases. These are app policy, not library defaults.
+
 - [ ] Migrate the server, engine host, web app, and job orchestration into
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
@@ -55,6 +73,22 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   serial-only or compilation switches on the new app surface. Exit: the full
   draft preserves main's behavior and cancellation/streaming contracts before
   the subsequent performance pass.
+- [ ] Restore deferred serving inputs with their app owners, keeping the existing
+  main behavior rather than silently retiring capabilities:
+  - Engine admission: `--memory-budget`, `--force-wire`, `--context-length`,
+    `--expert-offload`; paged scheduling: `--paged-kv`, `--paged-kv-block-size`;
+    mixed-KV composition: `--kv-quant turbo`.
+  - Speculative/model loading: `--draft-model`, `--draft-kind`,
+    `--num-draft-tokens`, `--ngram-max`, `--ngram-min`, `--mtp`, `--preload`;
+    adapter defaults: `--adapter`, `--adapter-path`.
+  - Process/listener ownership: `--unix`, `--isolate`, `--model-pool`,
+    `MLX_BUN_SHUTDOWN_TIMEOUT_MS`; transcription: `--whisper-model`,
+    `--whisper-idle-unload`, `--whisper-resident`; request media policy:
+    `--allow-private-media`; media preprocessing: the `--hlg-*` family.
+  - Resolve parity-route compatibility (`--l1`, `--l2`, removed `--l3` error,
+    `--fused-sdpa`) with specialized-layer policy. Serial-only and compilation
+    controls (`--compiled-decode`, `--compiled-activations`) are intentionally
+    absent under Josh's decision; this does not authorize dropping the other inputs.
 - [ ] Preserve the `mlx-bun` terminal experience and Bun, Homebrew, curl-script,
   and source-checkout installation paths. Add generated surface reference and
   coverage checks with the CLI/server migration. Exit: the app and its install

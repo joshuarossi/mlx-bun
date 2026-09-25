@@ -22,7 +22,10 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
   try {
     expect(await (await fetch(app.server.url)).text()).toBe("web");
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
-    for (const path of ["/api/settings/hf-token", "/api/quantize/submit", "/api/jobs/id/stream", "/api/memory/status", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats"]) {
+    for (const path of ["/api/settings/hf-token", "/api/quantize/submit", "/api/jobs/id/stream", "/api/memory/status", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/local", "/api/hub/search", "/api/hub/download",
+      "/api/hub/serve", "/api/sessions/search", "/api/sessions/export", "/curve-terrain",
+      "/v1/audio/sessions", "/v1/audio/sessions/session/audio", "/v1/audio/sessions/session/finish",
+      "/admin/transcription/unload"]) {
       const response = await fetch(new URL(path, app.server.url));
       expect(response.status).toBe(501);
       expect((await response.json()).error.type).toBe("not_implemented");
@@ -80,14 +83,17 @@ test("engine cleanup errors are reported once after the listener has stopped", a
   await expect(fetch(app.server.url)).rejects.toThrow();
 });
 
-test("shutdown aborts an active HTTP stream before releasing engine resources", async () => {
+test("shutdown stops background work then drains a delayed HTTP stream before releasing engine resources", async () => {
   const events: string[] = [];
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
   const app = await startServer({
     web: () => null, chat: idle,
+    beforeDrain() { events.push("timer stop"); },
     routes: { async handle(request) {
       request.signal.addEventListener("abort", () => events.push("request-abort"), { once: true });
-      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("data: ready\n\n")); } }),
-        { headers: { "content-type": "text/event-stream" } });
+      return new Response(new ReadableStream({ start(controller) {
+        stream = controller; controller.enqueue(new TextEncoder().encode("data: ready\n\n"));
+      } }), { headers: { "content-type": "text/event-stream" } });
     } },
     async closeEngine() { events.push("engine-close"); },
   }, { port: 0 });
@@ -96,9 +102,14 @@ test("shutdown aborts an active HTTP stream before releasing engine resources", 
     const response = await fetch(app.server.url, { signal: request.signal });
     const reader = response.body!.getReader();
     expect((await reader.read()).done).toBe(false);
-    await app.close();
-    expect(events).toEqual(["request-abort", "engine-close"]);
-    await reader.cancel().catch(() => {});
+    const closing = app.close();
+    await Bun.sleep(5);
+    expect(events).toEqual(["timer stop"]);
+    stream.enqueue(new TextEncoder().encode("data: complete\n\n")); stream.close();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("data: complete");
+    expect((await reader.read()).done).toBe(true);
+    await closing;
+    expect(events).toEqual(["timer stop", "engine-close"]);
   } finally { request.abort(); await app.close(); }
 });
 
@@ -128,4 +139,49 @@ test("shutdown joins delayed chat work and reports cleanup failure after engine 
     expect((await closed).message).toBe("server cleanup failed");
     expect(events).toEqual(["chat-close", "late-cleanup", "engine-close"]);
   } finally { finish.resolve(); client.socket.close(); await app.close().catch(() => {}); }
+});
+
+
+test("the listener preserves handler 499 and 501 envelopes on the HTTP wire", async () => {
+  const app = await startServer({ web: () => null, chat: idle, async closeEngine() {},
+    routes: { async handle(request) {
+      const status = new URL(request.url).pathname === "/cancelled" ? 499 : 501;
+      return Response.json({ error: { message: status === 499 ? "Request cancelled" : "unsupported execution" } }, { status });
+    } },
+  }, { port: 0 });
+  try {
+    for (const [path, status, message] of [["/cancelled", 499, "Request cancelled"], ["/unsupported", 501, "unsupported execution"]] as const) {
+      const response = await fetch(new URL(path, app.server.url));
+      expect(response.status).toBe(status); expect(await response.json()).toEqual({ error: { message } });
+    }
+  } finally { await app.close(); }
+});
+
+
+test("shutdown awaits producer cancellation before listener drain and engine release", async () => {
+  const events: string[] = [], cancel = Promise.withResolvers<void>();
+  const app = await startServer({ web: () => null, routes: { async handle() { return new Response("ready"); } }, chat: idle,
+    async beforeDrain() { events.push("cancel jobs"); await cancel.promise; events.push("jobs closed"); },
+    async closeEngine() { events.push("engine-close"); },
+  }, { port: 0 });
+  const closing = app.close();
+  try {
+    expect(events).toEqual(["cancel jobs"]);
+    expect((await fetch(app.server.url)).status).toBe(503);
+    expect(events).toEqual(["cancel jobs"]);
+    cancel.resolve(); await closing;
+    expect(events).toEqual(["cancel jobs", "jobs closed", "engine-close"]);
+  } finally { cancel.resolve(); await closing; }
+});
+
+test("failed chat startup closes its transport so graceful listener drain can finish", async () => {
+  let disposed = 0;
+  const app = await startServer({ web: () => null, routes: { async handle() { return null; } },
+    chat: () => ({ async start() { throw new Error("session failed"); }, async handle() {}, dispose() {} }),
+    async closeEngine() { disposed++; },
+  }, { port: 0 });
+  const client = connection(app.server.url);
+  const closed = new Promise<void>(resolve => client.socket.addEventListener("close", () => resolve(), { once: true }));
+  try { await client.opened; await closed; await app.close(); expect(disposed).toBe(1); }
+  finally { client.socket.close(); await app.close(); }
 });
