@@ -201,7 +201,11 @@ class UniversalAttention {
       const minVal = FINFO_MIN[scores.dtype];
       if (minVal === undefined) throw new Error(`no finfo.min for dtype ${scores.dtypeName}`);
       const minArr = ops.scalarLike(minVal, scores);
-      scores = disposing(scores, ops.where(mask.arr, scores, minArr));
+      // GQA scores are [B, Hkv, repeats, L, S]. Row masks carry B,
+      // unlike the ordinary [L, S] causal mask, so keep that axis aligned.
+      using rowMask = repeats > 1 && mask.arr.shape.length === 4
+        ? ops.expandDims(mask.arr, 2) : null;
+      scores = disposing(scores, ops.where(rowMask ?? mask.arr, scores, minArr));
       minArr.dispose();
     }
 
@@ -530,9 +534,11 @@ export class UniversalDenseModel {
     let swaMask: Mask | null = null;
     if (a.maskArray) {
       // gemma2: create_attention_mask(h, cache[0], return_array=True)
-      faMask = L === 1
-        ? { mode: "", arr: null }
-        : { mode: "array", arr: createCausalMask(L, cache[0]!.offset, null) };
+      // Storage owns row validity. Materialize only the ordinary causal
+      // spelling required by manual softcap attention, preserving B1 math.
+      faMask = cache[0]!.makeMask(L, null);
+      if (faMask.mode === "causal")
+        faMask = { mode: "array", arr: createCausalMask(L, cache[0]!.offset, null) };
     } else if (a.layerTypes && a.layerTypes.includes("sliding_attention")) {
       // llama.py: fa mask from the first full layer, swa mask (windowed)
       // from the first sliding layer.

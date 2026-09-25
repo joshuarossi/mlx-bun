@@ -147,6 +147,19 @@ the pinned oracle and identical weights; this test never starts Python.
 `MLX_BUN_TEST_PADDED_ROTATING_LAYOUT=1` exercise the corresponding pre-conversion
 cache layouts against the same plain-KV reference, not quantized arithmetic.
 
+The [Gemma2 batching test](tests/models/universal/gemma2-batching.test.ts) runs
+synthetic mask checks with `MLX_BUN_GEMMA2_NATIVE=1`; add
+`MLX_BUN_GEMMA2_MODEL=/cached/gemma2` for real B1/B2/B4 continuous lifecycle checks.
+`MLX_BUN_GEMMA2_REFERENCE=/external/report.json` adds full-logit and KV hashes
+against same-shaped pinned Python runs. The reference uses upstream Gemma2
+and `BatchKVCache`, adding only a GQA axis to the upstream row mask. B1 is
+compared exactly with direct execution; B>1 uses the same-shaped reference,
+since quantized matmul dispatch can change numerical results across batch sizes.
+Shared Gemma2 currently qualifies ordinary plain KV; encoded KV, speculative
+methods, fill, adapters, grammar and paging retain typed unsupported placement.
+Its full-attention policy remains the pinned mlx-lm policy documented in the
+[architecture descriptor](src/models/universal/archs.ts).
+
 The [Trellis specialization test](tests/parity/trellis-shared-m.test.ts) takes
 `MLX_BUN_TEST_TRELLIS_MODEL=/cached/packed-qwen`. It preserves main's variant
 comparison: `MLX_BUN_TRELLIS_AB_VARIANT` (default 7) against
