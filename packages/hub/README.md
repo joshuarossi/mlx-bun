@@ -32,6 +32,8 @@ so a caller can show one lifecycle from its own admission onward. The
 [download tests](tests/download.test.ts) run every path against a local fake Hub.
 Uploads never resolve credentials implicitly. The app chooses its token and
 passes it to `createRepo` or `uploadFolder` from `@mlx-bun/hub/upload`.
-The [upload protocol tests](tests/upload.test.ts) are executable examples using
-a local mock Hub; they cover regular/LFS files, authentication, filtering, and
-commit payloads without publishing anything.
+Both accept an optional `signal`: an abort cancels the in-flight request, runs
+no later step, and rejects with the signal's reason, so an aborted upload never
+commits. The [upload protocol tests](tests/upload.test.ts) are executable
+examples using a local mock Hub; they cover regular/LFS files, authentication,
+filtering, commit payloads, and cancellation without publishing anything.

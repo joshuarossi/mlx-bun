@@ -61,6 +61,7 @@ function freshCapture(): Captured {
 let cap = freshCapture();
 let createStatus = 200;
 let lfsAlreadyExists = false; // toggle to simulate an upstream-present blob
+let putGate: { arrived: () => void; release: Promise<void> } | null = null;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -119,11 +120,12 @@ const server = Bun.serve({
       });
     }
 
-    // 3b. S3-style PUT
+    // 3b. S3-style PUT (a test may hold it open to abort mid-transfer)
     m = p.match(/^\/s3-put\/(.+)$/);
     if (m && req.method === "PUT") {
       const body = new Uint8Array(await req.arrayBuffer());
       cap.s3Puts.push({ oid: m[1]!, body });
+      if (putGate) { putGate.arrived(); await putGate.release; }
       return new Response(null, { status: 200 });
     }
 
@@ -156,6 +158,7 @@ beforeEach(() => {
   cap = freshCapture();
   createStatus = 200;
   lfsAlreadyExists = false;
+  putGate = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -344,6 +347,38 @@ describe("uploadFolder (mock Hub)", () => {
     await expect(createRepo("me/missing-token", { baseUrl: base })).rejects.toThrow("explicit token");
     // @ts-expect-error Uploads never consult app or machine credentials.
     await expect(uploadFolder(makeModelDir(), "me/missing-token", { baseUrl: base })).rejects.toThrow("explicit token");
+    expect(cap.paths).toEqual([]);
+  });
+
+  test("an abort mid-PUT rejects with the signal's reason and never commits", async () => {
+    const dir = makeModelDir();
+    const weights = new Uint8Array(await Bun.file(join(dir, "model.safetensors")).arrayBuffer());
+    const oid = new Bun.CryptoHasher("sha256").update(weights).digest("hex");
+    const controller = new AbortController(), reason = new Error("upload cancelled");
+    let arrived!: () => void, release!: () => void;
+    const putArrived = new Promise<void>((resolve) => { arrived = resolve; });
+    putGate = { arrived, release: new Promise<void>((resolve) => { release = resolve; }) };
+    try {
+      const pending = uploadFolder(dir, "me/cancelled", { token: "hf_secret", baseUrl: base, signal: controller.signal });
+      await putArrived;
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      release();
+    }
+    expect(cap.paths).toEqual([
+      "/api/repos/create", "/api/models/me/cancelled/preupload/main",
+      "/me/cancelled.git/info/lfs/objects/batch", `/s3-put/${oid}`,
+    ]);
+    expect(cap.verifies).toEqual([]);
+    expect(cap.commitBody).toBeNull();
+  });
+
+  test("an already-aborted signal rejects before any request", async () => {
+    const controller = new AbortController(), reason = new Error("cancelled before start");
+    controller.abort(reason);
+    await expect(uploadFolder(makeModelDir(), "me/never", { token: null, baseUrl: base, signal: controller.signal })).rejects.toBe(reason);
+    await expect(createRepo("me/never", { token: null, baseUrl: base, signal: controller.signal })).rejects.toBe(reason);
     expect(cap.paths).toEqual([]);
   });
 

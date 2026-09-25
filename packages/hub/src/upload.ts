@@ -81,6 +81,9 @@ export interface UploadOptions {
   baseUrl?: string;
   /** Per-file progress: (repoPath, bytesSent, bytesTotal). */
   onProgress?: (file: string, sent: number, total: number) => void;
+  /** Cancels the upload: the in-flight request is aborted, no later step runs,
+   *  and the promise rejects with the signal's reason. An aborted upload never commits. */
+  signal?: AbortSignal;
 }
 
 export interface UploadResult {
@@ -95,6 +98,18 @@ export interface UploadResult {
 
 function authHeaders(token: string | null | undefined): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+/** fetch bound to an optional signal: never starts after an abort, and an
+ *  aborted request rejects with the signal's reason rather than a transport error. */
+async function request(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+  signal?.throwIfAborted();
+  try {
+    return await fetch(url, { ...init, signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
 }
 
 /** Turn a transport-level HTTP failure into a clear, actionable error. */
@@ -142,6 +157,8 @@ export interface CreateRepoOptions {
   /** Required: callers choose authentication; null sends no bearer token. */
   token: string | null;
   baseUrl?: string;
+  /** Aborts the request; rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -170,11 +187,11 @@ export async function createRepo(
   };
   if (organization) body.organization = organization;
 
-  const res = await fetch(`${base}/api/repos/create`, {
+  const res = await request(`${base}/api/repos/create`, {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders(token) },
     body: JSON.stringify(body),
-  });
+  }, opts.signal);
 
   if (res.ok) {
     let json: { url?: string } = {};
@@ -255,9 +272,10 @@ async function preupload(
   revision: string,
   files: { file: LocalFile; sample: Uint8Array }[],
   token: string | null,
+  signal?: AbortSignal,
 ): Promise<Map<string, PreuploadEntry>> {
   const url = `${base}/api/${apiPrefix(repoType)}/${repoId}/preupload/${encodeURIComponent(revision)}`;
-  const res = await fetch(url, {
+  const res = await request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders(token) },
     body: JSON.stringify({
@@ -267,7 +285,7 @@ async function preupload(
         size: file.size,
       })),
     }),
-  });
+  }, signal);
   if (!res.ok) throw await httpError("preupload", res);
   const json = (await res.json()) as { files?: PreuploadEntry[] };
   const map = new Map<string, PreuploadEntry>();
@@ -298,11 +316,12 @@ async function uploadLfsFiles(
   items: { file: LocalFile; oid: string; bytes: Uint8Array }[],
   token: string | null,
   onProgress?: UploadOptions["onProgress"],
+  signal?: AbortSignal,
 ): Promise<void> {
   if (items.length === 0) return;
 
   const batchUrl = `${base}/${gitPrefix(repoType)}${repoId}.git/info/lfs/objects/batch`;
-  const batchRes = await fetch(batchUrl, {
+  const batchRes = await request(batchUrl, {
     method: "POST",
     headers: {
       accept: "application/vnd.git-lfs+json",
@@ -316,7 +335,7 @@ async function uploadLfsFiles(
       ref: { name: revision },
       objects: items.map((i) => ({ oid: i.oid, size: i.file.size })),
     }),
-  });
+  }, signal);
   if (!batchRes.ok) throw await httpError("LFS batch", batchRes);
   const batch = (await batchRes.json()) as { objects?: LfsObject[] };
 
@@ -335,18 +354,18 @@ async function uploadLfsFiles(
       continue;
     }
 
-    const putRes = await fetch(upload.href, {
+    const putRes = await request(upload.href, {
       method: "PUT",
       headers: { ...(upload.header ?? {}) },
       body: new Blob([Uint8Array.from(item.bytes)]),
-    });
+    }, signal);
     if (!putRes.ok) throw await httpError(`LFS upload of ${item.file.repoPath}`, putRes);
     onProgress?.(item.file.repoPath, item.file.size, item.file.size);
 
     // Optional verify step (S3 transfers often request it).
     const verify = obj.actions?.verify;
     if (verify) {
-      const vRes = await fetch(verify.href, {
+      const vRes = await request(verify.href, {
         method: "POST",
         headers: {
           "content-type": "application/vnd.git-lfs+json",
@@ -354,7 +373,7 @@ async function uploadLfsFiles(
           ...authHeaders(token),
         },
         body: JSON.stringify({ oid: obj.oid, size: item.file.size }),
-      });
+      }, signal);
       if (!vRes.ok) throw await httpError(`LFS verify of ${item.file.repoPath}`, vRes);
     }
   }
@@ -373,6 +392,7 @@ async function commit(
   regularFiles: { file: LocalFile; bytes: Uint8Array }[],
   lfsFiles: { file: LocalFile; oid: string }[],
   token: string | null,
+  signal?: AbortSignal,
 ): Promise<{ commitOid?: string; commitUrl?: string }> {
   const lines: string[] = [];
   lines.push(
@@ -409,14 +429,14 @@ async function commit(
   const ndjson = lines.join("\n") + "\n";
 
   const url = `${base}/api/${apiPrefix(repoType)}/${repoId}/commit/${encodeURIComponent(revision)}`;
-  const res = await fetch(url, {
+  const res = await request(url, {
     method: "POST",
     headers: {
       "content-type": "application/x-ndjson",
       ...authHeaders(token),
     },
     body: ndjson,
-  });
+  }, signal);
   if (!res.ok) throw await httpError("commit", res);
   let json: { commitOid?: string; commitUrl?: string } = {};
   try {
@@ -439,6 +459,9 @@ async function commit(
  * server's verdict, uploads LFS blobs via the LFS batch + PUT flow, then
  * posts a single NDJSON commit (regular files inlined as base64, LFS files
  * referenced by oid/size). Creates the repo first (idempotent).
+ *
+ * `opts.signal` aborts the in-flight request and skips every later step; the
+ * promise rejects with the signal's reason, and no commit follows an abort.
  */
 export async function uploadFolder(
   dir: string,
@@ -473,6 +496,7 @@ export async function uploadFolder(
     private: opts.private,
     token,
     baseUrl: base,
+    signal: opts.signal,
   });
 
   // Read bytes + compute the LFS sha256 oids; build the preupload samples
@@ -489,6 +513,8 @@ export async function uploadFolder(
     }),
   );
 
+  opts.signal?.throwIfAborted();
+
   // Local LFS guess feeds the preupload request's sample/size; the server's
   // verdict is authoritative.
   const verdict = await preupload(
@@ -498,6 +524,7 @@ export async function uploadFolder(
     revision,
     loaded.map((l) => ({ file: l.file, sample: l.sample })),
     token,
+    opts.signal,
   );
 
   const regularFiles: { file: LocalFile; bytes: Uint8Array }[] = [];
@@ -525,6 +552,7 @@ export async function uploadFolder(
     lfsToUpload,
     token,
     opts.onProgress,
+    opts.signal,
   );
 
   // Report progress for inlined regular files too.
@@ -541,6 +569,7 @@ export async function uploadFolder(
     regularFiles,
     lfsForCommit,
     token,
+    opts.signal,
   );
 
   const url = `${base}/${repoType === "dataset" ? "datasets/" : ""}${repoId}`;

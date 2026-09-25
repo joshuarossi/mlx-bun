@@ -355,6 +355,17 @@ datasets publish as dataset repos. Uploads need no model execution lease.
 storage and an injected uploader; they never read installed credentials or
 publish to Hugging Face.
 
+`cli/upload.ts` is the `upload` verb, main's `mlx_lm.upload` counterpart:
+`mlx-bun upload --path <dir> --upload-repo <org/repo> [--private]` (the path
+defaults to `mlx_model`). It resolves the token through
+`publishing/credentials.ts`, fails before any request when the repo id,
+directory, or write token is missing, and pushes a model repo through the same
+public hub uploader with the commit message "Upload with mlx-bun". SIGINT or
+SIGTERM aborts the transfer; nothing is committed after an abort. The
+[upload CLI tests](tests/upload-cli.test.ts) drive the verb with injected
+dependencies and spawn the real CLI against a local mock Hub with an isolated
+home directory and an invented token.
+
 ## Web hub
 
 `server/hub-routes.ts` owns the web hub list/search and restart-required response.
