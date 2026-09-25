@@ -56,18 +56,23 @@ test("SSD stats expose live store and combined persistence counters with unlimit
     pending_spills: 3, pending_spill_bytes: 4, dropped_spills: 5, failed_spills: 6, longest_durable_prefix_tokens: 11 });
 });
 
-test("fit reuses hub estimates at maximum and typical context with the served artifact's expert bytes", async () => {
-  const input = fixture(), routes = createStatusRoutes(input), { config, weightsBytes } = input.context.model;
-  const admission = fit(config, weightsBytes, 1, input.machine);
-  const report = fit(config, weightsBytes, admission.maxSafeContext, input.machine, undefined, input.artifact.expertsBytes);
+test.each(["bf16", "kv8"])("fit forwards %s accounting to hub estimates at maximum and typical context", async (scheme) => {
+  const input = fixture();
+  if (scheme === "kv8") input.caches.resolvedKvScheme = new KvScheme("affine-uniform", { kvBits: 8, kvGroupSize: 64 });
+  const routes = createStatusRoutes(input), { config, weightsBytes } = input.context.model;
+  const options = input.caches.resolvedKvScheme.fitOptions;
+  const admission = fit(config, weightsBytes, 1, input.machine, undefined, 0, undefined, options);
+  const report = fit(config, weightsBytes, admission.maxSafeContext, input.machine, undefined, input.artifact.expertsBytes, undefined, options);
   const body = await get(routes, "/fit");
   expect(body.machine).toEqual({ chip: "test-chip", ram_bytes: input.machine!.ramBytes, bandwidth_gbs: 200 });
   expect(body.context_tokens).toBe(admission.maxSafeContext);
   expect(body.typical_context_tokens).toBe(8192);
-  expect(body.typical_decode_tps).toBe(fit(config, weightsBytes, 8192, input.machine, undefined, input.artifact.expertsBytes).predictedDecodeTps);
+  expect(body.typical_decode_tps).toBe(fit(config, weightsBytes, 8192, input.machine, undefined, input.artifact.expertsBytes, undefined, options).predictedDecodeTps);
   expect(body.report).toEqual({ fits: report.fits, weights_bytes: report.weightsBytes, kv_bytes: report.kvBytes,
     transient_bytes: report.transientBytes, total_bytes: report.totalBytes, usable_bytes: report.usableBytes,
     max_safe_context: report.maxSafeContext, predicted_decode_tps: report.predictedDecodeTps });
+  if (scheme === "kv8") expect(body.report.kv_bytes).toBeLessThan(
+    fit(config, weightsBytes, admission.maxSafeContext, input.machine, undefined, input.artifact.expertsBytes).kvBytes);
   expect(body.measured_decode_tps).toBeNull(); expect(body.measured_at).toBeNull();
   expect(body.sku_matrix_ctx).toBe(32768);
   expect(body.sku_matrix).toEqual(skuMatrix(config, weightsBytes, 32768, input.artifact.expertsBytes)

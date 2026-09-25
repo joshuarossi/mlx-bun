@@ -126,10 +126,14 @@ lifecycle, numerical parity, or performance.
 `server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
 Responses-history counters for `GET /stats`; `GET /fit` uses the public hub fit
 functions and the served artifact metadata. Predictions remain advisory and do
-not impose an admission limit. GLM reports its existing explicit memory plan.
+not impose an admission limit. GLM admission accounting uses its actual explicit
+memory plan rather than the generic resident-weight estimate. Batch mode remains
+continuous even at capacity one. Pending SSD counters include the generation
+checkpoint queue as well as prompt-cache persistence work.
 Historical EvalDB measurements have no migrated owner, so measurement fields
 remain null; old machine-specific GLM throughput constants are not reported as
-measurements for the current server. The dashboard shows an unavailable marker
+measurements for the current server or CLI fit output. The library retains those
+historical constants. The dashboard shows an unavailable marker
 when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
 synthetic counters and CPU fit inputs without a model or native MLX.
 

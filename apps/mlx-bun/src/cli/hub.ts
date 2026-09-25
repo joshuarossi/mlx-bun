@@ -4,9 +4,8 @@ import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { isGlm52Config } from "@mlx-bun/inference/models/support";
 import {
-  GLM52_G5_ASPIRATIONAL_DECODE_TPS, GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS,
-  GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES, GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS,
-  GLM52_G5_MEASURED_WARM_DECODE_TPS, planGlm52MemoryForArtifact,
+  GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS,
+  GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES, planGlm52MemoryForArtifact,
 } from "@mlx-bun/inference/artifacts/glm52/memory";
 import type { Command, CommandArgs } from "./args";
 
@@ -283,9 +282,6 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
             "",
             `max safe context  ${style.bold(plan.contextTokens.toLocaleString())} tokens`,
             `max generation    ${style.bold(plan.maxGenerationTokens.toLocaleString())} tokens`,
-            `measured warm     ${gradient(`${GLM52_G5_MEASURED_WARM_DECODE_TPS.toFixed(3)} tok/s`)} ${style.dim("(quality-preserving, MTP on)")}`,
-            `direct oracle     ${GLM52_G5_DIRECT_ORACLE_WARM_DECODE_TPS.toFixed(2)} tok/s`,
-            `aspirational      ${GLM52_G5_ASPIRATIONAL_DECODE_TPS.toFixed(1)} tok/s ${style.dim("(not a fit prediction or release gate)")}`,
           ]);
           if (flag("skus")) {
             console.log(style.dim(
