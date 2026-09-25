@@ -1,9 +1,9 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Registry } from "@mlx-bun/hub/registry";
 import type { DownloadOptions } from "@mlx-bun/hub/download";
-import type { Emit, JobRunner } from "../jobs/protocol";
-import { createQuantizeRunner } from "../quantize/job";
 import { createHfCredentials } from "../publishing/credentials";
 import type { PublishRequest } from "../publishing/upload";
 import { parseCommand, type CommandArgs } from "./args";
@@ -16,8 +16,15 @@ const REPO_ID = /^[\w.-]+\/[\w.-]+$/;
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 export interface ConvertDependencies {
-  /** The web quantize job's producer, driven in-process with the same snake_case config. */
-  runner: JobRunner;
+  /** The web quantize job's producer, run as an owned child process with the
+   * same snake_case config. The sensitivity sweep is synchronous, so only a
+   * separate process keeps the parent responsive; cancellation terminates and
+   * joins the child and discards its staging. */
+  quantize(config: Record<string, unknown>, outDir: string, progress: (message: string) => void, signal?: AbortSignal,
+    owner?: { spawn?: typeof Bun.spawn; entry?: string }): Promise<{ outputPath: string }>;
+  /** Child creation and entry for the default producer owner; tests inject a slow or failing child. */
+  spawn?: typeof Bun.spawn;
+  entry?: string;
   download(repoId: string, options: { onProgress: Progress; signal?: AbortSignal }): Promise<string>;
   registry(): ModelRegistry;
   credentials(): Pick<ReturnType<typeof createHfCredentials>, "get">;
@@ -26,8 +33,48 @@ export interface ConvertDependencies {
   box: (lines: string[]) => void;
   log(line?: string): void;
 }
+/** Staging directories the atomic writer may leave beside the destination. */
+function stagingSiblings(outDir: string): string[] {
+  const destination = resolve(outDir), parent = dirname(destination), prefix = `.${basename(destination)}.tmp-`;
+  return existsSync(parent) ? readdirSync(parent).filter(name => name.startsWith(prefix)).map(name => join(parent, name)) : [];
+}
+
+/** Run the quantize job in an owned child over a temporary job store: the
+ * parent tails the job log for progress; an abort terminates and joins the
+ * child, then removes any staging the child created. */
+export async function quantizeInChild(config: Record<string, unknown>, outDir: string, progress: (message: string) => void,
+  signal?: AbortSignal, owner: { spawn?: typeof Bun.spawn; entry?: string } = {}): Promise<{ outputPath: string }> {
+  const [{ createJobHost }, { JobStore }, { tailJob }] = await Promise.all([import("../jobs/host"), import("../jobs/db"), import("../jobs/sse")]);
+  const root = mkdtempSync(join(tmpdir(), "mlx-convert-job-"));
+  const before = new Set(stagingSiblings(outDir));
+  const jobs = createJobHost({ entry: owner.entry ?? fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
+    acquire: async () => ({ dispose() {} }), spawn: owner.spawn,
+    createStore: () => new JobStore(join(root, "jobs.db"), join(root, "logs")) });
+  const cancel = () => { void jobs.close().catch(() => {}); };
+  try {
+    signal?.throwIfAborted();
+    const { jobId } = jobs.submit("quantize", config, outDir);
+    signal?.addEventListener("abort", cancel, { once: true });
+    const store = jobs.ensureStore();
+    for await (const event of tailJob(store, jobId, { signal })) {
+      if (event.type === "stage" && event.message) progress(event.message);
+    }
+    if (signal?.aborted) {
+      await jobs.close();
+      for (const dir of stagingSiblings(outDir)) if (!before.has(dir)) rmSync(dir, { recursive: true, force: true });
+      throw signal.reason;
+    }
+    const row = store.get(jobId);
+    if (!row || row.status !== "done") throw new Error(row?.error ?? `quantize job ${row?.status ?? "missing"}`);
+    return { outputPath: row.output_path ?? outDir };
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    try { await jobs.close(); } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+}
+
 const defaults: ConvertDependencies = {
-  runner: (emit, config, signal) => createQuantizeRunner()(emit, config, signal),
+  quantize: quantizeInChild,
   async download(repoId, { onProgress, signal }) {
     const { downloadModel } = await import("@mlx-bun/hub/download");
     // The hub download honors the signal at every checkpoint and keeps the
@@ -52,8 +99,9 @@ export function parseConvertArgs(args: string[]): CommandArgs {
 
 /** mlx_lm.convert counterpart: main's flags, defaults, messages, and check order.
  * Uniform affine 4/8-bit or the OptiQ mixed path via --target-bpw, through the
- * same producer as the web quantize job. Cancellation is honored at the next
- * progress report; the producer's atomic writer never publishes a partial output. */
+ * same producer as the web quantize job in an owned child. Cancellation
+ * terminates and joins that child; the atomic writer never publishes a partial
+ * output and the parent removes the child's staging. */
 export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...defaults, ...supplied };
   const opt = (name: string): string | undefined => { const value = args.values[name]; return typeof value === "string" ? value : undefined; };
@@ -123,16 +171,11 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
     ...(opt("n-calibration") ? { n_calibration: Number(opt("n-calibration")) } : {}),
     ...(rotateWeights ? { rotate_weights: true, rotation_seed: rotationSeed } : {}) };
   let summary: string | undefined;
-  const emit: Emit = (event) => {
-    // The sink may throw cancellation (jobs contract); the producer then unwinds
-    // through its own disposal and discards its staging directory.
-    signal?.throwIfAborted();
-    if (event.type === "stage" && event.message) { summary = event.message; quantizing.update(event.message); }
-  };
+  const progress = (message: string) => { summary = message; quantizing.update(message); };
   let outDir = mlxPath;
   try {
-    const result = await deps.runner(emit, config, signal);
-    outDir = result?.outputPath ?? mlxPath;
+    const result = await deps.quantize(config, mlxPath, progress, signal, { spawn: deps.spawn, entry: deps.entry });
+    outDir = result.outputPath;
   } catch (error) { quantizing.fail(signal?.aborted ? "convert cancelled" : "convert failed"); throw error; }
   quantizing.done(summary ?? "quantized");
   deps.log();

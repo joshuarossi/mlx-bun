@@ -27,11 +27,10 @@ function harness(input: { token?: string | null; models?: Partial<ModelRecord>[]
     close() { closed++; },
   };
   const deps: ConvertDependencies = {
-    async runner(emit, config, signal) {
+    async quantize(config, outDir, progress, signal) {
       order.push("runner"); runs.push({ config, signal });
-      emit({ type: "stage", stage: "quantizing", progress: 0.5, message: "Module 1/2" });
-      emit({ type: "stage", stage: "done", progress: 1, message: "Quantized 2 modules (4.50 bpw)", output_dir: String(config.out_dir) });
-      return { outputPath: String(config.out_dir) };
+      progress("Module 1/2"); progress("Quantized 2 modules (4.50 bpw)");
+      return { outputPath: outDir };
     },
     async download(repoId, options) {
       order.push("download"); downloads.push({ repoId, signal: options.signal });
@@ -176,12 +175,14 @@ test("mixed precision and rotation flags reach the producer as the web job's con
       quantize: (async (...args: unknown[]) => { calls.push(args); return { outDir: args[1], nQuantized: 3, achievedBpw: 4.4, write: { totalSize: 0 } }; }) as never,
       rotation: ((options: unknown) => { expect(options).toEqual({ seed: 7 }); return transform; }) as never,
     });
-    const real = harness(); real.deps.runner = producer;
+    const through = (config: Record<string, unknown>, outDir: string, progress: (message: string) => void) =>
+      producer(event => { if (event.type === "stage" && event.message) progress(event.message); }, config).then(result => ({ outputPath: result?.outputPath ?? outDir }));
+    const real = harness(); real.deps.quantize = through;
     await runConvert(parse(...mixed), real.deps);
     expect(calls[0]!.slice(0, 3)).toEqual([local, out, { bits: 4, groupSize: 32, mode: "affine", targetBpw: 4.5, candidateBits: [2, 4, 8],
       calibrationMix: "data.jsonl", nCalibration: 4, weightTransform: transform }]);
     expect(real.lines).toContain("done: Quantized 3 modules (4.40 bpw)");
-    const uniform = harness(); uniform.deps.runner = producer;
+    const uniform = harness(); uniform.deps.quantize = through;
     await runConvert(parse(local, "-q", "--q-bits", "8", "--mlx-path", out), uniform.deps);
     expect(calls[1]!.slice(0, 3)).toEqual([local, out, { bits: 8, groupSize: 64, mode: "affine" }]);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -224,35 +225,63 @@ test("--upload-repo resolves the write token before any work and publishes only 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("cancellation mid-quantization reaches the producer at its next progress report and leaves no output", async () => {
+test("cancellation during quantization reaches the producer owner, prints the cancelled step, and publishes nothing", async () => {
   const { root, local, out } = workspace();
-  const staging = join(root, ".out.tmp");
   try {
     const controller = new AbortController();
-    const observed: { aborted: boolean[]; thrown?: unknown } = { aborted: [] };
     const run = harness();
-    run.deps.runner = async (emit, _config, signal) => {
-      mkdirSync(staging); writeFileSync(join(staging, "model.safetensors"), "partial");
-      try {
-        for (let module = 1; module <= 3; module++) {
-          await Bun.sleep(1);
-          observed.aborted.push(signal!.aborted);
-          emit({ type: "stage", stage: "quantizing", progress: module / 3, message: `Module ${module}/3` });
-          if (module === 1) controller.abort(new Error("convert cancelled"));
-        }
-      } catch (error) { observed.thrown = error; throw error; }
-      finally { rmSync(staging, { recursive: true, force: true }); } // as the library's atomic writer does on a throw
-      mkdirSync(out); return { outputPath: out };
-    };
+    let observed: AbortSignal | undefined;
+    run.deps.quantize = (_config, _out, progress, signal) => new Promise((_, reject) => {
+      observed = signal; progress("Module 1/3");
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+      controller.abort(new Error("convert cancelled"));
+    });
     await expect(runConvert(parse(local, "-q", "--mlx-path", out), run.deps, controller.signal)).rejects.toThrow("convert cancelled");
-    expect(observed.aborted).toEqual([false, true]);
-    expect(observed.thrown).toBe(controller.signal.reason);
+    expect(observed).toBe(controller.signal);
     expect(run.lines).toEqual(["step: quantizing (4-bit, group 64)", "update: Module 1/3", "fail: convert cancelled"]);
-    expect(existsSync(out)).toBe(false); expect(existsSync(staging)).toBe(false); expect(run.publishes).toEqual([]);
+    expect(existsSync(out)).toBe(false); expect(run.publishes).toEqual([]);
     const broken = harness();
-    broken.deps.runner = async () => { throw new Error("weights unreadable"); };
+    broken.deps.quantize = async () => { throw new Error("weights unreadable"); };
     await expect(runConvert(parse(local, "-q", "--mlx-path", out), broken.deps)).rejects.toThrow("weights unreadable");
     expect(broken.lines.at(-1)).toBe("fail: convert failed");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the child owner terminates and joins a running child on abort and removes only the staging it created", async () => {
+  const { root, out } = workspace();
+  const { quantizeInChild } = await import("../src/cli/convert");
+  const stale = join(root, ".out.tmp-stale"); mkdirSync(stale);
+  const fresh = join(root, ".out.tmp-fresh");
+  try {
+    const controller = new AbortController(), reason = new Error("convert cancelled");
+    let child: Bun.Subprocess | undefined;
+    const spawn = ((command: string[], options: Parameters<typeof Bun.spawn>[1]) => {
+      // A child that writes staging beside the destination, then idles like a synchronous sweep would.
+      child = Bun.spawn([process.execPath, "-e", `require("node:fs").mkdirSync(${JSON.stringify(fresh)}); setTimeout(() => {}, 60_000)`], options);
+      void command; return child;
+    }) as unknown as typeof Bun.spawn;
+    const messages: string[] = [];
+    const work = quantizeInChild({ src_dir: "/unused", out_dir: out, bits: 4, group_size: 64, mode: "affine" }, out, message => messages.push(message), controller.signal, { spawn });
+    const started = Date.now();
+    while (!existsSync(fresh)) { if (Date.now() - started > 5_000) throw new Error("child never wrote staging"); await Bun.sleep(5); }
+    controller.abort(reason);
+    await expect(work).rejects.toBe(reason);
+    expect(child!.killed || child!.exitCode !== null || child!.signalCode !== null).toBe(true);
+    expect(existsSync(fresh)).toBe(false); expect(existsSync(stale)).toBe(true); expect(existsSync(out)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the child owner reports a failed child's error and a real child without native MLX fails cleanly", async () => {
+  const { root, out } = workspace();
+  const { quantizeInChild } = await import("../src/cli/convert");
+  try {
+    const failing = ((_command: string[], options: Parameters<typeof Bun.spawn>[1]) =>
+      Bun.spawn([process.execPath, "-e", "process.exit(3)"], options)) as unknown as typeof Bun.spawn;
+    await expect(quantizeInChild({ out_dir: out }, out, () => {}, undefined, { spawn: failing })).rejects.toThrow("exited 3");
+    // The real job entry: the producer cannot load native MLX here, so the job fails with that reason.
+    await expect(quantizeInChild({ src_dir: root, out_dir: out, bits: 4, group_size: 64, mode: "affine" }, out, () => {}))
+      .rejects.toThrow(/native|libmlxc|dlopen/);
+    expect(existsSync(out)).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
