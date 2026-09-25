@@ -9,7 +9,8 @@ test.skipIf(!modelDir)("real HTTP generation shares the continuous engine and re
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
   const model = await scanSnapshot(modelDir!, "test-model");
   if (!model) throw new Error("Model path has no loadable checkpoint");
-  const options = parseServeOptions({ values: { port: "0", ctx: "2048", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
+  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
+  options.contextLimit = 2048; // Programmatic composition, not a serving CLI flag.
   const app = await startModelServer(model, options);
   const base = new URL(`http://127.0.0.1:${app.port}`);
   try {

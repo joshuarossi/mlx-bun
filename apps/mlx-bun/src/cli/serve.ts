@@ -4,6 +4,7 @@ import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
+import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
 import type { RequestPrepOptions } from "../server/request-prep";
 
 export interface ServeOptions {
@@ -72,11 +73,24 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
     capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
-    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? profileLimit,
+    contextLimit: profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
-    readOnly: args.values["read-only"] === true, noOpen: args.values["no-open"] === true,
+    readOnly: false, noOpen: args.values["no-open"] === true,
     cache, request,
+  };
+}
+
+/** Main's loaded-model limits constrain the context window; an explicit output
+ * cap overrides the model plan's default without changing its context budget. */
+export function resolveServingLimits(
+  options: Pick<ServeOptions, "contextLimit" | "defaultGeneratedTokens">,
+  plan?: Pick<Glm52MemoryPlan, "contextTokens" | "maxGenerationTokens"> | null,
+) {
+  return {
+    contextLimit: options.contextLimit === null ? plan?.contextTokens ?? null
+      : Math.min(options.contextLimit, plan?.contextTokens ?? Infinity),
+    defaultGeneratedTokens: options.defaultGeneratedTokens ?? plan?.maxGenerationTokens,
   };
 }
 
@@ -119,9 +133,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
+    const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
-      defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
+      kvScheme: caches.kvScheme, ...limits, tokenHistory });
     const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }] = await Promise.all([
       import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
     ]);
@@ -141,7 +155,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
-      contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
+      contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template.supportsThinking,
       genDefaults: {
@@ -152,7 +166,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, closeEngine: closeApp }, {
+    const listener = await startServer({ routes, web, chat,
+      beforeDrain: async () => { try { caches.stopIdleDemotion(); } finally { await jobs.close(); } },
+      closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;
@@ -213,7 +229,7 @@ const defaults: ServeDependencies = {
   resolve: resolveModelAuto, start: startModelServer, interactive: !!process.stdout.isTTY,
   async open(url) { const child = Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" }); if (await child.exited !== 0) throw new Error("Browser could not be opened"); },
   log: message => console.log(message), signals: process, exit: code => process.exit(code),
-  error: error => console.error(error instanceof Error ? (process.env.MLX_BUN_DEBUG ? error.stack ?? error.message : error.message) : String(error)),
+  error: error => console.error(error instanceof Error ? error.message : String(error)),
 };
 
 export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<RunningApp> {
