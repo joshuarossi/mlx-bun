@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -113,9 +114,21 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
-    const routes = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
+    const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
       defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
+    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }] = await Promise.all([
+      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
+    ]);
+    const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
+      acquire: signal => engine.gateway.acquireExecutionLease(signal),
+      onComplete: () => completions.invalidateLibrary(),
+    });
+    const closeApp = async () => { try { await jobs.close(); } finally { await engine.close(); } };
+    cleanup = closeApp;
+    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
+    const routes = { handle: async (request: Request) => await jobRoutes.handle(request) ??
+      await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
@@ -129,7 +142,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, closeEngine: () => engine.close() }, {
+    const listener = await startServer({ routes, web, chat, closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;

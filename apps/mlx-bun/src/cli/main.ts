@@ -7,7 +7,9 @@ try {
   const [first, ...rest] = process.argv.slice(2);
   const command = !first || (first.startsWith("--") && !["--help", "--version"].includes(first)) ? "serve" : first;
   const args = command === "serve" && first !== "serve" ? process.argv.slice(2) : rest;
-  if (["--version", "-v", "version"].includes(command ?? "")) {
+  if (command === "__job") {
+    process.exitCode = await (await import("./job-entry")).runJobEntry(args[0]);
+  } else if (["--version", "-v", "version"].includes(command ?? "")) {
     console.log(`mlx-bun ${pkg.version}`);
   } else if (command === "help" || command === "--help" || command === "-h") {
     console.log(renderHelp(help(args[0])));

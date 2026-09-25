@@ -45,7 +45,7 @@ function layer(path: string, owner: Library): Layer | undefined {
 }
 
 // Add a domain only with its first consumer; app roots do not become a loophole.
-const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web"], engine: [], chat: [], server: ["engine", "chat"], jobs: [], web: ["chat", "jobs"] };
+const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "quantize"], engine: [], chat: [], server: ["engine", "chat", "jobs", "quantize"], quantize: ["jobs"], jobs: [], web: ["chat", "jobs"] };
 function appDomain(path: string, owner: Library): string {
   const domain = relative(owner.source, path).split("/")[0]!;
   if (!(domain in appDomains)) throw new Error(`Unclassified app source: ${relative(owner.source, path)}`);
