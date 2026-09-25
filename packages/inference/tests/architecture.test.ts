@@ -44,6 +44,14 @@ function layer(path: string, owner: Library): Layer | undefined {
   return directory as Layer;
 }
 
+// Add a domain only with its first consumer; app roots do not become a loophole.
+const appDomains: Record<string, string[]> = { cli: [] };
+function appDomain(path: string, owner: Library): string {
+  const domain = relative(owner.source, path).split("/")[0]!;
+  if (!(domain in appDomains)) throw new Error(`Unclassified app source: ${relative(owner.source, path)}`);
+  return domain;
+}
+
 function references(source: ts.SourceFile): { specifier: string | undefined; line: number }[] {
   const found: { specifier: string | undefined; line: number }[] = [];
   const inspect = (node: ts.Node, literal: ts.Node | undefined) => found.push({
@@ -85,22 +93,28 @@ function mayImport(from: Layer, to: Layer): boolean {
 }
 
 interface Library {
+  app: boolean;
   name: string;
   source: string;
   dependencies: string[];
 }
 
-async function inspectLibraries(root: string): Promise<string[]> {
+async function inspectWorkspaces(root: string): Promise<string[]> {
   root = realpathSync(root);
   const libraries: Library[] = [];
-  for await (const file of new Bun.Glob("packages/*/package.json").scan(root)) {
+  for await (const file of new Bun.Glob("{packages,apps}/*/package.json").scan(root)) {
     const manifest = await Bun.file(resolve(root, file)).json();
-    libraries.push({ name: manifest.name, source: resolve(root, dirname(file), "src"),
+    libraries.push({ app: file.startsWith("apps/"), name: manifest.name, source: resolve(root, dirname(file), "src"),
       dependencies: Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies }) });
   }
   const violations: string[] = [];
   const names = libraries.map(item => item.name);
   if (new Set(names).size !== names.length) violations.push("Duplicate workspace package names");
+  for (const owner of libraries) {
+    for (const dependency of libraries.filter(item => owner.dependencies.includes(item.name))) {
+      if (!owner.app && dependency.app) violations.push(`${owner.name}: libraries cannot depend on apps (${dependency.name})`);
+    }
+  }
   const packageGraph = new Map(libraries.map(item => [item.name, item.dependencies.filter(name => names.includes(name))]));
   violations.push(...cycles(packageGraph).map(cycle => `Package cycle: ${cycle}`));
   const ownerOf = (path: string) => libraries.find(item => path.startsWith(`${item.source}/`));
@@ -127,11 +141,14 @@ async function inspectLibraries(root: string): Promise<string[]> {
   }
   for (const [file, source] of sources) {
     const owner = ownerOf(file)!;
+    if (owner.app) appDomain(file, owner);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
     for (const { specifier, line } of references(source)) {
       const at = `${name}:${line}`;
       if (specifier === undefined) { violations.push(`${at}: nonliteral module reference`); continue; }
+      // A workspace may read its own package metadata (e.g. CLI --version).
+      if (specifier.startsWith(".") && resolve(dirname(file), specifier) === resolve(owner.source, "../package.json")) continue;
       const dependency = owner.dependencies.find(name => specifier === name || specifier.startsWith(`${name}/`));
       const isExternal = external.has(specifier) || (dependency !== undefined && !names.includes(dependency));
       if (isExternal) {
@@ -147,6 +164,11 @@ async function inspectLibraries(root: string): Promise<string[]> {
       if (!actual || !sources.has(actual)) { violations.push(`${at}: unresolved or unclassified import ${specifier}`); continue; }
       const targetOwner = ownerOf(actual)!;
       const to = layer(actual, targetOwner);
+      if (owner.app && owner === targetOwner) {
+        const fromDomain = appDomain(file, owner), toDomain = appDomain(actual, owner);
+        if (fromDomain !== toDomain && !appDomains[fromDomain]!.includes(toDomain))
+          violations.push(`${at}: app ${fromDomain} -> ${toDomain}`);
+      }
       if (owner !== targetOwner) {
         if (!owner.dependencies.includes(targetOwner.name))
           violations.push(`${at}: undeclared workspace dependency ${targetOwner.name}`);
@@ -158,14 +180,14 @@ async function inspectLibraries(root: string): Promise<string[]> {
       edges.push(relative(root, actual));
     }
   }
-  if (sources.size === 0) violations.push("No library source files found");
+  if (sources.size === 0) violations.push("No workspace source files found");
   violations.push(...cycles(dependencies).map(cycle => `Module cycle: ${cycle}`));
   return violations;
 }
 
-test("all library packages follow their declared DAG and inference layer rules, including type-only dependencies", async () => {
+test("all library and app workspaces follow their declared DAG and inference layer rules, including type-only dependencies", async () => {
   expect(cycles(new Map(Object.entries(allowed)))).toEqual([]);
-  expect(await inspectLibraries(workspace)).toEqual([]);
+  expect(await inspectWorkspaces(workspace)).toEqual([]);
 });
 
 test("new library packages cannot hide undeclared imports, private paths, or dependency cycles", async () => {
@@ -185,20 +207,20 @@ test("new library packages cannot hide undeclared imports, private paths, or dep
       mkdirSync(resolve(root, "node_modules/@example"), { recursive: true });
       symlinkSync(resolve(root, `packages/${name}`), resolve(root, `node_modules/@example/${name}`));
     }
-    expect(await inspectLibraries(root)).toEqual([]);
+    expect(await inspectWorkspaces(root)).toEqual([]);
     write("packages/a/src/index.ts", 'import type { Value } from "@example/b"; export type A = Value;');
-    expect(await inspectLibraries(root)).toContain("packages/a/src/index.ts:1: undeclared workspace dependency @example/b");
+    expect(await inspectWorkspaces(root)).toContain("packages/a/src/index.ts:1: undeclared workspace dependency @example/b");
     manifest("a", { "@example/b": "workspace:*" });
-    expect(await inspectLibraries(root)).toEqual([]);
+    expect(await inspectWorkspaces(root)).toEqual([]);
     write("packages/a/src/index.ts", 'export type { Value } from "../../b/src/index";');
-    expect((await inspectLibraries(root)).some(item => item.includes("cross-package import must use public exports"))).toBe(true);
+    expect((await inspectWorkspaces(root)).some(item => item.includes("cross-package import must use public exports"))).toBe(true);
     write("packages/b/src/private.ts", "export type Secret = number;");
     write("packages/a/src/index.ts", 'export type { Secret } from "@example/b/src/private";');
-    expect((await inspectLibraries(root)).some(item => item.includes("unresolved or unclassified import"))).toBe(true);
+    expect((await inspectWorkspaces(root)).some(item => item.includes("unresolved or unclassified import"))).toBe(true);
     write("packages/a/src/index.ts", 'export type A = number; export type { B } from "@example/b";');
     write("packages/b/src/index.ts", 'export type B = number; export type { A } from "@example/a";');
     manifest("b", { "@example/a": "workspace:*" });
-    const cyclic = await inspectLibraries(root);
+    const cyclic = await inspectWorkspaces(root);
     expect(cyclic.some(item => item.startsWith("Package cycle:"))).toBe(true);
     expect(cyclic.some(item => item.startsWith("Module cycle:"))).toBe(true);
   } finally {
@@ -227,4 +249,34 @@ test("the gate sees every supported import form and rejects upward edges", () =>
   expect(mayImport("models", "api")).toBe(false);
   expect(mayImport("generation", "models")).toBe(true);
   expect(cycles(new Map([["a", ["b"]], ["b", ["c"]], ["c", ["a"]]]))).toEqual(["a -> b -> c -> a"]);
+});
+
+test("apps consume declared public library exports and libraries never depend on apps", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-app-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const app = { name: "example-app", type: "module", exports: { ".": "./src/cli/main.ts" }, dependencies: { "example-library": "workspace:*" } };
+  const lib = { name: "example-library", type: "module", exports: { ".": "./src/index.ts" }, dependencies: {} };
+  try {
+    write("apps/example/package.json", JSON.stringify(app));
+    write("packages/example/package.json", JSON.stringify(lib));
+    write("packages/example/src/index.ts", "export type Value = number;");
+    write("apps/example/src/cli/main.ts", 'import type { Value } from "example-library"; export type App = Value;');
+    mkdirSync(resolve(root, "node_modules"));
+    symlinkSync(resolve(root, "packages/example"), resolve(root, "node_modules/example-library"));
+    symlinkSync(resolve(root, "apps/example"), resolve(root, "node_modules/example-app"));
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write("apps/example/package.json", JSON.stringify({ ...app, dependencies: {} }));
+    expect((await inspectWorkspaces(root)).some(item => item.includes("undeclared workspace dependency"))).toBe(true);
+    write("apps/example/package.json", JSON.stringify(app));
+    write("apps/example/src/cli/main.ts", 'export type { Value } from "../../../../packages/example/src/index";');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("cross-package import must use public exports"))).toBe(true);
+    write("apps/example/src/cli/main.ts", "export type App = number;");
+    write("packages/example/package.json", JSON.stringify({ ...lib, dependencies: { "example-app": "workspace:*" } }));
+    expect((await inspectWorkspaces(root)).some(item => item.includes("libraries cannot depend on apps"))).toBe(true);
+    write("apps/example/src/mystery.ts", "export const hidden = true;");
+    await expect(inspectWorkspaces(root)).rejects.toThrow("Unclassified app source");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

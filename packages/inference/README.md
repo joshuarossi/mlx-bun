@@ -106,6 +106,14 @@ single-query decode. The record preserves the initial mismatched-reference
 results and appends the corrected comparison. Trellis's reference is main, not
 mlx-lm. These checks do not close the broader verification gate in PLAN.
 
+The same record includes a later window-wrap run at `7b8dcd7`: Gemma e4b
+plain and artifact mixed KV each match main and their respective external
+references in three additional cases (context 1536, append 1/8/128, chunk 128).
+The model's 512-token sliding window has wrapped before the append. Full logits,
+physical cache planes, and live/restored continuation match exactly; no layout
+normalization or numerical change was needed. Compilation and performance are
+not exercised by this run.
+
 ### Compiled decode verification
 
 The opt-in `tests/parity/compiled-decode.test.ts` accepts local checkpoint paths
