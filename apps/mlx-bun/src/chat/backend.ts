@@ -16,6 +16,7 @@ type Socket = ServerWebSocket<ChatSocketData>;
 interface Connection {
   backend: ChatBackend;
   closed: boolean;
+  disposal?: Promise<void>;
 }
 
 /** Transport owns socket lifetime; the backend owns agent/session lifetime.
@@ -27,6 +28,9 @@ export function makeChatWebSocketHandler(factory: ChatBackendFactory): {
   const connections = new Map<Socket, Connection>();
   const disposing = new Set<Promise<void>>();
   const starting = new Set<Promise<void>>();
+  const handling = new Set<Promise<void>>();
+  const cleanupErrors: unknown[] = [];
+  let closing: Promise<void> | undefined;
   let stopped = false;
   const send = (socket: Socket, message: ServerMessage) => {
     try { socket.send(JSON.stringify(message)); } catch { /* disconnected */ }
@@ -35,9 +39,12 @@ export function makeChatWebSocketHandler(factory: ChatBackendFactory): {
     type: "error", message: cause instanceof Error ? cause.message : String(cause),
   });
   const release = (connection: Connection): Promise<void> => {
-    if (connection.closed) return Promise.resolve();
+    if (connection.disposal) return connection.disposal;
     connection.closed = true;
-    const done = Promise.resolve().then(() => connection.backend.dispose()).then(() => {}, () => {});
+    // Socket callbacks cannot return disposal errors to an owner. Retain them
+    // for handler shutdown while observing each rejection immediately.
+    const done = connection.disposal = Promise.resolve().then(() => connection.backend.dispose())
+      .catch(cause => { cleanupErrors.push(cause); });
     disposing.add(done);
     void done.finally(() => disposing.delete(done));
     return done;
@@ -71,8 +78,11 @@ export function makeChatWebSocketHandler(factory: ChatBackendFactory): {
           if (!parsed || typeof parsed !== "object" || typeof (parsed as { type?: unknown }).type !== "string") throw new Error();
           message = parsed as ClientMessage;
         } catch { error(socket, "invalid JSON message"); return; }
-        try { await connection.backend.handle(message); }
-        catch (cause) { if (!connection.closed) error(socket, cause); }
+        try {
+          const operation = connection.backend.handle(message);
+          handling.add(operation);
+          try { await operation; } finally { handling.delete(operation); }
+        } catch (cause) { if (!connection.closed) error(socket, cause); }
       },
       close(socket) {
         const connection = connections.get(socket);
@@ -80,12 +90,19 @@ export function makeChatWebSocketHandler(factory: ChatBackendFactory): {
         if (connection) void release(connection);
       },
     },
-    async dispose() {
-      stopped = true;
-      for (const connection of connections.values()) void release(connection);
-      connections.clear();
-      await Promise.all([...disposing]);
-      await Promise.allSettled([...starting]);
+    dispose() {
+      return closing ??= (async () => {
+        stopped = true;
+        for (const connection of connections.values()) void release(connection);
+        connections.clear();
+        await Promise.all([...disposing]);
+        // Cancel first, then join work that can acquire/release resources after
+        // an await. Messages remain concurrent during the connection lifetime.
+        await Promise.allSettled([...starting, ...handling]);
+        await Promise.all([...disposing]);
+        if (cleanupErrors.length === 1) throw cleanupErrors[0];
+        if (cleanupErrors.length) throw new AggregateError(cleanupErrors, "chat cleanup failed");
+      })();
     },
   };
 }

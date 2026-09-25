@@ -82,7 +82,10 @@ and durable approval choices. Pi dependencies stay in this app workspace.
 Composition supplies the backend factory to `makeChatWebSocketHandler`, mounts
 its `websocket` handler, and awaits its `dispose()` on shutdown. Each connection
 gets an independent agent session. Abort and approval messages remain available
-while a prompt is running. The [lifecycle examples](tests/chat-backend.test.ts)
+while a prompt is running. Shutdown cancels each backend, waits for pending
+startup and message cleanup, then reports any peer disposal failures. Pi waits
+for the agent to become idle and for an in-flight session replacement before
+releasing its runtime. The [lifecycle examples](tests/chat-backend.test.ts)
 exercise startup failure, disconnects, cancellation, and shutdown without a
 server or native libraries; [chat behavior tests](tests/chat-policy.test.ts)
 cover history, sampling scopes, thinking events, tool-loop policy, and UI tools.
