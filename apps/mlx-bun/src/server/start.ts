@@ -7,9 +7,7 @@ import type { createCompletionRoutes } from "./routes";
 // (/generate, /signal, /curves, /curve-terrain, /dag) are not product surface
 // and answer 404. Lease, drain, and /engine wait on the isolation decision.
 const pending = [
-  /^\/v1\/(?:audio\/(?:transcriptions|translations|speech)|memory\/synthesize)$/,
-  /^\/v1\/audio\/sessions(?:\/[^/]+(?:\/(?:audio|finish))?)?$/,
-  /^\/admin\/transcription\/unload$/,
+  /^\/v1\/memory\/synthesize$/,
   /^\/admin\/(?:lease|drain)$/,
   /^\/engine$/,
 ];
