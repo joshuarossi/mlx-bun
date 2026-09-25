@@ -178,6 +178,7 @@ test("startup attaches continuation/cache services and token history before list
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], remembered = [];
+    const chatPaths = { toolApprovalsFile: "/unused/approvals.json" };
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 65536 } } },
       glmMemoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048 }, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
@@ -209,20 +210,25 @@ test("startup attaches continuation/cache services and token history before list
       assert.equal(options.contextLimit, 8192); assert.equal(options.defaultGeneratedTokens, 2048);
       assert.deepEqual(remembered, [[1, 2]]); cache.promptCache.onPut([3, 4]);
       assert.deepEqual(remembered, [[1, 2], [3, 4]]); assert.ok(options.tokenHistory);
-      events.push("routes"); return { handle: async () => null };
+      events.push("routes"); return { handle: async () => null, invalidateLibrary() {} };
+    } }));
+    mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes(options) {
+      assert.equal(options.toolApprovalsFile, chatPaths.toolApprovalsFile);
+      assert.equal(options.servedModelPath, "/unused"); assert.equal(typeof options.invalidateLibrary, "function");
+      return { handle: async () => null };
     } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
-      assert.equal(options.contextWindow, 8192); assert.equal(options.readOnly, true); return () => {};
+      assert.equal(options.contextWindow, 8192); assert.equal(options.readOnly, true); assert.equal(options.paths, chatPaths); return () => {};
     } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
       listenerInput = input; events.push("listener");
-      return { server: { port: 1234 }, close: async () => { input.beforeDrain(); await input.closeEngine(); } };
+      return { server: { port: 1234 }, close: async () => { await input.beforeDrain(); await input.closeEngine(); } };
     } }));
     const { startModelServer } = await import(app + "src/cli/serve.ts");
     const running = await startModelServer({ path: "/unused", repoId: "test" }, {
       query: null, hostname: "127.0.0.1", port: 0, capacity: 8, contextLimit: null,
-      readOnly: true, noOpen: true, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
+      readOnly: true, noOpen: true, chatPaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
     });
     assert.equal(running.port, 1234);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
