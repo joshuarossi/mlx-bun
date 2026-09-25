@@ -364,7 +364,9 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
-      contextLimit = options.contextLimit; defaultAdapter = options.defaultAdapter; return { handle: async () => null, invalidateLibrary() {} };
+      contextLimit = options.contextLimit; defaultAdapter = options.defaultAdapter;
+      assert.deepEqual(options.pagedKv, { blockSize: 128 });
+      return { handle: async () => null, invalidateLibrary() {} };
     } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes(input) { statusBudget = input.memoryBudgetBytes; return { handle: async () => null }; } }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
@@ -380,7 +382,8 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
       "--force-wire", "--allow-private-media", "--expert-offload", "--adapter", "/unused/adapters/my-lora/",
-      "--draft-kind", "ngram", "--num-draft-tokens", "4", "--ngram-max", "5", "--ngram-min", "2", "--mtp", "off", "--no-open"]));
+      "--draft-kind", "ngram", "--num-draft-tokens", "4", "--ngram-max", "5", "--ngram-min", "2", "--mtp", "off",
+      "--paged-kv", "--paged-kv-block-size", "128", "--no-open"]));
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options);
     // The adapter mounts right after the model loads, before the allocator, caches, or engine exist.
@@ -512,4 +515,15 @@ test("a draft model query resolves through model selection before startup and re
   expect(queries).toEqual([null, "draft-query"]);
   expect(run.starts[0]?.draft).toEqual({ model: "draft-query", numTokens: 2, modelDir: "/models/draft" });
   await app.close();
+});
+
+test("paged KV follows main's flag and env mirror, with the block size only alongside paging", () => {
+  expect(parse("--paged-kv").request.pagedKv).toEqual({});
+  expect(parse("--paged-kv", "--paged-kv-block-size", "512").request.pagedKv).toEqual({ blockSize: 512 });
+  expect(parse().request).not.toHaveProperty("pagedKv");
+  expect(() => parse("--paged-kv-block-size", "512")).toThrow("--paged-kv-block-size requires --paged-kv");
+  expect(() => parse("--paged-kv", "--paged-kv-block-size", "0")).toThrow();
+  const restore = configureRuntime({ MLX_BUN_PAGED_KV: "1" });
+  try { expect(parse().request.pagedKv).toEqual({}); expect(parse("--paged-kv-block-size", "128").request.pagedKv).toEqual({ blockSize: 128 }); }
+  finally { restore(); }
 });
