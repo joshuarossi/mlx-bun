@@ -1,5 +1,14 @@
 /* eslint-disable */
 // AUTO-PORTED VERBATIM from MLX quantized.h + steel/* (github.com/ml-explore/mlx).
+// ONE DEVIATION from verbatim (compile-only; no arithmetic, layout or dispatch change):
+// every non-static member function of MMATile and BlockMMA is `thread`-qualified.
+// MSL 4.1 -- what MLX's JIT selects on macOS 27 (mlx/backend/metal/device.cpp,
+// get_metal_version) -- no longer treats the implicit `this` of an unqualified member
+// function as `thread`, so frag_at's `thread frag_type&` return, tile_matmad's
+// `thread MMATile&` params and the `thread`-qualified MMATile() ctor stop binding
+// ("constructor for BlockMMA<...> must explicitly initialize the member 'Atile'").
+// MSL <= 4.0 and MLX's precompiled metallib are unaffected; the qualifier restores
+// the <= 4.0 meaning under 4.1. Upstream mma.h (v0.32.2 == main) is unchanged.
 export const STEEL_QMM_HEADER = String.raw`// mlx metal_kernel preamble provides METAL_FUNC + using namespace metal; we add
 // the steel macros, type_traits + integral_constant (each self-manages its own
 // #pragma METAL internals enable/disable), then the GEMM-specific structs.
@@ -832,24 +841,24 @@ struct MMATile {
 
   METAL_FUNC MMATile() thread {}
 
-  METAL_FUNC constexpr void clear() {
+  METAL_FUNC constexpr void clear() thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kNumFrags; ++i) {
       val_frags[i] = frag_type(0);
     }
   }
 
-  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) {
+  METAL_FUNC constexpr thread frag_type& frag_at(const short i, const short j) thread {
     return val_frags[i * kTileCols + j];
   }
 
   METAL_FUNC constexpr const thread frag_type& frag_at(
       const short i,
-      const short j) const {
+      const short j) const thread {
     return val_frags[i * kTileCols + j];
   }
 
-  METAL_FUNC mat_type mat_at(const short i, const short j) {
+  METAL_FUNC mat_type mat_at(const short i, const short j) thread {
     mat_type val_mat;
     STEEL_PRAGMA_UNROLL
     for (short ii = 0; ii < kElemsPerFrag; ++ii) {
@@ -858,16 +867,16 @@ struct MMATile {
     return val_mat;
   }
 
-  METAL_FUNC thread elem_type* elems() {
+  METAL_FUNC thread elem_type* elems() thread {
     return reinterpret_cast<thread elem_type*>(val_frags);
   }
 
-  METAL_FUNC const thread elem_type* elems() const {
+  METAL_FUNC const thread elem_type* elems() const thread {
     return reinterpret_cast<const thread elem_type*>(val_frags);
   }
 
   template <typename U, int w_x, int w_y, int str_x, int str_y>
-  METAL_FUNC void load(const threadgroup U* src) {
+  METAL_FUNC void load(const threadgroup U* src) thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -884,7 +893,7 @@ struct MMATile {
   }
 
   template <typename U, int w_x, int w_y, int str_x, int str_y>
-  METAL_FUNC void store(threadgroup U* dst) const {
+  METAL_FUNC void store(threadgroup U* dst) const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -901,7 +910,7 @@ struct MMATile {
   }
 
   template <typename U, int w_x, int w_y>
-  METAL_FUNC void load(const device U* src, const int ld) {
+  METAL_FUNC void load(const device U* src, const int ld) thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -916,7 +925,7 @@ struct MMATile {
   }
 
   template <typename U, int w_x, int w_y>
-  METAL_FUNC void store(device U* dst, const int ld) const {
+  METAL_FUNC void store(device U* dst, const int ld) const thread {
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -932,7 +941,7 @@ struct MMATile {
 
   template <typename U, int w_x, int w_y>
   METAL_FUNC void
-  load_safe(const device U* src, const int ld, const short2 src_tile_dims) {
+  load_safe(const device U* src, const int ld, const short2 src_tile_dims) thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -952,7 +961,7 @@ struct MMATile {
 
   template <typename U, int w_x, int w_y>
   METAL_FUNC void
-  store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const {
+  store_safe(device U* dst, const int ld, const short2 dst_tile_dims) const thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -975,7 +984,7 @@ struct MMATile {
       device U* dst,
       const int ld,
       const short2 start,
-      const short2 stop) const {
+      const short2 stop) const thread {
     STEEL_PRAGMA_UNROLL
     for (int i = 0; i < kTileRows; ++i) {
       STEEL_PRAGMA_UNROLL
@@ -1075,7 +1084,7 @@ struct BlockMMA {
   /* Constructor */
   METAL_FUNC BlockMMA(
       ushort simd_group_id [[simdgroup_index_in_threadgroup]],
-      ushort simd_lane_id [[thread_index_in_simdgroup]]) {
+      ushort simd_lane_id [[thread_index_in_simdgroup]]) thread {
     // Determine thread position in simdgroup matrix
     short tm = kFragSize * (simd_group_id / WN);
     short tn = kFragSize * (simd_group_id % WN);
@@ -1093,7 +1102,7 @@ struct BlockMMA {
   }
 
   /* (BM, BK) X (BK, BN) multiply accumulate function */
-  METAL_FUNC void mma(const threadgroup T* As, const threadgroup T* Bs) {
+  METAL_FUNC void mma(const threadgroup T* As, const threadgroup T* Bs) thread {
     // Adjust for simdgroup and thread location
     As += As_offset;
     Bs += Bs_offset;
@@ -1120,7 +1129,7 @@ struct BlockMMA {
   }
 
   /* Store results from simdgroup_matrix results into device memory */
-  METAL_FUNC void store_result(device U* D, const int ldd) {
+  METAL_FUNC void store_result(device U* D, const int ldd) thread {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1134,7 +1143,7 @@ struct BlockMMA {
   }
 
   METAL_FUNC void
-  store_result_slice(device U* D, const int ldd, short2 start, short2 stop) {
+  store_result_slice(device U* D, const int ldd, short2 start, short2 stop) thread {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1154,7 +1163,7 @@ struct BlockMMA {
   }
 
   METAL_FUNC void
-  store_result_safe(device U* D, const int ldd, short2 dst_tile_dims) {
+  store_result_safe(device U* D, const int ldd, short2 dst_tile_dims) thread {
     // Apply epilogue
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1173,7 +1182,7 @@ struct BlockMMA {
 
   /* Apply epilogue */
   template <typename UnaryEpilogue>
-  METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) {
+  METAL_FUNC void apply_epilogue(thread const UnaryEpilogue& epilogue_op) thread {
     // Loop over all simdgroup tiles
     STEEL_PRAGMA_UNROLL
     for (short i = 0; i < decltype(Ctile)::kElemsPerTile; i++) {
@@ -1187,7 +1196,7 @@ struct BlockMMA {
       const device U* C,
       const int ldc,
       const int fdc,
-      thread const BinaryEpilogue& epilogue_op) {
+      thread const BinaryEpilogue& epilogue_op) thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
 
@@ -1216,7 +1225,7 @@ struct BlockMMA {
       const int ldc,
       const int fdc,
       short2 dst_tile_dims,
-      thread const BinaryEpilogue& epilogue_op) {
+      thread const BinaryEpilogue& epilogue_op) thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
     dst_tile_dims -= short2(sn, sm);
@@ -1261,7 +1270,7 @@ struct BlockMMA {
       const device U* C,
       const int ldc,
       const int fdc,
-      thread const Epilogue& epilogue_op) const {
+      thread const Epilogue& epilogue_op) const thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
     D += (sm)*ldd + sn;
@@ -1294,7 +1303,7 @@ struct BlockMMA {
       const int ldc,
       const int fdc,
       short2 dst_tile_dims,
-      thread const Epilogue& epilogue_op) const {
+      thread const Epilogue& epilogue_op) const thread {
     // Adjust for simdgroup and thread location
     C += (sm)*ldc + (sn)*fdc;
     D += (sm)*ldd + sn;
