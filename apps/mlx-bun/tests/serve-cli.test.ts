@@ -379,13 +379,15 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
-      "--force-wire", "--allow-private-media", "--expert-offload", "--adapter", "/unused/adapters/my-lora/", "--no-open"]));
+      "--force-wire", "--allow-private-media", "--expert-offload", "--adapter", "/unused/adapters/my-lora/",
+      "--draft-kind", "ngram", "--num-draft-tokens", "4", "--ngram-max", "5", "--ngram-min", "2", "--mtp", "off", "--no-open"]));
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options);
     // The adapter mounts right after the model loads, before the allocator, caches, or engine exist.
     assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
     assert.equal(defaultAdapter, "my-lora");
-    assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, glm: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096 } });
+    assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, glm: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096, enableMtp: false },
+      draftKind: "ngram", numDraftTokens: 4, ngramMax: 5, ngramMin: 2 });
     assert.equal(cacheOptions.allocatorLimitBytes, 8e9);
     assert.equal(statusBudget, 8e9);
     assert.equal(contextLimit, expected);
@@ -477,4 +479,37 @@ test("a startup adapter directory is accepted under both spellings and validated
   expect(parse("--adapter", "/a", "--adapter-path", "/b").adapterDir).toBe("/a");
   expect(parse()).not.toHaveProperty("adapterDir");
   expect(() => parse("--adapter", " ")).toThrow("--adapter expects a directory");
+});
+
+test("speculative flags keep main's validation and messages, and only reach the load gate when a draft is configured", () => {
+  expect(parse("--draft-model", "tiny", "--draft-kind", "ngram", "--num-draft-tokens", "4", "--ngram-max", "5", "--ngram-min", "2", "--mtp", "off"))
+    .toMatchObject({ draft: { model: "tiny", kind: "ngram", numTokens: 4, ngramMax: 5, ngramMin: 2 }, mtp: false });
+  expect(parse("--mtp", "on").mtp).toBe(true);
+  expect(parse()).not.toHaveProperty("draft"); expect(parse()).not.toHaveProperty("mtp");
+  expect(parse("--draft-kind", "mtp").draft).toEqual({ kind: "mtp" });
+  for (const [args, message] of [
+    [["--num-draft-tokens", "0"], '--num-draft-tokens expects an integer >= 1 (got "0")'],
+    [["--num-draft-tokens", "1.5"], '--num-draft-tokens expects an integer >= 1 (got "1.5")'],
+    [["--draft-kind", "lookahead"], "--draft-kind expects two-model|assistant|dspark|deepspec|mtp|ngram (got \"lookahead\")"],
+    [["--draft-kind", "ngram", "--ngram-max", "x"], '--ngram-max expects an integer >= 1 (got "x")'],
+    [["--draft-kind", "ngram", "--ngram-min", "6", "--ngram-max", "5"], "--ngram-min (6) must be <= --ngram-max (5)"],
+    [["--mtp", "maybe"], '--mtp expects on|off (got "maybe")'],
+    [["--draft-model", " "], "--draft-model expects a path or query"],
+  ] as const) expect(() => parse(...args)).toThrow(message);
+  const warnings: string[] = [], warn = console.warn;
+  console.warn = (message: string) => { warnings.push(message); };
+  try { expect(parse("--ngram-max", "3").draft).toEqual({ ngramMax: 3 }); }
+  finally { console.warn = warn; }
+  expect(warnings).toEqual(["--ngram-max/--ngram-min only apply with --draft-kind ngram — ignored"]);
+});
+
+test("a draft model query resolves through model selection before startup and reaches composition as a directory", async () => {
+  const run = runtime(false);
+  const queries: (string | null)[] = [];
+  const app = await runServe(parseCommand("serve", ["--draft-model", "draft-query", "--num-draft-tokens", "2"]), { ...run.dependencies,
+    resolve: async (query, _supplied, signal) => { queries.push(query); expect(signal?.aborted).toBe(false);
+      return { m: query === "draft-query" ? { ...model, path: "/models/draft" } : model, picked: false }; } });
+  expect(queries).toEqual([null, "draft-query"]);
+  expect(run.starts[0]?.draft).toEqual({ model: "draft-query", numTokens: 2, modelDir: "/models/draft" });
+  await app.close();
 });
