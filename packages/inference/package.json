@@ -79,7 +79,12 @@
     "./artifacts/config": "./src/artifacts/config.ts",
     "./models/support": "./src/models/support.ts",
     "./state/kv-scheme": "./src/state/kv-scheme.ts",
-    "./artifacts/glm52/memory": "./src/artifacts/glm52/memory.ts"
+    "./artifacts/glm52/memory": "./src/artifacts/glm52/memory.ts",
+    "./runtime/trace": "./src/runtime/trace.ts",
+    "./execution/engine": "./src/execution/engine.ts",
+    "./execution/admission": "./src/execution/admission.ts",
+    "./execution/cancellation": "./src/execution/cancellation.ts",
+    "./runtime/resources": "./src/runtime/resources.ts"
   },
   "files": [
     "src",
