@@ -545,7 +545,7 @@ export function createMemoryTools(root: string): ToolDefinition[] {
     name: "memory_status",
     label: "Memory Status",
     description:
-      "Show read-only status for the user's memory: vault path, setup state, article count, git state, last synthesis run, and nightly schedule state. Use when the user asks whether memory is on or where it lives.",
+      "Show read-only status for the user's memory: vault path, setup state, article count, git state, last recorded synthesis run, and synthesis/scheduling availability. Use when the user asks whether memory is on or where it lives.",
     parameters: Type.Object({}),
     execute: async () => {
       try {
