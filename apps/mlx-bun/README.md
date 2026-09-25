@@ -307,6 +307,26 @@ alone emits the terminal lifecycle event.
 wire responses stay in `server/job-routes.ts`, `server/quantize-routes.ts`, and
 `server/finetune-routes.ts`.
 
+`mlx-bun convert <repo-or-path> -q` is main's mlx_lm.convert counterpart: a
+local model directory, a downloaded model, or an `org/name` repo id (fetched
+first, resumable) is quantized into `--mlx-path` (default `mlx_model`, which
+must not already exist) by the same `createQuantizeRunner` producer the web
+quantize job runs, in-process. `--q-bits 4|8` and `--q-group-size 32|64` select
+uniform affine quantization; `--target-bpw` with `--candidate-bits`,
+`--calibration-mix`, `--n-calibration`, `--rotate-weights`, and
+`--rotation-seed` select the mixed path. `--upload-repo` resolves the write
+token before any work and publishes through the app publisher afterwards; an
+upload failure keeps the model and prints the retry hint. `--dtype`,
+`-d`/`--dequantize`, `--quant-predicate`, a non-affine `--q-mode`, and plain
+non-quantizing conversion are refused with main's messages. SIGINT/SIGTERM
+abort at the producer's next progress report; the library's atomic writer
+discards its staging directory, so the destination is never partially
+written, but a synchronous quantization loop is not interrupted before it
+yields. `cli/convert.ts` owns the verb. [Convert tests](tests/convert-cli.test.ts)
+cover validation, source resolution, the producer config, credential ordering,
+upload, cancellation, and the spawned CLI with native MLX blocked; they do not
+quantize real weights.
+
 Composition injects the engine execution lease. A job drains active inference
 and holds that lease until its child exits and output streams finish; inference
 then resumes. As in main's direct-process server, resident model weights and
