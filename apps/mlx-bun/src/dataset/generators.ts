@@ -170,7 +170,10 @@ export async function genDpoPairs(inputs: Inputs): Promise<Row[]> {
   return rows;
 }
 
-export async function genCodeCompletion(inputs: Inputs): Promise<Row[]> {
+export async function genCodeCompletion(
+  inputs: Inputs, _emit?: Emit, _llm?: LlmClient, http: DatasetHttp = {},
+): Promise<Row[]> {
+  http.signal?.throwIfAborted();
   const srcRaw = str(inputs.src_dir).trim();
   const maxPairs = num(inputs.max_pairs, 500);
   // Expand a leading ~ to the home dir (parity with Path.expanduser()).
@@ -205,17 +208,22 @@ export async function genCodeCompletion(inputs: Inputs): Promise<Row[]> {
   // Sort the file list for determinism across filesystems.
   const files: string[] = [];
   for await (const rel of glob.scan({ cwd: src, onlyFiles: true })) {
+    http.signal?.throwIfAborted();
     files.push(rel);
   }
+  http.signal?.throwIfAborted();
   files.sort();
 
   for (const rel of files) {
+    http.signal?.throwIfAborted();
     let text: string;
     try {
       text = await Bun.file(`${src}/${rel}`).text();
     } catch {
+      http.signal?.throwIfAborted();
       continue;
     }
+    http.signal?.throwIfAborted();
     // Split on def / class / async def boundaries (lookahead at line start).
     const chunks = text.split(/(?=^(?:def |class |async def ))/m);
     for (const raw of chunks) {
@@ -998,4 +1006,3 @@ export async function genCotSynthesis(
   }
   return rows;
 }
-

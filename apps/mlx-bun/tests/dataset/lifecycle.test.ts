@@ -1,12 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createJobHost } from "../../src/jobs/host";
 import { JobStore } from "../../src/jobs/db";
 import { createDatasetRunner } from "../../src/dataset/job";
 import { makeLlmClient } from "../../src/dataset/llm";
-import { genHfDatasetImport } from "../../src/dataset/generators";
+import { genCodeCompletion, genHfDatasetImport } from "../../src/dataset/generators";
 import { createDatasetRoutes } from "../../src/server/dataset-routes";
 import { generate } from "../../src/dataset/registry";
 
@@ -113,4 +113,67 @@ test("Hugging Face cancellation interrupts retry backoff without another request
   await Bun.sleep(10); abort.abort();
   await expect(pending).rejects.toThrow();
   expect(calls).toBe(1);
+});
+
+test("code-completion cancellation closes an active directory iterator before reading files", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-dataset-scan-")); roots.push(root);
+  const abort = new AbortController();
+  const reason = new Error("cancel scan");
+  let closed = false, reachedTail = false;
+  const scan = spyOn(Bun.Glob.prototype, "scan").mockImplementation(async function* () {
+    try {
+      yield "a.py";
+      abort.abort(reason);
+      yield "b.py";
+      reachedTail = true;
+    } finally { closed = true; }
+  });
+  try {
+    await expect(genCodeCompletion({ src_dir: root }, undefined, undefined, { signal: abort.signal })).rejects.toBe(reason);
+    expect(closed).toBe(true);
+    expect(reachedTail).toBe(false);
+  } finally { scan.mockRestore(); }
+});
+
+test("shutdown joins the current code-completion file read without reading more files or writing a dataset", async () => {
+  const { root, host, store } = setup();
+  const output = join(root, "dataset");
+  writeFileSync(join(root, "a.py"), "def first():\n    return 'some useful training content'\n");
+  writeFileSync(join(root, "b.py"), "def second():\n    return 'more useful training content'\n");
+  const originalFile = Bun.file;
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>(resolve => { releaseRead = resolve; });
+  let reads = 0, readSettled = false, closed = false;
+  const originalClose = store.close.bind(store);
+  store.close = () => { expect(readSettled).toBe(true); closed = true; originalClose(); };
+  const file = spyOn(Bun, "file").mockImplementation(((path: string) => {
+    if (path === join(root, "a.py") || path === join(root, "b.py")) return {
+      async text() {
+        reads++;
+        await readGate;
+        expect(closed).toBe(false);
+        readSettled = true;
+        return readFileSync(path, "utf8");
+      },
+    };
+    return originalFile(path);
+  }) as typeof Bun.file);
+  try {
+    const { jobId } = host.submitTask("dataset", { template_id: "code_completion", inputs: { src_dir: root },
+      output_dir: output }, createDatasetRunner());
+    await wait(() => reads === 1);
+    const closing = host.close();
+    expect(closed).toBe(false);
+    releaseRead();
+    await closing;
+    expect(reads).toBe(1);
+    expect(closed).toBe(true);
+    expect(existsSync(join(output, "train.jsonl"))).toBe(false);
+    expect(existsSync(join(output, "valid.jsonl"))).toBe(false);
+    const reopened = new JobStore(join(root, "jobs.sqlite"), join(root, "logs"));
+    try { expect(reopened.get(jobId)?.status).toBe("failed"); } finally { reopened.close(); }
+  } finally {
+    releaseRead();
+    try { await host.close(); } finally { file.mockRestore(); }
+  }
 });
