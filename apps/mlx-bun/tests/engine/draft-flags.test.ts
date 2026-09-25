@@ -18,15 +18,16 @@ test.skipIf(!modelDir)("ngram drafting serves completions with speculation telem
     const { scanSnapshot } = await import("@mlx-bun/hub/registry");
     const model = await scanSnapshot(modelDir!, "test-model");
     if (!model) throw new Error("Model path has no loadable checkpoint");
-    const prompt = "Repeat exactly: one two three four five six seven eight. one two three four five six seven eight.";
+    // A copy task: the answer repeats the prompt's own n-grams, so prompt lookup proposes them and the target verifies.
+    const prompt = "Copy the following text exactly, word for word: the quick brown fox jumps over the lazy dog near the quiet river bank at dawn. Text: the quick brown fox jumps over the lazy dog near the quiet river bank at dawn.";
     const chat = async (base: URL) => {
       const response = await fetch(new URL("/v1/chat/completions", base), { method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: prompt }], max_tokens: 32, temperature: 0 }) });
+        body: JSON.stringify({ messages: [{ role: "user", content: prompt }], max_tokens: 48, temperature: 0 }) });
       expect(response.status).toBe(200);
       return response.json();
     };
     const serveWith = async (values: Record<string, string | boolean>) => {
-      const options = parseServeOptions({ values: { port: "0", "max-tokens": "32", "prompt-cache": "0.125", "no-open": true, thinking: "off", ...values }, positionals: [] });
+      const options = parseServeOptions({ values: { port: "0", "max-tokens": "48", "prompt-cache": "0.125", "no-open": true, thinking: "off", ...values }, positionals: [] });
       options.readOnly = true;
       options.chatPaths = { cwd: join(root, "project"), agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
       options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
@@ -37,7 +38,11 @@ test.skipIf(!modelDir)("ngram drafting serves completions with speculation telem
     const drafted = await chat(new URL(`http://127.0.0.1:${app.port}`));
     expect(drafted.choices).toHaveLength(1);
     expect(drafted.usage.completion_tokens).toBeGreaterThan(0);
-    expect(typeof drafted.usage.speculation).toBe("object");
+    // Real speculative work: proposals were drafted, verified by target calls, and some accepted.
+    expect(drafted.usage.speculation.drafted).toBeGreaterThan(0);
+    expect(drafted.usage.speculation.targetCalls).toBeGreaterThan(0);
+    expect(drafted.usage.speculation.accepted).toBeGreaterThan(0);
+    expect(drafted.usage.speculation.targetCalls).toBeLessThan(drafted.usage.completion_tokens);
     await app.close(); app = undefined;
     app = await serveWith({});
     const plain = await chat(new URL(`http://127.0.0.1:${app.port}`));
