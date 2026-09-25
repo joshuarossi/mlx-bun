@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,42 +33,47 @@ export interface ConvertDependencies {
   box: (lines: string[]) => void;
   log(line?: string): void;
 }
-/** Staging directories the atomic writer may leave beside the destination. */
-function stagingSiblings(outDir: string): string[] {
-  const destination = resolve(outDir), parent = dirname(destination), prefix = `.${basename(destination)}.tmp-`;
-  return existsSync(parent) ? readdirSync(parent).filter(name => name.startsWith(prefix)).map(name => join(parent, name)) : [];
-}
-
-/** Run the quantize job in an owned child over a temporary job store: the
- * parent tails the job log for progress; an abort terminates and joins the
- * child, then removes any staging the child created. */
+/** Run the quantize job in an owned child over a private root created beside
+ * the destination (same filesystem): the child's result, its atomic staging,
+ * any temporary probe (TMPDIR), and the job store all live under that root.
+ * The parent tails the job log for progress, publishes only a complete result
+ * with one rename, and on every other exit joins the child first and then
+ * removes only the root it owns. Nothing is inferred from filename prefixes. */
 export async function quantizeInChild(config: Record<string, unknown>, outDir: string, progress: (message: string) => void,
   signal?: AbortSignal, owner: { spawn?: typeof Bun.spawn; entry?: string } = {}): Promise<{ outputPath: string }> {
   const [{ createJobHost }, { JobStore }, { tailJob }] = await Promise.all([import("../jobs/host"), import("../jobs/db"), import("../jobs/sse")]);
-  const root = mkdtempSync(join(tmpdir(), "mlx-convert-job-"));
-  const before = new Set(stagingSiblings(outDir));
+  const destination = resolve(outDir);
+  mkdirSync(dirname(destination), { recursive: true });
+  const root = mkdtempSync(join(dirname(destination), `.${basename(destination)}.convert-`));
+  const result = join(root, "result"), temp = join(root, "tmp"), jobsRoot = join(root, "jobs");
+  mkdirSync(temp); mkdirSync(jobsRoot);
+  const spawn = owner.spawn ?? Bun.spawn;
   const jobs = createJobHost({ entry: owner.entry ?? fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
-    acquire: async () => ({ dispose() {} }), spawn: owner.spawn,
-    createStore: () => new JobStore(join(root, "jobs.db"), join(root, "logs")) });
+    acquire: async () => ({ dispose() {} }),
+    // The child's temporary files (mixed-precision probes) land under the owned root.
+    spawn: ((command: string[], options?: Parameters<typeof Bun.spawn>[1]) =>
+      spawn(command, { ...options, env: { ...(options?.env ?? process.env), TMPDIR: temp } })) as typeof Bun.spawn,
+    createStore: () => new JobStore(join(jobsRoot, "jobs.db"), join(jobsRoot, "logs")) });
   const cancel = () => { void jobs.close().catch(() => {}); };
   try {
     signal?.throwIfAborted();
-    const { jobId } = jobs.submit("quantize", config, outDir);
+    const { jobId } = jobs.submit("quantize", { ...config, out_dir: result }, result);
     signal?.addEventListener("abort", cancel, { once: true });
     const store = jobs.ensureStore();
     for await (const event of tailJob(store, jobId, { signal })) {
       if (event.type === "stage" && event.message) progress(event.message);
     }
-    if (signal?.aborted) {
-      await jobs.close();
-      for (const dir of stagingSiblings(outDir)) if (!before.has(dir)) rmSync(dir, { recursive: true, force: true });
-      throw signal.reason;
-    }
+    if (signal?.aborted) { await jobs.close(); throw signal.reason; }
     const row = store.get(jobId);
     if (!row || row.status !== "done") throw new Error(row?.error ?? `quantize job ${row?.status ?? "missing"}`);
-    return { outputPath: row.output_path ?? outDir };
+    if (!existsSync(result)) throw new Error("quantize job reported success without a result");
+    if (existsSync(destination)) throw new Error(`Cannot save to the path ${outDir} as it already exists — delete it or pass a fresh --mlx-path.`);
+    renameSync(result, destination);
+    return { outputPath: destination };
   } finally {
     signal?.removeEventListener("abort", cancel);
+    // Join the child (SIGTERM, then SIGKILL after a grace period) before the
+    // root it writes into goes away.
     try { await jobs.close(); } finally { rmSync(root, { recursive: true, force: true }); }
   }
 }

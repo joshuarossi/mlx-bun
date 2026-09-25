@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -247,41 +247,71 @@ test("cancellation during quantization reaches the producer owner, prints the ca
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the child owner terminates and joins a running child on abort and removes only the staging it created", async () => {
+const dbModule = resolve(import.meta.dir, "../src/jobs/db.ts");
+/** A child script standing in for the quantize producer; `options` reach it through the job runner's spawn. */
+const childSpawn = (script: string) => ((command: string[], options: Parameters<typeof Bun.spawn>[1]) =>
+  Bun.spawn([process.execPath, "-e", script], { ...options, env: { ...options?.env, JOB_ID: command[2] } })) as unknown as typeof Bun.spawn;
+
+test("the child owner publishes only a complete result and removes its private root afterwards", async () => {
   const { root, out } = workspace();
   const { quantizeInChild } = await import("../src/cli/convert");
-  const stale = join(root, ".out.tmp-stale"); mkdirSync(stale);
-  const fresh = join(root, ".out.tmp-fresh");
   try {
-    const controller = new AbortController(), reason = new Error("convert cancelled");
-    let child: Bun.Subprocess | undefined;
-    const spawn = ((command: string[], options: Parameters<typeof Bun.spawn>[1]) => {
-      // A child that writes staging beside the destination, then idles like a synchronous sweep would.
-      child = Bun.spawn([process.execPath, "-e", `require("node:fs").mkdirSync(${JSON.stringify(fresh)}); setTimeout(() => {}, 60_000)`], options);
-      void command; return child;
-    }) as unknown as typeof Bun.spawn;
+    // The child writes its result where the job says, marks the job done like the real entry, and leaves a temp file under TMPDIR.
+    const spawn = childSpawn(`
+      const fs = require("node:fs"); const { JobStore } = require(${JSON.stringify(dbModule)});
+      const store = new JobStore(process.env.MLX_BUN_JOBS_DB, process.env.MLX_BUN_JOBS_DIR);
+      const row = store.get(process.env.JOB_ID); const config = JSON.parse(row.config_json);
+      fs.mkdirSync(config.out_dir, { recursive: true }); fs.writeFileSync(config.out_dir + "/config.json", "{}");
+      fs.writeFileSync(process.env.TMPDIR + "/probe.bin", "scratch");
+      fs.appendFileSync(row.log_path, JSON.stringify({ type: "stage", stage: "quantizing", message: "Module 1/1" }) + "\\n");
+      store.setOutputPath(row.id, config.out_dir); store.setStatus(row.id, "done", { endedAt: "now" }); store.close();`);
     const messages: string[] = [];
-    const work = quantizeInChild({ src_dir: "/unused", out_dir: out, bits: 4, group_size: 64, mode: "affine" }, out, message => messages.push(message), controller.signal, { spawn });
-    const started = Date.now();
-    while (!existsSync(fresh)) { if (Date.now() - started > 5_000) throw new Error("child never wrote staging"); await Bun.sleep(5); }
-    controller.abort(reason);
-    await expect(work).rejects.toBe(reason);
-    expect(child!.killed || child!.exitCode !== null || child!.signalCode !== null).toBe(true);
-    expect(existsSync(fresh)).toBe(false); expect(existsSync(stale)).toBe(true); expect(existsSync(out)).toBe(false);
+    const published = await quantizeInChild({ src_dir: "/unused", bits: 4, group_size: 64, mode: "affine" }, out, message => messages.push(message), undefined, { spawn });
+    expect(published).toEqual({ outputPath: out });
+    expect(existsSync(join(out, "config.json"))).toBe(true);
+    expect(messages).toEqual(["Module 1/1"]);
+    expect(readdirSync(root).filter(name => name.startsWith(".out.convert-"))).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("the child owner reports a failed child's error and a real child without native MLX fails cleanly", async () => {
+test("cancellation terminates a child that ignores SIGTERM, joins it, and removes only the owned root", async () => {
+  const { root, out } = workspace();
+  const { quantizeInChild } = await import("../src/cli/convert");
+  const unrelated = join(root, ".out.convert-unrelated"); mkdirSync(unrelated);
+  try {
+    const controller = new AbortController(), reason = new Error("convert cancelled");
+    let child: Bun.Subprocess | undefined;
+    const spawn = ((command: string[], options: Parameters<typeof Bun.spawn>[1]) => child = Bun.spawn([process.execPath, "-e", `
+      const fs = require("node:fs"); const { JobStore } = require(${JSON.stringify(dbModule)});
+      const store = new JobStore(process.env.MLX_BUN_JOBS_DB, process.env.MLX_BUN_JOBS_DIR);
+      const config = JSON.parse(store.get(process.env.JOB_ID).config_json); store.close();
+      fs.mkdirSync(config.out_dir, { recursive: true }); fs.writeFileSync(process.env.TMPDIR + "/probe.bin", "scratch");
+      process.on("SIGTERM", () => {}); fs.writeFileSync(config.out_dir + "/started", "");
+      setInterval(() => {}, 1000);`], { ...options, env: { ...options?.env, JOB_ID: command[2] } })) as unknown as typeof Bun.spawn;
+    const work = quantizeInChild({ src_dir: "/unused", bits: 4, group_size: 64, mode: "affine" }, out, () => {}, controller.signal, { spawn });
+    const owned = async () => readdirSync(root).filter(name => name.startsWith(".out.convert-") && name !== ".out.convert-unrelated");
+    const startedAt = Date.now();
+    while (!(await owned()).some(name => existsSync(join(root, name, "result", "started")))) {
+      if (Date.now() - startedAt > 5_000) throw new Error("child never started"); await Bun.sleep(10);
+    }
+    const abortedAt = Date.now();
+    controller.abort(reason);
+    await expect(work).rejects.toBe(reason);
+    expect(Date.now() - abortedAt).toBeLessThan(10_000);
+    expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true);
+    expect(await owned()).toEqual([]);
+    expect(existsSync(unrelated)).toBe(true); expect(existsSync(out)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+test("a failed child and the real job entry without native MLX both fail cleanly and leave no root behind", async () => {
   const { root, out } = workspace();
   const { quantizeInChild } = await import("../src/cli/convert");
   try {
-    const failing = ((_command: string[], options: Parameters<typeof Bun.spawn>[1]) =>
-      Bun.spawn([process.execPath, "-e", "process.exit(3)"], options)) as unknown as typeof Bun.spawn;
-    await expect(quantizeInChild({ out_dir: out }, out, () => {}, undefined, { spawn: failing })).rejects.toThrow("exited 3");
-    // The real job entry: the producer cannot load native MLX here, so the job fails with that reason.
-    await expect(quantizeInChild({ src_dir: root, out_dir: out, bits: 4, group_size: 64, mode: "affine" }, out, () => {}))
-      .rejects.toThrow(/native|libmlxc|dlopen/);
+    await expect(quantizeInChild({ src_dir: "/unused" }, out, () => {}, undefined, { spawn: childSpawn("process.exit(3)") })).rejects.toThrow("exited 3");
+    await expect(quantizeInChild({ src_dir: root, bits: 4, group_size: 64, mode: "affine" }, out, () => {})).rejects.toThrow(/native|libmlxc|dlopen/);
     expect(existsSync(out)).toBe(false);
+    expect(readdirSync(root).filter(name => name.startsWith(".out.convert-"))).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

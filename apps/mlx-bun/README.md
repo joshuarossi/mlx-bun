@@ -320,12 +320,15 @@ uniform affine quantization; `--target-bpw` with `--candidate-bits`,
 token before any work and publishes through the app publisher afterwards; an
 upload failure keeps the model and prints the retry hint. `--dtype`,
 `-d`/`--dequantize`, `--quant-predicate`, a non-affine `--q-mode`, and plain
-non-quantizing conversion are refused with main's messages. SIGINT/SIGTERM
-terminate and join the child immediately, even mid-sweep; the destination is
-never partially written, and the parent removes only the staging directory
-the child created. `cli/convert.ts` owns the verb. [Convert tests](tests/convert-cli.test.ts)
+non-quantizing conversion are refused with main's messages. Each conversion owns a
+private root beside the destination holding the child's result, staging, temp
+probes, and job store; only a complete result is published, by one rename.
+SIGINT/SIGTERM terminate and join the child immediately, even mid-sweep
+(SIGKILL after a grace period if it ignores SIGTERM), and on every failure or
+cancellation the parent removes only that owned root, never anything inferred
+from a name. `cli/convert.ts` owns the verb. [Convert tests](tests/convert-cli.test.ts)
 cover validation, source resolution, the producer config, credential ordering,
-upload, cancellation, the child owner with an injected slow or failing child,
+upload, cancellation, the child owner (complete-result publish, a SIGTERM-ignoring child, a failing child, an unrelated sibling left intact),
 and the spawned CLI with native MLX blocked; they do not quantize real weights.
 
 Composition injects the engine execution lease. A job drains active inference
