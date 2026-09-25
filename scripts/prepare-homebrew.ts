@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
-import { NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
+import { BUNDLE_FILES } from "./bundle-files";
 
 /** Prepare a reviewable formula from a local release tarball; never install,
  * sign, publish, clone, or write to the user's Homebrew tap. */
@@ -19,7 +18,7 @@ export async function prepareHomebrew(archive: string, output = join(dirname(arc
   ]);
   if (code !== 0) throw new Error(`Invalid release archive: ${error}`);
   const entries = new Set(files.trim().split("\n").map(name => name.replace(/^\.\//, "")));
-  for (const file of ["mlx-bun", ...MLX_FILES, ...INFERENCE_FILES, "photon_rs_bg.wasm", "LICENSE", "THIRD_PARTY_NOTICES.md"])
+  for (const file of BUNDLE_FILES)
     if (!entries.has(file)) throw new Error(`Incomplete release archive: ${file}`);
   const checksum = createHash("sha256").update(data).digest("hex");
   await writeFile(output, `# Generated from ${name}; review before publishing to joshuarossi/homebrew-tap.
