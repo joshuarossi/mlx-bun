@@ -44,7 +44,10 @@ test.skipIf(!modelDir)("a startup adapter is mounted before serving, defaults re
     for (const body of [{}, { adapter: "none" }, { adapter: "cli-lora" }]) {
       const response = await chat(body);
       expect(response.status).toBe(200);
-      expect((await response.json()).choices).toHaveLength(1);
+      const completion = await response.json();
+      expect(completion.choices).toHaveLength(1);
+      expect(completion.usage.completion_tokens).toBeGreaterThan(0);
+      expect(String(completion.choices[0].message.content ?? "").length + String(completion.choices[0].message.reasoning ?? "").length).toBeGreaterThan(0);
     }
     await app.close(); app = undefined;
     await expect(startModelServer(model, { ...options, adapterDir: join(root, "missing-adapter") })).rejects.toThrow(/^adapter mount failed: /);
