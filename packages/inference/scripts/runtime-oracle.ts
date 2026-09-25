@@ -276,6 +276,7 @@ const help = `Full logits and live-state parity (local weights, no downloads).
   bun packages/inference/scripts/runtime-oracle.ts compare --plan plan.json --actual actual.json --reference reference.json [--allow-unrecorded-config]
 Plan: {model: absolute directory, runtime: MLX version, contexts: nonnegative integers,
        lengths: positive integers, prefixChunk: positive integer}.
+Use bun --no-env-file on both trees to avoid project-local dotenv overrides.
 Use a context larger than prefixChunk to exercise chunked prefill. Input IDs follow
 main's runtime-oracle worker: prefix 100+(position*7)%1000, append 600+position*3,
 continuation 911. The vocabulary must contain these IDs. Every grid and live cache
@@ -287,6 +288,8 @@ checked on load. Temporary checkpoints are removed after each case. Runtime over
 reset. Compare requires matching recorded settings unless explicitly accepting a
 legacy reference whose environment you have verified externally. A matching config
 hash alone does not establish identical weights: use --hash-weights for evidence.
+Match the reference dispatch as well as KV bits: this library uses stock quantized
+attention for one query and the OptiQ tiled path for supported multi-query input.
 Reports/plan files belong outside Git. Run external references separately; check
 that training is inactive first. No built-in timeout or Python invocation.\n`;
 if (import.meta.main) {
