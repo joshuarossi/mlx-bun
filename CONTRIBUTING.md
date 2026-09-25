@@ -41,9 +41,9 @@ models and paths the evidence covers.
 Performance claims require paired runs on a quiet, named machine with identical
 artifacts and configuration. Compare decode, prefill, complete-request time,
 and memory as applicable. Investigate gaps against the applicable oracle rather
-than dismissing them as framework differences. Paired reports live in the
-lab repository or a published dataset; quote results as text in documentation
-with their provenance, following the architecture's [documentation rules](ARCHITECTURE.md#documentation).
+than dismissing them as framework differences. Paired reports live outside this
+repository, for example as a published dataset; quote results as text in
+documentation with their provenance, following the architecture's [documentation rules](ARCHITECTURE.md#documentation).
 
 ## Commits and review
 
