@@ -261,3 +261,47 @@ test("vocabulary hints fit whole terms into the prompt budget in order after the
     .toEqual({ prompt: "Sotto, x, y", usage: { included: ["x", "y"], omitted: ["z"], token_count: 3, token_budget: 3 } });
   expect(TranscriptionService.fitVocabulary(encode, 3, "", []).usage).toEqual({ included: [], omitted: [], token_count: 0, token_budget: 3 });
 });
+
+test("a session reserves the weights before its VAD gate resolves, so unload is refused until the session releases", async () => {
+  const h = harness();
+  let releaseVad!: () => void;
+  const pending = new Promise<void>(resolve => { releaseVad = resolve; });
+  const whisper = service(h, { runtime: { ...h.runtime, vad: async path => { await pending; return h.runtime.vad(path); } } });
+  const creating = whisper.createSession({ vad: {} });
+  await Bun.sleep(0);
+  expect(whisper.resident).toBe(true);
+  expect(whisper.unload()).toBe(false);
+  releaseVad();
+  const session = await creating;
+  expect(whisper.sessionCount).toBe(1); expect(whisper.resident).toBe(true);
+  h.vadSegments = [{ start: 0, end: 16_000 }];
+  expect((await session.append(take)).speech).toBe(true);
+  session.close();
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  expect(h.events).toEqual(["load /whisper", "vad load", "feed 16000", "dispose"]);
+});
+
+test("close between a cached VAD gate and registration rejects the session and registers nothing", async () => {
+  const h = harness();
+  const whisper = service(h);
+  await whisper.ensureLoaded(); await whisper.vad();
+  const creating = whisper.createSession({ vad: {} });
+  queueMicrotask(() => whisper.close());
+  await expect(creating).rejects.toMatchObject({ status: 503 });
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  expect(h.events.filter(event => event === "dispose")).toEqual(["dispose"]);
+  expect(h.events.filter(event => event === "vad dispose")).toEqual(["vad dispose"]);
+  await expect(whisper.createSession()).rejects.toMatchObject({ status: 503 });
+});
+
+test("a session whose run fails to start releases its reservation and the idle policy applies", async () => {
+  const h = harness();
+  const whisper = service(h);
+  const { loaded } = await whisper.ensureLoaded();
+  const start = loaded.start;
+  loaded.start = () => { throw new Error("no decoder"); };
+  await expect(whisper.createSession()).rejects.toThrow("no decoder");
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  loaded.start = start;
+  await expect(whisper.transcribe(take)).resolves.toMatchObject({ result: { text: " hello" } });
+});

@@ -422,16 +422,27 @@ export class TranscriptionService {
   // latency at finish() is one window regardless of take length.
 
   async createSession(params: TranscriptionParams = {}): Promise<TranscriptionSession> {
+    if (this.#closed) throw new TranscriptionError("transcription service is closed", 503);
     if (this.#sessions.size >= 64) throw new TranscriptionError("too many open transcription sessions", 429);
     const { loaded } = await this.ensureLoaded();
+    // Reserve the weights before suspending again: unload() and the idle
+    // policy refuse while #active > 0, and close() is rechecked after the
+    // VAD boundary because a cached gate resolves without its arrival check.
     this.#cancelIdleTimer();
-    const id = crypto.randomUUID();
-    const { options, vocabulary } = this.#decodingOptions(loaded, params);
-    const run = loaded.start(options);
-    const session = new TranscriptionSession(id, this, run, params, vocabulary, params.vad ? await this.vad() : null, this.#now);
-    this.#sessions.set(id, session);
     this.#active++;
-    return session;
+    try {
+      const gate = params.vad ? await this.vad() : null;
+      if (this.#closed) throw new TranscriptionError("transcription service is closed", 503);
+      const id = crypto.randomUUID();
+      const { options, vocabulary } = this.#decodingOptions(loaded, params);
+      const session = new TranscriptionSession(id, this, loaded.start(options), params, vocabulary, gate, this.#now);
+      this.#sessions.set(id, session);
+      return session;
+    } catch (error) {
+      this.#active--;
+      this.#armIdleTimer();
+      throw error;
+    }
   }
 
   session(id: string): TranscriptionSession | null {
