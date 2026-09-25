@@ -21,9 +21,10 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   preservation-checked short MiniCPM SFT/DPO/ORPO paths.
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
-- [ ] Finish restoring main's training checks: `diffusion-lora.test.ts` (needs a
-  cached diffusion checkpoint named by an explicit variable) is not yet ported.
-  Exit: the diffusion test is restored under the same opt-in gating. (The
+- [ ] Finish restoring main's training checks: `diffusion-lora.test.ts` is
+  ported to `packages/training/tests/native/diffusion-lora.test.ts`, opted in
+  with `MLX_BUN_TRAINING_DIFFUSION_MODEL`; real-weight acceptance is pending a
+  coordinated GPU slot. Exit: that run passes on the cached checkpoint. (The
   flash-CCE STEEL kernels compile again: the copied steel header now carries
   upstream MLX's explicit `thread` qualifiers for MSL 4.1, and the ported
   fused-CE matrix passes in full against the fused head; main still carries
