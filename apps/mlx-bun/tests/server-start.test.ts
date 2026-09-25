@@ -79,3 +79,25 @@ test("engine cleanup errors are reported once after the listener has stopped", a
   expect(disposed).toBe(1);
   await expect(fetch(app.server.url)).rejects.toThrow();
 });
+
+test("shutdown aborts an active HTTP stream before releasing engine resources", async () => {
+  const events: string[] = [];
+  const app = await startServer({
+    web: () => null, chat: idle,
+    routes: { async handle(request) {
+      request.signal.addEventListener("abort", () => events.push("request-abort"), { once: true });
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("data: ready\n\n")); } }),
+        { headers: { "content-type": "text/event-stream" } });
+    } },
+    async closeEngine() { events.push("engine-close"); },
+  }, { port: 0 });
+  const request = new AbortController();
+  try {
+    const response = await fetch(app.server.url, { signal: request.signal });
+    const reader = response.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await app.close();
+    expect(events).toEqual(["request-abort", "engine-close"]);
+    await reader.cancel().catch(() => {});
+  } finally { request.abort(); await app.close(); }
+});
