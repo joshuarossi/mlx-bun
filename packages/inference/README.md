@@ -157,6 +157,11 @@ against same-shaped pinned Python runs. The reference uses upstream Gemma2
 and `BatchKVCache`, adding only a GQA axis to the upstream row mask. B1 is
 compared exactly with direct execution; B>1 uses the same-shaped reference,
 since quantized matmul dispatch can change numerical results across batch sizes.
+The app gateway's real Gemma2 placement test uses the same
+`MLX_BUN_GEMMA2_NATIVE=1` opt-in: importing the graph loads MLX even though
+that test only checks placement and allocates no tensors. Native-blocked CPU
+runs skip this check; synthetic gateway tests remain CPU-only.
+
 Shared Gemma2 currently qualifies ordinary plain KV; encoded KV, speculative
 methods, fill, adapters, grammar and paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the

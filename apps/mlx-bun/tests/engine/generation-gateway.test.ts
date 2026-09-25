@@ -158,7 +158,9 @@ test("exclusive mutations share the scheduler lock and release aborted waiters",
 });
 
 
-test("Gemma2 admits ordinary plain KV and rejects unqualified shared compositions before execution", async () => {
+// Importing the real graph/binding loads MLX, even though placement creates no
+// tensors. Keep this qualification check out of the native-blocked CPU suite.
+test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits ordinary plain KV and rejects unqualified shared compositions before execution", async () => {
   const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
