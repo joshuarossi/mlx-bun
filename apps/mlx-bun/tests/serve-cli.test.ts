@@ -175,7 +175,11 @@ test("bare and option-first CLI invocations dispatch to serve without loading a 
     expect(commandInvocation([command])).toEqual({ command, args: [] });
 });
 
-for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup attaches caches, token history, and shared session paths before listener ownership (${sessionDir ?? "default"})`, async () => {
+for (const [sessionDir, jobPaths, expectedStore] of [
+  [undefined, { jobsDb: "/unused/store/jobs.sqlite" }, "store /unused/store/jobs.sqlite /unused/store/jobs"],
+  ["/unused/custom-sessions", { jobsDb: "/unused/store/jobs.sqlite", jobsLogs: "/unused/custom-logs" }, "store /unused/store/jobs.sqlite /unused/custom-logs"],
+  [undefined, { jobsLogs: "/unused/custom-logs" }, "store undefined /unused/custom-logs"],
+] as const) test(`startup attaches caches, token history, and shared storage paths before listener ownership (${JSON.stringify(jobPaths)})`, async () => {
   // Isolate module mocks in a child so other engine tests always see real modules.
   const app = new URL("../", import.meta.url).pathname;
   const script = `
@@ -236,6 +240,18 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
       sessionsDirectory = directory; assert.equal(directory, chatPaths.sessionDir ?? defaultSessionDir());
       return { handle: async () => null };
     } }));
+    // Storage seams: the job store, credential file, and artifact root follow composition, not HOME.
+    const storagePaths = { ...${JSON.stringify(jobPaths)}, credentialsFile: "/unused/hf.json", artifactRoot: "/unused/artifacts" };
+    let storeFactory;
+    mock.module(app + "src/jobs/db.ts", () => ({ JobStore: class { constructor(db, logs) { events.push("store " + db + " " + logs); } } }));
+    mock.module(app + "src/jobs/host.ts", () => ({ createJobHost(options) { storeFactory = options.createStore;
+      let closing; // idempotent like the real host: one close across beforeDrain and engine release
+      return { signal: new AbortController().signal, ensureStore() { return storeFactory(); }, submit() {}, submitTask() {},
+        close() { return closing ??= (async () => { events.push("jobs close"); })(); } }; } }));
+    mock.module(app + "src/publishing/credentials.ts", () => ({ createHfCredentials(options) {
+      assert.equal(options.tokenFile, storagePaths.credentialsFile); return { get: () => null, save() {} }; } }));
+    mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes(_gateway, options) {
+      assert.equal(options.outputRoot, storagePaths.artifactRoot); return { handle: async () => null }; } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
       assert.equal(typeof options.memory, "function"); memoryCallback = options.memory;
@@ -248,14 +264,16 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
     const { startModelServer } = await import(app + "src/cli/serve.ts");
     const running = await startModelServer({ path: "/unused", repoId: "test" }, {
       query: null, hostname: "127.0.0.1", port: 0, capacity: 8, contextLimit: null,
-      readOnly: true, noOpen: true, chatPaths, memoryPaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
+      readOnly: true, noOpen: true, chatPaths, memoryPaths, storagePaths, request: {}, cache: { kvQuant: "off", generationCheckpointTokens: 32 }
     });
     assert.equal(running.port, 1234);
     assert.equal(typeof running.downloads.start, "function");
     assert.equal(await memoryCallback(), memorySurface);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
+    storeFactory();
+    assert.equal(events.pop(), ${JSON.stringify(expectedStore)});
     await running.close();
-    assert.deepEqual(events.slice(-3), ["timer stop", "cache close", "model close"]);
+    assert.deepEqual(events.slice(-4), ["timer stop", "jobs close", "cache close", "model close"]);
   `;
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
