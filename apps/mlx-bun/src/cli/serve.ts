@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
@@ -135,8 +136,24 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const limits = resolveServingLimits(options, context.glmMemoryPlan);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory });
+    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }] = await Promise.all([
+      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
+    ]);
+    const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
+      acquire: signal => engine.gateway.acquireExecutionLease(signal),
+      onComplete: () => completions.invalidateLibrary(),
+    });
+    const closeApp = async () => {
+      const errors: unknown[] = [];
+      try { await jobs.close(); } catch (error) { errors.push(error); }
+      try { await engine.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "application cleanup failed");
+    };
+    cleanup = closeApp;
+    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
     const memory = createMemoryRoutes();
-    const routes = { handle: async (request: Request) => await memory.handle(request) ?? await completions.handle(request) };
+    const routes = { handle: async (request: Request) => await memory.handle(request) ?? await jobRoutes.handle(request) ??
+      await quantizeRoutes.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
@@ -150,7 +167,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web, chat, beforeDrain: () => caches.stopIdleDemotion(), closeEngine: () => engine.close() }, {
+    const listener = await startServer({ routes, web, chat,
+      beforeDrain: async () => { try { caches.stopIdleDemotion(); } finally { await jobs.close(); } },
+      closeEngine: closeApp }, {
       port: options.port, hostname: options.hostname,
     });
     boundPort = listener.server.port!;

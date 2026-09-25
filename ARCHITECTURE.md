@@ -95,9 +95,8 @@ prompt policy, and JSON/SSE remain server-owned. The server borrows the engine,
 while application startup owns closing it. `chat/` owns the WebSocket backend
 and its Pi adapter; `web/` owns browser modules, static assets, and compilation.
 Browser code consumes only its own modules and the leaf chat/job protocols.
-`jobs/protocol.ts` currently owns the browser's job events; job orchestration
-is still pending. Add other domains with their first migrated consumers and
-explicit dependency rules.
+`jobs/protocol.ts` owns the browser's job events and runner contracts. Add
+other domains with their first migrated consumers and explicit dependency rules.
 
 `memory/` owns Markdown vault storage, initialization, and article semantics.
 Its HTTP adapter belongs to `server/`; composition supplies reference sources
@@ -112,6 +111,12 @@ protocols belong to chat, job contracts to job orchestration, and
 host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
+
+`jobs/` owns persisted job state and subprocess/lease lifetimes; `quantize/`
+owns quantization job policy and consumes jobs contracts plus public libraries.
+The CLI composes producers and child entry paths, so jobs infrastructure imports
+neither producer implementations nor engine internals. HTTP adapters consume
+these domains from `server/`.
 
 Extract a shared app-contract package only when the app consumers require it.
 

@@ -12,11 +12,9 @@ const pending = [
   /^\/admin\/transcription\/unload$/,
   /^\/api\/settings\/(?:hf-token|tool-approvals)$/,
   /^\/api\/gc\/(?:plan|execute)$/,
-  /^\/api\/jobs(?:\/[^/]+(?:\/stream)?)?$/,
-  /^\/api\/quantize\/(?:inspect|resolve-folder|submit|push)$/,
+  /^\/api\/quantize\/push$/,
   /^\/api\/finetune\/(?:inspect-dataset|submit|merge|export|push)$/,
   /^\/api\/dataset\/(?:templates|submit|push)$/,
-  /^\/api\/model\/resolve-folder$/,
   /^\/admin\/(?:cache\/(?:session\/close|flush)|lease|drain)$/,
   /^\/(?:generate|signal|fit|stats|curves|curve-terrain|dag|engine)$/,
 ];
