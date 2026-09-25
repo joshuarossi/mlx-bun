@@ -164,6 +164,10 @@ escaping, attachments, panels, and interactions without a live server.
 [Static tests](tests/web/assets.test.ts) exercise the built bundle and asset
 headers. The packed consumer check verifies the same assets after installation.
 
+`server/adapter-routes.ts` presents available and resident adapters and mounts or
+unmounts through the engine execution lock. It borrows the engine; no HTTP
+handler owns tensors. Serving with an adapter still uses the shared scheduler
+and reports 501 for unsupported batched capabilities.
 
 ## Memory vault
 
