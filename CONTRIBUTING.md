@@ -30,8 +30,10 @@ for claims about real models.
 - **Lab:** a path without an oracle needs explicit numerical acceptance criteria;
   it must win a paired A/B before becoming a default.
 
-Run Python references externally, as required by the architecture. Record the
-exact oracle versions and source revisions with the comparison. Use identical
+Run Python references externally, as required by the architecture, and publish
+the resulting goldens as a dataset revision that records the exact oracle
+versions and source revisions. An opt-in test verifies against a pinned revision
+or regenerates it; this repository stores no comparison data. Use identical
 artifacts, tokens, settings, and state transitions; compare the migrated path
 with both its applicable oracle and pre-refactor main. State exactly which
 models and paths the evidence covers.
@@ -39,8 +41,9 @@ models and paths the evidence covers.
 Performance claims require paired runs on a quiet, named machine with identical
 artifacts and configuration. Compare decode, prefill, complete-request time,
 and memory as applicable. Investigate gaps against the applicable oracle rather
-than dismissing them as framework differences. Use the architecture's
-[measurement rules](ARCHITECTURE.md#documentation) for provenance and storage.
+than dismissing them as framework differences. Paired reports live outside this
+repository, for example as a published dataset; quote results as text in
+documentation with their provenance, following the architecture's [documentation rules](ARCHITECTURE.md#documentation).
 
 ## Commits and review
 

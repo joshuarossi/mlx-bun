@@ -24,13 +24,3 @@ is the entry point for a whole checkpoint; it needs a real one.
 
 Job orchestration and the CLI verb belong to the app.
 
-## Checkpoint preservation evidence
-
-The [MiniCPM5-2B comparison](measurements/2026-09-25-checkpoint-preservation.json)
-records byte-identical outputs against pre-refactor main for uniform 4-bit and
-sensitivity-allocated mixed 4/8-bit quantization, both with group size 64.
-Each comparison covers all 973 output tensors and all 11 output files, including
-configuration, allocation metadata, and tokenizer sidecars. Mixed allocation
-uses one deterministic 128-token calibration sample. This verifies migration
-preservation for those settings, not quantization quality or performance;
-rotation and Trellis packing are outside this record's coverage.

@@ -22,8 +22,9 @@ needs a separate installation or release boundary.
   not add a separate serial serving lane. Preserve main's application behavior
   while giving each domain a clear owner; benchmark the full draft afterward.
 - Python reference oracles run externally. This repository has no Python
-  dependency, venv, oracle setup script, or Python dependency lock. Gather
-  comparison data externally and record curated evidence in approved docs.
+  dependency, venv, oracle setup script, or Python dependency lock. Comparison
+  data and goldens are published datasets referenced by revision; this repository
+  carries code, tests, and documentation.
 
 ## Composition and public APIs
 
@@ -186,9 +187,10 @@ investigations likely to recur. Keep the body frozen, allow a small mutable
 status header, and append dated corrections. Foundational conventions belong
 in the decisions list above. Recover historical decisions only as needed.
 
-Keep curated measurement records in Git, raw output elsewhere. Record machine,
-chip, RAM, OS, commit, artifact, configuration, context length, batch, date, and
-results. Corrections reference the original record. A negative performance
+No measurement records, goldens, or benchmark data in Git. Published dataset
+records carry machine, chip, RAM, OS, commit, artifact, configuration, context
+length, batch, date, and results; corrections reference the original record.
+Quotable numbers appear as text in documentation with that provenance. A negative performance
 result merits a decision record only with a paired A/B on a named machine and
 a question likely to recur; preserve its conditions rather than generalizing.
 
