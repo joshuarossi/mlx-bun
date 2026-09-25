@@ -105,3 +105,23 @@ test("browser addresses support IPv6 and wildcard listeners", () => {
   expect(browserUrl("::", 8080)).toBe("http://localhost:8080/#/chat");
   expect(browserUrl("::1", 8080)).toBe("http://[::1]:8080/#/chat");
 });
+
+
+test("the process owner bounds shutdown without releasing live resources or exiting twice", async () => {
+  const run = runtime();
+  const pending = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<void>();
+  let releases = 0;
+  installShutdownHandlers(async () => { await pending.promise; releases++; }, {
+    signals: run.signals, timeoutMs: 5, error: run.dependencies.error,
+    exit(code) { run.exits.push(code); exited.resolve(); },
+  });
+  run.signals.emit("SIGTERM");
+  await exited.promise;
+  expect(run.exits).toEqual([1]);
+  expect((run.errors[0] as Error).message).toContain("persistence may be incomplete");
+  expect(releases).toBe(0);
+  pending.resolve(); await tick();
+  expect(releases).toBe(1); expect(run.exits).toEqual([1]);
+  expect(run.signals.listenerCount("SIGTERM")).toBe(0);
+});

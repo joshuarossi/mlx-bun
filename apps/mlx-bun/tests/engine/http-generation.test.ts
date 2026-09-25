@@ -26,7 +26,9 @@ test.skipIf(!modelDir)("real HTTP generation shares the continuous engine and re
     const pair = await Promise.all([request(), request()]);
     for (const response of pair) {
       expect(response.status).toBe(200);
-      expect((await response.json()).choices).toEqual(baseline.choices);
+      const repeated = await response.json();
+      expect(repeated.choices).toEqual(baseline.choices);
+      expect(repeated.usage.prompt_tokens_details.cached_tokens).toBeGreaterThan(0);
     }
     const stream = await request({ ...body, max_tokens: 128, stream: true });
     expect(stream.status).toBe(200);

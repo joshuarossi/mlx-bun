@@ -148,14 +148,24 @@ export interface SignalPort {
 }
 /** Keep listeners installed until teardown finishes, so a second signal cannot race it. */
 export function installShutdownHandlers(close: () => Promise<void>, input: {
-  signals: SignalPort; exit(code: number): void; error(error: unknown): void;
+  signals: SignalPort; exit(code: number): void; error(error: unknown): void; timeoutMs?: number;
 }) {
   let stopping = false;
   const remove = () => { input.signals.removeListener("SIGINT", stop); input.signals.removeListener("SIGTERM", stop); };
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    void close().then(() => input.exit(0), error => { input.error(error); input.exit(1); }).finally(remove);
+    // Keep the deadline at the process owner. Resource owners keep joining
+    // their work; timing out must not free model weights under a live borrower.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Shutdown exceeded its deadline; persistence may be incomplete")), input.timeoutMs ?? 120_000);
+      timer.unref();
+    });
+    const work = (async () => { await close(); })();
+    void Promise.race([work, deadline]).then(() => input.exit(0), error => {
+      input.error(error); input.exit(1);
+    }).finally(() => { if (timer) clearTimeout(timer); remove(); });
   };
   input.signals.on("SIGINT", stop); input.signals.on("SIGTERM", stop);
   return remove;
