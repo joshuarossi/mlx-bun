@@ -110,6 +110,36 @@ test("a real CPU-only child entry records an unsupported producer failure withou
   expect(await Bun.file(store.get(jobId)!.log_path).text()).toContain('"type":"failed"');
 });
 
+test("queued persistence failure still joins the child before closing its store and engine", async () => {
+  const { store } = fresh(); const running = child(); const events: string[] = [];
+  running.proc.kill = () => { events.push("kill"); };
+  const host = createJobHost({ entry: "unused", createStore: () => store,
+    acquire: async () => ({ dispose() { events.push("release"); } }), spawn: running.spawn });
+  const active = host.submit("quantize", {}, "unused");
+  await tick();
+  const queued = host.submit("quantize", {}, "unused");
+  const failure = new Error("SQLITE_BUSY while cancelling queued job");
+  const setStatus = store.setStatus.bind(store), closeStore = store.close.bind(store);
+  store.setStatus = (id, status, opts) => {
+    if (id === queued.jobId) throw failure;
+    setStatus(id, status, opts);
+  };
+  store.close = () => {
+    expect(store.get(active.jobId)?.status).toBe("failed");
+    events.push("store.close"); closeStore();
+  };
+  stores.splice(stores.indexOf(store), 1); // The host owns this connection.
+  const closing = (async () => { try { await host.close(); } finally { events.push("engine.close"); } })();
+  const result = closing.catch(error => error);
+  await tick(); expect(events).toEqual(["kill"]);
+  running.proc.exitCode = 143; running.exit.resolve(143);
+  const error = await result;
+  expect(error).toBeInstanceOf(AggregateError);
+  expect(error.errors).toEqual([failure]);
+  expect(events).toEqual(["kill", "release", "store.close", "engine.close"]);
+  await expect(host.close()).rejects.toBe(error);
+});
+
 test("job HTTP responses preserve rows, filters, missing IDs and SSE framing", async () => {
   const { store } = fresh(); const row = store.create("quantize", {});
   makeEmit(store, row.id, row.log_path)({ type: "stage", stage: "test", progress: 0.5 });

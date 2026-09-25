@@ -180,21 +180,25 @@ export function drainQueue(): void {
  * the execution lease; queued and admission-waiting jobs never spawn. */
 export async function closeSubprocessJobs(store: JobStore): Promise<void> {
   closedStores.add(store);
+  const errors: unknown[] = [];
   for (let i = spawnQueue.length - 1; i >= 0; i--) {
     const item = spawnQueue[i]!;
     if (item.store !== store) continue;
     spawnQueue.splice(i, 1);
-    store.setStatus(item.jobId, "failed", { error: "job host closed", endedAt: nowIso() });
-    item.finish();
+    try { store.setStatus(item.jobId, "failed", { error: "job host closed", endedAt: nowIso() }); }
+    catch (error) { errors.push(error); }
+    finally { item.finish(); }
   }
   const active = activeSpawn;
-  if (!active || active.store !== store) return;
-  active.abort.abort(new Error("job host closed"));
-  const proc = active.proc;
-  if (proc) proc.kill("SIGTERM");
-  const force = proc ? setTimeout(() => { if (proc.exitCode === null) proc.kill("SIGKILL"); }, 3000) : undefined;
-  try { await active.finished; }
-  finally { if (force) clearTimeout(force); }
+  if (active?.store === store) {
+    active.abort.abort(new Error("job host closed"));
+    const proc = active.proc;
+    if (proc) proc.kill("SIGTERM");
+    const force = proc ? setTimeout(() => { if (proc.exitCode === null) proc.kill("SIGKILL"); }, 3000) : undefined;
+    try { await active.finished; }
+    finally { if (force) clearTimeout(force); }
+  }
+  if (errors.length) throw new AggregateError(errors, "Failed to persist cancelled jobs");
 }
 
 /** Read a child stream line-by-line, buffering partial trailing lines, and
