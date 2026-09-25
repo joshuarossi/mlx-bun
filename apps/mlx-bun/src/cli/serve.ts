@@ -1,7 +1,7 @@
 import { requireChatTemplate } from "../engine/model-host";
 import { createHubRoutes } from "../server/hub-routes";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { defaultSessionDir } from "../chat/session-files";
 import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
@@ -38,6 +38,10 @@ export interface ServeOptions {
   memoryPaths?: { vault: string; skills: string };
   /** App composition only; shares Pi storage with its settings routes. */
   chatPaths?: PiBackendPaths;
+  /** App-owned storage overrides for embedding and tests, like chatPaths and
+   * memoryPaths: the job store, the saved Hugging Face token file, and the root
+   * for adapter merge/export and fine-tune outputs. Defaults live under HOME. */
+  storagePaths?: { jobsDb?: string; jobsLogs?: string; credentialsFile?: string; artifactRoot?: string };
 }
 
 /** Validate before opening a registry, loading a model, or creating a listener. */
@@ -243,14 +247,16 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
       toolApprovalsFile: options.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
     const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }, { createDatasetRoutes }, { createDatasetRunner }, { createFinetuneRoutes }, { createAdapterArtifactRoutes },
-      { createHfCredentials }, { createPublisher }, { createPublishingRoutes }] = await Promise.all([
+      { createHfCredentials }, { createPublisher }, { createPublishingRoutes }, { JobStore }] = await Promise.all([
       import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"),
       import("../server/dataset-routes"), import("../dataset/job"), import("../server/finetune-routes"), import("../server/adapter-artifact-routes"),
-      import("../publishing/credentials"), import("../publishing/upload"), import("../server/publishing-routes"),
+      import("../publishing/credentials"), import("../publishing/upload"), import("../server/publishing-routes"), import("../jobs/db"),
     ]);
+    const storage = options.storagePaths ?? {};
     const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
       acquire: signal => engine.gateway.acquireExecutionLease(signal),
       onComplete: () => completions.invalidateLibrary(),
+      ...(storage.jobsDb ? { createStore: () => new JobStore(storage.jobsDb, storage.jobsLogs ?? join(dirname(storage.jobsDb!), "jobs")) } : {}),
     });
     const closeApp = async () => {
       const errors: unknown[] = [];
@@ -259,13 +265,15 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
     cleanup = closeApp;
-    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs), finetuneRoutes = createFinetuneRoutes(jobs);
+    const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs);
+    const finetuneRoutes = createFinetuneRoutes(jobs, storage.artifactRoot
+      ? () => join(storage.artifactRoot!, "adapters", `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined);
     const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: join(homedir(), ".mlx-bun", "skills") };
     const memory = createMemoryRoutes({ root: () => memoryPaths.vault });
     const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
     const sessions = createSessionRoutes(sessionDir);
-    const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway);
-    const credentials = createHfCredentials();
+    const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: storage.artifactRoot });
+    const credentials = createHfCredentials({ tokenFile: storage.credentialsFile });
     const publishing = createPublishingRoutes({ credentials, publish: createPublisher({ credentials,
       getJob: id => jobs.ensureStore().get(id),
     }) });

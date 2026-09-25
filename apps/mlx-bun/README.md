@@ -363,6 +363,20 @@ explicit overrides, dataset inspection, HTTP submission, progress, and resource
 cleanup with a fake native runtime. These CPU checks do not extend the numerical
 claims in the [training evidence](../../packages/training/README.md).
 
+Composition takes `storagePaths` (job store, saved token file, artifact root)
+like `chatPaths` and `memoryPaths`, so embedded and test servers never touch
+the user's jobs or credentials. The opt-in
+[managed-jobs acceptance](tests/engine/managed-jobs.test.ts) runs a real
+`mlx-bun serve` process under a temporary HOME and `HF_HUB_CACHE` with the
+cached model named by `MLX_BUN_APP_TEST_MODEL`: a quantize job whose artifact
+appears in the library, inference after its lease, a three-step SFT job with a
+periodic checkpoint, a long job cancelled by shutdown (child terminated, row
+terminal, checkpoint kept, no final adapter, bounded progress), and a restart
+on the same storage; then a spawned `train` interrupted by SIGINT at a step
+boundary, and, with a cached bf16 snapshot named by
+`MLX_BUN_APP_TEST_BF16_MODEL`, a `convert` interrupted mid-sweep and a complete
+uniform conversion. It downloads nothing.
+
 ## Dataset jobs
 
 `dataset/` owns the existing template inputs, generation, Hugging Face import,
