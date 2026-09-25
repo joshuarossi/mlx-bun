@@ -101,3 +101,31 @@ test("shutdown aborts an active HTTP stream before releasing engine resources", 
     await reader.cancel().catch(() => {});
   } finally { request.abort(); await app.close(); }
 });
+
+test("shutdown joins delayed chat work and reports cleanup failure after engine disposal", async () => {
+  const events: string[] = [];
+  const handled = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const disposed = Promise.withResolvers<void>();
+  const app = await startServer({
+    web: () => null, routes: { async handle() { return null; } },
+    chat: () => ({
+      async start() {},
+      async handle() { handled.resolve(); await finish.promise; events.push("late-cleanup"); },
+      dispose() { events.push("chat-close"); disposed.resolve(); throw new Error("chat cleanup failed"); },
+    }),
+    async closeEngine() { events.push("engine-close"); },
+  }, { port: 0 });
+  const client = connection(app.server.url);
+  try {
+    await client.opened;
+    client.socket.send(JSON.stringify({ type: "abort" }));
+    await handled.promise;
+    const closed = app.close().then(() => undefined, error => error);
+    await disposed.promise;
+    expect(events).toEqual(["chat-close"]);
+    finish.resolve();
+    expect((await closed).message).toBe("server cleanup failed");
+    expect(events).toEqual(["chat-close", "late-cleanup", "engine-close"]);
+  } finally { finish.resolve(); client.socket.close(); await app.close().catch(() => {}); }
+});
