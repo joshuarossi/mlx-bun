@@ -100,7 +100,10 @@ other domains with their first migrated consumers and explicit dependency rules.
 
 `memory/` owns Markdown vault storage, initialization, and article semantics.
 Its HTTP adapter belongs to `server/`; composition supplies reference sources
-explicitly rather than deriving them from repository layout.
+explicitly rather than deriving them from repository layout. Read-only memory
+tools and prompt context are built by `memory/` and injected into chat, with
+composition supplying the vault and bundled-skill destinations. Query navigation
+uses local article structure; scheduling and synthesis have separate lifecycles.
 
 Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.
@@ -119,6 +122,11 @@ neither producer implementations nor engine internals. HTTP adapters consume
 these domains from `server/`. `dataset/` owns templates, JSONL production, and
 HTTP clients; its loopback requests enter the server scheduler without holding
 an exclusive execution lease.
+
+`publishing/` owns app credential storage and artifact/source selection. Server
+routes parse settings and push requests; CLI composition supplies a read-only
+job lookup. The hub library owns the upload protocol and receives an explicit
+token, without importing application storage or jobs.
 
 Extract a shared app-contract package only when the app consumers require it.
 
