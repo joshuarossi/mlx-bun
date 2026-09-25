@@ -290,9 +290,49 @@ embedding remains part of the release migration.
 
 [Tool tests](tests/memory/tools.test.ts) exercise temporary vaults, and the
 [SDK test](tests/chat-runtime.test.ts) executes a memory tool through a real
-read-only Pi session with a synthetic loopback model. Synthesis, nightly
-scheduling, and the memory CLI remain unavailable; status and skill guidance
-say so explicitly. No read tool starts those lifecycles.
+read-only Pi session with a synthetic loopback model. No read tool starts a
+synthesis run.
+
+### Memory synthesis
+
+Main's nightly pipeline lives under `src/memory/` unchanged in prompts, stage
+order, database schema (`db.ts`, `~/.cache/mlx-bun/memory.sqlite`), vault
+layout, Git usage, and the dedup/normalize/reconcile rules: `pipeline.ts` drives
+the four resumable, chronological stage workers in `stages.ts` (SEGMENT via
+`chunk.ts`, ENTITY-EXTRACT via `entity.ts` + `resolve.ts`, ROUTE via `route.ts`,
+SYNTHESIZE via `synthesize.ts`/`cluster.ts`/`reconcile.ts`), then the
+deterministic `crosslink.ts` pass and the `wikify.ts` editorial sweep. `events.ts`
+holds the shared event contract so no stage imports the orchestrator.
+
+The engine is reached only through `model.ts`'s `MemoryCompletionClient` seam.
+The memory domain defines the interface; composition injects the one
+implementation, `server/memory-completion-client.ts`, which posts each stage
+call to a serving mlx-bun's own `/v1/chat/completions` (temperature 0, the
+stage's system/user turns, `adapter: "memory-chunk"` for the chunk stage when
+`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise) so
+synthesis rides the continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
+(default 1) bounds the calls in flight per batched stage. Nothing in the memory
+domain loads a model, and no serial lane exists.
+
+`GET /v1/memory/synthesize[?dry=1]` streams the run as SSE (`stage`/`log`/`done`
+events, a `summary`, then `[DONE]`; a failure ends with an `error` event); it is
+mounted only when composition supplies the pipeline. `mlx-bun memory` exposes
+main's subcommands: `status` (default), `open`, `list`, `search`, `toc`,
+`section`, `links`, `read`, `synthesize` (`--dry-run`; `--since`/`--model`
+parsed but not consumed, as in main), the stage workers `segment`, `extract`,
+`route`, `synthesize-stage` (`--limit`, `--convs`), and `link`. Model-driven
+subcommands talk to the server named by `--host`/`--port` (the serve defaults)
+and fail with a pointer to `mlx-bun serve` when none answers. The entity gold
+main read from `goldens/dreaming-entities-gold.json` is a published dataset:
+without that file the resolver runs unseeded (store aliases still fold).
+Deferred to the follow-up branch: `memory init`/`setup`, `schedule`,
+`unschedule`, and the schedule state in `status`, the `memory_status` tool, and
+`/api/memory/status`.
+
+[Pipeline tests](tests/memory/) port main's model-free suites with fake stage
+calls, in-test vaults, and an in-test entity gold; the
+[client test](tests/server/memory-completion-client.test.ts) and
+[verb test](tests/memory-cli.test.ts) use a fake fetch and a temporary HOME.
 
 ## Jobs, quantization, and fine-tuning
 
