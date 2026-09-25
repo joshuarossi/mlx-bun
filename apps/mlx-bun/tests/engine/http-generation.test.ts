@@ -139,7 +139,7 @@ test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous
   mkdirSync(cwd); mkdirSync(join(vault, "articles"), { recursive: true });
   writeFileSync(join(vault, "articles", "Travel.md"), "# Travel\n\nTravel preferences.\n\n## Preference\n\nTake the early train.\n");
   const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true,
-    thinking: "off", "ssd-cache": join(root, "ssd") }, positionals: [] });
+    thinking: "off", "ssd-cache": join(root, "ssd"), "memory-budget": "12", "force-wire": true }, positionals: [] });
   // Pi includes its system prompt and actual tool schemas. This is a
   // programmatic test budget, not a new serving CLI flag or product default.
   options.contextLimit = 16_384;
@@ -163,7 +163,12 @@ test.skipIf(!modelDir)("real HTTP protocols and Pi web chat share the continuous
     await deadline(health.arrayBuffer(), "health body", signal);
     const stats = await fetch(new URL("/stats", base), { signal });
     expect(stats.status).toBe(200);
-    expect((await json(stats)).batch).toMatchObject({ mode: "batch", batched: true });
+    const statsBody = await json(stats);
+    expect(statsBody.batch).toMatchObject({ mode: "batch", batched: true });
+    // Main's explicit budget is the admission envelope and the enforced context ceiling.
+    expect(statsBody.admission.memory_budget_bytes).toBe(12e9);
+    expect(statsBody.admission.enforced_context_tokens).toBeGreaterThan(0);
+    expect(statsBody.admission.enforced_context_tokens).toBeLessThanOrEqual(16_384);
     const fit = await fetch(new URL("/fit", base), { signal });
     expect(fit.status).toBe(200);
     expect((await json(fit)).report.max_safe_context).toBeGreaterThan(0);

@@ -33,6 +33,8 @@ export function createStatusRoutes(input: {
   startedAt: number;
   owner?: string;
   ssdCacheDir?: string;
+  /** Main's explicit `--memory-budget`: the usable envelope for the estimates below. */
+  memoryBudgetBytes?: number;
   /** Composition/test inputs; omitted values use the hub's machine detection. */
   machine?: MachineSpec;
   chip?: string | null;
@@ -42,7 +44,7 @@ export function createStatusRoutes(input: {
   const chip = input.chip === undefined ? detectChip().name : input.chip;
   const plan = ctx.glmMemoryPlan;
   const admission = plan ?? fit(ctx.model.config, ctx.model.weightsBytes, 1,
-    machine, undefined, 0, undefined, caches.resolvedKvScheme.fitOptions);
+    machine, undefined, 0, input.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
 
   return { async handle(request: Request): Promise<Response | null> {
     if (request.method !== "GET") return null;
@@ -64,7 +66,7 @@ export function createStatusRoutes(input: {
         response_store: input.responseStats(),
         kv_quant: caches.resolvedKvScheme.describe(ctx.model.config),
         admission: { max_safe_context: admission.maxSafeContext, enforced_context_tokens: input.contextLimit,
-          memory_budget_bytes: plan?.processLimitBytes ?? null, usable_bytes: admission.usableBytes, weights_bytes: ctx.model.weightsBytes },
+          memory_budget_bytes: plan?.processLimitBytes ?? input.memoryBudgetBytes ?? null, usable_bytes: admission.usableBytes, weights_bytes: ctx.model.weightsBytes },
         ...input.diagnostics(),
         batch: { configured: input.capacity, mode: "batch", batched: true,
           active_rows: gateway.activeRows, pending_rows: gateway.pendingRows, submitted_rows: gateway.submittedRows,
@@ -92,12 +94,12 @@ export function createStatusRoutes(input: {
       });
     }
     const report = fit(ctx.model.config, ctx.model.weightsBytes, admission.maxSafeContext,
-      machine, undefined, input.artifact.expertsBytes, undefined, caches.resolvedKvScheme.fitOptions);
+      machine, undefined, input.artifact.expertsBytes, input.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
     const typicalContext = Math.min(8192, admission.maxSafeContext);
     return Response.json({ machine: machineWire, context_tokens: admission.maxSafeContext,
       typical_context_tokens: typicalContext,
       typical_decode_tps: fit(ctx.model.config, ctx.model.weightsBytes, typicalContext,
-        machine, undefined, input.artifact.expertsBytes, undefined, caches.resolvedKvScheme.fitOptions).predictedDecodeTps,
+        machine, undefined, input.artifact.expertsBytes, input.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions).predictedDecodeTps,
       // The old EvalDB and machine-specific historical GLM measurements are not
       // live evidence for this server. Preserve the fields without inventing data.
       measured_decode_tps: null, measured_at: null,

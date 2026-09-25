@@ -113,3 +113,13 @@ test("status owns only GET stats and fit, with their migration placeholders remo
   }
   expect(await routes.handle(new Request("http://local/other"))).toBeNull();
 });
+
+test("an explicit memory budget is the usable envelope for admission and fit, and is reported on stats", async () => {
+  const routes = createStatusRoutes({ ...fixture(), memoryBudgetBytes: 8e9 });
+  const stats = await get(routes, "/stats");
+  expect(stats.admission).toMatchObject({ memory_budget_bytes: 8e9, usable_bytes: 8e9 });
+  expect(stats.admission.max_safe_context).toBeGreaterThan(0);
+  const fitReport = await get(routes, "/fit");
+  expect(fitReport.report.usable_bytes).toBe(8e9);
+  expect((await get(createStatusRoutes(fixture()), "/stats")).admission.memory_budget_bytes).toBeNull();
+});

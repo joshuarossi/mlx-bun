@@ -256,3 +256,141 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   expect(stderr).toBe(""); expect(code).toBe(0);
 });
+
+test("restored admission, wiring, media, sampling, and context flags keep main's units and validation", () => {
+  expect(parse("--memory-budget", "12", "--context-length", "4096", "--force-wire", "--expert-offload", "--allow-private-media",
+    "--hlg-sampling", "on", "--hlg-width", "3", "--hlg-toe", "7")).toMatchObject({
+      memoryBudgetBytes: 12e9, contextTokens: 4096, forceWire: true, expertOffload: true, allowPrivateMedia: true,
+      request: { hlg: { enabled: true, width: 3, shoulder: 4, toe: 7, pivotOffset: 6, pivot: "top" } } });
+  expect(parse("--memory-budget", "0")).not.toHaveProperty("memoryBudgetBytes");
+  expect(parse("--hlg-sampling", "off", "--hlg-width", "3").request).not.toHaveProperty("hlg");
+  expect(parse()).toMatchObject({ forceWire: false, expertOffload: false, allowPrivateMedia: false });
+  expect(parse()).not.toHaveProperty("contextTokens");
+  for (const args of [["--memory-budget", "-1"], ["--memory-budget", "abc"], ["--context-length", "0"], ["--context-length", "1.5"],
+    ["--hlg-sampling", "maybe"], ["--hlg-sampling", "on", "--hlg-width", "101"], ["--hlg-sampling", "on", "--hlg-toe", "-1"]])
+    expect(() => parse(...args)).toThrow();
+});
+
+test("a memory budget enforces the admission estimate's safe context; otherwise GLM plans and profile caps apply as before", () => {
+  const budget = { ...parse("--memory-budget", "8"), contextLimit: null };
+  expect(resolveServingLimits(budget, null, { maxSafeContext: 6000 })).toEqual({ contextLimit: 6000, defaultGeneratedTokens: undefined });
+  expect(resolveServingLimits({ ...budget, contextLimit: 4096 }, null, { maxSafeContext: 6000 }).contextLimit).toBe(4096);
+  expect(resolveServingLimits({ ...budget, contextLimit: 9000 }, null, { maxSafeContext: 6000 }).contextLimit).toBe(6000);
+  expect(resolveServingLimits(budget, { contextTokens: 8192, maxGenerationTokens: 2048 }, { maxSafeContext: 6000 }))
+    .toEqual({ contextLimit: 6000, defaultGeneratedTokens: 2048 });
+  expect(resolveServingLimits(parse(), null, { maxSafeContext: 6000 })).toEqual({ contextLimit: null, defaultGeneratedTokens: undefined });
+});
+
+test("MLX_BUN_SHUTDOWN_TIMEOUT_MS bounds serve's shutdown deadline; unusable values keep the default", async () => {
+  const restore = configureRuntime({ MLX_BUN_SHUTDOWN_TIMEOUT_MS: "5" });
+  try {
+    const run = runtime(false);
+    const exited = Promise.withResolvers<void>();
+    await runServe(parseCommand("serve", []), { ...run.dependencies,
+      start: async () => ({ port: 1, close: () => new Promise<void>(() => {}) }),
+      exit(code) { run.exits.push(code); exited.resolve(); } });
+    run.signals.emit("SIGTERM");
+    await exited.promise;
+    expect(run.exits).toEqual([1]);
+    expect((run.errors[0] as Error).message).toContain("deadline");
+  } finally { restore(); }
+  for (const raw of ["abc", "0", "-5"]) {
+    const restore = configureRuntime({ MLX_BUN_SHUTDOWN_TIMEOUT_MS: raw });
+    try {
+      const run = runtime(false);
+      const app = await runServe(parseCommand("serve", []), run.dependencies);
+      await app.close();
+      expect(run.errors).toEqual([]);
+    } finally { restore(); }
+  }
+});
+
+test("startup wires the memory budget, GLM context, allocator limit, expert offload, and force-wire through composition", async () => {
+  const app = new URL("../", import.meta.url).pathname;
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { fit } from "@mlx-bun/hub/fit";
+    import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+    const app = ${JSON.stringify(app)};
+    const events = [];
+    const config = { text: { numHiddenLayers: 2, numAttentionHeads: 8, numKeyValueHeads: 2, headDim: 64, globalHeadDim: 64,
+      numGlobalKeyValueHeads: 2, attentionKEqV: false, layerTypes: ["full_attention", "sliding_attention"], slidingWindow: 1024,
+      maxPositionEmbeddings: 32768, enableMoeBlock: false } };
+    const context = { modelId: "test", model: { config, weightsBytes: 2e9 }, glmMemoryPlan: null, tokenizer: {},
+      template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
+    const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
+      adapterNamespace() {}, checkpoints: null, continuationServices: {},
+      stopIdleDemotion() {}, async close() { return { durable: true }; } };
+    const expected = fit(config, 2e9, 1, undefined, undefined, 0, 8e9, undefined).maxSafeContext;
+    let loadOptions, cacheOptions, statusBudget, contextLimit;
+    mock.module(app + "src/engine/index.ts", () => ({
+      loadContext: async (path, id, options) => { loadOptions = options; events.push("load wire=" + runtimeValue("MLX_BUN_FORCE_WIRE") + " media=" + runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA")); return context; },
+      modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
+      createCacheServices: async (_context, _binding, options) => { cacheOptions = options; return cache; },
+      createAppEngine: async () => ({ gateway: {}, async close() { context.dispose(); } }),
+    }));
+    let limit = 77;
+    mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
+    mock.module("@mlx-bun/inference/artifacts", () => ({
+      async ensureOffloadFile(path) { events.push("offload " + path); return "/offload"; },
+      activateExpertOffload(dir) { events.push("activate " + dir); return () => events.push("restore offload"); },
+    }));
+    mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
+    mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
+      contextLimit = options.contextLimit; return { handle: async () => null, invalidateLibrary() {} };
+    } }));
+    mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes(input) { statusBudget = input.memoryBudgetBytes; return { handle: async () => null }; } }));
+    mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
+    mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async () => ({}) }));
+    mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
+    mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes: () => ({ handle: async () => null }) }));
+    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
+    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => {} }));
+    // Like the real listener, close is idempotent: one drain and one engine release.
+    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing;
+      return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await input.closeEngine(); })() }; } }));
+    const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
+    const { parseCommand } = await import(app + "src/cli/args.ts");
+    const options = parseServeOptions(parseCommand("serve", ["--memory-budget", "8", "--context-length", "4096", "--batch", "2",
+      "--force-wire", "--allow-private-media", "--expert-offload", "--no-open"]));
+    options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
+    const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options);
+    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "allocator 8000000000"]);
+    assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, glm: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096 } });
+    assert.equal(cacheOptions.allocatorLimitBytes, 8e9);
+    assert.equal(statusBudget, 8e9);
+    assert.equal(contextLimit, expected);
+    await running.close();
+    // Process settings restore only after the engine released the model.
+    assert.deepEqual(events.slice(4), ["model close", "restore offload", "allocator 77"]);
+    assert.equal(limit, 77);
+    assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
+    assert.equal(runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA"), undefined);
+    events.length = 0;
+    const dense = await startModelServer({ path: "/dense", repoId: "dense", expertsBytes: 0 }, options);
+    assert.deepEqual(events, ["load wire=1 media=1", "allocator 8000000000"]);
+    await dense.close();
+    assert.deepEqual(events.slice(2), ["model close", "allocator 77"]);
+    // A closed app's repeated close never resets a later app's process settings.
+    events.length = 0;
+    const later = await startModelServer({ path: "/later", repoId: "later", expertsBytes: 5 }, options);
+    await dense.close(); await running.close();
+    assert.deepEqual(events, ["offload /later", "activate /offload", "load wire=1 media=1", "allocator 8000000000"]);
+    assert.equal(limit, 8e9);
+    await later.close();
+    assert.deepEqual(events.slice(4), ["model close", "restore offload", "allocator 77"]);
+    // Startup failure after activation and the allocator limit restores both.
+    events.length = 0;
+    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { await input.closeEngine(); throw new Error("bind failed"); } }));
+    await assert.rejects(startModelServer({ path: "/unused", repoId: "test", expertsBytes: 5 }, options), /bind failed/);
+    assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "allocator 8000000000", "model close", "restore offload", "allocator 77"]);
+    assert.equal(limit, 77);
+    assert.equal(runtimeValue("MLX_BUN_FORCE_WIRE"), undefined);
+  `;
+  // Bare workspace specifiers in the script resolve from the app directory, whatever the runner's cwd.
+  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
+    env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  expect(stderr.replace(/^--expert-offload ignored.*$/m, "").trim()).toBe(""); expect(code).toBe(0);
+});
