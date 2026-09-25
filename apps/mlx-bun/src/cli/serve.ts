@@ -117,8 +117,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, contextLimit: options.contextLimit,
       defaultGeneratedTokens: options.defaultGeneratedTokens, tokenHistory });
-    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }, { createFinetuneRoutes }] = await Promise.all([
-      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"), import("../server/finetune-routes"),
+    const [{ createJobHost }, { createJobRoutes }, { createQuantizeRoutes }, { createFinetuneRoutes }, { createAdapterArtifactRoutes }] = await Promise.all([
+      import("../jobs/host"), import("../server/job-routes"), import("../server/quantize-routes"), import("../server/finetune-routes"), import("../server/adapter-artifact-routes"),
     ]);
     const jobs = createJobHost({ entry: fileURLToPath(new URL("./job-entry.ts", import.meta.url)),
       acquire: signal => engine.gateway.acquireExecutionLease(signal),
@@ -127,8 +127,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const closeApp = async () => { try { await jobs.close(); } finally { await engine.close(); } };
     cleanup = closeApp;
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs), finetuneRoutes = createFinetuneRoutes(jobs);
+    const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway);
     const routes = { handle: async (request: Request) => await jobRoutes.handle(request) ??
-      await quantizeRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await completions.handle(request) };
+      await quantizeRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await adapterArtifacts.handle(request) ?? await completions.handle(request) };
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       contextWindow: options.contextLimit ?? context.model.config.text.maxPositionEmbeddings,

@@ -161,7 +161,7 @@ test("submit forwards caller model and all policy to the host, independently of 
   expect(calls[1]?.[2]).toBe("/chosen");
   expect(pendingRoute("/api/finetune/submit")).toBe(false);
   expect(pendingRoute("/api/finetune/inspect-dataset")).toBe(false);
-  for (const path of ["merge", "export", "push"]) {
+  for (const path of ["push"]) {
     expect(pendingRoute(`/api/finetune/${path}`)).toBe(true);
     expect(await routes.handle(post(path, {}))).toBeNull();
   }

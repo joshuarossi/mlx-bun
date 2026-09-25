@@ -35,7 +35,6 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   their real app owner. The composed Pi backend currently leaves memory disabled.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
   their owners migrate: memory read/init and synthesis; dataset generation and
-  adapter merge/export;
   artifact publishing; adapter management; settings and GC; lease/drain/cache admin;
   Anthropic messages, Responses, audio, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
