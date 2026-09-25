@@ -76,6 +76,17 @@ handlers over an injected engine. Its `handle(Request)` returns a response or
 `null` for the next application surface; it never opens a socket or closes the
 borrowed engine. Application startup owns those lifetimes.
 
+`server/management-routes.ts` owns tool-approval settings and confirmed cache
+cleanup over the existing chat and hub libraries. Startup shares
+`ServeOptions.chatPaths.toolApprovalsFile` with Pi and the settings routes.
+GC requires an explicit `yes: true`, uses the hub's conservative plan, closes
+its registry after rescanning, and invalidates discovery even if a rescan fails
+after deletion. Execution returns 409 if the plan would remove the active model
+snapshot, including a model reached through a symlink. Planning/execution errors
+use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
+use isolated approval files and synthetic caches with native MLX blocked.
+Hugging Face credential and upload routes remain deferred.
+
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
 and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
@@ -157,3 +168,43 @@ headers. The packed consumer check verifies the same assets after installation.
 unmounts through the engine execution lock. It borrows the engine; no HTTP
 handler owns tensors. Serving with an adapter still uses the shared scheduler
 and reports 501 for unsupported batched capabilities.
+
+## Memory vault
+
+`src/memory/article.ts` owns Markdown article structure; `vault.ts` owns vault
+initialization, filesystem reads, search, links, and Git history. The default
+vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
+`server/memory-routes.ts` exposes the read/init HTTP surface through
+`createMemoryRoutes({ root })`; CLI startup composes it before model routes.
+Initialization is explicit and idempotent, and its path stays confined to the
+vault or temporary trees. Existing article/Talk directory links remain usable;
+initialization confines its actual write targets. Reference seeding defaults to
+none; composition can pass explicit `referenceSources` without inferring old
+repository documentation paths. Merely starting the app does not create a vault.
+
+[Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
+and real local Git history; [article tests](tests/memory/article.test.ts) cover
+parsing and round trips. Synthesis, memory tools, and scheduling remain separate
+migration work; the chat backend still receives no memory integration.
+
+## Jobs and quantization
+
+`jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,
+and managed subprocess lifetimes. `quantize/` owns submitted quantization policy
+and CPU-only model inspection; the numerical work uses `@mlx-bun/quantize`.
+`cli/job-entry.ts` resolves the producer in the child process. HTTP parsing and
+wire responses stay in `server/job-routes.ts` and `server/quantize-routes.ts`.
+
+Composition injects the engine execution lease. A job drains active inference
+and holds that lease until its child exits and output streams finish; inference
+then resumes. As in main's direct-process server, resident model weights and
+caches remain allocated while the child runs. Shutdown stops queued jobs, aborts
+admission waits, terminates active children, and awaits them before closing the
+store and engine. Opening the app does not create the job database until a job
+route is used. Dataset, finetune, and artifact publishing remain separate work.
+
+[Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
+paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage.
+[Quantization policy tests](tests/quantize/policy.test.ts) verify option forwarding
+and output naming with an injected numerical operation. They do not run or
+establish parity for actual checkpoint quantization.

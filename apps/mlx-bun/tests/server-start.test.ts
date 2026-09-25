@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { createMemoryRoutes } from "../src/server/memory-routes";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { startServer } from "../src/server/start";
 import type { ChatBackendFactory } from "../src/chat/backend";
 
@@ -14,18 +18,23 @@ function connection(url: URL) {
 
 test("the mounted app serves implemented routes, explicit migration gaps, and unknown paths separately", async () => {
   let disposals = 0;
+  const root = join(tmpdir(), `mlx-memory-uninitialized-${crypto.randomUUID()}`);
+  const memory = createMemoryRoutes({ root: () => root });
   const app = await startServer({
     web: request => new URL(request.url).pathname === "/" ? new Response("web") : null,
-    routes: { async handle(request) { return new URL(request.url).pathname === "/health" ? Response.json({ status: "ok" }) : null; } },
+    routes: { async handle(request) { return await memory.handle(request) ?? (new URL(request.url).pathname === "/health" ? Response.json({ status: "ok" }) : null); } },
     chat: idle, async closeEngine() { disposals++; },
   }, { port: 0 });
   try {
     expect(await (await fetch(app.server.url)).text()).toBe("web");
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
-    for (const path of ["/api/settings/hf-token", "/api/quantize/submit", "/api/jobs/id/stream", "/api/memory/status", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/local", "/api/hub/search", "/api/hub/download",
+    expect(await (await fetch(new URL("/api/memory/status", app.server.url))).json()).toMatchObject({ ok: false, enabled: false, root });
+    expect(existsSync(root)).toBe(false);
+    for (const path of ["/api/settings/hf-token", "/api/quantize/push", "/api/dataset/submit", "/v1/memory/synthesize", "/v1/audio/transcriptions", "/admin/cache/flush", "/stats", "/api/hub/local", "/api/hub/search", "/api/hub/download",
       "/api/hub/serve", "/api/sessions/search", "/api/sessions/export", "/curve-terrain",
       "/v1/audio/sessions", "/v1/audio/sessions/session/audio", "/v1/audio/sessions/session/finish",
       "/admin/transcription/unload"]) {
+
       const response = await fetch(new URL(path, app.server.url));
       expect(response.status).toBe(501);
       expect((await response.json()).error.type).toBe("not_implemented");

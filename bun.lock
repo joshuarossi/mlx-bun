@@ -21,6 +21,7 @@
         "@mlx-bun/hub": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
+        "@mlx-bun/quantize": "workspace:*",
         "typebox": "1.1.38",
       },
       "devDependencies": {
