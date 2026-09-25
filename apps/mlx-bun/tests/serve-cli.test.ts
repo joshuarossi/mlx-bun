@@ -179,7 +179,7 @@ for (const sessionDir of [undefined, "/unused/custom-sessions"]) test(`startup a
     const app = ${JSON.stringify(app)};
     const events = [], remembered = [];
     const memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
-    const memorySurface = { toolNames: [], customTools: [], skillPaths: [], hint: "memory" };
+    const memorySurface = { readOnly: true, toolNames: [], customTools: [], skillPaths: [], hint: "memory" };
     const chatPaths = { toolApprovalsFile: "/unused/approvals.json", sessionDir: ${JSON.stringify(sessionDir) ?? "undefined"} };
     const { defaultSessionDir } = await import(app + "src/chat/session-files.ts");
     let sessionsDirectory;
