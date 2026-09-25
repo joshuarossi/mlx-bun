@@ -43,12 +43,19 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 
 - [ ] Inject memory tools, skill paths, and prompt context into web chat from
   their real app owner. The composed Pi backend currently leaves memory disabled.
+  Restore the browser memory-chip/tool-name check with that slice and preserve
+  read-only tool permissions through the injected memory surface.
+- [ ] Migrate the memory CLI commands and nightly scheduling with their owning
+  synthesis lifecycle; read/init routes alone do not enable background work.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
-  their owners migrate: memory read/init and synthesis; dataset and finetune;
-  artifact publishing; adapter management; settings and GC; lease/drain/cache admin;
+  their owners migrate: memory synthesis; dataset publishing and finetune;
+  artifact publishing; HF credential settings; lease/drain/cache admin;
   audio, hub/browser model switching, session
   search/export, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
+- [ ] Migrate an owned generated-code execution facility before enabling the
+  `verified_code` dataset template. Its metadata currently states unavailable
+  and submission returns 501; the other twelve templates are enabled.
 - [ ] Preserve main's `src/train/job.ts` resolved configuration in the finetune
   producer. Exit: per-method behavior snapshots cover SFT/DPO/ORPO learning
   rates, ORPO segment/chunk sizes, flash/shared-prefix defaults, and disabling
