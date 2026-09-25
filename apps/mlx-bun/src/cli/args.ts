@@ -71,7 +71,13 @@ const commands = {
     "dry-run": { type: "boolean", description: "Never delete, even with --yes" },
     force: { type: "boolean", description: "Also prune superseded snapshots with otherwise unique files" },
   } },
-} satisfies Record<string, { description: string; positional: string; options: Record<string, { type: "string" | "boolean"; description: string }> }>;
+  upload: { description: "Push a local model directory to the Hugging Face Hub (mlx_lm.upload counterpart)", positional: "",
+    usage: "usage: mlx-bun upload --path <model-dir> --upload-repo <org/repo> [--private]", options: {
+    path: { type: "string", description: "Local model directory to upload [default: mlx_model]" },
+    "upload-repo": { type: "string", description: "Hub repo id, org/name or bare name (required)" },
+    private: { type: "boolean", description: "Create the repo as private (mlx-bun extension)" },
+  } },
+} satisfies Record<string, { description: string; positional: string; usage?: string; options: Record<string, { type: "string" | "boolean"; description: string }> }>;
 export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
 export function isCommand(name: string): name is Command { return Object.hasOwn(commands, name); }
@@ -83,13 +89,24 @@ export function commandInvocation(argv: string[]): { command: string; args: stri
   return { command: command === "gen" ? "generate" : command, args: command === "serve" && first !== "serve" ? argv : rest };
 }
 
+/** The verb's usage line: table-supplied, else derived from its positional. */
+export function usage(command: Command): string {
+  return (commands[command] as { usage?: string }).usage ?? `usage: mlx-bun ${command} ${commands[command].positional}`;
+}
+
 export function parseCommand(command: Command, args: string[]): CommandArgs {
   const options: Record<string, { type: "string" | "boolean" }> = commands[command].options;
-  const parsed = parseArgs({ args, options, allowPositionals: true, strict: true });
+  let parsed: CommandArgs;
+  try { parsed = parseArgs({ args, options, allowPositionals: true, strict: true }); }
+  catch (error) {
+    // A verb with its own usage line answers a valueless option the way main did.
+    if ("usage" in commands[command] && (error as { code?: string }).code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE")
+      throw new Error(usage(command));
+    throw error;
+  }
   const max = command === "generate" || command === "embed" ? 2 : commands[command].positional ? 1 : 0;
   if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
-  if (commands[command].positional.startsWith("<") && !parsed.positionals.length)
-    throw new Error(`usage: mlx-bun ${command} ${commands[command].positional}`);
+  if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
   return parsed;
 }
 

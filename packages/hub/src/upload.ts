@@ -81,6 +81,10 @@ export interface UploadOptions {
   baseUrl?: string;
   /** Per-file progress: (repoPath, bytesSent, bytesTotal). */
   onProgress?: (file: string, sent: number, total: number) => void;
+  /** Cancels the upload: the in-flight request is aborted, no later step runs,
+   *  and the promise rejects with the signal's reason. No request starts once
+   *  cancellation is observed; a commit already submitted may have been accepted. */
+  signal?: AbortSignal;
 }
 
 export interface UploadResult {
@@ -97,13 +101,37 @@ function authHeaders(token: string | null | undefined): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
+/** fetch bound to an optional signal: never starts after an abort, and an
+ *  aborted request rejects with the signal's reason rather than a transport error. */
+async function request(url: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+  signal?.throwIfAborted();
+  try {
+    return await fetch(url, { ...init, signal });
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
+}
+
+/** Read a JSON body under the same contract as `request`: an abort observed
+ *  while the body is still arriving rejects with the signal's reason. */
+async function readJson<T>(res: Response, signal?: AbortSignal): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
+}
+
 /** Turn a transport-level HTTP failure into a clear, actionable error. */
-async function httpError(action: string, res: Response): Promise<Error> {
+async function httpError(action: string, res: Response, signal?: AbortSignal): Promise<Error> {
   let detail = "";
   try {
     detail = (await res.text()).slice(0, 300);
   } catch {
-    /* ignore */
+    // An unreadable error body is still that error; an abort while reading it is cancellation.
+    signal?.throwIfAborted();
   }
   const hints: Record<number, string> = {
     401: "unauthorized — your HF token is missing, invalid, or expired (need a *write* token)",
@@ -142,6 +170,8 @@ export interface CreateRepoOptions {
   /** Required: callers choose authentication; null sends no bearer token. */
   token: string | null;
   baseUrl?: string;
+  /** Aborts the request; rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -170,18 +200,19 @@ export async function createRepo(
   };
   if (organization) body.organization = organization;
 
-  const res = await fetch(`${base}/api/repos/create`, {
+  const res = await request(`${base}/api/repos/create`, {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders(token) },
     body: JSON.stringify(body),
-  });
+  }, opts.signal);
 
   if (res.ok) {
     let json: { url?: string } = {};
     try {
       json = (await res.json()) as { url?: string };
     } catch {
-      /* some servers return empty body */
+      // Some servers return an empty body; an abort mid-body is not that.
+      opts.signal?.throwIfAborted();
     }
     return { url: json.url ?? `${base}/${repoType === "dataset" ? "datasets/" : ""}${repoId}` };
   }
@@ -189,7 +220,7 @@ export async function createRepo(
   if (res.status === 409) {
     return { url: `${base}/${repoType === "dataset" ? "datasets/" : ""}${repoId}` };
   }
-  throw await httpError("create repo", res);
+  throw await httpError("create repo", res, opts.signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,9 +286,10 @@ async function preupload(
   revision: string,
   files: { file: LocalFile; sample: Uint8Array }[],
   token: string | null,
+  signal?: AbortSignal,
 ): Promise<Map<string, PreuploadEntry>> {
   const url = `${base}/api/${apiPrefix(repoType)}/${repoId}/preupload/${encodeURIComponent(revision)}`;
-  const res = await fetch(url, {
+  const res = await request(url, {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders(token) },
     body: JSON.stringify({
@@ -267,9 +299,9 @@ async function preupload(
         size: file.size,
       })),
     }),
-  });
-  if (!res.ok) throw await httpError("preupload", res);
-  const json = (await res.json()) as { files?: PreuploadEntry[] };
+  }, signal);
+  if (!res.ok) throw await httpError("preupload", res, signal);
+  const json = await readJson<{ files?: PreuploadEntry[] }>(res, signal);
   const map = new Map<string, PreuploadEntry>();
   for (const e of json.files ?? []) map.set(e.path, e);
   return map;
@@ -298,11 +330,12 @@ async function uploadLfsFiles(
   items: { file: LocalFile; oid: string; bytes: Uint8Array }[],
   token: string | null,
   onProgress?: UploadOptions["onProgress"],
+  signal?: AbortSignal,
 ): Promise<void> {
   if (items.length === 0) return;
 
   const batchUrl = `${base}/${gitPrefix(repoType)}${repoId}.git/info/lfs/objects/batch`;
-  const batchRes = await fetch(batchUrl, {
+  const batchRes = await request(batchUrl, {
     method: "POST",
     headers: {
       accept: "application/vnd.git-lfs+json",
@@ -316,9 +349,9 @@ async function uploadLfsFiles(
       ref: { name: revision },
       objects: items.map((i) => ({ oid: i.oid, size: i.file.size })),
     }),
-  });
-  if (!batchRes.ok) throw await httpError("LFS batch", batchRes);
-  const batch = (await batchRes.json()) as { objects?: LfsObject[] };
+  }, signal);
+  if (!batchRes.ok) throw await httpError("LFS batch", batchRes, signal);
+  const batch = await readJson<{ objects?: LfsObject[] }>(batchRes, signal);
 
   const byOid = new Map(items.map((i) => [i.oid, i]));
   for (const obj of batch.objects ?? []) {
@@ -335,18 +368,18 @@ async function uploadLfsFiles(
       continue;
     }
 
-    const putRes = await fetch(upload.href, {
+    const putRes = await request(upload.href, {
       method: "PUT",
       headers: { ...(upload.header ?? {}) },
       body: new Blob([Uint8Array.from(item.bytes)]),
-    });
-    if (!putRes.ok) throw await httpError(`LFS upload of ${item.file.repoPath}`, putRes);
+    }, signal);
+    if (!putRes.ok) throw await httpError(`LFS upload of ${item.file.repoPath}`, putRes, signal);
     onProgress?.(item.file.repoPath, item.file.size, item.file.size);
 
     // Optional verify step (S3 transfers often request it).
     const verify = obj.actions?.verify;
     if (verify) {
-      const vRes = await fetch(verify.href, {
+      const vRes = await request(verify.href, {
         method: "POST",
         headers: {
           "content-type": "application/vnd.git-lfs+json",
@@ -354,8 +387,8 @@ async function uploadLfsFiles(
           ...authHeaders(token),
         },
         body: JSON.stringify({ oid: obj.oid, size: item.file.size }),
-      });
-      if (!vRes.ok) throw await httpError(`LFS verify of ${item.file.repoPath}`, vRes);
+      }, signal);
+      if (!vRes.ok) throw await httpError(`LFS verify of ${item.file.repoPath}`, vRes, signal);
     }
   }
 }
@@ -373,6 +406,7 @@ async function commit(
   regularFiles: { file: LocalFile; bytes: Uint8Array }[],
   lfsFiles: { file: LocalFile; oid: string }[],
   token: string | null,
+  signal?: AbortSignal,
 ): Promise<{ commitOid?: string; commitUrl?: string }> {
   const lines: string[] = [];
   lines.push(
@@ -409,20 +443,22 @@ async function commit(
   const ndjson = lines.join("\n") + "\n";
 
   const url = `${base}/api/${apiPrefix(repoType)}/${repoId}/commit/${encodeURIComponent(revision)}`;
-  const res = await fetch(url, {
+  const res = await request(url, {
     method: "POST",
     headers: {
       "content-type": "application/x-ndjson",
       ...authHeaders(token),
     },
     body: ndjson,
-  });
-  if (!res.ok) throw await httpError("commit", res);
+  }, signal);
+  if (!res.ok) throw await httpError("commit", res, signal);
   let json: { commitOid?: string; commitUrl?: string } = {};
   try {
     json = (await res.json()) as { commitOid?: string; commitUrl?: string };
   } catch {
-    /* empty body is acceptable */
+    // An empty body is acceptable; an abort while it arrives is reported as
+    // cancellation even though the Hub may already have accepted the commit.
+    signal?.throwIfAborted();
   }
   return json;
 }
@@ -439,6 +475,10 @@ async function commit(
  * server's verdict, uploads LFS blobs via the LFS batch + PUT flow, then
  * posts a single NDJSON commit (regular files inlined as base64, LFS files
  * referenced by oid/size). Creates the repo first (idempotent).
+ *
+ * `opts.signal` aborts the in-flight request and skips every later step; the
+ * promise rejects with the signal's reason. No request starts once cancellation
+ * is observed; a commit already submitted may have been accepted by the Hub.
  */
 export async function uploadFolder(
   dir: string,
@@ -473,6 +513,7 @@ export async function uploadFolder(
     private: opts.private,
     token,
     baseUrl: base,
+    signal: opts.signal,
   });
 
   // Read bytes + compute the LFS sha256 oids; build the preupload samples
@@ -489,6 +530,8 @@ export async function uploadFolder(
     }),
   );
 
+  opts.signal?.throwIfAborted();
+
   // Local LFS guess feeds the preupload request's sample/size; the server's
   // verdict is authoritative.
   const verdict = await preupload(
@@ -498,6 +541,7 @@ export async function uploadFolder(
     revision,
     loaded.map((l) => ({ file: l.file, sample: l.sample })),
     token,
+    opts.signal,
   );
 
   const regularFiles: { file: LocalFile; bytes: Uint8Array }[] = [];
@@ -525,6 +569,7 @@ export async function uploadFolder(
     lfsToUpload,
     token,
     opts.onProgress,
+    opts.signal,
   );
 
   // Report progress for inlined regular files too.
@@ -541,6 +586,7 @@ export async function uploadFolder(
     regularFiles,
     lfsForCommit,
     token,
+    opts.signal,
   );
 
   const url = `${base}/${repoType === "dataset" ? "datasets/" : ""}${repoId}`;

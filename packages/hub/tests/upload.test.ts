@@ -61,6 +61,7 @@ function freshCapture(): Captured {
 let cap = freshCapture();
 let createStatus = 200;
 let lfsAlreadyExists = false; // toggle to simulate an upstream-present blob
+let putGate: { arrived: () => void; release: Promise<void> } | null = null;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
@@ -119,11 +120,12 @@ const server = Bun.serve({
       });
     }
 
-    // 3b. S3-style PUT
+    // 3b. S3-style PUT (a test may hold it open to abort mid-transfer)
     m = p.match(/^\/s3-put\/(.+)$/);
     if (m && req.method === "PUT") {
       const body = new Uint8Array(await req.arrayBuffer());
       cap.s3Puts.push({ oid: m[1]!, body });
+      if (putGate) { putGate.arrived(); await putGate.release; }
       return new Response(null, { status: 200 });
     }
 
@@ -156,6 +158,7 @@ beforeEach(() => {
   cap = freshCapture();
   createStatus = 200;
   lfsAlreadyExists = false;
+  putGate = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -347,6 +350,38 @@ describe("uploadFolder (mock Hub)", () => {
     expect(cap.paths).toEqual([]);
   });
 
+  test("an abort mid-PUT rejects with the signal's reason and never commits", async () => {
+    const dir = makeModelDir();
+    const weights = new Uint8Array(await Bun.file(join(dir, "model.safetensors")).arrayBuffer());
+    const oid = new Bun.CryptoHasher("sha256").update(weights).digest("hex");
+    const controller = new AbortController(), reason = new Error("upload cancelled");
+    let arrived!: () => void, release!: () => void;
+    const putArrived = new Promise<void>((resolve) => { arrived = resolve; });
+    putGate = { arrived, release: new Promise<void>((resolve) => { release = resolve; }) };
+    try {
+      const pending = uploadFolder(dir, "me/cancelled", { token: "hf_secret", baseUrl: base, signal: controller.signal });
+      await putArrived;
+      controller.abort(reason);
+      await expect(pending).rejects.toBe(reason);
+    } finally {
+      release();
+    }
+    expect(cap.paths).toEqual([
+      "/api/repos/create", "/api/models/me/cancelled/preupload/main",
+      "/me/cancelled.git/info/lfs/objects/batch", `/s3-put/${oid}`,
+    ]);
+    expect(cap.verifies).toEqual([]);
+    expect(cap.commitBody).toBeNull();
+  });
+
+  test("an already-aborted signal rejects before any request", async () => {
+    const controller = new AbortController(), reason = new Error("cancelled before start");
+    controller.abort(reason);
+    await expect(uploadFolder(makeModelDir(), "me/never", { token: null, baseUrl: base, signal: controller.signal })).rejects.toBe(reason);
+    await expect(createRepo("me/never", { token: null, baseUrl: base, signal: controller.signal })).rejects.toBe(reason);
+    expect(cap.paths).toEqual([]);
+  });
+
   test("file walking skips VCS/cache directories and symlinks as in main", async () => {
     const dir = makeModelDir();
     for (const name of [".git", ".cache"]) {
@@ -357,4 +392,54 @@ describe("uploadFolder (mock Hub)", () => {
     expect(cap.preuploadBody.files.map((file: { path: string }) => file.path).sort())
       .toEqual(["README.md", "config.json", "model.safetensors", "tokenizer/tokenizer.json"]);
   });
+});
+
+// Abort while a response body is still arriving: the empty-body tolerance of
+// create and commit must not swallow cancellation, and the reason is preserved.
+describe("cancellation while reading a held response body", () => {
+  const files = () => {
+    const dir = mkdtempSync(join(tmpdir(), "upload-held-body-"));
+    writeFileSync(join(dir, "config.json"), "{}");
+    return dir;
+  };
+  test("an abort while a held error body is being read rejects with the signal's reason, not the HTTP error", async () => {
+    const abort = new AbortController(), reason = new Error("review cancellation");
+    const held = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch() {
+      setTimeout(() => abort.abort(reason), 50);
+      return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("server ")); } }),
+        { status: 500, headers: { "content-type": "text/plain" } });
+    } });
+    try { await expect(createRepo("test/review", { token: null, baseUrl: held.url.href, signal: abort.signal })).rejects.toBe(reason); }
+    finally { await held.stop(true); }
+  });
+  for (const target of ["create", "commit"] as const) {
+    test(`an abort while the ${target} response body is held rejects with the signal's reason`, async () => {
+      const dir = files();
+      const abort = new AbortController(), reason = new Error("review cancellation");
+      const paths: string[] = [];
+      const held = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+        const path = new URL(request.url).pathname; paths.push(path);
+        if (path.includes("/preupload/")) {
+          const body = await request.json() as { files: { path: string }[] };
+          return Response.json({ files: body.files.map(file => ({ path: file.path, uploadMode: "regular" })) });
+        }
+        if ((target === "create" && path === "/api/repos/create") || (target === "commit" && path.includes("/commit/"))) {
+          setTimeout(() => abort.abort(reason), 50);
+          return new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("{")); } }),
+            { headers: { "content-type": "application/json" } });
+        }
+        return Response.json({ url: "http://local/review" });
+      } });
+      try {
+        const work = target === "create"
+          ? createRepo("test/review", { token: null, baseUrl: held.url.href, signal: abort.signal })
+          : uploadFolder(dir, "test/review", { token: null, baseUrl: held.url.href, signal: abort.signal });
+        await expect(work).rejects.toBe(reason);
+        const after = paths.length;
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(paths.length).toBe(after);
+        if (target === "commit") expect(paths.some(path => path.includes("/commit/"))).toBe(true);
+      } finally { await held.stop(true); rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
 });

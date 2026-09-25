@@ -134,7 +134,7 @@ after deletion. Execution returns 409 if the plan would remove the active model
 snapshot, including a model reached through a symlink. Planning/execution errors
 use the management JSON error shape. The [management tests](tests/server/management-routes.test.ts)
 use isolated approval files and synthetic caches with native MLX blocked.
-Hugging Face credential and upload routes remain deferred.
+Hugging Face credential and upload routes are described under publishing below.
 
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
@@ -354,6 +354,17 @@ datasets publish as dataset repos. Uploads need no model execution lease.
 [Publishing tests](tests/server/publishing-routes.test.ts) use temporary token
 storage and an injected uploader; they never read installed credentials or
 publish to Hugging Face.
+
+`cli/upload.ts` is the `upload` verb, main's `mlx_lm.upload` counterpart:
+`mlx-bun upload --path <dir> --upload-repo <org/repo> [--private]` (the path
+defaults to `mlx_model`). It resolves the token through
+`publishing/credentials.ts`, fails before any request when the repo id,
+directory, or write token is missing, and pushes a model repo through the same
+public hub uploader with the commit message "Upload with mlx-bun". SIGINT or
+SIGTERM aborts the transfer; nothing is committed after an abort. The
+[upload CLI tests](tests/upload-cli.test.ts) drive the verb with injected
+dependencies and spawn the real CLI against a local mock Hub with an isolated
+home directory and an invented token.
 
 ## Web hub
 
