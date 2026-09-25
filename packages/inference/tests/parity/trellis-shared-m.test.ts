@@ -95,6 +95,17 @@ test.skipIf(!artifact)("shared-M kernels preserve full Qwen logits, recurrent st
       console.log(`[trellis-variant-13] M=${m}: last logits, state and continuation match`);
     }
 
+    // Preserve main's last-head screening cells and alternating invocation
+    // order without its timing/report machinery.
+    const lengths = [1, 2, 3, 4, 5, 8, 9, 16, ...(candidateVariant >= 11 ? [32] : []),
+      ...(candidateVariant === 13 ? [128, 512] : [])];
+    for (let block = 0; block < 6; block++) for (const m of lengths) {
+      const tokens = Array.from({ length: m }, (_, i) => 600 + block * 13 + i);
+      const order = block % 2 ? [candidateVariant, baselineVariant] : [baselineVariant, candidateVariant];
+      const results = new Map(order.map(variant => [variant, run(variant, tokens, false, true)]));
+      expect(results.get(candidateVariant)!.hashes).toEqual(results.get(baselineVariant)!.hashes);
+    }
+
   } finally {
     setTrellisVariant(null);
     for (const cache of prefix) cache.dispose();

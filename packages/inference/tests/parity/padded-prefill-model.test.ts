@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
 const artifact = Bun.env.MLX_BUN_TEST_PADDED_PREFILL_MODEL;
 const reportPath = Bun.env.MLX_BUN_TEST_PADDED_PREFILL_REFERENCE;
+if (Boolean(artifact) !== Boolean(reportPath)) throw new Error("padded prefill requires both MLX_BUN_TEST_PADDED_PREFILL_MODEL and MLX_BUN_TEST_PADDED_PREFILL_REFERENCE");
 if (artifact && !existsSync(`${artifact}/config.json`)) throw new Error(`unavailable model: ${artifact}`);
 const speculativeRotatingLayout = Bun.env.MLX_BUN_TEST_SPECULATIVE_ROTATING_LAYOUT === "1";
 const delayedFullLayout = Bun.env.MLX_BUN_TEST_PADDED_FULL_LAYOUT;

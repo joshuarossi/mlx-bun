@@ -18,9 +18,7 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   versus interrupted/restarted B1/B4 sampling and state agree; complete padded
   cohorts match an externally supplied same-machine oracle report; packed Qwen
   variants preserve full logits, recurrent/KV state and continuation. Use explicit
-  cached artifacts and references, and preserve main's assertions. Earlier state
-  restore/window-wrap/compiled evidence (#61/#62/#64) remains valid for its covered
-  paths; these checks extend it rather than repeat those matrices.
+  cached artifacts and references, and preserve main's assertions.
 - [ ] Confirm the long-term mixed-KV reference contract for single-query decode:
   the documented stock mlx-lm path or OptiQ serve's fused default. The opt-in
   state comparison verifies the existing composition; keep that implementation unchanged during
