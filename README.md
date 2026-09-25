@@ -19,6 +19,7 @@ and optional in-process execution.
 [`@mlx-bun/training`](packages/training/README.md) owns LoRA and preference training, optimizers, losses, and adapter production.
 [`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry, Hugging Face downloads, and memory fit.
 [`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces; startup composes the migrated engine, HTTP API, and browser chat.
+The [public website](apps/website/README.md) owns user guides and build-only reference pages.
 See [the architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.
 Remaining migration work is in [PLAN.md](PLAN.md).
 See [CONTRIBUTING.md](CONTRIBUTING.md) for verification and review expectations;

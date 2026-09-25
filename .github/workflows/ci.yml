@@ -24,6 +24,8 @@ jobs:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - name: Build public documentation and generated CLI reference
+        run: bun run --cwd apps/website build
       - run: brew install cmake
       - name: Build and stage native libraries
         run: |

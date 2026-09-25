@@ -46,9 +46,13 @@ function layer(path: string, owner: Library): Layer | undefined {
 
 // Add a domain only with its first consumer; app roots do not become a loophole.
 const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "quantize", "dataset", "finetune", "publishing", "memory", "hub"], engine: [], chat: [], server: ["engine", "chat", "memory", "jobs", "quantize", "dataset", "finetune", "publishing", "hub"], memory: [], quantize: ["jobs"], dataset: ["jobs"], finetune: ["jobs"], publishing: [], jobs: [], hub: [], web: ["chat", "jobs"] };
+const siteDomains: Record<string, string[]> = { "content.config.ts": [], content: [], styles: [] };
+function domains(owner: Library): Record<string, string[]> {
+  return owner.name === "mlx-bun-website" ? siteDomains : appDomains;
+}
 function appDomain(path: string, owner: Library): string {
   const domain = relative(owner.source, path).split("/")[0]!;
-  if (!(domain in appDomains)) throw new Error(`Unclassified app source: ${relative(owner.source, path)}`);
+  if (!(domain in domains(owner))) throw new Error(`Unclassified app source: ${relative(owner.source, path)}`);
   return domain;
 }
 
@@ -152,7 +156,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       // A workspace may read its own package metadata (e.g. CLI --version).
       if (specifier.startsWith(".") && resolve(dirname(file), specifier) === resolve(owner.source, "../package.json")) continue;
       const dependency = owner.dependencies.find(name => specifier === name || specifier.startsWith(`${name}/`));
-      const isExternal = external.has(specifier) || (dependency !== undefined && !names.includes(dependency));
+      const siteContentApi = owner.name === "mlx-bun-website" && owner.dependencies.includes("astro") &&
+        relative(owner.source, file) === "content.config.ts" && specifier === "astro:content";
+      const isExternal = siteContentApi || external.has(specifier) || (dependency !== undefined && !names.includes(dependency));
       const browser = owner.app && relative(owner.source, file).startsWith("web/browser/");
       if (browser && isExternal) { violations.push(`${at}: browser cannot import ${specifier}`); continue; }
       if (isExternal) {
@@ -173,7 +179,7 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       const to = layer(actual, targetOwner);
       if (owner.app && owner === targetOwner) {
         const fromDomain = appDomain(file, owner), toDomain = appDomain(actual, owner);
-        if (fromDomain !== toDomain && !appDomains[fromDomain]!.includes(toDomain))
+        if (fromDomain !== toDomain && !domains(owner)[fromDomain]!.includes(toDomain))
           violations.push(`${at}: app ${fromDomain} -> ${toDomain}`);
       }
       if (owner !== targetOwner) {
@@ -195,6 +201,25 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
 test("all library and app workspaces follow their declared DAG and inference layer rules, including type-only dependencies", async () => {
   expect(cycles(new Map(Object.entries(allowed)))).toEqual([]);
   expect(await inspectWorkspaces(workspace)).toEqual([]);
+});
+
+test("the website has explicit source domains and cannot import app internals", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-site-boundaries-"));
+  const write = (path: string, text: string) => {
+    mkdirSync(dirname(resolve(root, path)), { recursive: true }); writeFileSync(resolve(root, path), text);
+  };
+  try {
+    write("apps/website/package.json", JSON.stringify({ name: "mlx-bun-website", type: "module", dependencies: { astro: "6", "@astrojs/starlight": "0.40" } }));
+    write("apps/website/src/content.config.ts", 'import { defineCollection } from "astro:content"; import { docsLoader } from "@astrojs/starlight/loaders";');
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module" }));
+    write("apps/mlx-bun/src/chat/backend.ts", "export const backend = true;");
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write("apps/website/src/content.config.ts", 'import { backend } from "../../mlx-bun/src/chat/backend";');
+    expect((await inspectWorkspaces(root)).some(message => message.includes("undeclared workspace dependency mlx-bun"))).toBe(true);
+    write("apps/website/src/content.config.ts", "export const collections = {};");
+    write("apps/website/src/cli/hidden.ts", "export const hidden = true;");
+    await expect(inspectWorkspaces(root)).rejects.toThrow("Unclassified app source: cli/hidden.ts");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("new library packages cannot hide undeclared imports, private paths, or dependency cycles", async () => {
