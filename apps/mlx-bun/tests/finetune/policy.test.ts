@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -51,17 +51,17 @@ test("SFT inherits supplied library policy while DPO and ORPO preserve app learn
   expect(defaults.orpoFlashCe).toBe(false);
 });
 
-test("explicit web/API options win, including zero and false overrides of the ORPO recipe", () => {
-  expect(parseFinetuneConfig({ ...paths, method: "orpo", rank: 16, scale: 1, rank_scaling: "constant",
-    target_modules: ["q_proj"], num_layers: 2, iters: 3, learning_rate: 0.001, max_seq_length: 128,
+for (const method of ["sft", "dpo", "orpo"] as const) test(`${method} explicit options preserve zero and false overrides`, () => {
+  expect(parseFinetuneConfig({ ...paths, method, rank: 16, scale: 1, rank_scaling: "constant",
+    target_modules: ["q_proj"], num_layers: 2, iters: 3, learning_rate: 0, max_seq_length: 128,
     batch_size: 2, grad_accumulation_steps: 4, seed: 11, steps_per_report: 1, steps_per_eval: 2,
     weight_decay: 0, lora_dropout: 0.1, rs_lora: true, lora_plus_ratio: 2, grad_checkpoint: true,
     mlp_split: true, segment_size: 0, save_checkpoints: true, grad_clip_norm: 0, val_max_examples: 0,
     dpo_beta: 0.2, dpo_warmup_iters: 2, dpo_lr_schedule: "constant", orpo_lambda: 0.3,
     orpo_warmup_iters: 4, orpo_lr_schedule: "constant", orpo_chunk_size: 0, orpo_fused_ce: false,
     orpo_flash_ce: false, orpo_prefix_shared: false, sft_scope: "response", warm_start_adapter: "/previous",
-  }, defaults).cfg).toEqual({ method: "orpo", rank: 16, scale: 1, rankScaling: "constant",
-    targetModules: ["q_proj"], numLayers: 2, iters: 3, learningRate: 0.001, maxSeqLen: 128,
+  }, defaults).cfg).toEqual({ method, rank: 16, scale: 1, rankScaling: "constant",
+    targetModules: ["q_proj"], numLayers: 2, iters: 3, learningRate: 0, maxSeqLen: 128,
     batchSize: 2, gradAccumSteps: 4, seed: 11, stepsPerReport: 1, stepsPerEval: 2, betas: [0.7, 0.8],
     weightDecay: 0, loraDropout: 0.1, rsLora: true, loraPlusRatio: 2, gradCheckpoint: true,
     mlpSplit: true, segmentSize: 0, saveCheckpoints: true, gradClipNorm: 0, valMaxExamples: 0,
@@ -83,7 +83,9 @@ function runtime() {
     loadTemplate: async () => ({}) as Awaited<ReturnType<FinetuneRuntime["loadTemplate"]>>,
     train: async (_model, _tokenizer, _template, dir, config, emit) => {
       expect(dir).toBe(paths.data_dir); configs.push(config); calls.push("train");
-      emit!({ type: "metric", kind: "train", step: 1, loss: 0.5 });
+      emit!({ type: "metric", kind: "train", step: 1, loss: 0.5, progress: 0.75, message: "Training", peak_gb: 1.2 });
+      emit!({ type: "stage", stage: "done", progress: 1, message: "Adapter saved",
+        adapter_path: config.adapterPath, applied_ranks: { q_proj: config.rank } });
       return { adapterPath: config.adapterPath } as Awaited<ReturnType<FinetuneRuntime["train"]>>;
     },
     recommendedLimit: () => 100, setWiredLimit(limit) { calls.push(`limit:${limit}`); return 20; },
@@ -97,7 +99,10 @@ test("child forwards training progress, falls back for bf16 ORPO heads, and rest
   expect(await createFinetuneRunner(async () => r)(event => events.push(event), { ...paths, method: "orpo" }))
     .toEqual({ outputPath: paths.adapter_path });
   expect(configs[0]).toMatchObject({ orpoFlashCe: false, orpoFusedCe: false, orpoPrefixShared: true, segmentSize: 2 });
-  expect(events).toContainEqual({ type: "metric", kind: "train", step: 1, loss: 0.5 });
+  expect(events).toContainEqual({ type: "metric", kind: "train", step: 1, loss: 0.5,
+    progress: 0.75, message: "Training", peak_gb: 1.2 });
+  expect(events).toContainEqual({ type: "stage", stage: "done", progress: 1, message: "Adapter saved",
+    adapter_path: paths.adapter_path, applied_ranks: { q_proj: defaults.rank } });
   expect(events.some(event => event.type === "stage" && event.message?.includes("unquantized base"))).toBe(true);
   expect(calls).toEqual(["limit:100", "train", "sync", "limit:20", "model", "weights"]);
 });
@@ -172,4 +177,21 @@ test("malformed HTTP inputs never submit a child or inspect arbitrary non-string
   for (const body of [null, [], {}, { ...paths, model_dir: 3 }, { ...paths, adapter_path: [] }])
     expect((await routes.handle(post("submit", body)))?.status).toBe(400);
   expect((await routes.handle(post("inspect-dataset", { path: [] })))?.status).toBe(400);
+});
+
+test("default adapter outputs are distinct for two submissions in the same millisecond", async () => {
+  const calls: unknown[][] = [];
+  const routes = createFinetuneRoutes({ submit(...args) { calls.push(args); return { jobId: `job_${calls.length}` }; } });
+  const clock = spyOn(Date, "now").mockReturnValue(123);
+  try {
+    const body = { model_dir: paths.model_dir, data_dir: paths.data_dir };
+    const first = await (await routes.handle(post("submit", body)))!.json();
+    const second = await (await routes.handle(post("submit", body)))!.json();
+    expect(first.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
+    expect(second.adapter_path).toMatch(/\/adapter-123-[0-9a-f-]{36}$/);
+    expect(first.adapter_path).not.toBe(second.adapter_path);
+    expect(calls.map(call => call[2])).toEqual([first.adapter_path, second.adapter_path]);
+    await routes.handle(post("submit", { ...body, adapter_path: "/chosen/output" }));
+    expect(calls[2]?.[2]).toBe("/chosen/output");
+  } finally { clock.mockRestore(); }
 });

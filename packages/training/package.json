@@ -30,7 +30,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test tests/cpu",
-    "test:native": "bun test tests/native"
+    "test:native": "MLX_BUN_TEST_NATIVE=1 bun test tests/native"
   },
   "dependencies": {
     "@mlx-bun/mlx": "workspace:*",

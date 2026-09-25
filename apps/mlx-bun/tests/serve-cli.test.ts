@@ -1,3 +1,4 @@
+import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -29,6 +30,19 @@ test("serving forwards explicit sampling, context, and cache choices with their 
     });
   expect(parse("--temp", "1", "--temperature", "0").request.defaultTemperature).toBe(0);
   expect(parse("positional", "--query", "fallback").query).toBe("positional");
+});
+
+test("the existing runtime context cap is validated and explicit CLI context takes precedence", () => {
+  const restore = configureRuntime({ MLX_BUN_RD_CONTEXT_LIMIT: "2048" });
+  try {
+    expect(parse().contextLimit).toBe(2048);
+    expect(parse("--ctx", "4096").contextLimit).toBe(4096);
+  } finally { restore(); }
+  for (const raw of ["", "0", "-1", "1.5", "NaN"]) {
+    const restore = configureRuntime({ MLX_BUN_RD_CONTEXT_LIMIT: raw });
+    try { expect(() => parse()).toThrow("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer"); }
+    finally { restore(); }
+  }
 });
 
 test("invalid serving input fails before model selection", async () => {

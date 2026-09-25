@@ -19,9 +19,19 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   verifies the existing composition; keep that implementation unchanged during
   this refactor and do not imply blanket OptiQ serve compatibility.
 - [ ] Extend training preservation beyond the
-  [verified short MiniCPM SFT/DPO/ORPO paths](packages/training/measurements/2026-09-25-training-preservation.json).
+  [preservation-checked short MiniCPM SFT/DPO/ORPO paths](packages/training/measurements/2026-09-25-training-preservation.json).
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
+- [ ] Restore main's remaining training checks in their owning packages:
+  `tests/parity/train-e2e.test.ts`, `train-batch-e2e.test.ts`,
+  `train-orpo-e2e.test.ts`, `train-regularization-e2e.test.ts`, and
+  `diffusion-lora.test.ts`; `tests/research/train-orpo-chunked.test.ts` and
+  `train-orpo-fused-ce.test.ts`; and `tests/unit/train-autograd.test.ts`.
+  Exit: the seven model tests use explicit caller-supplied cached artifacts,
+  skip before native loading when not opted in, and retain their loss, gradient,
+  adapter reload, batching, regularization, and specialized-head checks without
+  importing old goldens or fixtures. The weight-free ValueAndGrad/Vjp
+  finite-difference test belongs in `@mlx-bun/mlx` and must run in native Mac CI.
 
 ## Optimize after the full draft
 

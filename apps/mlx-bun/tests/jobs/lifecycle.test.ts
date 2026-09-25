@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { JobStore } from "../../src/jobs/db";
@@ -134,6 +134,27 @@ test("a real finetune child validates its config and persists failure before nat
   const log = await Bun.file(store.get(jobId)!.log_path).text();
   expect(log).toContain('"type":"started"');
   expect(log).toContain('"type":"failed"');
+});
+
+for (const dispatch of ["direct", "cli"] as const) test(`${dispatch} child exits after terminal persistence even with a lingering producer handle`, async () => {
+  const { root, store } = fresh(), row = store.create("unsupported", {});
+  const preload = join(root, "keepalive.ts");
+  writeFileSync(preload, "setInterval(() => {}, 1000);\n");
+  const child = Bun.spawn([process.execPath, "--no-env-file", "--preload", preload,
+    ...(dispatch === "direct" ? [new URL("../../src/cli/job-entry.ts", import.meta.url).pathname, row.id]
+      : [new URL("../../src/cli/main.ts", import.meta.url).pathname, "__job", row.id])], {
+    env: { ...process.env, MLX_BUN_LIBMLXC: "/does-not-exist", MLX_BUN_JOBS_DB: store.dbPath, MLX_BUN_JOBS_DIR: store.logsDir },
+    stdout: "ignore", stderr: "ignore",
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const code = await Promise.race([child.exited, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("child retained its event loop")), 2000);
+    })]);
+    expect(code).toBe(1);
+    expect(store.get(row.id)?.status).toBe("failed");
+    expect(await Bun.file(row.log_path).text()).toContain('"type":"failed"');
+  } finally { if (timer) clearTimeout(timer); if (child.exitCode === null) child.kill("SIGKILL"); await child.exited; }
 });
 
 test("queued persistence failure still joins the child before closing its store and engine", async () => {
