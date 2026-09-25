@@ -253,11 +253,23 @@ describe("session HTTP routes and filesystem confinement", () => {
     writeFileSync(external, jsonl([msg("user", "outside secret")]));
     const leaf = join(dir, "escape.jsonl"), parent = join(dir, "linked-parent");
     symlinkSync(external, leaf); symlinkSync(outside, parent);
-    for (const path of [external, join(dir, "..", "sessions-other", "secret.jsonl"), leaf, join(parent, "secret.jsonl")]) {
+    for (const path of [external, `${dir}/../sessions-other/secret.jsonl`, leaf, join(parent, "secret.jsonl")]) {
       const response = await get("export", { path }); expect(response.status).toBe(403);
       expect(await response.json()).toEqual({ ok: false, error: "path must be under the session directory" });
     }
     expect(await (await get("search", { q: "secret" })).json()).toEqual({ ok: true, results: [] });
+  });
+
+  test("export trims Unicode whitespace and reports dangling aliases as not found", async () => {
+    const { dir, routes, get } = setup();
+    const file = join(dir, "whitespace.jsonl");
+    writeFileSync(file, '\uFEFF{"first":1}\n\u00A0{"second":2}\n');
+    expect((await (await get("export", { path: file })).json()).entries).toEqual([{ first: 1 }, { second: 2 }]);
+    const dangling = join(dir, "dangling.jsonl");
+    symlinkSync(join(dir, "missing-target.jsonl"), dangling);
+    expect((await get("export", { path: dangling })).status).toBe(404);
+    const encoded = new Request(`http://local/api/sessions/export?path=${encodeURIComponent(dir)}/%2e%2e/sessions-other/secret.jsonl`);
+    expect((await routes.handle(encoded))!.status).toBe(403);
   });
 
   test("nested files and links inside the configured directory remain readable", async () => {

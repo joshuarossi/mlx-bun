@@ -44,10 +44,12 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 - [ ] Migrate the memory CLI commands and nightly scheduling with their owning
   synthesis lifecycle; read/init routes alone do not enable background work.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
-  their owners migrate: memory synthesis; dataset publishing and adapter merge/export;
-  artifact publishing; HF credential settings; lease/drain/cache admin;
-  audio, hub/browser model switching, curve terrain, generate, signal, fit and stats.
+  their owners migrate: memory synthesis; lease/drain/cache admin;
+  audio, hub downloads and live model switching, curve terrain, generate and signal.
   Each slice removes its matching placeholder when its real handler lands.
+- [ ] Give hub downloads a caller-owned cancellation and join seam before enabling
+  the web download route; application shutdown must cancel/join transfers before
+  closing their owner. The route remains 501 until that lifecycle exists.
 - [ ] Migrate an owned generated-code execution facility before enabling the
   `verified_code` dataset template. Its metadata currently states unavailable
   and submission returns 501; the other twelve templates are enabled.

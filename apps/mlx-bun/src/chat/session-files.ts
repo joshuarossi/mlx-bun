@@ -30,7 +30,7 @@ export function sessionEntries(content: string): unknown[] {
   const entries: unknown[] = [];
   for (const line of content.split("\n")) {
     if (!line.trim()) continue;
-    try { entries.push(JSON.parse(line)); } catch { /* incomplete JSONL line */ }
+    try { entries.push(JSON.parse(line.trim())); } catch { /* incomplete JSONL line */ }
   }
   return entries;
 }
