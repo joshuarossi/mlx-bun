@@ -46,7 +46,8 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 - [ ] Replace the temporary 501 routes in `apps/mlx-bun/src/server/start.ts` as
   their owners migrate: memory read/init and synthesis; jobs, quantize, dataset
   and finetune; settings and GC; lease/drain/cache admin;
-  Anthropic messages, Responses, audio, generate, signal, fit and stats.
+  Anthropic messages, Responses, audio, hub/browser model switching, session
+  search/export, curve terrain, generate, signal, fit and stats.
   Each slice removes its matching placeholder when its real handler lands.
 - [ ] Preserve main's `src/train/job.ts` resolved configuration in the finetune
   producer. Exit: per-method behavior snapshots cover SFT/DPO/ORPO learning
@@ -72,6 +73,22 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   serial-only or compilation switches on the new app surface. Exit: the full
   draft preserves main's behavior and cancellation/streaming contracts before
   the subsequent performance pass.
+- [ ] Restore deferred serving inputs with their app owners, keeping the existing
+  main behavior rather than silently retiring capabilities:
+  - Engine admission: `--memory-budget`, `--force-wire`, `--context-length`,
+    `--expert-offload`; paged scheduling: `--paged-kv`, `--paged-kv-block-size`;
+    mixed-KV composition: `--kv-quant turbo`.
+  - Speculative/model loading: `--draft-model`, `--draft-kind`,
+    `--num-draft-tokens`, `--ngram-max`, `--ngram-min`, `--mtp`, `--preload`;
+    adapter defaults: `--adapter`, `--adapter-path`.
+  - Process/listener ownership: `--unix`, `--isolate`, `--model-pool`,
+    `MLX_BUN_SHUTDOWN_TIMEOUT_MS`; transcription: `--whisper-model`,
+    `--whisper-idle-unload`, `--whisper-resident`; request media policy:
+    `--allow-private-media`; media preprocessing: the `--hlg-*` family.
+  - Resolve parity-route compatibility (`--l1`, `--l2`, removed `--l3` error,
+    `--fused-sdpa`) with specialized-layer policy. Serial-only and compilation
+    controls (`--compiled-decode`, `--compiled-activations`) are intentionally
+    absent under Josh's decision; this does not authorize dropping the other inputs.
 - [ ] Preserve the `mlx-bun` terminal experience and Bun, Homebrew, curl-script,
   and source-checkout installation paths. Add generated surface reference and
   coverage checks with the CLI/server migration. Exit: the app and its install
