@@ -8,6 +8,7 @@ import type { PromptResponseTrace } from "@mlx-bun/inference/runtime/trace";
 import type { CacheCodecProvider } from "@mlx-bun/inference/state";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { CompletionEngine, RequestShape, GenerationPlacement, Vision, OnToken } from "./completion";
+import { UnsupportedExecutionError } from "./completion";
 import { acquireReservation } from "./preparation";
 
 /** Async mutex: acquire() resolves to a release fn; releases run FIFO. */
@@ -72,6 +73,8 @@ export class GenerationGateway implements CompletionEngine {
   #rowsSubmitted = 0;
 
   #exclusiveWaiters = 0;
+  /** The model binding is stable for this gateway; probing allocates native caches. */
+  #cachesBatchable: boolean | null = null;
   /** Lazy, memoized: can the configured KV scheme convert every named cache? */
   #kvSchemeBatchable: boolean | null = null;
   constructor(
@@ -152,12 +155,12 @@ export class GenerationGateway implements CompletionEngine {
     if (this.#closed) throw new Error("generation gateway is closed");
     const frozenShape = Object.freeze(shape);
     const execution = this.#binding.plan(frozenShape, options, {
-      continuous: this.#binding.cachesBatchable(),
+      continuous: this.#cachesBatchable ??= this.#binding.cachesBatchable(),
       quantizedBatch: (shape.kvQuant || shape.turboQuant) && this.#kvBatchable(),
       checkpoints: this.opts.checkpoints === true,
     });
     if (execution.mechanism !== "continuous")
-      throw new Error(`model ${this.#binding.config.modelType} method ${execution.method} does not support shared execution: ${execution.reasons.join(", ")}`);
+      throw new UnsupportedExecutionError(this.#binding.config.modelType, execution.method, execution.reasons);
     return Object.freeze({ shape: frozenShape, mechanism: "continuous", execution });
   }
 

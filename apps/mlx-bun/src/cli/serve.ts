@@ -1,3 +1,4 @@
+import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -62,11 +63,15 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (!host.trim()) throw new Error("--host expects an address");
   const kvBudget = number("kv-budget");
   const maxTokens = number("max-tokens", 1, 10_000_000);
+  const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
+  const profileLimit = profileContext === undefined ? null : Number(profileContext);
+  if (profileLimit !== null && (!Number.isSafeInteger(profileLimit) || profileLimit < 1))
+    throw new Error("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer");
   return {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
     capacity: number("batch", 1, Number.MAX_SAFE_INTEGER, true) ?? 8,
-    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? null,
+    contextLimit: number("ctx", 1, Number.MAX_SAFE_INTEGER, true) ?? profileLimit,
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
     readOnly: args.values["read-only"] === true, noOpen: args.values["no-open"] === true,
@@ -150,14 +155,24 @@ export interface SignalPort {
 }
 /** Keep listeners installed until teardown finishes, so a second signal cannot race it. */
 export function installShutdownHandlers(close: () => Promise<void>, input: {
-  signals: SignalPort; exit(code: number): void; error(error: unknown): void;
+  signals: SignalPort; exit(code: number): void; error(error: unknown): void; timeoutMs?: number;
 }) {
   let stopping = false;
   const remove = () => { input.signals.removeListener("SIGINT", stop); input.signals.removeListener("SIGTERM", stop); };
   const stop = () => {
     if (stopping) return;
     stopping = true;
-    void close().then(() => input.exit(0), error => { input.error(error); input.exit(1); }).finally(remove);
+    // Keep the deadline at the process owner. Resource owners keep joining
+    // their work; timing out must not free model weights under a live borrower.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Shutdown exceeded its deadline; persistence may be incomplete")), input.timeoutMs ?? 120_000);
+      timer.unref();
+    });
+    const work = (async () => { await close(); })();
+    void Promise.race([work, deadline]).then(() => input.exit(0), error => {
+      input.error(error); input.exit(1);
+    }).finally(() => { if (timer) clearTimeout(timer); remove(); });
   };
   input.signals.on("SIGINT", stop); input.signals.on("SIGTERM", stop);
   return remove;

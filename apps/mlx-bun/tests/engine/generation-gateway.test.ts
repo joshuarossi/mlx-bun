@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { GenerationGateway } from "../../src/engine/generation-gateway";
 import type { RequestShape, Vision } from "../../src/engine/completion";
+import { UnsupportedExecutionError } from "../../src/engine/completion";
 import { runtimeConfig } from "@mlx-bun/inference/runtime/config";
 import type { MlxGatewayBinding, MlxBatchGroup } from "@mlx-bun/inference/execution";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
@@ -50,11 +51,67 @@ for (const capacity of [1, 4]) test(`capacity ${capacity} uses the same continuo
   await gateway.close(); expect(f.closed).toBe(true);
 });
 
-test("unsupported methods are reported rather than relabeled or run on a hidden lane", () => {
-  const f = fake({ plan: () => ({ ...execution, method: "denoising", mechanism: "serial", reasons: ["method-requires-serial"] }) });
+test("unsupported methods report typed exclusion reasons without unrelated compilation diagnostics", () => {
+  const f = fake({ plan: () => ({ ...execution, method: "denoising", mechanism: "serial",
+    reasons: ["method-requires-serial", "compiled-decode-unavailable-for-request"] }) });
   const gateway = new GenerationGateway(f.binding, 1);
-  expect(() => gateway.place(shape())).toThrow("model replacement method denoising does not support shared execution");
+  let failure: unknown;
+  try { gateway.place(shape()); } catch (error) { failure = error; }
+  expect(failure).toBeInstanceOf(UnsupportedExecutionError);
+  expect(failure).toMatchObject({ modelType: "replacement", method: "denoising", reasons: ["method-requires-serial"],
+    message: "model replacement method denoising does not support shared execution: method-requires-serial" });
   expect(f.created).toBe(0);
+});
+
+test("unsupported cache capability is probed once even when every placement fails", () => {
+  const f = fake({ plan: (_shape, _options, support) => ({ ...execution,
+    mechanism: support.continuous ? "continuous" : "serial", reasons: support.continuous ? [] : ["continuous-unavailable"] }) });
+  let probes = 0;
+  f.binding.cachesBatchable = () => { probes++; return false; };
+  const gateway = new GenerationGateway(f.binding, 2);
+  expect(() => gateway.place(shape())).toThrow(UnsupportedExecutionError);
+  expect(() => gateway.place(shape())).toThrow(UnsupportedExecutionError);
+  expect(probes).toBe(1); expect(f.created).toBe(0);
+});
+
+test("two rows interleave at shared capacity and cancelling one preserves the other", async () => {
+  type Request = Parameters<MlxBatchGroup["submit"]>[0];
+  const rows = new Map<number, { request: Request; finish: () => void }>();
+  const bothEntered = Promise.withResolvers<void>();
+  const f = fake({ submit: request => {
+    const task = Promise.withResolvers<typeof result>();
+    const id = request.promptIds[0]!;
+    const abort = () => task.reject(request.signal!.reason);
+    request.signal?.addEventListener("abort", abort, { once: true });
+    rows.set(id, { request, finish: () => task.resolve(result) });
+    if (rows.size === 2) bothEntered.resolve();
+    return task.promise.finally(() => { request.signal?.removeEventListener("abort", abort); rows.delete(id); });
+  } });
+  Object.defineProperty(f.group, "activeRows", { get: () => rows.size });
+  let probes = 0;
+  f.binding.cachesBatchable = () => { probes++; return true; };
+  const gateway = new GenerationGateway(f.binding, 2), abort = new AbortController();
+  const firstShape = shape(), secondShape = shape(), firstGrammar = grammar(), secondGrammar = grammar();
+  const emitted: string[] = [];
+  const first = gateway.run([1], { grammar: firstGrammar.value }, token => { emitted.push(`a${token}`); },
+    undefined, firstShape, gateway.place(firstShape), abort.signal);
+  const second = gateway.run([2], { grammar: secondGrammar.value }, token => { emitted.push(`b${token}`); },
+    undefined, secondShape, gateway.place(secondShape));
+  await bothEntered.promise;
+  expect(gateway.activeRows).toBe(2); expect(f.created).toBe(1); expect(f.capacity).toBe(2);
+  expect(probes).toBe(1); expect(gateway.submittedRows).toBe(2);
+  await rows.get(1)!.request.onToken(7);
+  await rows.get(2)!.request.onToken(8);
+  await rows.get(1)!.request.onToken(9);
+  abort.abort(new Error("caller left mid-stream"));
+  await expect(first).rejects.toThrow("caller left mid-stream");
+  expect(gateway.activeRows).toBe(1); expect(gateway.busy).toBe(true);
+  expect(firstGrammar.disposed).toBe(1); expect(secondGrammar.disposed).toBe(0); expect(f.samplingDisposed).toBe(1);
+  await rows.get(2)!.request.onToken(10); rows.get(2)!.finish(); await second;
+  expect(emitted).toEqual(["a7", "b8", "a9", "b10"]);
+  expect(secondGrammar.disposed).toBe(1); expect(f.samplingDisposed).toBe(2);
+  expect(gateway.activeRows).toBe(0); expect(gateway.pendingRows).toBe(0); expect(gateway.busy).toBe(false);
+  await gateway.close(); expect(f.closed).toBe(true);
 });
 
 for (const failure of ["setup", "submit", "none"] as const) test(`request-owned media and grammar release after ${failure}`, async () => {

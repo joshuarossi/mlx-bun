@@ -1,3 +1,4 @@
+import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -29,6 +30,19 @@ test("serving forwards explicit sampling, context, and cache choices with their 
     });
   expect(parse("--temp", "1", "--temperature", "0").request.defaultTemperature).toBe(0);
   expect(parse("positional", "--query", "fallback").query).toBe("positional");
+});
+
+test("the existing runtime context cap is validated and explicit CLI context takes precedence", () => {
+  const restore = configureRuntime({ MLX_BUN_RD_CONTEXT_LIMIT: "2048" });
+  try {
+    expect(parse().contextLimit).toBe(2048);
+    expect(parse("--ctx", "4096").contextLimit).toBe(4096);
+  } finally { restore(); }
+  for (const raw of ["", "0", "-1", "1.5", "NaN"]) {
+    const restore = configureRuntime({ MLX_BUN_RD_CONTEXT_LIMIT: raw });
+    try { expect(() => parse()).toThrow("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer"); }
+    finally { restore(); }
+  }
 });
 
 test("invalid serving input fails before model selection", async () => {
@@ -104,4 +118,24 @@ test("signals wait for teardown and report cleanup failures with a nonzero exit"
 test("browser addresses support IPv6 and wildcard listeners", () => {
   expect(browserUrl("::", 8080)).toBe("http://localhost:8080/#/chat");
   expect(browserUrl("::1", 8080)).toBe("http://[::1]:8080/#/chat");
+});
+
+
+test("the process owner bounds shutdown without releasing live resources or exiting twice", async () => {
+  const run = runtime();
+  const pending = Promise.withResolvers<void>();
+  const exited = Promise.withResolvers<void>();
+  let releases = 0;
+  installShutdownHandlers(async () => { await pending.promise; releases++; }, {
+    signals: run.signals, timeoutMs: 5, error: run.dependencies.error,
+    exit(code) { run.exits.push(code); exited.resolve(); },
+  });
+  run.signals.emit("SIGTERM");
+  await exited.promise;
+  expect(run.exits).toEqual([1]);
+  expect((run.errors[0] as Error).message).toContain("persistence may be incomplete");
+  expect(releases).toBe(0);
+  pending.resolve(); await tick();
+  expect(releases).toBe(1); expect(run.exits).toEqual([1]);
+  expect(run.signals.listenerCount("SIGTERM")).toBe(0);
 });

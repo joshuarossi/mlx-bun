@@ -30,6 +30,7 @@ function same(actual: MlxArray, expected: MlxArray): void {
   expect(Buffer.from(actual.rawBytes()).equals(Buffer.from(expected.rawBytes()))).toBe(true);
 }
 
+// Allow cold Metal compilation across all variants; this is a correctness gate.
 test("shared matvec schedules retain baseline decoded values and accumulation", () => {
   for (const k of [2, 3, 4]) for (const axis of [0, 1] as const) {
     using w = weights(k, axis);
@@ -48,7 +49,7 @@ test("shared matvec schedules retain baseline decoded values and accumulation", 
       }
     }
   }
-}, 30_000);
+}, 60_000);
 
 test("interleaved scatter codebook retains outputs across the small row counts", () => {
   using w = weights(3, 0, true);

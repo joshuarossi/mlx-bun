@@ -40,10 +40,16 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
   application contracts and policy stay out of the inference library.
-- [ ] Complete app shared-execution support for denoising and any model-specific
-  media/cache capability gaps. The engine's CPU lifecycle and single/concurrent
-  scheduling seams are tested; real-weight app execution still needs verification.
-  Exit: supported app modalities use the shared scheduler without hidden serial fallback.
+- [ ] Complete shared-execution support for all shapes main supported through its
+  serial fallback: model caches without batch conversion (including Gemma2 masks
+  and sliding-attention caches); media without a batched input binding; adapters
+  without batched adapter support; non-batchable quantized KV and TurboQuant KV;
+  grammar with batching disabled; paged KV without a batched implementation;
+  speculative decoding without a grouped draft; and denoising. These are migration
+  gaps to support, not dropped capabilities. The app currently reports a typed
+  capability error for these shapes. Exit: each uses the shared scheduler and
+  preserves main's behavior, verified with real weights and cancellation/streaming
+  coverage, without a hidden serial fallback.
 - [ ] Preserve continuous batching as the serving default, including single
   requests. Keep compilation choices inside specialized graph layers, without
   serial-only or compilation switches on the new app surface. Exit: the full
@@ -53,3 +59,8 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   and source-checkout installation paths. Add generated surface reference and
   coverage checks with the CLI/server migration. Exit: the app and its install
   paths work from release artifacts, with documented public surfaces matching code.
+
+- [ ] Embed browser assets in the standalone compiled binary and verify it runs
+  outside a source checkout. Current static loading uses file-backed package
+  assets; runtime `Bun.file` URLs do not establish compiled-binary support.
+  Keep generated browser bundles out of Git.

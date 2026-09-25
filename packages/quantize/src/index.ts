@@ -1,6 +1,5 @@
-// Public API for native model quantization. The server (and the job system)
-// import from here: quantize a model directory, write sharded safetensors,
-// build the config block, and resolve/inspect models for the wizard UI.
+// Public checkpoint-quantization API: allocation, weight transforms, sharded
+// output, and quantization metadata. Model discovery belongs to @mlx-bun/hub.
 
 export { quantizeModelDir, isQuantizable, withPreparedProbe } from "./quantizer";
 export type {
@@ -71,4 +70,3 @@ export type {
 } from "./sensitivity";
 
 export { loadLlmCalibration } from "./calibration";
-

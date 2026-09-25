@@ -1,4 +1,5 @@
 import { AdmissionRejected } from "@mlx-bun/inference/execution/admission";
+import { UnsupportedExecutionError } from "../engine/completion";
 // The HTTP end of the pipeline: build + admit a request (errors → a JSON
 // error response in the surface's own shape), then run it and write the
 // result as JSON, or as protocol frames while events arrive. One writer for
@@ -19,13 +20,21 @@ export type ErrorFormatter = (status: number, message: string, body: Record<stri
 export const openAiError: ErrorFormatter = (status, _message, body) =>
   Response.json({ error: body }, { status });
 
-/** RequestError → the surface's error response; anything else is a 500 with
- *  its stack logged (a 500 with no server-side trace is undebuggable). */
-export function errorResponse(e: unknown, context: string, format: ErrorFormatter = openAiError): Response {
+function errorMessage(error: unknown): string {
+  try { return error instanceof Error ? error.message : String(error); }
+  catch { return "Unknown error"; }
+}
+
+/** Request cancellation and capability gaps are expected responses, not 500s. */
+export function errorResponse(e: unknown, context: string, format: ErrorFormatter = openAiError, signal?: AbortSignal): Response {
+  if (signal?.aborted) return format(499, "request cancelled", { message: "request cancelled", type: "request_cancelled", code: "request_cancelled" });
+  if (e instanceof UnsupportedExecutionError) return format(501, e.message, {
+    message: e.message, type: "not_implemented", code: "unsupported_execution", reasons: e.reasons,
+  });
   if (e instanceof AdmissionRejected) return format(429, e.message, { message: e.message, type: "resource_admission", code: "queue_full" });
   if (e instanceof RequestError) return format(e.status, e.message, e.body);
-  console.error(`[serve] 500 on ${context}:\n${(e as Error).stack ?? e}`);
-  const message = (e as Error).message;
+  const message = errorMessage(e);
+  console.error(`[serve] 500 on ${context}:\n${e instanceof Error ? e.stack ?? message : message}`);
   return format(500, message, { message });
 }
 
@@ -38,6 +47,7 @@ export async function admit(
   trace: PromptResponseTrace | undefined,
   context: string,
   format: ErrorFormatter = openAiError,
+  signal?: AbortSignal,
 ): Promise<{ admitted: AdmittedRequest } | { response: Response }> {
   const closePrepare = trace?.begin("request.prompt_prepare");
   try {
@@ -46,8 +56,8 @@ export async function admit(
     return { admitted };
   } catch (e) {
     closePrepare?.();
-    trace?.finish("error", { stage: "prepare_completion" });
-    return { response: errorResponse(e, context, format) };
+    trace?.finish(signal?.aborted ? "abort" : "error", { stage: "prepare_completion" });
+    return { response: errorResponse(e, context, format, signal) };
   }
 }
 
@@ -65,13 +75,14 @@ export async function respondJson(
 ): Promise<Response> {
   try {
     const result = await stage.run(admitted, { signal, ...(trace ? { trace } : {}) });
+    signal.throwIfAborted();
     trace?.mark("response.final_write");
     const response = Response.json(json(result), { headers: warningHeaders(admitted) });
     trace?.finish("success");
     return response;
   } catch (e) {
     trace?.finish(signal.aborted ? "abort" : "error");
-    return errorResponse(e, `request ${admitted.requestId}`, format);
+    return errorResponse(e, `request ${admitted.requestId}`, format, signal);
   }
 }
 
@@ -129,7 +140,7 @@ export function respondStream(
           outcome = generationSignal.aborted ? "abort" : "error";
           if (!generationSignal.aborted) {
             emit([
-              ...protocol.error((e as Error).message),
+              ...protocol.error(errorMessage(e)),
               ...protocol.finish("stop", latestUsage ? openAiUsage(latestUsage) : {}),
             ]);
           }

@@ -1,7 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
-import { buildWebBundle, OUTFILE } from "../../scripts/build-web";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { buildWebBundle, OUTFILE } from "../../src/web/build";
 import { createWebHandler } from "../../src/web/assets";
 
 let handle: Awaited<ReturnType<typeof createWebHandler>>;
@@ -43,4 +45,40 @@ test("the worker keeps API traffic network-only; legacy pages redirect and unkno
     expect(handle(new Request(`http://local${path}`))).toBeNull();
   }
   expect(handle(new Request("http://local/", { method: "POST" }))).toBeNull();
+});
+
+
+test("a source checkout builds a missing browser bundle without writing installation files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mlx-web-source-"));
+  try {
+    await cp(new URL("../../src/web", import.meta.url), join(root, "src/web"), { recursive: true });
+    await mkdir(join(root, "src/chat"), { recursive: true });
+    await cp(new URL("../../src/chat/protocol.ts", import.meta.url), join(root, "src/chat/protocol.ts"));
+    const { createWebHandler: sourceHandler } = await import(pathToFileURL(join(root, "src/web/assets.ts")).href);
+    const source = await sourceHandler();
+    const response = source(new Request("http://local/assets/app.js"))!;
+    expect(response.status).toBe(200);
+    const script = await response.text();
+    expect(script.length).toBeGreaterThan(10000);
+    expect(script).not.toContain("bun:ffi");
+    expect(await Bun.file(join(root, "dist/web/app.js")).exists()).toBe(false);
+    expect(source(new Request("http://local/"))?.status).toBe(200);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a packaged browser bundle is served directly without invoking the source compiler", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mlx-web-packed-"));
+  try {
+    await cp(new URL("../../src/web", import.meta.url), join(root, "src/web"), { recursive: true });
+    await mkdir(join(root, "src/chat"), { recursive: true });
+    await cp(new URL("../../src/chat/protocol.ts", import.meta.url), join(root, "src/chat/protocol.ts"));
+    await mkdir(join(root, "dist/web"), { recursive: true });
+    const packed = "globalThis.packedBrowser = true;";
+    await writeFile(join(root, "dist/web/app.js"), packed);
+    // The packaged bundle must work even when its source entry cannot build.
+    await writeFile(join(root, "src/web/browser/main.ts"), "this is invalid TypeScript {");
+    const { createWebHandler: packedHandler } = await import(pathToFileURL(join(root, "src/web/assets.ts")).href);
+    const source = await packedHandler();
+    expect(await source(new Request("http://local/assets/app.js"))!.text()).toBe(packed);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
