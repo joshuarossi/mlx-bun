@@ -19,7 +19,7 @@ export function createDatasetRoutes(deps: {
     if (id === "verified_code") return Response.json({ ok: false,
       error: "verified_code is unavailable during migration: generated-code execution has not been migrated" }, { status: 501 });
     const outDir = join(deps.outputRoot ?? join(homedir(), ".cache/mlx-bun/datasets"),
-      `dataset-${id.replace(/[^a-z0-9_-]/gi, "")}-${Date.now()}`);
+      `dataset-${id.replace(/[^a-z0-9_-]/gi, "")}-${Date.now()}-${crypto.randomUUID()}`);
     const result = deps.submit({ template_id: id, inputs: body.inputs ?? {}, output_dir: outDir,
       api_url: `http://127.0.0.1:${deps.serverPort()}`, model_name: body.model_name ?? "local" }, outDir);
     return Response.json({ ok: true, job_id: result.jobId, output_dir: outDir });

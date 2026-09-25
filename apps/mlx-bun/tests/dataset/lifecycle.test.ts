@@ -59,6 +59,26 @@ test("templates retain verified-code fields but clearly disable execution before
   await expect(generate("verified_code", {}, "/unused", () => {})).rejects.toThrow("unavailable");
 });
 
+test("simultaneous dataset submissions retain separate output files", async () => {
+  const { root, store, host } = setup();
+  const clock = spyOn(Date, "now").mockReturnValue(123456789);
+  const routes = createDatasetRoutes({ outputRoot: root, serverPort: () => 1,
+    submit: (config, output) => host.submitTask("dataset", config, createDatasetRunner(), output) });
+  try {
+    const results = await Promise.all(["first", "second"].map(async answer => {
+      const response = await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST",
+        body: JSON.stringify({ template_id: "sft_qa_pairs", inputs: { pairs_text: `Q: hello\nA: ${answer}` } }) }));
+      return response!.json();
+    }));
+    await wait(() => results.every(result => store.get(result.job_id)?.status === "done"));
+    expect(results[0].output_dir).not.toBe(results[1].output_dir);
+    for (const [i, answer] of ["first", "second"].entries()) {
+      const row = JSON.parse(readFileSync(join(results[i].output_dir, "train.jsonl"), "utf8"));
+      expect(row.messages[1].content).toBe(answer);
+    }
+  } finally { clock.mockRestore(); await host.close(); }
+});
+
 test("loopback client preserves defaults, tool payload and cancellation signal", async () => {
   const controller = new AbortController();
   const requests: any[] = [];
