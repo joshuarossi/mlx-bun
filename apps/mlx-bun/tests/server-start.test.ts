@@ -39,7 +39,7 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
       expect(response.status).toBe(501);
       expect((await response.json()).error.type).toBe("not_implemented");
     }
-    for (const path of ["/unknown", "/api/quantize/nonsense", "/toString"]) {
+    for (const path of ["/unknown", "/api/quantize/nonsense", "/toString", "/api/sessions/search", "/api/sessions/export"]) {
       expect((await fetch(new URL(path, app.server.url))).status).toBe(404);
     }
     expect((await fetch(new URL("/ws/chat", app.server.url))).status).toBe(426);
