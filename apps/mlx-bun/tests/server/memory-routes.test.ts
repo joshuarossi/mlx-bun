@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { access, mkdtemp, mkdir, readdir, writeFile, rm, symlink } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, writeFile, rm, symlink, readlink, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryRoutes } from "../../src/server/memory-routes";
@@ -212,6 +212,76 @@ describe("GET /api/memory/diff", () => {
 });
 
 describe("POST /api/memory/init", () => {
+  test("initialization preserves external article, Talk, and unseeded Reference directory links", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "mlxbun-memrest-linked-"));
+    try {
+      for (const name of ["articles", "Talk", "Reference"]) {
+        const destination = join(outside, name);
+        await mkdir(destination);
+        await writeFile(join(destination, "Existing.md"), "User content");
+        await rm(join(root, name), { recursive: true, force: true });
+        await symlink(destination, join(root, name));
+      }
+      expect((await call(new Request("http://x/api/memory/init", { method: "POST", body: "{}" }))).status).toBe(200);
+      for (const name of ["articles", "Talk", "Reference"]) {
+        expect(await readdir(join(outside, name))).toEqual(["Existing.md"]);
+        expect(await readFile(join(outside, name, "Existing.md"), "utf8")).toBe("User content");
+        expect(await readlink(join(root, name))).toBe(join(outside, name));
+      }
+    } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+
+  test("initialization can write Meta pages through an internal directory symlink", async () => {
+    const internal = join(root, "InternalMeta");
+    await mkdir(internal);
+    await symlink(internal, join(root, "Meta"));
+    const response = await call(new Request("http://x/api/memory/init", { method: "POST", body: "{}" }));
+    expect(response.status).toBe(200);
+    expect(await readlink(join(root, "Meta"))).toBe(internal);
+    expect(await readFile(join(internal, "Editorial_Guidelines.md"), "utf8")).toContain("Editorial");
+  });
+
+  test("only explicitly supplied reference sources are seeded and default re-init leaves existing links unchanged", async () => {
+    const fresh = join(root, "new-vault");
+    const source = join(root, "approved.md"), replacement = join(root, "replacement.md");
+    await writeFile(source, "# Approved reference");
+    await writeFile(replacement, "# Explicit replacement");
+    const seeded = createMemoryRoutes({ root: () => fresh,
+      referenceSources: [{ name: "Approved_Guide", source }] });
+    const request = () => new Request("http://x/api/memory/init", { method: "POST", body: "{}" });
+    const result = await (await seeded.handle(request()))!.json();
+    const link = join(fresh, "Reference", "Approved_Guide.md");
+    expect(result.result.created).toContain(link);
+    expect(await readdir(join(fresh, "Reference"))).toEqual(["Approved_Guide.md"]);
+    expect(await readlink(link)).toBe(source);
+    // A legacy link must not be silently repointed at the app README.
+    const legacy = join(fresh, "Reference", "mlx-bun_README.md");
+    await symlink(source, legacy);
+    const unseeded = createMemoryRoutes({ root: () => fresh });
+    const unchanged = await (await unseeded.handle(request()))!.json();
+    expect(unchanged.result.created).toEqual([]);
+    expect(await readlink(legacy)).toBe(source);
+    expect(await readlink(link)).toBe(source);
+    const replace = createMemoryRoutes({ root: () => fresh,
+      referenceSources: [{ name: "Approved_Guide", source: replacement }] });
+    expect((await replace.handle(request()))!.status).toBe(200);
+    expect(await readlink(link)).toBe(replacement);
+    expect(await readlink(legacy)).toBe(source);
+  });
+
+  test("reference seeding rejects an external directory without writing links there", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "mlxbun-memrest-seeds-"));
+    try {
+      const source = join(root, "approved.md");
+      await writeFile(source, "# Approved");
+      await rm(join(root, "Reference"), { recursive: true });
+      await symlink(outside, join(root, "Reference"));
+      const seeded = createMemoryRoutes({ root: () => root, referenceSources: [{ name: "Approved", source }] });
+      expect((await seeded.handle(new Request("http://x/api/memory/init", { method: "POST", body: "{}" })))!.status).toBe(400);
+      expect(await readdir(outside)).toEqual([]);
+    } finally { await rm(outside, { recursive: true, force: true }); }
+  });
+
   test("invalid JSON shapes and path types return 400 without initializing a vault", async () => {
     const fresh = join(root, "not-created");
     routeRoot = fresh;

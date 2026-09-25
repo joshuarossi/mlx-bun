@@ -153,7 +153,10 @@ vault is `~/.mlx-bun/wiki`, with `MLX_BUN_WIKI` as its override.
 `server/memory-routes.ts` exposes the read/init HTTP surface through
 `createMemoryRoutes({ root })`; CLI startup composes it before model routes.
 Initialization is explicit and idempotent, and its path stays confined to the
-vault or temporary trees. Merely starting the app does not create a vault.
+vault or temporary trees. Existing article/Talk directory links remain usable;
+initialization confines its actual write targets. Reference seeding defaults to
+none; composition can pass explicit `referenceSources` without inferring old
+repository documentation paths. Merely starting the app does not create a vault.
 
 [Route tests](tests/server/memory-routes.test.ts) use injected temporary vaults
 and real local Git history; [article tests](tests/memory/article.test.ts) cover

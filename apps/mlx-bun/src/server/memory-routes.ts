@@ -4,13 +4,13 @@ import { dirname, resolve, sep } from "node:path";
 import {
   vaultRoot, vaultStatus, listArticles, listReferenceDocs, readArticle,
   searchArticles, getArticleLinks, resolveArticleRelPath, articleHistory, articleDiff,
-  setupVault, VaultPathError, type VaultStatus,
+  setupVault, VaultPathError, type VaultStatus, type ReferenceSource,
 } from "../memory/vault";
 import { parseInfobox, parseLead, parseSeriesBanner, articleStructure } from "../memory/article";
 
 /** Request-only memory API. The caller supplies the vault root; no model or
  * listener is created, and the handler owns no long-lived resources. */
-export function createMemoryRoutes(options: { root?: () => string } = {}) {
+export function createMemoryRoutes(options: { root?: () => string; referenceSources?: readonly ReferenceSource[] } = {}) {
   const getRoot = options.root ?? vaultRoot;
   function jsonOk<T extends object>(body: T, init?: ResponseInit): Response {
     return Response.json({ ok: true, ...body }, init);
@@ -229,7 +229,7 @@ export function createMemoryRoutes(options: { root?: () => string } = {}) {
       return jsonErr("path must be under the memory vault root or a temp directory", 400);
     }
     try {
-      const res = await setupVault(root);
+      const res = await setupVault(root, { referenceSources: options.referenceSources });
       const st = await vaultStatus(res.root);
       return jsonOk({ result: res, status: st });
     } catch (e) {

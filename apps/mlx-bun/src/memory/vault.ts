@@ -966,24 +966,15 @@ export const META_PAGES: Record<string, string> = {
   "Topics_to_Ignore.md": TOPICS_TO_IGNORE,
 };
 
-const REPO_ROOT = join(import.meta.dir, "..", "..");
+/** Trusted composition inputs; no repository-relative document list is inferred. */
+export interface ReferenceSource { name: string; source: string }
 
-const REFERENCE_LINKS: { name: string; source: string }[] = [
-  { name: "mlx-bun_README", source: join(REPO_ROOT, "README.md") },
-  { name: "mlx-bun_Server_API", source: join(REPO_ROOT, "docs", "reference", "server-api.md") },
-  { name: "mlx-bun_Server_Config", source: join(REPO_ROOT, "docs", "reference", "server-config.md") },
-  { name: "mlx-bun_Library_API", source: join(REPO_ROOT, "docs", "reference", "library-api.md") },
-  { name: "mlx-bun_Distribution", source: join(REPO_ROOT, "docs", "reference", "distribution.md") },
-  { name: "mlx-bun_Training", source: join(REPO_ROOT, "docs", "reference", "training.md") },
-  { name: "mlx-bun_Product_Roadmap", source: join(REPO_ROOT, "docs", "planning", "PRODUCT_ROADMAP.md") },
-];
-
-async function seedReferenceLinks(root: string): Promise<string[]> {
+async function seedReferenceLinks(root: string, sources: readonly ReferenceSource[]): Promise<string[]> {
   await mkdir(referenceDir(root), { recursive: true });
   const changed: string[] = [];
-  for (const ref of REFERENCE_LINKS) {
+  for (const ref of sources) {
     if (!(await pathExists(ref.source))) continue;
-    const dest = join(referenceDir(root), `${ref.name}.md`);
+    const dest = join(referenceDir(root), `${normalizeBareStem(ref.name)}.md`);
     try {
       const existing = await lstat(dest);
       if (existing.isSymbolicLink()) {
@@ -1087,8 +1078,12 @@ export class VaultPathError extends Error {
 }
 
 /** Idempotent: create dirs, write README + Meta pages (only if missing — never
- *  clobber user edits), git init + initial commit. Safe to re-run. */
-export async function setupVault(root = vaultRoot()): Promise<SetupResult> {
+ *  clobber user edits), git init + initial commit. Reference links are seeded
+ *  only when composition explicitly supplies sources. Safe to re-run. */
+export async function setupVault(root = vaultRoot(), options: { referenceSources?: readonly ReferenceSource[] } = {}): Promise<SetupResult> {
+  const sources = options.referenceSources ?? [];
+  // Validate trusted seed names before any initialization writes.
+  for (const source of sources) normalizeBareStem(source.name);
   const created: string[] = [];
   const ensureDir = async (p: string) => {
     if (!(await pathExists(p))) {
@@ -1108,7 +1103,8 @@ export async function setupVault(root = vaultRoot()): Promise<SetupResult> {
   // Validate write destinations before creating children. Reference documents
   // may intentionally link outside the vault for reads; only their containing
   // directory is a write target. Dangling symlinks cannot establish confinement.
-  for (const target of ["articles", "Reference", "Meta", "Talk", "README.md", ".gitignore", ".git",
+  for (const target of ["Meta", "README.md", ".gitignore", ".git",
+    ...(sources.length ? ["Reference"] : []),
     ...Object.keys(META_PAGES).map(filename => join("Meta", filename))]) {
     let current = resolve(root);
     for (const segment of target.split(sep)) {
@@ -1132,7 +1128,7 @@ export async function setupVault(root = vaultRoot()): Promise<SetupResult> {
   for (const [filename, content] of Object.entries(META_PAGES)) {
     await writeIfMissing(join(root, "Meta", filename), content);
   }
-  created.push(...(await seedReferenceLinks(root)));
+  if (sources.length) created.push(...(await seedReferenceLinks(root, sources)));
 
   let gitInitialized = false;
   if (!(await pathExists(join(root, ".git")))) {
