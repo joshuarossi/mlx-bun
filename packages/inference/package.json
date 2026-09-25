@@ -84,7 +84,8 @@
     "./execution/engine": "./src/execution/engine.ts",
     "./execution/admission": "./src/execution/admission.ts",
     "./execution/cancellation": "./src/execution/cancellation.ts",
-    "./runtime/resources": "./src/runtime/resources.ts"
+    "./runtime/resources": "./src/runtime/resources.ts",
+    "./models/profile": "./src/models/profile.ts"
   },
   "files": [
     "src",
