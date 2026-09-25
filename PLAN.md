@@ -31,10 +31,23 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 
 ## Migrate the application
 
+- [ ] Wire the migrated chat backend into the server and browser; inject memory
+  tools, skill paths, and prompt context from their real app owner. The chat
+  adapter currently leaves memory disabled and starts no server by itself.
 - [ ] Migrate the server, engine host, web app, and job orchestration into
   `apps/mlx-bun`, keeping their interfaces in the consuming domains. CLI hub
   commands are the first slice. Exit: app consumers use public library APIs;
   application contracts and policy stay out of the inference library.
+- [ ] Complete shared-execution support for all shapes main supported through its
+  serial fallback: model caches without batch conversion (including Gemma2 masks
+  and sliding-attention caches); media without a batched input binding; adapters
+  without batched adapter support; non-batchable quantized KV and TurboQuant KV;
+  grammar with batching disabled; paged KV without a batched implementation;
+  speculative decoding without a grouped draft; and denoising. These are migration
+  gaps to support, not dropped capabilities. The app currently reports a typed
+  capability error for these shapes. Exit: each uses the shared scheduler and
+  preserves main's behavior, verified with real weights and cancellation/streaming
+  coverage, without a hidden serial fallback.
 - [ ] Preserve continuous batching as the serving default, including single
   requests. Keep compilation choices inside specialized graph layers, without
   serial-only or compilation switches on the new app surface. Exit: the full

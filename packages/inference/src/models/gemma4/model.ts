@@ -17,6 +17,7 @@
 // identical to mlx-lm's RotatingKVCache, at the cost of unbounded cache
 // growth past the window (memory optimization deferred).
 
+import { disposeResources } from "../../runtime/resources";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -664,6 +665,7 @@ export class DecoderLayer {
 }
 
 export class Gemma4Model {
+  #disposed = false;
   readonly config: ModelConfig;
   /** Total weight-shard bytes (for the conditional wired-limit scope). */
   readonly weightsBytes: number;
@@ -788,6 +790,14 @@ export class Gemma4Model {
         ? new RotatingKVCache(this.windowSize)
         : new KVCache(),
     );
+  }
+
+  /** Release model-owned graph constants after all executions and compiled
+   * runners have stopped. Weight tensors and hidden taps are borrowed. */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    disposeResources(this.layers.flatMap(layer => layer.attn.ropeFreqs ? [layer.attn.ropeFreqs] : []));
   }
 
   /** Computed model constants must retain their constructor arithmetic when

@@ -9,8 +9,15 @@ import {
   isQwen3MoeConfig,
   isWhisperConfig,
 } from "./support";
-import { GENERATED } from "./gemma4/generated/index";
 import { GENERIC_MODEL_TYPES, genericArgsFor, remapModelType } from "./universal/archs";
+
+/** Construction identities are metadata; inspecting a profile never loads native graphs. */
+export const GENERATED_GEMMA_FINGERPRINTS = Object.freeze({
+  "12b": "9f812d2eb461fcbe",
+  "e4b": "418e9adc386ea67c",
+  "26b": "c9dd67ed5a525231",
+});
+const generatedGemmaFingerprints = new Set<string>(Object.values(GENERATED_GEMMA_FINGERPRINTS));
 
 export const ENGINE_CAPABILITIES = Object.freeze([
   "autoregressive",
@@ -283,7 +290,7 @@ function familyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
   if (isQwen3Config(config)) return FAMILY_PROFILES.qwen3;
   if (isWhisperConfig(config)) return FAMILY_PROFILES.whisper;
   if (config.modelType.startsWith("gemma4"))
-    return GENERATED.has(fingerprint) ? FAMILY_PROFILES.gemma4Generated : FAMILY_PROFILES.gemma4;
+    return generatedGemmaFingerprints.has(fingerprint) ? FAMILY_PROFILES.gemma4Generated : FAMILY_PROFILES.gemma4;
   if (genericArgsFor(config)) return FAMILY_PROFILES.universal;
 
   const arch = remapModelType(config.modelType);

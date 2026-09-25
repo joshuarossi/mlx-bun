@@ -89,9 +89,10 @@ directories need an explicit layer owner in this gate.
 surfaces. Its `cli/` domain parses arguments and presents results, consuming
 public library exports. Model discovery, acquisition, and fit remain in
 `@mlx-bun/hub`; numerical inference remains in `@mlx-bun/inference`.
-Only `cli/` exists so far. Add server, engine-host, web, and job domains with
-their first migrated consumers and explicit dependency rules; do not invent
-shared utilities or placeholder contracts ahead of those consumers.
+The `engine/` domain owns the model host, completion boundary, preparation, and
+continuous execution lifecycle; `cli/` consumes it. Add server, web, and job
+domains with their first migrated consumers and explicit dependency rules; do
+not invent shared utilities or placeholder contracts ahead of those consumers.
 
 Standalone Pi integration is deferred pending Josh's decision. The web app
 may use Pi as its agentic component when that surface migrates.
