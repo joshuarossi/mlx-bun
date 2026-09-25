@@ -118,6 +118,8 @@ export function createDiscoveryRoutes(
               "POST /v1/messages",
               "POST /v1/responses",
               "POST /v1/embeddings",
+              "POST /v1/audio/transcriptions",
+              "POST /v1/audio/translations",
               "GET /v1/models",
               "GET /health",
               "GET /stats",
