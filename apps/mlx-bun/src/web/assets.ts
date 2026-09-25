@@ -22,7 +22,8 @@ export async function createWebHandler() {
   const legacy = new Set(["/status", "/chat", "/quantize", "/finetune", "/dataset"]);
   return (request: Request): Response | null => {
     if (request.method !== "GET") return null;
-    const path = new URL(request.url).pathname, file = files[path];
+    const path = new URL(request.url).pathname;
+    const file = Object.hasOwn(files, path) ? files[path] : undefined;
     if (file) return new Response(file.body, { headers: {
       "content-type": file.type, ...(file.cache ? { "cache-control": file.cache } : {}),
     } });

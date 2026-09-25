@@ -39,7 +39,7 @@ test("the worker keeps API traffic network-only; legacy pages redirect and unkno
     const result = handle(new Request(`http://local${path}`))!;
     expect(result.status).toBe(302); expect(result.headers.get("location")).toBe(`/#${path}`);
   }
-  for (const path of ["/v1/chat/completions", "/api/jobs", "/ws", "/not-a-file", "/curves", "/dag"]) {
+  for (const path of ["/v1/chat/completions", "/api/jobs", "/ws", "/not-a-file", "/toString", "/constructor", "/__proto__", "/curves", "/dag"]) {
     expect(handle(new Request(`http://local${path}`))).toBeNull();
   }
   expect(handle(new Request("http://local/", { method: "POST" }))).toBeNull();
