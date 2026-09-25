@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { defaultSessionDir } from "../chat/session-files";
 import { fileURLToPath } from "node:url";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CommandArgs } from "./args";
@@ -107,12 +108,12 @@ export interface RunningApp { port: number; close(): Promise<void> }
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }] = await Promise.all([
+    { downloadsSnapshot }, { configureRuntime }, { GeneratedTokenHistory }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"), import("@mlx-bun/hub/download"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"),
     import("../server/management-routes"), import("../server/adapter-routes"),
-    import("../memory/vault"), import("../memory/surface"),
+    import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"),
   ]);
   const web = await createWebHandler();
   // Keep main's KV numerical composition while graph compilation stays a layer concern.
@@ -166,15 +167,17 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const jobRoutes = createJobRoutes(jobs), quantizeRoutes = createQuantizeRoutes(jobs), finetuneRoutes = createFinetuneRoutes(jobs);
     const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: join(homedir(), ".mlx-bun", "skills") };
     const memory = createMemoryRoutes({ root: () => memoryPaths.vault });
+    const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
+    const sessions = createSessionRoutes(sessionDir);
     let boundPort = options.port;
     const datasetRunner = createDatasetRunner();
     const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
-    const routes = { handle: async (request: Request) => await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
+    const routes = { handle: async (request: Request) => await sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await memory.handle(request) ?? await jobRoutes.handle(request) ??
       await quantizeRoutes.handle(request) ?? await datasetRoutes.handle(request) ?? await finetuneRoutes.handle(request) ?? await completions.handle(request) };
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       memory: () => createMemorySurface(memoryPaths.vault, memoryPaths.skills),
-      paths: options.chatPaths,
+      paths: { ...options.chatPaths, sessionDir },
       contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template.supportsThinking,

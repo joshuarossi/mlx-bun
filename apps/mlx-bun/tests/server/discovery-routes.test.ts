@@ -33,7 +33,7 @@ test("model discovery preserves batch vocabulary and binding capabilities and cl
     const response = (await run.get(`/v1/models/test/${modelType}`))!;
     expect(response.status).toBe(200);
     expect((await response.json()).data).toEqual([expect.objectContaining({ batch_mode: "batch", adapters: supported, training: supported,
-      dsa: !supported, capabilities: expect.objectContaining({ adapters: supported, training: supported, anthropic_messages: false, responses: false }) })]);
+      dsa: !supported, capabilities: expect.objectContaining({ adapters: supported, training: supported, anthropic_messages: true, responses: true }) })]);
     expect(run.scans()).toBe(1); expect(run.closes()).toBe(1);
   }
 });
