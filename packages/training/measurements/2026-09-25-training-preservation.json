@@ -1,0 +1,434 @@
+{
+  "schemaVersion": 1,
+  "kind": "training-migration-preservation",
+  "date": "2026-09-25",
+  "branchCommit": "20912ba059a8fe635f2db39d7ec6573a8b87b73e",
+  "mainCommit": "02d723a2875153196f8c6c10bce2daf6f0044655",
+  "machine": {
+    "name": "Josh Apple M1 Max 32 GB",
+    "chip": "Apple M1 Max",
+    "ramBytes": 34359738368,
+    "os": "macOS 27.0",
+    "architecture": "arm64",
+    "bun": "1.4.2",
+    "mlx": "0.32.2"
+  },
+  "reference": {
+    "kind": "pre-refactor main",
+    "scope": "Migration preservation only; this record does not establish independent mlx-lm or OptiQ training parity."
+  },
+  "artifact": {
+    "repo": "mlx-community/MiniCPM5-1B-OptiQ-4bit",
+    "snapshot": "664aabaed233c653f82716d8dc822234d0091f78",
+    "configSha256": "94b1ac84fc7333f4beccd73766543c150d7c005d1fb2e8eaecee2326f8d83227",
+    "tokenizerSha256": "3e065a558a034185fe299917b398685c1facd0169a9eea1e629eb30c171fed81",
+    "tokenizerConfigSha256": "b99b837295c979cc956b9e018fe710123a5547df9d4143894ba7b95a7f08c42b",
+    "weightHashes": {
+      "model.safetensors": "88bb686ed4a28f7c2065e27aabef7669f84961ac47c83efe2d003436c179e2e4"
+    }
+  },
+  "native": {
+    "selection": "Both revisions explicitly use the same staged MLX native bundle; staged files match the monorepo bundle byte-for-byte.",
+    "hashes": {
+      "libjaccl.dylib": "74f53f3e5deff38eaec4be0d555ebb8614f73dc28c861dfefb0449430e29f457",
+      "libmlx.dylib": "a7254c2a63f6bf01ce7d033ff8c880f30eeb399e3d0df2f2333a47ff47db517f",
+      "libmlxc.dylib": "35596c4a4031a755c19b203bec95f180b5b4e4f8a9bdf131ca4fe45ce050ddd9",
+      "mlx.metallib": "a19618258e2a215d0d0ac3056174a6e066818bb6cdecb50062cc9316076ebe43"
+    }
+  },
+  "settings": {
+    "rank": 2,
+    "scale": 1,
+    "rankScaling": "constant",
+    "targetModules": [
+      "q_proj",
+      "v_proj"
+    ],
+    "numLayers": 1,
+    "learningRate": 0.001,
+    "maxSeqLen": 64,
+    "batchSize": 1,
+    "gradAccumSteps": 1,
+    "seed": 123,
+    "stepsPerReport": 1,
+    "stepsPerEval": 1000,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "weightDecay": 0.01,
+    "loraDropout": 0,
+    "rsLora": false,
+    "loraPlusRatio": 1,
+    "mlpSplit": false,
+    "gradCheckpoint": false,
+    "segmentSize": 0,
+    "saveCheckpoints": false,
+    "gradClipNorm": 1,
+    "valMaxExamples": 256,
+    "dpoBeta": 0.1,
+    "dpoWarmupIters": 0,
+    "dpoLrSchedule": "constant",
+    "orpoLambda": 0.1,
+    "orpoWarmupIters": 0,
+    "orpoLrSchedule": "constant",
+    "orpoChunkSize": 0,
+    "orpoFusedCe": false,
+    "orpoFlashCe": false,
+    "orpoPrefixShared": false,
+    "sftScope": "full",
+    "warmStartAdapter": ""
+  },
+  "datasets": {
+    "sft": {
+      "sha256": "2866023964bfbbde9c3a6f12dd0d0b44e6f9ad65c2b48b725a2b76ba338d38f6",
+      "rows": [
+        {
+          "prompt": "Say hello.",
+          "completion": "Hello, friend."
+        },
+        {
+          "prompt": "Name one color.",
+          "completion": "Blue is a color."
+        }
+      ],
+      "validation": "No valid.jsonl; no evaluation step is scheduled in these short runs."
+    },
+    "preference": {
+      "sha256": "7aeb020fa591272df4aa8a3adc1f6845bada57c7636109a87d880cc248981f71",
+      "rows": [
+        {
+          "prompt": "Say hello.",
+          "chosen": "Hello, friend.",
+          "rejected": "Goodbye forever."
+        },
+        {
+          "prompt": "Name one color.",
+          "chosen": "Blue is a color.",
+          "rejected": "Seven is a cloud."
+        }
+      ],
+      "validation": "No valid.jsonl; no evaluation step is scheduled in these short runs."
+    }
+  },
+  "protocol": [
+    "Run each revision and objective in a fresh Bun process, sequentially, with the same artifact, dataset, native bundle and resolved configuration.",
+    "Load config, Weights, createModel, tokenizer and ChatTemplate; call trainLora with the recorded settings and case iteration count, saving into a separate temporary adapter directory per run.",
+    "Compare the reported kind, step, loss, gradient norm, learning rate, accuracy and margin exactly where emitted, plus rank assignment and iteration count. Timing, throughput, memory, progress fractions and formatted messages are excluded.",
+    "Load every saved adapter tensor, sort by name and compare name, shape, dtype and raw bytes exactly. All four tensors are listed for each case.",
+    "Mount the saved adapter onto the same caller-owned base graph, activate it, encode Hello from a small model. and slice to eight tokens. Call trainForward on [1, tokenCount] and compare the entire logits tensor byte-for-byte.",
+    "Dispose loaded adapter tensors, logits, token inputs, mounted adapters, model resources and weights after each run."
+  ],
+  "cases": [
+    {
+      "method": "sft",
+      "iterations": 3,
+      "dataset": "sft",
+      "exactStepMetrics": [
+        {
+          "kind": "train",
+          "step": 1,
+          "loss": 7,
+          "grad_norm": 0.12367909041409934,
+          "learning_rate": 0.001
+        },
+        {
+          "kind": "train",
+          "step": 2,
+          "loss": 3.5104167461395264,
+          "grad_norm": 0.13072684928916226,
+          "learning_rate": 0.001
+        },
+        {
+          "kind": "train",
+          "step": 3,
+          "loss": 3.53125,
+          "grad_norm": 0.2323068795226828,
+          "learning_rate": 0.001
+        }
+      ],
+      "appliedRanks": {
+        "model.layers.23.self_attn.q_proj": 2,
+        "model.layers.23.self_attn.v_proj": 2
+      },
+      "exactAdapterTensors": [
+        {
+          "name": "model.layers.23.self_attn.q_proj.lora_a",
+          "shape": [
+            1536,
+            2
+          ],
+          "dtype": "float32",
+          "bytes": 12288,
+          "sha256": "e1d830a373fbb8c2b445031eb7d16ba8a3ae9a04a7a13707c1c366bbde1ec060"
+        },
+        {
+          "name": "model.layers.23.self_attn.q_proj.lora_b",
+          "shape": [
+            2,
+            2048
+          ],
+          "dtype": "float32",
+          "bytes": 16384,
+          "sha256": "cdece187cc99aab0641614801779d325e1d7764aed96f5ee4fd79765a926d1f6"
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj.lora_a",
+          "shape": [
+            1536,
+            2
+          ],
+          "dtype": "float32",
+          "bytes": 12288,
+          "sha256": "e66ec92bdb86caf6f7ee2e422429da6af57a4a50a7b8c017257e218494af6d82"
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj.lora_b",
+          "shape": [
+            2,
+            256
+          ],
+          "dtype": "float32",
+          "bytes": 2048,
+          "sha256": "04ca38c7d29e4f94f0c271fa23987c25e8e0fe398f1e0c77011f688d15713637"
+        }
+      ],
+      "exactReloadLogits": {
+        "ids": [
+          0,
+          36417,
+          512,
+          280,
+          1681,
+          1327,
+          35
+        ],
+        "shape": [
+          1,
+          7,
+          130560
+        ],
+        "dtype": "bfloat16",
+        "bytes": 1827840,
+        "sha256": "9e441734bb7373f9e7cf7cc9dc5c02756b1d02a6a98308a83bd56500a6fcbc7d"
+      },
+      "mainReportSha256": "44cacbc7e27b29d7627801c915bfacd3ec414afe59cd361e8e111deee468972c",
+      "migratedReportSha256": "e0243185ac6b0bb6c40739fb29957f397d4a8ff1faee2e5b35e37cfc5098ff95"
+    },
+    {
+      "method": "dpo",
+      "iterations": 2,
+      "dataset": "preference",
+      "exactStepMetrics": [
+        {
+          "kind": "train",
+          "step": 1,
+          "loss": 0.6931471824645996,
+          "grad_norm": 0.02490424196871695,
+          "learning_rate": 0.001,
+          "accuracy": 0,
+          "margin": -0.012500000186264515
+        },
+        {
+          "kind": "train",
+          "step": 2,
+          "loss": 0.7088941931724548,
+          "grad_norm": 0.03216787046467916,
+          "learning_rate": 0.001,
+          "accuracy": 0,
+          "margin": -0.01875000074505806
+        }
+      ],
+      "appliedRanks": {
+        "model.layers.23.self_attn.q_proj": 2,
+        "model.layers.23.self_attn.v_proj": 2
+      },
+      "exactAdapterTensors": [
+        {
+          "name": "model.layers.23.self_attn.q_proj.lora_a",
+          "shape": [
+            1536,
+            2
+          ],
+          "dtype": "float32",
+          "bytes": 12288,
+          "sha256": "0429b494dea7fe71fc77837c89c0265d9a07f5efa1f55dc7cb7d68d8dce97efd"
+        },
+        {
+          "name": "model.layers.23.self_attn.q_proj.lora_b",
+          "shape": [
+            2,
+            2048
+          ],
+          "dtype": "float32",
+          "bytes": 16384,
+          "sha256": "6226231d65766d5de90b87c0dd211b49f9dafb80e1ab8bd9b6323e58a9592e00"
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj.lora_a",
+          "shape": [
+            1536,
+            2
+          ],
+          "dtype": "float32",
+          "bytes": 12288,
+          "sha256": "fbd581cad76f60a8c77daed8fe40cff7b3a691d27a33c8184113997a07292817"
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj.lora_b",
+          "shape": [
+            2,
+            256
+          ],
+          "dtype": "float32",
+          "bytes": 2048,
+          "sha256": "ccabd61838b296386024ca2e30867e9aaa1b513f5e53d7cb7c9155a29288b495"
+        }
+      ],
+      "exactReloadLogits": {
+        "ids": [
+          0,
+          36417,
+          512,
+          280,
+          1681,
+          1327,
+          35
+        ],
+        "shape": [
+          1,
+          7,
+          130560
+        ],
+        "dtype": "bfloat16",
+        "bytes": 1827840,
+        "sha256": "8169c8ed2032d8b010cbf996a7c4a77c997524876e0ae3093362db374227fbd9"
+      },
+      "mainReportSha256": "b61c9d01fb49526599a86118b46563672b796a6f46ac76dc12cd350680e0bbbc",
+      "migratedReportSha256": "ff5017fdd65c695bbc3f2d2bcb1dbe22a15b958a90821e829c1901d344e99498"
+    },
+    {
+      "method": "orpo",
+      "iterations": 2,
+      "dataset": "preference",
+      "exactStepMetrics": [
+        {
+          "kind": "train",
+          "step": 1,
+          "loss": 8.433058738708496,
+          "grad_norm": 0.10697110924569406,
+          "learning_rate": 0.001,
+          "accuracy": 1,
+          "margin": 1.9018393754959106
+        },
+        {
+          "kind": "train",
+          "step": 2,
+          "loss": 5.404021739959717,
+          "grad_norm": 0.06164215206818399,
+          "learning_rate": 0.001,
+          "accuracy": 1,
+          "margin": 4.501229763031006
+        }
+      ],
+      "appliedRanks": {
+        "model.layers.23.self_attn.q_proj": 2,
+        "model.layers.23.self_attn.v_proj": 2
+      },
+      "exactAdapterTensors": [
+        {
+          "name": "model.layers.23.self_attn.q_proj.lora_a",
+          "shape": [
+            1536,
+            2
+          ],
+          "dtype": "float32",
+          "bytes": 12288,
+          "sha256": "b6de72fb462ae4db799d417230c72f27dcfa480a3b1a0d7e9b12d96b875fa4cc"
+        },
+        {
+          "name": "model.layers.23.self_attn.q_proj.lora_b",
+          "shape": [
+            2,
+            2048
+          ],
+          "dtype": "float32",
+          "bytes": 16384,
+          "sha256": "1e3b70a1431c9ad233ec79356b3cc5c335fc1b7b0a20d366292bcb246aca018b"
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj.lora_a",
+          "shape": [
+            1536,
+            2
+          ],
+          "dtype": "float32",
+          "bytes": 12288,
+          "sha256": "7ea0b239f551a20adf503431990ab3a77384b9abe88af47ea45546e8cb0f1355"
+        },
+        {
+          "name": "model.layers.23.self_attn.v_proj.lora_b",
+          "shape": [
+            2,
+            256
+          ],
+          "dtype": "float32",
+          "bytes": 2048,
+          "sha256": "702466df99f0a29ea9031d5bc6877e5bcf63df0a36438fe59e9792a93569b9b0"
+        }
+      ],
+      "exactReloadLogits": {
+        "ids": [
+          0,
+          36417,
+          512,
+          280,
+          1681,
+          1327,
+          35
+        ],
+        "shape": [
+          1,
+          7,
+          130560
+        ],
+        "dtype": "bfloat16",
+        "bytes": 1827840,
+        "sha256": "4ad5304415fe8a7d02709984bf6b368eb4282750901ae751baa4d5ffa763fc3b"
+      },
+      "mainReportSha256": "31e46960bc88c6e54387765f3ae217bf5ccb8133cce53bdb887d2e1c30d5be56",
+      "migratedReportSha256": "cf472507a71a2e7ac7b3bd320d329dcb0d7f9772a99818834929b29592c0d648"
+    }
+  ],
+  "supportingChecks": {
+    "cpuAndDag": {
+      "tests": 24,
+      "assertions": 90,
+      "nativeLoadingBlocked": true
+    },
+    "nativeTraining": {
+      "tests": 47,
+      "assertions": 7478
+    },
+    "typecheck": "All workspace and tooling TypeScript checks passed.",
+    "installedArtifacts": {
+      "command": "bun scripts/verify-packages.ts",
+      "publicImports": 111,
+      "consumerTests": 30,
+      "assertions": 2829,
+      "examplesPassed": true
+    },
+    "sourcePreservation": "All 14 migrated implementation bodies match main after TypeScript transpilation and removing import declarations; comments/types are excluded, numerical and Metal source bodies are retained."
+  },
+  "externalEvidence": {
+    "directory": "/tmp/mlx-training-preservation-20912ba",
+    "harnessSha256": "ef5f87fa225c917dbc385cd2d9a341001298907f7167511c6fd43c2163417066",
+    "retention": "Raw logs, checkpoint files, harness and tensor bytes remain outside Git; this record contains the compared values, hashes, input rows and reconstruction protocol."
+  },
+  "limitations": [
+    "Only MiniCPM5-1B OptiQ 4-bit, last-layer q_proj/v_proj rank-2 adapters, batch 1 and short sequences are covered by these paired runs.",
+    "Gemma, DiffusionGemma, segmented or checkpointed backward, shared-prefix preference training, fused/flash CCE, warm starts, intermediate checkpoints, export/fusion and longer or distributed runs require separate real-weight evidence.",
+    "Synthetic native tests exercise additional primitive behavior but do not establish specialized graph preservation.",
+    "There is no performance claim."
+  ]
+}

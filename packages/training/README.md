@@ -37,8 +37,12 @@ exercise per-target rank selection. They need no native library or weights.
 optimizer, accumulation, batching, ORPO, and regularization tests; it uses MLX
 and must only run when GPU work is allowed.
 
-The migration preserves the existing operations and specialized paths. CPU
-checks do not establish numerical preservation. Fixed-seed paired training
-against main, saved A/B tensor comparisons, and adapter reload checks remain
-required before this migration can merge; specialized paths need their own
-numerical evidence.
+The [migration preservation record](measurements/2026-09-25-training-preservation.json)
+compares fixed-seed MiniCPM5-1B training against main: three SFT steps, two DPO
+steps, and two ORPO steps. Step metrics, every saved A/B tensor, and full-sequence
+logits after adapter reload match exactly. These runs cover rank-2 adapters on
+the last layer's query/value projections, batch size one, and short sequences.
+The 47 native tests also pass, and every public entry imports from installed
+package archives. This establishes migration preservation for those paths;
+other model families and specialized training paths still need real-weight
+evidence. It is not an independent training-oracle or performance claim.
