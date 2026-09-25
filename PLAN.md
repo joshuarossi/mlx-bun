@@ -18,6 +18,11 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   [state record](packages/inference/measurements/2026-09-25-runtime-state.json)
   verifies the existing composition; keep that implementation unchanged during
   this refactor and do not imply blanket OptiQ serve compatibility.
+- [ ] Extend training preservation beyond the
+  [verified short MiniCPM SFT/DPO/ORPO paths](packages/training/measurements/2026-09-25-training-preservation.json).
+  Cover other model families and specialized training paths before claiming
+  their numerical preservation; synthetic native tests do not close this item.
+
 ## Optimize after the full draft
 
 - [ ] Run paired same-machine performance comparisons against main using the
