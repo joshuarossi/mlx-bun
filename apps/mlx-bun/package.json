@@ -13,6 +13,7 @@
   "files": [
     "bin",
     "src",
+    "native",
     "dist/web"
   ],
   "scripts": {
