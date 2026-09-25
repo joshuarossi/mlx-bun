@@ -58,6 +58,15 @@
         "@mlx-bun/mlx": "workspace:*",
       },
     },
+    "packages/training": {
+      "name": "@mlx-bun/training",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/mlx": "workspace:*",
+        "@mlx-bun/quantize": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.91.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw=="],
@@ -160,6 +169,7 @@
 
     "@mlx-bun/quantize": ["@mlx-bun/quantize@workspace:packages/quantize"],
 
+    "@mlx-bun/training": ["@mlx-bun/training@workspace:packages/training"],
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
     "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.43.0", "", {}, "sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg=="],
