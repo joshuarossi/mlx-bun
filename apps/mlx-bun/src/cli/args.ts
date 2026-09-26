@@ -1,6 +1,51 @@
 import { parseArgs } from "node:util";
 
 // One small source for parsing and help; no command registration framework.
+// `setup` is main's true alias of `memory` (`mlx-bun setup init` == `mlx-bun memory init`).
+const memoryDetails = `A local, durable memory for the assistant: a wiki of Markdown articles
+(~/.mlx-bun/wiki) it reads to remember your projects, people, and history
+across sessions. It is yours: git-tracked, editable in any tool (Obsidian
+opens it as a vault), and it never leaves the machine. Once set up, it loads
+automatically into every \`mlx-bun serve\` session. Synthesis
+(conversations -> articles) runs through a serving mlx-bun.
+
+Subcommands:
+  init, setup        Create the wiki + walk through setup (idempotent);
+                     offers to import an existing vault and install the
+                     nightly synthesis job
+  status             Path, article count, git + schedule state (the default)
+  open, browse [article]
+                     Open the wiki, or a specific article, in Obsidian
+                     (falls back to Finder / the default Markdown app)
+  list               List article titles + read-only Reference docs
+  search <query>     Search articles from the terminal
+  toc <article>      Print an article's headings + anchors
+  section <article> <anchor>
+                     Print one article section
+  links <article>    Show resolved outbound + inbound wikilinks
+  read <article>     Print an article (stem, e.g. Archie_Project)
+  synthesize         Run the FULL synthesis DAG now (--since, --model,
+                     --dry-run); also: pipeline, all
+  segment | extract | route | synthesize-stage
+                     Run ONE decomposed stage worker (--limit N —
+                     segment/extract/synthesize-stage only; --convs a,b).
+                     Each pulls its eligible work from the DB by state, walks
+                     oldest-conversation-first, persists, and exits — resumable,
+                     and runnable as separate concurrent processes on slices.
+  link               Deterministic cross-linking stage: inline-link first
+                     mentions + rebuild ## See also (--limit N; no model)
+  schedule           Install the nightly launchd job (--at HH:MM [03:00]);
+                     it runs \`mlx-bun memory synthesize\`, which needs a
+                     serving mlx-bun at that time
+  unschedule         Remove the nightly launchd job
+
+The read path is live: the assistant reads a wiki you set up by hand or
+import during \`memory init\`. Run \`mlx-bun memory open\` to browse it in
+Obsidian/Finder, or \`mlx-bun memory open <article>\` to jump to a specific
+page. Synthesis (conversations -> articles) runs the full local pipeline via
+\`mlx-bun memory synthesize\` (or per-stage: segment/extract/route/
+synthesize-stage/link) against a serving mlx-bun; the nightly job runs it on
+a schedule and needs that server at its time.`;
 const commands = {
   serve: { description: "Serve a local model with continuous batching and the web app", positional: "[query]", options: {
     model: { type: "string", description: "Model directory or cached registry query (overrides positional query)" },
@@ -188,42 +233,25 @@ const commands = {
     type: { type: "boolean", description: "Type it into the frontmost app via System Events keystrokes (needs Accessibility for your terminal)" },
     "type-delay": { type: "string", description: "Seconds to wait before typing so you can Cmd-Tab [default: 1 in Enter mode, 0 with --hotkey]" },
   } },
-  memory: { description: "Your local AI's personal wiki: inspect it and run synthesis", positional: "[subcommand] [args]",
-    usage: "usage: mlx-bun memory <subcommand> [args] [options]",
-    details: `A local, durable memory for the assistant: a wiki of Markdown articles
-(~/.mlx-bun/wiki) it reads to remember your projects, people, and history
-across sessions. It is yours: git-tracked, editable in any tool (Obsidian
-opens it as a vault), and it never leaves the machine. Synthesis
-(conversations -> articles) runs through a serving mlx-bun.
-
-Subcommands:
-  status             Path, article count, git state (the default)
-  open, browse [article]
-                     Open the wiki, or a specific article, in Obsidian
-                     (falls back to Finder / the default Markdown app)
-  list               List article titles + read-only Reference docs
-  search <query>     Search articles from the terminal
-  toc <article>      Print an article's headings + anchors
-  section <article> <anchor>
-                     Print one article section
-  links <article>    Show resolved outbound + inbound wikilinks
-  read <article>     Print an article (stem, e.g. Archie_Project)
-  synthesize         Run the FULL synthesis DAG now (--since, --model,
-                     --dry-run); also: pipeline, all
-  segment | extract | route | synthesize-stage
-                     Run ONE decomposed stage worker (--limit N —
-                     segment/extract/synthesize-stage only; --convs a,b).
-                     Each pulls its eligible work from the DB by state, walks
-                     oldest-conversation-first, persists, and exits — resumable,
-                     and runnable as separate concurrent processes on slices.
-  link               Deterministic cross-linking stage: inline-link first
-                     mentions + rebuild ## See also (--limit N; no model)`,
-    options: {
+  memory: { description: "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it", positional: "[subcommand] [args]",
+    usage: "usage: mlx-bun memory <subcommand> [args] [options]", details: memoryDetails, options: {
     since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
     model: { type: "string", description: "synthesize: synthesis model override (parsed; reserved)" },
     "dry-run": { type: "boolean", description: "synthesize: plan the stages only, never write the vault" },
     limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
     convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
+    at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
+    host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
+    port: { type: "string", description: "Port of that server [default: 8080]" },
+  } },
+  setup: { description: "Set up your local AI's memory wiki (alias of mlx-bun memory)", positional: "[subcommand] [args]",
+    usage: "usage: mlx-bun setup <subcommand> [args] [options]", details: memoryDetails, options: {
+    since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
+    model: { type: "string", description: "synthesize: synthesis model override (parsed; reserved)" },
+    "dry-run": { type: "boolean", description: "synthesize: plan the stages only, never write the vault" },
+    limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
+    convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
+    at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
     host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
     port: { type: "string", description: "Port of that server [default: 8080]" },
   } },
@@ -254,7 +282,7 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
       throw new Error(usage(command));
     throw error;
   }
-  const max = command === "memory" ? Infinity : command === "generate" || command === "embed" || command === "transcribe" ? 2 : commands[command].positional ? 1 : 0;
+  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" || command === "transcribe" ? 2 : commands[command].positional ? 1 : 0;
   if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
   if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
   return parsed;

@@ -42,6 +42,8 @@ test("status is the default subcommand and reports the vault or its absence", as
   expect(status.out).toContain("reference  1 read-only docs");
   expect(status.out).toContain("git        not a git repo");
   expect(status.out).toContain("synthesis  available · mlx-bun memory synthesize");
+  // No plist under the temporary HOME: not scheduled, and launchctl is never consulted.
+  expect(status.out).toContain("nightly    not scheduled · mlx-bun memory schedule");
   expect(status.out).toMatch(/recent    (Alpha, Beta|Beta, Alpha)/);
   const missing = await cli(home(false), "status");
   expect(missing.code).toBe(0);
@@ -99,6 +101,9 @@ test("a missing article, a missing query, and an unknown subcommand fail with ma
   expect(helped.code).toBe(0);
   expect(helped.out).toContain("segment | extract | route | synthesize-stage");
   expect(helped.out).toContain("--dry-run");
+  expect(helped.out).toContain("  init, setup        Create the wiki + walk through setup (idempotent);");
+  expect(helped.out).toContain("  unschedule         Remove the nightly launchd job");
+  expect(helped.out).toContain("--at <value>");
 });
 
 test("synthesize --dry-run plans every stage without a server; a bad --port is a usage error", async () => {

@@ -24,6 +24,7 @@ import {
   vaultStatus,
   type SearchHit,
 } from "./vault";
+import { formatAt, scheduleStatus, type ScheduleStatus } from "./schedule";
 
 /** Tool names, exported so the front doors can add them to the allowlist. The
  *  order is the recommended call order: FIND (resolve/category) → READ (read/
@@ -65,8 +66,14 @@ export async function isMemoryEnabled(root: string): Promise<boolean> {
   }
 }
 
+export interface MemoryToolOptions {
+  /** Nightly schedule state for memory_status; composition keeps the real launchd. */
+  schedule?: () => Promise<ScheduleStatus>;
+}
+
 /** Read-only tools bound to one vault; no process-global path override. */
-export function createMemoryTools(root: string): ToolDefinition[] {
+export function createMemoryTools(root: string, options: MemoryToolOptions = {}): ToolDefinition[] {
+  const schedule = options.schedule ?? (() => scheduleStatus());
   function textResult(text: string): { content: [{ type: "text"; text: string }]; details: Record<string, never> } {
     return { content: [{ type: "text", text }], details: {} };
   }
@@ -545,12 +552,13 @@ export function createMemoryTools(root: string): ToolDefinition[] {
     name: "memory_status",
     label: "Memory Status",
     description:
-      "Show read-only status for the user's memory: vault path, setup state, article count, git state, last recorded synthesis run, and synthesis/scheduling availability. Use when the user asks whether memory is on or where it lives.",
+      "Show read-only status for the user's memory: vault path, setup state, article count, git state, last recorded synthesis run, synthesis availability, and nightly schedule state. Use when the user asks whether memory is on or where it lives.",
     parameters: Type.Object({}),
     execute: async () => {
       try {
         const st = await vaultStatus(root);
         const last = st.isGitRepo ? await lastSynthesisCommit(st.root) : null;
+        const sched = await schedule();
         const recent = st.recentArticles.length
           ? st.recentArticles.slice(0, 5).map((r) => `  - ${r.article} (${new Date(r.mtimeMs).toISOString()})`).join("\n")
           : "  - (none)";
@@ -563,7 +571,9 @@ export function createMemoryTools(root: string): ToolDefinition[] {
           `- git: ${st.isGitRepo ? "tracked" : "not tracked"}`,
           `- last synthesis: ${last ? `${last.date} (${last.subject})` : "no synthesis run recorded yet"}`,
           "- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun",
-          "- nightly: unavailable during migration (schedule state is not inspected)",
+          `- nightly: ${sched.installed
+            ? `${sched.loaded ? "scheduled" : "installed but not loaded"}${sched.at ? ` at ${formatAt(sched.at)}` : ""} — ${sched.note}`
+            : "not scheduled — `mlx-bun memory schedule` installs the launchd job"}`,
           "- recent changed articles:",
           recent,
         ].join("\n"));

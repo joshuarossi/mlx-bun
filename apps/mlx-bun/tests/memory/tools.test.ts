@@ -66,15 +66,29 @@ test("memory lookup, small reads, graph traversal and references stay bound to t
   expect(await call(root, "memory_list")).toContain("Orion_Camera");
 });
 
-test("memory status advertises on-demand synthesis and reports the scheduler gap without probing it", async () => {
+test("memory status advertises on-demand synthesis and reports the injected nightly schedule state", async () => {
   const root = vault();
-  const status = await call(root, "memory_status");
-  expect(status).toContain(`- vault: ${root}`);
-  expect(status).toContain("- articles: 2");
-  expect(status).toContain("- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun");
-  expect(status).toContain("- nightly: unavailable during migration (schedule state is not inspected)");
-  expect(status).not.toContain("mlx-bun memory schedule");
-  expect(status).not.toContain("launchd");
+  const plistPath = join(root, "com.mlx-bun.memory.plist"), note = "the job runs mlx-bun memory synthesize and needs a serving mlx-bun (mlx-bun serve) at that time";
+  const states = [
+    { installed: false, plistPath, loaded: false, at: null, note },
+    { installed: true, plistPath, loaded: true, at: { hour: 3, minute: 0 }, note },
+    { installed: true, plistPath, loaded: false, at: { hour: 22, minute: 5 }, note },
+    { installed: true, plistPath, loaded: true, at: null, note },
+  ];
+  let probes = 0;
+  const tool = createMemoryTools(root, { schedule: async () => { probes++; return states[Math.min(probes, states.length) - 1]!; } }).find(tool => tool.name === "memory_status")!;
+  expect(tool.description).toContain("nightly schedule state");
+  const status = async () => (await tool.execute("test", {}, undefined, undefined, undefined as never)).content.map(part => "text" in part ? part.text : "").join("");
+  const first = await status();
+  expect(first).toContain(`- vault: ${root}`);
+  expect(first).toContain("- articles: 2");
+  expect(first).toContain("- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun");
+  expect(first).toContain("- nightly: not scheduled — `mlx-bun memory schedule` installs the launchd job");
+  expect(first).not.toContain("unavailable during migration");
+  expect(await status()).toContain(`- nightly: scheduled at 03:00 — ${note}`);
+  expect(await status()).toContain(`- nightly: installed but not loaded at 22:05 — ${note}`);
+  expect(await status()).toContain(`- nightly: scheduled — ${note}`);
+  expect(probes).toBe(4);
   expect(await memoryIndexHint(root)).toContain("2 articles plus 1 read-only");
 });
 
