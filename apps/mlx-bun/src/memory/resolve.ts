@@ -1,5 +1,47 @@
-// Read-side name resolution, extracted from main without synthesis/store dependencies.
+// mlx-bun memory — surface-variant RESOLUTION (the dedup fix for P5-T3/T4).
+//
+// canonicalize() in entity.ts is a *pure string normal form*: casefold, collapse
+// whitespace, strip articles/possessives. That is necessary but NOT sufficient —
+// the self-check turned the spacing, brand-only, and possessive surfaces of ONE
+// product name into several different stems:
+//   - "<name>" vs "<na me>"  (internal spacing the normal form keeps)
+//   - "<brand>" / "<brand> <model>"  (brand-only and compositional surfaces that
+//     no purely-lexical normalizer can fold onto one canonical)
+//
+// The resolver adds three layers on top of canonicalize():
+//   1. SQUEEZE — strip ALL non-alphanumerics so "<na me>" / "<name>" / "<nam e>"
+//      collapse to one key deterministically (fixes the spacing split).
+//   2. ALIAS SEED — a known-entity index (entities + entity_aliases in the store,
+//      seeded from goldens/dreaming-entities-gold.json) so brand-only / nickname
+//      surfaces (a "<the brand>", a "<the role>") resolve by exact alias hit.
+//   3. TOKEN-SUBSET FUZZY — a conservative compositional match: a surface folds
+//      onto an entity iff its content tokens are a SUBSET of that entity's tokens
+//      AND the overlap carries at least one DISTINCTIVE token (a token unique to
+//      that entity among all known entities). This merges "<my brand model>" → the
+//      entity via the distinctive model token while REFUSING to merge
+//      "<brand A>" into "<brand B>" (a shared brand token is not distinctive;
+//      the model-number tokens differ) — the over-merge guard.
+//
+// Resolution is conservative by construction: when in doubt it MINTS a new
+// canonical rather than fusing two distinct things. ROUTE (route.ts) escalates
+// the genuine misses to the model for binary disambiguation.
 
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import type { MemoryStore } from "./db";
+
+// Shared with entity.ts (which re-exports it) — no entity <-> resolve cycle.
+/**
+ * Deterministic canonical stem of an entity surface: casefold, collapse
+ * whitespace/underscores, strip surrounding markdown/quotes, drop a trailing
+ * period, then strip ONE leading article (the/a/an) and ONE leading possessive
+ * determiner (my/your/his/her/its/our/their), plus a trailing possessive `'s`.
+ *
+ * This is the dedup key: a name's spacing variants, short forms, brand-only
+ * surfaces, and possessive surfaces all collapse toward one stem so variants of
+ * the same thing unify.
+ */
 export function canonicalize(surface: string): string {
   let t = surface
     .toLowerCase()
@@ -45,6 +87,30 @@ export function contentTokens(surface: string): Set<string> {
 /** How a surface resolved (for instrumentation + the deterministic gates). */
 export type MatchKind = "stem" | "squeeze" | "alias" | "fuzzy" | "new";
 
+export interface ResolveResult {
+  /** The canonical entity name the surface resolved to (or was minted as). */
+  name: string;
+  /** Which layer produced the resolution. "new" ⇒ a canonical was minted. */
+  matched: MatchKind;
+  /** True iff this call minted a NEW canonical (no existing entity matched). */
+  created: boolean;
+}
+
+interface Seed {
+  canonical: string;
+  aliases: string[];
+}
+
+/**
+ * In-memory variant resolver over a KNOWN-ENTITY set. Indexes each canonical by
+ * its normal-form stem, its squeeze key, and its content tokens, then resolves a
+ * surface through stem → squeeze → alias → token-subset-fuzzy, minting a new
+ * canonical only when every layer misses.
+ *
+ * Construct from a seed list, from a {@link MemoryStore} (entities +
+ * entity_aliases), or from the curated gold — and compose them (store first,
+ * gold to backfill notable brand-only aliases).
+ */
 export class EntityResolver {
   /** normal-form stem → canonical. */
   private byStem = new Map<string, string>();
@@ -54,6 +120,20 @@ export class EntityResolver {
   private tokensOf = new Map<string, Set<string>>();
   /** content token → set of canonicals carrying it (distinctiveness check). */
   private tokenOwners = new Map<string, Set<string>>();
+
+  constructor(seeds: Seed[] = []) {
+    for (const s of seeds) this.register(s.canonical, s.aliases);
+  }
+
+  /** All known canonical names (registration order is not guaranteed). */
+  canonicals(): string[] {
+    return [...this.tokensOf.keys()];
+  }
+
+  /** Is `name` an already-known canonical entity? */
+  has(name: string): boolean {
+    return this.tokensOf.has(name);
+  }
 
   /** Register a canonical and its aliases into every index. Idempotent; adding
    *  aliases to an existing canonical merges them. The canonical's own surface is
@@ -125,6 +205,20 @@ export class EntityResolver {
     return null;
   }
 
+  /**
+   * Resolve a surface, MINTING a new canonical when nothing matches. The minted
+   * canonical is the cleaned surface; it is registered so later variants of the
+   * same thing fold onto it. Brand-only nicknames still need a gold/store seed —
+   * fuzzy cannot invent a "<the brand>" ≡ "<brand model>" link from lexis alone.
+   */
+  resolve(surface: string, mintName?: string): ResolveResult {
+    const hit = this.match(surface);
+    if (hit) return { name: hit.name, matched: hit.matched, created: false };
+    const canonical = (mintName ?? surface).trim();
+    this.register(canonical, surface === canonical ? [] : [surface]);
+    return { name: canonical, matched: "new", created: true };
+  }
+
   /** Register one canonical per stem with its alias surfaces, grouped from a
    *  normalized `alias → stem` map (the read-index's `aliasToStem`). The stem is
    *  the canonical; its surfaces become aliases. */
@@ -140,6 +234,20 @@ export class EntityResolver {
     return r;
   }
 
+  /** Load the known-entity index from a store's entities + entity_aliases. */
+  static fromStore(store: MemoryStore): EntityResolver {
+    const r = new EntityResolver();
+    const ents = store.db.query("SELECT name FROM entities").all() as { name: string }[];
+    for (const e of ents) r.register(e.name, []);
+    const aliases = store.db
+      .query("SELECT alias, entity_name FROM entity_aliases")
+      .all() as { alias: string; entity_name: string }[];
+    for (const a of aliases) {
+      if (!r.has(a.entity_name)) r.register(a.entity_name, [a.alias]);
+      else r.register(a.entity_name, [a.alias]);
+    }
+    return r;
+  }
 }
 
 // ---- near-name resolution (sub-concept → its home article) -----------------
@@ -178,3 +286,56 @@ export function nearNameMatch(resolver: EntityResolver, surface: string): string
   return hit ? hit.name : null;
 }
 
+// ---- gold seed -------------------------------------------------------------
+
+export interface VariantGroup {
+  canonical: string;
+  kind: string;
+  domain: string;
+  variants: string[];
+}
+export interface NotableEntity {
+  name: string;
+  kind: string;
+  domain: string;
+  aliases: string[];
+  whyNotable: string;
+}
+export interface DreamingGold {
+  variantGroups: VariantGroup[];
+  notableEntities: NotableEntity[];
+}
+
+// Main read `<repo>/goldens/dreaming-entities-gold.json`; the same relative
+// location resolves to the app workspace here. Goldens are published datasets,
+// not repository files, so an absent default file yields an EMPTY gold (the
+// pipeline runs unseeded — store-seeded aliases still fold) instead of throwing.
+// An explicit path keeps main's contract: a missing file is an error.
+const GOLD_PATH = join(import.meta.dir, "..", "..", "goldens", "dreaming-entities-gold.json");
+
+/** Read the curated entity gold (variantGroups + notableEntities). */
+export function loadDreamingGold(path?: string): DreamingGold {
+  if (path === undefined && !existsSync(GOLD_PATH)) return { variantGroups: [], notableEntities: [] };
+  return JSON.parse(readFileSync(path ?? GOLD_PATH, "utf8")) as DreamingGold;
+}
+
+/** Seeds derived from the gold: every variant group AND every notable entity
+ *  becomes a (canonical, aliases) seed. Notable entries that share a canonical
+ *  with a variant group merge their aliases. */
+export function goldSeeds(gold: DreamingGold = loadDreamingGold()): Seed[] {
+  const byName = new Map<string, Set<string>>();
+  const add = (canonical: string, aliases: string[]): void => {
+    let set = byName.get(canonical);
+    if (!set) byName.set(canonical, (set = new Set()));
+    for (const a of aliases) set.add(a);
+  };
+  for (const g of gold.variantGroups) add(g.canonical, g.variants);
+  for (const n of gold.notableEntities) add(n.name, n.aliases);
+  return [...byName].map(([canonical, aliases]) => ({ canonical, aliases: [...aliases] }));
+}
+
+/** A resolver pre-seeded with the curated gold — the production seed for the
+ *  notable brand-only aliases the model/lexis cannot derive on its own. */
+export function goldResolver(gold?: DreamingGold): EntityResolver {
+  return new EntityResolver(goldSeeds(gold));
+}

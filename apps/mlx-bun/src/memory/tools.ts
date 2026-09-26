@@ -562,7 +562,7 @@ export function createMemoryTools(root: string): ToolDefinition[] {
           `- read-only references: ${st.referenceCount}`,
           `- git: ${st.isGitRepo ? "tracked" : "not tracked"}`,
           `- last synthesis: ${last ? `${last.date} (${last.subject})` : "no synthesis run recorded yet"}`,
-          "- synthesis: unavailable during migration",
+          "- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun",
           "- nightly: unavailable during migration (schedule state is not inspected)",
           "- recent changed articles:",
           recent,

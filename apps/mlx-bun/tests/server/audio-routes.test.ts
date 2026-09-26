@@ -84,7 +84,9 @@ describe("audio route dispatch", () => {
   test("the audio surface is owned: no migration placeholder remains and an unmounted group stays composable", async () => {
     for (const path of ["/v1/audio/transcriptions", "/v1/audio/translations", "/v1/audio/sessions", "/v1/audio/sessions/x/audio",
       "/v1/audio/sessions/x/finish", "/admin/transcription/unload"]) expect(pendingRoute(path)).toBe(false);
-    expect(pendingRoute("/v1/memory/synthesize")).toBe(true);
+    // Memory synthesis is owned by its composition now, so it is no placeholder either.
+    expect(pendingRoute("/v1/memory/synthesize")).toBe(false);
+    for (const path of ["/admin/lease", "/admin/drain", "/engine"]) expect(pendingRoute(path)).toBe(true);
     const unmounted = createAudioRoutes();
     expect(await unmounted.handle(multipart({}))).toBeNull();
     expect(await unmounted.handle(post("/admin/transcription/unload"))).toBeNull();
