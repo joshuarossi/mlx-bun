@@ -643,7 +643,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], created = [];
-    let defaultWhisper = null, discovery, audioHost, piProbe;
+    let defaultWhisper = null, discovery, audioHost, piProbe, drain;
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, glmMemoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
@@ -658,7 +658,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     }));
     mock.module(app + "src/engine/transcription-service.ts", () => ({ TranscriptionService: class {
       constructor(options) { created.push(options); this.modelId = options.modelId; this.resident = false; }
-      close() { events.push("whisper close " + this.modelId); }
+      close() { return this.closing ??= (async () => { await Promise.resolve(); events.push("whisper close " + this.modelId); })(); }
     } }));
     mock.module(app + "src/server/audio-routes.ts", () => ({ createAudioRoutes(host) { audioHost = host; return { handle: async () => null }; } }));
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
@@ -673,7 +673,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing;
-      return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await input.closeEngine(); })() }; } }));
+      return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await drain?.(); await input.closeEngine(); })() }; } }));
     const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--whisper-model", "large-v3-turbo", "--whisper-idle-unload", "30", "--whisper-resident", "--no-open"]));
@@ -714,6 +714,14 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     assert.deepEqual([created[0].modelDir, created[0].idleUnloadSec, created[0].resident], ["/cache/whisper", undefined, undefined]);
     await found.close();
     assert.deepEqual(events, ["registry lookup", "whisper close mlx-community/whisper-tiny", "engine close", "model close"]);
+    // An admitted route can reach the lazy owner after beforeDrain captured no service.
+    events.length = 0; created.length = 0;
+    const late = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
+    assert.equal(created.length, 0);
+    drain = async () => { const service = await audioHost.service(); assert.equal(service.modelId, "mlx-community/whisper-tiny"); };
+    await late.close();
+    assert.deepEqual(events, ["registry lookup", "whisper close mlx-community/whisper-tiny", "engine close", "model close"]);
+    drain = undefined;
   `;
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });

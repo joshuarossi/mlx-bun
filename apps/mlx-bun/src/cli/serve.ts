@@ -391,7 +391,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const closeApp = async () => {
       const errors: unknown[] = [];
       try { await jobs.close(); } catch (error) { errors.push(error); }
-      // The Whisper companion closes in beforeDrain (it exists only once the listener serves requests).
+      // A request admitted before shutdown may initialize the lazy companion while
+      // responses drain. Close again here; the service joins/releases only once.
+      try { await (await transcription)?.close(); } catch (error) { errors.push(error); }
       try { await engine.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };

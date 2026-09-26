@@ -242,7 +242,7 @@ export function createAudioRoutes(host?: AudioRouteHost) {
       const format = (fields.response_format as string | undefined) ?? "json";
       if (!["json", "verbose_json"].includes(format)) return errorJson("sessions return json or verbose_json", 400);
       try {
-        const session = await service.createSession(params);
+        const session = await service.createSession({ ...params, signal: request.signal });
         sessionFormats.set(session.id, format as TranscriptionFormat);
         return Response.json({ id: session.id, model: service.modelId, vocabulary: session.vocabulary ?? null });
       } catch (e) {
