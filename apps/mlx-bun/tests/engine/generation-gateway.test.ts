@@ -156,3 +156,39 @@ test("exclusive mutations share the scheduler lock and release aborted waiters",
   expect(gateway.busy).toBe(true); held.dispose(); await gateway.onIdle();
   expect(gateway.busy).toBe(false); await gateway.close();
 });
+
+
+// Importing the real graph/binding loads MLX, even though placement creates no
+// tensors. Keep this qualification check out of the native-blocked CPU suite.
+test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits ordinary plain KV and rejects unqualified shared compositions before execution", async () => {
+  const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
+  const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
+  const { KVCache } = await import("@mlx-bun/inference/state");
+  const { KvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
+  const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
+    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
+    config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] },
+  });
+  const binding = bindMlxGateway(model);
+  let created = false;
+  binding.createBatchGroup = () => { created = true; throw new Error("unexpected execution"); };
+  const gateway = new GenerationGateway(binding, 4);
+  try {
+    expect(gateway.place(shape())).toMatchObject({ mechanism: "continuous",
+      execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false } });
+    for (const kind of ["affine-uniform", "affine-config", "turbo"] as const)
+      expect(binding.kvBatchable(new KvScheme(kind, {}))).toBe(false);
+    for (const request of [{ hasDraft: true }, { hasDraft: true, wantsLogprobs: true },
+      { hasAdapters: true }, { hasGrammar: true }, { hasVision: true }, { kvQuant: true }, { turboQuant: true }])
+      expect(() => gateway.place({ ...shape(), ...request })).toThrow(UnsupportedExecutionError);
+    expect(() => gateway.place(shape(), { pagedKv: {} })).toThrow(UnsupportedExecutionError);
+    expect(() => gateway.place(shape(), { fill: { plan: {} } } as GenerateOptions)).toThrow(UnsupportedExecutionError);
+    // Even a caller advertising generic encoded support cannot qualify this graph.
+    expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
+      { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("serial");
+    model.args.layerTypes = ["sliding_attention"];
+    expect(binding.cachesBatchable()).toBe(false);
+    expect(created).toBe(false);
+  } finally { await gateway.close(); }
+});
