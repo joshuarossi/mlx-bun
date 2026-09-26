@@ -147,6 +147,29 @@ test("disconnect during media fetch never enters native execution and releases i
   expect(reservations).toBe(0);
 });
 
+test("tensors a media builder returns just before an abort are disposed with the reservation", async () => {
+  const disposed: string[] = [];
+  const tensor = (name: string) => ({ dispose() { disposed.push(name); } }) as unknown as import("@mlx-bun/mlx/array").MlxArray;
+  let reservations = 0;
+  const abort = new AbortController();
+  const h = harness({ preparation: {
+    async reserve() { reservations++; return { dispose() { reservations--; } }; },
+    async run(work) { return work(); },
+  }, async buildPrompt(_body, _tools, _ownership, _prep, nativeWork) {
+    const built = await nativeWork!(async () => ({ promptIds: [7, 8, 9],
+      vision: { embeddings: tensor("embeddings"), imageMask: tensor("imageMask"), multimodalMask: tensor("multimodalMask") },
+      startInThinking: false, probeStableLen: false, diffusionPixels: tensor("pixels") }));
+    abort.abort(new Error("disconnected"));
+    return built;
+  } });
+  const error = await h.chat.run(new ChatRequest({ messages: [{ role: "user",
+    content: [{ type: "image_url", image_url: { url: "https://example.com/image.png" } }] }] }),
+    "late-abort", abort.signal).then(() => null, (e: Error) => e);
+  expect(error?.message).toContain("disconnected");
+  expect(disposed.toSorted()).toEqual(["embeddings", "imageMask", "multimodalMask", "pixels"]);
+  expect(reservations).toBe(0);
+});
+
 test("native preparation waits for admission and an aborted waiter allocates nothing", async () => {
   let resume!: () => void;
   const gate = new Promise<void>((resolve) => { resume = resolve; });
