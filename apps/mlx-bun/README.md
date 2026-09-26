@@ -73,8 +73,9 @@ launch forms, and no flag selects either:
   because the parent owns them.
 - The app form `{ kind: "app", version, socketPath, argv }` runs serve
   arguments (`["--model", model, ...]`) through the CLI's `parseCommand` and
-  `runServe`, so the whole app listens on the socket instead of TCP. Nothing
-  public sends it yet. `validateAppLaunchArgv` (`serve.ts`) is the CLI's strict
+  `runServe`, so the whole app listens on the socket instead of TCP.
+  `openIsolatedHost` ([`mlx-bun/engine`](#engine-entry-mlx-bunengine)) sends
+  it. `validateAppLaunchArgv` (`serve.ts`) is the CLI's strict
   parse with three differences: `--host`, `--port`, and `--no-open` are
   accepted and never steer the socket bind; `--isolate` and `--model-pool` are
   refused, because a nested isolated app binds TCP instead of the socket; and a
@@ -83,8 +84,9 @@ launch forms, and no flag selects either:
   aborts through runServe's startup signal and announces nothing. After ready,
   any of them runs runServe's shutdown under the CLI's deadline
   (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`, default 120 s), and its exit code is the
-  worker's. The parent should pass that budget to the supervisor as
-  `drainTimeoutMs` and `graceMs` (defaults 10 s and 3 s, for the model form).
+  worker's. `openIsolatedHost` passes that budget to the supervisor as
+  `drainTimeoutMs` and `graceMs` (the supervisor's defaults, 10 s and 3 s,
+  serve the model form).
 
 `server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`, and
 `POST /admin/drain` ahead of the routes on the socket only (a TCP listener keeps
@@ -437,8 +439,9 @@ synthetic counters and CPU fit inputs without a model or native MLX.
 
 ## Client entry (`mlx-bun/client`)
 
-The package's one export, `mlx-bun/client` (`src/server/client.ts`), is main's
-embedding client. It imports no other module, so it loads without native MLX.
+`mlx-bun/client` (`src/server/client.ts`) is main's embedding client. It
+imports no other module, so it loads without native MLX. `mlx-bun/engine`
+(below) re-exports it.
 
 - `createCompletionClient({ baseUrl, headers?, host? })` posts to
   `<baseUrl>/chat/completions` (or `route: "completions"`) with the caller's
@@ -454,13 +457,61 @@ embedding client. It imports no other module, so it loads without native MLX.
   streams pass through unchanged.
 - Types: `EngineHost`, `CompletionClient`, `CompletionCall`, `CompletionResponse`.
 
-Main's `openIsolatedHost` and its `mlx-bun/engine` entry are not exported yet.
-Main spawned `serve --model <model> ...arguments --unix <socket>`. Here the
-private worker's app form, described above, takes the same serve arguments
-through the `__worker` stdin launch, and the public entry that spawns it is
-pending.
 The [client tests](tests/client.test.ts) import the entry through the export
 map with native MLX blocked; `verify-packages` repeats them from the installed package.
+
+## Engine entry (`mlx-bun/engine`)
+
+`mlx-bun/engine` (`src/cli/engine-entry.ts`) is main's `src/library.ts`
+without `initializeMlx`. It loads without native MLX and starts nothing on
+import. It re-exports the client above, `createInferenceEngine` and
+`CancellationSource` with main's generation contract types from
+`@mlx-bun/inference`, and adds `openIsolatedHost`. Main's `initializeMlx` and
+the native root (`.`) compatibility API are not provided; they are tracked
+separately.
+
+```ts
+import { createCompletionClient, openIsolatedHost } from "mlx-bun/engine";
+
+const host = await openIsolatedHost("/path/to/hf-snapshot", { arguments: ["--max-tokens", "256"] });
+try {
+  const client = createCompletionClient({ baseUrl: "http://engine/v1", host });
+  const result = await client.complete({ body: { messages: [{ role: "user", content: "Hello" }] } });
+  console.log(result.choices[0]?.message?.content);
+} finally {
+  await host.close();
+}
+```
+
+The caller owns the host: `openIsolatedHost` starts one worker process in the
+app launch form above, and `close()` stops it and removes its private socket
+directory after it exits. The function's JSDoc states the argument, command,
+retry, and close rules.
+
+- `arguments` are `mlx-bun serve` arguments. `--host`, `--port`, and
+  `--no-open` only concern a TCP listener and have no effect on the socket;
+  `--isolate` and `--model-pool` are refused before anything is spawned.
+- `command` must run the mlx-bun CLI of the same package version: the
+  installed binary, `[bun, <package>/bin/mlx-bun.mjs]`, or
+  `[bun, <package>/src/cli/main.ts]`. A compiled consumer must supply it,
+  because its own executable is not the mlx-bun CLI. The version handshake
+  refuses another package version but cannot tell apart two builds with the
+  same version.
+- The host forwards to the whole app, so the app form's limitations above
+  apply: the user stores under HOME are shared with other mlx-bun processes
+  without locks, Pi web chat targets TCP `127.0.0.1:<--port>`, and `/ws/chat`
+  cannot pass through `forward`. These predate this entry.
+
+The [engine tests](tests/engine-entry.test.ts) import the entry through the
+export map with native MLX blocked and drive the host over a fake worker;
+`verify-packages` repeats them from the installed package. The worker's own
+refusal and startup behaviors are covered by C2a's
+[worker-entry](tests/worker-entry.test.ts) and
+[worker-process](tests/jobs/worker-process.test.ts) tests. The opt-in
+[native test](tests/engine/library-host.test.ts) (`MLX_BUN_TEST_NATIVE=1` with
+`MLX_BUN_APP_TEST_MODEL` and/or `MLX_BUN_APP_TEST_WHISPER_MODEL`) runs real
+consumers, including a standalone CLI as `command`, under a temporary HOME;
+its real-HOME check is a names-only guard.
 
 ## Web chat backend
 

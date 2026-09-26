@@ -1,5 +1,5 @@
 // A stand-in isolation worker for the parent-side tests (jobs/worker-supervisor,
-// server/proxy-routes, cli/serve-isolated): it speaks the worker handshake
+// server/proxy-routes, cli/serve-isolated, cli/library-host): it speaks the worker handshake
 // (the launch record on stdin, the ready line on stdout echoing its version,
 // the end of stdin means the parent left, SIGTERM stops it) and serves a fake
 // model surface on the socket. Behavior is driven by request content and `/fake/*` control
@@ -10,7 +10,11 @@
 // FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only (a pool's failed cold start);
 // FAKE_WORKER_LOAD_MS delays the ready line, like a weights load.
 // FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
-import { appendFileSync } from "node:fs";
+// FAKE_WORKER_VERSION=<v> plays a worker of that package version: a launch record
+// with another one is refused as the real entry refuses it (exit 2, the reason on stderr).
+// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing.
+// The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 const PREFIX = "<mlx-bun-worker>";
 const reader = Bun.stdin.stream().getReader(), decoder = new TextDecoder(), encoder = new TextEncoder();
@@ -19,9 +23,13 @@ while (!text.includes("\n")) { const { done, value } = await reader.read(); if (
 const launchLine = text.slice(0, text.indexOf("\n"));
 const launch = JSON.parse(launchLine, (_key, value: unknown) =>
   value !== null && typeof value === "object" && "$number" in value ? Number((value as { $number: string }).$number) : value) as
-  { version?: string; socketPath: string; model: { repoId: string; path: string }; options: Record<string, unknown> };
+  { version?: string; socketPath: string; model?: { repoId: string; path: string }; options?: Record<string, unknown>; kind?: string; argv?: string[] };
 if (process.env.FAKE_WORKER_RECORD) appendFileSync(process.env.FAKE_WORKER_RECORD, JSON.stringify({ argv: process.argv, pid: process.pid, launch: launchLine }) + "\n");
-const modelId = launch.model.repoId;
+if (process.env.FAKE_WORKER_VERSION && launch.version !== process.env.FAKE_WORKER_VERSION) {
+  console.error(`worker protocol version mismatch: the launch record is ${launch.version ?? "unversioned"}, this worker is ${process.env.FAKE_WORKER_VERSION}`);
+  process.exit(2);
+}
+const modelId = launch.kind === "app" ? launch.argv![launch.argv!.lastIndexOf("--model") + 1]! : launch.model!.repoId;
 const event = (name: string) => { if (process.env.FAKE_WORKER_EVENTS) appendFileSync(process.env.FAKE_WORKER_EVENTS, JSON.stringify({ event: name, model: modelId, pid: process.pid, at: Date.now() }) + "\n"); };
 if (process.env.FAKE_WORKER_FAIL === "start" || process.env.FAKE_WORKER_FAIL_MODEL === modelId) { console.error("worker startup failed: fake load failure"); process.exit(1); }
 console.log(`loading ${modelId}`);
@@ -83,6 +91,16 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   }
   if (path === "/fake/seen") return Response.json({ pid: process.pid, model: modelId, seen });
   if (path === "/fake/crash") { crash(Number(url.searchParams.get("code") ?? "137")); return Response.json({ crashing: true }); }
+  // Until the marker file lists `times` pids (default 1), a worker appends its pid and exits without
+  // answering (a transport failure for the caller); later requests are answered.
+  if (path === "/fake/die") {
+    const marker = url.searchParams.get("marker")!;
+    const deaths = existsSync(marker) ? readFileSync(marker, "utf8").split("\n").filter(Boolean).length : 0;
+    if (deaths < Number(url.searchParams.get("times") ?? "1")) { appendFileSync(marker, `${process.pid}\n`); process.exit(137); }
+    return Response.json({ pid: process.pid, method: request.method });
+  }
+  if (path === "/fake/headers") return new Response("hop", { headers: { "x-kept": "yes", connection: "x-private-hop", "x-private-hop": "1",
+    "keep-alive": "timeout=5", "proxy-authenticate": "Basic", trailer: "x-trailer", upgrade: "h2c" } });
   if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
   if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: modelId, object: "model", created: 1, owned_by: "mlx-bun",
     context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: 0.6, top_p: 0.9, top_k: null },
@@ -129,6 +147,10 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
 
 console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid, version: launch.version })));
 event("ready");
-const stop = () => { console.error("stopping"); event("stop"); void server.stop(true); process.exit(0); };
+const stop = async () => {
+  console.error("stopping"); event("stop");
+  if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
+  void server.stop(true); process.exit(0);
+};
 process.on("SIGTERM", stop);
 void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();

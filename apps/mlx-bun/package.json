@@ -8,7 +8,8 @@
     "mlx-bun": "./bin/mlx-bun.mjs"
   },
   "exports": {
-    "./client": "./src/server/client.ts"
+    "./client": "./src/server/client.ts",
+    "./engine": "./src/cli/engine-entry.ts"
   },
   "engines": {
     "bun": ">=1.4.2"
