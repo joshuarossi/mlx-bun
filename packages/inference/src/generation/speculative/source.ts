@@ -1,17 +1,27 @@
 // DraftSource — the seam between the serve-time speculative verify loop
-// (src/spec/serve-loop.ts) and whatever produces draft tokens. Designed in
-// docs/reference/cli.md §7 so every drafter shares ONE
+// (packages/inference/src/generation/speculative/run.ts) and whatever produces
+// draft tokens. Designed in `02d723a:docs/design/speculative-decoding.md` §1 so
+// every drafter shares ONE
 // verify/accept executor:
-//   - TwoModelSource (src/spec/two-model.ts) — mlx-lm parity (L1 oracle:
+//   - TwoModelSource (packages/inference/src/generation/speculative/sources/two-model.ts)
+//     — mlx-lm parity (L1 oracle:
 //     mlx_lm.server --draft-model), a full second model. Ignores `target`.
-//   - AssistantSource (src/spec/assistant-source.ts) — the optiq KV-borrowing
-//     Gemma drafter (src/spec/drafter.ts; L2 oracle: optiq spec_generate).
+//   - AssistantSource
+//     (packages/inference/src/generation/speculative/sources/assistant-source.ts)
+//     — the optiq KV-borrowing Gemma drafter (packages/inference/src/models/gemma4/assistant.ts; L2
+//     oracle: optiq spec_generate).
 //     Reads the target's donor K/V + anchor hidden each step.
-//   - DflashSource (src/spec/dflash-source.ts) — DSpark (L3, KL/quality-gated).
+//   - DflashSource
+//     (packages/inference/src/generation/speculative/sources/dflash-source.ts)
+//     — DSpark (L3, KL/quality-gated).
 //     Taps the target's multi-layer hiddens (prefill + verify) into a growing
-//     H_ctx (docs/design/speculative-decoding.md).
-//   - NgramSource (src/spec/ngram-source.ts) — model-free prompt lookup.
-//   - Glm52NativeMtpSource (src/spec/glm52-mtp-source.ts) — the target
+//     H_ctx (`02d723a:docs/design/speculative-decoding.md` §4.1).
+//   - NgramSource
+//     (packages/inference/src/generation/speculative/sources/ngram-source.ts)
+//     — model-free prompt lookup.
+//   - Glm52NativeMtpSource
+//     (packages/inference/src/generation/speculative/sources/glm52-mtp-source.ts)
+//     — the target
 //     artifact's native Colibri MTP row.
 //
 // The sources differ ONLY in what fills the draft; the serve loop, admission

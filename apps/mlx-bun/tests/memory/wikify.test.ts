@@ -5,7 +5,7 @@
 // citation or leaks is rejected and the original kept), the infobox
 // extract/refresh node's single-info-block invariant, grounded-field rule, and
 // alias merge — all driven by a FAKE model so the test is pure and fast. The
-// real one-load base-model sweep lives in scripts/memory/wikify-smoke.ts.
+// real one-load base-model sweep lives in `02d723a:scripts/memory/wikify-smoke.ts`.
 
 import { describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";

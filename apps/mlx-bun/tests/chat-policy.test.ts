@@ -71,7 +71,7 @@ describe("injectSampling (before_provider_request hook body)", () => {
     expect(p).toEqual({ model: "x" });
   });
 
-  // web-ui-pass-plan.md #8: the full mlx_lm.server sampler extension set, not
+  // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #8: the full mlx_lm.server sampler extension set, not
   // just temperature/top_p/top_k.
   it("injects every extended sampling field (min_p/XTC/penalties/seed)", () => {
     const out = injectSampling(
@@ -132,7 +132,7 @@ describe("injectSampling (before_provider_request hook body)", () => {
 // next_turn one-shot override composed OVER the session-level overrides,
 // consumed after exactly one outgoing provider request. See the "Per-
 // message sampling scope" block comment above composeSampling in
-// src/pi-web.ts for the full design and lifecycle rationale.
+// apps/mlx-bun/src/chat/policy.ts for the full design and lifecycle rationale.
 describe("composeSampling (next_turn OVER session precedence)", () => {
   it("returns session unchanged when no next_turn override is armed", () => {
     const session = { temperature: 0.7, top_p: 0.9 };
@@ -224,7 +224,7 @@ describe("sampling scope lifecycle: set -> one turn -> cleared", () => {
 // Loop hygiene (plan §9 Phase 3, beat matrix Axis 7): dedup, retry budget,
 // tool-turn cap. Pure decision functions extracted from the tool_call /
 // tool_result / turn_start extension hooks (installLoopHygieneHooks in
-// src/pi-web.ts) so they're testable without a live AgentSession.
+// apps/mlx-bun/src/chat/pi-backend.ts) so they're testable without a live AgentSession.
 describe("loop hygiene: decideBeforeToolCall / recordToolCallOutcome", () => {
   it("toolCallSignature is stable across argument key order", () => {
     expect(toolCallSignature("read", { path: "a", limit: 10 }))
@@ -336,7 +336,7 @@ describe("toolResultText", () => {
 // Per-chat system prompt (plan §9 Phase 2, beat matrix Axis 4): the
 // before_agent_start hook body. Layers the user's custom text onto (never
 // replacing) the built-in surface prompt pi hands in as event.systemPrompt
-// on every turn — see pi-web.ts's installSystemPromptHook.
+// on every turn — see apps/mlx-bun/src/chat/pi-backend.ts's installSystemPromptHook.
 describe("injectSystemPrompt (before_agent_start hook body)", () => {
   const base = "You are mlx-bun's built-in assistant.";
 
@@ -428,7 +428,7 @@ describe("mapEventToFrames", () => {
     ]);
   });
 
-  // docs/design/web-chat-redesign.md §2.3 caveat / risk #5: the lane badge must
+  // `02d723a:docs/design/web-chat-redesign.md` §3.12: the lane badge must
   // be server-driven, correlated via the lane registry keyed by the
   // AssistantMessage's responseId — never inferred client-side.
   it("does not expose serving lane selection in turn_end", () => {
@@ -669,7 +669,7 @@ describe("serializeHistory", () => {
 // Both features are built on findLastUserMessageEntry (locate the resend
 // target + its original content) and userMessageSiblings (the `< i/n >`
 // toggle's data). deepestLeafFrom is the pure "walk to a branch's own tip"
-// helper used by switch_sibling in PiWebSession (src/pi-web.ts).
+// helper used by switch_sibling in apps/mlx-bun/src/chat/pi-backend.ts.
 describe("findLastUserMessageEntry", () => {
   it("returns undefined for entries with no user message", () => {
     const entries: SessionEntry[] = [mEntry("1", "assistant", [{ type: "text", text: "hi" }])];

@@ -1,9 +1,10 @@
 // Whisper FAST execution path — the optimized graphs behind the same
-// decoding loop as the faithful port (whisper.ts / whisper-decode.ts).
+// decoding loop as the faithful port (packages/inference/src/models/whisper/model.ts /
+// packages/inference/src/transcription/whisper/decode.ts).
 // Gated token-exact against the faithful path on the fixture clips
-// (tests/parity/whisper-fast.test.ts); never bit-exact by design.
+// (`02d723a:tests/parity/whisper-fast.test.ts`); never bit-exact by design.
 //
-// What it changes (PLAN "Whisper P3", the reference-engine techniques):
+// What it changes (the reference-engine techniques):
 //   S1 fused SDPA (mx.fast.scaled_dot_product_attention) for encoder
 //      self-attention, decoder self-attention (causal prefill, cached
 //      steps) and cross-attention — whisper.cpp's flash_attn.
@@ -13,7 +14,7 @@
 //      encoder-prefill-only cross KV.
 //   S2 the single-token decoder step — embed → 4 layers → ln → logits →
 //      logit filters — is ONE mx.compile'd, shapeless closure replayed
-//      natively (src/mlx/compile.ts; the LLM compiled-decode pattern).
+//      natively (packages/mlx/src/compile.ts; the LLM compiled-decode pattern).
 //      Per-step state crosses as small int32 arrays (position, last two
 //      tokens, last timestamp, at-sample-begin) so the graph never
 //      changes; the growing self-KV enters as inputs (concat in-graph).

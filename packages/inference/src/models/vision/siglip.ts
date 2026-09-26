@@ -27,8 +27,9 @@
 // Parity: this matches optiq's computation op-for-op, INCLUDING its choices of
 // decomposed (manual f32) RMS norm for the q/k/v attention norms vs the fused
 // fast.rms_norm for the block layernorms. EVERY primitive is bit-identical to
-// the oracle on this machine — verified model-free in scripts/op-parity-
-// {dump.py,check.ts}: rms_norm, gelu, matmul, clip, cos, sin, the full
+// the oracle on this machine — verified model-free in
+// `02d723a:scripts/oracle/op-parity-dump.py` + `02d723a:scripts/op-parity-check.ts`:
+// rms_norm, gelu, matmul, clip, cos, sin, the full
 // multidimensional RoPE, sdpa (no-mask AND array-mask), sdpa padded-vs-unpadded
 // (a no-op), and the 3×3 pool (f32 matmul == optiq's einsum). There is NO
 // kernel / "cross-build" divergence (an earlier claim of one was a bug in the
@@ -214,7 +215,7 @@ export class SiglipVisionTower {
   ): SiglipVisionTower {
     const self = new SiglipVisionTower(cfg, embedScale);
     // out-param slots read via read.u64, not [0] (DFG stale-read bug — see
-    // outArray in mlx/ffi.ts).
+    // outArray in packages/mlx/src/ffi.ts).
     const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
     const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
     const arrMapPtr = ptr(arrMap);

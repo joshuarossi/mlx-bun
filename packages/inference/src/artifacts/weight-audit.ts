@@ -1,8 +1,9 @@
 // Universal-tier primitives: dense (unquantized) linear/embedding modules
-// (Phase 1.5 — mlx nn.Linear / nn.Embedding semantics), quantized-or-dense
+// (mlx nn.Linear / nn.Embedding semantics), quantized-or-dense
 // loader helpers, norm loaders, and the load-time weight audit.
 //
-// The quantized paths delegate to the proven gemma4-base primitives; the
+// The quantized paths delegate to the proven QuantizedLinear/QuantizedEmbedding
+// primitives (packages/inference/src/layers/); the
 // dense paths are verbatim ports of mlx.nn.Linear (`mx.addmm(bias, x, W.T)`
 // / `x @ W.T`) and mlx.nn.Embedding (`weight[ids]`, `x @ weight.T`).
 
@@ -12,7 +13,7 @@ import type { Weights } from "./weights";
 /** Records every tensor a universal load consumes; `finish` diffs against
  *  the shard index so a descriptor mistake is a LOAD error (unconsumed /
  *  missing tensors named), never a silently-wrong model
- *  (docs/design/generic-model-support.md §3.4). */
+ *  (`02d723a:docs/design/generic-model-support.md` §4.1). */
 export class WeightAudit {
   readonly consumed = new Set<string>();
 

@@ -170,7 +170,7 @@ export function createMemoryRoutes(options: { root?: () => string; referenceSour
   // ---- POST /api/memory/init { path?: string } -----------------------------
   //
   // The consent-card backend: wraps the exact same `setupVault` the CLI's
-  // `mlx-bun memory init` calls (src/cli.ts, `case "memory":` → `sub === "init"`)
+  // `mlx-bun memory init` calls (apps/mlx-bun/src/cli/memory.ts, `sub === "init"`)
   // — same idempotent create-dirs/README/Meta-pages/git-init behavior, minus
   // the CLI's interactive extras (seed-from-existing-vault prompt, nightly
   // schedule prompt), which stay CLI-only/TTY-gated and are out of scope here.

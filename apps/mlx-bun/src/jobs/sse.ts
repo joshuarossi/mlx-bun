@@ -2,7 +2,7 @@
 // (offset-seek read, partial-line tolerant, polls while the row is
 // non-terminal — port of optiq lab jobs.py `tail`). `streamJobResponse`
 // wraps it in a Bun `Response` whose body is an EventSource-compatible SSE
-// stream, matching the writer style in src/server.ts.
+// stream, matching the writer style in apps/mlx-bun/src/server/http.ts.
 
 import type { JobEvent, JobStatus } from "./protocol";
 import type { JobStore } from "./db";

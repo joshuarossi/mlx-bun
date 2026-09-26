@@ -16,10 +16,9 @@
 //     OUTLINE → per-section DRAFT → INFOBOX → assemble → NORMALIZE → gate → write
 //     + ledger), with a single `commitVault` at the end of the run.
 //
-// `runSynthesis` keeps the M1 event/summary contract `src/cli.ts` drives; it now
+// `runSynthesis` keeps the M1 event/summary contract apps/mlx-bun/src/cli/memory.ts drives; it now
 // runs the real DAG over the default store + vault. The FULL-corpus bootstrap is
-// USER-ACTION (P6-T5) — the agent never starts it; `scripts/experiments`
-// drives a bounded handful of conversations through `runPipeline` directly.
+// USER-ACTION (P6-T5) — the agent never starts it.
 
 import { createMemoryCalls, type MemoryCompletionClient } from "./model";
 import type { ChunkCall } from "./chunk";
@@ -49,7 +48,7 @@ import { wikifyVault } from "./wikify";
 export { buildEntityMeta, selectCreateTargets };
 export type { EntityMeta, PipelineCreated, PipelinePatched, RouteDecision };
 
-// ---- stage / event contract (consumed by src/cli.ts) -----------------------
+// ---- stage / event contract (consumed by apps/mlx-bun/src/cli/memory.ts) ----
 
 export type { SynthesisEvent, SynthesisStage } from "./events";
 import type { SynthesisEvent, SynthesisStage } from "./events";
@@ -225,7 +224,7 @@ export async function runPipeline(
   };
 }
 
-// ---- cli entry: the M1 contract src/cli.ts drives --------------------------
+// ---- cli entry: the M1 contract apps/mlx-bun/src/cli/memory.ts drives ------
 
 /**
  * Run the synthesis pipeline over the default store + vault — the `mlx-bun

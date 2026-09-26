@@ -102,7 +102,7 @@ export type ClientMessage =
   // App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12): pushed
   // by chat.ts on every route change AND on wizard-step change (quantize/
   // finetune/dataset), never on a timer. `context` is opaque here (the
-  // browser's AppContext shape, src/web/src/assistant.ts) — stored verbatim
+  // browser's AppContext shape, apps/mlx-bun/src/web/browser/assistant.ts) — stored verbatim
   // as the connection's currentAppContext and returned by the
   // get_current_app_context tool, plus mined for the compact one-line
   // ambient context auto-prepended to the NEXT prompt (see

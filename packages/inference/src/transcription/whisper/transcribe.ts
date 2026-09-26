@@ -7,7 +7,8 @@
 // parity gate covers both. Streaming caveat: a window fed early sees a
 // log-mel normalized against the audio received so far (the 8-decade clamp
 // is relative to the clip maximum), which can differ from the batch result
-// in near-silent bins. Word timestamps live in whisper-timing.ts.
+// in near-silent bins. Word timestamps live in
+// packages/inference/src/transcription/whisper/timing.ts.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
@@ -34,7 +35,8 @@ export interface WhisperTranscribeOptions extends WhisperDecodingOptions {
   /** [start, end, start, end, …] seconds; last end defaults to the clip end.
    *  Batch only: a run with clips never transcribes eagerly. */
   clipTimestamps?: number[];
-  /** Word-level timestamps via cross-attention DTW (whisper-timing.ts);
+  /** Word-level timestamps via cross-attention DTW
+   *  (packages/inference/src/transcription/whisper/timing.ts);
    *  one extra faithful decoder pass per window. */
   wordTimestamps?: boolean;
   /** With wordTimestamps: skip silent gaps longer than this many seconds

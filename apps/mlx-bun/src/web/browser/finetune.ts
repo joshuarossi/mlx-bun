@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // FINE-TUNE CONTROLLER — 5-step wizard with live loss chart.
 // Behavior-identical port of the original controllers.finetune IIFE.
@@ -86,7 +87,7 @@ export function createFinetuneController() {
     if (method === "dpo") { hp.dpo_beta = +($("f-beta") as HTMLInputElement).value; hp.dpo_lr_schedule = ($("f-sched") as HTMLSelectElement).value; }
     if (method === "orpo") {
       hp.orpo_lambda = +($("f-orpo-lambda") as HTMLInputElement).value; hp.orpo_lr_schedule = ($("f-orpo-sched") as HTMLSelectElement).value;
-      // web-ui-pass-plan.md #7: sft_scope only makes sense for ORPO's
+      // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #7: sft_scope only makes sense for ORPO's
       // monolithic loss (the SFT term needs a scope); default matches the
       // segmented control's default ("full", paper/TRL chosen-NLL).
       const scopeBtn = $("f-orpo-scope").querySelector("button.on") as HTMLElement | null;
@@ -146,7 +147,7 @@ export function createFinetuneController() {
     ($("f-exp-base") as HTMLInputElement).value = base;
     ($("f-exp-adapter") as HTMLInputElement).value = adapterPath;
     show(4);
-    // web-ui-pass-plan.md #15 staleness half: the new adapter is on disk now —
+    // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #15 staleness half: the new adapter is on disk now —
     // refresh the chat adapter chip immediately rather than waiting for the
     // user to navigate to Chat (enter() also refreshes, this just removes the
     // wait for the common case of finishing a run and going straight to try it).

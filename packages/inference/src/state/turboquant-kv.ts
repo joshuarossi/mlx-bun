@@ -11,7 +11,7 @@ import { RotatingKVCache } from "./rotating-kv";
 import { TurboQuantCodec,disposeTurboQuant,turboQuantFusedDecode,type TurboQuantTensor } from "./turboquant-codec";
 
 
-/** TurboQuant KV cache — v1 (docs/design/turboquant.md): dequantize-
+/** TurboQuant KV cache — v1 (`02d723a:docs/design/turboquant.md`): dequantize-
  *  on-fetch. Deliberately does NOT subclass KVCache/RotatingKVCache (or
  *  QuantizedKVCache) — a novel class fails every generated-file
  *  `#matches()` guard and every batching `instanceof` allow-list, so it
@@ -210,7 +210,7 @@ export class TurboQuantKVCache implements Cache {
   }
 
   /** Trimmed-to-offset arrays in documented order: kIdx, kScales, kZeros,
-   *  vPacked, vScales (kv-store.ts tensor-slot ordering for kind
+   *  vPacked, vScales (packages/inference/src/state/persistence.ts tensor-slot ordering for kind
    *  "turboquant"). Empty cache → []. */
   state(): MlxArray[] {
     if (!this.#kv) return [];

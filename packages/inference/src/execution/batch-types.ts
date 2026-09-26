@@ -16,7 +16,7 @@ import type { OrdinaryContinuation } from "./continuation-types";
 // step hand-off ping-pongs the GIL with asyncio/uvicorn (~1 ms/token); Bun's
 // setImmediate hop costs microseconds, so bursting here only delays socket
 // flushes. Don't re-add without new evidence — the per-yield step below is
-// the measured optimum (docs/design/batching.md P4 notes).
+// the measured optimum (`02d723a:docs/design/batching.md` §2).
 
 /** A token sampler for one row: (logits [1,V], step) → token array [1] on
  *  device. Greedy is `(l) => ops.argmaxAxis(l, -1)`; richer closures fold in
@@ -129,7 +129,7 @@ export interface BatchStats {
   fill?: import("../generation/index").GenerateStats["fill"];
   promptTokens: number;
   generatedTokens: number;
-  /** Prompt tokens served from the prompt cache (Phase 3.2): a joiner's solo
+  /** Prompt tokens served from the prompt cache: a joiner's solo
    *  prefill starts from the longest usable cached prefix, exactly like the
    *  serial lane's runGeneration take(). 0 on a cold prefill. */
   cachedTokens: number;
@@ -144,8 +144,8 @@ export interface BatchStats {
 /** The slice of PromptCache the scheduler drives (structural — the server's
  *  PromptCache satisfies it). take() on admission (any joiner: a restored
  *  prefix + suffix prefill is byte-safe whether the row later merges or
- *  not). put() paths: rows that finish NEVER-MERGED (adopted lone rows,
- *  Phase 3.2) hand their pristine serial caches over zero-copy; rows that
+ *  not). put() paths: rows that finish NEVER-MERGED (adopted lone rows)
+ *  hand their pristine serial caches over zero-copy; rows that
  *  finish INSIDE a multi-row batch get their KV EXTRACTED per row into
  *  fresh serial caches first (mlx-lm server.py:872 extract_cache — the
  *  cross-request reuse concurrent agents live on). */
@@ -224,7 +224,7 @@ export interface MlxBatchExecutionGroupOptions {
   kvScheme?: KvScheme;
   /** Model binding owns support for precision transitions. */
   kvBatchCapabilities?: { delayedAffine?: boolean };
-  /** Prompt-cache hook (Phase 3.2): admission take()s the longest usable
+  /** Prompt-cache hook: admission take()s the longest usable
    *  prefix into the joiner's solo caches (suffix-only prefill — the
    *  multi-turn chat TTFT path); rows that finish never-merged put() their
    *  caches back. Adapter requests never reach the batch lane, so the

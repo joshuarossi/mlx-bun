@@ -1,10 +1,11 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // The Memory panel (plan §5.5), provenance chips (§5.4.2), personalized
 // hero chips + consent card (§5.1), and the sidebar entry that opens the
 // panel. Everything here talks to the /api/memory/* REST wrappers
-// (src/memory/rest.ts) — no new WS frames, per the task brief. esc()
+// (apps/mlx-bun/src/server/memory-routes.ts) — no new WS frames, per the task brief. esc()
 // discipline on every interpolation site: article names/content/commit
 // subjects/paths are all vault (i.e. user/model) data, never trusted.
 //
@@ -21,9 +22,9 @@ import type { ApiEnvelope } from "./protocol";
 import { esc, mdToHtml, wireCanvasToggle } from "./markdown";
 
 /* ────────────────────────────────────────────────────────────────────
-   REST response shapes (mirrors src/memory/rest.ts's jsonOk() bodies —
-   frontend-only types since these are HTTP JSON envelopes, not part of
-   the typed WS contract in pi-web.ts). Each extends ApiEnvelope (api()'s
+   REST response shapes (mirrors apps/mlx-bun/src/server/memory-routes.ts's
+   jsonOk() bodies — frontend-only types since these are HTTP JSON envelopes,
+   not part of the typed WS contract in apps/mlx-bun/src/chat/protocol.ts). Each extends ApiEnvelope (api()'s
    generic constraint, api.ts) via intersection, per that file's own
    doc-comment convention.
    ──────────────────────────────────────────────────────────────────── */

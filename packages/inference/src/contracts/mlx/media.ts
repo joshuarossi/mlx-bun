@@ -9,7 +9,7 @@ export type Vision = {
   embeddings: MlxArray;
   /** bool [L] image-token mask for the bidirectional attention overlay.
    *  Absent when the prompt carries ANY audio — audio(-containing) prompts
-   *  run fully causal (docs/design/generic-model-support.md §3.3 Q1). */
+   *  run fully causal (`02d723a:docs/design/generic-model-support.md` §6.6). */
   imageMask?: MlxArray;
   /** bool [L] union multimodal soft-token mask (image | audio) for
    *  per-layer-input id zeroing. Absent on the legacy vision-only shape,

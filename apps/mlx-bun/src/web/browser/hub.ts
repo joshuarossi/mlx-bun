@@ -1,13 +1,14 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 3). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 3). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
-// Model Hub panel (docs/design/web-chat-redesign.md §9 Phase 3, beat-matrix
-// Axis 3 "Hub" row). Same overlay language/chrome as the Memory panel
+// Model Hub panel (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 3). Same overlay language/chrome as the Memory panel
 // (mem-overlay/mem-panel/mem-head/mem-body): fixed right-side panel,
 // scrimmed, focus-trapped, Escape closes, opened from the model picker
 // popover's "Browse models…" action (and exported for palette use later).
 //
-// Three sections talking to src/hub-rest.ts's REST wrappers — no new WS
+// Three sections talking to apps/mlx-bun/src/server/hub-routes.ts's REST routes — no new WS
 // frames:
 //   - Downloaded  <- GET /api/hub/local  (size/quant/capability chips, the
 //     /fit verdict as a green/yellow/red dot + predicted tok/s, a "serve"
@@ -29,7 +30,7 @@ import type { ApiEnvelope } from "./protocol";
 import { esc } from "./markdown";
 
 /* ────────────────────────────────────────────────────────────────────
-   REST response shapes (mirrors src/hub-rest.ts's jsonOk() bodies).
+   REST response shapes (mirrors apps/mlx-bun/src/server/hub-routes.ts's JSON bodies).
    ──────────────────────────────────────────────────────────────────── */
 
 export interface HubLocalRow {
@@ -119,7 +120,7 @@ function localRowHtml(m: HubLocalRow): string {
 }
 
 /** Pure render, exported for esc()-discipline + empty-state tests
- *  (tests/using/web-app.test.ts, mirroring renderModelPopBodyHtml's pattern). */
+ *  (apps/mlx-bun/tests/web/browser.test.ts, mirroring renderModelPopBodyHtml's pattern). */
 export function renderHubLocalHtml(models: HubLocalRow[]): string {
   if (!models.length) {
     return '<div class="hub-empty">No models downloaded yet — search Hugging Face below to get one.</div>';

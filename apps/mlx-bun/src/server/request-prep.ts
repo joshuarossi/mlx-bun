@@ -5,8 +5,7 @@ import { textPrompt } from "./text-prompt";
 // server/model defaults folded in, chat-template rendering + prompt ids,
 // the stable prompt-cache boundary probe, grammar compilation, and the
 // tool-call stream router. Resolved ONCE per server (createRequestPrep) and
-// captured by the route handlers. Extracted from src/server.ts (repo-taming
-// Phase 4).
+// captured by the route handlers.
 import type { ChatMessage, ToolDefinition } from "@mlx-bun/inference/input";
 import {
   fillEchoConfig,
@@ -288,7 +287,7 @@ export function createRequestPrep(input: {
       (t.function?.parameters?.additionalProperties as unknown) ?? null,
     ]));
 
-  /** Token fast-forwarding (docs/design/speculative-decoding.md "Token
+  /** Token fast-forwarding (`02d723a:docs/design/speculative-decoding.md` §7 "Token
    *  fast-forwarding"): compile this request's determined-span table, or null
    *  when the feature is off or the request's shape refuses it.
    *

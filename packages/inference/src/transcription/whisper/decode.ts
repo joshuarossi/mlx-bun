@@ -3,7 +3,7 @@
 // detection, ranking) plus the beam search the oracle leaves unimplemented
 // (ported from openai-whisper's BeamSearchDecoder, which mlx-whisper
 // mirrors everywhere else). Per-step pre-filter logits are gated
-// bit-exact vs the oracle for the greedy path (tests/parity/whisper.test.ts).
+// bit-exact vs the oracle for the greedy path (`02d723a:tests/parity/whisper.test.ts`).
 
 import { deflateSync } from "node:zlib";
 import { MlxArray } from "@mlx-bun/mlx/array";
@@ -29,7 +29,7 @@ export interface WhisperDecodingOptions {
   /** Token ids to suppress; "-1" = the tokenizer's non-speech set (default). */
   suppressTokens?: number[] | "-1" | null;
   /** Execution path: `true` (default) runs the optimized graphs
-   *  (whisper-fast.ts) for temperature-0 decoding; `false` forces the
+   *  (packages/inference/src/models/whisper/fast.ts) for temperature-0 decoding; `false` forces the
    *  faithful oracle graph. Sampling (temperature > 0) always uses the
    *  faithful path. */
   fast?: boolean;

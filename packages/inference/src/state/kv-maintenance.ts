@@ -30,7 +30,7 @@ let warnedTurboRotating = false;
 
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
  *  per-layer patched variant (incl. patch_rotating_to_quantized: rotating
- *  caches convert too — Phase 9):
+ *  caches convert too):
  *  - per-layer bits/group_size selection (kvConfig overrides kvBits,
  *    matching optiq's --kv-config precedence; shipped kv_config.json
  *    files cover EVERY cache-owning layer, sliding ones included —
@@ -44,7 +44,8 @@ let warnedTurboRotating = false;
  *    layers' bf16 K/V as graph inputs alongside ALL quantized outputs —
  *    the exact transient optiq's fix kills (16.35 → 7.60 GB at 32k on a
  *    24 GB Mac). Numerics untouched: same quantize math, only the eval
- *    ordering is forced (tests/parity/kv-quant.test.ts, tests/parity/rotating-kvq.test.ts). */
+ *    ordering is forced (`02d723a:tests/parity/kv-quant.test.ts`,
+ *    `02d723a:tests/parity/rotating-kvq.test.ts`). */
 export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvConfig">> & {
   readonly kvConfig?: readonly Readonly<KvQuantSpec>[];
 }): KvMaintenance {

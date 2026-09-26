@@ -1,10 +1,11 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // The hand-rolled markdown renderer + streaming block-memoization +
 // syntax-highlighting glue. Behavior-identical port of the original inline
 // <script> in app.html. This module is the streaming-parity oracle for
-// tests/using/web-app.test.ts: renderBlocksIncremental fed char-by-char must
+// apps/mlx-bun/tests/web/browser.test.ts: renderBlocksIncremental fed char-by-char must
 // converge to the exact same innerHTML as one-shot mdToHtml.
 
 /** Escape the four HTML-significant characters. Used on every interpolation
@@ -50,7 +51,7 @@ export function mdInline(t: unknown): string {
 /** Pure: does this fence's language tag qualify for the Canvas v1
  *  Preview|Source toggle? Only html/svg — js/ts/etc. fences never get a
  *  toggle (running arbitrary script output isn't the feature; rendering a
- *  markup/vector document is). Exported so tests/using/web-app.test.ts can check
+ *  markup/vector document is). Exported so apps/mlx-bun/tests/web/browser.test.ts can check
  *  the detection logic directly without a DOM. */
 export function isCanvasFence(lang: string): boolean {
   return /^(html?|svg)$/i.test(lang.trim());
@@ -360,7 +361,7 @@ export function mdToHtml(src: unknown): string {
    one per token.
 
    INVARIANT (this is the correctness test for this whole scheme, and the
-   thing tests/using/web-app.test.ts's streaming-parity fixtures check): the
+   thing apps/mlx-bun/tests/web/browser.test.ts's streaming-parity fixtures check): the
    memoized incremental render must be pixel-for-pixel/byte-for-byte
    identical to a single `mdToHtml(fullText)` pass once the message is
    complete. We guarantee this by (a) never touching a block's DOM once
@@ -475,7 +476,7 @@ export function renderBlocksIncremental(container: HTMLElement, text: string, st
 /* ────────────────────────────────────────────────────────────────────
    SYNTAX HIGHLIGHTING (plan §5.3/§7)
    ────────────────────────────────────────────────────────────────────
-   Vendored highlight.js (src/web/vendor/hljs.js, no CDN — see that file's
+   Vendored highlight.js (apps/mlx-bun/src/web/public/vendor/hljs.js, no CDN — see that file's
    header) applied to fenced code blocks. mdCodeBlock() above stamps
    `class="language-<fence-info-string>"` onto the <code> element when the
    fence declares one (```ts, ```python, ...); highlight.js reads that class
@@ -500,7 +501,7 @@ export function renderBlocksIncremental(container: HTMLElement, text: string, st
    same node without clearing that marker, so we check for it explicitly
    rather than relying on the library to no-op. */
 
-/** The vendored highlight.js global (src/web/vendor/hljs.js), loaded via a
+/** The vendored highlight.js global (apps/mlx-bun/src/web/public/vendor/hljs.js), loaded via a
  *  plain <script defer src="/assets/hljs.js">, not an ES module — so it's
  *  a `window` global, not an import. Declared loosely (not the full hljs
  *  typing) since this app only calls the one method. */

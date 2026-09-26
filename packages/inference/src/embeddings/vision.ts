@@ -37,7 +37,7 @@ export class VisionTower {
   static load(modelDir: string, embedScale: number, rmsNormEps = 1e-6): VisionTower {
     const self = new VisionTower(embedScale, rmsNormEps);
     // out-param slots read back via read.u64, not [0] (DFG stale-read bug
-    // — see outArray in mlx/ffi.ts).
+    // — see outArray in packages/mlx/src/ffi.ts).
     const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
     const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
     const arrMapPtr = ptr(arrMap);

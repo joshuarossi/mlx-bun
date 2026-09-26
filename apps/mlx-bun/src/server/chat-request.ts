@@ -1,7 +1,7 @@
 // Wire-level chat/completion request shapes and the pure per-request
 // helpers: message normalization, sampling-field coercion, grammar-degrade
 // prompt injection, and the mlx_lm.server-parity validators. No model, no
-// server state. Extracted from src/server.ts (repo-taming Phase 4).
+// server state.
 import type { ChatMessage, ToolDefinition } from "@mlx-bun/inference/input";
 import type { HlgConfig } from "@mlx-bun/inference/sampling";
 import { RequestError } from "./pipeline";
@@ -72,7 +72,7 @@ export interface ChatRequestParams {
   /** Mounted LoRA adapter selection: "id", "a+b" (stacked), or "none". */
   adapter?: string;
   /** HLG tone-curve sampling override (per request). Snake_case wire fields,
-   *  merged over the server's --hlg-sampling config. docs/archive/hlg-sampling.md. */
+   *  merged over the server's --hlg-sampling config. `02d723a:docs/archive/hlg-sampling.md`. */
   hlg?: {
     enabled?: boolean;
     width?: number;
@@ -82,7 +82,7 @@ export interface ChatRequestParams {
   };
   /** OpenAI structured output: {type:"json_object"} | {type:"json_schema",
    *  json_schema:{name,schema,strict?}} | {type:"text"}. Enforced at the
-   *  sampler via xgrammar token-bitmasks (src/grammar.ts). L2-class (oMLX
+   *  sampler via xgrammar token-bitmasks (packages/inference/src/sampling/grammar.ts). L2-class (oMLX
    *  oracle). On compile failure, degrades to a system-prompt injection +
    *  Warning header (oMLX parity), never 500. */
   response_format?: unknown;

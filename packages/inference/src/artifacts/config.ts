@@ -75,7 +75,7 @@ export interface QuantSpec {
   bits: number;
   groupSize: number;
   mode: string;
-  /** `mode: "trellis"` (packed trellis-coded weights, src/model/trellis-linear.ts):
+  /** `mode: "trellis"` (packed trellis-coded weights, packages/inference/src/layers/trellis-linear.ts):
    *  bits = k per weight, groupSize = block T, plus the codec geometry. */
   trellis?: TrellisSpec;
 }
@@ -100,12 +100,13 @@ export interface KvQuantSpec {
   groupSize: number;
 }
 
-/** TurboQuant scheme (docs/design/turboquant.md): rotation-based KV
+/** TurboQuant scheme (`02d723a:docs/design/turboquant.md`): rotation-based KV
  *  quantization, a distinct axis from the uniform/per-layer affine kvQuant
  *  above (composes with it in principle; v1 ships as a standalone CLI-only
  *  runtime lever, same class as uniform kvBits — see
- *  src/generate.ts maybeQuantizeKv). Valid kBits: {2,4,5,8}; vBits:
- *  {2,3,4,5,8} (docs/design/turboquant.md's supported Lloyd-Max tables). */
+ *  packages/inference/src/generation/autoregressive.ts maybeQuantizeKv). Valid
+ *  kBits: {2,4,5,8}; vBits: {2,3,4,5,8} (`02d723a:docs/design/turboquant.md`'s
+ *  supported Lloyd-Max tables). */
 export interface TurboQuantScheme {
   kBits: number;
   vBits: number;

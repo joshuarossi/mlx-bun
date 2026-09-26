@@ -581,7 +581,7 @@ class PiBackend implements ChatBackend {
   /**
    * Register the tool_call approval gate on the inline extension.
    *
-   * Approval-fatigue defaults (web-chat-redesign.md §5.4 matrix — verified
+   * Approval-fatigue defaults (`02d723a:docs/design/web-chat-redesign.md` §2.3 — verified
    * here, not just asserted): READ_ONLY_TOOLS NEVER prompt, checked first
    * and unconditionally — no config, always-allow list, or codingTools
    * state can make a read-only tool gated, and no combination of state can
@@ -848,7 +848,7 @@ class PiBackend implements ChatBackend {
       case "set_sampling": {
         // The full mlx_lm.server sampler extension set (min_p/XTC/penalty
         // families/seed), not just temperature/top_p/top_k
-        // (web-ui-pass-plan.md #8), for either scope.
+        // (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #8), for either scope.
         const overrides: SamplingOverrides = {
           temperature: msg.temperature ?? null,
           top_p: msg.top_p ?? null,

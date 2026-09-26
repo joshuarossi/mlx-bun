@@ -17,7 +17,8 @@
 // the KV (and recurrent SSM state) over the whole span. That shared primitive
 // lives in generate.ts; everything here is bookkeeping.
 //
-// MIGRATION NOTE. The shipped speculative lane (src/spec/) has its own
+// MIGRATION NOTE. The shipped speculative lane
+// (packages/inference/src/generation/speculative/) has its own
 // `DraftSource` seam with a verify/rollback executor of its own (ngram, MTP,
 // two-model, DSpark). Those are NOT rewired onto this interface in this phase
 // — the adapter (a DraftSource wrapped as a `verify`-policy ProposalSource, so

@@ -5,11 +5,11 @@
 // are read into an mlx-owned (page-aligned, Metal-visible) buffer only
 // when first evaluated — the same lazy semantics as Python's mx.load.
 //
-// Why not wrap our own mmap pointers? Verified in Phase 1: GPU ops on
+// Why not wrap our own mmap pointers? Verified: GPU ops on
 // externally-wrapped buffers read garbage unless the pointer is
 // page-aligned, and safetensors tensor offsets are arbitrary (not even
 // element-aligned). CPU-stream ops on wrapped pointers are correct, but
-// the weights' consumers are GPU kernels. See PLAN.md Phase 1 findings.
+// the weights' consumers are GPU kernels.
 //
 // The JS-side parser (ShardedSafetensors) stays as the metadata source:
 // names, shapes, dtypes, byte sizes — for the registry, fit reports, and
@@ -68,7 +68,7 @@ const NATIVE_WEIGHTS: WeightsNativeBindings = {
  * lazy value repair applied to the loaded array — return null to keep it.
  *
  * Weights only APPLIES a view; the rules belong to the architecture that owns
- * the naming (see `qwen35WeightsView` in model/qwen3_5-checkpoint.ts).
+ * the naming (see `qwen35WeightsView` in packages/inference/src/models/qwen/checkpoint.ts).
  */
 export interface WeightsView {
   readonly names: ReadonlyMap<string, string>;
@@ -115,7 +115,7 @@ export class Weights {
     const sf = this.shards.files.get(file);
     if (!sf) throw new Error(`no shard file ${file}`);
     // out-param slots read back via read.u64, not [0] (DFG stale-read
-    // bug — see outArray in mlx/ffi.ts). Cold path, but the rule is
+    // bug — see outArray in packages/mlx/src/ffi.ts). Cold path, but the rule is
     // uniform: native wrote it, read.* reads it.
     const arrMap = new BigUint64Array([this.#native.newArrayMap()]);
     const arrMapPtr = ptr(arrMap);

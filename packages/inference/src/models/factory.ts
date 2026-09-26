@@ -141,7 +141,8 @@ export async function openGlm52RuntimeModel(
 
 /** Open a Whisper checkpoint (encoder-decoder speech model) through the same
  * profile resolution as text models. Whisper never enters the chat loop, so
- * it is not a RuntimeModel: the transcription engine (src/audio/whisper-*)
+ * it is not a RuntimeModel: the transcription engine
+ * (packages/inference/src/transcription/whisper/)
  * owns it. */
 export async function openWhisperModel(
   modelDir: string, options: { readonly profiles?: ResolveModelProfileOptions } = {},

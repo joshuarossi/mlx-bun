@@ -1,6 +1,7 @@
 // OpenAI wire formats: InferenceResult → chat.completion / text_completion
 // JSON, and the SSE chunk protocols for both. Anthropic and Responses have
-// their own (src/anthropic.ts, src/responses.ts); all three implement the
+// their own (apps/mlx-bun/src/server/anthropic.ts, apps/mlx-bun/src/server/responses.ts);
+// all three implement the
 // same CompletionStreamProtocol so the HTTP writer (http.ts) is shared.
 import type { CompletionSummary, CompletionUsage } from "./completion-executor";
 import type { CompletionEvent, CompletionStreamProtocol } from "./completion-sink";

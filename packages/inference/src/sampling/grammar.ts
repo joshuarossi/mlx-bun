@@ -53,7 +53,7 @@ export interface GrammarRequest {
   guided_grammar?: string;
   /** vLLM/oMLX: regex. Compiled via `root ::= <regex>` EBNF embedding, so
    *  only the regex∩EBNF subset works (the F5 gap — real regex→EBNF or
-   *  structural-tag RegexFormat is the tracked fix, docs/reference/server-api.md). */
+   *  structural-tag RegexFormat is the tracked fix, `02d723a:docs/reference/server-api.md`). */
   guidedRegex?: string;
   guided_regex?: string;
   /** vLLM/oMLX: restrict output to one of these strings (enum). */
@@ -81,7 +81,7 @@ export interface CompiledGrammarResult {
 /** Module-level serializer for ALL xgrammar WASM calls. The WASM instance is
  *  single-threaded; CONCURRENT async calls corrupt emscripten's binding
  *  layer (BindingError: Expected null or instance of VectorInt, got an
- *  instance of VectorInt — reproduced in tests/parity/grammar.test.ts B1 test, which
+ *  instance of VectorInt — reproduced in `02d723a:tests/parity/grammar.test.ts` B1 test, which
  *  fires 4 overlapping compiles + fills). Under `--batch N` the scheduler
  *  fires N accept()s (each kicks an async fill) then awaits ready() on all;
  *  and the server compiles grammar for concurrent requests. Without
@@ -115,7 +115,7 @@ let cachedTokenizerInfo: {
 } | null = null;
 
 /** Extract the ordered vocab array + detect xgrammar vocab type from
- *  tokenizer.json (the same data src/tokenizer.ts already loads).
+ *  tokenizer.json (the same data packages/inference/src/input/tokenizer.ts already loads).
  *  - decoder.type == "ByteLevel"            → byte_level  (Llama3, Qwen)
  *  - decoder is Sequence w/ ByteFallback    → byte_fallback (Gemma/SP)
  *  - otherwise                              → raw
@@ -290,7 +290,7 @@ export class GrammarController {
    *  time: a controller disposed while its fill is still queued (an exception
    *  between accept/jumpForward and ready()) must not call into the deleted
    *  WASM matcher — that BindingError poisons the module-wide wasmChain for
-   *  every later grammar request (found by tests/parity/grammar-jump.test.ts). */
+   *  every later grammar request (found by `02d723a:tests/parity/grammar-jump.test.ts`). */
   private fireFill(): Promise<void> {
     return wasmQueue(() =>
       this.disposed
@@ -476,7 +476,7 @@ export async function compileGrammarRequest(
     if (!degradeHint) degradeHint = resolved.degradeDescription ?? "grammar compile failed";
     // The compiler is the cached per-TokenizerInfo instance (F4) — a failed
     // compile must NOT dispose it; the WASM abort is catchable and the
-    // compiler state survives (verified in tests/parity/grammar.test.ts).
+    // compiler state survives (verified in `02d723a:tests/parity/grammar.test.ts`).
     // Return the hint (NOT bare null): it drives the degrade path's
     // system-prompt injection + Warning header. Dropping it here served
     // unconstrained output with no Warning at all (found 2026-07-07 sweep).
@@ -557,7 +557,7 @@ function resolveGrammarRequest(req: GrammarRequest):
           kind: "json_schema",
           schema,
           strict: js?.strict,
-          // Whitespace-stall escape hatch (docs/reference/server-api.md known gaps):
+          // Whitespace-stall escape hatch (`02d723a:docs/reference/server-api.md` known gaps):
           // any_whitespace=false compiles the schema with xgrammar's compact
           // separators — no whitespace choice points, so a whitespace-
           // degenerate base model can't greedily tab-loop to max_tokens.

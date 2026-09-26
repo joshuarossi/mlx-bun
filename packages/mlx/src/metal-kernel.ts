@@ -1,4 +1,4 @@
-// mx.fast.metal_kernel from Bun (docs/archive/investigations/optimization_plan.md Phase E): the
+// mx.fast.metal_kernel from Bun (`02d723a:docs/archive/investigations/optimization_plan.md` Phase E): the
 // intended MLX extension point for custom Metal kernels — no fork. The
 // kernel body is Metal Shading Language; mlx generates the signature
 // from input/output names (inputs by name, outputs by name, plus
@@ -145,7 +145,7 @@ export class MetalKernel {
 }
 
 /** mlx_metal_start/stop_capture — wrap a single decode step to inspect
- *  its command buffer in Xcode (Phase E step 2: size the prize). Needs
+ *  its command buffer in Xcode (to size the prize). Needs
  *  MTL_CAPTURE_ENABLED=1 in the environment. */
 export function metalCapture(path: string, fn: () => void): void {
   const p = Buffer.from(path + "\0", "utf8");

@@ -1,4 +1,4 @@
-// Main's `fixtures/train/tiny` rows (train.jsonl, valid.jsonl, dpo.jsonl) as
+// `02d723a:fixtures/train/tiny` rows (train.jsonl, valid.jsonl, dpo.jsonl) as
 // inline literals. Git carries no data files, so the model-gated training
 // tests read a row directly from here or stage rows into a temporary data
 // directory with `writeJsonl`. Row order and content match main exactly (the

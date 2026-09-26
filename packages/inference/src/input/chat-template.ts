@@ -1,6 +1,5 @@
 // Chat template rendering via @huggingface/jinja (pure JS, purpose-built
-// for HF chat templates). Decision recorded in PLAN.md Phase 1 findings:
-// rendering the model's own chat_template.jinja beats a hand-port because
+// for HF chat templates). Rendering the model's own chat_template.jinja beats a hand-port because
 // it can't rot when the model updates its template.
 
 import { Template } from "@huggingface/jinja";

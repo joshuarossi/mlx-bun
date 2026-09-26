@@ -2,7 +2,7 @@
 //
 // Locks the ported chunk-validation logic (and the chunk.ts prompt/format
 // seams). The model-driven end-to-end path is exercised by
-// scripts/memory/segment-smoke.ts against the real e4b chunk adapter.
+// `02d723a:scripts/memory/segment-smoke.ts` against the real e4b chunk adapter.
 
 import { describe, expect, it } from "bun:test";
 import { validateChunks, ChunkValidationError } from "../../src/memory/chunk-validation";

@@ -20,7 +20,8 @@ export { TRELLIS_MATVEC_MAX_M, type TrellisGeometry, type MixedGateUpTail } from
  *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */
 let variantOverride: number | null = null;
 /** Explicit override (benches); otherwise the runtime flag — read per call so
- *  the self-flag KL gate (`eval.ts kl --decode --self MLX_BUN_TRELLIS_VARIANT`)
+ *  the self-flag KL gate (`02d723a:scripts/eval.ts`
+ *  `kl --decode --self MLX_BUN_TRELLIS_VARIANT`)
  *  can A/B two decodes on one loaded model. */
 export function setTrellisVariant(v: number | null): void { variantOverride = v; }
 function variant(): number {

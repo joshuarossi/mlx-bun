@@ -1,6 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §9 Phase 3, beat matrix Axis 5 — "chat-with-files RAG v1"). Built into
-// src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §9 Phase 3, beat matrix Axis 5 — "chat-with-files RAG v1"). Built
+// into apps/mlx-bun/dist/web/app.js by scripts/build-web.ts.
 //
 // A small, dependency-free, pure BM25 retriever over attached-file text —
 // matching optiq Lab's shipped v1 shape (the task's explicit target): chunk
@@ -10,7 +10,7 @@
 //
 // No network, no embeddings, no external deps — this is the "dependency-
 // free BM25 proves the v1 needs no vector infra" bet from the beat matrix.
-// A later vector upgrade (src/embed.ts) is explicitly out of scope here
+// A later vector upgrade (packages/inference/src/embeddings/text.ts) is explicitly out of scope here
 // (Phase 5).
 
 /* ────────────────────────────────────────────────────────────────────

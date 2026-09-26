@@ -78,7 +78,7 @@ export class ChatStage {
       throw new RequestError(status, message);
     };
 
-    // Grammar-constrained decoding (src/grammar.ts). Compile BEFORE prompt
+    // Grammar-constrained decoding (packages/inference/src/sampling/grammar.ts). Compile BEFORE prompt
     // rendering: on the degrade path (compile failed but a constraint was
     // requested) inject a system message instructing valid JSON so the
     // model still best-efforts schema-conformant output (oMLX parity —

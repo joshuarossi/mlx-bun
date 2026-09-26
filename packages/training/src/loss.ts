@@ -497,7 +497,7 @@ export function dpoMetrics(
 // rejected), both with grad, no reference. The REJECTED branch never needs
 // prompt logps. This is the naïve full-logits oracle path — the chunked /
 // response-only / segmented tiers validate against it (see the design's oracle
-// ladder, docs/design/orpo-training.md).
+// ladder, `02d723a:docs/design/orpo-training.md`).
 
 /** SFT-term scope for ORPO's L_NLL(chosen): "full" = prompt+response token-mean
  *  CE (paper/TRL-faithful); "response" = -ℓw (the pre-change behavior). The

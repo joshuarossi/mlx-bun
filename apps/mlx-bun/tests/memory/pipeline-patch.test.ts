@@ -10,8 +10,7 @@
 // The end-to-end acceptance is the self-heal demo: inject a CORRECTION chunk
 // about an existing article, run the pipeline, assert the article was PATCHED in
 // just the relevant section (cites the new chunk, every other section
-// byte-identical) and no duplicate article was created. The real base-model
-// version is the one-load smoke in scripts/experiments, not here.
+// byte-identical) and no duplicate article was created.
 
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";

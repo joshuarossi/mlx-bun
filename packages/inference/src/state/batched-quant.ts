@@ -1,5 +1,4 @@
-// Batched QUANTIZED KV for continuous batching (Phase 3.1 of
-// docs/design/unified-engine-frontier-plan.md) — the quantized twins of
+// Batched QUANTIZED KV for continuous batching — the quantized twins of
 // batched-mask.ts's dynamic-B ops, over (packed, scales, biases) triples.
 //
 // Why this is safe surgery: mlx quantization packs along HEAD_DIM (the last
@@ -17,7 +16,7 @@
 // (maybeQuantizeKv at chunk boundaries — see BatchScheduler.#quantizeSolo),
 // so a row's quantized bytes are bit-exact vs serial `--kv-quant config` by
 // construction; this module only re-arranges those bytes across the batch
-// axis. Gates: tests/parity/batched-kv-quant-parity.test.ts.
+// axis. Gates: `02d723a:tests/parity/batched-kv-quant-parity.test.ts`.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -161,7 +160,8 @@ export function filterQuantRows(
  *  positions. Ephemeral — the scheduler builds a fresh wrapper each step
  *  and calls releaseRopeArr() after (never dispose(), which would free the
  *  inner). Rope is captured ONCE per step before updateAndFetch (attention
- *  reads it pre-write; see minicpm5.ts LlamaAttention.forward), so an
+ *  reads it pre-write; see packages/inference/src/models/minicpm5/model.ts
+ *  LlamaAttention.forward), so an
  *  eagerly-built [B] position array is exact. */
 export class BatchedQuantDecodeMaskCache extends QuantizedKVCache {
   override readonly ropeOffsetArr: MlxArray;

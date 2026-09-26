@@ -189,7 +189,7 @@ export function makeStepSampler(
         try {
           if (windowFilters && steps.length > 1) {
             // One filter chain over [W, V] (bit-identical per row to the [1, V]
-            // chain, tests/unit/sampler-window.test.ts), then each row's own
+            // chain, packages/inference/tests/sampling/window.test.ts), then each row's own
             // keyed draw on its [1, V] slice: that shape keeps MLX's inverse-CDF
             // categorical, which the draft's coupled draw relies on.
             using logprobs = toLogprobs(scores);

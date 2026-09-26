@@ -1,9 +1,11 @@
 // NgramSource — MODEL-FREE prompt-lookup speculative drafting behind the
-// DraftSource seam (src/spec/source.ts). No weights, no caches, no tokenizer:
+// DraftSource seam (packages/inference/src/generation/speculative/source.ts).
+// No weights, no caches, no tokenizer:
 // drafts are copied from the request's own token stream. When the trailing
 // k-gram of (prompt + emitted-so-far) has occurred earlier in that stream,
 // the tokens that followed the earlier occurrence are proposed as the draft;
-// the shared verify/accept executor (src/spec/serve-loop.ts) makes the result
+// the shared verify/accept executor
+// (packages/inference/src/generation/speculative/run.ts) makes the result
 // LOSSLESS by construction (drafts are only proposals — the target's own
 // samples decide every emitted token, at any temperature; only the acceptance
 // rate moves). Best case: agentic/RAG/code-edit traffic that re-emits spans

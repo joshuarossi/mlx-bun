@@ -1,7 +1,7 @@
 // Sharded safetensors writer: takes a list of named mlx arrays and writes
 // them to disk as one or more `model*.safetensors` files via mlx's native
 // saver (mlx_save_safetensors), matching the on-disk layout the loader
-// (src/weights.ts → ShardedSafetensors) reads back.
+// (packages/inference/src/artifacts/weights.ts → ShardedSafetensors) reads back.
 //
 // Layout parity with mlx-lm / the MiniCPM5-OptiQ target:
 //   - single shard  → `model.safetensors`, NO index file.

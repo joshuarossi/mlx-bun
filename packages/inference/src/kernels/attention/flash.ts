@@ -622,8 +622,8 @@ export function flashAttention(
 //  - This flash kernel is the L2 path: a port of mlx-optiq's
 //    flash_attention_metal (O(L) backward memory). Its parity oracle is OPTIQ,
 //    not finite differences. Confirmed: optiq's flash dK == ops.sdpa to f16
-//    (scripts/oracle/flash-optiq-check.py, rel 0.0%), and mlx-bun's flash == ops.sdpa
-//    (tests/unit/flash-attention.test.ts) ⟹ mlx-bun flash == optiq flash (L2 parity).
+//    (`02d723a:scripts/oracle/flash-optiq-check.py`, rel 0.0%), and mlx-bun's flash == ops.sdpa
+//    (`02d723a:tests/unit/flash-attention.test.ts`) ⟹ mlx-bun flash == optiq flash (L2 parity).
 //
 // Two real port bugs were fixed to reach that parity (the original diverged
 // ~100% from optiq on dK): a spurious dK transpose in flashBackward (corrupted

@@ -161,7 +161,8 @@ export const C = dlopen(LIBMLXC_PATH, {
   // (res, input, weight, stride, padding, dilation, groups, stream) — depthwise
   // causal conv1d for Qwen3.5 gated-DeltaNet (groups == channels, padding 0).
   mlx_conv1d: { args: [P, u64, u64, i32, i32, i32, i32, u64], returns: i32 },
-  // --- Whisper (src/model/whisper.ts, src/audio/whisper-mel.ts) -----------
+  // --- Whisper (packages/inference/src/models/whisper/model.ts,
+  //     packages/inference/src/input/audio/whisper-mel.ts) ---
   // (res, a, n, axis, norm, stream) — mlx_fft_norm enum: 0 backward (numpy default).
   mlx_fft_rfft: { args: [P, u64, i32, i32, i32, u64], returns: i32 },
   // (res, a, shape*, shape_num, strides*(int64), strides_num, offset, stream)
@@ -179,11 +180,11 @@ export const C = dlopen(LIBMLXC_PATH, {
   // flat take: (res, a, indices, stream)
   mlx_take: { args: [P, u64, u64, u64], returns: i32 },
   // Natural mlx-c signatures. Bun 1.4 fixed the macOS arm64 stack packing
-  // bug recorded in lab/repro/bun-ffi-stack-args, so these must match the
+  // bug recorded in `02d723a:lab/repro/bun-ffi-stack-args`, so these must match the
   // header exactly. mlx-bun now requires Bun 1.4 or newer.
   mlx_conv2d: { args: [P, u64, u64, i32, i32, i32, i32, i32, i32, i32, u64], returns: i32 },
   mlx_conv3d: { args: [P, u64, u64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, u64], returns: i32 },
-  // --- training: autograd (value_and_grad) — proven in lab/spikes/phase-train-vag.ts.
+  // --- training: autograd (value_and_grad).
   // mlx_value_and_grad(res: mlx_closure_value_and_grad*, fun: mlx_closure,
   //   argnums: int*, n) → builds a value+grad closure differentiating the
   //   selected inputs of `fun` (a mlx_closure_new_func_payload over a JS loss).
@@ -196,7 +197,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   //   primals: vector_array, cotangents: vector_array) — reverse-mode AD given an
   //   explicit cotangent per output. The natural segmented-backward primitive:
   //   fun = segment forward, cotangent = dh, vjps = [dh_in, ...dLoRA]. No
-  //   surrogate scalar, no value_and_grad closure (see src/train/segmented.ts).
+  //   surrogate scalar, no value_and_grad closure (see packages/training/src/segmented.ts).
   mlx_vjp: { args: [P, P, u64, u64, u64], returns: i32 },
   // --- training: random init (LoRA A ~ normal; B stays zeros)
   // (res, shape*, n, dtype, loc, scale, key may-be-null, stream)
@@ -223,7 +224,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_save_safetensors: { args: [cstring, u64, u64], returns: i32 },
   mlx_map_string_to_array_insert: { args: [u64, cstring, u64], returns: i32 },
   mlx_map_string_to_string_insert: { args: [u64, cstring, cstring], returns: i32 },
-  // compile via closures (Phase A compiled decode — docs/archive/investigations/optimization_plan.md).
+  // compile via closures (Phase A compiled decode — `02d723a:docs/archive/investigations/optimization_plan.md`).
   // mlx_closure is the usual one-pointer struct; the func-payload variant
   // carries an id we use to route the trace callback back to JS.
   mlx_closure_new: { args: [], returns: u64 },
@@ -255,7 +256,7 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_slice_update_dynamic: { args: [P, u64, u64, u64, P, u64, u64], returns: i32 },
   // (res, a, start ARRAY, axes*, axes_num, slice_size*, n, stream)
   mlx_slice_dynamic: { args: [P, u64, u64, P, u64, P, u64, u64], returns: i32 },
-  // custom Metal kernels (Phase E — mx.fast.metal_kernel from Bun)
+  // custom Metal kernels (mx.fast.metal_kernel from Bun)
   mlx_vector_string_new_data: { args: [P, u64], returns: u64 },
   mlx_vector_string_free: { args: [u64], returns: i32 },
   // (name, input_names, output_names, source, header, ensure_row_contiguous, atomic_outputs)
@@ -271,10 +272,10 @@ export const C = dlopen(LIBMLXC_PATH, {
   mlx_fast_metal_kernel_config_set_init_value: { args: [u64, f32], returns: i32 },
   mlx_fast_metal_kernel_config_add_template_arg_int: { args: [u64, cstring, i32], returns: i32 },
   mlx_fast_metal_kernel_config_add_template_arg_dtype: { args: [u64, cstring, i32], returns: i32 },
-  // GPU trace capture (Phase E step 2: size the prize before the kernel)
+  // GPU trace capture (size the prize before the kernel)
   mlx_metal_start_capture: { args: [cstring], returns: i32 },
   mlx_metal_stop_capture: { args: [], returns: i32 },
-  // TurboQuant KV codec (Phase 13): FWHT rotation + per-group affine/Lloyd-Max
+  // TurboQuant KV codec: FWHT rotation + per-group affine/Lloyd-Max
   // (res, a, opt scale, stream) — 1/sqrt(dim) normalization when scale is null.
   mlx_hadamard_transform: { args: [P, u64, u64, u64], returns: i32 },
   mlx_min_axis: { args: [P, u64, i32, FFIType.bool, u64], returns: i32 },
@@ -369,7 +370,7 @@ export const NULL_HANDLE = 0n;
 // RULE: never read a typed array that a bun:ffi call wrote through a
 // pointer — once the calling function is DFG-compiled, the JIT eliminates
 // the load across the native call and `buf[i]` returns stale values
-// (lab/repro/bun-ffi-f64/ISSUE.md; PLAN.md Phase 4 findings). Out-param slots
+// (`02d723a:lab/repro/bun-ffi-f64/ISSUE.md`). Out-param slots
 // must be read back with bun:ffi `read.*` (verified safe). Initializing the
 // slot via the typed-array *constructor* is fine: that store happens in
 // host code the JIT can't elide.
@@ -421,7 +422,7 @@ export function resetPeakMemory(): void {
  *  OS. mlx-lm calls this after every prefill chunk (and every 256 decode
  *  steps); without it the first decode step after a long prefill pays a
  *  one-shot allocator-reclaim stall (~800 ms after an 8k prefill —
- *  measured, scripts/decode-split.ts; the root cause of the
+ *  measured; the root cause of the
  *  context-scaling decode gap). */
 export function clearCache(): void {
   C.mlx_clear_cache();
@@ -495,7 +496,7 @@ export function setWiredLimit(bytes: number): number {
 /** mx.set_memory_limit — returns the previous limit. At the limit the
  *  allocator reclaims/waits instead of ballooning past it. Defense in
  *  depth under admission control ONLY: it does NOT make Metal
- *  command-buffer OOM catchable (Phase 6 finding — that throw comes
+ *  command-buffer OOM catchable (that throw comes
  *  from a completion handler and is std::terminate). */
 export function setMemoryLimit(bytes: number): number {
   const out = new BigUint64Array(1);

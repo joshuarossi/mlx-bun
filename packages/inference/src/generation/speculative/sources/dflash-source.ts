@@ -1,8 +1,10 @@
 // DflashSource — DSpark (faithful DFlash + Markov + confidence,
-// src/spec/dspark/module-dflash.ts) behind the serve-time DraftSource seam.
-// L3 (KL/quality-gated). The DRAFT half of the standalone dflashGenerate loop
-// (src/spec/dspark/generate-dflash.ts) plugged into the shared verify/accept
-// executor (src/spec/serve-loop.ts).
+// packages/inference/src/models/speculative/dflash.ts) behind the serve-time
+// DraftSource seam. L3 (KL/quality-gated). The DRAFT half of the standalone
+// dflashGenerate loop
+// (packages/inference/src/generation/speculative/dspark/generate-dflash.ts)
+// plugged into the shared
+// verify/accept executor (packages/inference/src/generation/speculative/run.ts).
 //
 // H_ctx (why the seam taps): DSpark drafts by attending to a GROWING
 // multi-layer context — the target's tapped hiddens over the accepted stream

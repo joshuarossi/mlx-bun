@@ -10,8 +10,9 @@ import { cleanupFailure, disposeResources } from "../../runtime/resources";
 //
 // Ported verbatim from optiq/vlm/_mlxvlm/models/diffusion_gemma/language.py.
 // Reuses mlx-bun's quantized primitives (QuantizedLinear/Embedding/SwitchLinear,
-// RMSNorm, KVCache/RotatingKVCache) from gemma4-base. Architecture deltas vs
-// gemma4 (verified against the checkpoint, see docs/design/generic-model-support.md):
+// RMSNorm, KVCache/RotatingKVCache) from packages/inference/src/layers/ and
+// packages/inference/src/state/. Architecture deltas vs
+// gemma4 (verified against the checkpoint, see `02d723a:docs/design/generic-model-support.md` §6.5):
 //   - attention scale=1.0, NO attention softcap (only final-logit softcap 30 fp32)
 //   - QK/V-norm POST-proj / PRE-RoPE; v_norm is RMSNormNoScale; V gets no RoPE
 //   - full-attention layers (5,11,17,23,29) reuse k as v (no v_proj), hd=512 kv=2,
@@ -298,7 +299,7 @@ class DiffAttention {
     // RoPE: default (sliding, theta 1e4) or proportional (full, partial 0.25,
     // theta 1e6). Proportional rotates only floor(head_dim*factor) dims; the
     // unrotated tail is freq=Infinity (cos=1, sin=0 → identity). Mirrors
-    // gemma4.ts initialize_rope.
+    // packages/inference/src/models/gemma4/model.ts initialize_rope.
     const rp = t.ropeParameters[this.isSliding ? "sliding_attention" : "full_attention"]!;
     if (rp.ropeType === "default") {
       this.ropeBase = rp.ropeTheta;
@@ -996,7 +997,7 @@ export class DiffusionGemmaModel {
 
   // ---- AR-only RuntimeModel surface (never called on a diffusion model) ----
   // DiffusionGemma is non-autoregressive: generate() detects it and routes to
-  // the denoising engine (src/diffusion/diffusion-generate.ts). These exist so
+  // the denoising engine (packages/inference/src/generation/diffusion.ts). These exist so
   // the model fits the shared RuntimeModel union; calling them is a bug.
   forwardHidden(_ids: MlxArray, _cache: Cache[]): MlxArray {
     throw new Error("DiffusionGemma is non-autoregressive — use the diffusion engine, not forwardHidden");

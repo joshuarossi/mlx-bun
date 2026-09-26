@@ -1,8 +1,9 @@
 // Universal-tier primitives: dense (unquantized) linear/embedding modules
-// (Phase 1.5 — mlx nn.Linear / nn.Embedding semantics), quantized-or-dense
+// (mlx nn.Linear / nn.Embedding semantics), quantized-or-dense
 // loader helpers, norm loaders, and the load-time weight audit.
 //
-// The quantized paths delegate to the proven gemma4-base primitives; the
+// The quantized paths delegate to the proven QuantizedLinear/QuantizedEmbedding
+// primitives (packages/inference/src/layers/); the
 // dense paths are verbatim ports of mlx.nn.Linear (`mx.addmm(bias, x, W.T)`
 // / `x @ W.T`) and mlx.nn.Embedding (`weight[ids]`, `x @ weight.T`).
 
@@ -22,7 +23,7 @@ import { TrellisLinear } from "./trellis-linear";
 export type AnyLinear = QuantizedLinear | DenseLinear | TrellisLinear;
 
 /** Quantized when `.scales` exists (MLX-quantized checkpoints), else dense
- *  bf16/f16/f32 (Phase 1.5). Both flavors carry the optional ADDITIVE
+ *  bf16/f16/f32. Both flavors carry the optional ADDITIVE
  *  `.bias` term (qwen2 qkv, starcoder2, …). */
 export function loadLinear(
   weights: Weights, path: string, config: ModelConfig, audit: WeightAudit,

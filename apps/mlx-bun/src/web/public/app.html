@@ -160,7 +160,7 @@
   #nav-model-wrap #model-pop{top:calc(100% + 9px);bottom:auto;left:0;right:auto;width:340px}
   /* Model picker rows — same list-row language as the adapter table, one
      row per /library entry with its own fit verdict + restart command
-     (model-picker.ts; no in-process swap exists, see docs/reference/cli.md). */
+     (model-picker.ts; no in-process swap exists). */
   .mp-row{display:flex;align-items:flex-start;gap:9px;padding:9px 10px;border-radius:10px;
     border:1px solid transparent;margin-bottom:4px;transition:background .12s}
   .mp-row:last-child{margin-bottom:0}
@@ -1210,14 +1210,14 @@
     #theme-toggle{display:none}
   }
 </style>
-<!-- Vendored syntax-highlighting theme (src/web/vendor/hljs-theme.css, hand-derived
-     from the design tokens above — see that file's header). No CDN; served by
-     src/server.ts alongside this page. -->
+<!-- Vendored syntax-highlighting theme (apps/mlx-bun/src/web/public/vendor/hljs-theme.css,
+     hand-derived from the design tokens above — see that file's header). No CDN;
+     served by apps/mlx-bun/src/web/assets.ts alongside this page. -->
 <link rel="stylesheet" href="/assets/hljs.css">
 <!-- PWA installability (plan §9 Phase 3, beat-matrix Axis 10): manifest +
-     inline SVG icon (src/web/manifest.webmanifest, src/web/icon.svg — no
-     binary PNGs, per the hygiene gate; some browsers won't render an SVG
-     app icon and that's an accepted tradeoff, see docs/reference/server-config.md).
+     inline SVG icon (apps/mlx-bun/src/web/public/manifest.webmanifest,
+     apps/mlx-bun/src/web/public/icon.svg — no binary PNGs, per the hygiene gate;
+     some browsers won't render an SVG app icon and that's an accepted tradeoff).
      theme-color matches the app's --bg token so the OS chrome doesn't
      flash a mismatched color on launch. -->
 <link rel="manifest" href="/manifest.webmanifest">
@@ -1655,10 +1655,8 @@
           <span class="pf-item" id="pf-tps" title="Decode speed for the current/last turn"></span>
           <span class="pf-item" id="pf-ttft" title="Time to first token"></span>
           <span class="pf-item" id="pf-fill" title="Context window in use — auto-compacts before it fills"></span>
-          <!-- Lane badge: server-driven only (never client-inferred, plan §2.3
-               risk #5). Hidden until a turn_end frame actually carries `lane`
-               (wave-1 backend work landed the field — src/serve/lane-registry.ts,
-               pi-web.ts turn_end — so this fills in for real turns, not a stub). -->
+          <!-- Lane badge: server-driven only (never client-inferred). Hidden until
+               a turn_end frame actually carries `lane`. -->
         </div>
       </div>
     </div>
@@ -2092,13 +2090,13 @@
   </section>
 
   <!-- ═══════════════════ ROUTES ═══════════════════ -->
-  <!-- web-ui-pass-plan.md #17: /dag 404s outside a repo checkout (readFileSync
+  <!-- `02d723a:docs/archive/planning/web-ui-pass-plan.md` #17: /dag 404s outside a repo checkout (readFileSync
        on a repo-relative doc, absent from compiled binaries/npm installs).
        shell.ts's initRoutesProbe() HEAD-checks /dag at boot: on success this
        iframe renders as-is; on 404 it hides the Routes tab and swaps this
        section's innerHTML for a graceful note instead of a raw 404 iframe.
        Could instead embed the artifact server-side like /curves' fallback
-       does — that's server.ts territory, out of scope this wave. -->
+       does. -->
   <section data-route="routes" id="s-routes">
     <iframe src="/dag" title="Training · inference route map"
             style="width:100%;height:100%;border:0;display:block"></iframe>
@@ -2122,7 +2120,7 @@
   <div class="asr-pop"><div class="asr-pop-text"></div></div>
 </div>
 
-<!-- Vendored syntax highlighter (src/web/vendor/hljs.js — highlight.js core +
+<!-- Vendored syntax highlighter (apps/mlx-bun/src/web/public/vendor/hljs.js — highlight.js core +
      a curated language set, BSD-3-Clause, see that file's header). `defer`
      means this loads/executes at DOMContentLoaded, which happens well before
      any real highlighting call (those only fire later, on streamed content
@@ -2130,11 +2128,11 @@
      async event handlers, so load order here is safe in practice.
      highlightIn() still guards with `typeof hljs !== "undefined"` for the
      case this tag is ever stripped or the asset 404s. No CDN; served by
-     src/server.ts at /assets/hljs.js. -->
+     apps/mlx-bun/src/web/assets.ts at /assets/hljs.js. -->
 <script defer src="/assets/hljs.js"></script>
 <!-- The app itself: GENERATED bundle of src/web/browser/*.ts (plan §7/§9 Phase 2
      module split), built by `bun run --filter mlx-bun build:web` into dist/web/app.js
-     and served by src/server.ts at /assets/app.js — see that file's header
+     and served by apps/mlx-bun/src/web/assets.ts at /assets/app.js — see that file's header
      comment. `defer` (like hljs.js above) means both scripts run in document
      order at DOMContentLoaded, after the DOM this script queries with $()
      is fully parsed. Edit src/web/browser/*.ts, never this bundle or this tag. -->

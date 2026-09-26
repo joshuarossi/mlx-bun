@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // STATUS CONTROLLER — ported dashboard (poll /stats + /v1/models + /fit +
 // /library + /downloads). Behavior-identical port of the original
@@ -46,7 +47,7 @@ interface SkuRow {
 export function createStatusController() {
   let timer: ReturnType<typeof setInterval> | null = null, libTimer: ReturnType<typeof setInterval> | null = null, fitLoaded = false;
   const dlRates: Record<string, { bytes: number; t: number }> = {};
-  // Library staleness (web-ui-pass-plan.md #3): /library is server-cached for
+  // Library staleness (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #3): /library is server-cached for
   // 30s, but the client used to fetch it exactly once per page load
   // (gated on `fitLoaded`) — a quantize job finishing, a fresh download
   // landing, or a manual drop into the HF cache never showed up without a
@@ -176,7 +177,7 @@ export function createStatusController() {
         else if (!m.supported) status = '<span style="color:var(--dimmer)">unsupported (' + esc(m.model_type) + ")</span>";
         else if (a && a.fits) status = '<span style="color:var(--green);font-weight:600">fits</span>';
         else status = '<span style="color:var(--red);font-weight:600">too big</span>';
-        // web-ui-pass-plan.md #20: max_safe_context is meaningful whenever
+        // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #20: max_safe_context is meaningful whenever
         // it's > 0, even when `fits` is false at the library's default 8192
         // probe context — e.g. a model that doesn't fit at 8192 tokens but
         // does fit at a smaller context still gets a real number here rather
@@ -293,7 +294,7 @@ export function createStatusController() {
     // Exposed so a quantize job's `done` event (this same controller's own
     // quantize flow, see controllers.quantize below) can force an immediate
     // refresh instead of waiting up to 15s — the server invalidates its
-    // /library cache the moment the job completes (server.ts onComplete),
+    // /library cache the moment the job completes (apps/mlx-bun/src/cli/serve-state.ts onComplete),
     // so an immediate re-fetch is guaranteed fresh, not a race.
     refreshLibrary: loadLibrary,
   };

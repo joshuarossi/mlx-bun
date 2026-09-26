@@ -8,11 +8,12 @@ export function turboQuantFusedDecode(config: RuntimeConfig = runtimeConfig()): 
   return config.flag("MLX_BUN_TURBOQUANT_FUSED_DECODE", true);
 }
 
-/** One TurboQuant-encoded (K, V) storage tuple — the 5 arrays kv-store.ts
+/** One TurboQuant-encoded (K, V) storage tuple — the 5 arrays
+ *  packages/inference/src/state/persistence.ts
  *  and toQuantized/fromKVCache pass around. Not `ops.QuantizedTensor`
  *  (mlx's affine int4/int8 scheme): this is the rotation + Lloyd-Max
- *  layout (docs/design/turboquant.md), asymmetric-affine for keys,
- *  FWHT+Lloyd-Max for values. Field order is the kv-store.ts tensor-slot
+ *  layout (`02d723a:docs/design/turboquant.md`), asymmetric-affine for keys,
+ *  FWHT+Lloyd-Max for values. Field order is the persistence.ts tensor-slot
  *  contract — do not reorder without updating snapshotCache/loadKvCache. */
 export interface TurboQuantTensor {
   kIdx: MlxArray;

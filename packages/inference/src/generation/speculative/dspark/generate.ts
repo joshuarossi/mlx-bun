@@ -1,5 +1,6 @@
-// DSpark speculative decode loop — a fork of src/spec/generate.ts
-// (specGenerate). Same γ-draft / verify-in-one-pass / accept-longest-prefix /
+// DSpark speculative decode loop — a fork of
+// packages/inference/src/generation/speculative/generate.ts (specGenerate).
+// Same γ-draft / verify-in-one-pass / accept-longest-prefix /
 // rollback spine, but the drafter is the trainable DSpark module: one PARALLEL
 // backbone pass + a cheap SEQUENTIAL Markov head produce the γ-block, instead
 // of γ sequential KV-borrowing drafter calls. DSpark needs only the target's
@@ -14,7 +15,7 @@
 //     w.p. min(1, p_k(x_k)/q_k(x_k)); on rejection resample from the residual
 //     norm(relu(p−q)) and stop; if the whole block is accepted, sample a bonus
 //     from p_{γ+1}. p and q use the SAME top-p/top-k/temperature processing
-//     (sample.ts), so the emitted stream is distributed exactly as if e4b
+//     (packages/inference/src/sampling/draft.ts), so the emitted stream is distributed exactly as if e4b
 //     sampled token-by-token at that temperature — independent of draft quality.
 //
 // Verify the corresponding gate before chasing τ (dspark-ab.ts (deleted 2026-08-23; git history)): greedy

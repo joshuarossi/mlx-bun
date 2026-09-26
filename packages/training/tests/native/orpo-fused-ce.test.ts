@@ -1,5 +1,5 @@
 // OPT-IN parity matrix for the ORPO FUSED linear-CE head and the paths built on
-// it, restored from main's tests/research/train-orpo-fused-ce. What it proves:
+// it, restored from `02d723a:tests/research/train-orpo-fused-ce.test.ts`. What it proves:
 //
 //   - fused head (fusedLogpMeanB1: one CustomVjp with an analytic softmax−onehot
 //     backward, no autograd through the head and no retained [M,vocab] logits —

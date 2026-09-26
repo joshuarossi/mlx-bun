@@ -11,7 +11,7 @@
 // with stock only on tie-free prompts (where batched == per-position).
 // An earlier version verified per-position to stay bit-exact to STOCK —
 // that matched no real oracle and cost an extra γ× read of the lm-head
-// weight per step; superseded. See docs/design/speculative-decoding.md.
+// weight per step; superseded. See `02d723a:docs/design/speculative-decoding.md`.
 //
 // Limitation (same as the reference): partial-accept rollback requires
 // trimmable caches; RotatingKVCache loses trimability once its ring
@@ -133,7 +133,7 @@ export function specGenerate(
   // mid-round throw (the 2f not-trimmable throw, or any mlx op) — try-body
   // locals are invisible to the finally. Each is nulled at its normal
   // disposal, so the finally never double-frees. Same discipline as
-  // src/spec/serve-loop.ts / generate-dflash.ts (2026-07-06 review fix);
+  // packages/inference/src/generation/speculative/run.ts / generate-dflash.ts (2026-07-06 review fix);
   // see memory [[mlx-inline-slice-leak-pattern]].
   let prefillH: MlxArray | null = null;
   let lastHidden: MlxArray | null = null;
@@ -143,7 +143,7 @@ export function specGenerate(
     // 1. prefill — FULL-prompt single forward, deliberately. Per-oracle
     // convention (2026-07-07 re-anchor): mlx-lm's speculative path drains to
     // len-1 with no step-0 (the SERVE loop, whose oracle it is, now mirrors
-    // that — src/spec/serve-loop.ts); THIS loop's oracle is optiq
+    // that — packages/inference/src/generation/speculative/run.ts); THIS loop's oracle is optiq
     // spec_generate, which prefills the whole prompt in one forward and
     // samples token0 from it (runtime/spec/runtime.py:162-170, read from the
     // installed oracle venv) — the 2026-06-14 bit-exact gate was established

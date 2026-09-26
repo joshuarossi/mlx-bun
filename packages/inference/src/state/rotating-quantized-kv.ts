@@ -13,7 +13,7 @@ import { disposeTriple,mapTriple } from "./quantized-tensor";
  *  (packed, scales, biases) triples, storage convention identical to
  *  QuantizedKVCache. Returns ACTIVE QUANTIZED SLICES — the oracle's
  *  module docstring claims dequantize-on-read, but its code does not
- *  (Phase 9 finding; port follows the code). optiq's producer-registry
+ *  (port follows the code). optiq's producer-registry
  *  + SDPA patches are unnecessary here: our SharedKv carries
  *  groupSize/bits through the donor→sharer plumbing explicitly. */
 export class RotatingQuantizedKVCache implements Cache {
@@ -264,7 +264,8 @@ export class RotatingQuantizedKVCache implements Cache {
   }
 
   /** Adopt persisted state (takes ownership of the triples' arrays) —
-   *  ring order as-laid-out, ringIdx carried with it (kv-store persistence). */
+   *  ring order as-laid-out, ringIdx carried with it
+   *  (packages/inference/src/state/persistence.ts). */
   restoreState(keys: ops.QuantizedTensor, values: ops.QuantizedTensor, offset: number, idx: number): void {
     this.dispose();
     this.keys = keys;
@@ -274,8 +275,7 @@ export class RotatingQuantizedKVCache implements Cache {
   }
 
   /** Chronological (K, V) triples cut to the valid window — the quantized
-   *  twin of RotatingKVCache.temporalView (batched merge reads, Phase 3
-   *  milestone 2). Caller owns the returned views. */
+   *  twin of RotatingKVCache.temporalView (batched merge reads). Caller owns the returned views. */
   captureDonorAttention(): KvDonorAttention {
     const [keys, values] = this.temporalView();
     const B = keys.packed.shape[0]!, width = keys.packed.shape[2]!;

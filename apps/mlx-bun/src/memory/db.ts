@@ -21,7 +21,7 @@
 // reassembles the slice on demand. Total stored text == the messages, once.
 //
 // Reuses mlx-bun's per-domain sqlite pattern (cf. JobStore in src/jobs/db.ts,
-// EvalDB in src/evaldb.ts): a small class over bun:sqlite with WAL +
+// EvalDB in `02d723a:src/evaldb.ts`): a small class over bun:sqlite with WAL +
 // schema-in-constructor + a migrate() hook, living under ~/.cache/mlx-bun/.
 // It's rebuildable derived state, so it belongs in the cache, NOT the vault.
 

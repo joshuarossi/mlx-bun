@@ -4,7 +4,7 @@
 // sections (with gists, tail sections excluded), the new-section parse, the
 // all-yes / all-no→new-section binary routing driven by a FAKE model, structural
 // pruning to ROUTE-matched articles, and the chunk_sections ledger write. The
-// real base-model M×N grid is the one-load smoke in scripts/memory/eval-section-route.ts.
+// real base-model M×N grid is the one-load smoke in `02d723a:scripts/memory/eval-section-route.ts`.
 
 import { describe, expect, it } from "bun:test";
 

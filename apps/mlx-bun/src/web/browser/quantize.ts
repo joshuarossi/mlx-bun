@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // QUANTIZE CONTROLLER — 4-step wizard. Behavior-identical port of the
 // original controllers.quantize IIFE in app.html.
@@ -119,8 +120,8 @@ export function createQuantizeController() {
   }
   function finish(): void {
     $("q-bar").style.width = "100%"; $("q-pct").textContent = "100%"; es && es.close(); show(3);
-    // web-ui-pass-plan.md #3: the server invalidates its /library cache the
-    // instant this job completes (server.ts onComplete) — pull the fresh
+    // `02d723a:docs/archive/planning/web-ui-pass-plan.md` #3: the server invalidates its /library cache the
+    // instant this job completes (apps/mlx-bun/src/cli/serve-state.ts onComplete) — pull the fresh
     // list right away instead of waiting for Status's own 15s poll.
     if (controllers.status && controllers.status.refreshLibrary) (controllers.status.refreshLibrary as () => void)();
   }

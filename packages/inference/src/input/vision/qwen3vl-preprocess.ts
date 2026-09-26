@@ -1,4 +1,4 @@
-// Qwen3-VL-family image preprocessing (Qwen3.8 vision, PLAN 14v) — port of
+// Qwen3-VL-family image preprocessing (Qwen3.8 vision) — port of
 // mlx-vlm's Qwen3VLImageProcessor image path (processing_qwen3_vl.py):
 //
 //   decode → smart_resize to multiples of factor=patch*merge=32 (PIL-style
@@ -287,7 +287,7 @@ export async function preprocessQwen3VLImage(
   return patchifyImage(sized);
 }
 
-// --- video (PLAN 14w) ------------------------------------------------------
+// --- video ------------------------------------------------------------------
 
 /** Qwen3VLVideoProcessor class defaults (frame-count-aware budget). */
 export const QWEN3VL_VIDEO_MIN_PIXELS = 128 * 32 * 32;

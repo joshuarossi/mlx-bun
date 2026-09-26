@@ -5,7 +5,7 @@
 // gains a correct [^N]/[^N]: pair), the assign-footnote helpers, the weak/uncited
 // → NO-OP gate, and the synthesized_chunk_sections PK idempotency. The real
 // base-model integration + self-healing demo is the one-load eval in
-// scripts/memory/eval-patch.ts, not here.
+// `02d723a:scripts/memory/eval-patch.ts`, not here.
 
 import { describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";

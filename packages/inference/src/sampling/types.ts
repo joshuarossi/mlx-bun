@@ -81,11 +81,11 @@ export interface SamplerOptions {
   seed?: number;
   /** HLG tone-curve sampling. When enabled, replaces temperature's flat slope
    *  with the piecewise curve (temperature becomes the mid gain). Off/undefined
-   *  ⇒ the plain temperature path, unchanged. docs/archive/hlg-sampling.md. */
+   *  ⇒ the plain temperature path, unchanged. `02d723a:docs/archive/hlg-sampling.md`. */
   hlg?: HlgConfig;
   /** v2 log-prob transfer-curve sampler. When set, the drawn monotone curve
    *  REPLACES temperature+softmax entirely (stochastic, seeded) — see
-   *  src/lab/curve/curve-sampler.ts. Identity curve ≡ temperature 1. */
+   *  packages/inference/src/sampling/curve.ts. Identity curve ≡ temperature 1. */
   curve?: CurveParams;
 }
 

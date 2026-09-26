@@ -2,7 +2,7 @@
 // host — no model, no HTTP server:
 //   new ChatRequest(body) → ChatStage.run → InferenceStage.admit/run → result
 //   → openai-wire JSON / SSE frames.
-// Route-level coverage (real createServer + fetch) is tests/unit/glm52-model.test.ts.
+// Route-level coverage (real startServer + fetch) is apps/mlx-bun/tests/server/routes.test.ts.
 import { describe, expect, test } from "bun:test";
 import type { GenerateOptions, GenerateStats, TokenLogprobs } from "@mlx-bun/inference/generation";
 import type { ChatTemplate } from "@mlx-bun/inference/input";

@@ -1,6 +1,6 @@
 // Whisper log-mel spectrogram — an op-for-op port of mlx-whisper's
 // audio.py (log_mel_spectrogram / stft / mel_filters), gated bit-exact
-// against the oracle in tests/parity/whisper.test.ts.
+// against the oracle in `02d723a:tests/parity/whisper.test.ts`.
 //
 // Pipeline (single 16 kHz mono float32 waveform):
 //   [optional zero pad of `padding` samples on the right]

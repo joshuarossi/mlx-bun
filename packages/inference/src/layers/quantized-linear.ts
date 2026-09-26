@@ -105,7 +105,7 @@ export class QuantizedLinear {
     // LoRA residual — composition is mlx-lm LoRALinear / optiq apply.py:
     //   y + (scale · ((x @ A) @ B)).astype(x.dtype)
     // (optiq mount.py omits the astype, leaking the f32 residual into the
-    // bf16 stream — divergence documented in PLAN Phase 8 findings; the
+    // bf16 stream; the
     // cast form is what the adapters were trained behind.)
     const st = this.loraState;
     if (st && st.active.length > 0 && this.adapters && this.adapters.size > 0) {

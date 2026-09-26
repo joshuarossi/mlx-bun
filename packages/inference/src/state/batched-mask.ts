@@ -1,12 +1,12 @@
 // Padding-aware attention masks for batched (B>1) serving — decode side.
 //
-// Companion to src/train/forward.ts's buildBatchedPadMask, which builds the
+// Companion to packages/inference/src/scoring/full-sequence.ts's buildBatchedPadMask, which builds the
 // PREFILL mask ([B,1,L,L], offset 0, right-padded — the training case, already
-// parity-proven by tests/parity/train-batch-e2e.test.ts). This module covers the
+// parity-proven by packages/training/tests/native/batch-e2e.test.ts). This module covers the
 // DECODE case for batched serving: left-padded rows sharing one growing
 // [B,H,S,D] KV buffer, where a step forwards N new query tokens at a nonzero
 // offset. (The two builders should be consolidated when batched prefill is
-// wired into the serving path — phase S1a, docs/design/batching.md.)
+// wired into the serving path — phase S1a, `02d723a:docs/design/batching.md`.)
 //
 // Why left-padding for decode: with rows right-aligned in the KV buffer, every
 // row's next write lands in the SAME column, so one advancing offset serves
@@ -167,8 +167,7 @@ export class BatchedDecodeMaskCache implements Cache {
 // the --batch N scheduler needs that our fixed-B verified forward doesn't have.
 // They run per layer on the raw [.,H,.,D] K/V; the scheduler applies them
 // across layers and wraps the result in a BatchedDecodeMaskCache. Pure array
-// surgery — unit-tested without a model (tests/batched-decode-mask.test.ts);
-// numerical correctness is gated separately vs an mlx-lm dynamic golden.
+// surgery; numerical correctness is gated separately vs an mlx-lm dynamic golden.
 
 /** mlx-lm `merge`: stack N single-row KV slices into one left-padded
  *  [B,H,Smax,D] batch. Each row is its sequence's KV sliced to its true length
@@ -242,7 +241,8 @@ export function extendKVRows(
  *  disposed). `leftPad` is the scheduler's per-row padding for this row (full
  *  layers share one offset; the scheduler owns the pad list). Bit-exact vs a
  *  solo run by construction: merge/extend/filter are byte-preserving per row
- *  (tests/batched-decode-parity, tests/batched-extract) and this is a pure
+ *  (`02d723a:tests/parity/batched-decode-parity.test.ts`,
+ *  `02d723a:tests/unit/batched-extract.test.ts`) and this is a pure
  *  slice+copy of those bytes. Off the hot decode path. */
 export function extractKVRow(cache: KVCache, leftPad: number, i: number): KVCache {
   if (!cache.keys || !cache.values) throw new Error("extractKVRow: empty cache");

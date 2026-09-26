@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // The composer's non-thread surface: attachments (files + images), the
 // sampling popover (full parameter set incl. Advanced), the LoRA adapter
@@ -85,8 +86,9 @@ export class ComposerState {
   oneShotArmed = false;
 
   // Per-chat custom system prompt (plan §9 Phase 2 item, beat matrix Axis 4),
-  // layered onto the built-in surface prompt server-side (see pi-web.ts's
-  // injectSystemPrompt/installSystemPromptHook). null/"" = none set.
+  // layered onto the built-in surface prompt server-side (see
+  // apps/mlx-bun/src/chat/policy.ts's injectSystemPrompt and
+  // apps/mlx-bun/src/chat/pi-backend.ts's installSystemPromptHook). null/"" = none set.
   systemPrompt: string | null = null;
 
   recTemp(): number { return this.genDefaults.temperature != null ? this.genDefaults.temperature : (this.thinkingOn ? 0.9 : 0.7); }
@@ -155,7 +157,7 @@ export interface BuiltMessage {
  *   - total attached text <= INLINE_THRESHOLD_CHARS: inline every file
  *     verbatim exactly as before this feature existed (LM Studio's
  *     transparent "fits context -> just inline it" half of the dual mode).
- *   - above threshold: retrieve the top-K chunks (src/web/src/rag.ts's
+ *   - above threshold: retrieve the top-K chunks (apps/mlx-bun/src/web/browser/rag.ts's
  *     BM25 index) scored against the outgoing message text, and inject a
  *     numbered [1]..[K] context block instead of the raw files. The index
  *     is rebuilt fresh on every send (attachments can change between
@@ -202,7 +204,7 @@ function escHtml(s: unknown): string {
 
 /** Pure: builds the <option> markup for the adapter <select> from the
  *  /v1/adapters/available list. Split out from refreshAdapters() (which
- *  does the fetch + DOM write) so tests/using/web-app.test.ts can exercise the
+ *  does the fetch + DOM write) so apps/mlx-bun/tests/web/browser.test.ts can exercise the
  *  esc() discipline on this template directly without a DOM or network —
  *  every interpolated field (id, rank, path, base_model) must be escaped,
  *  since adapter ids/paths are user-controlled (on-disk directory names). */
@@ -705,7 +707,7 @@ export function renderContext(m: ContextFrame): void {
    already resolves, so the agent's memory tools pick it up naturally, same
    as in the vault's own prose). No vault -> files-only picker. Pure
    query-detection/insertion helpers below are unit-tested directly
-   (tests/using/web-app.test.ts); DOM wiring (initMentionPicker) owns the
+   (apps/mlx-bun/tests/web/browser.test.ts); DOM wiring (initMentionPicker) owns the
    picker's open/close/keyboard-nav state.
    ──────────────────────────────────────────────────────────────────── */
 
@@ -869,7 +871,7 @@ export function initMentionPicker(state: ComposerState, box: HTMLTextAreaElement
       const d = await api<MentionSearchResp>("/api/memory/search?q=" + encodeURIComponent(query));
       if (seq !== searchSeq) return; // stale response — a newer keystroke already superseded it
       // enabled:false is the REST layer's explicit "no vault yet" signal
-      // (src/memory/rest.ts's noVault()) — only THAT latches the picker into
+      // (apps/mlx-bun/src/server/memory-routes.ts's noVault()) — only THAT latches the picker into
       // files-only mode; any other failure (a transient search error) just
       // yields an empty article list for this keystroke, not a permanent
       // downgrade for the rest of the picker session.

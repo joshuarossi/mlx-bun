@@ -1,7 +1,8 @@
 // Functional op layer over MlxArray. Parity-critical conventions:
 // - Python-float scalars in mlx promote weakly (bf16 array × float →
 //   bf16, scalar cast to bf16 first). `scalarLike` replicates that.
-// - Op composition order mirrors mlx-lm exactly; see model/gemma4.ts.
+// - Op composition order mirrors mlx-lm exactly; see
+//   packages/inference/src/models/gemma4/model.ts.
 
 import { ptr, read } from "bun:ffi";
 import { C, Dtype, type MlxHandle, optFloat, optInt, outArray, takeMlxError } from "./ffi";
@@ -178,7 +179,7 @@ export function ropeScaled(
  *  of a baked int — required inside compiled decode graphs, where the
  *  offset changes every step but the graph must not. Same kernel as
  *  `rope`; bit-exactness vs the static form is asserted in
- *  tests/unit/compile.test.ts. */
+ *  `02d723a:tests/unit/compile.test.ts`. */
 export function ropeDynamic(
   x: MlxArray, dims: number, base: number | null, offset: MlxArray,
   freqs: MlxArray | null, s: S = gpuStream,
@@ -196,8 +197,7 @@ export function ropeDynamic(
 /** Array-offset fast::rope with every knob exposed (traditional + scale) —
  *  the dynamic twin of `ropeScaled`, for the universal rope factory's
  *  batched-decode path (per-row [B] offsets under left-padding). Same
- *  kernel as `ropeDynamic`; static/dynamic bit-exactness is asserted in
- *  tests/unit/compile.test.ts. */
+ *  kernel as `ropeDynamic`. */
 export function ropeScaledDynamic(
   x: MlxArray, dims: number, traditional: boolean, base: number | null,
   scale: number, offset: MlxArray, freqs: MlxArray | null, s: S = gpuStream,
@@ -639,7 +639,7 @@ export function sliceDynamic(
 /** slice_update with the start index as an ARRAY (one int32 per entry in
  *  `axes`) — the compiled-decode form of the per-step cache write. Same
  *  write as `sliceUpdate`; bit-exactness vs the static form is asserted
- *  in tests/unit/compile.test.ts. */
+ *  in `02d723a:tests/unit/compile.test.ts`. */
 export function sliceUpdateDynamic(
   src: MlxArray, update: MlxArray, start: MlxArray, axes: number[], s: S = gpuStream,
 ): MlxArray {
@@ -732,7 +732,7 @@ export function fromInt32(data: number[], shape: number[]): MlxArray {
   return MlxArray.fromInt32(new Int32Array(data), shape);
 }
 
-// --- quantized KV support (Phase 6) ---------------------------------------
+// --- quantized KV support ---------------------------------------------------
 
 export interface QuantizedTensor {
   packed: MlxArray;
@@ -873,7 +873,7 @@ export function sumAxis(a: MlxArray, axis: number, keepdims: boolean, s: S = gpu
 }
 
 /** View-preserving expand_dims (reshape on a non-contiguous view copies —
- *  different kernel path, different reduction rounding; see Phase 6). */
+ *  different kernel path, different reduction rounding). */
 export function expandDims(a: MlxArray, axis: number, s: S = gpuStream): MlxArray {
   return new MlxArray(
     outArray("expand_dims", (o) => C.mlx_expand_dims(o, a.handle, axis, s)),
@@ -988,7 +988,7 @@ export function silu(a: MlxArray, s: S = gpuStream): MlxArray {
 /** fast::hadamard_transform over the last axis. `scale` defaults to
  *  1/sqrt(dim) (mlx's own default when unset) — pass it explicitly to
  *  match a reference that always states its normalization, per
- *  turboquant-ops.ts's fwht(). */
+ *  packages/inference/src/kernels/turboquant/ops.ts's fwht(). */
 export function hadamardTransform(x: MlxArray, scale: number | null = null, s: S = gpuStream): MlxArray {
   return new MlxArray(
     outArray("hadamard_transform", (o) =>

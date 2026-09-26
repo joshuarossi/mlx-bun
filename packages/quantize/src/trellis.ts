@@ -1,5 +1,5 @@
 // Bitshift trellis codec (QTIP TCQ) — the ENGINE's copy, with the packed
-// bit-stream the Q2b kernel reads. scripts/turboquant/tq-trellis.ts is the
+// bit-stream the Q2b kernel reads. `02d723a:scripts/turboquant/tq-trellis.ts` is the
 // frozen fake-quant codec that produced the Q3 artifact of record; this module
 // is a copy of it plus `encodeStates` / `fakeQuantRowsPacked` / the host pack
 // and unpack helpers, so nothing that reproduces the record changes.

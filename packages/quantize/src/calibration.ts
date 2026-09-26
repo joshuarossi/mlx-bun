@@ -8,7 +8,8 @@
 // prompts (each a (1, seq_len) row the model forwards).
 //
 // Two deviations from the Python, both forced by our pure-JS tokenizer surface
-// (src/tokenizer.ts exposes plain `encode` only, no `apply_chat_template`):
+// (packages/inference/src/input/tokenizer.ts exposes plain `encode` only, no
+// `apply_chat_template`):
 //   - `messages` samples use the role-prefixed dumb-concatenation fallback —
 //     exactly OptIQ's `no chat template` branch.
 //   - `add_special_tokens=False` is the OptIQ encode flag; our `encode` already

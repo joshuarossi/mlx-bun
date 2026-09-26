@@ -11,7 +11,7 @@ export interface Mask {
    *  have handed the string "causal" instead. Only these array masks
    *  are eligible for the fused tiled SDPA: the optiq wrapper falls
    *  back to unfused on every array mask, and window/bidir masks must
-   *  match that to stay scenario-bit-exact (Phase 9 finding). */
+   *  match that to stay scenario-bit-exact. */
   causalEquivalent?: boolean;
 }
 
@@ -107,7 +107,8 @@ export interface Cache {
   offset: number;
   /** Stable storage identity for compatibility guards and persistence.
    *  REQUIRED: every capability predicate (isPlainKvCache, isRotating*,
-   *  kv-store codecs) is a string compare on this value, so a missing
+   *  packages/inference/src/state/persistence.ts codecs) is a string compare on
+   *  this value, so a missing
    *  override used to fail OPEN into wrong routing (PRs #42/#43:
    *  BatchedRotatingCache shipped without one and batched joins dropped
    *  running rows). Wrappers report their own kind plus the inner kind. */

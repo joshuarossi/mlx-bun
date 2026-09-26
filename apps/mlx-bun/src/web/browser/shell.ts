@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // App shell: DOM helpers, toast, HF settings modal, focus trap, theme,
 // keyboard shortcut sheet, mobile drawer, router, connection pill + model
@@ -614,14 +615,13 @@ export function initDeveloperToggle(): void {
   if (btn) btn.onclick = () => setDeveloperMode(!isDeveloperMode());
 }
 
-/* ── Routes tab feature-detection (web-ui-pass-plan.md #17) ──
+/* ── Routes tab feature-detection (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #17) ──
    /dag readFileSync's a repo-relative doc that's absent from compiled
    binaries/npm installs. Probe once at boot with a HEAD request; on 404
    hide the Routes tab entirely (rather than leaving a dead link that
    iframes a raw 404) and, if the user is already sitting on #/routes, swap
    in a graceful in-app note instead of the broken iframe. Could instead
-   embed the artifact server-side like app.html's /curves fallback does —
-   left as server.ts territory, not touched here. */
+   embed the artifact server-side like app.html's /curves fallback does. */
 export async function initRoutesProbe(): Promise<void> {
   const tab = document.querySelector<HTMLElement>('nav .tab[data-tab="routes"]');
   let ok = true;
@@ -718,7 +718,7 @@ export function initRouter(): void {
 
 /* ════════════════════════════════════════════════════════════════════
    PWA SERVICE WORKER REGISTRATION (plan §9 Phase 3, beat-matrix Axis 10)
-   Shell-only cache-first worker (src/web/sw.js) — installability + instant
+   Shell-only cache-first worker (apps/mlx-bun/src/web/public/sw.js) — installability + instant
    shell paint, explicitly NOT offline chat (the app is useless without the
    local model server running, see sw.js's own header comment). Guarded so
    it never registers somewhere a service worker can't run at all

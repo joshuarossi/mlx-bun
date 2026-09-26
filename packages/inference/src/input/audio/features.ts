@@ -1,9 +1,9 @@
 // USM log-mel feature extraction for gemma-4 audio — a verbatim-semantics
 // port of the oracle's Gemma4AudioFeatureExtractor (optiq/vlm/_mlxvlm/
-// models/gemma4/audio_feature_extractor.py, constructor DEFAULTS — §3.3 Q3
-// of docs/design/generic-model-support.md: no per-bin normalization, params are
+// models/gemma4/audio_feature_extractor.py, constructor DEFAULTS —
+// `02d723a:docs/design/generic-model-support.md` §6.6: no per-bin normalization, params are
 // fixed for all gemma-4 models). Gated bit-close against the T0 mel goldens
-// (goldens/e4b-audio-*-mel.bin) in tests/parity/audio-features.test.ts.
+// (untracked goldens/e4b-audio-*-mel.bin) in `02d723a:tests/parity/audio-features.test.ts`.
 //
 // Pipeline (single waveform, 16 kHz mono float32):
 //   pad to a multiple of 128 samples (validity mask over the original part)

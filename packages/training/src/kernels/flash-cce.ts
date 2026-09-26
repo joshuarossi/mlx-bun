@@ -1,7 +1,7 @@
 // Flash Cut-Cross-Entropy Metal kernel for the ORPO log-prob head — the vocab
 // loop lives INSIDE the kernel, so neither the [M,V] logits nor a dequantized
 // [V,hidden] head ever touch HBM (the residency bound pure MLX can't reach; see
-// docs/design/orpo-training.md → "Vocab-blocked online-softmax"). Computes the
+// `02d723a:docs/design/orpo-training.md` → "Vocab-blocked online-softmax"). Computes the
 // per-token response log-prob `logp = target_logit − logsumexp_v(h·W_v)`.
 //
 // TRANSPILE SOURCE — this is, in effect, Apple's Cut Cross Entropy + Liger's
@@ -727,7 +727,7 @@ const BWD_SG_SOURCE = String.raw`
 // Apple-CCE coeff filter epsilon (phase-2 per-tile skip). DEFAULT ON at 1e-5
 // (flipped 2026-07-02 — the kernel-perf-review backlog #1 flip). The old
 // 0.66%→2.7% dh-accuracy scare was on RANDOM targets (flat softmax, the filter's
-// worst case — see PLAN.md "filter-on-real-data"); the real-data gate
+// worst case); the real-data gate
 // (flash-cce-filter-realdata.ts (deleted 2026-08-23; git history)) measured, on REAL chunk-ORPO
 // data (M1 Max, 2026-07-02): CPM5 eps 1e-5 = 0.343% dh for 1.41×; e4b = 0.158% dh
 // for 1.70× — and the teacher-forced full-logits fidelity shows the filter's added

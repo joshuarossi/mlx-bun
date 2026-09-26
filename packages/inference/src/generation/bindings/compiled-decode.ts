@@ -1,9 +1,9 @@
-// Compiled decode step (Phase A of docs/archive/investigations/optimization_plan.md).
+// Compiled decode step (Phase A of `02d723a:docs/archive/investigations/optimization_plan.md`).
 //
 // The single-token decode graph is identical token-to-token except for
 // integer state (RoPE offset, cache write position, active length). This
 // module wraps one whole step — embed → all layers → finalNorm → logits —
-// in an mx.compile'd closure (src/mlx/compile.ts) so the per-step graph
+// in an mx.compile'd closure (packages/mlx/src/compile.ts) so the per-step graph
 // is REPLAYED in C++ instead of rebuilt through ~2000 bun:ffi crossings.
 //
 // How the per-step state crosses into a fixed graph:
@@ -17,7 +17,8 @@
 // The trace runs the UNMODIFIED Gemma4Model.forwardHidden against trace
 // adapters that subclass the real cache classes — so the compiled graph
 // is the production op sequence by construction, not a reimplementation.
-// Per-cache fetch strategy (see DecodeStepPlan in gemma4.ts):
+// Per-cache fetch strategy (see DecodeStepPlan in
+// packages/inference/src/contracts/mlx/cache.ts):
 // - "concat": graph returns this step's (quantized) KV row; the buffer
 //   write stays OUTSIDE, right after the step — the buffer keeps a single
 //   reference at its slice_update, so mlx donates it (no per-step copy).
@@ -252,7 +253,7 @@ function makeTraceFn(model: Gemma4Model, descs: SlotDesc[]) {
 }
 
 // --- segmented mode (dense models) ------------------------------------------
-// Measured (PLAN Phase A findings): the concat fetch materializes a copy
+// Measured: the concat fetch materializes a copy
 // of each growing cache's active window every step — per-op encode
 // overhead + 2× byte traffic + allocator churn from monotonically
 // growing transient sizes. Ring-phase caches (write-in-graph, read the

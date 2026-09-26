@@ -1,4 +1,4 @@
-// curve-sampler.ts — the v2 log-prob transfer-curve sampler. Replaces the whole
+// curve.ts — the v2 log-prob transfer-curve sampler. Replaces the whole
 // temperature+softmax stage with a drawn MONOTONE CUBIC curve in log-probability
 // space:
 //

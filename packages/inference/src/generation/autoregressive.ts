@@ -310,7 +310,7 @@ async function* generateInner(
 
   /** THE apply primitive for token fast-forwarding — ONE chunked forward
    *  carries a proposal into the KV (and the recurrent state), and BOTH
-   *  policies ride it (src/fill/proposal.ts):
+   *  policies ride it (packages/inference/src/generation/fill/proposal.ts):
    *
    *   - assert: the span is determined (a template scaffold). Append and move
    *     on. No readback, no checkpoint, no rewind. The in-flight sample for
@@ -426,7 +426,8 @@ async function* generateInner(
       if (accepted < ids.length) {
         // Trimmable caches drop the rejected tail; recurrent caches restore
         // their pre-round snapshot and bit-exactly replay the accepted prefix
-        // (Cache.specRoundRollback — the same primitive src/spec/serve-loop.ts
+        // (Cache.specRoundRollback — the same primitive
+        // packages/inference/src/generation/speculative/run.ts
         // uses after its accept walk).
         for (const c of cache) {
           const rc = rewindable(c);
@@ -635,7 +636,7 @@ async function* generateInner(
       }
       // Keep current extras owned by the run until readback succeeds. A
       // forward/grammar failure must leave them reachable by finally.
-      // Grammar advance (src/grammar.ts): acceptToken needs the token id as a
+      // Grammar advance (packages/inference/src/sampling/grammar.ts): acceptToken needs the token id as a
       // JS number, which the pipelined loop defers (it operates on device
       // arrays). So grammar requests eager-read cur here, advance the matcher,
       // and await the async mask precompute — which overlaps the GPU forward

@@ -33,7 +33,8 @@
 // query chunk-position i may see context j iff i ≤ j ≤ i + 12, AND the
 // context slot maps to a real (unpadded, valid) frame.
 //
-// Golden reference point (goldens/e4b-audio.json, gen-e4b-audio-golden.py):
+// Golden reference point (`02d723a:goldens/e4b-audio.json`,
+// `02d723a:scripts/oracle/gen-e4b-audio-golden.py`):
 // the dumped [n,2560] embeddings are the embed_audio OUTPUT in f32, NOT yet
 // divided by embed_scale — the /embed_scale happens at the T2 splice. Like
 // the vision towers, features() returns PRE-DIVIDED by embedScale (the
@@ -139,7 +140,7 @@ export class AudioTower {
   ): AudioTower {
     const self = new AudioTower(cfg, embedScale);
     // out-param slots read via read.u64, not [0] (DFG stale-read bug — see
-    // outArray in mlx/ffi.ts).
+    // outArray in packages/mlx/src/ffi.ts).
     const arrMap = new BigUint64Array([C.mlx_map_string_to_array_new()]);
     const metaMap = new BigUint64Array([C.mlx_map_string_to_string_new()]);
     const arrMapPtr = ptr(arrMap);

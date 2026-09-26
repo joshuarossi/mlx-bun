@@ -3,7 +3,7 @@
 // exercise: 12B (dense), e4b (per-layer-input embeddings + KV-shared
 // layers), 26B-A4B (MoE block: router + gather_qmm experts).
 //
-// Parity notes (see PLAN.md Phase 2 findings):
+// Parity notes:
 // - SDPA scale is 1.0 (Gemma4 normalizes q/k instead).
 // - Full-attention layers: global_head_dim 512, 1 global KV head,
 //   attention_k_eq_v (V = same projection as K, with un-scaled RMS norm);
@@ -20,10 +20,10 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 
-// The shared, config-independent machinery lives in gemma4-base.ts
-// (Phase B extraction); this file keeps the architecture-specific
-// assembly that Phase C generates per model. Re-export the base so
-// existing importers keep one entry point.
+// The shared, config-independent machinery lives in packages/inference/src/layers/,
+// packages/inference/src/contracts/mlx/cache.ts and packages/inference/src/state/;
+// this file keeps the architecture-specific assembly that is generated per model.
+// Re-export the base so existing importers keep one entry point.
 
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 

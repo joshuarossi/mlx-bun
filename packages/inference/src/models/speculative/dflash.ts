@@ -2,7 +2,8 @@
 // architecture, in a parallel file so the v1 single-vector module stays intact
 // as the baseline. Selected by variant="dflash" in the checkpoint metadata.
 //
-// vs v1 (module.ts): v1 collapsed the target context to ONE vector fused as a
+// vs v1 (packages/inference/src/models/speculative/dspark.ts): v1 collapsed the
+// target context to ONE vector fused as a
 // sequence token before layer 0. This builds the paper's mechanism:
 //   Eq 2:  H_ctx = RMSNorm(W_c · [H^{l1};…;H^{lm}])   — m tapped target layers,
 //          over the FULL context, projected into the draft width.
@@ -25,8 +26,9 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /** STS calibration (§3.2.1) — per-position confidence thresholds fit on real
- *  (confidence, accepted) verify outcomes (src/spec/dspark/calibration.ts,
- *  scripts/dspark.ts calibrate). Consumed by the confidence-scheduled
+ *  (confidence, accepted) verify outcomes
+ *  (packages/inference/src/generation/speculative/dspark/calibration.ts,
+ *  `02d723a:scripts/dspark.ts` calibrate). Consumed by the confidence-scheduled
  *  draft-length pruning (Alg 1, single-user form) in forwardInfer. Stored
  *  inside DflashConfig so it round-trips through dspark.json for free.
  *  ABSENT ⟹ no pruning — an uncalibrated checkpoint drafts exactly as before. */

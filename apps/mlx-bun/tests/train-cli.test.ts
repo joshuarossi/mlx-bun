@@ -41,7 +41,7 @@ function harness(modelDir: string, run?: JobRunner) {
   return { deps, logs, selections, selectionSignals, runs, resets: () => resets, text: () => strip(logs.join("\n")) };
 }
 
-// Captured from main src/train/trainer.ts: a test input, never a second
+// Captured from `02d723a:src/train/trainer.ts`: a test input, never a second
 // production copy of the library defaults (the root export loads native MLX).
 const mainLibraryDefaults: TrainConfig = {
   method: "sft", rank: 8, scale: 1, rankScaling: "by_bits",

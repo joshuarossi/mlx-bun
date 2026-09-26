@@ -1,16 +1,17 @@
 // TurboQuant KV-cache codec — reference operations ported op-for-op
 // from the vendored vllm-metal reference
-// (lab/repro/vllm-metal-turboquant/turboquant_reference.py). See
-// docs/design/turboquant.md for the algorithm writeup and
-// goldens/turboquant.json (via tests/research/turboquant-ops.test.ts) for the
+// (`02d723a:lab/repro/vllm-metal-turboquant/turboquant_reference.py`). See
+// `02d723a:docs/design/turboquant.md` for the algorithm writeup and the untracked
+// goldens/turboquant.json (via `02d723a:tests/research/turboquant-ops.test.ts`) for the
 // bit-exactness oracle. Quantization groups run along the LAST axis
 // (head_dim) only — never the token axis, per the standing invariant.
 //
 // Dtype routing: encodeKeys upcasts its input to fp32 before any
 // min/max/scale/zero-point/round arithmetic (mirroring the value path,
 // where the FWHT sign-multiply already forces an fp32 promotion — see
-// fwht()). This matters because production callers (gemma4-base.ts
-// TurboQuantKVCache) feed bf16 K tensors straight from the model, not the
+// fwht()). This matters because production callers
+// (packages/inference/src/state/turboquant-kv.ts TurboQuantKVCache) feed bf16 K
+// tensors straight from the model, not the
 // fp32 the vendored reference/goldens exercise; running the affine-quant
 // arithmetic at bf16 precision measurably shifts rounding-boundary indices
 // vs the fp32 reference. Only scale/zero are cast to fp16 at the end —

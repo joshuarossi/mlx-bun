@@ -1,5 +1,5 @@
 // Arch descriptor table for the Tier-0 universal dense module
-// (docs/design/generic-model-support.md §3.1). One entry per mlx-lm
+// (`02d723a:docs/design/generic-model-support.md` §4.1). One entry per mlx-lm
 // model_type; each parse function is the ~15–25-line transcription of that
 // arch's ModelArgs (defaults included) + structural deltas, read from the
 // RAW config.json exactly like the oracle's dataclass does.
