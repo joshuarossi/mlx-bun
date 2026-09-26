@@ -93,6 +93,7 @@ const commands = {
     "whisper-resident": { type: "boolean", description: "Never release the Whisper weights" },
     preload: { type: "boolean", description: "Transcription-only server: load the Whisper weights before listening instead of on the first request" },
     "no-open": { type: "boolean", description: "Do not open the web app in an interactive terminal" },
+    isolate: { type: "boolean", description: "Serve the model from a crash-isolated worker process that respawns after a crash; the app, web chat, and jobs stay in this process" },
   } },
   generate: { description: "Generate text once from a local model", positional: "[query] [prompt]", options: {
     query: { type: "string", description: "Cached model query when no positional query is supplied" },

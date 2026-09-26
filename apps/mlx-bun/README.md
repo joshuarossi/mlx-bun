@@ -58,16 +58,113 @@ native module at runtime; `serve-host.ts` creates the model-scoped host
 listener), borrowing that state by parameter and lending it an execution
 lease, library invalidation, and the bound port through an attached link.
 `startModelServer` composes both with one close in the app's order.
-Worker mode is internal, with no user flag yet: `cli/worker-entry.ts` composes
-only the model host over a Unix socket a parent supplies (the launch record is
-the first stdin line, the ready line goes to stdout, and the end of stdin means
-the parent is gone), with the persistent services stubbed because the parent
-owns them; `server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`,
-and `POST /admin/drain` ahead of the model routes on that socket only (a TCP
-listener keeps answering 501 there); `jobs/worker-process.ts` is the parent-side
-owner, spawning through the executable captured at startup as `__worker` in
-the compiled binary or the entry script in source runs, SIGTERM then SIGKILL
-after a grace. `--isolate` and `--model-pool` are the next isolation steps in
+Worker mode composes only the model host in another process:
+`cli/worker-entry.ts` runs `startModelHost` over a Unix socket a parent supplies
+(the launch record is the first stdin line, the ready line goes to stdout, and
+the end of stdin means the parent is gone), with the persistent services stubbed
+because the parent owns them; `server/worker-routes.ts` answers `GET /health`,
+`POST /admin/lease`, and `POST /admin/drain` ahead of the model routes on that
+socket only (a TCP listener keeps answering 501 there); `jobs/worker-process.ts`
+is the parent-side owner, spawning through the executable captured at startup as
+`__worker` in the compiled binary or the entry script in source runs, SIGTERM
+then SIGKILL after a grace. No flag selects worker mode; `--isolate` does.
+
+## Runtime isolation (`--isolate`)
+
+`--isolate` is an optional capability, off by default: the model runs in a
+crash-isolated worker process while this process keeps the app up. It mirrors
+main's documented `--isolate` semantics with the deviations listed at the end.
+
+**Process layout.** `serve.ts` resolves the model as usual, then `startModelServer`
+composes `cli/serve-isolated.ts` instead of the direct host: the same persistent
+`createAppState` (web app, download owner, Responses history, memory, jobs,
+sessions, credentials, publishing), a parent-owned proxy, and one worker spawned
+through `jobs/worker-supervisor.ts` over `jobs/worker-process.ts`. The launch
+record pins the resolved model by path and carries the parsed serve options
+(draft and Whisper queries already resolved to directories, `isolate` cleared),
+so the worker never re-resolves a query; every exported `MLX_BUN_*` variable
+reaches it unchanged, and its output is forwarded to this process's log with a
+`[worker]` prefix. The socket lives in a private `mlx-worker-*` temp directory
+(0700, socket 0600) that this process removes on close. This process loads no
+engine or native module: `serve.ts` imports the model half only inside the
+direct composition, and the [composition test](tests/serve-isolated.test.ts)
+gates both the static closure and the runtime with tripwire mocks.
+
+**Readiness.** The listener binds after the worker's ready line (up to 15
+minutes for large models, as main), so startup succeeds or fails the way the
+direct composition does: a worker that dies before its first ready line rejects
+startup with its exit and is never retried; the browser opens once the model
+serves. The Pi backend learns the model's capabilities, generation defaults, and
+enforced context window from the worker's `/v1/models` and `/stats` once, after
+that first ready line.
+
+**Application state.** The web app, Pi chat, the Responses history, jobs,
+downloads, sessions, memory, tool-approval settings, and hub GC (which still
+protects the served snapshot) live here and survive worker restarts. Pi runs in
+this process and reaches the model over loopback HTTP through the proxy, so web
+chat works under isolation (main answered 501 on `/ws/chat`).
+
+**Proxying.** `server/proxy-routes.ts` is one route group mounted after the
+persistent groups: every remaining path (chat and text completions, Messages,
+embeddings, audio, `/v1/models`, `/library`, `/fit`, cache admin, adapters,
+adapter artifacts, unknown paths) forwards over the socket with hop-by-hop
+headers stripped, request and response bodies streaming through unchanged, and a
+client abort aborting the proxied request so the worker sees the disconnect (a
+request whose client left answers `499`). `POST /v1/responses` goes through
+`server/responses-client.ts`: `previous_response_id` resolves against this
+process's store, the worker receives the resolved conversation without one (and
+the `x-mlx-bun-response-owner: parent` header), and the completed record is
+remembered here, so conversations survive a worker restart. The parent answers
+`GET /engine` (`{ isolated, state, pid, restarts, socket, model, last_exit,
+response_store }`; `state` is `starting`, `ready`, `restarting`, `exhausted`,
+or `closed`), `GET /health` (`{ status: "ok", isolated, engine: { state, pid,
+restarts, socket, model, last_exit, in_flight, leases } }` with the last two and
+a `draining` state from the worker while it serves), `GET /stats` (the worker's
+body with this process's `response_store` and an `engine` report on top; while
+the worker is down, 200 with only the parent's part and an `unavailable`
+message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
+`/admin/drain` stay unix-socket-only and keep answering 501 on TCP, as does
+`/v1/memory/synthesize`.
+
+**Crashes.** An unexpected worker exit is respawned with main's budget: at most
+three restarts in a rolling 60-second window, and a worker that died within
+10 seconds of its spawn waits 5 seconds before the retry. A managed job's
+execution lease is a connection-owned `POST /admin/lease` inside the worker,
+acquired after the worker serves and after generation in flight has finished;
+a respawn waits until every such lease is released, so a reload never shares the
+GPU with a job. Requests in flight when the worker dies end with
+`502 { error: { type: "engine_unavailable", state } }`; an SSE response ends
+with the protocol's own error frame naming the cause (OpenAI `data: {"error"}`,
+Anthropic `event: error`, Responses `event: error`), so a client parser ends
+with an error rather than a silent truncation and Pi ends the turn with an error
+frame instead of replaying the generation. While the worker is down or
+restarting, new requests answer 502 with the reason and `— retry shortly`;
+exhausting the budget leaves 502 (`engine restart limit reached … restart the
+server`) and `/engine` reporting `exhausted` until the server restarts (no
+restart route, as main). The [supervisor](tests/jobs/worker-supervisor.test.ts)
+and [proxy](tests/server/proxy-routes.test.ts) tests drive these paths against a
+fake worker over a real socket; the opt-in
+[isolation test](tests/engine/isolate.test.ts) kills a real worker and checks the
+respawned completion.
+
+**Shutdown.** Jobs and downloads stop while the worker is alive, chat sessions
+and HTTP responses drain, then the worker is drained (`POST /admin/drain`),
+sent SIGTERM, SIGKILL after 3 seconds, joined, and the socket directory removed;
+a respawn in progress is joined too.
+
+**Deviations from main.** Main bound the listener before the engine loaded and
+made every request wait on readiness, including across restarts, retrying
+bodyless GET/HEAD once; here the listener binds after the first ready line and a
+request during a restart fails fast with 502 so the UI can report the restart
+instead of hanging, and nothing is retried. Main answered 501 on `/ws/chat`;
+Pi lives in the parent here. Main's parent `/health` was the child's; here it
+is the parent's with the worker's contribution. Main's coordinator serialized
+worker startup against jobs from the parent; here the lease is the worker's and
+only the respawn waits for a held lease. Pi's own SDK policy still retries a
+request refused with 502 before generation started (three attempts, 2/4/8 s),
+which rides out a fast respawn; a generation that started is never replayed.
+`--isolate` with a Whisper checkpoint as the main model is refused before
+anything starts. `--model-pool` is the next isolation step in
 [PLAN](../../PLAN.md).
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
