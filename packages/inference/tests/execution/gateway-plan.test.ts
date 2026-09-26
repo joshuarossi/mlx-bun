@@ -37,13 +37,16 @@ test("the retired MLX_BUN_GRAMMAR_BATCH switch no longer changes grammar placeme
   for (const plan of others) expect(plan).toEqual(baseline!);
 });
 
-test("grammar on an attention-softcap universal graph stays unsupported with its batch reason", () => {
+test("Gemma2 softcap grammar and adapter requests plan continuous; its encoded KV stays unsupported", () => {
   for (const env of environments) {
-    expect(planUnder(env, softcapUniversal(), shape)).toMatchObject({ mechanism: "continuous" });
-    const plan = planUnder(env, softcapUniversal());
-    expect(plan).toMatchObject({ mechanism: "unsupported", fill: false, checkpoint: false, grammarJump: false });
-    // Rejection reasons are separate from optional-feature diagnostics (compiled decode here).
-    expect(plan.reasons.filter(reason => reason.endsWith("-unsupported") || reason === "continuous-unavailable"))
-      .toEqual(["grammar-batch-unsupported"]);
+    for (const request of [shape, grammar, { ...shape, hasAdapters: true }, { ...grammar, hasAdapters: true }])
+      expect(planUnder(env, softcapUniversal(), request))
+        .toMatchObject({ mechanism: "continuous", fill: false, checkpoint: false, grammarJump: false });
+    for (const [request, reason] of [[{ ...grammar, kvQuant: true }, "kv-scheme-batch-unsupported"],
+      [{ ...grammar, turboQuant: true }, "turbo-kv-batch-unsupported"]] as const) {
+      const plan = planUnder(env, softcapUniversal(), request);
+      expect(plan.mechanism).toBe("unsupported");
+      expect(plan.reasons).toContain(reason);
+    }
   }
 });
