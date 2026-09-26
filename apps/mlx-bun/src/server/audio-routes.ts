@@ -253,7 +253,8 @@ export function createAudioRoutes(host?: AudioRouteHost) {
       const session = service.session(route.id);
       if (!session) return errorJson("unknown transcription session", 404);
       if (route.kind === "session-delete") {
-        session.close();
+        // 204 only once the feed or finish in flight has settled and the lease is back.
+        await session.close();
         sessionFormats.delete(route.id);
         return new Response(null, { status: 204 });
       }

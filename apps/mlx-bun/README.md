@@ -516,8 +516,8 @@ prints an empty result and never loads Whisper when the Silero gate finds no
 speech; `--vad-trim` is accepted without cropping, as in main. `--format` is
 `text` (default) | `json` | `verbose_json` | `srt` | `vtt`; `--verbose` prints
 each segment as it decodes and a realtime summary on stderr. SIGINT aborts the
-decode or the take, releases the weights, and exits 1. Clips under 0.1 s are
-refused by the service (main's direct transcriber accepted them).
+decode or the take, releases the weights, and exits 1. The file CLI accepts
+clips under 0.1 s, as main did; HTTP keeps its existing minimum duration.
 
 `mlx-bun dictate [query]` is main's push-to-talk loop. `engine/mic-capture.ts`
 spawns the AVAudioEngine sidecar (`native/mic-capture.swift` →
@@ -539,7 +539,9 @@ The backend is the in-process service with `--idle-unload <s>` (default 30;
 0 = release after every take) and `--resident`, or `--server <url>` for a
 running server's `/v1/audio/sessions`. Stopping ends the sidecar's stdin,
 terminates it, joins it (SIGKILL after two seconds), and only then releases
-the weights; an open take is dropped and Ctrl-C exits 0, as in main.
+the weights. It cancels and joins session requests and active transcription,
+cleans up the open session, and prevents delayed copying or typing after
+cancellation. Ctrl-C exits 0, as in main.
 
 The [transcribe tests](tests/transcribe-cli.test.ts) and
 [dictate tests](tests/dictate-cli.test.ts) run both verbs over the real

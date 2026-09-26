@@ -157,6 +157,8 @@ export const nativeTranscriptionRuntime: TranscriptionRuntime = {
 export interface TranscriptionServiceOptions {
   modelDir: string;
   modelId: string;
+  /** HTTP admission defaults to 0.1 s; the file CLI accepts shorter clips. */
+  minimumAudioSeconds?: number;
   /** Seconds idle before the model is released. Default 0 = release right
    *  after each take, so the chat model has the memory back before it
    *  prefills the transcript. */
@@ -215,6 +217,11 @@ export class TranscriptionService {
   #closed = false;
   #vad: Promise<VadGate> | null = null;
   #vadGate: VadGate | null = null;
+  /** Aborted by close(): every take and session signal is composed with it. */
+  readonly #shutdown = new AbortController();
+  /** Takes and session creations still running; close() joins them. */
+  readonly #inflight = new Set<Promise<unknown>>();
+  #closing: Promise<void> | null = null;
   readonly #sessions = new Map<string, TranscriptionSession>();
   readonly #exclusive: <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
   readonly #log: (line: string) => void;
@@ -222,10 +229,14 @@ export class TranscriptionService {
   readonly #runtime: TranscriptionRuntime;
   readonly #timers: NonNullable<TranscriptionServiceOptions["timers"]>;
   readonly #now: () => number;
+  readonly #minimumAudioSeconds: number;
 
   constructor(options: TranscriptionServiceOptions) {
     this.modelDir = options.modelDir;
     this.modelId = options.modelId;
+    this.#minimumAudioSeconds = options.minimumAudioSeconds ?? 0.1;
+    if (!Number.isFinite(this.#minimumAudioSeconds) || this.#minimumAudioSeconds < 0)
+      throw new Error("invalid minimum audio duration");
     this.idleUnloadSec = Math.max(0, options.idleUnloadSec ?? 0);
     this.pinned = options.resident ?? false;
     this.#exclusive = options.exclusive ?? (fn => fn());
@@ -234,6 +245,17 @@ export class TranscriptionService {
     this.#runtime = options.runtime ?? nativeTranscriptionRuntime;
     this.#timers = options.timers ?? realTimers;
     this.#now = options.now ?? (() => performance.now());
+  }
+
+  /** The caller's signal composed with service shutdown. */
+  #ownedSignal(signal?: AbortSignal): AbortSignal {
+    return signal ? AbortSignal.any([signal, this.#shutdown.signal]) : this.#shutdown.signal;
+  }
+
+  #track<T>(work: Promise<T>): Promise<T> {
+    this.#inflight.add(work);
+    work.finally(() => { this.#inflight.delete(work); }).catch(() => {});
+    return work;
   }
 
   /** The Silero gate, loaded on first use; a gate arriving after close is released. */
@@ -353,14 +375,20 @@ export class TranscriptionService {
   }
 
   async transcribe(audio: Uint8Array | Float32Array, params: TranscriptionParams = {}): Promise<TranscriptionOutcome> {
+    if (this.#closed) throw new TranscriptionError("transcription service is closed", 503);
+    const signal = this.#ownedSignal(params.signal);
     const run = async (): Promise<TranscriptionOutcome> => {
+      if (this.#closed) throw new TranscriptionError("transcription service is closed", 503);
+      signal.throwIfAborted();
       const t0 = this.#now();
       this.#requests++;
       this.#cancelIdleTimer();
       this.#active++;
       try {
         let samples = audio instanceof Float32Array ? audio : await this.#runtime.decodeAudio(audio);
-        if (samples.length < 1600) throw new TranscriptionError("audio is shorter than 0.1 s", 400);
+        signal.throwIfAborted();
+        if (samples.length < this.#minimumAudioSeconds * 16_000)
+          throw new TranscriptionError(`audio is shorter than ${this.#minimumAudioSeconds} s`, 400);
         let vadInfo: TranscriptionOutcome["vad"];
         let vadMs = 0;
         if (params.vad) {
@@ -388,8 +416,8 @@ export class TranscriptionService {
         const { options, vocabulary } = this.#decodingOptions(loaded, params);
         const t1 = this.#now();
         const result = await this.#exclusive(() => loaded.transcribe(samples, {
-          ...options, onSegment: params.onSegment, onProgress: params.onProgress, signal: params.signal,
-        }), params.signal);
+          ...options, onSegment: params.onSegment, onProgress: params.onProgress, signal,
+        }), signal);
         const t2 = this.#now();
         if (vadInfo?.trimmed) {
           const offset = vadInfo.trimmed.start;
@@ -413,7 +441,7 @@ export class TranscriptionService {
     };
     const next = this.#queue.then(run, run);
     this.#queue = next.catch(() => undefined);
-    return next;
+    return this.#track(next);
   }
 
   // --- streaming sessions -----------------------------------------------------
@@ -422,8 +450,13 @@ export class TranscriptionService {
   // latency at finish() is one window regardless of take length.
 
   async createSession(params: TranscriptionParams = {}): Promise<TranscriptionSession> {
+    params.signal?.throwIfAborted();
     if (this.#closed) throw new TranscriptionError("transcription service is closed", 503);
     if (this.#sessions.size >= 64) throw new TranscriptionError("too many open transcription sessions", 429);
+    return this.#track(this.#createSession({ ...params, signal: this.#ownedSignal(params.signal) }));
+  }
+
+  async #createSession(params: TranscriptionParams & { signal: AbortSignal }): Promise<TranscriptionSession> {
     const { loaded } = await this.ensureLoaded();
     // Reserve the weights before suspending again: unload() and the idle
     // policy refuse while #active > 0, and close() is rechecked after the
@@ -433,9 +466,10 @@ export class TranscriptionService {
     try {
       const gate = params.vad ? await this.vad() : null;
       if (this.#closed) throw new TranscriptionError("transcription service is closed", 503);
+      params.signal.throwIfAborted();
       const id = crypto.randomUUID();
       const { options, vocabulary } = this.#decodingOptions(loaded, params);
-      const session = new TranscriptionSession(id, this, loaded.start(options), params, vocabulary, gate, this.#now);
+      const session = new TranscriptionSession(id, this, loaded.start({ ...options, signal: params.signal }), params, vocabulary, gate, this.#now);
       this.#sessions.set(id, session);
       return session;
     } catch (error) {
@@ -465,20 +499,30 @@ export class TranscriptionService {
     return next;
   }
 
-  /** Close every session, cancel the idle timer, and release the weights and
-   *  the VAD gate. Idempotent; a load still in flight is released on arrival. */
-  close(): void {
-    if (this.#closed) return;
+  /** Stop admission, cancel pending work, join every session, take, creation
+   *  and load in flight, then release the weights and the VAD gate. Idempotent
+   *  (later calls return the same promise); with nothing in flight the release
+   *  happens synchronously. A load still in flight is released on arrival. */
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
-    for (const session of this.#sessions.values()) session.close();
-    this.#cancelIdleTimer();
-    if (this.#loaded) {
-      this.#loaded.dispose();
-      this.#loaded = null;
-    }
-    this.#vadGate?.dispose();
-    this.#vadGate = null;
-    this.#vad = null;
+    this.#shutdown.abort(new TranscriptionError("transcription service is closed", 503));
+    // Idle sessions release synchronously inside close(); busy ones are joined.
+    const sessionCloses = [...this.#sessions.values()].map(session => session.close());
+    const joins: Promise<unknown>[] = [...this.#inflight];
+    if (this.#loading) joins.push(this.#loading.catch(() => undefined));
+    const release = () => {
+      this.#cancelIdleTimer();
+      if (this.#loaded) {
+        this.#loaded.dispose();
+        this.#loaded = null;
+      }
+      this.#vadGate?.dispose();
+      this.#vadGate = null;
+      this.#vad = null;
+    };
+    if (this.#sessions.size === 0 && joins.length === 0) { release(); return this.#closing = Promise.resolve(); }
+    return this.#closing = Promise.allSettled([...sessionCloses, ...joins]).then(() => { release(); });
   }
 }
 
@@ -494,6 +538,13 @@ export class TranscriptionSession {
   #pendingLen = 0;
   #feeding: Promise<void> = Promise.resolve();
   #feedError: Error | null = null;
+  #finishing: Promise<unknown> | null = null;
+  #closing: Promise<void> | null = null;
+  #released = false;
+  #feeds = 0;
+  /** Aborted by close(): pending feeds and the finish are skipped, running work is joined. */
+  readonly #abort = new AbortController();
+  readonly #signal: AbortSignal;
   readonly #vad: VadGate | null;
   readonly #now: () => number;
 
@@ -505,6 +556,7 @@ export class TranscriptionSession {
     this.#vad = vad;
     this.#vadState = vad ? vad.streamState() : null;
     this.#now = now;
+    this.#signal = params.signal ? AbortSignal.any([params.signal, this.#abort.signal]) : this.#abort.signal;
   }
 
   get samples(): number { return this.#samples; }
@@ -525,6 +577,7 @@ export class TranscriptionSession {
 
   /** Append 16 kHz mono float32 PCM. Returns the segments finalized so far. */
   append(pcm: Float32Array): Promise<{ segments: WhisperSegment[]; speech: boolean }> {
+    this.#signal.throwIfAborted();
     if (this.#closed) throw new TranscriptionError("session is closed", 409);
     this.#samples += pcm.length;
     // streaming VAD in whole 512-sample chunks; the remainder waits
@@ -542,9 +595,14 @@ export class TranscriptionSession {
     }
     // serialize feeds; window work takes the exclusive lock
     const work = async () => {
-      if (this.#vad && !this.#speech) { this.run.feedSilent(pcm); return; }
-      await this.service.runExclusiveQueued(() => this.run.feed(pcm));
+      try {
+        this.#signal.throwIfAborted();
+        if (this.#vad && !this.#speech) { this.run.feedSilent(pcm); return; }
+        // Re-check at the head of the queue: a close() while queued skips the feed.
+        await this.service.runExclusiveQueued(() => { this.#signal.throwIfAborted(); return this.run.feed(pcm); }, this.#signal);
+      } finally { this.#feeds--; }
     };
+    this.#feeds++;
     this.#feeding = this.#feeding.then(work, work).catch(error => { this.#feedError = error as Error; });
     return this.#feeding.then(() => {
       if (this.#feedError) throw this.#feedError;
@@ -552,12 +610,19 @@ export class TranscriptionSession {
     });
   }
 
-  /** Transcribe the remainder and close. */
+  /** Transcribe the remainder and close. A concurrent close() joins this. */
   async finish(): Promise<TranscriptionOutcome> {
+    this.#signal.throwIfAborted();
     if (this.#closed) throw new TranscriptionError("session is closed", 409);
+    const work = this.#finish();
+    this.#finishing = work.catch(() => undefined);
+    return work;
+  }
+
+  async #finish(): Promise<TranscriptionOutcome> {
     const t0 = this.#now();
     await this.#feeding;
-    if (this.#feedError) { this.close(); throw this.#feedError; }
+    if (this.#feedError) { this.#release(); throw this.#feedError; }
     try {
       let vad: TranscriptionOutcome["vad"];
       if (this.#vad && this.#vadState) {
@@ -573,20 +638,36 @@ export class TranscriptionSession {
           };
         }
       }
-      const result = await this.service.runExclusiveQueued(() => this.run.finish());
+      const result = await this.service.runExclusiveQueued(() => { this.#signal.throwIfAborted(); return this.run.finish(); }, this.#signal);
       const t1 = this.#now();
       return {
         result, durationSeconds: this.durationSeconds, modelId: this.service.modelId,
         timings: { load_ms: 0, transcribe_ms: t1 - t0, total_ms: t1 - t0 }, vocabulary: this.vocabulary, vad,
       };
     } finally {
-      this.close();
+      this.#release();
     }
   }
 
-  close(): void {
-    if (this.#closed) return;
+  /** Give the service back its lease exactly once; no admission afterwards. */
+  #release(): void {
     this.#closed = true;
+    if (this.#released) return;
+    this.#released = true;
     this.service.releaseSession(this.id);
+  }
+
+  /** Stop admission, skip pending feeds, join the feed or finish in flight,
+   *  then release the service lease. Idempotent. */
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    this.#abort.abort(new TranscriptionError("session is closed", 409));
+    if (this.#feeds === 0 && !this.#finishing) { this.#release(); return this.#closing = Promise.resolve(); }
+    return this.#closing = (async () => {
+      await this.#feeding;
+      if (this.#finishing) await this.#finishing;
+      this.#release();
+    })();
   }
 }

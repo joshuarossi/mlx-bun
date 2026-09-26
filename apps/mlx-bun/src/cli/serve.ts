@@ -391,8 +391,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const closeApp = async () => {
       const errors: unknown[] = [];
       try { await jobs.close(); } catch (error) { errors.push(error); }
-      // Whisper weights release before the chat model; in-flight takes drained with the listener.
-      try { (await transcription)?.close(); } catch (error) { errors.push(error); }
+      // The Whisper companion closes in beforeDrain (it exists only once the listener serves requests).
       try { await engine.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
@@ -434,7 +433,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       beforeDrain: async () => {
         const errors: unknown[] = [];
         try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
-        for (const result of await Promise.allSettled([jobs.close(), downloads.close()]))
+        for (const result of await Promise.allSettled([jobs.close(), downloads.close(),
+          (async () => { await (await transcription)?.close(); })()]))
           if (result.status === "rejected") errors.push(result.reason);
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "background shutdown failed");
@@ -464,7 +464,7 @@ export async function startTranscriptionServer(model: ModelRecord, options: Serv
   const whisper = options.whisper ?? {};
   const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId,
     idleUnloadSec: whisper.idleUnloadSec, resident: whisper.resident });
-  let cleanup: (() => void) | undefined = () => service.close();
+  let cleanup: (() => Promise<void>) | undefined = async () => { await service.close(); };
   try {
     if (whisper.preload) await service.ensureLoaded();
     const audio = createAudioRoutes({ service: async () => service });
@@ -476,11 +476,13 @@ export async function startTranscriptionServer(model: ModelRecord, options: Serv
       web: () => null,
       // No chat model: a WebSocket session fails to start and its transport closes.
       chat: () => ({ async start() { throw new Error("transcription-only server has no chat model"); }, async handle() {}, dispose() {} }),
-      closeEngine: async () => service.close(),
+      // Whisper closes before drain: admission stops, in-flight takes are joined, weights release.
+      beforeDrain: () => service.close(),
+      closeEngine: async () => {},
     }, { port: options.port, hostname: options.hostname });
     return { port: listener.server.port!, close: listener.close,
       downloads: { active: [], start() { throw new Error("transcription-only server owns no downloads"); } } };
-  } catch (error) { cleanup?.(); throw error; }
+  } catch (error) { await cleanup?.(); throw error; }
 }
 
 export interface SignalPort {

@@ -209,7 +209,7 @@ test("cancellation while reading the clip never decodes, resolves, or loads", as
   } finally { h.cleanup(); }
 });
 
-test("a missing or undecodable file fails before any model lookup; clips under 0.1 s are refused by the service", async () => {
+test("a missing or undecodable file fails before any model lookup; the file CLI preserves clips under 0.1 s", async () => {
   const h = harness();
   try {
     await expect(runTranscribe(parse("/nope/clip.wav"), h.deps)).rejects.toThrow("audio file not found: /nope/clip.wav");
@@ -218,8 +218,9 @@ test("a missing or undecodable file fails before any model lookup; clips under 0
     await expect(runTranscribe(parse(bad), h.deps)).rejects.toThrow("not a WAV file");
     expect(h.events).toEqual(["decode 4"]);
     const short = join(h.dir, "short.wav"); writeFileSync(short, toneWav(800));
-    await expect(runTranscribe(parse(short), h.deps)).rejects.toThrow("audio is shorter than 0.1 s");
-    expect(h.events.slice(1)).toEqual(["decode 1644", "resolve (default)"]);
+    await runTranscribe(parse(short), h.deps);
+    expect(h.events.slice(1)).toEqual(["decode 1644", "resolve (default)", "load /whisper", "transcribe 800", "dispose"]);
+    expect(h.writes).toEqual(["hello world.\n"]);
   } finally { h.cleanup(); }
 });
 

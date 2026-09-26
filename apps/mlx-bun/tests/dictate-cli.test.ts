@@ -226,13 +226,14 @@ test("--server drives a running server's sessions instead of loading a model", a
   expect(h.writes).toEqual(["served text\n"]);
   expect(h.events).toEqual(["capture hotkey=61", "out served text", "stop", "joined"]);
   expect(requests.map(r => r.url)).toEqual(["http://localhost:8090/v1/audio/sessions", "http://localhost:8090/v1/audio/sessions/s1/audio",
-    "http://localhost:8090/v1/audio/sessions/s1/audio", "http://localhost:8090/v1/audio/sessions/s1/finish"]);
+    "http://localhost:8090/v1/audio/sessions/s1/audio", "http://localhost:8090/v1/audio/sessions/s1/finish", "http://localhost:8090/v1/audio/sessions/s1"]);
   expect(JSON.parse(requests[0]!.init!.body as string)).toEqual({ language: null, beam_size: 2, temperature: 0, prompt: "p",
     vocabulary: ["Sotto", "Metal"], vad: true, vad_min_speech_ms: 120 });
   expect((requests[1]!.init!.headers as Record<string, string>)["content-type"]).toBe("audio/pcm;rate=16000");
   expect((requests[1]!.init!.body as Uint8Array).byteLength).toBe(4000 * 4);
   expect((requests[2]!.init!.body as Uint8Array).byteLength).toBe(100 * 4);
-  expect(requests[3]!.init).toEqual({ method: "POST" });
+  expect(requests[3]!.init).toMatchObject({ method: "POST", signal: expect.any(AbortSignal) });
+  expect(requests[4]!.init).toMatchObject({ method: "DELETE", signal: expect.any(AbortSignal) });
   // A failed session create ends dictation with the server's answer.
   const refused = harness(), refusedMic = fakeCapture(refused.events);
   refusedMic.feed.push(key(true));
@@ -259,4 +260,64 @@ test("the spawned CLI answers dictate help and argument errors with native MLX b
   expect(unknown.code).toBe(1); expect(unknown.out).toBe(""); expect(unknown.err).toContain("Unknown option '--bogus'");
   const invalid = await cli("dictate", "--idle-unload", "x");
   expect(invalid).toEqual({ out: "", err: "invalid --idle-unload: x\n", code: 1 });
+});
+
+for (const stage of ["create", "feed", "finish"] as const) {
+  test(`cancellation joins a pending remote ${stage} and releases the take without delivery`, async () => {
+    const h = harness(), mic = fakeCapture(h.events), keys = channel<string>();
+    const abort = new AbortController(), entered = Promise.withResolvers<void>();
+    let active = 0, cancelled = false, deleted = false;
+    const fetchFake = async (url: string, init?: RequestInit): Promise<Response> => {
+      if (init?.method === "DELETE") {
+        expect(init.signal?.aborted).toBe(false); deleted = true; return Response.json({ ok: true });
+      }
+      const current = url.endsWith("/sessions") ? "create" : url.endsWith("/audio") ? "feed" : "finish";
+      if (current !== stage) return Response.json(current === "create" ? { id: "s1" } : { text: "unexpected delivery" });
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      active++; entered.resolve();
+      return new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => {
+          active--; cancelled = true; reject(init!.signal!.reason);
+        }, { once: true });
+      });
+    };
+    const run = runDictate(parse("--server", "http://localhost:8090"),
+      { ...h.deps(mic.capture, keys), fetch: fetchFake }, abort.signal);
+    run.catch(() => {});
+    try {
+      keys.push("");
+      if (stage !== "create") {
+        await waitFor(() => h.text().includes("recording"));
+        mic.feed.push(pcm(4000));
+        if (stage === "finish") keys.push("");
+      }
+      await entered.promise;
+      abort.abort(new Error("client cancelled"));
+      await run;
+      expect(cancelled).toBe(true); expect(active).toBe(0);
+      expect(deleted).toBe(stage !== "create");
+      expect(h.writes).toEqual([]);
+      expect(h.events).toContain("joined");
+    } finally { abort.abort(); keys.close(); await mic.capture.stop(); }
+  });
+}
+
+test("cancellation during the typing delay never types after shutdown", async () => {
+  const h = harness(), mic = fakeCapture(h.events), abort = new AbortController();
+  const delaying = Promise.withResolvers<void>();
+  for (const event of [key(true), pcm(4000), key(false)]) mic.feed.push(event);
+  const run = runDictate(parse("--hotkey", "--type", "--type-delay", "10", "--no-vad"), {
+    ...h.deps(mic.capture),
+    sleep: async (_ms, signal) => {
+      expect(signal).toBeInstanceOf(AbortSignal); delaying.resolve();
+      await new Promise<void>((_resolve, reject) => signal!.addEventListener("abort", () => reject(signal!.reason), { once: true }));
+    },
+  }, abort.signal);
+  run.catch(() => {});
+  try {
+    await delaying.promise; abort.abort(); await run;
+    expect(h.events.filter(event => event.startsWith("type "))).toEqual([]);
+    expect(h.events.indexOf("joined")).toBeLessThan(h.events.indexOf("dispose"));
+    expect(h.text()).not.toContain("typing failed");
+  } finally { abort.abort(); await mic.capture.stop(); }
 });

@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { startMicCapture, type MicCapture } from "../engine/mic-capture";
 import { TranscriptionService, type TranscriptionParams, type TranscriptionRuntime } from "../engine/transcription-service";
 import { parseCommand } from "./args";
@@ -82,10 +83,10 @@ export interface DictateDependencies {
   fetch(input: string, init?: RequestInit): Promise<Response>;
   /** stdin lines for Enter mode; ends on EOF or abort. */
   lines(signal: AbortSignal): AsyncIterable<string>;
-  copy(text: string): Promise<void>;
+  copy(text: string, signal?: AbortSignal): Promise<void>;
   /** Rejects with the tool's diagnostic when typing fails. */
-  type(text: string): Promise<void>;
-  sleep(ms: number): Promise<void>;
+  type(text: string, signal?: AbortSignal): Promise<void>;
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
   /** stdout. */
   write(text: string): void;
   /** stderr, verbatim. */
@@ -111,32 +112,44 @@ const defaults: DictateDependencies = {
       }
     } finally { signal.removeEventListener("abort", abort); reader.releaseLock(); }
   },
-  async copy(text) {
+  async copy(text, signal) {
+    signal?.throwIfAborted();
     const proc = Bun.spawn(["pbcopy"], { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
     proc.stdin.write(text); proc.stdin.end();
-    await proc.exited;
+    const abort = () => { try { proc.kill("SIGKILL"); } catch {} };
+    signal?.addEventListener("abort", abort, { once: true });
+    try { await proc.exited; signal?.throwIfAborted(); }
+    finally { signal?.removeEventListener("abort", abort); }
   },
-  async type(text) {
+  async type(text, signal) {
+    signal?.throwIfAborted();
     const escaped = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const proc = Bun.spawn(["osascript", "-e", `tell application "System Events" to keystroke "${escaped}"`], { stdout: "ignore", stderr: "pipe" });
-    const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-    if (code !== 0) throw new Error(stderr.trim());
+    const abort = () => { try { proc.kill("SIGKILL"); } catch {} };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const [code, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
+      signal?.throwIfAborted();
+      if (code !== 0) throw new Error(stderr.trim());
+    } finally { signal?.removeEventListener("abort", abort); }
   },
-  sleep: ms => Bun.sleep(ms),
+  sleep: async (ms, signal) => { await delay(ms, undefined, { signal }); },
   write: text => { process.stdout.write(text); },
   note: text => { process.stderr.write(text); },
   now: () => performance.now(),
 };
 
-interface Take { feed(pcm: Float32Array): Promise<void>; finish(): Promise<{ text: string; ms: number }> }
+interface Take { feed(pcm: Float32Array): Promise<void>; finish(): Promise<{ text: string; ms: number }>; close(): Promise<void> }
 
 /** Resolves when dictation ends: `q`, the signal (main exited 0 on Ctrl-C),
  * or the sidecar closing; rejects on a sidecar error. */
 export async function runDictate(args: DictateArgs, supplied: Partial<DictateDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...defaults, ...supplied };
+  const lifetime = new AbortController();
+  const runSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
   const params: TranscriptionParams = {
     language: args.language, beamSize: args.beamSize, temperature: 0, prompt: args.prompt, vocabulary: args.vocabulary,
-    vad: args.vad ? { threshold: 0.5, minSpeechMs: 120 } : null,
+    vad: args.vad ? { threshold: 0.5, minSpeechMs: 120 } : null, signal: runSignal,
   };
   signal?.throwIfAborted();
   let service: TranscriptionService | null = null;
@@ -156,45 +169,55 @@ export async function runDictate(args: DictateArgs, supplied: Partial<DictateDep
       signal?.throwIfAborted();
     }
     const startTake = async (): Promise<Take> => {
+      runSignal.throwIfAborted();
       if (service) {
         const session = await service.createSession(params);
         return {
+          close: async () => { await session.close(); },
           feed: async pcm => { await session.append(pcm); },
           finish: async () => { const t0 = deps.now(); const outcome = await session.finish(); return { text: outcome.result.text.trim(), ms: deps.now() - t0 }; },
         };
       }
       const base = args.server!;
-      const created = await deps.fetch(`${base}/v1/audio/sessions`, { method: "POST", headers: { "content-type": "application/json" },
+      const created = await deps.fetch(`${base}/v1/audio/sessions`, { method: "POST", signal: runSignal, headers: { "content-type": "application/json" },
         body: JSON.stringify({ language: params.language, beam_size: params.beamSize, temperature: 0, prompt: params.prompt,
           vocabulary: args.vocabulary, vad: !!params.vad, vad_min_speech_ms: 120 }) });
       if (!created.ok) throw new Error(`session create failed: ${created.status} ${await created.text()}`);
       const { id } = await created.json() as { id: string };
       return {
+        close: async () => {
+          await deps.fetch(`${base}/v1/audio/sessions/${id}`, { method: "DELETE", signal: AbortSignal.timeout(2000) });
+        },
         feed: async pcm => {
-          await deps.fetch(`${base}/v1/audio/sessions/${id}/audio`, { method: "POST", headers: { "content-type": "audio/pcm;rate=16000" },
+          const response = await deps.fetch(`${base}/v1/audio/sessions/${id}/audio`, { method: "POST", signal: runSignal, headers: { "content-type": "audio/pcm;rate=16000" },
             body: new Uint8Array(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer) });
+          if (!response.ok) throw new Error(`session feed failed: ${response.status} ${await response.text()}`);
         },
         finish: async () => {
           const t0 = deps.now();
-          const finished = await deps.fetch(`${base}/v1/audio/sessions/${id}/finish`, { method: "POST" });
+          const finished = await deps.fetch(`${base}/v1/audio/sessions/${id}/finish`, { method: "POST", signal: runSignal });
+          if (!finished.ok) throw new Error(`session finish failed: ${finished.status} ${await finished.text()}`);
           const body = await finished.json() as { text?: string };
           return { text: (body.text ?? "").trim(), ms: deps.now() - t0 };
         },
       };
     };
     const deliver = async (text: string) => {
+      runSignal.throwIfAborted();
       if (!text) { deps.write(style.dim("(no speech)") + "\n"); return; }
       deps.write(text + "\n");
-      if (args.copy) await deps.copy(text);
+      if (args.copy) await deps.copy(text, runSignal);
       if (args.type) {
-        if (args.typeDelaySec > 0) await deps.sleep(args.typeDelaySec * 1000);
-        try { await deps.type(text); }
-        catch (error) { deps.note(style.dim(`typing failed (grant Accessibility to your terminal): ${message(error)}`) + "\n"); }
+        if (args.typeDelaySec > 0) await deps.sleep(args.typeDelaySec * 1000, runSignal);
+        runSignal.throwIfAborted();
+        try { await deps.type(text, runSignal); }
+        catch (error) { if (runSignal.aborted) throw error; deps.note(style.dim(`typing failed (grant Accessibility to your terminal): ${message(error)}`) + "\n"); }
       }
     };
 
     const mic = await deps.capture({ hotkey: args.hotkey });
     let take: Take | null = null;
+    const closeTake = async () => { const current = take; take = null; if (current) await current.close().catch(() => {}); };
     let pending: Float32Array[] = [], pendingLen = 0;
     let feeding: Promise<void> = Promise.resolve();
     const flush = () => {
@@ -204,30 +227,33 @@ export async function runDictate(args: DictateArgs, supplied: Partial<DictateDep
       for (const part of pending) { buffer.set(part, offset); offset += part.length; }
       pending = []; pendingLen = 0;
       const current = take;
-      feeding = feeding.then(() => current.feed(buffer)).catch(error => { deps.note(style.dim(`feed failed: ${message(error)}`) + "\n"); });
+      feeding = feeding.then(() => { runSignal.throwIfAborted(); return current.feed(buffer); })
+        .catch(error => { if (!runSignal.aborted) deps.note(style.dim(`feed failed: ${message(error)}`) + "\n"); });
     };
     const begin = async () => {
-      if (take) return;
+      if (take || runSignal.aborted) return;
       take = await startTake();
+      if (runSignal.aborted) { await take.close(); take = null; return; }
       pending = []; pendingLen = 0;
       deps.note(style.bold("● recording") + style.dim(args.hotkey ? " (release to stop)\n" : " (Enter to stop)\n"));
     };
     const end = async () => {
       if (!take) return;
       flush();
-      await feeding;
       const current = take; take = null;
+      await feeding;
       deps.note(style.dim("transcribing… "));
       try {
         const { text, ms } = await current.finish();
         deps.note(style.dim(`${ms.toFixed(0)} ms\n`));
         await deliver(text);
-      } catch (error) { deps.note(`transcription failed: ${message(error)}\n`); }
+      } catch (error) { if (!runSignal.aborted) deps.note(`transcription failed: ${message(error)}\n`); }
+      finally { await current.close().catch(() => {}); }
     };
 
     const input = new AbortController();
     let quit = false, failure: string | null = null;
-    const stop = () => { quit = true; return mic.stop(); };
+    const stop = () => { quit = true; lifetime.abort(); return mic.stop(); };
     const onAbort = () => { void stop(); };
     if (signal?.aborted) void stop(); else signal?.addEventListener("abort", onAbort, { once: true });
     let keys: Promise<void> = Promise.resolve();
@@ -263,8 +289,12 @@ export async function runDictate(args: DictateArgs, supplied: Partial<DictateDep
       signal?.removeEventListener("abort", onAbort);
       input.abort();
       await stop();
-      try { await keys; } catch (error) { failure ??= message(error); }
+      try { await keys; } catch (error) { if (!runSignal.aborted) failure ??= message(error); }
+      await feeding;
+      await closeTake();
     }
     if (failure !== null) throw new Error(failure);
-  } finally { service?.close(); }
+  } catch (error) {
+    if (!signal?.aborted) throw error;
+  } finally { await service?.close(); }
 }

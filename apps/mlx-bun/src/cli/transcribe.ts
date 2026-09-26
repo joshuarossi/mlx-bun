@@ -96,7 +96,7 @@ export async function runTranscribe(args: TranscribeArgs, supplied: Partial<Tran
   const model = await deps.resolveModel(args.query);
   signal?.throwIfAborted();
   // The verb owns the weights' lifetime: resident until close releases them.
-  const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId, resident: true,
+  const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId, resident: true, minimumAudioSeconds: 0,
     vadModelPath: args.vad?.modelPath ?? null, log() {}, runtime });
   try {
     const outcome = await service.transcribe(samples, {
@@ -123,5 +123,5 @@ export async function runTranscribe(args: TranscribeArgs, supplied: Partial<Tran
       deps.note(`${durationSeconds.toFixed(2)} s audio in ${elapsed.toFixed(3)} s (${(durationSeconds / elapsed).toFixed(1)}× realtime), language ${outcome.result.language}`);
     }
     deps.write(formatTranscription(outcome.result, args.format, durationSeconds, args.task));
-  } finally { service.close(); }
+  } finally { await service.close(); }
 }
