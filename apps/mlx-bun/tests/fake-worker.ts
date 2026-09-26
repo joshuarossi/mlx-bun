@@ -6,6 +6,7 @@
 // routes, so a test reaches everything through the parent's proxy. Env:
 // FAKE_WORKER_RECORD appends `{ argv, pid, launch }` per launch (the launch line as received);
 // FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load.
+// FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
 import { appendFileSync } from "node:fs";
 
 const PREFIX = "<mlx-bun-worker>";
@@ -116,7 +117,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   return Response.json({ error: { message: "Not found" } }, { status: 404 });
 } } as unknown as Parameters<typeof Bun.serve>[0]);
 
-console.log(PREFIX + JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid }));
+console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid })));
 const stop = () => { console.error("stopping"); void server.stop(true); process.exit(0); };
 process.on("SIGTERM", stop);
 void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();

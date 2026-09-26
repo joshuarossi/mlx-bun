@@ -153,7 +153,11 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
       try {
         await next.ready;
         if (worker === next && state === "restarting") { setState("ready"); notice(`engine worker pid ${next.pid} ready`); }
-      } catch { /* the exit handler applies the budget */ }
+      } catch {
+        // A rejected handshake need not mean the process exited. Stop and join
+        // it so the exit handler can apply the budget and no live orphan stalls reload.
+        await next.close();
+      }
     })();
     respawns.add(respawn);
     void respawn.finally(() => respawns.delete(respawn)).catch(() => {});
@@ -168,9 +172,9 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
   void ready.catch(() => {});
 
   const whenReady = (signal?: AbortSignal) => {
+    if (signal?.aborted) return Promise.reject(signal.reason);
     if (state === "ready") return Promise.resolve();
     if (state === "exhausted" || state === "closed") return Promise.reject(unavailable());
-    if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise<void>((resolve, reject) => {
       const waiter = { resolve() { signal?.removeEventListener("abort", abort); resolve(); },
         reject(error: unknown) { signal?.removeEventListener("abort", abort); reject(error); } };
@@ -188,6 +192,8 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
 
   const acquireExecutionLease = async (signal: AbortSignal): Promise<DisposableResource> => {
     await whenReady(signal);
+    // Cancellation can arrive in the readiness promise continuation too.
+    signal.throwIfAborted();
     // The connection owns the lease (main's semantics): a parent that dies
     // releases it, and disposing here ends the stream the worker holds open.
     const abort = new AbortController();
@@ -196,6 +202,8 @@ export function superviseWorker(options: WorkerSupervisorOptions): WorkerSupervi
     try {
       const response = await fetchWorker("http://engine/admin/lease", { method: "POST", signal: abort.signal });
       if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`worker lease failed (${response.status})`); }
+      signal.throwIfAborted();
+      lifetime.signal.throwIfAborted();
       held++;
       let released = false;
       return { dispose() {

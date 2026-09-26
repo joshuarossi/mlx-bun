@@ -18,8 +18,10 @@ const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/v1/memory/synthes
 
 const encoder = new TextEncoder();
 const stripHopByHop = (headers: Headers) => {
+  const excluded = new Set(HOP_BY_HOP);
+  for (const name of (headers.get("connection") ?? "").split(",")) excluded.add(name.trim().toLowerCase());
   const out = new Headers();
-  headers.forEach((value, key) => { if (!HOP_BY_HOP.has(key.toLowerCase())) out.set(key, value); });
+  headers.forEach((value, key) => { if (!excluded.has(key.toLowerCase())) out.set(key, value); });
   return out;
 };
 

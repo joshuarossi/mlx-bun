@@ -34,7 +34,7 @@ function fixture(restarts = { max: 2, windowMs: 60_000, delayMs: 200 }) {
   const seen = async () => (await (await request("/fake/seen")).json() as { pid: number; seen: { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown }[] });
   return { dir, socketPath, engine, proxy, store, downloads, notices, request, direct, seen, remove: () => rmSync(dir, { recursive: true, force: true }) };
 }
-const chat = (text: string, stream = true) => ({ method: "POST", headers: { "content-type": "application/json", "proxy-authorization": "hop", "x-mlx-bun-trace-id": "trace-1" },
+const chat = (text: string, stream = true) => ({ method: "POST", headers: { "content-type": "application/json", "proxy-authorization": "hop", "connection": "keep-alive, X-Only-This-Hop", "x-only-this-hop": "private", "x-mlx-bun-trace-id": "trace-1" },
   body: JSON.stringify({ model: "local", stream, messages: [{ role: "user", content: text }] }) });
 const readAll = async (response: Response) => new TextDecoder().decode(new Uint8Array(await response.arrayBuffer()));
 const firstChunk = async (response: Response) => {
@@ -60,6 +60,7 @@ test("model-scoped requests stream through byte for byte with hop-by-hop headers
     const streamed = observed.seen.find(entry => entry.path === "/v1/chat/completions")!;
     expect([streamed.headers["content-type"], streamed.headers["x-mlx-bun-trace-id"]]).toEqual(["application/json", "trace-1"]);
     expect(streamed.headers["proxy-authorization"]).toBeUndefined();
+    expect(streamed.headers["x-only-this-hop"]).toBeUndefined();
     expect(streamed.aborted).toBe(false);
     // A request already abandoned by its client answers 499 without reaching the worker.
     const gone = new AbortController(); gone.abort();
