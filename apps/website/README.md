@@ -32,5 +32,10 @@ HTML and reflection JSON are build output, never committed. Generation parses
 source without importing library code or loading native libraries. TypeDoc can
 warn about references to non-exported types; their owning source remains linked.
 
-HTTP/configuration inventories remain follow-up work. Pages explain this scope
-and link to the owning package docs.
+The HTTP inventory is generated the same way from the route handlers in
+`apps/mlx-bun/src/server` and their composition in `apps/mlx-bun/src/cli`: each
+server mode's routes, status, and source links, never committed. Generation
+fails on a routing predicate or composition shape it does not recognize; the
+reviewed exceptions are `NON_ROUTE_SITES` in its generator. Its source links
+follow the library API's revision rule. The configuration inventory remains
+follow-up work.
