@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 // `mlx-bun memory`: main's verb over a temporary vault and HOME. Read
-// subcommands touch only the vault; synthesis reaches the model through a
-// serving mlx-bun, so a run that needs the model fails clearly without one.
+// subcommands touch only the vault; synthesis loads the memory task model in
+// process on first use (never downloading it), or uses a serving mlx-bun given
+// explicit --host/--port. A run that needs a model it cannot reach fails clearly.
 
 const entry = process.env.MLX_BUN_TEST_CLI ?? resolve(import.meta.dir, "../src/cli/main.ts");
 const homes: string[] = [];
@@ -26,7 +27,8 @@ function home(seed = true): { home: string; vault: string } {
 }
 async function cli(paths: { home: string; vault: string }, ...args: string[]) {
   const proc = Bun.spawn([process.execPath, "--no-env-file", entry, "memory", ...args], {
-    env: { ...process.env, HOME: paths.home, MLX_BUN_WIKI: paths.vault, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib", HF_HUB_OFFLINE: "1" },
+    env: { ...process.env, HOME: paths.home, MLX_BUN_WIKI: paths.vault, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib",
+      HF_HUB_OFFLINE: "1", HF_HUB_CACHE: join(paths.home, "hub") },
     stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
@@ -154,4 +156,22 @@ test("a stage that needs the model fails clearly when no server answers at --hos
   // Segmentation failed, so no chunk entered the run scope: main counts conversations from the routed chunks.
   expect(full.out).toContain("segment done: 1 attempted, 0 valid, 0 skipped, 1 errored, 0 chunks");
   expect(full.out).toContain("synthesis wired — 0 created, 0 patched, 0 wikified from 0 conversations.");
+});
+
+test("without --host/--port model work loads the memory task model in-process, lazily, and never downloads it", async () => {
+  // No conversations and no articles: nothing needs the model, so nothing is loaded.
+  const empty = home(false);
+  mkdirSync(join(empty.vault, "articles"), { recursive: true });
+  const idle = await cli(empty, "synthesize");
+  expect(idle.code).toBe(0);
+  expect(idle.out).toContain("synthesis wired — 0 created, 0 patched, 0 wikified from 0 conversations.");
+  expect(idle.out + idle.err).not.toContain("not downloaded");
+  // The wikify sweep edits the existing articles, so it reaches for the task model; an
+  // uncached model fails with main's fetch hint and no download is attempted.
+  const paths = home();
+  const lookup = join(paths.home, "hub", "models--mlx-community--gemma-4-e4b-it-OptiQ-4bit", "snapshots");
+  const full = await cli(paths, "synthesize");
+  expect(full.code).toBe(0);
+  expect(full.out).toContain(`wikify sweep skipped (error: Error: memory: Gemma-4-e4b is not downloaded (looked under ${lookup}). Fetch it first: HF_HUB_DISABLE_XET=1 hf download mlx-community/gemma-4-e4b-it-OptiQ-4bit)`);
+  expect(full.out).not.toContain("no mlx-bun server answered");
 });

@@ -1,8 +1,8 @@
 // `mlx-bun memory` — main's memory verb: walk through setup, inspect the wiki
 // from the terminal, run synthesis, and manage the nightly launchd job. Read
-// subcommands touch only the vault; the stage workers and the full DAG reach the
-// model through the loopback client onto a serving mlx-bun (`--host`/`--port`,
-// the serve defaults), never in-process. `mlx-bun setup` is main's true alias
+// subcommands touch only the vault; the stage workers and the full DAG load the
+// memory task model in-process on first use (cli/memory-engine), as main did, or
+// use a serving mlx-bun when --host/--port are given. `mlx-bun setup` is main's true alias
 // (`mlx-bun setup init` == `mlx-bun memory init`).
 //
 // Every persistent action goes through MemoryDependencies: the home directory
@@ -22,6 +22,7 @@ import { executablePath } from "../jobs/executable";
 import type { MemoryCompletionClient } from "../memory/model";
 import type { SynthesisEvent } from "../memory/events";
 import { createLoopbackMemoryClient } from "../server/memory-completion-client";
+import { createInProcessMemoryClient } from "./memory-engine";
 import { formatAt, installSchedule, parseAt, removeSchedule, scheduleStatus } from "../memory/schedule";
 import {
   vaultRoot, vaultStatus, setupVault, importArticlesFrom, commitVault,
@@ -46,6 +47,9 @@ export interface MemoryDependencies {
    *  the session is non-interactive (main: a non-TTY stdin never hangs and
    *  never confirms a persistent action). */
   ask(question: string, fallback: string): Promise<string>;
+  /** The model-driven subcommands' client when no --host/--port is given:
+   *  loads the memory task model in-process on first use. */
+  taskModel(): { client: MemoryCompletionClient; close(): Promise<void> };
 }
 
 /** The job's command: the executable captured at startup, plus this CLI's entry
@@ -63,6 +67,7 @@ function defaultDependencies(): MemoryDependencies {
     vault: vaultRoot(),
     home: homedir(),
     program: synthesisProgram(),
+    taskModel: () => createInProcessMemoryClient(),
     async ask(question, fallback) {
       if (!process.stdin.isTTY) return fallback;
       const { createInterface } = await import("node:readline/promises");
@@ -111,10 +116,15 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
     deps.log(`set one up:  ${style.accent("mlx-bun memory init")}`);
   };
   const onEvent = (e: SynthesisEvent) => deps.log(e.type === "stage" ? `  ${style.dim("·")} ${e.message}` : `  ${e.message}`);
-  /** The model-driven subcommands run their calls through the serving mlx-bun. */
-  const withServer = async <T>(work: (client: MemoryCompletionClient) => Promise<T>): Promise<T> => {
-    const url = serverUrl(args);
-    return work(createLoopbackMemoryClient(() => url));
+  /** Model-driven subcommands load the task model in-process (lazily, only if a
+   *  stage calls it), or use the serving mlx-bun the user named with --host/--port. */
+  const withClient = async <T>(work: (client: MemoryCompletionClient) => Promise<T>): Promise<T> => {
+    if (args.values.host !== undefined || args.values.port !== undefined) {
+      const url = serverUrl(args);
+      return work(createLoopbackMemoryClient(() => url));
+    }
+    const local = deps.taskModel();
+    try { return await work(local.client); } finally { await local.close(); }
   };
   const box = (lines: string[]) => { for (const line of boxLines(lines)) deps.log(line); };
   const launchd = { home: deps.home, launchctl: deps.launchctl };
@@ -162,13 +172,11 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
     // runs the real synthesis DAG (`mlx-bun memory synthesize`) — create new
     // entity articles, then the editorial wikify sweep — so installing the
     // schedule keeps your wiki current automatically. Persistent action →
-    // TTY-only, defaults to no. Synthesis reaches the model through a serving
-    // mlx-bun, so the job needs `mlx-bun serve` running at its time.
+    // TTY-only, defaults to no.
     let scheduled: string | null = null;
     deps.log(style.dim(
       "\n  Synthesis (turning your conversations into articles) runs as a nightly job;\n" +
-      "  install it now so your wiki stays current automatically.\n" +
-      "  The job needs a serving mlx-bun (mlx-bun serve) running at that time.",
+      "  install it now so your wiki stays current automatically.",
     ));
     if (await confirmYN("  Install the nightly synthesis job (runs in the background)?", false)) {
       const atRaw = await deps.ask(`    At what time? 24h HH:MM ${style.dim("[03:00]")}: `, "03:00");
@@ -257,7 +265,7 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
     const store = new MemoryStore();
     deps.log("");
     try {
-      await withServer(async (client) => {
+      await withClient(async (client) => {
         if (sub === "segment") {
           const r = await stages.runSegmentStage(store, { root, client, convIds, limit, onEvent });
           deps.log(style.dim(`\n  segment: ${r.valid} segmented, ${r.chunks} chunks, ${r.skipped} skipped, ${r.errored} errored`));
@@ -300,7 +308,7 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
     const { runSynthesis } = await import("../memory/pipeline");
     const dryRun = flag("dry-run");
     deps.log("");
-    const summary = await withServer((client) => runSynthesis(
+    const summary = await withClient((client) => runSynthesis(
       { since: opt("since") ?? undefined, model: opt("model") ?? undefined, dryRun, root, client },
       onEvent,
     ));
@@ -319,7 +327,6 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
       "",
       `plist      ${style.dim(r.plistPath)}`,
       `runs       ${style.dim("mlx-bun memory synthesize (full DAG: create + wikify sweep)")}`,
-      `needs      ${style.dim("a serving mlx-bun (mlx-bun serve) at that time")}`,
       `undo       ${style.accent("mlx-bun memory unschedule")}`,
     ]);
     return;

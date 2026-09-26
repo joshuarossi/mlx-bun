@@ -68,7 +68,7 @@ test("memory lookup, small reads, graph traversal and references stay bound to t
 
 test("memory status advertises on-demand synthesis and reports the injected nightly schedule state", async () => {
   const root = vault();
-  const plistPath = join(root, "com.mlx-bun.memory.plist"), note = "the job runs mlx-bun memory synthesize and needs a serving mlx-bun (mlx-bun serve) at that time";
+  const plistPath = join(root, "com.mlx-bun.memory.plist"), note = "the job runs mlx-bun memory synthesize, which loads the memory task model itself";
   const states = [
     { installed: false, plistPath, loaded: false, at: null, note },
     { installed: true, plistPath, loaded: true, at: { hour: 3, minute: 0 }, note },
@@ -82,7 +82,7 @@ test("memory status advertises on-demand synthesis and reports the injected nigh
   const first = await status();
   expect(first).toContain(`- vault: ${root}`);
   expect(first).toContain("- articles: 2");
-  expect(first).toContain("- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun");
+  expect(first).toContain("- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles); the nightly job runs it automatically when scheduled");
   expect(first).toContain("- nightly: not scheduled — `mlx-bun memory schedule` installs the launchd job");
   expect(first).not.toContain("unavailable during migration");
   expect(await status()).toContain(`- nightly: scheduled at 03:00 — ${note}`);

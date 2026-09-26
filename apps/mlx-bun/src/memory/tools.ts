@@ -570,7 +570,7 @@ export function createMemoryTools(root: string, options: MemoryToolOptions = {})
           `- read-only references: ${st.referenceCount}`,
           `- git: ${st.isGitRepo ? "tracked" : "not tracked"}`,
           `- last synthesis: ${last ? `${last.date} (${last.subject})` : "no synthesis run recorded yet"}`,
-          "- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles) through a serving mlx-bun",
+          "- synthesis: available — `mlx-bun memory synthesize` runs the full local pipeline (conversations → articles); the nightly job runs it automatically when scheduled",
           `- nightly: ${sched.installed
             ? `${sched.loaded ? "scheduled" : "installed but not loaded"}${sched.at ? ` at ${formatAt(sched.at)}` : ""} — ${sched.note}`
             : "not scheduled — `mlx-bun memory schedule` installs the launchd job"}`,

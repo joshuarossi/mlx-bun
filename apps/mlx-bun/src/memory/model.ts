@@ -12,13 +12,18 @@
 //                                       order-preserving.
 //
 // Importing this module never loads MLX. The engine is reached only through a
-// {@link MemoryCompletionClient} that the app's composition roots (`serve`, the
-// `memory` verb) inject: a loopback HTTP client onto a serving mlx-bun, which
-// runs the calls on its continuous-batching scheduler. Nothing here talks to a
-// model directly; with no client configured the seams throw a clear error.
+// {@link MemoryCompletionClient} that the app's composition roots inject: the
+// `memory` verb loads the task model in-process on first use (cli/memory-engine),
+// or, with explicit --host/--port, a loopback HTTP client onto a serving mlx-bun;
+// `serve` injects its loopback client. Nothing here talks to a model directly;
+// with no client configured the seams throw a clear error.
 
 import { existsSync } from "node:fs";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+
+/** The memory task model main's synthesis loaded when it had no client
+ *  supplied. Owned here, independent of the app's starter-model default. */
+export const MEMORY_TASK_MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
 
 /** Per-stage adapter dir, or undefined when none is symlinked (run base). Only
  *  the `chunk` stage has a trained adapter on disk today (`memory-chunk`). */
@@ -168,7 +173,7 @@ export function configureMemoryCompletionClient(client: MemoryCompletionClient |
 
 function requireClient(): MemoryCompletionClient {
   if (!configured)
-    throw new Error("memory: no completion client configured — synthesis runs through a serving mlx-bun (start `mlx-bun serve`, then run the memory verb against it)");
+    throw new Error("memory: no completion client configured — run synthesis through the `mlx-bun memory` verb or a serving mlx-bun");
   return configured;
 }
 
