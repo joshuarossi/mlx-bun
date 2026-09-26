@@ -13,9 +13,8 @@
 // never reads process.execPath, and tests inject a temporary home and a
 // recording launchctl so the real launchd is never reached.
 //
-// Deviation from main: synthesis now reaches the model through a serving
-// mlx-bun, so the job needs `mlx-bun serve` running at its time. The status
-// carries that note so every surface reports the schedule honestly.
+// As in main, the job's `memory synthesize` loads the memory task model itself,
+// so it needs no running server. The status carries that note.
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -25,7 +24,7 @@ import { join } from "node:path";
 export const LAUNCHD_LABEL = "com.mlx-bun.memory";
 
 /** What the installed job does and what it needs; every status surface prints it. */
-export const SCHEDULE_NOTE = "runs mlx-bun memory synthesize, which needs a serving mlx-bun (mlx-bun serve) at that time";
+export const SCHEDULE_NOTE = "runs mlx-bun memory synthesize, which loads the memory task model itself";
 
 /** The persistent system the schedule touches; composition uses the real one. */
 export interface LaunchdSystem {

@@ -78,7 +78,7 @@ test("memory schedule installs the launchd job at --at through the seams, status
   expect(scheduled.out).toContain("● nightly synthesis scheduled · 04:30 daily");
   expect(scheduled.out).toContain(`plist      ${paths.plist}`);
   expect(scheduled.out).toContain("runs       mlx-bun memory synthesize (full DAG: create + wikify sweep)");
-  expect(scheduled.out).toContain("needs      a serving mlx-bun (mlx-bun serve) at that time");
+  expect(scheduled.out).not.toContain("serving mlx-bun");
   expect(scheduled.out).toContain("undo       mlx-bun memory unschedule");
   expect(scheduled.calls).toEqual([["unload", paths.plist], ["load", "-w", paths.plist]]);
   const plist = readFileSync(paths.plist, "utf8");
@@ -127,7 +127,8 @@ test("setup init accepts the nightly job: main's prompts verbatim, plist at the 
   expect(result.out).toContain("● Personal memory for your local AI");
   expect(result.out).toContain(`git-tracked at ${paths.vault}, editable in any tool, and it`);
   expect(result.out).toContain(`  ✓ wiki ready · ${paths.vault}`);
-  expect(result.out).toContain("  Synthesis (turning your conversations into articles) runs as a nightly job;\n  install it now so your wiki stays current automatically.\n  The job needs a serving mlx-bun (mlx-bun serve) running at that time.");
+  expect(result.out).toContain("  Synthesis (turning your conversations into articles) runs as a nightly job;\n  install it now so your wiki stays current automatically.\n");
+  expect(result.out).not.toContain("serving mlx-bun");
   expect(result.out).toContain(`  ✓ nightly job installed · 02:15 · ${paths.plist}`);
   expect(result.out).toContain("● memory is set up · 0 article(s) · 0 reference doc(s)");
   expect(result.out).toContain("chat now   mlx-bun serve — the assistant now reads your memory automatically");
@@ -215,7 +216,7 @@ test("setup --help and memory schedule --help document the wizard, the schedule,
   expect(setup.out).toContain("mlx-bun setup — Set up your local AI's memory wiki (alias of mlx-bun memory)");
   expect(setup.out).toContain("Usage: mlx-bun setup [subcommand] [args] [options]");
   expect(setup.out).toContain("  init, setup        Create the wiki + walk through setup (idempotent);");
-  expect(setup.out).toContain("  schedule           Install the nightly launchd job (--at HH:MM [03:00]);");
+  expect(setup.out).toContain("  schedule           Install the nightly launchd job (--at HH:MM [03:00])\n");
   expect(setup.out).toContain("  unschedule         Remove the nightly launchd job");
   expect(setup.out).toContain("--at <value>");
   const schedule = await cli(paths, "memory", "schedule", "--help");

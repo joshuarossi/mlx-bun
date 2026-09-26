@@ -6,8 +6,7 @@ const memoryDetails = `A local, durable memory for the assistant: a wiki of Mark
 (~/.mlx-bun/wiki) it reads to remember your projects, people, and history
 across sessions. It is yours: git-tracked, editable in any tool (Obsidian
 opens it as a vault), and it never leaves the machine. Once set up, it loads
-automatically into every \`mlx-bun serve\` session. Synthesis
-(conversations -> articles) runs through a serving mlx-bun.
+automatically into every \`mlx-bun serve\` session.
 
 Subcommands:
   init, setup        Create the wiki + walk through setup (idempotent);
@@ -34,9 +33,7 @@ Subcommands:
                      and runnable as separate concurrent processes on slices.
   link               Deterministic cross-linking stage: inline-link first
                      mentions + rebuild ## See also (--limit N; no model)
-  schedule           Install the nightly launchd job (--at HH:MM [03:00]);
-                     it runs \`mlx-bun memory synthesize\`, which needs a
-                     serving mlx-bun at that time
+  schedule           Install the nightly launchd job (--at HH:MM [03:00])
   unschedule         Remove the nightly launchd job
 
 The read path is live: the assistant reads a wiki you set up by hand or
@@ -44,8 +41,8 @@ import during \`memory init\`. Run \`mlx-bun memory open\` to browse it in
 Obsidian/Finder, or \`mlx-bun memory open <article>\` to jump to a specific
 page. Synthesis (conversations -> articles) runs the full local pipeline via
 \`mlx-bun memory synthesize\` (or per-stage: segment/extract/route/
-synthesize-stage/link) against a serving mlx-bun; the nightly job runs it on
-a schedule and needs that server at its time.`;
+synthesize-stage/link); the nightly job runs it on a schedule. These load the
+memory task model on first use; --host/--port use a serving mlx-bun instead.`;
 const commands = {
   serve: { description: "Serve a local model with continuous batching and the web app", positional: "[query]", options: {
     model: { type: "string", description: "Model directory or cached registry query (overrides positional query)" },
@@ -243,8 +240,8 @@ const commands = {
     limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
     convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
     at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
-    host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
-    port: { type: "string", description: "Port of that server [default: 8080]" },
+    host: { type: "string", description: "Run the model calls on a serving mlx-bun at this host instead of loading the memory task model (127.0.0.1 when only --port is given)" },
+    port: { type: "string", description: "Port of that server (8080 when only --host is given)" },
   } },
   setup: { description: "Set up your local AI's memory wiki (alias of mlx-bun memory)", positional: "[subcommand] [args]",
     usage: "usage: mlx-bun setup <subcommand> [args] [options]", details: memoryDetails, options: {
@@ -254,8 +251,8 @@ const commands = {
     limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
     convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
     at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
-    host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
-    port: { type: "string", description: "Port of that server [default: 8080]" },
+    host: { type: "string", description: "Run the model calls on a serving mlx-bun at this host instead of loading the memory task model (127.0.0.1 when only --port is given)" },
+    port: { type: "string", description: "Port of that server (8080 when only --host is given)" },
   } },
 } satisfies Record<string, { description: string; positional: string; usage?: string; details?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
 export type Command = keyof typeof commands;

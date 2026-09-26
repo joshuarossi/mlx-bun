@@ -115,7 +115,7 @@ describe("memory model seam — client injection", () => {
   });
 
   test("the stage defaults reject until composition installs a client, then delegate, then restore", async () => {
-    await expect(callLocal("route", { user: "q" })).rejects.toThrow(/no completion client configured.*mlx-bun serve/);
+    await expect(callLocal("route", { user: "q" })).rejects.toThrow(/no completion client configured.*mlx-bun memory/);
     await expect(callLocalBatch("entity", [{ user: "a" }])).rejects.toThrow("no completion client configured");
     const { client, requests } = recorder();
     const restore = configureMemoryCompletionClient(client);

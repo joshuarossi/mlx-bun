@@ -96,7 +96,7 @@ test("status reports not installed, installed (loaded or not) with the plist's t
   // A hand-edited plist without a calendar interval still counts as installed, with no time.
   writeFileSync(path, "<plist><dict><key>Label</key><string>x</string></dict></plist>\n");
   expect(await scheduleStatus({ home: dir, launchctl })).toMatchObject({ installed: true, loaded: true, at: null });
-  expect(SCHEDULE_NOTE).toBe("runs mlx-bun memory synthesize, which needs a serving mlx-bun (mlx-bun serve) at that time");
+  expect(SCHEDULE_NOTE).toBe("runs mlx-bun memory synthesize, which loads the memory task model itself");
 });
 
 test("the default home is the process home, so a temporary HOME confines the plist path", () => {
