@@ -865,16 +865,25 @@ resolve the shipped helper and run `--help` before any audio initialization.
 After staging the root native setup and the app helper with
 `bun run --filter mlx-bun build:native`, run `bun run build:binary` from the root.
 `dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
-WASM sidecar, the project license, and combined MLX/inference third-party notices.
+WASM sidecar, the project license, and combined third-party notices: the MLX and
+inference package notices, Photon's installed Apache-2.0 license, and the app's
+own [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Pi is compiled into the
+executable and its npm packages ship no license file, so that file carries Pi's
+upstream MIT license verbatim with its source revision and git blob; the build
+fails unless it names every installed Pi package at its installed version.
 Move the whole directory together. Web assets and the memory skill
 are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
 
-`bun run verify:binary` builds into temporary storage, relocates the directory,
-installs it through the curl installer using a local archive and temporary home,
-and checks the actual CLI and managed child plus a compiled consumer for web,
-memory, synthetic registry/fit, native path resolution, microphone helper help,
-and Photon initialization.
+`bun run verify:binary` builds into temporary storage, archives the bundle with
+the release preparation's tar command, and removes the build. The shared
+acceptance then extracts the archive to another directory, compiles a consumer
+into that copy, checks every notice section, and installs the unchanged archive
+through the curl installer using a local curl stub and temporary home, then
+upgrades once. It checks the actual CLI and managed child plus the consumer for
+web, memory, synthetic registry/fit, native path resolution, microphone helper
+help, and Photon initialization in the relocated, installed, and retained
+previous bundles.
 The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
 With exclusive GPU access, `bun run verify:binary --model /path/to/cached-model`
 also starts the actual relocated executable, checks its web assets, `/stats`,
@@ -918,6 +927,9 @@ temporary homes, including reinstall and failure paths, without network access.
 `bun scripts/prepare-release.ts prepare /new/output/directory` builds from staged
 natives, checks the executable against the app manifest version, packs workspace
 packages, and writes unsigned local archives, checksums, and a Homebrew formula.
+It then runs the `verify:binary` acceptance (CPU only) on the unsigned archive
+and requires unchanged bundle hashes afterwards; a failure removes `unsigned/`
+and writes no `preparation.json`.
 `preparation.json` records bundle hashes, dependency-first package publication
 order, and pending private/version decisions. Nothing changes those decisions or
 publishes. The `unsigned/` output is for local verification only.
@@ -935,5 +947,5 @@ Run `--help` for usage. Signing/notarization and publishing require Josh's relea
 instruction; preparation and tests do not access identities or Apple services.
 GitHub/npm publication and tap synchronization remain separate unfinished release
 work. No stage invokes those operations. [Release tests](tests/release.test.ts)
-use captured mock signing/notary commands; they do not prove a real signature or
-Apple acceptance.
+use captured mock signing/notary commands and a recording acceptance stand-in;
+they do not prove a real signature or Apple acceptance.

@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
@@ -23,24 +23,63 @@ export async function compileApp(entry: string, output: string): Promise<void> {
   if (await proc.exited !== 0) throw new Error("Standalone compilation failed");
 }
 
+/** Installed package directories: Pi is compiled into the executable and
+ * Photon (Pi's image dependency) supplies the WASM sidecar. */
+function installedDependencies(base: string) {
+  const from = join(base, "apps/mlx-bun"), pi = Bun.resolveSync("@earendil-works/pi-coding-agent", from);
+  return { pi: dirname(Bun.resolveSync("@earendil-works/pi-coding-agent/package.json", from)),
+    photon: dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(pi))) };
+}
+
+async function noticeText(path: string): Promise<string> {
+  const text = await readFile(path, "utf8").catch(() => "");
+  if (!text.trim()) throw new Error(`Missing or empty bundle notice: ${path}`);
+  return text;
+}
+
+async function installedManifest(directory: string): Promise<{ name: string; version: string; license: string }> {
+  const manifest = JSON.parse(await noticeText(join(directory, "package.json")));
+  if (!manifest.name || !manifest.version || !manifest.license) throw new Error(`Missing name, version or license: ${directory}/package.json`);
+  return manifest;
+}
+
+/** Pi packages compiled into the executable. Their npm packages ship no license
+ * file, so apps/mlx-bun/THIRD_PARTY_NOTICES.md carries the upstream text. */
+const PI_PACKAGES = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai",
+  "@earendil-works/pi-agent-core", "@earendil-works/pi-tui"] as const;
+
+/** Ordered sections of the bundle's THIRD_PARTY_NOTICES.md, verbatim from the
+ * workspace, the installed Photon package, and the app-owned notices for Pi.
+ * The app notice must name every installed Pi package at its installed version. */
+export async function bundleNotices(base = root): Promise<string[]> {
+  const { pi, photon } = installedDependencies(base);
+  const photonPackage = await installedManifest(photon);
+  const appNotice = await noticeText(join(base, "apps/mlx-bun/THIRD_PARTY_NOTICES.md"));
+  for (const name of PI_PACKAGES) {
+    const { version } = await installedManifest(dirname(Bun.resolveSync(`${name}/package.json`, pi)));
+    if (!appNotice.includes(`\`${name}@${version}\``))
+      throw new Error(`apps/mlx-bun/THIRD_PARTY_NOTICES.md does not cover the installed ${name}@${version}`);
+  }
+  return [
+    ...await Promise.all(["mlx", "inference"].map(async name =>
+      `# @mlx-bun/${name}\n\n${await noticeText(join(base, "packages", name, "THIRD_PARTY_NOTICES.md"))}`)),
+    `# ${photonPackage.name}@${photonPackage.version}\n\nCovers the bundled \`photon_rs_bg.wasm\`. License: ${photonPackage.license}.\n\n${await noticeText(join(photon, "LICENSE.md"))}`,
+    `# mlx-bun\n\n${appNotice}`,
+  ];
+}
+
 /** Uses already staged package natives; does not download, sign for release,
  * publish, start a server, or load MLX. The complete directory is relocatable. */
 export async function buildBinary(output = join(root, "dist/bundle")): Promise<string> {
   const out = resolve(output);
-  const pi = Bun.resolveSync("@earendil-works/pi-coding-agent", app);
-  const photon = join(dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(pi))), "photon_rs_bg.wasm");
+  const photon = join(installedDependencies(root).photon, "photon_rs_bg.wasm");
   const copies: [string, string][] = [
     ...MLX_FILES.map(name => [join(MLX_DIR, name), name] as [string, string]),
     ...INFERENCE_FILES.map(name => [join(INFERENCE_DIR, name), name] as [string, string]),
     [MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY],
     [photon, "photon_rs_bg.wasm"], [join(root, "LICENSE"), "LICENSE"],
   ];
-  const notices = await Promise.all(["mlx", "inference"].map(async name => {
-    const source = join(root, "packages", name, "THIRD_PARTY_NOTICES.md");
-    const text = await readFile(source, "utf8");
-    if (!text.trim()) throw new Error(`Empty bundle notice: ${source}`);
-    return `# @mlx-bun/${name}\n\n${text}`;
-  }));
+  const notices = await bundleNotices();
   for (const [source] of copies) {
     const info = await stat(source).catch(() => null);
     if (!info?.isFile() || !info.size) throw new Error(`Missing bundle input: ${source}. Stage package native files first.`);

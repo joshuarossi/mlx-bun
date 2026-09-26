@@ -114,14 +114,15 @@ without one.
   versions/private decisions and clean-source checks. Verify the intended Git tag
   and registry versions before publication, and require release notes for the
   release body. Actual publication requires Josh's release instruction.
-- [ ] Gate release preparation on the existing relocated `bun run verify:binary`
-  acceptance; `prepare` currently checks only the executable's version.
 - [ ] With Josh's release instruction, verify real Developer ID signing and
   notarization, including loading the signed native libraries from a relocated
   signed bundle. The native-blocked version check and mocked commands do not
   establish this acceptance.
-- [ ] Include the bundled Photon WASM's Apache-2.0 notice in the standalone
-  notices; the current notice bundle covers only the MLX and inference libraries.
+- [ ] Audit notices for the rest of the code compiled into the executable. Pi's
+  own MIT text ships (apps/mlx-bun/THIRD_PARTY_NOTICES.md); Pi's vendored
+  ansi-regex/strip-ansi (`dist/utils/ansi.js`, MIT) and the npm dependencies the
+  compiler bundles (Pi's and the app's) have no notice section, and the compiler
+  strips their source headers.
 - [ ] Make partial signing retryable without weakening bundle integrity checks
   before the first real signed release. This is an operational improvement:
   today a partial signing failure safely requires rebuilding a fresh preparation.
