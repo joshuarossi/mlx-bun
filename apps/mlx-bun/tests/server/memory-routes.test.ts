@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { createMemoryRoutes } from "../../src/server/memory-routes";
 
 let routeRoot = "";
-const routes = createMemoryRoutes({ root: () => routeRoot });
+/** Nightly launchd state injected through the seam; the real launchctl is never consulted. */
+let schedule = { installed: false, plistPath: "/home/Library/LaunchAgents/com.mlx-bun.memory.plist", loaded: false, at: null as { hour: number; minute: number } | null, note: "the job runs mlx-bun memory synthesize and needs a serving mlx-bun (mlx-bun serve) at that time" };
+let scheduleProbes = 0;
+const routes = createMemoryRoutes({ root: () => routeRoot, schedule: async () => { scheduleProbes++; return schedule; } });
 async function call(input: URL | Request): Promise<Response> {
   const response = await routes.handle(input instanceof Request ? input : new Request(input));
   if (!response) throw new Error("Expected a memory route");
@@ -66,7 +69,8 @@ afterEach(async () => {
 });
 
 describe("GET /api/memory/status", () => {
-  test("enabled vault returns article/reference counts + git state", async () => {
+  test("enabled vault returns article/reference counts + git state + the nightly schedule", async () => {
+    scheduleProbes = 0;
     const res = await call(new URL("http://x/api/memory/status"));
     const body = (await res.json()) as any;
     expect(body.ok).toBe(true);
@@ -74,14 +78,22 @@ describe("GET /api/memory/status", () => {
     expect(body.status.articleCount).toBe(2);
     expect(body.status.referenceCount).toBe(1);
     expect(body.status.isGitRepo).toBe(true);
+    expect(body.schedule).toEqual({ installed: false, plistPath: schedule.plistPath, loaded: false, at: null, note: schedule.note });
+    schedule = { ...schedule, installed: true, loaded: true, at: { hour: 4, minute: 30 } };
+    const installed = (await (await call(new URL("http://x/api/memory/status"))).json()) as any;
+    expect(installed.schedule).toEqual({ installed: true, plistPath: schedule.plistPath, loaded: true, at: { hour: 4, minute: 30 }, note: schedule.note });
+    expect(scheduleProbes).toBe(2);
   });
 
-  test("no vault → enabled:false, never throws", async () => {
+  test("no vault → enabled:false, never throws, and never probes the schedule", async () => {
     routeRoot = join(tmpdir(), "mlxbun-memrest-does-not-exist");
+    scheduleProbes = 0;
     const res = await call(new URL("http://x/api/memory/status"));
     const body = (await res.json()) as any;
     expect(body.ok).toBe(false);
     expect(body.enabled).toBe(false);
+    expect(body.schedule).toBeUndefined();
+    expect(scheduleProbes).toBe(0);
   });
 });
 

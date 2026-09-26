@@ -332,22 +332,65 @@ drain. Completed stage writes are resumable; cancellation does not roll them bac
 `GET /v1/memory/synthesize[?dry=1]` streams the run as SSE (`stage`/`log`/`done`
 events, a `summary`, then `[DONE]`; a failure ends with an `error` event); it is
 mounted only when composition supplies the pipeline. `mlx-bun memory` exposes
-main's subcommands: `status` (default), `open`, `list`, `search`, `toc`,
-`section`, `links`, `read`, `synthesize` (`--dry-run`; `--since`/`--model`
-parsed but not consumed, as in main), the stage workers `segment`, `extract`,
-`route`, `synthesize-stage` (`--limit`, `--convs`), and `link`. Model-driven
-subcommands talk to the server named by `--host`/`--port` (the serve defaults)
-and fail with a pointer to `mlx-bun serve` when none answers. The entity gold
-main read from `goldens/dreaming-entities-gold.json` is a published dataset:
-without that file the resolver runs unseeded (store aliases still fold).
-Deferred to the follow-up branch: `memory init`/`setup`, `schedule`,
-`unschedule`, and the schedule state in `status`, the `memory_status` tool, and
-`/api/memory/status`.
+main's subcommands: `init`/`setup` (the wizard below), `status` (default),
+`open`, `list`, `search`, `toc`, `section`, `links`, `read`, `synthesize`
+(`--dry-run`; `--since`/`--model` parsed but not consumed, as in main), the
+stage workers `segment`, `extract`, `route`, `synthesize-stage` (`--limit`,
+`--convs`), `link`, and `schedule`/`unschedule`. Model-driven subcommands talk
+to the server named by `--host`/`--port` (the serve defaults) and fail with a
+pointer to `mlx-bun serve` when none answers. The entity gold main read from
+`goldens/dreaming-entities-gold.json` is a published dataset: without that
+file the resolver runs unseeded (store aliases still fold).
 
 [Pipeline tests](tests/memory/) port main's model-free suites with fake stage
 calls, in-test vaults, and an in-test entity gold; the
 [client test](tests/server/memory-completion-client.test.ts) and
 [verb test](tests/memory-cli.test.ts) use a fake fetch and a temporary HOME.
+
+### Memory setup and nightly schedule
+
+`mlx-bun memory init` (also `memory setup`) runs main's onboarding wizard.
+`mlx-bun setup` is main's true alias of `mlx-bun memory`: `mlx-bun setup init`
+is the same wizard and a bare `mlx-bun setup` reports status. The wizard
+initializes the vault through the same `setupVault` as `POST /api/memory/init`
+(idempotent; no reference seeding), offers to import an existing wiki's
+`articles/` (main's prompt; default yes once a path is given; the import is
+committed), and offers to install the nightly synthesis job (main's prompt;
+default no; then asks for the time, default 03:00). A non-TTY stdin answers
+every prompt with its default, so a scripted run initializes the vault and
+installs nothing.
+
+`memory schedule [--at HH:MM]` writes main's launchd agent,
+`~/Library/LaunchAgents/com.mlx-bun.memory.plist` (label `com.mlx-bun.memory`,
+`StartCalendarInterval` at the local time, default 03:00, `RunAtLoad` off,
+`ProcessType` Background, logs in `~/.mlx-bun/logs/memory-synthesis.{out,err}.log`),
+then `launchctl unload` and `launchctl load -w` it; a failed load is reported,
+not thrown. `memory unschedule` runs `launchctl unload -w` and deletes the
+plist. The job runs `/bin/zsh -lc "exec <program> memory synthesize"`, where
+the program is the executable identity captured at startup
+(`jobs/executable.ts`) plus the CLI entry when running from source; it is
+never a PATH lookup and never `process.execPath` read later. Because synthesis
+runs through a serving mlx-bun, the job needs `mlx-bun serve` running at that
+time; every status surface says so (the improvement that the server should own
+the scheduled run is recorded in PLAN).
+
+`scheduleStatus` reports `installed` (plist present), `loaded` (`launchctl
+list com.mlx-bun.memory` succeeds), `at` (read back from the plist; `null`
+when absent or hand-edited), and `note` (what the job runs and needs).
+`memory status` prints it as the `nightly` line, `GET /api/memory/status`
+returns it as `schedule` beside `status` (absent when no vault exists), and
+the `memory_status` tool prints its `nightly` line; the memory skill tells the
+assistant not to claim a scheduled run happened unless the last synthesis
+commit shows it.
+
+`src/memory/schedule.ts` owns the plist and takes the home directory and the
+`launchctl` runner as seams; `cli/memory.ts` adds the vault root, the job's
+program, and the prompt; the tool and route factories take a `schedule` probe.
+[Schedule tests](tests/memory/schedule.test.ts) and the
+[setup verb test](tests/setup-cli.test.ts) drive every path under a temporary
+home with a recording `launchctl`, an injected vault root, and scripted
+answers; spawned runs use a temporary HOME and a non-TTY stdin. No test
+reaches the real launchd, `~/Library/LaunchAgents`, or `~/.mlx-bun`.
 
 ## Jobs, quantization, and fine-tuning
 
@@ -640,11 +683,10 @@ symlink and retains the old app on failure. Successful updates keep the current
 and immediate previous bundles, plus any older bundle used by a running app.
 Other older owned bundles and stale stages are removed on the next install;
 vnode inspection keeps bundles used by apps launched through PATH or symlinks,
-and an inconclusive inspection retains the affected bundle. Restart running
-apps after an upgrade before starting new managed jobs: the job runner currently
-resolves its executable lazily and can select the new build. Capturing executable
-identity at startup is tracked in [PLAN](../../PLAN.md). A later install prunes
-old bundles after their processes exit.
+and an inconclusive inspection retains the affected bundle. The CLI captures
+its executable identity at startup, so managed jobs launched after an upgrade
+still use that running app's original build. A later install prunes old bundles
+after their processes exit.
 Sessions, wiki, credentials, and legacy flat installation files
 outside `app-install/` stay intact. A custom `MLX_BUN_INSTALL_DIR` relocates only
 the installed bundle; application data still lives under `~/.mlx-bun`.
@@ -662,3 +704,28 @@ must additionally check that its binary version matches the archive filename.
 Preparation does not install, sign, notarize, publish, or
 update the tap. [Installer tests](tests/install.test.ts) use local archives and
 temporary homes, including reinstall and failure paths, without network access.
+
+## Release preparation
+
+`bun scripts/prepare-release.ts prepare /new/output/directory` builds from staged
+natives, checks the executable against the app manifest version, packs workspace
+packages, and writes unsigned local archives, checksums, and a Homebrew formula.
+`preparation.json` records bundle hashes, dependency-first package publication
+order, and pending private/version decisions. Nothing changes those decisions or
+publishes. The `unsigned/` output is for local verification only.
+
+The same script has explicit `sign <directory> <Developer-ID-identity>`,
+`notarize <directory> <keychain-profile>`, and `package <directory>` stages.
+Signing handles every nested Mach-O before the executable, applies the preserved
+Bun JIT/library-validation entitlements, verifies each signature, and checks
+launch/version. Notarization submits to Apple and requires JSON status `Accepted`;
+an exit code of zero alone is insufficient. Packaging rejects changed bundle
+bytes and missing accepted evidence, then writes the versioned and stable arm64
+tarballs, matching checksum sidecars, and formula under `release/`.
+
+Run `--help` for usage. Signing/notarization and publishing require Josh's release
+instruction; preparation and tests do not access identities or Apple services.
+GitHub/npm publication and tap synchronization remain separate unfinished release
+work. No stage invokes those operations. [Release tests](tests/release.test.ts)
+use captured mock signing/notary commands; they do not prove a real signature or
+Apple acceptance.

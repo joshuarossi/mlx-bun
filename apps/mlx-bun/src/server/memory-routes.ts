@@ -9,6 +9,7 @@ import {
 import { parseInfobox, parseLead, parseSeriesBanner, articleStructure } from "../memory/article";
 import type { SynthesisEvent } from "../memory/events";
 import type { SynthesisSummary } from "../memory/pipeline";
+import { scheduleStatus, type ScheduleStatus } from "../memory/schedule";
 
 /** The synthesis entry composition mounts under GET /v1/memory/synthesize:
  * main's `runSynthesis`, bound to the served vault and the loopback client. */
@@ -16,9 +17,11 @@ export type MemorySynthesize = (options: { dryRun: boolean; signal?: AbortSignal
 
 /** Request-only memory API. The caller supplies the vault root; no model or
  * listener is created, and the handler owns no long-lived resources. The
- * synthesis route exists only when composition supplies `synthesize`. */
-export function createMemoryRoutes(options: { root?: () => string; referenceSources?: readonly ReferenceSource[]; synthesize?: MemorySynthesize } = {}) {
+ * synthesis route exists only when composition supplies `synthesize`; `schedule`
+ * reads the nightly launchd state for the status route (real launchd by default). */
+export function createMemoryRoutes(options: { root?: () => string; referenceSources?: readonly ReferenceSource[]; synthesize?: MemorySynthesize; schedule?: () => Promise<ScheduleStatus> } = {}) {
   const getRoot = options.root ?? vaultRoot;
+  const getSchedule = options.schedule ?? (() => scheduleStatus());
   function jsonOk<T extends object>(body: T, init?: ResponseInit): Response {
     return Response.json({ ok: true, ...body }, init);
   }
@@ -39,7 +42,7 @@ export function createMemoryRoutes(options: { root?: () => string; referenceSour
   async function handleMemoryStatus(): Promise<Response> {
     const st = await vaultStatus(getRoot());
     if (!st.exists) return noVault(st.root);
-    return jsonOk({ enabled: true, status: st satisfies VaultStatus });
+    return jsonOk({ enabled: true, status: st satisfies VaultStatus, schedule: await getSchedule() });
   }
 
   // ---- GET /api/memory/list ----------------------------------------------
