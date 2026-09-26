@@ -1,3 +1,4 @@
+import { chmodSync, rmSync } from "node:fs";
 import type { ChatBackendFactory, ChatSocketData } from "../chat/backend";
 import { makeChatWebSocketHandler } from "../chat/backend";
 import type { createCompletionRoutes } from "./routes";
@@ -23,7 +24,11 @@ export async function startServer(input: {
    * before waiting for HTTP/SSE responses to drain. */
   beforeDrain?(): void | Promise<void>;
   closeEngine(): Promise<void>;
-}, options: { port?: number; hostname?: string } = {}) {
+}, options: { port?: number; hostname?: string;
+  /** Internal (worker mode): bind this Unix socket path instead of TCP; `port`
+   * and `hostname` are then ignored. A stale file is replaced, the socket is
+   * narrowed to owner-only right after the bind, and close removes it. */
+  unix?: string } = {}) {
   const chat = makeChatWebSocketHandler(input.chat);
   let closing: Promise<void> | undefined;
   let stopped = false;
@@ -34,16 +39,16 @@ export async function startServer(input: {
     try { await input.beforeDrain?.(); } catch (error) { errors.push(error); }
     try { await chat.dispose(); } catch (error) { errors.push(error); }
     try { await server?.stop(false); } catch (error) { errors.push(error); }
+    finally { if (options.unix) rmSync(options.unix, { force: true }); }
     try { await input.closeEngine(); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors, "server cleanup failed");
   })();
   try {
-    server = Bun.serve<ChatSocketData>({
-      port: options.port ?? 8080,
-      hostname: options.hostname ?? "127.0.0.1",
+    if (options.unix) rmSync(options.unix, { force: true });
+    const handlers = {
       idleTimeout: 0,
       websocket: chat.websocket,
-      async fetch(request, listener) {
+      async fetch(request: Request, listener: ReturnType<typeof Bun.serve<ChatSocketData>>) {
         if (stopped) return Response.json({ error: { message: "server is shutting down" } }, { status: 503 });
         const url = new URL(request.url);
         if (url.pathname === "/ws/chat" && request.method === "GET") {
@@ -59,7 +64,14 @@ export async function startServer(input: {
         } }, { status: 501 });
         return Response.json({ error: { message: "Not found" } }, { status: 404 });
       },
-    });
+    };
+    // bun-types declares idleTimeout for TCP listeners only; the runtime takes
+    // the same options for a Unix listener, where a job's idle lease connection
+    // must never time out either.
+    server = options.unix
+      ? Bun.serve<ChatSocketData>({ unix: options.unix, ...handlers } as unknown as Parameters<typeof Bun.serve<ChatSocketData>>[0])
+      : Bun.serve<ChatSocketData>({ port: options.port ?? 8080, hostname: options.hostname ?? "127.0.0.1", ...handlers });
+    if (options.unix) chmodSync(options.unix, 0o600);
     return { server, close };
   } catch (error) {
     try { await close(); } catch (cleanup) { throw new AggregateError([error, cleanup], "server startup and cleanup failed"); }

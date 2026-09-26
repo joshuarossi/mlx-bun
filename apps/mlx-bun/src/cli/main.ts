@@ -8,6 +8,10 @@ try {
   const { command, args } = commandInvocation(process.argv.slice(2));
   if (command === "__job") {
     process.exit(await (await import("./job-entry")).runJobEntry(args[0]));
+  } else if (command === "__worker") {
+    // Private: the isolation worker a parent spawns (jobs/worker-process.ts);
+    // its launch record arrives on stdin. No user flag selects this mode.
+    process.exit(await (await import("./worker-entry")).runWorkerEntry());
   } else if (["--version", "-v", "version"].includes(command ?? "")) {
     console.log(`mlx-bun ${pkg.version}`);
   } else if (command === "help" || command === "--help" || command === "-h") {
