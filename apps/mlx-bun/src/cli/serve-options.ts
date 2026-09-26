@@ -73,7 +73,8 @@ export function resolveServingLimits(
 }
 
 export interface RunningApp {
-  port: number;
+  /** The bound TCP port; absent when the app listens on a Unix socket (the worker app form). */
+  port?: number;
   /** The app's transfer owner: startup hands it the recommended background
    * download; shutdown aborts and joins whatever it still carries. */
   downloads: Pick<DownloadOwner, "start" | "active">;

@@ -1,8 +1,8 @@
 // A stand-in isolation worker for the parent-side tests (jobs/worker-supervisor,
 // server/proxy-routes, cli/serve-isolated): it speaks the worker handshake
-// (the launch record on stdin, the ready line on stdout, the end of stdin
-// means the parent left, SIGTERM stops it) and serves a fake model surface on
-// the socket. Behavior is driven by request content and `/fake/*` control
+// (the launch record on stdin, the ready line on stdout echoing its version,
+// the end of stdin means the parent left, SIGTERM stops it) and serves a fake
+// model surface on the socket. Behavior is driven by request content and `/fake/*` control
 // routes, so a test reaches everything through the parent's proxy. Env:
 // FAKE_WORKER_RECORD appends `{ argv, pid, launch }` per launch (the launch line as received);
 // FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop (pool timing);
@@ -19,7 +19,7 @@ while (!text.includes("\n")) { const { done, value } = await reader.read(); if (
 const launchLine = text.slice(0, text.indexOf("\n"));
 const launch = JSON.parse(launchLine, (_key, value: unknown) =>
   value !== null && typeof value === "object" && "$number" in value ? Number((value as { $number: string }).$number) : value) as
-  { socketPath: string; model: { repoId: string; path: string }; options: Record<string, unknown> };
+  { version?: string; socketPath: string; model: { repoId: string; path: string }; options: Record<string, unknown> };
 if (process.env.FAKE_WORKER_RECORD) appendFileSync(process.env.FAKE_WORKER_RECORD, JSON.stringify({ argv: process.argv, pid: process.pid, launch: launchLine }) + "\n");
 const modelId = launch.model.repoId;
 const event = (name: string) => { if (process.env.FAKE_WORKER_EVENTS) appendFileSync(process.env.FAKE_WORKER_EVENTS, JSON.stringify({ event: name, model: modelId, pid: process.pid, at: Date.now() }) + "\n"); };
@@ -75,6 +75,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
       { headers: { "content-type": "application/octet-stream" } });
   }
   if (path === "/admin/drain") {
+    entry.raw = await request.text();
     draining = true;
     console.error("drain requested");
     event("drain");
@@ -126,7 +127,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   return Response.json({ error: { message: "Not found" } }, { status: 404 });
 } } as unknown as Parameters<typeof Bun.serve>[0]);
 
-console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid })));
+console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid, version: launch.version })));
 event("ready");
 const stop = () => { console.error("stopping"); event("stop"); void server.stop(true); process.exit(0); };
 process.on("SIGTERM", stop);

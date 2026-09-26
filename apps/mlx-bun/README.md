@@ -58,16 +58,62 @@ native module at runtime; `serve-host.ts` creates the model-scoped host
 listener), borrowing that state by parameter and lending it an execution
 lease, library invalidation, and the bound port through an attached link.
 `startModelServer` composes both with one close in the app's order.
-Worker mode composes only the model host in another process:
-`cli/worker-entry.ts` runs `startModelHost` over a Unix socket a parent supplies
-(the launch record is the first stdin line, the ready line goes to stdout, and
-the end of stdin means the parent is gone), with the persistent services stubbed
-because the parent owns them; `server/worker-routes.ts` answers `GET /health`,
-`POST /admin/lease`, and `POST /admin/drain` ahead of the model routes on that
-socket only (a TCP listener keeps answering 501 there); `jobs/worker-process.ts`
-is the parent-side owner, spawning through the executable captured at startup as
-`__worker` in the compiled binary or the entry script in source runs, SIGTERM
-then SIGKILL after a grace. No flag selects worker mode; `--isolate` does.
+
+Worker mode serves over a Unix socket a parent supplies, in another process.
+`jobs/worker-process.ts` is the parent-side owner: it spawns the executable
+captured at startup as `__worker` in the compiled binary or the entry script in
+source runs (or `[...command, "__worker"]` for an explicit mlx-bun command),
+writes the launch record as the first stdin line, reads the ready line from
+stdout, and stops the worker with SIGTERM, then SIGKILL after a grace; the end
+of stdin means the parent is gone. `cli/worker-entry.ts` takes two private
+launch forms, and no flag selects either:
+
+- The model form `{ version, socketPath, model, options }`, sent by
+  `--isolate`, runs `startModelHost` alone with the persistent services stubbed
+  because the parent owns them.
+- The app form `{ kind: "app", version, socketPath, argv }` runs serve
+  arguments (`["--model", model, ...]`) through the CLI's `parseCommand` and
+  `runServe`, so the whole app listens on the socket instead of TCP. Nothing
+  public sends it yet. `validateAppLaunchArgv` (`serve.ts`) is the CLI's strict
+  parse with three differences: `--host`, `--port`, and `--no-open` are
+  accepted and never steer the socket bind; `--isolate` and `--model-pool` are
+  refused, because a nested isolated app binds TCP instead of the socket; and a
+  missing or empty model is refused, because automatic selection may download
+  the starter model. SIGTERM, SIGINT, or the end of stdin during startup
+  aborts through runServe's startup signal and announces nothing. After ready,
+  any of them runs runServe's shutdown under the CLI's deadline
+  (`MLX_BUN_SHUTDOWN_TIMEOUT_MS`, default 120 s), and its exit code is the
+  worker's. The parent should pass that budget to the supervisor as
+  `drainTimeoutMs` and `graceMs` (defaults 10 s and 3 s, for the model form).
+
+`server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`, and
+`POST /admin/drain` ahead of the routes on the socket only (a TCP listener keeps
+answering 501 there). In the app form its `/health` replaces discovery's, and
+the transcription-only app, which has no execution lease, answers
+`/admin/lease` with 501.
+
+Both launch forms and the ready line carry the app's package version (the one
+`--version` prints). A worker exits 2 with `worker protocol version mismatch`
+when the launch record carries a different package version. The check compares
+package versions only: it detects a different package version, and two builds
+with the same package version are not told apart. The parent rejects a ready
+line that does not echo its version, and a worker's exit 2 (a refused launch
+record) puts the worker's last stderr line into the rejection.
+
+In the app form, memory synthesis and dataset jobs reach the model through the
+attached host's own `/v1/chat/completions` over its socket (the loopback URL's
+`127.0.0.1:<--port>` is a placeholder), so they call the same app. Pi web chat
+does not: its SDK takes a base URL rather than a fetch, so it targets TCP
+`127.0.0.1:<--port>`, as in the model form and main. An embedding host that
+forwards Request/Response pairs cannot carry `/ws/chat` either, because it is a
+WebSocket upgrade.
+
+The app form opens the CLI's user stores under HOME. Its first jobs request
+opens the jobs database and marks every queued or running job as a zombie,
+including another server's. The vault, sessions, skills, and credentials are
+shared without locks, and a worker's job children are not stopped when the
+worker crashes. These behaviors predate the app form and match main. Tests
+compose the app form with a temporary HOME and every storage override.
 
 ## Runtime isolation (`--isolate`)
 
@@ -408,10 +454,11 @@ embedding client. It imports no other module, so it loads without native MLX.
   streams pass through unchanged.
 - Types: `EngineHost`, `CompletionClient`, `CompletionCall`, `CompletionResponse`.
 
-Main's `openIsolatedHost` and its `mlx-bun/engine` entry are deferred: main
-spawned `serve --model <model> ...arguments --unix <socket>`, while the current
-worker is the private `__worker` verb with a stdin launch record and a ready
-line (`jobs/worker-process.ts`); the two launch APIs must be reconciled first.
+Main's `openIsolatedHost` and its `mlx-bun/engine` entry are not exported yet.
+Main spawned `serve --model <model> ...arguments --unix <socket>`. Here the
+private worker's app form, described above, takes the same serve arguments
+through the `__worker` stdin launch, and the public entry that spawns it is
+pending.
 The [client tests](tests/client.test.ts) import the entry through the export
 map with native MLX blocked; `verify-packages` repeats them from the installed package.
 

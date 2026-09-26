@@ -17,7 +17,8 @@ export interface ModelHostHooks {
    * persistent producers (jobs, downloads) here while the engine is alive. */
   beforeDrain?(): void | Promise<void>;
   /** Internal (worker mode, `cli/worker-entry.ts`): bind this Unix socket path
-   * instead of the TCP `port`/`hostname`; the host then reports no port. */
+   * instead of the TCP `port`/`hostname`; the host then reports no port, and
+   * the link it lends the state carries the socket for loopback clients. */
   unix?: string;
   /** Internal (worker mode): the worker's admin surface wraps the model routes
    * and answers ahead of them (health, lease, the drain gate). */
@@ -36,6 +37,7 @@ export type RunningWorkerHost = Pick<RunningModelHost, "close">;
 /** Model composition owns resources until each explicit ownership transfer. */
 export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks?: ModelHostHooks & { unix?: undefined }): Promise<RunningModelHost>;
 export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks & { unix: string }): Promise<RunningWorkerHost>;
+export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks?: ModelHostHooks): Promise<RunningModelHost | RunningWorkerHost>;
 export async function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks = {}): Promise<RunningModelHost | RunningWorkerHost> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { startServer }, { createPiBackend },
@@ -186,8 +188,8 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
     const modelRoutes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await audio.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.quantize.handle(request) ?? await persistent.dataset.handle(request) ?? await persistent.finetune.handle(request) ?? await adapterArtifacts.handle(request) ?? await persistent.publishing.handle(request) ?? await completions.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
-    // A Unix listener has no port; the requested one stands in for loopback
-    // clients (Pi, the link) until the parent owns them (I3).
+    // A Unix listener has no port: the requested one stands in for Pi's TCP
+    // loopback, and for the link's URL placeholder (its clients use the socket).
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       memory: state.memorySurface,
@@ -203,7 +205,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
       }, downloadsSnapshot: state.downloads.snapshot,
     });
     // Jobs and loopback clients reach this host from the first served request.
-    detachLink = state.attach({ get port() { return boundPort; },
+    detachLink = state.attach({ get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
       acquireExecutionLease: signal => engine.gateway.acquireExecutionLease(signal),
       invalidateLibrary: completions.invalidateLibrary });
     // startServer owns engine cleanup on entry, including a bind failure.
@@ -237,8 +239,11 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
  * audio routes plus `/v1`, `/v1/models`, `/health`, and `/stats` over the Whisper
  * checkpoint alone; no chat model, prompt cache, jobs, or web app. `--preload`
  * loads the weights before the listener binds; otherwise the first request
- * pages them in. Every take runs one at a time inside the service. */
-export async function startTranscriptionHost(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
+ * pages them in. Every take runs one at a time inside the service. The
+ * internal hooks are the model host's: a Unix socket instead of TCP, a route
+ * wrapper, and a step ahead of the Whisper close (the worker app form). */
+export async function startTranscriptionHost(model: ModelRecord, options: ServeOptions,
+  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
   const [{ TranscriptionService }, { createAudioRoutes }, { createTranscriptionServerRoutes }, { startServer }] = await Promise.all([
     import("../engine/transcription-service"), import("../server/audio-routes"), import("../server/transcription-server"), import("../server/start"),
   ]);
@@ -252,16 +257,17 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
     const info = createTranscriptionServerRoutes(service, { startedAt: Date.now() });
     // startServer owns service cleanup on entry, including a bind failure.
     cleanup = undefined;
+    const routes: RouteGroup = { handle: async request => await audio.handle(request) ?? await info.handle(request) };
     const listener = await startServer({
-      routes: { handle: async request => await audio.handle(request) ?? await info.handle(request) },
+      routes: hooks.routes?.(routes) ?? routes,
       web: () => null,
       // No chat model: a WebSocket session fails to start and its transport closes.
       chat: () => ({ async start() { throw new Error("transcription-only server has no chat model"); }, async handle() {}, dispose() {} }),
       // Whisper closes before drain: admission stops, in-flight takes are joined, weights release.
-      beforeDrain: () => service.close(),
+      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await service.close(); } },
       closeEngine: async () => {},
-    }, { port: options.port, hostname: options.hostname });
-    return { port: listener.server.port!, close: listener.close,
+    }, hooks.unix ? { unix: hooks.unix } : { port: options.port, hostname: options.hostname });
+    return { ...(hooks.unix ? {} : { port: listener.server.port! }), close: listener.close,
       downloads: { active: [], start() { throw new Error("transcription-only server owns no downloads"); } } };
   } catch (error) { await cleanup?.(); throw error; }
 }

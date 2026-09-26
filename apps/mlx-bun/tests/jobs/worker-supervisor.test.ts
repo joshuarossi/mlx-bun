@@ -176,6 +176,21 @@ test("close drains the serving worker before stopping it, joins a respawn in pro
 });
 
 
+test("a caller's shutdown budget rides the existing drain and grace options (the app form passes the CLI's)", async () => {
+  const fake = fixture({ drainTimeoutMs: 120_000, graceMs: 120_000 });
+  try {
+    await fake.engine.ready;
+    await fake.engine.drain();
+    const { seen } = await (await fake.engine.fetch("http://engine/fake/seen")).json() as { seen: { path: string; raw?: string }[] };
+    expect(seen.filter(entry => entry.path === "/admin/drain").map(entry => entry.raw)).toEqual([JSON.stringify({ timeout_ms: 120_000 })]);
+    // The worker stops on SIGTERM, so the long grace never elapses.
+    const started = Date.now();
+    await fake.engine.close();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(existsSync(fake.socketPath)).toBe(false);
+  } finally { await fake.engine.close(); fake.remove(); }
+});
+
 test("an already cancelled job and a cancellation at the readiness handoff never acquire a worker lease", async () => {
   const fake = fixture();
   try {

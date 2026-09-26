@@ -1,17 +1,25 @@
 // Parent-side ownership of one isolation worker process: spawn it through the
-// executable captured at startup, hand it its launch record on stdin, wait for
-// its ready line, forward its logs, and stop it (SIGTERM, then SIGKILL after a
-// grace). HTTP never passes through here; the parent talks to the worker's
-// socket directly (I3). There is no restart policy yet: the budget field is
-// carried so the parent's spec is stable when I3 applies it.
+// executable captured at startup (or a supplied mlx-bun command), hand it its
+// launch record on stdin, wait for its ready line, forward its logs, and stop
+// it (SIGTERM, then SIGKILL after a grace). HTTP never passes through here;
+// the parent talks to the worker's socket directly (I3). There is no restart
+// policy yet: the budget field is carried so the parent's spec is stable when
+// I3 applies it.
 import { rmSync } from "node:fs";
+import pkg from "../../package.json" with { type: "json" };
 import { executablePath } from "./executable";
 import { pumpLines } from "./runner";
 
 /** A stdout line the worker reserves for the parent; every other line is log output. */
 export const WORKER_MESSAGE_PREFIX = "<mlx-bun-worker>";
 
-export interface WorkerReady { type: "ready"; socketPath: string; modelId: string; pid: number }
+/** The app's package version (the one `--version` prints) is the worker
+ * protocol's: the launch record and the ready line both carry it, and a worker
+ * refuses a record with another package version ("worker protocol version
+ * mismatch"). Two builds with the same package version are not told apart. */
+export const WORKER_PROTOCOL_VERSION: string = pkg.version;
+
+export interface WorkerReady { type: "ready"; socketPath: string; modelId: string; pid: number; version: string }
 export type WorkerMessage = WorkerReady;
 
 export function formatWorkerMessage(message: WorkerMessage): string {
@@ -31,8 +39,13 @@ export function decodeLaunch(text: string): unknown {
 }
 
 export interface WorkerProcessOptions {
-  /** The worker entry for source runs; a `$bunfs` path selects the compiled binary's `__worker` dispatch. */
-  entry: string;
+  /** The worker entry for source runs; a `$bunfs` path selects the compiled
+   * binary's `__worker` dispatch. Required unless `command` is supplied. */
+  entry?: string;
+  /** Internal: the program and leading arguments of an mlx-bun CLI, spawned
+   * as `[...command, "__worker"]` instead of the captured executable and
+   * `entry`. Its package version must match: see `WORKER_PROTOCOL_VERSION`. */
+  command?: readonly string[];
   /** The Unix socket path the worker must bind. The parent owns the file's
    * directory; a stale file is removed before the spawn and after the exit. */
   socketPath: string;
@@ -59,8 +72,9 @@ export interface WorkerProcessOptions {
 export interface WorkerExit { code: number | null; signal: string | null }
 
 export class WorkerExitedError extends Error {
-  constructor(readonly exit: WorkerExit, stage: string) {
-    super(exit.signal ? `worker was killed by ${exit.signal} ${stage}` : `worker exited with code ${exit.code} ${stage}`);
+  /** `reason`: why a worker refused its launch record (exit 2), from its last stderr line. */
+  constructor(readonly exit: WorkerExit, stage: string, reason?: string) {
+    super((exit.signal ? `worker was killed by ${exit.signal} ${stage}` : `worker exited with code ${exit.code} ${stage}`) + (reason ? `: ${reason}` : ""));
     this.name = "WorkerExitedError";
   }
 }
@@ -71,7 +85,8 @@ export interface WorkerProcess {
   /** From the ready line; undefined until then. */
   readonly modelId: string | undefined;
   /** Resolves once the worker has bound its socket; rejects with the exit when
-   * the worker dies first, or when it echoes another socket, or on timeout. */
+   * the worker dies first (exit 2, a refused launch record, carries the
+   * worker's reason), when it echoes another socket or protocol version, or on timeout. */
   readonly ready: Promise<{ socketPath: string; modelId: string }>;
   /** The worker's exit, however it happened, after its logs have drained. */
   readonly exited: Promise<WorkerExit>;
@@ -81,7 +96,9 @@ export interface WorkerProcess {
 
 export function spawnWorker(options: WorkerProcessOptions): WorkerProcess {
   const bin = options.bin ?? executablePath;
-  const command = options.entry.includes("$bunfs") ? [bin, "__worker"] : [bin, options.entry];
+  if (!options.command && !options.entry) throw new Error("spawnWorker needs an entry or a command");
+  const command = options.command ? [...options.command, "__worker"] : options.entry!.includes("$bunfs") ? [bin, "__worker"] : [bin, options.entry!];
+  const version = (options.launch as { version?: unknown } | null)?.version;
   const log = options.log ?? (line => console.log(`[worker] ${line}`));
   const error = options.error ?? (line => console.error(`[worker] ${line}`));
   rmSync(options.socketPath, { force: true });
@@ -109,16 +126,22 @@ export function spawnWorker(options: WorkerProcessOptions): WorkerProcess {
     if (message.type !== "ready") return settle({ error: new Error(`worker sent an unknown message: ${line}`) });
     if (message.socketPath !== options.socketPath)
       return settle({ error: new Error(`worker bound ${message.socketPath}, not ${options.socketPath}`) });
+    // A versioned launch needs the same package version on the other side: an older worker ignores the field and never echoes it.
+    if (typeof version === "string" && message.version !== version)
+      return settle({ error: new Error(`worker protocol version mismatch: the worker reported ${typeof message.version === "string" ? message.version : "no version"}, the launch record is ${version}`) });
     modelId = message.modelId;
     settle({ value: { socketPath: message.socketPath, modelId: message.modelId } });
   });
-  const stderr = pumpLines(proc.stderr, error);
+  let lastError: string | undefined;
+  const stderr = pumpLines(proc.stderr, line => { lastError = line; error(line); });
   const exited = (async () => {
     await proc.exited;
     await Promise.all([stdout, stderr]);
     try { proc.stdin.end(); } catch { /* already closed */ }
     const exit: WorkerExit = { code: proc.exitCode, signal: proc.signalCode };
-    settle({ error: new WorkerExitedError(exit, "before ready") });
+    // Exit 2 is the worker refusing its launch record; its last stderr line says why.
+    settle({ error: new WorkerExitedError(exit, "before ready", exit.code === 2 ? lastError : undefined) });
+    // The socket file goes only once the child has exited and its output drained.
     rmSync(options.socketPath, { force: true });
     return exit;
   })();

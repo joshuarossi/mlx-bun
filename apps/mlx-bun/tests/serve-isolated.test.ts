@@ -85,7 +85,7 @@ test("the parent composes the persistent state and the proxy without the engine 
     const { parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const { executablePath } = await import(app + "src/jobs/executable.ts");
-    const { decodeLaunch, encodeLaunch } = await import(app + "src/jobs/worker-process.ts");
+    const { decodeLaunch, encodeLaunch, WORKER_PROTOCOL_VERSION } = await import(app + "src/jobs/worker-process.ts");
     const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--ssd-cache", join(root, "ssd"), "--ssd-cache-max", "0", "--temperature", "0.3", "--no-open"]));
     options.chatPaths = { sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
     options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
@@ -105,6 +105,7 @@ test("the parent composes the persistent state and the proxy without the engine 
     assert.deepEqual(launch.options, decodeLaunch(encodeLaunch({ ...options, isolate: false })));
     assert.equal(launch.options.cache.ssdCacheMaxBytes, Infinity);
     assert.ok(launch.socketPath.endsWith("/engine.sock"));
+    assert.equal(launch.version, WORKER_PROTOCOL_VERSION, "the model form carries the protocol version");
     const base = "http://127.0.0.1:" + running.port;
     const get = (path, init) => fetch(base + path, init);
     // The parent's own answers.

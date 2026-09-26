@@ -7,7 +7,10 @@ import type { JobRunner } from "../jobs/protocol";
 import { makeLlmClient, type DatasetHttp } from "./llm";
 import { generate } from "./registry";
 
-export function createDatasetRunner(http: Pick<DatasetHttp, "fetch"> = {}): JobRunner {
+/** `fetch` serves every request (Hugging Face imports included); `loopback`,
+ * when supplied, replaces it for the chat client's calls to the serving host. */
+export function createDatasetRunner(http: Pick<DatasetHttp, "fetch"> & { loopback?: typeof fetch } = {}): JobRunner {
+  const { loopback, ...shared } = http;
   return async (emit, config, signal) => {
     const template_id = String(config.template_id ?? "");
     const inputs = (config.inputs as Record<string, unknown>) ?? {};
@@ -25,8 +28,8 @@ export function createDatasetRunner(http: Pick<DatasetHttp, "fetch"> = {}): JobR
       message: `Starting template ${template_id}…`,
     });
 
-    const llm = api_url ? makeLlmClient(api_url, model_name, { ...http, signal }) : undefined;
-    const r = await generate(template_id, inputs, output_dir, emit, llm, { ...http, signal });
+    const llm = api_url ? makeLlmClient(api_url, model_name, { ...shared, ...(loopback ? { fetch: loopback } : {}), signal }) : undefined;
+    const r = await generate(template_id, inputs, output_dir, emit, llm, { ...shared, signal });
     return { outputPath: r.output_dir };
   };
 
