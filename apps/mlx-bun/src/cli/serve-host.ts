@@ -9,13 +9,19 @@ import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { TranscriptionService } from "../engine/transcription-service";
 import { defaultWhisperModel } from "./model-selection";
 import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
-import type { AppState } from "./serve-state";
+import type { AppState, RouteGroup } from "./serve-state";
 
 export interface ModelHostHooks {
   /** Runs inside the listener's drain step, after cache demotion stops and
    * before chat sessions and HTTP responses drain: the app stops its
    * persistent producers (jobs, downloads) here while the engine is alive. */
   beforeDrain?(): void | Promise<void>;
+  /** Internal (worker mode, `cli/worker-entry.ts`): bind this Unix socket path
+   * instead of the TCP `port`/`hostname`; the host then reports no port. */
+  unix?: string;
+  /** Internal (worker mode): the worker's admin surface wraps the model routes
+   * and answers ahead of them (health, lease, the drain gate). */
+  routes?(model: RouteGroup): RouteGroup;
 }
 
 export interface RunningModelHost {
@@ -24,9 +30,13 @@ export interface RunningModelHost {
    * model, then restores process-wide settings. Repeated calls are no-ops. */
   close(): Promise<void>;
 }
+/** Worker mode: the listener is a Unix socket, so there is no port to report. */
+export type RunningWorkerHost = Pick<RunningModelHost, "close">;
 
 /** Model composition owns resources until each explicit ownership transfer. */
-export async function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks = {}): Promise<RunningModelHost> {
+export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks?: ModelHostHooks & { unix?: undefined }): Promise<RunningModelHost>;
+export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks & { unix: string }): Promise<RunningWorkerHost>;
+export async function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks: ModelHostHooks = {}): Promise<RunningModelHost | RunningWorkerHost> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { startServer }, { createPiBackend },
     { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { createCacheRoutes },
@@ -173,8 +183,11 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
       toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPath: model.path });
     const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: state.storagePaths.artifactRoot });
     const persistent = state.routes;
-    const routes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await audio.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const modelRoutes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await audio.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.quantize.handle(request) ?? await persistent.dataset.handle(request) ?? await persistent.finetune.handle(request) ?? await adapterArtifacts.handle(request) ?? await persistent.publishing.handle(request) ?? await completions.handle(request) };
+    const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
+    // A Unix listener has no port; the requested one stands in for loopback
+    // clients (Pi, the link) until the parent owns them (I3).
     let boundPort = options.port;
     const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
       memory: state.memorySurface,
@@ -206,13 +219,12 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "background shutdown failed");
       },
-      closeEngine: closeApp }, {
-      port: options.port, hostname: options.hostname,
-    });
-    boundPort = listener.server.port!;
-    return { port: boundPort, async close() {
+      closeEngine: closeApp }, hooks.unix ? { unix: hooks.unix } : { port: options.port, hostname: options.hostname });
+    if (listener.server.port !== undefined) boundPort = listener.server.port;
+    const close = async () => {
       try { await listener.close(); } finally { try { restoreProcess(); } finally { detach(); } }
-    } };
+    };
+    return hooks.unix ? { close } : { port: boundPort, close };
   } catch (error) {
     try { await cleanup?.(); }
     catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }

@@ -203,8 +203,8 @@ export async function closeSubprocessJobs(store: JobStore): Promise<void> {
 }
 
 /** Read a child stream line-by-line, buffering partial trailing lines, and
- *  hand each complete line to `sink`. */
-async function pumpLines(
+ *  hand each complete line to `sink`. Shared with the isolation worker owner. */
+export async function pumpLines(
   stream: ReadableStream<Uint8Array> | undefined,
   sink: (line: string) => void,
 ): Promise<void> {
