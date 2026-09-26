@@ -48,8 +48,16 @@ Programmatic composition still accepts explicit context and read-only policy.
 
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
 `hub.ts` owns model-management presentation; `terminal.ts` owns formatting.
-`model-selection.ts` owns automatic selection policy; `serve.ts` composes the
-model, cache, engine, HTTP routes, browser assets, and Pi backend.
+`model-selection.ts` owns automatic selection policy. `serve.ts` parses the
+serve flags and owns the process; its composition is split in two halves:
+`serve-state.ts` creates the persistent, CPU-only state that outlives a loaded
+model (web assets, the download owner, Responses history, memory, jobs,
+sessions, credentials, and their routes) and never imports the engine or a
+native module at runtime; `serve-host.ts` creates the model-scoped host
+(native binding, caches, engine, Whisper companion, model routes, Pi backend,
+listener), borrowing that state by parameter and lending it an execution
+lease, library invalidation, and the bound port through an attached link.
+`startModelServer` composes both with one close in the app's order.
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
 
@@ -567,7 +575,7 @@ content type; 499 on client cancel; 503 `model_unavailable` with the
 `mlx-bun get` hint when no Whisper checkpoint is on disk. The group is mounted
 only with a service provider; the app composition always supplies one.
 
-`serve.ts` composes the companion: `--whisper-model <path|query>` resolves like
+`serve.ts` resolves and `serve-host.ts` composes the companion: `--whisper-model <path|query>` resolves like
 the main model and refuses a non-Whisper checkpoint before loading; without it
 the first downloaded `whisper` checkpoint is looked up once, on the first audio
 request (as in main, a checkpoint downloaded later needs a restart).

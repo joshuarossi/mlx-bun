@@ -93,7 +93,12 @@ public library exports. Model discovery, acquisition, and fit remain in
 `engine/` owns loaded models and continuous scheduling. `server/` consumes its
 completion, preparation, and model-binding interfaces; HTTP request shapes,
 prompt policy, and JSON/SSE remain server-owned. The server borrows the engine,
-while application startup owns closing it. `chat/` owns the WebSocket backend
+while application startup owns closing it. Serve startup is two halves inside
+`cli/`: `serve-state.ts` owns the persistent CPU state that outlives a loaded
+model and imports no engine or native module at runtime; `serve-host.ts` owns
+the model-scoped composition and borrows that state explicitly, lending back
+its execution lease, library invalidation, and port through an attached link,
+so a later isolation step can run the host in another process. `chat/` owns the WebSocket backend
 and its Pi adapter; `web/` owns browser modules, static assets, and compilation.
 Browser code consumes only its own modules and the leaf chat/job protocols.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
