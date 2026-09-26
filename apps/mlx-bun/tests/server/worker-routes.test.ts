@@ -162,3 +162,57 @@ test("lease failures answer 503, a caller that left answers 499, and the ordinar
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
   } finally { await app.close(); }
 });
+
+test("a lease acquisition still pending at close is cancelled and joined, and one that resolves late is disposed, never published", async () => {
+  // Late resolution: the gateway hands the lease over after close() ran.
+  let handOver!: (lease: { dispose(): void }) => void;
+  let disposed = 0;
+  const seen: AbortSignal[] = [];
+  const late = createWorkerRoutes({ modelId: "m", acquireExecutionLease: signal => {
+    seen.push(signal);
+    return new Promise(resolve => { handOver = resolve; });
+  } });
+  const group = late.wrap({ async handle() { return null; } });
+  const leasing = group.handle(new Request("http://worker/admin/lease", { method: "POST" }));
+  await until(() => seen.length === 1, "the acquisition to start");
+  let closedAt: number | undefined;
+  const closing = late.close().then(() => { closedAt = Date.now(); });
+  await Bun.sleep(10);
+  expect(closedAt).toBeUndefined();
+  expect(seen[0]!.aborted).toBe(true);
+  handOver({ dispose() { disposed++; } });
+  const response = (await leasing)!;
+  expect(response.status).toBe(503);
+  expect(((await response.json()) as { error: { type: string } }).error.type).toBe("unavailable");
+  expect(disposed).toBe(1);
+  await closing;
+  const health = await group.handle(new Request("http://worker/health"));
+  expect(((await health!.json()) as { leases: number }).leases).toBe(0);
+  // Cancelled acquisition: the gateway honours the composed signal and rejects.
+  const cancelled = createWorkerRoutes({ modelId: "m", acquireExecutionLease: signal =>
+    new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })) });
+  const cancelledGroup = cancelled.wrap({ async handle() { return null; } });
+  const waiting = cancelledGroup.handle(new Request("http://worker/admin/lease", { method: "POST" }));
+  await Bun.sleep(5);
+  await cancelled.close();
+  expect((await waiting)!.status).toBe(503);
+  await expect(cancelledGroup.handle(new Request("http://worker/admin/lease", { method: "POST" })).then(r => r!.status)).resolves.toBe(503);
+});
+
+test("a drain whose request signal is already aborted returns at once while work is in flight", async () => {
+  let finish!: () => void;
+  const slow = new Promise<void>(resolve => { finish = resolve; });
+  const admin = createWorkerRoutes({ modelId: "m", acquireExecutionLease: async () => ({ dispose() {} }) });
+  const group = admin.wrap({ async handle() { await slow; return new Response("done"); } });
+  const inflight = group.handle(new Request("http://worker/v1/chat/completions", { method: "POST" }));
+  await Bun.sleep(5);
+  const gone = new AbortController(); gone.abort(new Error("caller left"));
+  const started = Date.now();
+  const drain = (await group.handle(new Request("http://worker/admin/drain", { method: "POST", signal: gone.signal })))!;
+  expect(Date.now() - started).toBeLessThan(1000);
+  const report = (await drain.json()) as { drained: boolean; timed_out: boolean; in_flight: number };
+  expect(report).toMatchObject({ drained: false, timed_out: false, in_flight: 1 });
+  finish();
+  expect(await (await inflight)!.text()).toBe("done");
+  await admin.close();
+});
