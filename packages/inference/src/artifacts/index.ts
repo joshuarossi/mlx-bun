@@ -9,3 +9,4 @@ export * from "./fingerprint";
 export * from "./identity";
 export * from "./weight-audit";
 export * from "./safetensors-writer";
+export * from "./auxiliary-files";

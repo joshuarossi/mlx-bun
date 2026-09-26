@@ -79,7 +79,6 @@
       "dependencies": {
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
-        "@mlx-bun/quantize": "workspace:*",
       },
     },
   },

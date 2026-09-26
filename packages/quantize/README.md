@@ -14,7 +14,9 @@ loads and specializes on. Inference never quantizes; this package never serves.
 | `config-writer`, `atomic-output` | Quantization metadata and atomic directory publication |
 
 Sharded safetensors writing lives in `@mlx-bun/inference/artifacts` and is
-re-exported here for convenience.
+re-exported here for convenience. Auxiliary checkpoint file copying lives in
+`@mlx-bun/inference/artifacts/auxiliary-files`; `config-writer` re-exports
+`copyAuxFiles` for compatibility.
 
 Executed usage lives in the package tests: [weight-transform-plan](tests/weight-transform-plan.test.ts)
 plans a fold, [weight-transform-numerics](tests/weight-transform-numerics.test.ts) applies one, and

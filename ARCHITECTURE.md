@@ -36,9 +36,8 @@ graphs, state, sampling, and generation directly. A small convenience API does
 not require hiding those components.
 
 `@mlx-bun/training` owns adapter training and production above the inference
-graphs, layers, state contracts, and MLX autograd. It uses the quantize package
-only to preserve auxiliary checkpoint files during adapter fusion. Training
-progress is a library contract; job lifecycle and terminal output stay in apps.
+graphs, layers, state contracts, and MLX autograd. Training progress is a
+library contract; job lifecycle and terminal output stay in apps.
 Inference and quantization never depend on training.
 
 Interfaces describe required capabilities and ownership, not a selected model
@@ -55,7 +54,7 @@ Inside `packages/inference/src/`:
 | `contracts/mlx/` | Tensor, attention, cache, position, weight-source, and forward-work interfaces. May reference the MLX binding and portable contracts. |
 | `runtime/` | Shared configuration scopes, resource ownership helpers, tracing context, and bundled native paths. No model or scheduling dependencies. |
 | `kernels/` | Numerical operations and their input layouts. No concrete cache, artifact loader, model, or scheduler imports. |
-| `artifacts/` | Configuration, weights, formats, expert storage/residency, and conversion of artifact layouts into kernel descriptors. |
+| `artifacts/` | Configuration, weights, formats, auxiliary checkpoint files, expert storage/residency, and conversion of artifact layouts into kernel descriptors. |
 | `layers/` | Reusable graph building blocks, including LoRA application and positional operations. |
 | `state/` | Cache implementations, snapshots, row storage, retention, and persistence. |
 | `input/` | Tokenizers, templates, media preprocessing, and prompt assembly through encoder interfaces. |

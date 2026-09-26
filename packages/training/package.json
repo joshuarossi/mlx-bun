@@ -34,8 +34,7 @@
   },
   "dependencies": {
     "@mlx-bun/mlx": "workspace:*",
-    "@mlx-bun/inference": "workspace:*",
-    "@mlx-bun/quantize": "workspace:*"
+    "@mlx-bun/inference": "workspace:*"
   },
   "os": [
     "darwin"
