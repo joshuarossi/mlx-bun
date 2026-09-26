@@ -1,8 +1,8 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
-// Model picker (plan §5.6, §9 Phase 2): makes the nav model label
+// Model picker: makes the nav model label
 // (#nav-model, previously a dead <span> with no click handler) open a
 // popover of every downloaded model from GET /library, each with its own
 // fit verdict computed on THIS Mac (`assessment`, from packages/inference/src/execution/fit.ts) — not a
@@ -97,7 +97,7 @@ export function renderModelPopBodyHtml(models: LibraryRow[]): string {
   const rows = pickModel(models).map(renderRow).join("");
   return (
     rows +
-    '<div class="mp-foot-note">Fit is predicted for THIS Mac (src/fit.ts), not a generic guess. ' +
+    '<div class="mp-foot-note">Fit is predicted for THIS Mac (@mlx-bun/inference/execution/fit), not a generic guess. ' +
     "Switching the served model restarts the process — there's no live " +
     "in-process swap yet; copy the command above and restart.</div>" +
     browseRow

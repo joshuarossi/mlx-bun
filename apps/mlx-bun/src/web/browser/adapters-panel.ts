@@ -1,8 +1,8 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
-// Adapter routing table (plan §5.6, §9 Phase 2): the deep surface behind
+// Adapter routing table: the deep surface behind
 // the composer's ⚙ button beside #chat-adapter. Shows every on-disk
 // adapter with its three states (available / loaded+mounted /
 // selected-for-this-chat), base model, rank, size on disk, and RAM cost

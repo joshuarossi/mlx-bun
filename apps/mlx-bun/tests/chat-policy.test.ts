@@ -128,7 +128,8 @@ describe("injectSampling (before_provider_request hook body)", () => {
   });
 });
 
-// Per-message sampling scope (plan §9 Phase 3, beat matrix Axis 4): the
+// Per-message sampling scope (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 4): the
 // next_turn one-shot override composed OVER the session-level overrides,
 // consumed after exactly one outgoing provider request. See the "Per-
 // message sampling scope" block comment above composeSampling in
@@ -221,7 +222,8 @@ describe("sampling scope lifecycle: set -> one turn -> cleared", () => {
   });
 });
 
-// Loop hygiene (plan §9 Phase 3, beat matrix Axis 7): dedup, retry budget,
+// Loop hygiene (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 7): dedup, retry budget,
 // tool-turn cap. Pure decision functions extracted from the tool_call /
 // tool_result / turn_start extension hooks (installLoopHygieneHooks in
 // apps/mlx-bun/src/chat/pi-backend.ts) so they're testable without a live AgentSession.
@@ -333,7 +335,8 @@ describe("toolResultText", () => {
   });
 });
 
-// Per-chat system prompt (plan §9 Phase 2, beat matrix Axis 4): the
+// Per-chat system prompt (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 4): the
 // before_agent_start hook body. Layers the user's custom text onto (never
 // replacing) the built-in surface prompt pi hands in as event.systemPrompt
 // on every turn — see apps/mlx-bun/src/chat/pi-backend.ts's installSystemPromptHook.
@@ -515,7 +518,7 @@ describe("buildWebChatSystemPrompt", () => {
     const prompt = buildWebChatSystemPrompt(false);
     // The bloated welcome prompt was ~2.5k chars and drowned a 1B model; the
     // welcome blurb + tool guidance (now including the app-aware assistant's
-    // one-line steer, plan §6.6) keeps it well under that — budget bumped
+    // one-line steer) keeps it well under that — budget bumped
     // from 1300 to 1700 for the new capability line, still <70% of the
     // original bloated prompt.
     expect(prompt.length).toBeLessThan(1700);
@@ -556,7 +559,7 @@ describe("buildWebChatSystemPrompt", () => {
 
 describe("webChatToolAllowlist", () => {
   it("is exactly the two welcome tools plus the app-aware tools when memory is off", () => {
-    // App-aware assistant (plan §6.6): get_current_app_context/navigate_app/
+    // App-aware assistant: get_current_app_context/navigate_app/
     // spotlight_ui ride along unconditionally, same as WELCOME_TOOLS — they
     // never mutate the machine, so they're never gated behind memory or
     // codingTools state.
@@ -665,7 +668,7 @@ describe("serializeHistory", () => {
   });
 });
 
-// Message actions (plan §5.2): regenerate / edit-and-resend-as-sibling.
+// Message actions: regenerate / edit-and-resend-as-sibling.
 // Both features are built on findLastUserMessageEntry (locate the resend
 // target + its original content) and userMessageSiblings (the `< i/n >`
 // toggle's data). deepestLeafFrom is the pure "walk to a branch's own tip"
@@ -762,7 +765,7 @@ describe("toSessionListItems", () => {
 });
 
 /* ════════════════════════════════════════════════════════════════════
-   App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12)
+   App-aware assistant (`02d723a:docs/design/web-chat-redesign.md` Appendix A, beat-matrix Axis 12)
    ════════════════════════════════════════════════════════════════════ */
 
 function fakeSnapshot(route: string): AppUiContext["snapshot"] {

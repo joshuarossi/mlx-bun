@@ -1,5 +1,5 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built by scripts/build-web.ts into
+// split. Built by scripts/build-web.ts into
 // apps/mlx-bun/dist/web/app.js, which apps/mlx-bun/src/web/assets.ts serves at
 // GET /assets/app.js and app.html loads via
 // <script defer src="/assets/app.js"></script>.
@@ -32,7 +32,7 @@ initHfSettings();
 // — Theme: auto/dark/light, prefers-color-scheme —
 initTheme();
 
-// — PWA service worker (plan §9 Phase 3): shell-only cache-first, guarded
+// — PWA service worker: shell-only cache-first, guarded
 //   to secure contexts / localhost. Registration is fire-and-forget and
 //   never blocks boot —
 initServiceWorker();
@@ -43,10 +43,10 @@ initShortcutSheet();
 // — Mobile drawer (chat sidebar slide-over) —
 initDrawer();
 
-// — Model picker (plan §5.6/§9 Phase 2): #nav-model click -> /library popover —
+// — Model picker: #nav-model click -> /library popover —
 initModelPicker();
 
-// — Model Hub (plan §9 Phase 3): panel chrome + the model picker's "Browse
+// — Model Hub: panel chrome + the model picker's "Browse
 //   models…" entry. Registers its open callback before initModelPicker's
 //   popover is ever opened, so the first click already has a live target —
 //   order here doesn't actually matter (both are registered-callback
@@ -54,7 +54,7 @@ initModelPicker();
 //   surface inits visually adjacent in the boot sequence. —
 initHubPanel();
 
-// — Command palette (plan §9 Phase 3): Cmd/Ctrl+K, registers its
+// — Command palette: Cmd/Ctrl+K, registers its
 //   open/close/isOpen callbacks (shell.ts's registered-callback pattern)
 //   before initGlobalKeydown()'s binding below can ever fire —
 initPalette();
@@ -67,7 +67,7 @@ initGlobalKeydown();
 //   not just on first scroll/resize) —
 initRouter();
 
-// — Developer toggle (plan §8/§9 Phase 2): apply saved/first-run state to
+// — Developer toggle: apply saved/first-run state to
 //   the tab row before router() below reads it for the deep-link check —
 initDeveloperToggle();
 

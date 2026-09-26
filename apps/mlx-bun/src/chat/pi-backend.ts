@@ -64,7 +64,7 @@ class PiBackend implements ChatBackend {
   private codingToolsActive = false;
 
   /** Last `context` ClientMessage the browser pushed (route/view/step/
-   *  snapshot, plan §6.6) — null before the first one arrives (a non-
+   *  snapshot) — null before the first one arrives (a non-
    *  browser WS client, or the race before chat.ts's first push). Read by
    *  get_current_app_context's tool and by installAppContextHook's
    *  ambient-line injection. Set wholesale (not merged) on every "context"
@@ -215,7 +215,7 @@ class PiBackend implements ChatBackend {
           // point offering (and prompting the model to attempt) a tool that
           // can only ever fail.
           tools: webChatToolAllowlist(surface.memoryToolNames, this.codingToolsActive && !this.opts.readOnly),
-          // App-aware assistant tools (plan §6.6) are PER-CONNECTION (close
+          // App-aware assistant tools are PER-CONNECTION (close
           // over this.currentAppContext + this.send), unlike surface.customTools
           // which is a stateless singleton shared across every session — see
           // createAppAwareTools' doc comment.
@@ -474,8 +474,8 @@ class PiBackend implements ChatBackend {
     await this.resendFrom(last.id, last.text, last.images);
   }
 
-  /** Edit-and-resend: re-send the LAST user message with edited text (plan
-   *  §5.2 scopes editing to the last message only — the `< i/n >` toggle is
+  /** Edit-and-resend: re-send the LAST user message with edited text
+   *  (editing is scoped to the last message only — the `< i/n >` toggle is
    *  a linear sibling list, not a tree view). Original images are preserved
    *  since editing text shouldn't silently drop an attachment. */
   private async editResend(text: string): Promise<void> {
@@ -560,7 +560,7 @@ class PiBackend implements ChatBackend {
   }
 
   /** Register the before_agent_start hook that auto-prepends the compact
-   *  one-line ambient context (plan §6.6 "never answer blind") to every
+   *  one-line ambient context ("never answer blind") to every
    *  turn's system prompt — the SAME layering mechanism
    *  installSystemPromptHook uses for the user's custom prompt (pi's
    *  BeforeAgentStartEventResult can only replace systemPrompt, chained
@@ -781,7 +781,7 @@ class PiBackend implements ChatBackend {
         this.sendCodingToolsState();
         return;
       case "context":
-        // App-aware assistant (plan §6.6): stored wholesale, no session
+        // App-aware assistant: stored wholesale, no session
         // required — chat.ts pushes this on route/step change, which can
         // race the very first `ready` frame on initial connect. Read by
         // get_current_app_context (live) and installAppContextHook (the

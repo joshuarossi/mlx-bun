@@ -1,5 +1,5 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
 // The hand-rolled markdown renderer + streaming block-memoization +
@@ -63,7 +63,8 @@ export function mdCodeBlock(lang: string, code: string): string {
   // fence info string just omits the class and highlightIn() skips it.
   const langClass = lang ? ' class="language-' + esc(lang) + '"' : "";
   const canvas = isCanvasFence(lang);
-  // Canvas v1 (plan §9 Phase 3, beat matrix Axis 2): a Preview|Source toggle
+  // Canvas v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+  // beat-matrix Axis 2): a Preview|Source toggle
   // next to Copy for completed html/svg fences. The toggle markup is always
   // emitted for a qualifying fence (even while the block is still streaming
   // — mdCodeBlock only ever runs on a CLOSED fence per mdToHtml/splitBlocks,
@@ -94,7 +95,8 @@ export function mdCodeBlock(lang: string, code: string): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   CANVAS V1 (plan §9 Phase 3, beat matrix Axis 2 — "I miss optiq's Canvas"
+   CANVAS V1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 2 — "I miss optiq's Canvas"
    is a disallowed outcome): completed html/svg fenced code blocks get a
    Preview|Source toggle in the existing .cbhead bar. Preview renders the
    fence content in a sandboxed <iframe>.
@@ -211,8 +213,8 @@ function setCanvasView(block: HTMLElement, view: "preview" | "source"): void {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   CHAT-WITH-FILES RAG v1 — [n] citation markers (plan §9 Phase 3, beat
-   matrix Axis 5): when a turn's prompt carried retrieved chunks
+   CHAT-WITH-FILES RAG v1 — [n] citation markers (`02d723a:docs/design/web-chat-redesign.md`
+   Appendix A, beat-matrix Axis 5): when a turn's prompt carried retrieved chunks
    (composer.ts's buildMessageText, retrieval-mode branch), the model is
    asked to cite them inline as `[n]`. This turns each SURVIVING `[n]`
    marker in the assistant's rendered HTML into a clickable superscript
@@ -342,7 +344,7 @@ export function mdToHtml(src: unknown): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   STREAMING BLOCK MEMOIZATION  (plan §5.3, §2.2 #7)
+   STREAMING BLOCK MEMOIZATION  (`02d723a:docs/design/web-chat-redesign.md` §2.2)
    ────────────────────────────────────────────────────────────────────
    Naively doing `textNode.innerHTML = mdToHtml(fullText)` on every token
    is O(n^2) over a response: every delta re-parses and re-renders the
@@ -474,7 +476,7 @@ export function renderBlocksIncremental(container: HTMLElement, text: string, st
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   SYNTAX HIGHLIGHTING (plan §5.3/§7)
+   SYNTAX HIGHLIGHTING
    ────────────────────────────────────────────────────────────────────
    Vendored highlight.js (apps/mlx-bun/src/web/public/vendor/hljs.js, no CDN — see that file's
    header) applied to fenced code blocks. mdCodeBlock() above stamps
@@ -484,8 +486,7 @@ export function renderBlocksIncremental(container: HTMLElement, text: string, st
    here — an empty/unrecognized language just falls through to hljs's
    plaintext handling.
 
-   Called from exactly three places, matching the plan's "block completion
-   + final full-render pass" instruction:
+   Called from exactly three places:
      1. renderBlocksIncremental(), only on blocks freshly marked `done`
         (the live streaming tail is never highlighted — that would mean
         re-highlighting on every token, the same O(n^2) shape the block-

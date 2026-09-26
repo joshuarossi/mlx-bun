@@ -1,9 +1,9 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
-// The Memory panel (plan §5.5), provenance chips (§5.4.2), personalized
-// hero chips + consent card (§5.1), and the sidebar entry that opens the
+// The Memory panel, provenance chips, personalized
+// hero chips + consent card, and the sidebar entry that opens the
 // panel. Everything here talks to the /api/memory/* REST wrappers
 // (apps/mlx-bun/src/server/memory-routes.ts) — no new WS frames, per the task brief. esc()
 // discipline on every interpolation site: article names/content/commit
@@ -13,8 +13,8 @@
 // screen (status strip + search + article/reference lists) and an article
 // screen (rendered content + History toggle + links line). `view` tracks
 // which is showing so Back/Escape/re-open behave predictably; there is no
-// deep router here (the panel is not URL-addressable — matching the plan's
-// "reachable from the sidebar, not a nav tab" framing).
+// deep router here (the panel is not URL-addressable — it is reachable
+// from the sidebar, not a nav tab).
 
 import { $, el, toast, trapFocus, setMemPanelClose, type FocusTrap } from "./shell";
 import { api } from "./api";
@@ -196,7 +196,7 @@ async function renderArticleLists(query: string): Promise<void> {
         ? articles.map((a) => articleRowHtml(a)).join("")
         : '<div class="mem-list-empty">No articles yet — nightly synthesis writes here after a few conversations.</div>') +
       "</div>" +
-      // Reference/ docs are clearly separated (plan §5.5) — mlx-bun's own
+      // Reference/ docs are clearly separated — mlx-bun's own
       // docs, not personal memory.
       (reference.length
         ? '<div class="mem-sec"><div class="mem-sec-title">Reference</div>' +
@@ -387,7 +387,7 @@ export async function refreshSidebarEntry(): Promise<void> {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Provenance chips (plan §5.4.2) — rendered by chat.ts in place of the
+   Provenance chips — rendered by chat.ts in place of the
    generic wrench tool card for any memory_ or reference_ tool call.
    ──────────────────────────────────────────────────────────────────── */
 
@@ -463,7 +463,7 @@ export function memoryToolChip(parent: HTMLElement, tool: string, args: unknown)
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Personalized hero chips (plan §5.1) — replaces the 4 static chips with
+   Personalized hero chips — replaces the 4 static chips with
    one drawn from a real article + one adapter offer when either backend
    signal is available; falls back to the existing static chips otherwise
    (never fewer chips than today, never a broken/empty row).
@@ -507,7 +507,7 @@ export async function personalizeHeroChips(): Promise<void> {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Consent card (plan §5.1) — first run only, never auto-creates the vault.
+   Consent card — first run only, never auto-creates the vault.
    ──────────────────────────────────────────────────────────────────── */
 
 const CONSENT_DISMISSED_KEY = "mlxbun.memoryConsentDismissed";
@@ -562,7 +562,7 @@ export function initMemoryPanel(): void {
   ($("mem-close") as HTMLButtonElement).onclick = closeMemPanel;
   ($("mem-back") as HTMLButtonElement).onclick = () => showList();
   $("mem-overlay").addEventListener("click", (e) => { if (e.target === $("mem-overlay")) closeMemPanel(); });
-  // Canvas v1 (plan §9 Phase 3): same Preview|Source toggle as the chat
+  // Canvas v1: same Preview|Source toggle as the chat
   // thread, shared via markdown.ts — mem-body is the stable ancestor whose
   // innerHTML gets replaced per article, same delegation pattern as chat.ts.
   wireCanvasToggle($("mem-body"));

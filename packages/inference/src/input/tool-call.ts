@@ -29,7 +29,8 @@ export interface ParsedToolCall {
   /** Parsed argument object (callers serialize for OpenAI's string field). */
   arguments: Record<string, unknown>;
   /** Set only when strict parsing failed and a repair pass recovered the
-   *  call — never silent (Axis 7 self-healing beat row). `repairs` lists
+   *  call — never silent (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   *  beat-matrix Axis 7, self-healing row). `repairs` lists
    *  every malformation class that had to be corrected, in application
    *  order, so failures are observable (logs/telemetry) instead of masked. */
   repaired?: true;
@@ -221,7 +222,8 @@ function decodeToolValue(text: string, schema: Record<string, unknown> | null): 
   }
 }
 
-// ---- Repair layer (Axis 7 self-healing beat row) ---------------------
+// ---- Self-healing repair layer ---------------------------------------
+// (`02d723a:docs/design/web-chat-redesign.md` Appendix A, beat-matrix Axis 7)
 //
 // pi-ai (node_modules/@earendil-works/pi-ai/dist/utils/json-parse.js)
 // already ships a generic JSON repair pass for cloud-model streaming

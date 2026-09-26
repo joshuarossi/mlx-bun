@@ -141,7 +141,7 @@ function maybeTurboQuantizeKv(cache: Cache[], scheme: TurboQuantScheme, start: n
         warnedTurboRotating = true;
         console.warn(
           "[turbo-quant] sliding-window (RotatingKVCache) layers stay bf16 in v1 " +
-          "(full-attention only) — docs/design/turboquant.md.",
+          "(full-attention only).",
         );
       }
       continue;

@@ -24,7 +24,7 @@ export type ClientMessage =
   // model supports thinking — ready.thinking). Maps to Pi's session thinking
   // level: "medium" (on) ↔ "off". Pi sends it as enable_thinking to the server.
   | { type: "set_thinking"; enabled: boolean }
-  // Opt-in toggle (plan §5.4/§6.5/§9 Phase 2, default OFF): "let the agent
+  // Opt-in toggle (default OFF): "let the agent
   // touch files on this machine". Persisted per-browser by the client
   // (localStorage `mlxbun.codingTools`); the ALLOWLIST decision is enforced
   // here, server-side. buildPiAgentSurface's tool list is fixed for the
@@ -47,8 +47,9 @@ export type ClientMessage =
   // the provider payload and always wins. The before_provider_request hook
   // injects whatever is set here.
   //
-  // `scope` (plan §9 Phase 3 / beat matrix Axis 4 "per-message sampling
-  // scope"): "session" (default, omitting the field means this too) persists
+  // `scope` (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+  // beat-matrix Axis 4 "per-message sampling scope"): "session" (default,
+  // omitting the field means this too) persists
   // the override on the connection until changed — today's behavior,
   // unchanged. "next_turn" stores a ONE-SHOT override applied to exactly
   // the next prompt's injection, then cleared automatically — it never
@@ -88,7 +89,7 @@ export type ClientMessage =
   | { type: "open_session"; path: string }
   | { type: "fork_session"; path: string }
   | { type: "delete_session"; path: string }
-  // Message actions (plan §5.2). All three navigate the session's leaf
+  // Message actions. All three navigate the session's leaf
   // pointer via AgentSession.navigateTree() then re-prompt — a sibling
   // branch in the SAME session file, never a new one (see the helpers above
   // findLastUserMessageEntry for the full rationale). Regenerate re-sends the
@@ -99,7 +100,8 @@ export type ClientMessage =
   | { type: "regenerate" }
   | { type: "edit_resend"; text: string }
   | { type: "switch_sibling"; entryId: string }
-  // App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12): pushed
+  // App-aware assistant (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+  // beat-matrix Axis 12): pushed
   // by chat.ts on every route change AND on wizard-step change (quantize/
   // finetune/dataset), never on a timer. `context` is opaque here (the
   // browser's AppContext shape, apps/mlx-bun/src/web/browser/assistant.ts) — stored verbatim
@@ -175,7 +177,7 @@ export type ServerMessage =
   | { type: "history"; items: HistoryItem[] }
   | { type: "sessions"; items: SessionListItem[]; activePath?: string }
   // Sibling group for the LAST user message (edit-and-resend's `< i/n >`
-  // toggle, plan §5.2). Sent after every history rebuild and after a
+  // toggle). Sent after every history rebuild and after a
   // completed turn. `count` <= 1 means no toggle to show (the common case:
   // no edits/regenerations yet). `entryId` is the currently-active sibling's
   // id; `siblingIds` is the full ordered group so the client can resolve
@@ -196,7 +198,7 @@ export type ServerMessage =
   // `ready` and after any change, so the settings panel can list/forget
   // durable per-tool approvals without a separate REST round-trip.
   | { type: "tool_approvals"; alwaysAllow: string[] }
-  // App-aware assistant (plan §6.6): the navigate_app / spotlight_ui tools'
+  // App-aware assistant: the navigate_app / spotlight_ui tools'
   // side-channel notifications, mapped 1:1 from the tool call's params —
   // never guessed or re-derived, so chat.ts's router/spotlight get exactly
   // what the model asked for. `route` here is always a validated
@@ -224,8 +226,8 @@ export interface HistoryItem {
   tools: HistoryToolItem[];
   /** Session entry id (user items only). Lets the browser correlate "the
    *  last user message" in the replayed thread with the `siblings` frame's
-   *  entryId, so it knows which DOM node gets the edit/sibling-toggle UI
-   *  (plan §5.2). Undefined for assistant items — they aren't fork targets. */
+   *  entryId, so it knows which DOM node gets the edit/sibling-toggle UI.
+   *  Undefined for assistant items — they aren't fork targets. */
   entryId?: string;
 }
 

@@ -1,5 +1,5 @@
-// Command palette (Cmd/Ctrl+K) — plan §9 Phase 3, beat-matrix Axis 10
-// "Command palette" row: ChatGPT/Claude's universal "do anything" entry
+// Command palette (Cmd/Ctrl+K) — `02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 10 "Command palette" row: ChatGPT/Claude's universal "do anything" entry
 // point. Built 100% via createElement (zero app.html markup — a parallel
 // agent owns chat.ts/app.html this wave); its own CSS is injected once via
 // shell.ts's injectStyles() the same way the panel it opens (hub.ts) has

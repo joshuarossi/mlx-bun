@@ -41,12 +41,14 @@ export const LOOP_HYGIENE = {
   /** After this many consecutive FAILED calls with the same signature
    *  (name + JSON-stable args), the nudge text asks the model to change
    *  approach instead of repeating verbatim. optiq Lab's documented
-   *  budget (beat matrix Axis 7) is 3. */
+   *  budget (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   *  beat-matrix Axis 7) is 3. */
   MAX_CONSECUTIVE_FAILURES: 3,
   /** Cap on AgentSession's turnIndex (one assistant-response round, per
    *  agent-session.js's _turnIndex) within a single user prompt before
    *  every further tool call is blocked with a force-finish nudge.
-   *  optiq Lab's documented cap (beat matrix Axis 7) is 25. */
+   *  optiq Lab's documented cap (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   *  beat-matrix Axis 7) is 25. */
   MAX_TOOL_TURNS: 25,
 } as const;
 
@@ -205,7 +207,7 @@ export function buildWebChatSystemPrompt(
   // those two — and telling it to answer from knowledge first — is what keeps a
   // small model from reaching for a tool on math/writing/general questions.
   const hasTools = opts?.hasTools ?? true;
-  // App-aware assistant (plan §6.6): tell the model these tools exist and
+  // App-aware assistant: tell the model these tools exist and
   // when to reach for them instead of describing the UI blind — "when the
   // user asks where/how in the app, navigate or spotlight instead of
   // describing blind" is the literal steer the task calls for. Included
@@ -236,7 +238,7 @@ export function resolveAppRoute(routeOrPage: string): AppRouteId | null {
   return isAppRouteId(bare) ? bare : null;
 }
 
-/** Compact one-line ambient context (§6.6 "never answer blind") mined from
+/** Compact one-line ambient context ("never answer blind") mined from
  *  the stored AppUiContext — e.g. "[user is on: Quantize · step 2/4]".
  *  Never a snapshot dump; this is the ONLY thing auto-attached to every
  *  turn (the full snapshot stays on-demand via get_current_app_context).
@@ -300,7 +302,7 @@ export function injectSampling(
   return changed ? out : undefined;
 }
 
-// ---- Per-message sampling scope (beat matrix Axis 4 / plan §9 Phase 3) --
+// ---- Per-message sampling scope -----------------------------------------
 //
 // set_sampling's optional `scope` field: "session" (default, today's
 // behavior — persists on the connection until changed) or "next_turn" (a
@@ -310,9 +312,9 @@ export function injectSampling(
 // a next_turn field left null/undefined falls through to the session
 // override (which itself falls through to the server default per
 // injectSampling's existing null-means-unset contract). This mirrors
-// optiq Lab's per-message temp/max-tokens/thinking granularity cited in
-// the beat matrix, layered onto (not replacing) Phase 1's session-level
-// overrides.
+// optiq Lab's per-message temp/max-tokens/thinking granularity
+// (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 4), layered onto (not replacing) the session-level overrides.
 //
 // Lifecycle: armed by the set_sampling handler when scope is "next_turn"
 // (stored separately from the session-level `sampling` field so a

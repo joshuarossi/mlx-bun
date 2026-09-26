@@ -227,8 +227,7 @@ async function* generateInner(
       warnedFillRotating = true;
       console.warn(
         "[fill] sliding-window (RotatingKVCache) layers skip token " +
-        "fast-forwarding in v1 (multi-token append is O(window) there) — " +
-        "docs/design/speculative-decoding.md.",
+        "fast-forwarding in v1 (multi-token append is O(window) there).",
       );
     }
   }

@@ -1,6 +1,6 @@
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
 // DOM-level unit tests for the pure/DOM-facing parts of the
-// apps/mlx-bun/src/web/browser/* module split (plan §7/§9 Phase 2). Covers exactly the four things the
+// apps/mlx-bun/src/web/browser/* module split. Covers exactly the four things the
 // task calls out:
 //   (a) streaming parity — block-memoized incremental render vs one-shot
 //       mdToHtml, fed char-by-char, over a small fixture corpus
@@ -188,7 +188,8 @@ describe("chat turn rendering lifecycle", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Canvas v1 (plan §9 Phase 3, beat matrix Axis 2): fence-language
+   Canvas v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 2): fence-language
    detection is a pure predicate (isCanvasFence) so it's tested directly
    without a DOM, plus a check that mdCodeBlock only emits the
    Preview|Source toggle markup for qualifying languages.
@@ -487,7 +488,7 @@ describe("esc() discipline: memory provenance chip", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Adapter routing table (plan §5.6/§9 Phase 2): esc() discipline on every
+   Adapter routing table: esc() discipline on every
    interpolated field (id/path/base_model are on-disk directory names and
    config strings — user-controlled, same hazard class as #15's adapter
    <option> bug) plus the three-state row logic (mounted/selected/stacking).
@@ -584,7 +585,7 @@ describe("adapter routing table: renderAdaptersBodyHtml", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Model picker (plan §5.6/§9 Phase 2): fit-verdict thresholds and esc()
+   Model picker: fit-verdict thresholds and esc()
    discipline on repo ids (HF strings, user/model-controlled) interpolated
    into the popover body and the copy-able restart command.
    ──────────────────────────────────────────────────────────────────── */
@@ -635,7 +636,7 @@ describe("model picker: renderModelPopBodyHtml", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Unified "#" retrieval mention (plan §5.2/§9 Phase 2): detectMentionQuery
+   Unified "#" retrieval mention: detectMentionQuery
    (caret-aware span detection), filterFileMentions/buildMentionItems (pure
    list assembly), applyMention (pure text-splice insertion), and esc()
    discipline on renderMentionListHtml — the same pure/DOM split as the
@@ -786,7 +787,8 @@ describe("esc() discipline: mention picker list", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Model Hub panel (plan §9 Phase 3, beat-matrix Axis 3): pure render
+   Model Hub panel (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 3): pure render
    functions for the Downloaded and Search Hugging Face sections — same
    esc()-discipline + empty-state coverage as the model-pop tests above.
    ──────────────────────────────────────────────────────────────────── */
@@ -853,7 +855,8 @@ describe("Model Hub: renderHubSearchHtml", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5 — optiq
+   Chat-with-files RAG v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 5 — optiq
    Lab's dependency-free BM25 bar). Covers: chunker boundaries, BM25
    ranking sanity (term overlap outranks none, term-frequency saturation),
    the inline-vs-RAG threshold decision, and the citation-map rendering
@@ -1157,7 +1160,8 @@ describe("Chat-with-files RAG v1: [n] citation-marker linkification guard", () =
 });
 
 /* ════════════════════════════════════════════════════════════════════
-   App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12) —
+   App-aware assistant (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 12) —
    captureUiSnapshot on a fixture DOM: caps at MAX_ELEMENTS, excludes agent
    chrome, and resolves labels via aria-label/data-ui-label/text content.
    ════════════════════════════════════════════════════════════════════ */

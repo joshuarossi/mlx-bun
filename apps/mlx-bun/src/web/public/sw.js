@@ -1,7 +1,8 @@
 // mlx-bun service worker — SHELL ONLY, not offline chat.
 //
-// Scope (plan §9 Phase 3, beat-matrix Axis 10 "PWA installability"):
-// installability + instant shell load. The app is useless without the
+// Scope (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 10 "PWA installability"): installability + instant shell
+// load. The app is useless without the
 // local inference server actually running (every chat turn is a live
 // WebSocket to this same origin's model process), so caching API/WS
 // traffic would be actively misleading — a "successful" cached response

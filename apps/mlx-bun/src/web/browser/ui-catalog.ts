@@ -1,5 +1,5 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 3, §6.6 "app-aware assistant"). Built into
+// split (the app-aware assistant). Built into
 // apps/mlx-bun/dist/web/app.js by scripts/build-web.ts.
 //
 // Shared route IDs keep browser navigation and server validation in agreement.

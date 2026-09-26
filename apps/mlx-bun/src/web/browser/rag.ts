@@ -1,5 +1,6 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §9 Phase 3, beat matrix Axis 5 — "chat-with-files RAG v1"). Built
+// split (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 5 — "chat-with-files RAG v1"). Built
 // into apps/mlx-bun/dist/web/app.js by scripts/build-web.ts.
 //
 // A small, dependency-free, pure BM25 retriever over attached-file text —
@@ -11,7 +12,7 @@
 // No network, no embeddings, no external deps — this is the "dependency-
 // free BM25 proves the v1 needs no vector infra" bet from the beat matrix.
 // A later vector upgrade (packages/inference/src/embeddings/text.ts) is explicitly out of scope here
-// (Phase 5).
+// (`02d723a:docs/design/web-chat-redesign.md` §5).
 
 /* ────────────────────────────────────────────────────────────────────
    Chunking
@@ -210,7 +211,8 @@ export function bm25TopK(index: Bm25Index, query: string, k: number): ScoredChun
 
 /** Above this total attached-text size, switch from "inline everything"
  *  to "retrieve top-K chunks" — LM Studio's transparent dual-mode
- *  threshold (beat matrix Axis 5), tuned so ordinary small attachments
+ *  threshold (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+ *  beat-matrix Axis 5), tuned so ordinary small attachments
  *  (READMEs, short notes) never change behavior at all. */
 export const INLINE_THRESHOLD_CHARS = 8000;
 
