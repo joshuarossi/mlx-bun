@@ -46,16 +46,6 @@ page. Synthesis (conversations -> articles) runs the full local pipeline via
 \`mlx-bun memory synthesize\` (or per-stage: segment/extract/route/
 synthesize-stage/link) against a serving mlx-bun; the nightly job runs it on
 a schedule and needs that server at its time.`;
-const memoryOptions = {
-  since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
-  model: { type: "string", description: "synthesize: synthesis model override (parsed; reserved)" },
-  "dry-run": { type: "boolean", description: "synthesize: plan the stages only, never write the vault" },
-  limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
-  convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
-  at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
-  host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
-  port: { type: "string", description: "Port of that server [default: 8080]" },
-} satisfies Record<string, { type: "string" | "boolean"; description: string }>;
 const commands = {
   serve: { description: "Serve a local model with continuous batching and the web app", positional: "[query]", options: {
     model: { type: "string", description: "Model directory or cached registry query (overrides positional query)" },
@@ -206,9 +196,27 @@ const commands = {
     "upload-repo": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
   } },
   memory: { description: "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it", positional: "[subcommand] [args]",
-    usage: "usage: mlx-bun memory <subcommand> [args] [options]", details: memoryDetails, options: memoryOptions },
+    usage: "usage: mlx-bun memory <subcommand> [args] [options]", details: memoryDetails, options: {
+    since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
+    model: { type: "string", description: "synthesize: synthesis model override (parsed; reserved)" },
+    "dry-run": { type: "boolean", description: "synthesize: plan the stages only, never write the vault" },
+    limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
+    convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
+    at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
+    host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
+    port: { type: "string", description: "Port of that server [default: 8080]" },
+  } },
   setup: { description: "Set up your local AI's memory wiki (alias of mlx-bun memory)", positional: "[subcommand] [args]",
-    usage: "usage: mlx-bun setup <subcommand> [args] [options]", details: memoryDetails, options: memoryOptions },
+    usage: "usage: mlx-bun setup <subcommand> [args] [options]", details: memoryDetails, options: {
+    since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
+    model: { type: "string", description: "synthesize: synthesis model override (parsed; reserved)" },
+    "dry-run": { type: "boolean", description: "synthesize: plan the stages only, never write the vault" },
+    limit: { type: "string", description: "Stage workers: cap the work processed this pass (segment, extract, synthesize-stage, link)" },
+    convs: { type: "string", description: "Stage workers: comma-separated conversation ids to restrict the pass to" },
+    at: { type: "string", description: "schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]" },
+    host: { type: "string", description: "Serving mlx-bun whose /v1/chat/completions runs the model calls [default: 127.0.0.1]" },
+    port: { type: "string", description: "Port of that server [default: 8080]" },
+  } },
 } satisfies Record<string, { description: string; positional: string; usage?: string; details?: string; options: Record<string, { type: "string" | "boolean"; description: string; short?: string }> }>;
 export type Command = keyof typeof commands;
 export type CommandArgs = { values: Record<string, string | boolean | undefined>; positionals: string[] };
