@@ -42,6 +42,7 @@ function find<T extends ts.Node>(node: ts.Node, test: (node: ts.Node) => node is
 }
 function where(node: ts.Node) { const file = node.getSourceFile(); return { file: file.fileName, line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1 }; }
 function fail(node: ts.Node, message: string): never { const { file, line } = where(node); throw new Error(`${file}:${line}: ${message}`); }
+const receiverName = (e: ts.Expression) => ts.isCallExpression(e) ? `${e.expression.getText()}()` : ts.isPropertyAccessExpression(e) ? e.name.text : e.getText();
 const literal = (e: ts.Node | undefined) => e && (ts.isStringLiteralLike(e) || ts.isNumericLiteral(e) || (ts.isPrefixUnaryExpression(e) && ts.isNumericLiteral(e.operand))) ? (ts.isStringLiteralLike(e) ? e.text : e.getText()) : undefined;
 /** The outermost `a ?? b ?? …` chain above node: its last operand is the fallback. */
 function nullish(node: ts.Node): ts.BinaryExpression | undefined {
@@ -116,19 +117,37 @@ export function configInventory(sources: ReadonlyMap<string, string>): ConfigInv
   if (!serve) throw new Error(`${CLI_SOURCE}: the serve command was not found`);
   const help = new Map(serve.options.map(o => [o.name, /\[default: ([^\];]+)/.exec(o.description)?.[1]]));
   const reads: ReadSite[] = [], writes: WriteSite[] = [], files = [...sources].map(([path, text]) => ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS));
-  for (const file of files) find(file, (n): n is ts.Node => true).forEach(node => {
-    if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && ENV.has(code(node.expression))) {
+  for (const file of files) {
+  // A reader imported under another name (`import { runtimeValue as value }`) reads like the reader.
+  const readers = new Map(READERS);
+  for (const spec of find(file, ts.isImportSpecifier)) { const how = READERS.get((spec.propertyName ?? spec.name).text); if (how) readers.set(spec.name.text, how); }
+  find(file, (n): n is ts.Node => true).forEach(node => {
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer && ENV.has(code(skip(node.initializer)))) {
+      for (const element of node.name.elements) {
+        const name = element.propertyName ?? element.name;
+        const key = element.dotDotDotToken ? undefined : ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : ts.isComputedPropertyName(name) ? literal(name.expression) : undefined;
+        if (key === undefined) fail(element, `computed environment read \`${code(node)}\`; use a literal key`);
+        if (!KEY.test(key!)) continue;
+        if (!DIRECT_ENV_READS.some(s => s.file === file.fileName && s.key === key)) fail(element, `direct environment read \`${code(node)}\`; read ${key} through ${RUNTIME}`);
+        reads.push({ key: key!, how: "process.env", ...where(element) });
+      }
+    } else if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && ENV.has(code(node.expression))) {
       const key = ts.isPropertyAccessExpression(node) ? node.name.text : literal(node.argumentExpression) ?? fail(node, `computed environment read \`${code(node)}\`; use a literal key`);
       if (!KEY.test(key)) return;
       if (!DIRECT_ENV_READS.some(s => s.file === file.fileName && s.key === key)) fail(node, `direct environment read \`${code(node)}\`; read ${key} through ${RUNTIME}`);
       reads.push({ key, how: "process.env", ...where(node) });
     } else if (ts.isCallExpression(node)) {
       const callee = node.expression, arg = node.arguments[0];
-      const how = ts.isIdentifier(callee) ? READERS.get(callee.text) : ts.isPropertyAccessExpression(callee) && ["value", "flag", "number"].includes(callee.name.text) ? callee.name.text as How : undefined;
+      // `runtimeConfig()["value"](…)` reads like `runtimeConfig().value(…)`; `config.runtimeValue(…)` like `runtimeValue(…)`.
+      const member = ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) ? literal(callee.argumentExpression) : undefined;
+      if (ts.isElementAccessExpression(callee) && member === undefined && RUNTIME_RECEIVERS.has(receiverName(skip(callee.expression))))
+        fail(node, `computed runtime reader \`${code(node)}\`; call value, flag or number by name`);
+      const how = ts.isIdentifier(callee) ? readers.get(callee.text) : member === undefined ? undefined
+        : READERS.get(member) ?? (["value", "flag", "number"].includes(member) ? member as How : undefined);
       if (!how) return;
       if (arg && ts.isStringLiteralLike(arg)) { if (KEY.test(arg.text)) reads.push({ key: arg.text, how, fallback: fallback(node, how), ...where(node) }); return; }
-      const receiver = ts.isPropertyAccessExpression(callee) ? skip(callee.expression) : undefined;
-      const named = !receiver || RUNTIME_RECEIVERS.has(ts.isCallExpression(receiver) ? `${receiver.expression.getText()}()` : ts.isPropertyAccessExpression(receiver) ? receiver.name.text : receiver.getText());
+      const receiver = ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee) ? skip(callee.expression) : undefined;
+      const named = !receiver || READERS.has(member!) || RUNTIME_RECEIVERS.has(receiverName(receiver));
       if (named && file.fileName !== RUNTIME) fail(node, `non-literal runtime key \`${code(node)}\`; pass a literal MLX_BUN_* key`);
     } else if (ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && KEY.test(node.name.text)) {
       let call: ts.Node | undefined = node.parent;
@@ -136,6 +155,7 @@ export function configInventory(sources: ReadonlyMap<string, string>): ConfigInv
       writes.push({ key: node.name.text, ...(call ? { flag: serveFlag(node, call, help) } : {}), ...where(node) });
     }
   });
+  }
   for (const site of DIRECT_ENV_READS) if (!reads.some(r => r.how === "process.env" && r.file === site.file && r.key === site.key))
     throw new Error(`${site.file}: the listed direct read of ${site.key} disappeared; update DIRECT_ENV_READS`);
   for (const name of NOTES.flatMap(n => n.names)) if (name.startsWith("--") ? !help.has(name.slice(2)) : !reads.some(r => r.key === name))

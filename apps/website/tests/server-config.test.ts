@@ -70,6 +70,22 @@ test("each unsupported key form fails with its location; a comment does not", ()
     .toThrow("packages/mlx/src/native.ts: the listed direct read of MLX_BUN_LIBMLXC disappeared");
 });
 
+test("aliased and string-keyed runtime readers are inventoried; destructured environment reads follow the direct-read rule", () => {
+  const readsOf = (text: string) => configInventory(extra(text)).reads.filter(r => r.file === "packages/inference/src/extra.ts").map(r => `${r.key} ${r.how} ${r.line}`);
+  expect(readsOf('import { runtimeValue as setting } from "./runtime/config";\nexport const a = setting("MLX_BUN_ALIASED");\n')).toEqual(["MLX_BUN_ALIASED value 2"]);
+  expect(readsOf('import * as config from "./runtime/config";\nexport const a = config.runtimeFlag("MLX_BUN_NAMESPACED");\n')).toEqual(["MLX_BUN_NAMESPACED flag 2"]);
+  expect(readsOf('import { runtimeConfig } from "./runtime/config";\nexport const a = runtimeConfig()["number"]("MLX_BUN_KEYED", 3);\n')).toEqual(["MLX_BUN_KEYED number 2"]);
+  expect(readsOf('export const { HOME } = process.env;\n')).toEqual([]);
+  for (const [text, message] of [
+    ['import { runtimeValue as setting } from "./runtime/config";\nexport const a = setting(name);\n', "non-literal runtime key `setting(name)`"],
+    ['import { runtimeConfig } from "./runtime/config";\nexport const a = runtimeConfig()[how]("MLX_BUN_X");\n', 'computed runtime reader `runtimeConfig()[how]("MLX_BUN_X")`'],
+    ["export const read = () => 1;\nconst { MLX_BUN_NEW } = process.env;\n", "direct environment read `{ MLX_BUN_NEW } = process.env`"],
+    ["export const read = () => 1;\nconst { MLX_BUN_LIBMLXC: lib } = Bun.env;\n", "direct environment read `{ MLX_BUN_LIBMLXC: lib } = Bun.env`"],
+    ["export const read = () => 1;\nconst { ...all } = process.env;\n", "computed environment read `{ ...all } = process.env`"],
+    ["export const read = () => 1;\nconst { [name]: value } = process.env;\n", "computed environment read `{ [name]: value } = process.env`"],
+  ]) expect(() => configInventory(extra(text))).toThrow(`packages/inference/src/extra.ts:2: ${message}`);
+});
+
 test("a note whose key or flag is gone fails", () => {
   expect(() => configInventory(mutate("apps/mlx-bun/src/cli/serve.ts", 'runtimeValue("MLX_BUN_PAGED_KV")', 'runtimeValue("MLX_BUN_PAGING")')))
     .toThrow("A configuration note names MLX_BUN_PAGED_KV, which no source reads");
