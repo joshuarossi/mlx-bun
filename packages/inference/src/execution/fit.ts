@@ -5,8 +5,7 @@
 //   prefill transient — chunk size we choose × calibrated bytes/token
 //   machine        — RAM (queried) + Metal wired ceiling fraction
 //
-// Calibration constants come from measured runs on the reference M4 Pro
-// (see PLAN.md baselines; eval DB validates predictions against peaks).
+// Calibration constants come from measured runs on the reference M4 Pro.
 
 import { totalmem } from "node:os";
 import type { ModelConfig } from "../artifacts/config";
@@ -17,7 +16,7 @@ import { kvBytesAt, sdpaFallbackBytes, type KvSchemeOptions } from "../state/kv-
  *  reference machine (24.9 tok/s vs 30.3 ceiling @600 ctx). */
 export const DECODE_EFFICIENCY = 0.82;
 /** MoE decode efficiency vs the active-bytes ceiling. RECALIBRATED from
- *  the Phase 15 cleared-machine matrix: 26B-A4B measured 54.5 tok/s
+ *  a cleared-machine matrix: 26B-A4B measured 54.5 tok/s
  *  (python 55.7 — parity) vs ~71 tok/s raw ceiling → 0.76. The earlier
  *  0.42 came from a session where BOTH stacks were memory-degraded
  *  (32.3/33.0 "parity" — equally wrong, mutually consistent). */

@@ -5,7 +5,7 @@
 // Model picker (plan §5.6, §9 Phase 2): makes the nav model label
 // (#nav-model, previously a dead <span> with no click handler) open a
 // popover of every downloaded model from GET /library, each with its own
-// fit verdict computed on THIS Mac (`assessment`, from packages/hub/src/fit.ts) — not a
+// fit verdict computed on THIS Mac (`assessment`, from packages/inference/src/execution/fit.ts) — not a
 // generic heuristic like LM Studio's. Investigated: there is no in-process
 // model reload/swap path anywhere in apps/mlx-bun/src/server/ or apps/mlx-bun/src/cli/ (grepped
 // for reload/swapModel/switchModel/loadModel — none exist; the runtime is
@@ -32,7 +32,7 @@ export interface LibraryRow {
 function gb(n: number): string { return (n / 2 ** 30).toFixed(1) + " GB"; }
 
 /** Three-tier verdict from the server's honest {fits, predicted_decode_tps}
- *  (packages/hub/src/fit.ts) — LM Studio's green/yellow/red convention layered on our own
+ *  (packages/inference/src/execution/fit.ts) — LM Studio's green/yellow/red convention layered on our own
  *  per-machine numbers, not a second prediction model. green: fits with
  *  headroom (≥10 tok/s decode — comfortably interactive); yellow: fits but
  *  slow (<10 tok/s — usable, sluggish); red: doesn't fit the memory budget;

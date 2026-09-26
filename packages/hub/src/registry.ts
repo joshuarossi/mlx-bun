@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS models (
 `;
 
 /** HF hub cache root, honoring the standard env overrides the same way
- *  huggingface_hub (and our server.ts) do: HF_HUB_CACHE > HF_HOME/hub >
+ *  huggingface_hub does: HF_HUB_CACHE > HF_HOME/hub >
  *  ~/.cache/huggingface/hub. */
 export const DEFAULT_HUB =
   process.env.HF_HUB_CACHE ??
