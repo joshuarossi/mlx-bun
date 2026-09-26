@@ -95,6 +95,24 @@ function runtime(interactive = true) {
   return { dependencies, signals, opens, exits, errors, starts, transcriptionStarts, downloads, logs, closes: () => closes };
 }
 
+test("--isolate is a parent-only boolean that selects the isolated composition and refuses the transcription-only server", async () => {
+  expect(parse().isolate).toBe(false);
+  expect(parse("--isolate").isolate).toBe(true);
+  expect(() => parse("--isolate=1")).toThrow();
+  const run = runtime(false);
+  const app = await runServe(parseCommand("serve", ["--isolate", "--port", "0", "--max-tokens", "16"]), run.dependencies);
+  expect(run.starts).toHaveLength(1);
+  expect(run.starts[0]).toMatchObject({ isolate: true, port: 0, defaultGeneratedTokens: 16 });
+  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in an isolated engine worker");
+  await app.close();
+  expect(run.closes()).toBe(1);
+  const whisper = { repoId: "mlx-community/whisper-large-v3-turbo", path: "/whisper", modelType: "whisper" } as ModelRecord;
+  await expect(runServe(parseCommand("serve", ["whisper", "--isolate"]), { ...run.dependencies, resolve: async () => ({ m: whisper, picked: false }) }))
+    .rejects.toThrow("--isolate is not supported for the transcription-only server");
+  expect(run.transcriptionStarts).toEqual([]);
+  expect(run.starts).toHaveLength(1);
+});
+
 test("the Whisper companion flags keep main's spelling, units, and validation", () => {
   expect(parse("--whisper-model", "mlx-community/whisper-large-v3-turbo", "--whisper-idle-unload", "30", "--whisper-resident", "--preload").whisper)
     .toEqual({ model: "mlx-community/whisper-large-v3-turbo", idleUnloadSec: 30, resident: true, preload: true });
