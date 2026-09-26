@@ -32,7 +32,9 @@ const workspace = resolve(packageRoot, "../..");
 const realHome = homedir();
 const hubCache = process.env.HF_HUB_CACHE ?? (process.env.HF_HOME ? join(process.env.HF_HOME, "hub") : join(realHome, ".cache/huggingface/hub"));
 const scratch = mkdtempSync(join(tmpdir(), "mlx-engine-native-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+/** Tracked processes that outlived their forced stop; their directories are kept. */
+const lingering = new Set<number>();
+afterAll(() => { removeUnlessRunning(scratch, lingering); });
 
 /** Entry names two levels under a HOME's app stores (names only). */
 function storeNames(home: string): string[] {
@@ -61,6 +63,18 @@ function isolatedEnv(home: string, extra: Record<string, string>, keepLibmlxc: b
 }
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as { code?: string }).code !== "ESRCH"; } };
+/** Remove a directory only once none of the tracked processes is still running;
+ *  otherwise keep it (a worker may still use a HOME, a compiler may still write). */
+function removeUnlessRunning(path: string, pids: Iterable<number>): boolean {
+  const running = [...pids].filter(alive);
+  if (running.length) {
+    for (const pid of running) lingering.add(pid);
+    console.warn(`kept ${path}: processes ${running.join(", ")} are still running`);
+    return false;
+  }
+  rmSync(path, { recursive: true, force: true });
+  return true;
+}
 async function survivors(pids: Iterable<number>, timeoutMs: number): Promise<number[]> {
   const end = Date.now() + timeoutMs;
   let left = [...pids].filter(alive);
@@ -211,15 +225,34 @@ async function runConsumer(kind: "chat" | "whisper" | "compiled", modelDir: stri
   for (const pid of left) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
   // Never delete a HOME a worker may still be using: every tracked worker must be gone first.
   const remaining = await survivors(left, 10_000);
-  if (remaining.length)
-    throw new Error(`workers ${remaining.join(", ")} outlived their consumer; kept ${home}` + (failure ? `\nconsumer failure: ${failure}` : ""));
   const homeStores = storeNames(home);
-  rmSync(home, { recursive: true, force: true });
+  if (!removeUnlessRunning(home, remaining))
+    throw new Error(`workers ${remaining.join(", ")} outlived their consumer; kept ${home}` + (failure ? `\nconsumer failure: ${failure}` : ""));
   if (failure) throw failure;
   expect({ workers: workers.size > 0, left }).toEqual({ workers: true, left: [] });
   expect(storeNames(realHome)).toEqual(before);
   return { homeStores, result: result! };
 }
+
+// CPU: the failure-cleanup rule itself, with a short-lived orphaned descendant.
+test("cleanup keeps a directory while a tracked descendant still runs, then removes it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-engine-cleanup-"));
+  const parent = Bun.spawn(["/bin/sh", "-c", "sleep 2 & wait"], { stdout: "ignore", stderr: "ignore" });
+  let tree: number[] = [];
+  for (let tries = 0; !tree.length && tries < 40; tries++) { await Bun.sleep(25); tree = descendants(parent.pid); }
+  expect(tree.length).toBeGreaterThan(0);
+  parent.kill("SIGKILL");
+  await parent.exited;
+  // The descendant outlives its parent: the directory stays.
+  expect(tree.every(alive)).toBe(true);
+  expect(removeUnlessRunning(dir, tree)).toBe(false);
+  expect(existsSync(dir)).toBe(true);
+  // Once it has exited, the same rule removes the directory.
+  expect(await survivors(tree, 5_000)).toEqual([]);
+  expect(removeUnlessRunning(dir, tree)).toBe(true);
+  expect(existsSync(dir)).toBe(false);
+  for (const pid of tree) lingering.delete(pid);
+}, 10_000);
 
 test.skipIf(!native || !chatModel)("openIsolatedHost serves the full app to a native-free consumer: completion, library, jobs, an aborted stream, and close", async () => {
   const { homeStores, result } = await runConsumer("chat", chatModel!);
@@ -268,7 +301,10 @@ test.skipIf(!native || !chatModel)("openIsolatedHost runs a standalone CLI built
     stopBuild();
     await build.exited;
     const left = await survivors(tree, 10_000);
-    if (left.length) throw new Error(`the standalone build left processes running: ${left.join(", ")}`);
+    if (left.length) {
+      for (const pid of left) lingering.add(pid);
+      throw new Error(`the standalone build left processes running: ${left.join(", ")}; kept ${scratch}`);
+    }
     await Promise.race([readers, Bun.sleep(10_000)]);
   }
   if (code !== 0) throw new Error(`standalone build failed (${code ?? build.signalCode})\n${stdout}\n${stderr}`);
