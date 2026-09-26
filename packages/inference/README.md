@@ -162,8 +162,10 @@ The app gateway's real Gemma2 placement test uses the same
 that test only checks placement and allocates no tensors. Native-blocked CPU
 runs skip this check; synthetic gateway tests remain CPU-only.
 
-Shared Gemma2 currently qualifies ordinary plain KV; encoded KV, speculative
-methods, fill, adapters, grammar and paging retain typed unsupported placement.
+Shared Gemma2 qualifies plain KV, including grammar-constrained and adapter
+requests; the opt-in [constrained Gemma2 test](../../apps/mlx-bun/tests/engine/gemma2-constrained.test.ts)
+compares them exactly with direct generation. Encoded KV, speculative methods,
+fill and paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 

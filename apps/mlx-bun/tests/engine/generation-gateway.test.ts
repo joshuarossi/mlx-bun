@@ -160,7 +160,7 @@ test("exclusive mutations share the scheduler lock and release aborted waiters",
 
 // Importing the real graph/binding loads MLX, even though placement creates no
 // tensors. Keep this qualification check out of the native-blocked CPU suite.
-test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits ordinary plain KV and rejects unqualified shared compositions before execution", async () => {
+test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, grammar and adapter requests and rejects unqualified shared compositions before execution", async () => {
   const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
@@ -179,9 +179,15 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits ordinary p
       execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false } });
     for (const kind of ["affine-uniform", "affine-config", "turbo"] as const)
       expect(binding.kvBatchable(new KvScheme(kind, {}))).toBe(false);
-    for (const request of [{ hasDraft: true }, { hasDraft: true, wantsLogprobs: true },
-      { hasAdapters: true }, { hasGrammar: true }, { hasVision: true }, { kvQuant: true }, { turboQuant: true }])
+    for (const request of [{ hasGrammar: true }, { hasAdapters: true }, { hasGrammar: true, hasAdapters: true }])
+      expect(gateway.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous",
+        execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false, grammarJump: false } });
+    expect(binding.bindAdapterContext).toBeFunction();
+    for (const request of [{ hasDraft: true }, { hasDraft: true, wantsLogprobs: true }, { hasVision: true },
+      { kvQuant: true }, { turboQuant: true }, { hasGrammar: true, kvQuant: true }, { hasAdapters: true, hasDraft: true },
+      { hasGrammar: true, hasVision: true }])
       expect(() => gateway.place({ ...shape(), ...request })).toThrow(UnsupportedExecutionError);
+    expect(() => gateway.place({ ...shape(), hasAdapters: true }, { pagedKv: {} })).toThrow(UnsupportedExecutionError);
     expect(() => gateway.place(shape(), { pagedKv: {} })).toThrow(UnsupportedExecutionError);
     expect(() => gateway.place(shape(), { fill: { plan: {} } } as GenerateOptions)).toThrow(UnsupportedExecutionError);
     // Even a caller advertising generic encoded support cannot qualify this graph.

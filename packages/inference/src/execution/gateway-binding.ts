@@ -59,8 +59,9 @@ export interface MlxGatewayBinding {
 export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
-  // Manual softcap attention is qualified for ordinary plain-KV requests.
-  // Encoded attention and grouped methods need their own numerical evidence.
+  // Manual softcap attention is qualified for plain-KV requests, including
+  // grammar-constrained and adapter requests. Encoded attention and grouped
+  // methods (speculative, fill) need their own numerical evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model };
   const cachesBatchable = () => {
@@ -85,7 +86,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
     Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
-  const adapterState = !plainSoftcap && "loraState" in model ? model.loraState : undefined;
+  const adapterState = "loraState" in model ? model.loraState : undefined;
   const fillRequests = !plainSoftcap && supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
     bindEmbeddingsInput((ids, caches, start) => start > 0 ? model.forwardHidden(ids, caches)
@@ -156,7 +157,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
-        grammarBatch: !plainSoftcap,
+        grammarBatch: true,
         speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
           (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
           (!options.kvConfig?.length && model instanceof Qwen35Model &&
