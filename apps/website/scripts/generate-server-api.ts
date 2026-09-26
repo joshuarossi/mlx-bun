@@ -140,14 +140,17 @@ function scan(file: ts.SourceFile): Scan {
     const x = e && skip(e), y = x && ts.isBinaryExpression(x) && x.operatorToken.kind === K.QuestionQuestionToken ? skip(x.left) : x;
     return !!y && (ts.isElementAccessExpression(y) || (ts.isCallExpression(y) && y.expression.getText().endsWith(".slice")));
   };
+  const literalKey = (e: ts.ElementAccessExpression) => { const key = skip(e.argumentExpression); return ts.isStringLiteralLike(key) ? key.text : undefined; };
   const kind = (expression: ts.Expression): Kind | undefined => {
     const e = skip(expression);
     if (ts.isIdentifier(e)) { const name = resolveName(e); return name && kinds.get(name); }
-    if (ts.isPropertyAccessExpression(e)) {
-      const owner = kind(e.expression), name = e.name.text;
+    // `request["method"]` reads like `request.method`; a computed key on the request or its URL is an unsupported site.
+    if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) {
+      const owner = kind(e.expression), name = ts.isPropertyAccessExpression(e) ? e.name.text : literalKey(e);
+      if (name === undefined) return owner === "req" || owner === "url" ? "tainted" : taint(owner);
       return owner === "req" ? (name === "method" ? "method" : name === "url" ? "tainted" : undefined) : owner === "url" ? (name === "pathname" ? "path" : undefined) : taint(owner);
     }
-    if (ts.isElementAccessExpression(e) || ts.isPrefixUnaryExpression(e)) return taint(kind(ts.isPrefixUnaryExpression(e) ? e.operand : e.expression));
+    if (ts.isPrefixUnaryExpression(e)) return taint(kind(e.operand));
     if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
       const owner = taint(kind(e.expression.expression));
       return owner && e.expression.name.text === "split" ? "segments" : owner;
@@ -179,7 +182,8 @@ function scan(file: ts.SourceFile): Scan {
   }
   const value = (e: ts.Expression) => { const k = kind(e); return k === "req" || k === "url" ? undefined : k; }, sites: ts.Node[] = [];
   visit(file, n => {
-    if ((ts.isBinaryExpression(n) && COMPARE.has(n.operatorToken.kind) && (value(n.left) || value(n.right))) || (ts.isSwitchStatement(n) && value(n.expression)) ||
+    if ((ts.isElementAccessExpression(n) && literalKey(n) === undefined && (kind(n.expression) === "req" || kind(n.expression) === "url")) ||
+      (ts.isBinaryExpression(n) && COMPARE.has(n.operatorToken.kind) && (value(n.left) || value(n.right))) || (ts.isSwitchStatement(n) && value(n.expression)) ||
       (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && TESTS.has(n.expression.name.text) && [n.expression.expression, ...n.arguments].some(a => value(a))))
       sites.push(n);
   });
@@ -261,7 +265,8 @@ class Inventory {
       if (segment && (ts.isStringLiteralLike(other) || ts.isNumericLiteral(other))) return { segment: true };
       return ts.isStringLiteralLike(other) ? literals([[other.text, site]], this.value(subject)) : unsupported("routing comparison needs a string literal in");
     }
-    const call = site as ts.CallExpression, callee = call.expression as ts.PropertyAccessExpression;
+    if (!ts.isCallExpression(site)) return unsupported();
+    const call = site, callee = call.expression as ts.PropertyAccessExpression;
     const name = callee.name.text, receiver = skip(callee.expression), [first, second] = call.arguments;
     if (callee.getText() === "Object.hasOwn") {
       const table = this.constant(first!);

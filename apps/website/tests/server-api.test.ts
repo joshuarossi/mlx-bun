@@ -69,6 +69,23 @@ test("an added unsupported routing predicate fails with its location; an unrelat
   expect(rows(serverApiReference(unrelated), "serve")).toEqual(rows(baseline, "serve"));
 });
 
+test("string-keyed request reads route like property reads; a computed key on the request fails with its location", () => {
+  // `request["method"]` and `new URL(request["url"])["pathname"]` are the same routes as their property forms.
+  expect(serverApiReference(mutate("server/status-routes.ts", 'if (request.method !== "GET") return null;', 'if (request["method"] !== "GET") return null;'))).toEqual(baseline);
+  expect(serverApiReference(mutate("server/dataset-routes.ts", "const path = new URL(request.url).pathname;", 'const path = new URL(request["url"])["pathname"];'))).toEqual(baseline);
+  // The reviewer's case: a new route written only with string keys is listed, not silently omitted.
+  const added = serverApiReference(mutate("server/status-routes.ts", '  return { async handle(request: Request): Promise<Response | null> {\n',
+    '  return { async handle(request: Request): Promise<Response | null> {\n    if (request["method"] === "GET" && new URL(request["url"]).pathname === "/new-route") return Response.json({});\n'));
+  expect(rows(added, "serve")).toContain("GET /new-route implemented");
+  expect(rows(added, "serve").filter(row => !row.includes("/new-route"))).toEqual(rows(baseline, "serve"));
+  const cache = serverApiReference(mutate("server/cache-routes.ts", "${request.method} ${new URL(request.url).pathname}", '${request["method"]} ${new URL(request["url"]).pathname}'));
+  expect(cache.modes.map(mode => rows(cache, mode.id))).toEqual(baseline.modes.map(mode => rows(baseline, mode.id)));
+  expect(() => serverApiReference(mutate("server/status-routes.ts", 'if (request.method !== "GET") return null;', 'const key = "method"; if (request[key] !== "GET") return null;')))
+    .toThrow(/^server\/status-routes\.ts:50: unsupported routing predicate `request\[key\] !== "GET"`/);
+  expect(() => serverApiReference(mutate("server/dataset-routes.ts", "const path = new URL(request.url).pathname;", 'const key = "url"; const path = new URL(request[key]).pathname;')))
+    .toThrow(/^server\/dataset-routes\.ts:\d+: unsupported routing predicate `request\[key\]`/);
+});
+
 test("removing a route removes exactly its row", () => {
   const removed = serverApiReference(mutate("server/memory-routes.ts", '        case "GET /api/memory/diff": return handleMemoryDiff(url);\n', ""));
   for (const id of ["serve", "isolate"]) {
