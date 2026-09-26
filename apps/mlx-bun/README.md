@@ -58,6 +58,17 @@ native module at runtime; `serve-host.ts` creates the model-scoped host
 listener), borrowing that state by parameter and lending it an execution
 lease, library invalidation, and the bound port through an attached link.
 `startModelServer` composes both with one close in the app's order.
+Worker mode is internal, with no user flag yet: `cli/worker-entry.ts` composes
+only the model host over a Unix socket a parent supplies (the launch record is
+the first stdin line, the ready line goes to stdout, and the end of stdin means
+the parent is gone), with the persistent services stubbed because the parent
+owns them; `server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`,
+and `POST /admin/drain` ahead of the model routes on that socket only (a TCP
+listener keeps answering 501 there); `jobs/worker-process.ts` is the parent-side
+owner, spawning through the executable captured at startup as `__worker` in
+the compiled binary or the entry script in source runs, SIGTERM then SIGKILL
+after a grace. `--isolate` and `--model-pool` are the next isolation steps in
+[PLAN](../../PLAN.md).
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
 
