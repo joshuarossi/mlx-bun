@@ -6,6 +6,19 @@ import { CLI_SOURCE, INSTALLER_SOURCE, commandReference, generateReference, help
 
 const root = resolve(import.meta.dir, "../../..");
 
+function helpFlags(text: string): string[] {
+  const sections = text.split("\nOptions:\n");
+  expect(sections).toHaveLength(2);
+  const options = sections[1]!.split("\n\n")[0]!;
+  return [...options.matchAll(/^  ((?:-[a-z], )?--[a-z][a-z-]*)/gm)]
+    .flatMap(match => match[1]!.split(", ")).sort();
+}
+
+test("help inventory ignores option mentions in prose but preserves duplicate option rows", () => {
+  const help = "Subcommands:\n  synthesize (--model,\n    --dry-run)\n\nOptions:\n  --dry-run  Preview\n  --dry-run  Duplicate\n  -h, --help  Help\n\n  --example in prose";
+  expect(helpFlags(help)).toEqual(["--dry-run", "--dry-run", "--help", "-h"]);
+});
+
 async function liveHelp(command?: string): Promise<string> {
   const child = Bun.spawn([process.execPath, "--no-env-file", "apps/mlx-bun/src/cli/main.ts", ...(command ? [command] : []), "--help"], {
     cwd: root, env: { ...process.env, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" },
@@ -30,8 +43,6 @@ test("generated CLI covers the real help's complete command and option sets", as
   const section = globalHelp.split("Commands:\n")[1]!.split("\n\nOptions:")[0]!;
   const names = [...section.matchAll(/^  ([a-z][a-z-]*)\s/gm)].map(match => match[1]!);
   expect(commands.map(command => command.name).sort()).toEqual(names.sort());
-  const helpFlags = (text: string) => [...text.matchAll(/^\s+((?:-[a-z], )?--[a-z][a-z-]*)/gm)]
-    .flatMap(match => match[1]!.split(", ")).sort();
   expect(common.global.flatMap(option => option.flags).sort()).toEqual(helpFlags(globalHelp));
   const rendered = renderCommandReference(commands, common);
   const globalSection = rendered.split("## Global options\n")[1]!.split("\n## ")[0]!;

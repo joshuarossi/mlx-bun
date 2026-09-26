@@ -38,6 +38,8 @@ try {
         if (command === "upload") await (await import("./upload")).runUpload(parsed, {}, cancellation.signal);
         else await (await import("./inference")).runInference(command, parsed, {}, cancellation.signal);
       } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+    } else if (command === "memory") {
+      await (await import("./memory")).runMemory(parsed);
     } else if (command === "train" || command === "fuse" || command === "train-watch") {
       const { runTrain, runFuse, runTrainWatch } = await import("./train");
       const cancellation = new AbortController();

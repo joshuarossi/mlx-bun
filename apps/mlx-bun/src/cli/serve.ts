@@ -228,12 +228,14 @@ export function validatePagedServingOptions(
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
-    { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }, { createCacheRoutes }] = await Promise.all([
+    { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }, { createCacheRoutes },
+    { createMemorySynthesis }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"), import("../server/status-routes"),
     import("../server/management-routes"), import("../server/adapter-routes"),
     import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"), import("../server/cache-routes"),
+    import("../server/memory-synthesis"),
   ]);
   const [{ createDownloadOwner }, { Registry }, { TranscriptionService }, { createAudioRoutes }] = await Promise.all([
     import("../hub/downloads"), import("@mlx-bun/hub/registry"), import("../engine/transcription-service"), import("../server/audio-routes")]);
@@ -388,8 +390,10 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
           storage.jobsLogs ?? (storage.jobsDb !== undefined ? join(dirname(storage.jobsDb), "jobs") : undefined)),
       } : {}),
     });
+    let synthesis: ReturnType<typeof createMemorySynthesis> | undefined;
     const closeApp = async () => {
       const errors: unknown[] = [];
+      try { await synthesis?.close(); } catch (error) { errors.push(error); }
       try { await jobs.close(); } catch (error) { errors.push(error); }
       // Whisper weights release before the chat model; in-flight takes drained with the listener.
       try { (await transcription)?.close(); } catch (error) { errors.push(error); }
@@ -401,7 +405,6 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     const finetuneRoutes = createFinetuneRoutes(jobs, storage.artifactRoot
       ? () => join(storage.artifactRoot!, "adapters", `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined);
     const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: join(homedir(), ".mlx-bun", "skills") };
-    const memory = createMemoryRoutes({ root: () => memoryPaths.vault });
     const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
     const sessions = createSessionRoutes(sessionDir);
     const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: storage.artifactRoot });
@@ -410,6 +413,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       getJob: id => jobs.ensureStore().get(id),
     }) });
     let boundPort = options.port;
+    // The synthesis owner cancels and joins loopback requests before engine drain.
+    synthesis = createMemorySynthesis({ root: memoryPaths.vault, apiUrl: () => `http://127.0.0.1:${boundPort}` });
+    const memory = createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run });
     const datasetRunner = createDatasetRunner();
     const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
@@ -434,7 +440,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       beforeDrain: async () => {
         const errors: unknown[] = [];
         try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
-        for (const result of await Promise.allSettled([jobs.close(), downloads.close()]))
+        for (const result of await Promise.allSettled([synthesis!.close(), jobs.close(), downloads.close()]))
           if (result.status === "rejected") errors.push(result.reason);
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "background shutdown failed");

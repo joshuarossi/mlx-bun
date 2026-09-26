@@ -5,12 +5,15 @@ import { UnsupportedExecutionError } from "../../src/engine/completion";
 import { createCompletionRoutes } from "../../src/server/routes";
 import { errorResponse } from "../../src/server/http";
 import { startServer } from "../../src/server/start";
+import { createLoopbackMemoryClient } from "../../src/server/memory-completion-client";
 import { ResponseStore } from "../../src/server/responses";
 
 const execution = { method: "autoregressive", mechanism: "continuous" as const, pagedKv: false, promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false, reasons: [] };
 type RouteEngine = Parameters<typeof createCompletionRoutes>[0];
 function harness(run?: CompletionEngine["run"], overrides: {
   responseHistory?: ResponseStore;
+  context?: Partial<ModelContext>;
+  serverOptions?: Partial<Parameters<typeof createCompletionRoutes>[1]>;
   place?: CompletionEngine["place"];
   preparation?: RouteEngine["preparation"];
   runExclusive?: RouteEngine["gateway"]["runExclusive"];
@@ -22,7 +25,7 @@ function harness(run?: CompletionEngine["run"], overrides: {
     modelId: "test/model", model: { config: { modelType: "qwen3", eosTokenIds: [0], text: { vocabSize: 16 } } },
     tokenizer: { encode: () => [7, 8, 9], decode: (ids: number[]) => ids.map(id => `t${id}`).join(" "), idToToken: (id: number) => `t${id}`, bosTokenId: null, eosTokenId: null },
     template: { render: () => "<rendered>", supportsThinking: false, thinkingFormat: "none" },
-    adapters: { resolveSpec: () => [] }, genDefaults: {}, draft: null,
+    adapters: { resolveSpec: () => [] }, genDefaults: {}, draft: null, ...overrides.context,
   } as unknown as ModelContext;
   const completion: CompletionEngine = {
     place: (shape, options) => { placements++; return overrides.place?.(shape, options) ?? { shape, mechanism: "continuous", execution }; },
@@ -39,7 +42,7 @@ function harness(run?: CompletionEngine["run"], overrides: {
     binding: { discovery: { adapters: false, training: false, dsa: false, embeddings: true },
       embed: inputs => inputs.map(input => ({ vector: Float32Array.from([1, 2]), tokens: input.length })) },
     gateway: { runExclusive: overrides.runExclusive ?? (async (work, _session, signal) => { signal?.throwIfAborted(); exclusive++; return work(); }) },
-  }, { contextLimit: 100, promptCache: { peekPrefixLen: () => 0 }, buildPrompt: overrides.buildPrompt, responseHistory: overrides.responseHistory });
+  }, { ...overrides.serverOptions, contextLimit: 100, promptCache: { peekPrefixLen: () => 0 }, buildPrompt: overrides.buildPrompt, responseHistory: overrides.responseHistory });
   return { routes, seen, exclusive: () => exclusive, placements: () => placements };
 }
 function request(path: string, body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) {
@@ -434,4 +437,50 @@ test("Responses listener disconnect cancels execution without making partial out
     expect(history.size).toBe(1);
   } finally { abort.abort(); await listener.close(); }
   expect(closed).toBe(1);
+});
+
+
+test("memory completions neutralize serving processors and use template defaults through the actual chat route", async () => {
+  const rendered: unknown[] = [];
+  const { routes, seen } = harness(undefined, {
+    context: { genDefaults: { temperature: 1.3, topP: 0.8, topK: 30, repetitionPenalty: 1.4 },
+      template: { render: (_messages: unknown, options: unknown) => { rendered.push(options); return "prompt"; },
+        supportsThinking: true, thinkingFormat: "tags" } as unknown as ModelContext["template"] },
+    serverOptions: { defaultThinking: true, defaultTemperature: 0.9, defaultTopP: 0.7, defaultTopK: 15,
+      hlg: { enabled: true, width: 4, shoulder: 4, toe: 6, pivotOffset: 6, pivot: "top" } },
+  });
+  const client = createLoopbackMemoryClient(() => "http://local", {
+    fetch: (async (url, init) => (await routes.handle(new Request(String(url), init)))!) as typeof fetch,
+  });
+  await client.complete({ stage: "entity", input: { user: "extract" }, maxTokens: 8 });
+  expect(seen).toHaveLength(1);
+  expect(seen[0]![1]).toMatchObject({ temperature: 0, topP: 0, topK: 0, minP: 0,
+    repetitionPenalty: 1, presencePenalty: 0, frequencyPenalty: 0,
+    xtcProbability: 0, xtcThreshold: 0 });
+  expect(seen[0]![1].hlg).toBeUndefined();
+  expect(seen[0]![1].logitBias).toBeUndefined();
+  expect(rendered.length).toBeGreaterThan(0);
+  for (const options of rendered) expect(options).toMatchObject({ enableThinking: undefined });
+});
+
+test("thinking null uses the template default while absence and booleans retain their precedence", async () => {
+  for (const serverDefault of [true, false, undefined]) {
+    const modes: (boolean | undefined)[] = [];
+    const { routes } = harness(undefined, {
+      context: { model: { config: { modelType: "llama", eosTokenIds: [0], text: { vocabSize: 130560, hiddenSize: 1536, numHiddenLayers: 24, numAttentionHeads: 16, numKeyValueHeads: 2, headDim: 128, tieWordEmbeddings: false } } } as ModelContext["model"],
+        template: { render: (_messages: unknown, options: { enableThinking?: boolean }) => { modes.push(options.enableThinking); return "prompt"; },
+          supportsThinking: true, thinkingFormat: "tags" } as unknown as ModelContext["template"] },
+      serverOptions: { defaultThinking: serverDefault },
+    });
+    for (const [kwargs, expected] of [[undefined, serverDefault ?? false], [{ enable_thinking: false }, false],
+      [{ enable_thinking: true }, true], [{ enable_thinking: null }, undefined]] as const) {
+      modes.length = 0;
+      const response = await routes.handle(request("/v1/chat/completions", {
+        messages: [{ role: "user", content: "hello" }], chat_template_kwargs: kwargs,
+      }));
+      expect(response!.status).toBe(200);
+      expect(modes.length).toBeGreaterThan(0);
+      expect(modes.every(mode => mode === expected)).toBe(true);
+    }
+  }
 });
