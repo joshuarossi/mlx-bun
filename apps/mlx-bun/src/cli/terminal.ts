@@ -32,6 +32,25 @@ export function gradient(text: string): string {
   }).join("\n");
 }
 
+const WORDMARK = `
+███╗   ███╗██╗     ██╗  ██╗      ██████╗ ██╗   ██╗███╗   ██╗
+████╗ ████║██║     ╚██╗██╔╝      ██╔══██╗██║   ██║████╗  ██║
+██╔████╔██║██║      ╚███╔╝ █████╗██████╔╝██║   ██║██╔██╗ ██║
+██║╚██╔╝██║██║      ██╔██╗ ╚════╝██╔══██╗██║   ██║██║╚██╗██║
+██║ ╚═╝ ██║███████╗██╔╝ ██╗      ██████╔╝╚██████╔╝██║ ╚████║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝  ╚═══╝`.slice(1);
+
+/** Main's startup wordmark; one plain line when stdout is not a TTY. */
+export function banner(version: string, tagline = "local AI · apple silicon · one binary"): void {
+  if (!tty()) {
+    console.log(`mlx-bun ${version} — ${tagline}`);
+    return;
+  }
+  console.log();
+  console.log(gradient(WORDMARK));
+  console.log(`${DIM}  v${version} · ${tagline}${RESET}\n`);
+}
+
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const OK = tty() ? "\x1b[38;2;48;209;88m✓\x1b[0m" : "✓";
 const FAIL = tty() ? "\x1b[38;2;255;69;58m✗\x1b[0m" : "✗";
