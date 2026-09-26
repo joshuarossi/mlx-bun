@@ -255,6 +255,9 @@ contracts are unchanged; they are not universal dispatch rules for every shape.
 - `@mlx-bun/inference/artifacts`: model configuration, safetensors metadata,
   and lazy native weight loading through `Weights.open(directory)`. The caller
   supplies the local artifact directory and any graph-specific weight view.
+- `@mlx-bun/inference/artifacts/auxiliary-files`: `copyAuxFiles(source, output)`
+  copies tokenizer, template, and other non-weight checkpoint files when present,
+  without loading MLX.
 - `@mlx-bun/inference/input`: `loadTokenizer(directory)` consumes the existing
   Hugging Face tokenizer files; `ChatTemplate.load(directory)` loads the template.
 - `@mlx-bun/inference/layers`: quantized linear and embedding layers, RMSNorm,

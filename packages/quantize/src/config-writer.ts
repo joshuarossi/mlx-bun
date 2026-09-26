@@ -9,8 +9,11 @@
 // Aux files (tokenizer, chat template, generation config, …) are copied through
 // verbatim so the output directory is a complete, loadable model snapshot.
 
-import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { copyAuxFiles } from "@mlx-bun/inference/artifacts/auxiliary-files";
+
+/** Compatibility re-export; `@mlx-bun/inference/artifacts/auxiliary-files` owns it. */
+export { copyAuxFiles };
 
 /** A per-module quantization override. `false` means "left unquantized". */
 export type PerLayerEntry =
@@ -59,22 +62,6 @@ export function buildQuantizationBlock(
   return block;
 }
 
-/** Aux files copied through verbatim from the source dir when present. */
-const AUX_FILES = [
-  "tokenizer.json",
-  "tokenizer_config.json",
-  "tokenizer.model",
-  "spiece.model",
-  "chat_template.jinja",
-  "generation_config.json",
-  "special_tokens_map.json",
-  "added_tokens.json",
-  "vocab.json",
-  "merges.txt",
-  "README.md",
-  "kv_config.json",
-];
-
 /** Metadata for the OptiQ-style sidecar describing the achieved quantization. */
 export interface OptiqMetadata {
   method: string;
@@ -118,28 +105,5 @@ export async function writeQuantizedConfig(
       join(outDir, "optiq_metadata.json"),
       JSON.stringify(opts.optiq, null, 2),
     );
-  }
-}
-
-/** Copy known aux files (and any `*.model`) from src → out when present. */
-export async function copyAuxFiles(srcDir: string, outDir: string): Promise<void> {
-  const seen = new Set<string>();
-  for (const f of AUX_FILES) {
-    const src = join(srcDir, f);
-    if (existsSync(src)) {
-      await Bun.write(join(outDir, f), Bun.file(src));
-      seen.add(f);
-    }
-  }
-  // Sweep any additional *.model tokenizer sidecars not in the known list.
-  try {
-    const { readdirSync } = await import("node:fs");
-    for (const f of readdirSync(srcDir)) {
-      if (f.endsWith(".model") && !seen.has(f)) {
-        await Bun.write(join(outDir, f), Bun.file(join(srcDir, f)));
-      }
-    }
-  } catch {
-    // src dir unreadable — aux copy is best-effort.
   }
 }
