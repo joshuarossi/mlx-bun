@@ -233,7 +233,7 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
   const whisper = options.whisper ?? {};
   const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId,
     idleUnloadSec: whisper.idleUnloadSec, resident: whisper.resident });
-  let cleanup: (() => void) | undefined = () => service.close();
+  let cleanup: (() => Promise<void>) | undefined = async () => { await service.close(); };
   try {
     if (whisper.preload) await service.ensureLoaded();
     const audio = createAudioRoutes({ service: async () => service });
@@ -251,5 +251,5 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
     }, { port: options.port, hostname: options.hostname });
     return { port: listener.server.port!, close: listener.close,
       downloads: { active: [], start() { throw new Error("transcription-only server owns no downloads"); } } };
-  } catch (error) { cleanup?.(); throw error; }
+  } catch (error) { await cleanup?.(); throw error; }
 }
