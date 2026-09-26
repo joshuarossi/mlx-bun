@@ -4,11 +4,10 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symli
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { prepareHomebrew } from "../../../scripts/prepare-homebrew";
-import { NATIVE_FILES as MLX_FILES } from "../../../packages/mlx/src/native";
-import { NATIVE_FILES as INFERENCE_FILES } from "../../../packages/inference/src/runtime/native";
+import { BUNDLE_FILES } from "../../../scripts/bundle-files";
 
 const installer = resolve(import.meta.dir, "../../../scripts/install.sh");
-const required = [...MLX_FILES, ...INFERENCE_FILES, "photon_rs_bg.wasm", "LICENSE", "THIRD_PARTY_NOTICES.md"];
+const required = BUNDLE_FILES.filter(file => file !== "mlx-bun");
 async function readRemaining(stream: ReadableStream<Uint8Array>): Promise<string> {
   const reader = stream.getReader(), decoder = new TextDecoder();
   let text = "";
@@ -103,8 +102,9 @@ test("corrupt, incomplete, wrong-version and failed-link upgrades preserve the p
     const original = await readlink(join(f.app, "current"));
     const corrupt = join(f.home, "corrupt.tar.gz"); await writeFile(corrupt, "not an archive");
     const incomplete = await f.archive("1.0.1", "mlx.metallib");
+    const withoutMic = await f.archive("1.0.3", "mlx-bun-mic-capture");
     const next = await f.archive("1.0.2");
-    for (const [archive, options] of [[corrupt, {}], [incomplete, {}], [next, { MLX_BUN_VERSION: "v2.0.0" }], [next, { TEST_FAIL_LINK: "1" }]] as const) {
+    for (const [archive, options] of [[corrupt, {}], [incomplete, {}], [withoutMic, {}], [next, { MLX_BUN_VERSION: "v2.0.0" }], [next, { TEST_FAIL_LINK: "1" }]] as const) {
       expect((await f.install(archive, options)).code).not.toBe(0);
       expect(await readlink(join(f.app, "current"))).toBe(original);
       expect((await run([f.bin, "--version"])).out).toBe("mlx-bun 1.0.0\n");

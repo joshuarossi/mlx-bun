@@ -78,7 +78,7 @@ tar -tvzf "$STAGE/archive.tar.gz" | awk 'substr($0,1,1) != "-" && !(substr($0,1,
 tar -xzf "$STAGE/archive.tar.gz" -C "$STAGE"
 rm "$STAGE/archive.tar.gz" "$STAGE/entries"
 for file in mlx-bun libmlxc.dylib libmlx.dylib libjaccl.dylib mlx.metallib \
-  libmlx_bun_expert_io.dylib mlx-bun-frame-extract photon_rs_bg.wasm LICENSE THIRD_PARTY_NOTICES.md; do
+  libmlx_bun_expert_io.dylib mlx-bun-frame-extract mlx-bun-mic-capture photon_rs_bg.wasm LICENSE THIRD_PARTY_NOTICES.md; do
   [ -f "$STAGE/$file" ] && [ -s "$STAGE/$file" ] || fail "incomplete bundle: $file"
 done
 [ -x "$STAGE/mlx-bun" ] || fail "bundle executable is not executable"

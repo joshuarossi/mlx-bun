@@ -100,9 +100,29 @@ without one.
 | Embedding API: `mlx-bun/client` and `mlx-bun/engine` (`createCompletionClient`, `createDirectHost`, `openIsolatedHost`) | n/a | missing (no app export; `startModelServer` is the only host entry) | n/a | n/a | n/a | n/a | Preserve as public app exports with new homes in the isolation series: the direct host from the I1 composition split, the isolated host from I3, the completion client over the existing HTTP boundary; package exports and consumer tests in the verifier |
 | Existing-user data compatibility: prior-format sessions, jobs, settings, vault, caches; memory Reference symlinks that point into the main checkout | n/a | missing (no diagnosis) | n/a | n/a | n/a | n/a | Diagnosis and migration that preserve user edits, with prior-format inputs generated in-test (no fixtures committed); acceptance on an isolated copy of real user data; before deleting the old checkout, inventory and preserve user-selected ignored adapters/checkpoints and other local artifacts outside it, because Git history cannot recover ignored files |
 | Docs surface and gates | n/a | n/a | HTTP/config inventories pending | CLI inventory generated from source | site and legacy redirects implemented | n/a | Per ARCHITECTURE: generate inventories from source as build-only output with a coverage gate (the server API from the route handlers' registered surfaces, the server configuration from the serve options and runtime keys), and write the explanations by hand (models, environment, training, memory, distribution, troubleshooting; quotable numbers as text with provenance in a benchmarks page). No STATUS file, docs map, or ledgers are restored. |
-| Installation and release | n/a | n/a | n/a | bundle done (relocatable executable, opt-in verified) | n/a | n/a | All four install paths (Bun/npm launcher, Homebrew, curl script, source checkout) with app-only dependency closure and bin resolution; upgrade and version behavior; signing preparation (nested helpers, Bun entitlements, notarization status) without releasing; prior-data compatibility. Capture the original compiled executable identity at startup for managed jobs and isolated workers; verify the first child after repeated symlink upgrades uses the original build (the current job runner first reads Bun's lazy `process.execPath` at submission). Standalone third-party notices (build-binary copies only the MLX notices today) are owned separately by the reviewer's subagent. No actual release. |
+| Installation and release | n/a | n/a | n/a | bundle, launchers, safe installer, formula and staged release preparation implemented | n/a | n/a | Complete the release acceptance checks below; public installer delivery must follow a compatible bundle release; prior-data compatibility. No actual release. |
 
-- [ ] Completion: Josh could delete main without losing a capability it shipped.
+## Release acceptance
+
+- [ ] Finish GitHub/npm publication and tap synchronization with explicit package
+  versions/private decisions and clean-source checks. Verify the intended Git tag
+  and registry versions before publication, and require release notes for the
+  release body. Actual publication requires Josh's release instruction.
+- [ ] Gate release preparation on the existing relocated `bun run verify:binary`
+  acceptance; `prepare` currently checks only the executable's version.
+- [ ] With Josh's release instruction, verify real Developer ID signing and
+  notarization, including loading the signed native libraries from a relocated
+  signed bundle. The native-blocked version check and mocked commands do not
+  establish this acceptance.
+- [ ] Include the bundled Photon WASM's Apache-2.0 notice in the standalone
+  notices; the current notice bundle covers only the MLX and inference libraries.
+- [ ] Make partial signing retryable without weakening bundle integrity checks
+  before the first real signed release. This is an operational improvement:
+  today a partial signing failure safely requires rebuilding a fresh preparation.
+
+## Completion
+
+- [ ] Josh could delete main without losing a capability it shipped.
   Exit: every row above is all-done or carries a recorded decision and is deleted;
   the verify items above close against pinned published goldens or are recorded
   decisions; main's user flows (CLI verbs, HTTP protocols, web chat, jobs,

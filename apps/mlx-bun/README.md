@@ -632,11 +632,10 @@ symlink and retains the old app on failure. Successful updates keep the current
 and immediate previous bundles, plus any older bundle used by a running app.
 Other older owned bundles and stale stages are removed on the next install;
 vnode inspection keeps bundles used by apps launched through PATH or symlinks,
-and an inconclusive inspection retains the affected bundle. Restart running
-apps after an upgrade before starting new managed jobs: the job runner currently
-resolves its executable lazily and can select the new build. Capturing executable
-identity at startup is tracked in [PLAN](../../PLAN.md). A later install prunes
-old bundles after their processes exit.
+and an inconclusive inspection retains the affected bundle. The CLI captures
+its executable identity at startup, so managed jobs launched after an upgrade
+still use that running app's original build. A later install prunes old bundles
+after their processes exit.
 Sessions, wiki, credentials, and legacy flat installation files
 outside `app-install/` stay intact. A custom `MLX_BUN_INSTALL_DIR` relocates only
 the installed bundle; application data still lives under `~/.mlx-bun`.
@@ -654,3 +653,28 @@ must additionally check that its binary version matches the archive filename.
 Preparation does not install, sign, notarize, publish, or
 update the tap. [Installer tests](tests/install.test.ts) use local archives and
 temporary homes, including reinstall and failure paths, without network access.
+
+## Release preparation
+
+`bun scripts/prepare-release.ts prepare /new/output/directory` builds from staged
+natives, checks the executable against the app manifest version, packs workspace
+packages, and writes unsigned local archives, checksums, and a Homebrew formula.
+`preparation.json` records bundle hashes, dependency-first package publication
+order, and pending private/version decisions. Nothing changes those decisions or
+publishes. The `unsigned/` output is for local verification only.
+
+The same script has explicit `sign <directory> <Developer-ID-identity>`,
+`notarize <directory> <keychain-profile>`, and `package <directory>` stages.
+Signing handles every nested Mach-O before the executable, applies the preserved
+Bun JIT/library-validation entitlements, verifies each signature, and checks
+launch/version. Notarization submits to Apple and requires JSON status `Accepted`;
+an exit code of zero alone is insufficient. Packaging rejects changed bundle
+bytes and missing accepted evidence, then writes the versioned and stable arm64
+tarballs, matching checksum sidecars, and formula under `release/`.
+
+Run `--help` for usage. Signing/notarization and publishing require Josh's release
+instruction; preparation and tests do not access identities or Apple services.
+GitHub/npm publication and tap synchronization remain separate unfinished release
+work. No stage invokes those operations. [Release tests](tests/release.test.ts)
+use captured mock signing/notary commands; they do not prove a real signature or
+Apple acceptance.
