@@ -290,3 +290,52 @@ test("model-routed POSTs are buffered to read `model` and forwarded byte for byt
     expect(fake.notices.filter(line => line.startsWith("evicting"))).toEqual(["evicting org/model (pool cap 1): draining, then stopping", "evicting org/other (pool cap 1): draining, then stopping"]);
   } finally { await fake.pool.close(); fake.remove(); }
 });
+
+test("model discovery includes each resident's own metadata when workers have different registries and retains available nonresident rows", async () => {
+  const fake = fixture({ max: 1, windowMs: 60_000, delayMs: 200 }, 2);
+  try {
+    await fake.pool.ready;
+    const other = await fake.pool.workerFor("org/other");
+    // Each real fake worker lists only itself, like a caller-resolved snapshot
+    // absent from the shared registry. The parent must list both residents.
+    const own = (await (await other.fetch("http://engine/v1/models")).json() as { data: Record<string, unknown>[] }).data[0]!;
+    const list = async () => await (await fake.request("/v1/models")).json() as { data: Record<string, unknown>[] };
+    expect((await list()).data).toEqual([
+      expect.objectContaining({ id: "org/model", resident: true }), { ...own, resident: true },
+    ]);
+    // A registry row can be less precise than the loaded model's own row.
+    // Prefer its owner's metadata and keep cold models available for selection.
+    const original = fake.engine.fetch;
+    fake.engine.fetch = async (url, init) => {
+      const response = await original(url, init);
+      if (new URL(url).pathname !== "/v1/models") return response;
+      const body = await response.json() as { data: Record<string, unknown>[] };
+      return Response.json({ ...body, data: [...body.data,
+        { id: "org/other", object: "model", context_window: 1024 },
+        { id: "org/third", object: "model", context_window: 2048 },
+      ] });
+    };
+    const updated = (await list()).data;
+    expect(updated.filter(row => row.id === "org/other")).toEqual([{ ...own, resident: true }]);
+    expect(updated.find(row => row.id === "org/third")).toEqual({ id: "org/third", object: "model", context_window: 2048, resident: false });
+    expect(fake.pool.report().resident.map(worker => worker.id)).toEqual(["org/model", "org/other"]);
+    expect(fake.pool.report().loading).toEqual([]);
+    // Losing another worker's discovery must not fail the healthy listing.
+    other.fetch = async () => { throw new Error("peer restarting"); };
+    expect((await fake.request("/v1/models")).status).toBe(200);
+    // A hung peer has a bounded discovery wait; cancelling the caller still
+    // cancels that fan-out and returns the normal disconnected-client status.
+    let timedOut = false;
+    other.fetch = async (_url, init) => new Promise((_resolve, reject) => {
+      const signal = init!.signal!;
+      const abort = () => { timedOut ||= signal.reason?.name === "TimeoutError"; reject(signal.reason); };
+      if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+    });
+    expect((await fake.request("/v1/models")).status).toBe(200);
+    expect(timedOut).toBe(true);
+    const cancelled = new AbortController();
+    const listing = fake.request("/v1/models", { signal: cancelled.signal });
+    await Bun.sleep(10); cancelled.abort();
+    expect((await listing).status).toBe(499);
+  } finally { await fake.pool.close(); fake.remove(); }
+});

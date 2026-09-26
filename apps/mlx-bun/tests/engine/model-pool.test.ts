@@ -40,7 +40,7 @@ test.skipIf(!native || !firstDir || !secondDir)("--isolate --model-pool 2 keeps 
     return startIsolatedServer(first, options, { createRegistry: registry });
   };
   const completion = async (base: string, model: string) => {
-    const response = await fetch(`${base}/v1/chat/completions`, { method: "content-type" in {} ? "POST" : "POST", headers: { "content-type": "application/json" },
+    const response = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ model, stream: false, max_tokens: 8, temperature: 0, messages: [{ role: "user", content: "Say hi." }] }) });
     expect(response.status).toBe(200);
     const body = await response.json() as { model: string; choices: { message: { content: string } }[] };

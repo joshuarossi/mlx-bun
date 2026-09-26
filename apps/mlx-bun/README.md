@@ -223,7 +223,11 @@ state, restarts, socket }], loading: [ids] }` (residents least recently used
 first); its worker fields keep describing the default worker and are `null` with
 `state: "evicted"` while it is evicted. `GET /health` carries the same summary
 with resident ids only and `GET /stats` the full `engine` report. `/v1/models`
-rows gain `resident: boolean` (and `loading: true` while a cold start runs).
+keeps the available-model listing and merges each additional resident's own
+discovery row, so checkpoints resolved outside the shared registry still appear
+with their actual capabilities. Rows gain `resident: boolean` (and
+`loading: true` while a cold start runs). Peer discovery is bounded and preserves
+the base listing when another worker is unavailable.
 
 **Deviations from main.** Main clamped any bad `--model-pool` value to 1; here
 it is validated like the other numeric flags. Main forwarded every non-routed
@@ -231,9 +235,7 @@ request to the default worker, respawning it when evicted, which the browser's
 `/stats` and `/library` polls would turn into a spawn loop at cap 1; here those
 requests never load a model. Main's requester waited for the victim's drain
 before its first answer; here the victim is deregistered at once and drained in
-the background, while the next cold start and any job lease wait for it. Main
-serialized cold starts against jobs through a parent coordinator; here a worker
-spawned mid-job leases on ready instead.
+the background, while the next cold start and any job lease wait for it.
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
 

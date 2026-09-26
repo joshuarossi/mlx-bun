@@ -298,7 +298,7 @@ test("the model pool through the real composition: exact ids reach their own wor
     pids.push(two.pool.resident[1]!.pid!);
     expect(new Set(pids).size).toBe(2);
     expect(notices).toContain(`engine worker pid ${pids[1]} ready for org/second (socket ${two.pool.resident[1]!.socket})`);
-    expect(await (await fetch(`${base}/v1/models`)).json()).toMatchObject({ data: [{ id: "org/model", resident: true }] });
+    expect(await (await fetch(`${base}/v1/models`)).json()).toMatchObject({ data: [{ id: "org/model", resident: true }, { id: "org/second", resident: true }] });
     // A third id evicts the least recently used (the default): its worker drains and stops, the parent's default fields go null, an empty model field brings it back.
     expect(await chat("org/third")).toBe("org/third");
     const three = await engine();

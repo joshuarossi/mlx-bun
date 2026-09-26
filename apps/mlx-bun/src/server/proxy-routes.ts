@@ -153,14 +153,36 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
     }
   };
 
-  /** The worker's listing, each row flagged with the pool's residency. */
+  /** Keep the available-model listing and merge each resident's own metadata:
+   * a caller-resolved checkpoint need not exist in another worker's registry. */
   const models = async (request: Request, observe: Observe): Promise<Response> => {
-    const upstream = await forward(request, observe);
+    let inspected: WorkerSupervisor | undefined;
+    const upstream = await forward(request, engine => { inspected = engine; observe(engine); });
     if (!upstream.ok || !(upstream.headers.get("content-type") ?? "").includes("json")) return upstream;
     const body = await upstream.json() as { data?: unknown };
     if (!Array.isArray(body.data)) return Response.json(body, { status: upstream.status, headers: upstream.headers });
+    const rows: unknown[] = [...body.data];
+    const ownRows = await Promise.all(pool.residents().filter(({ engine }) => engine !== inspected && engine.state === "ready")
+      .map(async ({ id, engine }) => {
+        try {
+          const response = await engine.fetch("http://engine/v1/models", { headers: stripHopByHop(request.headers),
+            signal: AbortSignal.any([request.signal, AbortSignal.timeout(2_000)]) });
+          if (!response.ok || !(response.headers.get("content-type") ?? "").includes("json")) {
+            await response.body?.cancel(); return undefined;
+          }
+          const listing = await response.json() as { data?: unknown };
+          return Array.isArray(listing.data) ? listing.data.find((row: unknown) =>
+            row !== null && typeof row === "object" && (row as { id?: unknown }).id === id) : undefined;
+        } catch { return undefined; } // A restarting peer must not hide the available listing.
+      }));
+    request.signal.throwIfAborted();
+    for (const own of ownRows) {
+      if (!own) continue;
+      const index = rows.findIndex(row => row !== null && typeof row === "object" && (row as { id?: unknown }).id === own.id);
+      if (index < 0) rows.push(own); else rows[index] = own;
+    }
     const residentIds = new Set(pool.residents().map(worker => worker.id)), loading = new Set(pool.report().loading);
-    const data = body.data.map((row: unknown) => {
+    const data = rows.map((row: unknown) => {
       if (!row || typeof row !== "object" || typeof (row as { id?: unknown }).id !== "string") return row;
       const id = (row as { id: string }).id;
       return { ...row, resident: residentIds.has(id), ...(loading.has(id) ? { loading: true } : {}) };
