@@ -736,7 +736,7 @@ test("the transcription-only server preloads on request, serves audio and discov
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], created = [];
-    let failLoad = false;
+    let failLoad = false, deferClose = null;
     mock.module(app + "src/engine/transcription-service.ts", () => ({
       TranscriptionError: class extends Error { constructor(message, status) { super(message); this.status = status; } },
       TranscriptionService: class {
@@ -744,7 +744,7 @@ test("the transcription-only server preloads on request, serves audio and discov
         get stats() { return { resident: this.resident, loads: this.resident ? 1 : 0, unloads: 0, requests: 0, last_load_ms: 0, idle_unload_sec: 0 }; }
         async ensureLoaded() { events.push("load"); if (failLoad) throw new Error("no tokenizer"); this.resident = true; return { loadMs: 1, loaded: {} }; }
         unload() { const was = this.resident; this.resident = false; events.push("unload"); return was; }
-        close() { return this.closing ??= (async () => { await Promise.resolve(); events.push("close"); })(); }
+        close() { return this.closing ??= (async () => { await Promise.resolve(); if (deferClose) await deferClose; events.push("close"); })(); }
       },
     }));
     const { startTranscriptionServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
@@ -772,6 +772,17 @@ test("the transcription-only server preloads on request, serves audio and discov
     // A failed preload releases the service before any listener exists.
     events.length = 0; failLoad = true;
     await assert.rejects(startTranscriptionServer({ path: "/unused/whisper", repoId: "org/whisper" }, options), /no tokenizer/);
+    assert.deepEqual(events, ["load", "close"]);
+    // The service's close joins in-flight work; startup must not reject before that join finishes.
+    events.length = 0;
+    let finishClose; deferClose = new Promise(resolve => { finishClose = resolve; });
+    let settled = false;
+    const failing = startTranscriptionServer({ path: "/unused/whisper", repoId: "org/whisper" }, options).catch(error => { settled = true; return error; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(settled, false);
+    assert.deepEqual(events, ["load"]);
+    finishClose();
+    assert.match(String(await failing), /no tokenizer/);
     assert.deepEqual(events, ["load", "close"]);
   `;
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
