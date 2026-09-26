@@ -866,9 +866,11 @@ After staging the root native setup and the app helper with
 `bun run --filter mlx-bun build:native`, run `bun run build:binary` from the root.
 `dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
 WASM sidecar, the project license, and combined third-party notices: the MLX and
-inference package notices, Photon's installed Apache-2.0 license, and a Pi
-section. Pi is compiled into the executable; its npm package ships no license
-file, so that section states the MIT license its manifest declares.
+inference package notices, Photon's installed Apache-2.0 license, and the app's
+own [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Pi is compiled into the
+executable and its npm packages ship no license file, so that file carries Pi's
+upstream MIT license verbatim with its source revision and git blob; the build
+fails unless it names every installed Pi package at its installed version.
 Move the whole directory together. Web assets and the memory skill
 are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.

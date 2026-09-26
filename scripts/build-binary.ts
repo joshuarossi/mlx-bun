@@ -43,20 +43,28 @@ async function installedManifest(directory: string): Promise<{ name: string; ver
   return manifest;
 }
 
+/** Pi packages compiled into the executable. Their npm packages ship no license
+ * file, so apps/mlx-bun/THIRD_PARTY_NOTICES.md carries the upstream text. */
+const PI_PACKAGES = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai",
+  "@earendil-works/pi-agent-core", "@earendil-works/pi-tui"] as const;
+
 /** Ordered sections of the bundle's THIRD_PARTY_NOTICES.md, verbatim from the
- * workspace and installed packages. Pi 0.80.3's npm package ships no license
- * file, so its section states the license its manifest declares. */
+ * workspace, the installed Photon package, and the app-owned notices for Pi.
+ * The app notice must name every installed Pi package at its installed version. */
 export async function bundleNotices(base = root): Promise<string[]> {
   const { pi, photon } = installedDependencies(base);
-  const [piPackage, photonPackage] = await Promise.all([installedManifest(pi), installedManifest(photon)]);
-  const piLicense = (await readdir(pi)).find(name => /^licen[cs]e(\.md|\.txt)?$/i.test(name));
+  const photonPackage = await installedManifest(photon);
+  const appNotice = await noticeText(join(base, "apps/mlx-bun/THIRD_PARTY_NOTICES.md"));
+  for (const name of PI_PACKAGES) {
+    const { version } = await installedManifest(dirname(Bun.resolveSync(`${name}/package.json`, pi)));
+    if (!appNotice.includes(`\`${name}@${version}\``))
+      throw new Error(`apps/mlx-bun/THIRD_PARTY_NOTICES.md does not cover the installed ${name}@${version}`);
+  }
   return [
     ...await Promise.all(["mlx", "inference"].map(async name =>
       `# @mlx-bun/${name}\n\n${await noticeText(join(base, "packages", name, "THIRD_PARTY_NOTICES.md"))}`)),
     `# ${photonPackage.name}@${photonPackage.version}\n\nCovers the bundled \`photon_rs_bg.wasm\`. License: ${photonPackage.license}.\n\n${await noticeText(join(photon, "LICENSE.md"))}`,
-    `# ${piPackage.name}@${piPackage.version}\n\nCompiled into the \`mlx-bun\` executable. License: ${piPackage.license}` + (piLicense
-      ? `.\n\n${await noticeText(join(pi, piLicense))}`
-      : " (declared in the installed package.json; the package ships no license file).\n"),
+    `# mlx-bun\n\n${appNotice}`,
   ];
 }
 

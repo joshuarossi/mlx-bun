@@ -17,7 +17,8 @@
     "bin",
     "src",
     "dist/web",
-    "dist/native"
+    "dist/native",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --project tsconfig.browser.json",

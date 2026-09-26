@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { gitBlobSha1 } from "@mlx-bun/hub/download";
 import { bundleNotices } from "../../../scripts/build-binary";
 import { BUNDLE_FILES } from "../../../scripts/bundle-files";
 import { MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
@@ -122,24 +123,33 @@ test("failed or bundle-mutating acceptance leaves no unsigned output and no prep
   } finally { await f.close(); }
 });
 
-test("bundle notices carry the package notices and the installed Photon and Pi license texts verbatim", async () => {
+test("bundle notices carry the package notices, Photon's installed license and Pi's upstream license verbatim", async () => {
   expect(verifyBundle).toBeFunction();
   const app = resolve(import.meta.dir, ".."), root = resolve(app, "../..");
   const piDirectory = dirname(Bun.resolveSync("@earendil-works/pi-coding-agent/package.json", app));
   const photonDirectory = dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(Bun.resolveSync("@earendil-works/pi-coding-agent", app))));
-  const pi = JSON.parse(await readFile(join(piDirectory, "package.json"), "utf8"));
   const photon = JSON.parse(await readFile(join(photonDirectory, "package.json"), "utf8"));
-  const [mlx, inference, photonNotice, piNotice, ...extra] = await bundleNotices();
+  const [mlx, inference, photonNotice, appNotice, ...extra] = await bundleNotices();
   expect(extra).toEqual([]);
   for (const [name, notice] of [["mlx", mlx], ["inference", inference]] as const)
     expect(notice).toBe(`# @mlx-bun/${name}\n\n${await readFile(join(root, "packages", name, "THIRD_PARTY_NOTICES.md"), "utf8")}`);
   const photonLicense = await readFile(join(photonDirectory, "LICENSE.md"), "utf8");
   expect(photonLicense).toContain("Apache License");
   expect(photonNotice).toBe(`# @silvia-odwyer/photon-node@${photon.version}\n\nCovers the bundled \`photon_rs_bg.wasm\`. License: Apache-2.0.\n\n${photonLicense}`);
-  expect(piNotice).toStartWith(`# @earendil-works/pi-coding-agent@${pi.version}\n\nCompiled into the \`mlx-bun\` executable. License: MIT`);
-  const piLicense = (await readdir(piDirectory)).find(name => /^licen[cs]e(\.md|\.txt)?$/i.test(name));
-  expect(piNotice).toContain(piLicense ? await readFile(join(piDirectory, piLicense), "utf8")
-    : "declared in the installed package.json; the package ships no license file");
+
+  // Pi's npm packages ship no license file; the app notice carries the upstream
+  // LICENSE blob it names, byte for byte, for every installed Pi package version.
+  const notice = await readFile(join(app, "THIRD_PARTY_NOTICES.md"), "utf8");
+  expect(appNotice).toBe(`# mlx-bun\n\n${notice}`);
+  for (const name of ["pi-coding-agent", "pi-ai", "pi-agent-core", "pi-tui"]) {
+    const { version } = JSON.parse(await readFile(join(dirname(Bun.resolveSync(`@earendil-works/${name}/package.json`, piDirectory)), "package.json"), "utf8"));
+    expect(notice).toContain(`\`@earendil-works/${name}@${version}\``);
+  }
+  const license = notice.slice(notice.indexOf("MIT License")).replace(/\n$/, "");
+  expect(license).toStartWith("MIT License\n\nCopyright (c) 2025 Mario Zechner\n");
+  expect(license).toContain("The above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.");
+  const blob = notice.match(/git blob `([0-9a-f]{40})`/)![1];
+  expect(gitBlobSha1(new TextEncoder().encode(license))).toBe(blob!);
 });
 
 test("publication order rejects cycles, unpackaged ranges, missing packages and incompatible versions", () => {
