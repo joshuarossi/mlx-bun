@@ -7,6 +7,9 @@ const pages = new Map<string, string>();
 for await (const path of new Bun.Glob("**/*.html").scan(dist))
   pages.set(`/${path}`, await readFile(resolve(dist, path), "utf8"));
 if (!pages.has("/index.html") || !pages.has("/reference/cli/index.html") || !pages.has("/api/index.html")) throw new Error("Missing site entry, CLI reference, or library API");
+// The HTTP inventory is a generated page, never a redirect stub.
+const serverApi = pages.get("/reference/server-api/index.html") ?? "";
+if (serverApi.includes('http-equiv="refresh"') || !serverApi.includes("<table")) throw new Error("Missing the generated HTTP API reference");
 // Public URLs from the previous site remain navigable, even when their old
 // prose is deliberately replaced by a redirect to the current explanation.
 for (const path of ["getting-started/introduction", "getting-started/installation", "getting-started/quickstart",
