@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createMemoryRoutes } from "../src/server/memory-routes";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { startServer } from "../src/server/start";
 import type { ChatBackendFactory } from "../src/chat/backend";
 
@@ -193,4 +193,25 @@ test("failed chat startup closes its transport so graceful listener drain can fi
   const closed = new Promise<void>(resolve => client.socket.addEventListener("close", () => resolve(), { once: true }));
   try { await client.opened; await closed; await app.close(); expect(disposed).toBe(1); }
   finally { client.socket.close(); await app.close(); }
+});
+
+test("a Unix listener replaces a stale socket file, narrows it to its owner, ignores port and hostname, and removes it on close", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-worker-")), unix = join(dir, "worker.sock");
+  writeFileSync(unix, "stale");
+  let disposals = 0;
+  const app = await startServer({ web: () => null, chat: idle, async closeEngine() { disposals++; },
+    routes: { async handle(request) { return new URL(request.url).pathname === "/ping" ? Response.json({ pong: true }) : null; } },
+  }, { unix, port: 1, hostname: "203.0.113.1" });
+  try {
+    expect(app.server.port).toBeUndefined();
+    const stat = statSync(unix);
+    expect([stat.isSocket(), stat.mode & 0o777]).toEqual([true, 0o600]);
+    const get = (path: string) => fetch(`http://worker${path}`, { unix } as RequestInit);
+    expect(await (await get("/ping")).json()).toEqual({ pong: true });
+    // The migration list applies to the socket too; only the worker's own group answers lease and drain.
+    expect((await get("/admin/lease")).status).toBe(501);
+    expect((await get("/missing")).status).toBe(404);
+  } finally { await app.close(); }
+  expect([existsSync(unix), disposals]).toEqual([false, 1]);
+  rmSync(dir, { recursive: true, force: true });
 });
