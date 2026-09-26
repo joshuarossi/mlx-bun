@@ -338,7 +338,12 @@ HTTP media policy (which content parts are present, the video guard, and the 400
 text for each refusal) and delegates to the loaded model's media preparation.
 `engine/media-preparation.ts` binds one route per family when the model loads;
 each route borrows the context's tokenizer, template, token ids and lazily loaded
-towers and calls the library's numerical input builders. Grammar and media
+towers and calls the library's numerical input builders. The opt-in
+[native media test](tests/engine/media-native.test.ts) (`MLX_BUN_TEST_NATIVE=1` plus
+`MLX_BUN_APP_TEST_GEMMA4_AUDIO_MODEL`, `MLX_BUN_APP_TEST_GEMMA4_UNIFIED_MODEL`,
+`MLX_BUN_APP_TEST_QWEN_VISION_MODEL` or `MLX_BUN_APP_TEST_DIFFUSION_MODEL`, each a
+cached snapshot directory) prepares image, audio, mixed and video prompts through a
+loaded model with synthesized media and a warm encoder cache. Grammar and media
 work enter the engine's preparation domain before allocating native resources.
 Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
 requests and semantic completion events, including tools, thinking, and usage.
