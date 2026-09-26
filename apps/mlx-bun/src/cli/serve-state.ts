@@ -24,6 +24,7 @@ import { createFinetuneRoutes } from "../server/finetune-routes";
 import { createHubRoutes } from "../server/hub-routes";
 import { createJobRoutes } from "../server/job-routes";
 import { createMemoryRoutes } from "../server/memory-routes";
+import { createMemorySynthesis } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
 import { createQuantizeRoutes } from "../server/quantize-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
@@ -105,10 +106,14 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
   const datasetRunner = createDatasetRunner();
+  // Memory synthesis reaches the model only through the attached host's own
+  // /v1/chat/completions; the owner cancels and joins its runs before jobs and
+  // downloads close, ahead of any engine drain.
+  const synthesis = createMemorySynthesis({ root: memoryPaths.vault, apiUrl: () => `http://127.0.0.1:${host?.port ?? options.port}` });
   const routes: AppState["routes"] = {
     hub: createHubRoutes({ downloads }),
     sessions: createSessionRoutes(sessionDir),
-    memory: createMemoryRoutes({ root: () => memoryPaths.vault }),
+    memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
     quantize: createQuantizeRoutes(jobs),
     dataset: createDatasetRoutes({ serverPort: () => host?.port ?? options.port,
@@ -130,7 +135,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     },
     close: () => closing ??= (async () => {
       const errors: unknown[] = [];
-      for (const result of await Promise.allSettled([jobs.close(), downloads.close()]))
+      for (const result of await Promise.allSettled([synthesis.close(), jobs.close(), downloads.close()]))
         if (result.status === "rejected") errors.push(result.reason);
       if (errors.length === 1) throw errors[0];
       if (errors.length) throw new AggregateError(errors, "background shutdown failed");

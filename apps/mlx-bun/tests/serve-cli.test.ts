@@ -744,7 +744,7 @@ test("the transcription-only server preloads on request, serves audio and discov
         get stats() { return { resident: this.resident, loads: this.resident ? 1 : 0, unloads: 0, requests: 0, last_load_ms: 0, idle_unload_sec: 0 }; }
         async ensureLoaded() { events.push("load"); if (failLoad) throw new Error("no tokenizer"); this.resident = true; return { loadMs: 1, loaded: {} }; }
         unload() { const was = this.resident; this.resident = false; events.push("unload"); return was; }
-        close() { events.push("close"); }
+        close() { return this.closing ??= (async () => { await Promise.resolve(); events.push("close"); })(); }
       },
     }));
     const { startTranscriptionServer, parseServeOptions } = await import(app + "src/cli/serve.ts");

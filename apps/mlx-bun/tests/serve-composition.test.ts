@@ -116,7 +116,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
     mock.module(app + "src/engine/transcription-service.ts", () => ({ TranscriptionService: class {
       constructor(options) { this.modelId = options.modelId; this.resident = false; }
-      close() { events.push("whisper close"); }
+      close() { return this.closing ??= (async () => { await Promise.resolve(); events.push("whisper close"); })(); }
     } }));
     let completionOptions, piOptions, managementOptions, artifactOptions, listenerInput, whisperProbe;
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) { completionOptions = options; whisperProbe = options.transcription;
@@ -174,12 +174,13 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
     assert.deepEqual(visited, ["status", "cacheAdmin", "hub", "sessions", "adapters", "management", "audio", "memory", "jobs", "quantize", "dataset", "finetune", "adapterArtifacts", "publishing", "completions"]);
-    // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook),
-    // chat and HTTP drain, Whisper, engine, caches, model, process settings; then the link detaches.
+    // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
+    // with Whisper alongside them before drain, chat and HTTP drain, Whisper again (idempotent, catches a
+    // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.
     assert.deepEqual(await whisperProbe(), { id: "org/whisper", resident: false });
     events.length = 0;
     await host.close(); await host.close();
-    assert.deepEqual(events, ["timer stop", "jobs close", "downloads close", "chat dispose", "drain", "whisper close", "engine close", "cache close", "model close", "allocator 77", "detach"]);
+    assert.deepEqual(events, ["timer stop", "jobs close", "downloads close", "whisper close", "chat dispose", "drain", "engine close", "cache close", "model close", "allocator 77", "detach"]);
     assert.equal(limit, 77); assert.equal(detaches, 1);
     assert.equal(stateCloses, 0, "the host never closes the persistent state");
     // Startup failure after the link is lent detaches it and restores the process without touching the state.

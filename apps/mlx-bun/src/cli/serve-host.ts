@@ -150,8 +150,9 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
     })();
     const closeApp = async () => {
       const errors: unknown[] = [];
-      // Whisper weights release before the chat model; in-flight takes drained with the listener.
-      try { (await transcription)?.close(); } catch (error) { errors.push(error); }
+      // A request admitted before shutdown may initialize the lazy companion while
+      // responses drain. Close again here; the service joins/releases only once.
+      try { await (await transcription)?.close(); } catch (error) { errors.push(error); }
       try { await engine.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
@@ -198,7 +199,10 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
       beforeDrain: async () => {
         const errors: unknown[] = [];
         try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
-        try { await hooks.beforeDrain?.(); } catch (error) { errors.push(error); }
+        // Whisper closes with the persistent owners before drain: admission stops,
+        // in-flight takes are joined, weights release ahead of the chat model.
+        for (const result of await Promise.allSettled([hooks.beforeDrain?.(), (async () => { await (await transcription)?.close(); })()]))
+          if (result.status === "rejected") errors.push(result.reason);
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "background shutdown failed");
       },
@@ -241,7 +245,9 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
       web: () => null,
       // No chat model: a WebSocket session fails to start and its transport closes.
       chat: () => ({ async start() { throw new Error("transcription-only server has no chat model"); }, async handle() {}, dispose() {} }),
-      closeEngine: async () => service.close(),
+      // Whisper closes before drain: admission stops, in-flight takes are joined, weights release.
+      beforeDrain: () => service.close(),
+      closeEngine: async () => {},
     }, { port: options.port, hostname: options.hostname });
     return { port: listener.server.port!, close: listener.close,
       downloads: { active: [], start() { throw new Error("transcription-only server owns no downloads"); } } };
