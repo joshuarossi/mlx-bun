@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { buildBinary } from "./build-binary";
-import { BUNDLE_FILES } from "./bundle-files";
+import { archiveCommand, BUNDLE_FILES } from "./bundle-files";
 import { prepareHomebrew } from "./prepare-homebrew";
+import { verifyBundle } from "./verify-binary";
 
 const workspace = resolve(import.meta.dir, "..");
 export type Run = (command: string[], cwd?: string) => Promise<string>;
@@ -74,14 +75,15 @@ async function checked(directory: string): Promise<Preparation> {
 async function versionCheck(directory: string, version: string, execute: Run) {
   assert.equal(await execute([join(directory, "mlx-bun"), "--version"]), `mlx-bun ${version}\n`, "Binary version differs from app manifest/archive version");
 }
-async function archiveBundle(directory: string, version: string, output: string, execute: Run, expected: Record<string, string>, kind: "unsigned" | "release") {
+export type Verify = (options: { archive: string; version: string }) => Promise<void>;
+async function archiveBundle(directory: string, version: string, output: string, execute: Run, expected: Record<string, string>, kind: "unsigned" | "release", verify?: Verify) {
   await versionCheck(directory, version, execute);
   assert.deepEqual(await bundleFiles(directory), expected, "Bundle changed before archiving");
   const files = Object.keys(expected);
   await mkdir(output);
   try {
     const versioned = `mlx-bun-v${version}-arm64.tar.gz`, stable = "mlx-bun-arm64.tar.gz";
-    await execute(["tar", "-czf", join(output, versioned), "-C", directory, ...files]);
+    await execute(archiveCommand(join(output, versioned), directory, files));
     assert.deepEqual(await bundleFiles(directory), expected, "Bundle changed during archiving");
     await copyFile(join(output, versioned), join(output, stable));
     const checksum = sha(await readFile(join(output, versioned)));
@@ -89,13 +91,18 @@ async function archiveBundle(directory: string, version: string, output: string,
     const formula = await prepareHomebrew(join(output, versioned));
     if (kind === "unsigned") await writeFile(formula,
       "# UNSIGNED LOCAL PREPARATION ONLY; do not publish this formula.\n" + await readFile(formula, "utf8"));
+    if (verify) {
+      await verify({ archive: join(output, versioned), version });
+      assert.deepEqual(await bundleFiles(directory), expected, "Bundle changed during verification");
+    }
   } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
 }
 
-/** Build and inspect unsigned local artifacts. Does not access signing identities,
+/** Build and inspect unsigned local artifacts, then run the relocated/installer
+ * acceptance on the unsigned archive. Does not access signing identities,
  * notarize, publish packages/releases, or update the Homebrew tap. */
 export async function prepareRelease(directory: string, root = workspace, execute: Run = run,
-  build: (output: string) => Promise<string> = buildBinary) {
+  build: (output: string) => Promise<string> = buildBinary, verify: Verify = verifyBundle) {
   const app = JSON.parse(await readFile(join(root, "apps/mlx-bun/package.json"), "utf8"));
   assert(/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?$/.test(app.version), "Invalid app version");
   await mkdir(dirname(directory), { recursive: true });
@@ -116,7 +123,7 @@ export async function prepareRelease(directory: string, root = workspace, execut
   }
   assert.equal(manifests.find(manifest => manifest.name === app.name)?.version, app.version, "App version changed during preparation");
   const state: Preparation = { version: app.version, stage: "unsigned", files: await bundleFiles(bundle), publication: publicationPlan(manifests) };
-  await archiveBundle(bundle, app.version, join(directory, "unsigned"), execute, state.files, "unsigned");
+  await archiveBundle(bundle, app.version, join(directory, "unsigned"), execute, state.files, "unsigned", verify);
   await save(directory, state);
   return state;
 }
@@ -168,7 +175,8 @@ export async function packageRelease(directory: string, execute: Run = run) {
 if (import.meta.main) {
   const [command, path, credential, ...extra] = process.argv.slice(2);
   if (command === "--help") console.log(`Usage: bun scripts/prepare-release.ts <stage> <new-or-existing-directory> [credential]
-  prepare   NEW directory: staged native build, package graph, unsigned archives/formula
+  prepare   NEW directory: staged native build, package graph, unsigned archives/formula,
+            then the verify:binary acceptance on the unsigned archive (CPU only)
   sign      prepared directory + explicit Developer ID identity
   notarize  signed directory + explicit notarytool keychain profile
   package   accepted directory: release archives, checksums and Homebrew formula

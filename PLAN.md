@@ -114,14 +114,15 @@ without one.
   versions/private decisions and clean-source checks. Verify the intended Git tag
   and registry versions before publication, and require release notes for the
   release body. Actual publication requires Josh's release instruction.
-- [ ] Gate release preparation on the existing relocated `bun run verify:binary`
-  acceptance; `prepare` currently checks only the executable's version.
 - [ ] With Josh's release instruction, verify real Developer ID signing and
   notarization, including loading the signed native libraries from a relocated
   signed bundle. The native-blocked version check and mocked commands do not
   establish this acceptance.
-- [ ] Include the bundled Photon WASM's Apache-2.0 notice in the standalone
-  notices; the current notice bundle covers only the MLX and inference libraries.
+- [ ] Ship Pi's MIT license text in the standalone notices. Pi 0.80.3's npm
+  packages ship no license file, so the Pi section states only the declared
+  license; the upstream repository's LICENSE needs an approved committed copy.
+  Code compiled into the executable from Pi's dependencies and vendored sources
+  (e.g. ansi-regex in its `dist/utils/ansi.js`) has no notice either.
 - [ ] Make partial signing retryable without weakening bundle integrity checks
   before the first real signed release. This is an operational improvement:
   today a partial signing failure safely requires rebuilding a fresh preparation.

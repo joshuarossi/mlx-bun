@@ -1,22 +1,14 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildBinary, compileApp } from "./build-binary";
+import { buildBinary, bundleNotices, compileApp } from "./build-binary";
+import { archiveCommand } from "./bundle-files";
 import { NATIVE_DIR as MLX_DIR, resolveLibmlxc } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, resolveInferenceNative } from "../packages/inference/src/runtime/native";
 
-if (process.argv.includes("--help")) {
-  console.log("Usage: bun scripts/verify-binary.ts [--model CACHED_DIRECTORY]\nBuild, relocate, and exercise the app bundle. Default: CPU only.\n--model additionally runs real GPU inference through the relocated product server; uses cached weights and isolated temporary storage.");
-  process.exit(0);
-}
-const args = process.argv.slice(2);
-if (args.length && (args.length !== 2 || args[0] !== "--model" || !args[1]))
-  throw new Error("Usage: bun scripts/verify-binary.ts [--model CACHED_DIRECTORY]");
-const model = args[1] ? await realpath(args[1]) : undefined;
-if (model && (!(await stat(model)).isDirectory() || !existsSync(join(model, "config.json"))))
-  throw new Error("--model requires an existing cached model directory with config.json");
+const root = resolve(import.meta.dir, "..");
 
 async function bounded<T>(work: Promise<T>, milliseconds: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -102,49 +94,57 @@ async function verifyModel(executable: string, cachedModel: string, scratch: str
   if (failure) throw new Error(`Compiled model verification failed: ${failure instanceof Error ? failure.message : String(failure)}\n${output}\n${errors}`, { cause: failure });
   console.log("Actual relocated server: embedded web, stats, fit, chat completion and clean SIGTERM passed.");
 }
-const root = resolve(import.meta.dir, ".."), temporary = await mkdtemp(join(tmpdir(), "mlx-bundle-"));
-try {
-  const override = process.env.MLX_BUN_LIBMLXC;
+async function checkNotices(directory: string, label: string, sections: string[]) {
+  const notices = await readFile(join(directory, "THIRD_PARTY_NOTICES.md"), "utf8");
+  const titles = sections.map(section => section.slice(2, section.indexOf("\n")));
+  sections.forEach((section, index) =>
+    assert(notices.includes(section), `${label} bundle must retain the complete ${titles[index]} notice`));
+  console.log(`${label} bundle notices: ${titles.join(", ")}.`);
+}
+
+/** CPU acceptance of a bundle archive, shared by `verify:binary` and release
+ * preparation. Extracts the archive into its own temporary directory (a path
+ * other than the build output), compiles the verification consumer into that
+ * copy, runs the actual CLI and consumer, then installs the unchanged archive
+ * through scripts/install.sh with a local curl stub and temporary home, and
+ * upgrades once. Never writes to the archive's source bundle or the real home.
+ * `model` additionally runs real GPU inference through the relocated server. */
+export async function verifyBundle({ archive, version, model }: { archive: string; version: string; model?: string }) {
+  const sections = await bundleNotices();
+  const temporary = await mkdtemp(join(tmpdir(), "mlx-bundle-"));
   try {
-    delete process.env.MLX_BUN_LIBMLXC;
-    assert.equal(resolveLibmlxc(), join(MLX_DIR, "libmlxc.dylib"), "source execution uses its package native directory");
-    process.env.MLX_BUN_LIBMLXC = "/explicit/override.dylib";
-    assert.equal(resolveLibmlxc(), "/explicit/override.dylib");
-    assert.equal(resolveInferenceNative("mlx-bun-frame-extract"), join(INFERENCE_DIR, "mlx-bun-frame-extract"));
-  } finally {
-    if (override === undefined) delete process.env.MLX_BUN_LIBMLXC; else process.env.MLX_BUN_LIBMLXC = override;
-  }
-  const original = join(temporary, "built"), relocated = join(temporary, "relocated"), scratch = join(temporary, "data");
-  await mkdir(scratch);
-  await buildBinary(original);
-  await compileApp(join(root, "apps/mlx-bun/tests/compiled-consumer.ts"), join(original, "verify-consumer"));
-  await rename(original, relocated);
-  assert(!existsSync(original), "original bundle must be unavailable after relocation");
-  const notices = await readFile(join(relocated, "THIRD_PARTY_NOTICES.md"), "utf8");
-  for (const name of ["mlx", "inference"]) {
-    const source = await readFile(join(root, "packages", name, "THIRD_PARTY_NOTICES.md"), "utf8");
-    assert(source.trim().length > 0, `${name} source notices must not be empty`);
-    assert(notices.includes(source), `relocated bundle must retain the complete ${name} notices`);
-  }
-  const env = { ...process.env, MLX_BUN_LIBMLXC: "", MLX_BUN_EXPERT_IO_DYLIB: "", MLX_BUN_FRAME_EXTRACT: "", MLX_BUN_MIC_CAPTURE: "" };
-  async function run(command: string[], environment: NodeJS.ProcessEnv = env): Promise<string> {
-    const child = Bun.spawn(command, { cwd: scratch, env: environment, stdout: "pipe", stderr: "pipe" });
-    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    assert.equal(code, 0, `${command[0]} failed: ${out}\n${err}`);
-    return out;
-  }
-  const executable = join(relocated, "mlx-bun");
-  assert((await run([executable, "--version"])).startsWith("mlx-bun "));
-  assert((await run([executable, "--help"])).includes("Usage: mlx-bun"));
-  console.log(await run([join(relocated, "verify-consumer"), scratch]));
-  // Exercise the same real binaries through the installer's directory and
-  // command symlinks. The curl stub supplies our local archive, never a network.
-  const installHome = join(temporary, "install home"), transport = join(temporary, "transport");
-  await mkdir(installHome); await mkdir(transport);
-  const archive = join(temporary, "bundle.tar.gz");
-  await run(["tar", "-czf", archive, "-C", relocated, "."]);
-  const curl = join(transport, "curl");
-  await writeFile(curl, `#!/bin/sh
+    const override = process.env.MLX_BUN_LIBMLXC;
+    try {
+      delete process.env.MLX_BUN_LIBMLXC;
+      assert.equal(resolveLibmlxc(), join(MLX_DIR, "libmlxc.dylib"), "source execution uses its package native directory");
+      process.env.MLX_BUN_LIBMLXC = "/explicit/override.dylib";
+      assert.equal(resolveLibmlxc(), "/explicit/override.dylib");
+      assert.equal(resolveInferenceNative("mlx-bun-frame-extract"), join(INFERENCE_DIR, "mlx-bun-frame-extract"));
+    } finally {
+      if (override === undefined) delete process.env.MLX_BUN_LIBMLXC; else process.env.MLX_BUN_LIBMLXC = override;
+    }
+    const relocated = join(temporary, "relocated"), scratch = join(temporary, "data");
+    await mkdir(scratch); await mkdir(relocated);
+    const env = { ...process.env, MLX_BUN_LIBMLXC: "", MLX_BUN_EXPERT_IO_DYLIB: "", MLX_BUN_FRAME_EXTRACT: "", MLX_BUN_MIC_CAPTURE: "" };
+    async function run(command: string[], environment: NodeJS.ProcessEnv = env): Promise<string> {
+      const child = Bun.spawn(command, { cwd: scratch, env: environment, stdout: "pipe", stderr: "pipe" });
+      const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      assert.equal(code, 0, `${command[0]} failed: ${out}\n${err}`);
+      return out;
+    }
+    await run(["tar", "-xzf", archive, "-C", relocated]);
+    await compileApp(join(root, "apps/mlx-bun/tests/compiled-consumer.ts"), join(relocated, "verify-consumer"));
+    await checkNotices(relocated, "Relocated", sections);
+    const executable = join(relocated, "mlx-bun");
+    assert.equal(await run([executable, "--version"]), `mlx-bun ${version}\n`);
+    assert((await run([executable, "--help"])).includes("Usage: mlx-bun"));
+    console.log(await run([join(relocated, "verify-consumer"), scratch]));
+    // Exercise the same real binaries through the installer's directory and
+    // command symlinks. The curl stub supplies the given archive, never a network.
+    const installHome = join(temporary, "install home"), transport = join(temporary, "transport");
+    await mkdir(installHome); await mkdir(transport);
+    const curl = join(transport, "curl");
+    await writeFile(curl, `#!/bin/sh
 set -eu
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -o ]; then shift; output="$1"; fi
@@ -152,21 +152,49 @@ while [ "$#" -gt 0 ]; do
 done
 cp "$MLX_BUN_TEST_ARCHIVE" "$output"
 `);
-  await chmod(curl, 0o755);
-  const version = JSON.parse(await readFile(join(root, "apps/mlx-bun/package.json"), "utf8")).version;
-  const installEnvironment = { ...env, HOME: installHome,
-    PATH: `${transport}:${process.env.PATH}`, MLX_BUN_INSTALL_DIR: join(installHome, ".mlx-bun"),
-    MLX_BUN_VERSION: `v${version}`, MLX_BUN_TEST_ARCHIVE: archive };
-  await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
-  assert.equal(await run([join(installHome, ".local/bin/mlx-bun"), "--version"]), `mlx-bun ${version}\n`);
-  const installedScratch = join(temporary, "installed consumer"); await mkdir(installedScratch);
-  console.log(await run([join(installHome, ".mlx-bun/app-install/current/verify-consumer"), installedScratch]));
-  const previous = await readlink(join(installHome, ".mlx-bun/app-install/current"));
-  await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
-  // Managed jobs from a process started before the upgrade still use its old
-  // canonical executable. Exercise that retained bundle's actual reentry.
-  const previousScratch = join(temporary, "previous consumer"); await mkdir(previousScratch);
-  console.log(await run([join(installHome, ".mlx-bun/app-install", previous, "verify-consumer"), previousScratch]));
-  console.log("Local installer: actual compiled app, assets and managed child passed through installed symlinks (CPU only).");
-  if (model) await verifyModel(executable, model, scratch, env);
-} finally { await rm(temporary, { recursive: true, force: true }); }
+    await chmod(curl, 0o755);
+    const installEnvironment = { ...env, HOME: installHome,
+      PATH: `${transport}:${process.env.PATH}`, MLX_BUN_INSTALL_DIR: join(installHome, ".mlx-bun"),
+      MLX_BUN_VERSION: `v${version}`, MLX_BUN_TEST_ARCHIVE: archive };
+    await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
+    assert.equal(await run([join(installHome, ".local/bin/mlx-bun"), "--version"]), `mlx-bun ${version}\n`);
+    const installed = join(installHome, ".mlx-bun/app-install"), current = join(installed, "current");
+    await copyFile(join(relocated, "verify-consumer"), join(current, "verify-consumer"));
+    await checkNotices(current, "Installed current", sections);
+    const installedScratch = join(temporary, "installed consumer"); await mkdir(installedScratch);
+    console.log(await run([join(current, "verify-consumer"), installedScratch]));
+    const previous = join(installed, await readlink(current));
+    await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
+    // Managed jobs from a process started before the upgrade still use its old
+    // canonical executable. Exercise that retained bundle's actual reentry.
+    await checkNotices(previous, "Installed previous", sections);
+    const previousScratch = join(temporary, "previous consumer"); await mkdir(previousScratch);
+    console.log(await run([join(previous, "verify-consumer"), previousScratch]));
+    console.log("Local installer: actual compiled app, assets and managed child passed through installed symlinks (CPU only).");
+    if (model) await verifyModel(executable, model, scratch, env);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+}
+
+if (import.meta.main) {
+  if (process.argv.includes("--help")) {
+    console.log("Usage: bun scripts/verify-binary.ts [--model CACHED_DIRECTORY]\nBuild and archive the app bundle, then relocate, install, and exercise it. Default: CPU only.\n--model additionally runs real GPU inference through the relocated product server; uses cached weights and isolated temporary storage.");
+    process.exit(0);
+  }
+  const args = process.argv.slice(2);
+  if (args.length && (args.length !== 2 || args[0] !== "--model" || !args[1]))
+    throw new Error("Usage: bun scripts/verify-binary.ts [--model CACHED_DIRECTORY]");
+  const model = args[1] ? await realpath(args[1]) : undefined;
+  if (model && (!(await stat(model)).isDirectory() || !existsSync(join(model, "config.json"))))
+    throw new Error("--model requires an existing cached model directory with config.json");
+  const temporary = await mkdtemp(join(tmpdir(), "mlx-bundle-build-"));
+  try {
+    const built = join(temporary, "built"), archive = join(temporary, "bundle.tar.gz");
+    await buildBinary(built);
+    const tar = Bun.spawn(archiveCommand(archive, built, (await readdir(built)).sort()), { stdout: "inherit", stderr: "inherit" });
+    if (await tar.exited !== 0) throw new Error("Bundle archive failed");
+    await rm(built, { recursive: true });
+    assert(!existsSync(built), "original bundle must be unavailable after relocation");
+    const version = JSON.parse(await readFile(join(root, "apps/mlx-bun/package.json"), "utf8")).version;
+    await verifyBundle({ archive, version, model });
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+}
