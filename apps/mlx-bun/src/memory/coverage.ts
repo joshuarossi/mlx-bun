@@ -8,7 +8,8 @@
 // we replace) must resolve to an article (or alias) in the new vault.
 //
 // Pure read-path: reindex (file I/O) + alias resolution. No model load, no
-// embedder — the read-path tripwire (`src/embed.ts` counter) stays 0.
+// embedder — the read-path tripwire
+// (apps/mlx-bun/tests/memory/support/tripwire.ts counter) stays 0.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

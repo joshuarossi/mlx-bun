@@ -49,26 +49,28 @@ export function isGlm52Config(config: ModelConfig): boolean {
  *  artifacts to a target model — Q-only, centroid-head, no standalone LM
  *  head. They are never servable/selectable on their own (the spec path
  *  loads them by explicit path), so they must be excluded from model
- *  resolution and the supported-model lists. See src/spec/drafter.ts. */
+ *  resolution and the supported-model lists. See
+ *  packages/inference/src/models/gemma4/assistant.ts. */
 export function isDrafterModelType(modelType: string): boolean {
   return modelType.endsWith("_assistant");
 }
 
 /** DiffusionGemma (model_type `diffusion_gemma`): block/masked-diffusion canvas
  *  model. Non-autoregressive — routed through the diffusion engine, not the AR
- *  loop. See docs/design/generic-model-support.md. */
+ *  loop. See `02d723a:docs/design/generic-model-support.md` §6.5. */
 export function isDiffusionGemmaConfig(config: ModelConfig): boolean {
   return config.modelType === "diffusion_gemma";
 }
 
 /** Whisper (model_type `whisper`, mlx-whisper ModelDimensions config):
  *  encoder-decoder speech recognition — audio in, text out. Routed through
- *  the transcription engine (src/audio/whisper-*.ts), never the chat loop. */
+ *  the transcription engine (packages/inference/src/transcription/whisper/),
+ *  never the chat loop. */
 export function isWhisperConfig(config: ModelConfig): boolean {
   return config.modelType === "whisper" && typeof config.raw.n_audio_ctx === "number";
 }
 
-/** Support tier for a registry record (docs/design/generic-model-support.md):
+/** Support tier for a registry record (`02d723a:docs/design/generic-model-support.md`):
  *  "targeted" = dedicated/generated forward + L2/L3 paths;
  *  "generic"  = the Tier-0 universal module (L1 monolith only);
  *  null       = unsupported. Generic never shadows targeted. */

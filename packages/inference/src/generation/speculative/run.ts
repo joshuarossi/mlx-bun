@@ -1,12 +1,12 @@
 // Serve-time speculative decoding — the ONE verify/accept executor behind
-// `serve --draft-model` (docs/reference/cli.md §7; sequenced
-// by docs/design/batching.md Phase B).
+// `serve --draft-model` (`02d723a:docs/design/speculative-decoding.md` §2).
 //
 // Faithful to mlx-lm's speculative_generate_step (generate.py:473-654, read
 // from the oracle venv): per round, draft n tokens from the DraftSource, run
 // ONE target forward over [pending, ...drafts] (n+1 positions), sample the
 // target per position over the BATCHED lm-head logits (one matmul — matches
-// both oracles; see src/spec/generate.ts header on why this legitimately
+// both oracles; see packages/inference/src/generation/speculative/generate.ts
+// header on why this legitimately
 // diverges from stock decode at bf16 knife-edges), accept the longest prefix
 // where target token == draft token (exact token-match acceptance, NOT
 // distribution-level rejection sampling), emit the correction (or bonus)
@@ -21,7 +21,7 @@
 //    Target and companion state share the existing RAM/SSD lifecycle. Other
 //    sources begin with fresh state until they supply a checkpoint codec.
 //
-// Grammar × spec (Phase C, the constrained verify walk — novel: NO runtime
+// Grammar × spec (the constrained verify walk — novel: NO runtime
 // serves both; mlx-lm has no grammar, oMLX no spec): the drafter runs FREE
 // (drafts are proposals; a grammar-invalid draft is simply rejected at
 // verify), and the grammar mask rides the per-position accept walk in
@@ -29,7 +29,7 @@
 // so rejected drafts never touch grammar state and no matcher rollback is
 // needed. Grammar termination mid-burst truncates the round (the all--inf
 // guarantee). Gates (no oracle): greedy grammar+spec ≡ greedy grammar-only
-// long-prefix + 100% schema validity (tests/parity/spec-serve.test.ts).
+// long-prefix + 100% schema validity (`02d723a:tests/parity/spec-serve.test.ts`).
 //
 // Emission discipline: tokens flow through the caller's onToken ONE AT A
 // TIME, in order (bursts of ≤ n+1 per round) — the server's stop-sequence
@@ -70,7 +70,7 @@ export interface SpecServeExtras {
   forwardsSaved: number;
   /** Per-draft-position counters (index = position within a round's block,
    *  0..γ-1): how many rounds drafted/accepted at that position. Drives the
-   *  Phase-1c per-position acceptance report (scripts/dspark.ts ab)
+   *  per-position acceptance report (`02d723a:scripts/dspark.ts` ab)
    *  — near-zero cost, always populated. */
   draftedByPos: number[];
   acceptedByPos: number[];
@@ -214,7 +214,7 @@ async function specRunInner(
         (options.kvBits && ((options.kvBits !== 4 && options.kvBits !== 8) || options.quantizedKvStart !== 0)))
       throw new Error("speculative KV requires uniform KV4/KV8 or TurboQuant start=0");
     caches = binding.makeCache();
-    // Draft policy (see src/spec/draft-policy.ts): the target's stepSampler
+    // Draft policy (see packages/inference/src/generation/speculative/draft-policy.ts): the target's stepSampler
     // above is untouched; only the drafter's selection changes under the flag.
     const draftOptions = draftSamplerOptions(options);
     const src = binding.openDraft(draftOptions === options ? sampler : makeSampler(draftOptions), caches);
@@ -509,7 +509,7 @@ async function specRunInner(
 
       // (c) per-position accept walk: sample the target at each position,
       // accept while it reproduces the draft. Sampling is sequential because
-      // the processor history (and, in Phase C, the grammar mask) at position
+      // the processor history (and the grammar mask) at position
       // i depends on the tokens accepted at positions < i.
       const [result] = await sampleSpeculativeRows([{
         pending, step: stats.generatedTokens, remaining: maxTokens - stats.generatedTokens,

@@ -450,7 +450,7 @@ export class Qwen3Attention {
     // Batched decode: the scheduler's mask wrapper exposes each row's REAL
     // position as ropeOffsetArr (rows have different prompt lengths); the
     // dynamic-offset kernel is the same fast::rope, bit-exact vs the static
-    // form (tests/unit/compile.test.ts). Serial lane: scalar offset, unchanged.
+    // form (`02d723a:tests/unit/compile.test.ts`). Serial lane: scalar offset, unchanged.
     // Media forwards supply their own 3D interleaved positions. The reference
     // never uses the fused fast-rope kernel when position_ids are supplied,
     // so this IS the oracle's own arithmetic. Text-only stays on ops.rope.
@@ -541,7 +541,7 @@ export class Qwen3MLP {
   forward(x: MlxArray, inputRowContiguous = false, independentRows = false): MlxArray {
     // Packed-trellis decode (M ≤ 4): gate, up and the swiglu in ONE kernel —
     // x read once, no gate/up vectors materialized. This Lab path retains
-    // the packed activation arithmetic documented in turboquant.md.
+    // the packed activation arithmetic documented in `02d723a:docs/design/turboquant.md`.
     if (this.gate instanceof TrellisLinear && this.up instanceof TrellisLinear &&
         fusedGateUpEligible(this.gate, this.up) &&
         x.shape.slice(0, -1).reduce((a, b) => a * b, 1) <= TRELLIS_MATVEC_MAX_M) {

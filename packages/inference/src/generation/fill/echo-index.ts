@@ -23,7 +23,7 @@
 // policy "verify" unless it is unambiguous all the way to a delimiter-class
 // token — the engine then keeps only the prefix the model itself agrees with.
 // Lab tier: default off, and a paired A/B decides whether it ever becomes a
-// default (PLAN K3).
+// default.
 import type { Proposal, ProposalSource, TokenView } from "./proposal";
 
 export interface EchoConfig {

@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // DATASET CONTROLLER — template-driven builder. Behavior-identical port of
 // the original controllers.dataset IIFE in app.html.

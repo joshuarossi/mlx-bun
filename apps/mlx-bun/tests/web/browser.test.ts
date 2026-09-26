@@ -1,17 +1,18 @@
 import { MEMORY_TOOL_NAMES, REFERENCE_TOOL_NAMES } from "../../src/memory/tools";
-// DOM-level unit tests for the pure/DOM-facing parts of the src/web/src/*
-// module split (plan §7/§9 Phase 2). Covers exactly the four things the
+// DOM-level unit tests for the pure/DOM-facing parts of the
+// apps/mlx-bun/src/web/browser/* module split (plan §7/§9 Phase 2). Covers exactly the four things the
 // task calls out:
 //   (a) streaming parity — block-memoized incremental render vs one-shot
 //       mdToHtml, fed char-by-char, over a small fixture corpus
-//   (b) renderQueue length/array semantics (web-ui-pass-plan.md #2)
+//   (b) renderQueue length/array semantics (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #2)
 //   (c) api() error-envelope unwrapping ([object Object] bug, #4)
 //   (d) esc() discipline on the adapter-option template path (#15)
 //
 // This is model-free and server-free: no WS, no fetch to a real server
 // (fetch is stubbed per-test where api() is exercised). happy-dom provides
-// document/window (see web-dom-setup.ts, imported first for its side effect
-// of installing globals before any src/web/src module runs).
+// document/window (see apps/mlx-bun/tests/web/dom-setup.ts, imported first for
+// its side effect of installing globals before any apps/mlx-bun/src/web/browser
+// module runs).
 import "./dom-setup";
 import { describe, expect, it, beforeEach } from "bun:test";
 import {
@@ -310,7 +311,7 @@ describe("Canvas v1: view state survives a full re-render", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   (b) renderQueue length/array semantics (web-ui-pass-plan.md #2): an
+   (b) renderQueue length/array semantics (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #2): an
    empty steering/followUp array must render nothing (not the truthy-array
    bug where `q.steering` alone gated visibility).
    ──────────────────────────────────────────────────────────────────── */
@@ -349,7 +350,7 @@ describe("renderQueue array-length semantics", () => {
 });
 
 /* ────────────────────────────────────────────────────────────────────
-   (c) api() error-envelope unwrapping (web-ui-pass-plan.md #4): an
+   (c) api() error-envelope unwrapping (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #4): an
    OpenAI-style {error:{message}} object must unwrap to a plain string,
    never surface as "[object Object]".
    ──────────────────────────────────────────────────────────────────── */
@@ -411,7 +412,7 @@ describe("api() error-envelope unwrapping", () => {
 
 /* ────────────────────────────────────────────────────────────────────
    (d) esc() discipline on the adapter-option template path
-   (web-ui-pass-plan.md #15): a live unescaped-HTML injection point in the
+   (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #15): a live unescaped-HTML injection point in the
    original app.html — an adapter id/path containing HTML-significant
    characters must never break out of its attribute/element.
    ──────────────────────────────────────────────────────────────────── */

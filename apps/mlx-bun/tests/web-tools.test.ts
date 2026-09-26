@@ -1,4 +1,4 @@
-// Unit tests for the pure helpers in src/web-tools.ts — HTML/text
+// Unit tests for the pure helpers in apps/mlx-bun/src/chat/web-tools.ts — HTML/text
 // normalization, DuckDuckGo result parsing, and the weather/search
 // formatters. No network: execute() paths are exercised live in the
 // verify step, not here.

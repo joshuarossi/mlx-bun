@@ -112,10 +112,12 @@ export interface GenSamplingDefaults {
 export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | "mtp";
 
 /** Detect the draft artifact's kind so the right provider is loaded. All
- *  providers share ONE serve loop (src/spec/serve-loop.ts). Exported for the
- *  bench harness (scripts/bench-matrix.ts features) — one detection, no drift.
+ *  providers share ONE serve loop (packages/inference/src/generation/speculative/run.ts).
+ *  Exported so a bench harness reuses this one detection, as main's
+ *  `02d723a:scripts/bench-matrix.ts` did — no drift.
  *  "ngram" is never detected — it has no artifact (model-free prompt lookup,
- *  src/spec/ngram-source.ts) and mounts via an explicit `--draft-kind ngram`. */
+ *  packages/inference/src/generation/speculative/sources/ngram-source.ts) and
+ *  mounts via an explicit `--draft-kind ngram`. */
 export async function detectDraftKind(dir: string): Promise<DraftKind> {
   if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark"; // our trained module
   try {
@@ -272,7 +274,7 @@ export async function loadContext(
 
     // Speculative decoding: load the draft (mlx_lm.server --draft-model). The
     // draft artifact's KIND selects the provider — all three share ONE serve
-    // loop (src/spec/serve-loop.ts): dspark.json → DSpark (KV-injected), a
+    // loop (packages/inference/src/generation/speculative/run.ts): dspark.json → DSpark (KV-injected), a
     // *_assistant config → the optiq KV-borrowing Gemma drafter, otherwise a
     // full second model (mlx-lm parity). `--draft-kind` overrides the detect.
     let draft: ModelContext["draft"] = null;
@@ -521,8 +523,8 @@ export function getVisionTower(ctx: Pick<ModelContext<unknown>, "vision" | "load
   }
 }
 
-/** Build the on-demand audio-tower loader (gemma-4 Conformer, A4 of
- *  docs/design/generic-model-support.md). Auto-enables — no flags — when
+/** Build the on-demand audio-tower loader (gemma-4 Conformer,
+ *  `02d723a:docs/design/generic-model-support.md` §6.6). Auto-enables — no flags — when
  *  config.json carries an `audio_config` AND the optiq_vision.safetensors
  *  sidecar exists (the audio tensors ship in the same sidecar as vision).
  *  Returns null when the model can't do audio (no audio_config: 26B-A4B,

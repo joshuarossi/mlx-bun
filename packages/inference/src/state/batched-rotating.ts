@@ -18,7 +18,7 @@
 // temporal coordinates then ROLLED to the ring's physical layout — see
 // buildBatchedRotatingMask (a column-by-column port of mlx-lm make_mask,
 // including the `roll(shift=idx+1)`). Gated model-free against mlx-lm
-// (tests/unit/batched-rotating.test.ts) + end-to-end vs a long-context Gemma oracle.
+// (`02d723a:tests/unit/batched-rotating.test.ts`) + end-to-end vs a long-context Gemma oracle.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -98,7 +98,7 @@ export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
 
   /** Same signature as the serial RotatingKVCache — the scheduler's merge
    *  guards recognize a batched ring as "rotating-plain + RowBatchCache"
-   *  (batch-scheduler #mergeJoiner prevRot branch); without this the next
+   *  (packages/inference/src/execution/batch-group.ts #mergeJoiner prevRot branch); without this the next
    *  join sees "unknown", skips the prevRot rows, and replaces the batch's
    *  sliding-layer KV with a one-row cache (B≥3 collapse). Guard order
    *  everywhere is isRowBatchCache FIRST, so the shared string never
@@ -270,7 +270,8 @@ export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
    *  buffer length — temporal order ⇔ write head at the end, exactly the
    *  oracle's `cache._idx = cache.keys.shape[2]`. Bit-exact vs a solo run:
    *  merge/decode/filter keep each row's ring bytes identical to the serial
-   *  cache's (tests/batched-rotating) and this is a pure slice+copy. */
+   *  cache's (`02d723a:tests/unit/batched-rotating.test.ts`) and this is a pure
+   *  slice+copy. */
   extractRow(i: number, limit?: number): RotatingKVCache | null {
     if (!this.keys || !this.values) return null;
     const pad = Math.max(0, this.leftPad[i]!, limit === undefined ? 0 : this.#rows.activeLength - limit);

@@ -1,5 +1,5 @@
 // OPT-IN parity matrix for the ORPO chunked head (token-chunked, checkpoint-
-// rematerialized LM head), restored from main's tests/research/train-orpo-chunked.
+// rematerialized LM head), restored from `02d723a:tests/research/train-orpo-chunked.test.ts`.
 //
 // Chunking is EXACT up to bf16 shape-dependent kernel rounding: per-position
 // logp is bit-identical across chunk boundaries except for the occasional

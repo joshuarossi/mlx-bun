@@ -2,7 +2,6 @@
 // StreamDecoder (mlx-lm byte-parity incremental detokenizer), ToolAwareStream
 // (tool-call / reasoning-channel routing), StopMatcher (decoded-text stop
 // sequences), ThinkingTagSplitter (<think> markup → reasoning deltas).
-// Extracted from src/server.ts (repo-taming Phase 4).
 import type { ToolDefinition } from "@mlx-bun/inference/input";
 import type { LoadedTokenizer } from "@mlx-bun/inference/input";
 import {
@@ -21,7 +20,7 @@ export type ToolStreamMode = "gemma-sentinel" | "plain" | "buffered-text";
 /** Pick the stream router for a model family. The token-id sentinel router is
  *  Gemma-4-ONLY: ids 48/49 (<|tool_call>/<tool_call|>) and 100/101
  *  (<|channel>/<channel|>) are special tokens of that tokenizer family
- *  (src/tool-call.ts). On every other tokenizer — MiniCPM5, Qwen3/3.5, and
+ *  (packages/inference/src/input/tool-call.ts). On every other tokenizer — MiniCPM5, Qwen3/3.5, and
  *  the Tier-0 generics (llama, qwen2, phi3, …) — those ids are ordinary
  *  low-id vocab, so the sentinel router would silently swallow output into a
  *  phantom tool/reasoning segment. Everyone else parses tool calls from
@@ -74,7 +73,7 @@ export class ToolAwareStream {
     readonly mode: ToolStreamMode,
     readonly tools: ToolDefinition[] | null,
     /** Fired when parseGeneratedToolCalls rejects the emitted markup. The
-     *  fill table (src/fill/) subscribes: a request whose tool call the
+     *  fill table (packages/inference/src/generation/fill/) subscribes: a request whose tool call the
      *  parser refuses is a request whose template rendering disagreed with
      *  what the model emits, so its strict rows are disarmed. */
     private readonly onParseFailure?: () => void,

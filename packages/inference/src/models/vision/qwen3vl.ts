@@ -1,4 +1,4 @@
-// Qwen3-VL vision tower (Qwen3.8's `vision_tower`, PLAN 14v) — faithful port
+// Qwen3-VL vision tower (Qwen3.8's `vision_tower`) — faithful port
 // of mlx-vlm qwen3_vl/vision.py at the qwen3_5 configuration: depth 27,
 // hidden 1152, heads 16 (head_dim 72), patch 16, temporal 2, merge 2,
 // intermediate 4304 with gelu_pytorch_tanh, learned 48×48 pos-embed grid
@@ -453,7 +453,7 @@ export class Qwen3VLVisionTower {
     return disposing(sum, sum.astype(Dtype.bfloat16));
   }
 
-  /** Stage-instrumented encode for parity bisection (tests/debug): returns
+  /** Stage-instrumented encode for parity bisection: returns
    *  named f32 copies of each pipeline stage alongside the final output. */
   encodeStages(pp: Qwen3VLPreprocessed): Map<string, Float32Array> {
     const stages = new Map<string, Float32Array>();

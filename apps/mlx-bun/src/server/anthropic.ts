@@ -8,7 +8,7 @@
 //
 // Documented upgrades over the oracle (possible because our
 // chat-completions layer is natively capable where mlx-lm's gemma path
-// is not — same divergence class as the Phase 4 bidirectional-mask fix):
+// is not — same divergence class as the bidirectional-mask fix):
 //   - tools: Anthropic `tools`/`tool_use`/`tool_result` map onto our REAL
 //     OpenAI tools surface (token-level gemma tool calling) instead of
 //     the oracle's Qwen-style <tool_call> inline-text hack ("out of

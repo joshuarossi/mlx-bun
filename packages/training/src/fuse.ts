@@ -8,7 +8,7 @@
 // then re-quantizes with the module's OWN source spec (bits/group unchanged) —
 // we do the same, so the output config.json is the source config verbatim.
 //
-// Everything runs on the CPU stream (same discipline as src/quantize/quantizer:
+// Everything runs on the CPU stream (same discipline as packages/quantize/src/quantizer.ts:
 // the safetensors loader lives there, and one module is materialized, fused,
 // and disposed at a time). Modules the adapter does not touch pass through
 // bit-identical (no dequant→requant round trip).

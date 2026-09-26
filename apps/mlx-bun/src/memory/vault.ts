@@ -1006,7 +1006,8 @@ function runGit(args: string[], cwd: string): Promise<boolean> {
 // "watch it self-heal" — the article's commit history and a specific
 // commit's diff. Read-only plumbing only (log/show), args always an
 // explicit argv array via Bun.spawn (never a shell string), and callers
-// MUST validate `rev`/`name` before calling these (see server.ts) — this
+// MUST validate `rev`/`name` before calling these (see
+// apps/mlx-bun/src/server/memory-routes.ts) — this
 // layer trusts its `relPath`/`rev` inputs are already safe.
 
 export interface ArticleHistoryEntry {

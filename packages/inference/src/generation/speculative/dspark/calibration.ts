@@ -1,8 +1,8 @@
 // Threshold calibration for the confidence scheduler — fits per-position
 // confidence thresholds from real (confidence, accepted) verify outcomes, so
-// the scheduler in module-dflash.ts#forwardInfer prunes positions the
+// the scheduler in packages/inference/src/models/speculative/dflash.ts#forwardInfer prunes positions the
 // confidence head can't actually call. Pure math, no MLX/GPU here: the
-// caller (scripts/dspark.ts calibrate) collects samples off a live model via
+// caller (`02d723a:scripts/dspark.ts` calibrate) collects samples off a live model via
 // dflashGenerate's onRound hook, this module just fits.
 //
 // VERIFIED vs the paper + reference (2026-07-06 audit, arXiv:2607.05147 +
@@ -14,8 +14,7 @@
 // survival products, feeding Alg-1's throughput-maximizing scheduler with a
 // profiled SPS(B) cost table) — that machinery lives in DeepSeek's UNRELEASED
 // production serving layer, not in DeepSpec. Paper-faithful STS/Alg-1 is a
-// future Lab item; details in docs/design/speculative-decoding.md
-// "DeepSpec ground truth". The isotonic-style "smallest τ meeting a target
+// future Lab item. The isotonic-style "smallest τ meeting a target
 // precision, Laplace-smoothed" fit below is ours (the reference ships no
 // calibrator at all — raw sigmoid vs a hand-set threshold).
 

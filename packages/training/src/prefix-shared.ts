@@ -313,7 +313,8 @@ export function prefixSavings(P: number, Rc: number, Rr: number): { twoForward: 
 // reusing Gemma4Model.forwardHidden — which already drives per-layer inputs and
 // the donor-KV sharing through forwardLayers, building one mask per layer-type
 // from each donor cache's makeMask. Two e4b-specific wrinkles:
-//   (1) Block-wise RoPE rides in via setGemmaPrefixPlan (gemma4.ts Attention),
+//   (1) Block-wise RoPE rides in via setGemmaPrefixPlan
+//       (packages/inference/src/models/gemma4/model.ts Attention),
 //       so donor AND sharer layers rope identically to the two-forward path.
 //   (2) The SLIDING-window mask must be cut on LOGICAL positions, not physical:
 //       a rejected token at physical P+Rc+k has logical position P+k, so its

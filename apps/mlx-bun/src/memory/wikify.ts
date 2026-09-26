@@ -904,11 +904,13 @@ export function detectMergeCandidates(
 // SILHOUETTE is the ONE sanctioned OFFLINE triage instrument here: section-cohesion
 // spots an article whose sections drifted into distinct topics (a split candidate
 // the size heuristic alone might miss). It runs ONLY in this offline triage — the
-// `embed` function is injected, so this module never reaches `src/embed.ts` and
+// `embed` function is injected, so this module never reaches
+// packages/inference/src/embeddings/text.ts and
 // the read/route hot path stays at zero embedding calls (the P0-T6 tripwire).
 // ===========================================================================
 
-/** Inject the embedding backend (so `wikify.ts` never imports `src/embed.ts` and
+/** Inject the embedding backend (so `wikify.ts` never imports
+ *  packages/inference/src/embeddings/text.ts and
  *  the read path can never accidentally embed). The eval wires the real
  *  Qwen3-Embedding through here; tests inject a deterministic fake. */
 export type EmbedFn = (texts: string[]) => Float32Array[];

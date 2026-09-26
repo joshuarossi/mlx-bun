@@ -34,7 +34,7 @@ const { AdapterManager } = optIn ? await import("@mlx-bun/inference/adapters") :
 const { trainLora, DEFAULT_TRAIN_CONFIG } = optIn ? await import("@mlx-bun/training") : {} as typeof import("@mlx-bun/training");
 import type { TrainingProgress } from "@mlx-bun/training";
 
-// Tiny SFT corpus (main's fixtures/train/tiny, written to a temp dir at test
+// Tiny SFT corpus (`02d723a:fixtures/train/tiny`, written to a temp dir at test
 // time): ten user/assistant train rows and two valid rows in the {messages}
 // format. The shouting assistant style is what a 20-step run learns to imitate.
 const TRAIN_ROWS: readonly (readonly [string, string])[] = [

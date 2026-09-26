@@ -1,7 +1,7 @@
 // Model-free Whisper front-end checks: mel filter bank invariants, the
 // periodic Hann window, frame counting, and the GPU log-mel on a synthetic
 // tone (shape, range, dtype). Bit-exactness vs the oracle is the parity
-// test's job (tests/parity/whisper.test.ts).
+// test's job (`02d723a:tests/parity/whisper.test.ts`).
 
 import { describe, expect, test } from "bun:test";
 import {

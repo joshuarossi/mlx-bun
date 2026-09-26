@@ -1,7 +1,6 @@
 // Whisper tokenizer — mlx-whisper's tokenizer.py semantics over the stock
 // HF tokenizer.json (openai/whisper-large-v3-turbo ships the multilingual
-// tiktoken vocab in HF form; ids are identical, checked in
-// tests/unit/whisper-tokenizer.test.ts against the oracle constants).
+// tiktoken vocab in HF form; ids are identical).
 //
 // Special-token layout (multilingual v3, n_vocab 51866): 50256 BPE ranks +
 // "<|endoftext|>"(50257) "<|startoftranscript|>"(50258) + 100 language

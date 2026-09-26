@@ -1,6 +1,6 @@
 // The hand-built fixture vault the read-path tests navigate: eight articles
 // covering category membership, alias resolution, the infobox link graph, and
-// a "lens" false-positive decoy. Main tracked these under tests/fixtures/wiki;
+// a "lens" false-positive decoy. Main tracked these under `02d723a:tests/fixtures/wiki`;
 // here each test writes them into a fresh temporary vault.
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";

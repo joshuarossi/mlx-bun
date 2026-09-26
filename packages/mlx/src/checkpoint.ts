@@ -6,7 +6,7 @@
 // retaining every transformer layer's activations, each checkpointed unit is
 // recomputed one at a time in the backward pass.
 //
-// Same FFI lifecycle as ValueAndGrad (src/mlx/autograd.ts): a JSCallback over
+// Same FFI lifecycle as ValueAndGrad (packages/mlx/src/autograd.ts): a JSCallback over
 // the user fn → mlx_closure_new_func_payload → mlx_checkpoint → applied with
 // mlx_closure_apply. The closure must not throw across the FFI boundary; a JS
 // throw is captured and re-surfaced from apply().

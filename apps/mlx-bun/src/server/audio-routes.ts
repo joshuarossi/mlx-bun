@@ -1,4 +1,4 @@
-// OpenAI-compatible speech-to-text routes (main's `src/serve/audio-routes.ts`):
+// OpenAI-compatible speech-to-text routes (main's `02d723a:src/serve/audio-routes.ts`):
 //   POST /v1/audio/transcriptions   (task transcribe)
 //   POST /v1/audio/translations     (task translate, English output)
 //   POST /admin/transcription/unload (explicit page-out of the Whisper weights)

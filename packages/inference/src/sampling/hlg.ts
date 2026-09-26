@@ -12,7 +12,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 
 /** HLG sampling parameters — a piecewise tone curve on the logprobs.
- *  See docs/archive/hlg-sampling.md. Knobs are in nats (the logprob unit). */
+ *  See `02d723a:docs/archive/hlg-sampling.md`. Knobs are in nats (the logprob unit). */
 export interface HlgParams {
   /** m — mid-region slope. Folds temperature: m = 1/temperature. */
   gain: number;

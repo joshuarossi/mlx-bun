@@ -1,4 +1,4 @@
-// FAST (model-free): BatchedRotatingQuantCache — Phase 3 milestone 2. The
+// FAST (model-free): BatchedRotatingQuantCache. The
 // composition rule binds the SERIAL RotatingQuantizedKVCache as the per-row
 // oracle (no stack ships batched rotating-quantized KV), so the gates here
 // are LOGICAL byte-identity per row against serial caches fed the same
@@ -13,7 +13,7 @@
 // Quantize-on-write is deterministic and packs along HEAD_DIM, so identical
 // bf16 inputs must produce identical (packed, scales, biases) bytes; any
 // divergence is a ring-mechanics bug, not noise. Real-model coverage:
-// tests/batched-kv-quant-parity.test.ts (gemma gate).
+// `02d723a:tests/parity/batched-kv-quant-parity.test.ts` (gemma gate).
 
 import { describe, expect, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";

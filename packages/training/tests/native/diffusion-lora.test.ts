@@ -1,5 +1,5 @@
 // OPT-IN DiffusionGemma LoRA (D5) gate over a real cached checkpoint — the port
-// of main's tests/parity/diffusion-lora.test.ts. The denoising-objective LoRA
+// of `02d723a:tests/parity/diffusion-lora.test.ts`. The denoising-objective LoRA
 // trainer (`trainDiffusionLora`) must: mount LoRA on the decoder blocks, run
 // the corrupt-canvas -> forward -> CE-on-corrupted loss with autograd through
 // the MoE (routing indices stop_gradient'd), and DECREASE the loss. Also
@@ -18,7 +18,8 @@
 // MLX_BUN_TEST_NATIVE=1, or naming a directory that is not a diffusion_gemma
 // snapshot, fails loudly instead of skipping.
 //
-// Main read its inputs from goldens/diffusion/{forward-prompt.bin,forward.json};
+// Main read its inputs from goldens/diffusion/forward-prompt.bin (untracked) and
+// `02d723a:goldens/diffusion/forward.json`;
 // they are regenerated here from the checkpoint itself (no goldens):
 //   - promptIds: the golden generator's prompt ("Write a haiku about Apple
 //     Silicon.") rendered through the checkpoint's chat template with the
@@ -66,7 +67,7 @@ const { trainDiffusionLora } = optIn ? await import("@mlx-bun/training") : {} as
 const ops = optIn ? await import("@mlx-bun/mlx/ops") : {} as typeof import("@mlx-bun/mlx/ops");
 const { Dtype } = optIn ? await import("@mlx-bun/mlx/ffi") : {} as typeof import("@mlx-bun/mlx/ffi");
 
-// The golden generator's fixed prompt (scripts/oracle/gen-diffusion-golden.py
+// The golden generator's fixed prompt (`02d723a:scripts/oracle/gen-diffusion-golden.py`
 // PROMPT_TEXT) and seed; the target is the first 16 argmax-canvas tokens.
 const PROMPT_TEXT = "Write a haiku about Apple Silicon.";
 const CANVAS_SEED = 0n;

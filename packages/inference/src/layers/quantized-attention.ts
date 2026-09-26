@@ -299,12 +299,12 @@ export function quantizedSdpaTiled(
  *  bool matrix — so masks flagged causalEquivalent tile too (the oracle's
  *  INNER function handles them with the same column slicing we use).
  *  Window/bidir array masks do NOT tile, matching the reference's
- *  scenario-level dispatch exactly (Phase 9: sliding-layer quantized
+ *  scenario-level dispatch exactly (sliding-layer quantized
  *  prefill is unfused in optiq too). */
 function fusedSdpaSupported(q: MlxArray, mask: Mask, groupSize: number, bits: number): boolean {
   // Escape hatch mirroring optiq serve's --no-fused-kv: forces the
   // stock unfused path everywhere. Also the A/B lever for
-  // scripts/bench-levers.ts fused-prefill. Read per call (cheap next to the
+  // `02d723a:scripts/bench-levers.ts` fused-prefill. Read per call (cheap next to the
   // FFI work) so tests and paired A/B harnesses can flip it in-process.
   if (runtimeValue("MLX_BUN_NO_FUSED_SDPA") === "1") return false;
   if (bits !== 4 && bits !== 8) return false;
@@ -344,7 +344,7 @@ export function quantizedSdpa(
 }
 
 /** The runtime-only half of fusedSdpaSupported (env flag, dtype, mask
- *  kind) — generated models (Phase D) bake the (bits, group_size) half
+ *  kind) — generated models bake the (bits, group_size) half
  *  as a compile-time constant and call this for the rest. The combined
  *  predicate is exactly fusedSdpaSupported. */
 export function fusedSdpaRuntimeOk(q: MlxArray, mask: Mask): boolean {

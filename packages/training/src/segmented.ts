@@ -2,8 +2,8 @@
 // segment-by-segment so only ONE segment's activations are ever live, instead
 // of holding every layer's recompute activations at once (the spike that makes
 // naive gradient checkpointing crash at long context). Design + proof:
-// docs/design/orpo-training.md (mechanism validated on a toy in
-// scripts/ckpt-mem-test.ts, SEG mode: 0.000% grad error, peak below per-layer
+// `02d723a:docs/design/orpo-training.md` §5.3 (mechanism validated on a toy,
+// SEG mode: 0.000% grad error, peak below per-layer
 // checkpointing; bit-exact on MiniCPM5 under flash attention).
 //
 // Mechanism (B=1 SFT only — the responseOnlyCe path):
@@ -24,7 +24,7 @@
 // `value_and_grad(sum(stop_grad(dh) (.) segment_forward(...)))` is numerically
 // identical but LEAKS ~one activation buffer per segment per step at the mlx
 // level (measured; not GC/cache/synchronize/reuse reclaimable — see
-// docs/design/orpo-training.md §9.4). mlx_vjp takes the cotangent
+// `02d723a:docs/design/orpo-training.md` §5.3). mlx_vjp takes the cotangent
 // directly, needs no surrogate, and does not leak.
 //
 // IMPORTANT lifetime fact: mlx `eval` does NOT detach — an eval'd array retains
@@ -68,7 +68,7 @@ import { prefixSharedCaches, prefixGatherIdx, branchLogpMeanGathered, blockSpars
 // anything else (default) = the analytic fused CustomVjp. The fused head bounds
 // memory at the TOP level but not when nested in the segmented mlx_vjp (its
 // per-chunk graph isn't freed incrementally there); Checkpoint does. See
-// docs/design/orpo-training.md.
+// `02d723a:docs/design/orpo-training.md`.
 const SEG_HEAD = runtimeValue("MLX_BUN_SEG_HEAD") ?? "checkpoint";
 function boundedHeadFromHidden(
   model: MiniCPM5Model | Gemma4Model, h: MlxArray, ids: number[], mask: number[],

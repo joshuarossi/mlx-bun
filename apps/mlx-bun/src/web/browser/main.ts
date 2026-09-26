@@ -1,12 +1,12 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built by scripts/build-web.ts into src/web/app.js, which
-// server.ts serves at GET /assets/app.js and app.html loads via
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built by scripts/build-web.ts into
+// apps/mlx-bun/dist/web/app.js, which apps/mlx-bun/src/web/assets.ts serves at
+// GET /assets/app.js and app.html loads via
 // <script defer src="/assets/app.js"></script>.
 //
 // Entrypoint: imports and initializes every module in the EXACT order the
 // original monolithic inline <script> in app.html ran its top-level
-// statements. This ordering is load-bearing — see the design doc
-// (docs/design/web-chat-redesign.md §7) and the original file's own
+// statements. This ordering is load-bearing — see the original file's own
 // section comments for why (controllers object populated before router()
 // can dispatch to it; updateTabFades() needs to run once at parse time so
 // a tab row that's already overflowing on load gets its fade mask
@@ -91,7 +91,7 @@ router();
 pollIdentity();
 setInterval(pollIdentity, 4000);
 
-// — Routes tab feature-detection (web-ui-pass-plan.md #17): probe /dag once;
+// — Routes tab feature-detection (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #17): probe /dag once;
 //   hides the tab (and bounces off #/routes if already there) on 404. Runs
 //   after the initial router() so a direct deep link to #/routes has
 //   already rendered its section before this decides whether to keep it. —

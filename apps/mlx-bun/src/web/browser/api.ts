@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // Thin JSON-fetch helper + the SSE job-stream wrapper used by the
 // quantize/finetune/dataset controllers. Behavior-identical port of the
@@ -28,7 +29,7 @@ export async function api<T extends ApiEnvelope = ApiEnvelope>(path: string, opt
   try { data = text ? JSON.parse(text) : {}; } catch { data = { ok: false, error: text.slice(0, 400) || ("HTTP " + r.status) }; }
   // OpenAI-envelope errors are {error:{message,…}} — unwrap to a string so
   // callers can concatenate without printing "[object Object]"
-  // (web-ui-pass-plan.md #4).
+  // (`02d723a:docs/archive/planning/web-ui-pass-plan.md` #4).
   if (data && data.error && typeof data.error === "object") {
     const errObj = data.error as { message?: string };
     data.error = errObj.message || JSON.stringify(errObj).slice(0, 400);

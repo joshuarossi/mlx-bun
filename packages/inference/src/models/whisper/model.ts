@@ -2,7 +2,7 @@
 // mlx-whisper's whisper.py (mlx-community/whisper-* checkpoints: fp16
 // weights in a single weights.safetensors + config.json ModelDimensions).
 // L1 gate: encoder output and per-step decoder logits bit-exact vs the
-// pinned mlx-whisper oracle (tests/parity/whisper.test.ts).
+// pinned mlx-whisper oracle (`02d723a:tests/parity/whisper.test.ts`).
 //
 // Graph (dtype = weight dtype, fp16 for the shipped artifacts):
 //   encoder: mel [B,3000,n_mels] → conv1(k3,p1)+gelu → conv2(k3,s2,p1)+gelu
@@ -17,7 +17,7 @@
 //   attention: q,k scaled by (D/H)^-0.25 each, qk in the weight dtype,
 //              additive causal mask (-inf f16), precise softmax, no fused
 //              kernels — the FAITHFUL path. The optimized path lives in
-//              src/audio/whisper-fast.ts and is gated token-exact against
+//              packages/inference/src/models/whisper/fast.ts and is gated token-exact against
 //              this one.
 //
 // mlx inline-temporary hazard (CLAUDE.md): every op result is held in a
@@ -110,7 +110,7 @@ export class WhisperModel {
   #gelu: CompiledFunction | null = null;
   #fast: WhisperFastPath | null = null;
 
-  /** The optimized execution path (src/audio/whisper-fast.ts), built lazily. */
+  /** The optimized execution path (packages/inference/src/models/whisper/fast.ts), built lazily. */
   get fast(): WhisperFastPath {
     return this.#fast ??= new WhisperFastPath(this);
   }

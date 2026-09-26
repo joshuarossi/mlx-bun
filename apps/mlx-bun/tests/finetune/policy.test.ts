@@ -18,7 +18,7 @@ const defaults = { rank: 73, scale: 9, learningRate: 0.02, segmentSize: 0,
 const paths = { model_dir: "/synthetic/model", data_dir: "/synthetic/data", adapter_path: "/synthetic/adapter" };
 
 test("resolved SFT, DPO, and ORPO configs preserve main's API defaults", () => {
-  // Captured from main src/train/trainer.ts + src/train/job.ts. This is a test
+  // Captured from `02d723a:src/train/trainer.ts` + `02d723a:src/train/job.ts`. This is a test
   // input/expectation, never an alternative production source of defaults.
   const mainLibraryDefaults: TrainConfig = {
     method: "sft", rank: 8, scale: 1, rankScaling: "by_bits",

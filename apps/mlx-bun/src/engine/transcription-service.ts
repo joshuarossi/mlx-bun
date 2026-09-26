@@ -1,5 +1,5 @@
 // Transcription service: owns a Whisper checkpoint's residency and runs
-// transcriptions one at a time. Main's `src/serve/transcription-service.ts`,
+// transcriptions one at a time. Main's `02d723a:src/serve/transcription-service.ts`,
 // with model loading behind an injected runtime so residency policy is
 // testable without weights.
 //

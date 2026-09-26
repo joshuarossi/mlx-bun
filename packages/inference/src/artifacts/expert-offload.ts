@@ -1,4 +1,4 @@
-// E1 expert offload — RUNTIME (PLAN Phase 19).
+// E1 expert offload — RUNTIME.
 //
 // Routes expert WEIGHT tensors through a read-only file mmap (clean,
 // page-aligned pages that cost ~0 phys_footprint and that the GPU gathers
@@ -8,7 +8,7 @@
 // Activated two ways, both before model construction:
 //   - env MLX_BUN_EXPERT_OFFLOAD=<dir>  (scripts / direct runs)
 //   - activateExpertOffload(dir)        (CLI `--expert-offload`)
-// The file is produced by src/expert-offload-build.ts. Tensors not in the
+// The file is produced by packages/inference/src/artifacts/expert-offload-build.ts. Tensors not in the
 // manifest (or when never activated) fall back to the resident path, so this
 // is inert by default and safe on a partially-converted file.
 
@@ -66,7 +66,8 @@ export function isExpertOffload(): boolean {
  *  required for the GPU to gather from it.
  *
  *  Lifetime: these arrays are created ONCE at model load
- *  (QuantizedSwitchLinear.load, gemma4-base.ts) and live as model weights;
+ *  (QuantizedSwitchLinear.load, packages/inference/src/layers/quantized-switch-linear.ts)
+ *  and live as model weights;
  *  every decode's gather_qmm references them, so GPU command buffers retain
  *  the mlx buffer past any dispose and mlx may drop the LAST reference on
  *  the Metal completion thread. That's why this must be fromPointer (native

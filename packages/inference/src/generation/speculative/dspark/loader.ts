@@ -3,7 +3,8 @@
 // point). Reads dspark.json and returns the matching drafter:
 //   variant "dspark"           — the faithful KV-injection module (canonical)
 //   variant "dflash" (legacy)  — same module, pre-rename stamp
-//   variant absent             — a v1 single-vector checkpoint (module.ts,
+//   variant absent             — a v1 single-vector checkpoint
+//                                (packages/inference/src/models/speculative/dspark.ts,
 //                                superseded research baseline) — refused for
 //                                serving with a pointer at the v2 trainer.
 

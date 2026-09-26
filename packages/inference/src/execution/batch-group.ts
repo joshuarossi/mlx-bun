@@ -8,22 +8,22 @@ import { AdmissionRejected } from "./admission";
 import { runMixedTokenIteration } from "./mixed-iteration";
 import { MlxPrefillCohort,type PrefillState } from "./prefill-cohort";
 import { driveExecutionGroup } from "./scheduler";
-// Continuous-batching scheduler for `--batch N` serving (phase S2, the engine
-// loop). Owns ONE running batch and drives it forward one decode step at a
+// Continuous-batching scheduler for `--batch N` serving (the engine loop).
+// Owns ONE running batch and drives it forward one decode step at a
 // time, admitting waiting requests and evicting finished ones between steps —
 // iteration-level (continuous) scheduling, not static batching. See
-// docs/design/batching.md and docs/design/batching.md.
+// `02d723a:docs/design/batching.md`.
 //
 // The numerically-hard parts are verified primitives:
 //   - the batched FORWARD (per-row RoPE/mask) is bit-parity with mlx-lm B=N
-//     across all 4 models (tests/batched-decode-parity);
+//     across all 4 models (`02d723a:tests/parity/batched-decode-parity.test.ts`);
 //   - the dynamic-B FULL-attention ops mergeKVRows / filterKVRows match mlx-lm
-//     BatchKVCache (tests/batched-decode-parity), and the SLIDING-window
+//     BatchKVCache (same test), and the SLIDING-window
 //     BatchedRotatingCache (merge/filter/decode/make_mask incl. ring-wrap)
-//     matches mlx-lm BatchRotatingKVCache (tests/batched-rotating).
+//     matches mlx-lm BatchRotatingKVCache (`02d723a:tests/unit/batched-rotating.test.ts`).
 // This module is the ORCHESTRATION on top: admission, the step loop, per-row
 // sampling + token accounting, eviction, and assembling each layer's batched
-// cache by type. Gate: tests/parity/batch-scheduler.test.ts (teacher-forced, KL).
+// cache by type. Gate: `02d723a:tests/parity/batch-scheduler.test.ts` (teacher-forced, KL).
 //
 // Per-layer cache types: a model interleaves full-attention layers (plain
 // KVCache, wrapped per step in a BatchedDecodeMaskCache) and sliding-window
@@ -31,7 +31,7 @@ import { driveExecutionGroup } from "./scheduler";
 // mask). Full layers share one leftPad/offset (all rows advance together); the
 // rotating caches self-track per-row leftPad/offset as the ring wraps. The
 // per-row absolute position stays consistent across both (full: offset-leftPad;
-// rot: offsetArr) — see docs/design/batching.md. Hybrid gated-DeltaNet
+// rot: offsetArr) — see `02d723a:docs/design/batching.md` §5. Hybrid gated-DeltaNet
 // models (Qwen3.5) add "ssm" layers: SSMCache state is plain [B,...] with no
 // temporal axis and no padding (rows solo-prefill unpadded, decode feeds one
 // real token per row), so merge/filter are B-axis concat/take and the cache
@@ -184,7 +184,7 @@ export class MlxBatchExecutionGroup {
   readonly #batchCacheMaxTokens: number | null;
   readonly #kvScheme: KvScheme | undefined;
   readonly #maintainKv: KvMaintenance | null;
-  /** Compiled decode runner for the B=1 serial-class case (Phase 3.2) —
+  /** Compiled decode runner for the B=1 serial-class case —
    *  same eligibility gate as generate.ts (gemma dense, kill switch
    *  MLX_BUN_COMPILED_DECODE); adapter requests disable replay in their plan. Set
    *  to null permanently on a failed step (serial disables per
@@ -742,7 +742,7 @@ export class MlxBatchExecutionGroup {
     await this.#flushPipeline();
     this.#maintainKv?.prepareBatch?.(p.solo);
 
-    // ADOPT, don't copy (unified-engine plan Phase 3.2): a row joining an
+    // ADOPT, don't copy: a row joining an
     // EMPTY batch keeps its solo caches as the batch inners — a pointer
     // handoff, zero bytes moved (the old path ran the full merge machinery
     // to produce a byte-identical [1,...] copy). The copy now happens only
@@ -788,7 +788,7 @@ export class MlxBatchExecutionGroup {
         continue;
       }
       if (isQuantizedKvCache(p.solo[layer])) {
-        // Phase 3.1 — quantized full layer: same merge/extend shapes as the
+        // Quantized full layer: same merge/extend shapes as the
         // bf16 branch below, over (packed, scales, biases) triples. The solo
         // row was converted by #quantizeSolo with the serial ops, so its
         // bytes already bit-match serial `--kv-quant config`; this branch
@@ -873,7 +873,7 @@ export class MlxBatchExecutionGroup {
           }
           for (const t of [k0, v0]) { t.packed.dispose(); t.scales.dispose(); t.biases.dispose(); }
         } else if (isRotatingQuantizedCache(prevC)) {
-          // Adopted lone row (Phase 3.2 adopt): its chronological triples
+          // Adopted lone row: its chronological triples
           // are the merge's first row, pad 0 by definition.
           const [k0, v0] = prevC.temporalView();
           rows.push({ keys: k0, values: v0 });
@@ -894,7 +894,7 @@ export class MlxBatchExecutionGroup {
         const offsets: number[] = [];
         const prevC = prev?.[layer];
         if (isRotatingPlainCache(prevC) && !isRowBatchCache(prevC)) {
-          // Adopted lone row (Phase 3.2): a plain serial rotating cache —
+          // Adopted lone row: a plain serial rotating cache —
           // its chronological view is the merge's first row, same as a
           // fresh solo (pad 0 by definition).
           const [k0, v0] = prevC.temporalView();
@@ -1044,16 +1044,16 @@ export class MlxBatchExecutionGroup {
       // BatchedRotatingCache directly; ssm layers are already [B,...] state
       // with no padding (no mask, no per-row RoPE — pass through); full
       // layers get a fresh BatchedDecodeMaskCache wrapper — UNLESS no row
-      // has left padding. UNPADDED FAST PATH (unified-engine plan Phase 2,
-      // the B=1 case above all): with every leftPad 0 the wrapper's two
+      // has left padding. UNPADDED FAST PATH (the B=1 case above all): with
+      // every leftPad 0 the wrapper's two
       // jobs vanish — the padding mask (KVCache.makeMask(1) is the empty
       // mask, exactly the serial loop's) and the per-row rope positions
       // (every row sits at the shared scalar offset). The bare cache then
       // dispatches the SAME per-step graph serial builds; the wrapper
       // otherwise costs a host mask build + ~8 device nodes PER FULL LAYER
-      // PER TOKEN (the Phase-0 constant ~4–6 ms/step host tax at B=1).
+      // PER TOKEN (the constant ~4–6 ms/step host tax at B=1).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
-      // Compiled decode at B=1 (Phase 3.2): after adopt-don't-copy, a lone
+      // Compiled decode at B=1: after adopt-don't-copy, a lone
       // row's caches are SERIAL-CLASS, so the serial engine's compiled step
       // replays the same C++ graph here — closing the batch lane's last
       // B=1 host-tax gap (e4b's ~7%). Guards: gemma dense (constructor),
@@ -1511,9 +1511,11 @@ export class MlxBatchExecutionGroup {
   /** Row `b` of every layer as OWNED serial-class caches, or null when a
    *  layer kind can't be extracted (then the caller drops the row's KV as
    *  before). Bit-exactness: merge/extend/filter/decode are byte-preserving
-   *  per row (tests/batched-decode-parity, tests/batched-rotating,
-   *  tests/batched-rotating-quant) and each extract is a pure slice+copy of
-   *  those bytes (tests/batched-extract), so an extracted row's bytes ==
+   *  per row (`02d723a:tests/parity/batched-decode-parity.test.ts`,
+   *  `02d723a:tests/unit/batched-rotating.test.ts`,
+   *  packages/inference/tests/state/batched-rotating-quant.test.ts) and each
+   *  extract is a pure slice+copy of those bytes
+   *  (`02d723a:tests/unit/batched-extract.test.ts`), so an extracted row's bytes ==
    *  the solo run's. */
   #extractRowCaches(b: number, expectTokens: number): Cache[] | null {
     const out: Cache[] = [];
@@ -1558,7 +1560,7 @@ export class MlxBatchExecutionGroup {
     }
     const inners = this.#inners!;
     if (keep.length === 0) {
-      // Prompt-cache put (Phase 3.2): a lone NEVER-MERGED row's inners are
+      // Prompt-cache put: a lone NEVER-MERGED row's inners are
       // its adopted serial-class caches, covering exactly prompt+fed — hand
       // them back to the cache instead of disposing. dropOnly (the batch-
       // drop error path) and poisoned rows dispose as before; MERGED rows'

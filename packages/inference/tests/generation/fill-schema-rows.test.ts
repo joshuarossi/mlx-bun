@@ -5,7 +5,7 @@
 // values and diffs the TOKEN IDS. So the assertions here are token-exact and
 // format-agnostic — Qwen-style XML (`<function=NAME>`), Qwen-style JSON
 // (`{"name": …}`), and GLM-5.2's `<arg_key>`/`<arg_value>` (the shipped
-// renderer, src/chat-template.ts) all compile, and a template that does not
+// renderer, packages/inference/src/input/chat-template.ts) all compile, and a template that does not
 // render tool_calls compiles to nothing.
 //
 // THE GATE THAT MATTERS (regression, 2026-08-31): every row's
@@ -17,8 +17,9 @@
 // byte. Text checks pass that bug; id checks catch it.
 //
 // Model-free: a deterministic word/punctuation tokenizer with configurable
-// merges stands in for a real BPE vocabulary (tests/support/fill-fixtures.ts).
-// The real-tokenizer version of this gate is tests/parity/fill-strict.test.ts.
+// merges stands in for a real BPE vocabulary
+// (packages/inference/tests/generation/template-input.ts). The real-tokenizer
+// version of this gate is `02d723a:tests/parity/fill-strict.test.ts`.
 import { describe, expect, test } from "bun:test";
 import {
   renderGlm52Chat, type ChatMessage, type ToolDefinition,
@@ -65,7 +66,7 @@ function compile(
 }
 
 /** Token ids the compiler decided legitimately END an argument value — what
- *  the echo tier is allowed to stop at (src/fill/echo-index.ts). */
+ *  the echo tier is allowed to stop at (packages/inference/src/generation/fill/echo-index.ts). */
 function delimiters(
   template: FillTemplateLike, tokenizer: FakeTokenizer, tools: ToolDefinition[],
 ): string[] {

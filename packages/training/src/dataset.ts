@@ -271,7 +271,7 @@ export function tokenizePair(
 ): { ids: number[]; promptLen: number } {
   // A chat template emits a literal BOS, and the tokenizer's post-processor
   // prepends one too → a duplicate leading BOS. Inference strips it
-  // (server.ts: "template includes <bos>; tokenizer also prepends one"), so
+  // (apps/mlx-bun/src/server/text-prompt.ts, the HTTP duplicate-BOS correction), so
   // training must match or it learns on a token stream the model never sees.
   // No-op for raw (untemplated) prompts, which carry a single BOS.
   const bos = tok.bosTokenId;

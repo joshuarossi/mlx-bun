@@ -25,7 +25,7 @@ function loadMtpLinear(
 }
 
 /** Qwen3Attention.forward with the companion's dense or quantized projections.
- *  Attention operations follow src/model/qwen3_5.ts verbatim. */
+ *  Attention operations follow packages/inference/src/models/qwen/qwen3_5.ts verbatim. */
 class MtpAttention {
   readonly qProj: MtpLinear;
   readonly kProj: MtpLinear;

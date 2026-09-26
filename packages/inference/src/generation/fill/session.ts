@@ -8,7 +8,8 @@
 // them itself in one append and resumes sampling after them. The append can
 // use several execution chunks while retaining the complete span. No
 // draft, no verify, no rollback, and no comparison against what the model
-// "would have" produced — nothing here routes through src/spec/.
+// "would have" produced — nothing here routes through
+// packages/inference/src/generation/speculative/.
 //
 // The echo tier (K3c) adds a weaker claim over the SAME mechanism: a span
 // copied from earlier in the session, held under policy "verify" — the engine

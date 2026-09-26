@@ -165,7 +165,7 @@ async function readConfig(dir: string): Promise<any | null> {
 }
 
 /** Materialize every tensor from an adapter safetensors file (mirrors the
- *  read idiom in src/lora.ts loadAdapterTensors). */
+ *  read idiom in packages/inference/src/adapters/manager.ts loadAdapterTensors). */
 function loadAdapterTensors(file: string): Map<string, MlxArray> {
   const sf = SafetensorsFile.open(file);
   const names = [...sf.tensors.keys()];

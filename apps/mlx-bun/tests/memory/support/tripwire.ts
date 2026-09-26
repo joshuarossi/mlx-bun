@@ -1,6 +1,6 @@
 // Read-path embedding tripwire.
 //
-// Main counted embedder calls in `src/embed.ts`; every read-path test asserted
+// Main counted embedder calls in `02d723a:src/embed.ts`; every read-path test asserted
 // the counter stayed 0. Here the memory domain cannot import the embeddings
 // layer at all (the app DAG forbids it), so the equivalent proof is structural:
 // no module under the inference package's `embeddings/` directory is loaded in

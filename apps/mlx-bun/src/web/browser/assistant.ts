@@ -1,8 +1,8 @@
 import type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../chat/protocol";
 export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../chat/protocol";
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §6.6 "the app-aware assistant", §9 Phase 3, beat matrix Axis 12). Built
-// into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §6.6 "the app-aware assistant", §9 Phase 3, beat matrix Axis 12).
+// Built into apps/mlx-bun/dist/web/app.js by scripts/build-web.ts.
 //
 // Three pieces, mirroring the proven PortfolioManager reference
 // (client/src/lib/{ui-snapshot,spotlight,resolve-spotlight}.ts, read in
@@ -439,10 +439,10 @@ export function buildAppContext(route: string, viewOverride?: string | null): Ap
 /** The compact one-line ambient context PortfolioManager-style "never
  *  answer blind" auto-prepend — NOT a snapshot dump. Mirrors the shape in
  *  the task brief's example: "[user is on: Quantize · step 2/4]". Pure
- *  string builder so pi-web.ts's tests can exercise the exact wire text
+ *  string builder so apps/mlx-bun/tests/chat-policy.test.ts can exercise the exact wire text
  *  the assistant would see; the browser never calls this directly (the
- *  server derives its own copy from the stored context — see pi-web.ts's
- *  ambientContextLine). Exported for symmetry/documentation even though
+ *  server derives its own copy from the stored context — see
+ *  apps/mlx-bun/src/chat/policy.ts's ambientContextLine). Exported for symmetry/documentation even though
  *  chat.ts doesn't call it (kept here so the format has one home). */
 export function ambientLine(ctx: { route: string; view?: string; step?: WizardStep }): string {
   const place = ctx.view ? ctx.view : (ROUTE_LABELS as Record<string, string>)[ctx.route] ?? ctx.route;

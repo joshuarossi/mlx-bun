@@ -1,17 +1,18 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // Adapter routing table (plan §5.6, §9 Phase 2): the deep surface behind
 // the composer's ⚙ button beside #chat-adapter. Shows every on-disk
 // adapter with its three states (available / loaded+mounted /
 // selected-for-this-chat), base model, rank, size on disk, and RAM cost
 // when mounted (GET /v1/adapters now reports `ram_bytes` — see
-// docs/reference/server-api.md), with compatible-graying and a why-not
+// `02d723a:docs/reference/server-api.md`), with compatible-graying and a why-not
 // tooltip. Actions: mount, select, unselect, and stack two compatible
 // adapters as "a+b" — resolveSpec/injectAdapter already support composite
-// ids end to end (proved in tests/research/pi-web.test.ts's stacking test; the
-// shape-validated mount is proved against real weights in the
-// MLX_BUN_TEST_LORA=1-gated tests/parity/lora.test.ts).
+// ids end to end (proved in apps/mlx-bun/tests/chat-policy.test.ts's stacking
+// test; the shape-validated mount is proved against real weights in the
+// MLX_BUN_TEST_LORA=1-gated `02d723a:tests/parity/lora.test.ts`).
 //
 // Single source of SELECTION state, not a single fetch: composer.ts's quick
 // <select> and this table each hit /v1/adapters(+/available) independently
@@ -158,7 +159,7 @@ export function renderAdapterRow(
 }
 
 /** Full table body: a stack-mode toggle + composed-spec bar (when picks
- *  exist), then one section of rows. Exported so tests/using/web-app.test.ts can
+ *  exist), then one section of rows. Exported so apps/mlx-bun/tests/web/browser.test.ts can
  *  exercise esc() discipline without a live DOM/network. */
 export function renderAdaptersBodyHtml(state: AdaptersPanelState): string {
   if (!state.available.length) {

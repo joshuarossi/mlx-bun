@@ -34,7 +34,7 @@ const { AdapterManager } = optIn ? await import("@mlx-bun/inference/adapters") :
 const { trainLora, DEFAULT_TRAIN_CONFIG } = optIn ? await import("@mlx-bun/training") : {} as typeof import("@mlx-bun/training");
 import type { TrainingProgress } from "@mlx-bun/training";
 
-// Tiny preference corpus (main's fixtures/train/tiny/dpo.jsonl, written to a
+// Tiny preference corpus (`02d723a:fixtures/train/tiny/dpo.jsonl`, written to a
 // temp dir at test time as train.jsonl — the preference loop reads that name):
 // six {prompt, chosen, rejected} triples where chosen is the shouting variant.
 const PREFERENCE_ROWS: readonly (readonly [string, string, string])[] = [

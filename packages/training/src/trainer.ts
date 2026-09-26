@@ -82,7 +82,7 @@ export interface TrainConfig {
    *  beats per-layer checkpointing at long context, where naive checkpointing
    *  holds every layer's recompute activations at once and crashes. B=1 SFT
    *  only (the responseOnlyCe path); mutually exclusive with gradCheckpoint.
-   *  Numerically identical to off. See docs/design/orpo-training.md. */
+   *  Numerically identical to off. See `02d723a:docs/design/orpo-training.md`. */
   segmentSize: number;
   /** Keep ALL eval-step checkpoints (full mountable adapters under
    *  checkpoints/step-<NNNNN>-val<loss>/) + write metrics.json. Off by default
@@ -110,15 +110,15 @@ export interface TrainConfig {
    *  response-only LM head in token-chunks, each rematerialized in the backward,
    *  bounding the dominant `[M, vocab]` logits term to `[chunkSize, vocab]`.
    *  Exact (numerically identical). Non-segmented path only (segmentSize takes
-   *  precedence). See docs/design/orpo-training.md → chunked fused log-prob. */
+   *  precedence). See `02d723a:docs/design/orpo-training.md` → chunked fused log-prob. */
   orpoChunkSize: number;
   /** Use the FUSED linear cross-entropy head (Liger/CCE-style): one CustomVjp with
    *  an analytic softmax−onehot backward — no autograd through the head, no
    *  retained `[M,vocab]` logits in either direction. Composes with
    *  `orpoChunkSize` as the token-chunk size (defaults to 512 when unset). B=1,
    *  non-segmented path only; Gemma + MiniCPM5 heads. Value bit-exact vs the
-   *  full-logits head, grads in the bf16 class. See docs/design/orpo-training.md
-   *  → fused linear-CE head. */
+   *  full-logits head, grads in the bf16 class. See
+   *  `02d723a:docs/design/orpo-training.md` → fused linear-CE head. */
   orpoFusedCe: boolean;
   /** Route the fused linear-CE head through the flash-CCE Metal kernel: in-kernel
    *  quantized logits + online softmax (fwd) and dh accumulation (bwd) — neither
@@ -131,7 +131,7 @@ export interface TrainConfig {
    *  (token cost 2(P+R) → P+2R). B=1, non-segmented path; MiniCPM5 + Gemma4 (e4b).
    *  Falls back to the two-forward orpoLoss for rows whose chosen/rejected prompts
    *  differ. Composes with orpoFlashCe/orpoFusedCe (each branch routes through the
-   *  [M,V]-free head). See src/train/prefix-shared.ts. */
+   *  [M,V]-free head). See packages/training/src/prefix-shared.ts. */
   orpoPrefixShared: boolean;
   /** ORPO L_SFT scope (`sft_scope`). "full" (default; paper/TRL-faithful):
    *  the chosen-NLL term is the token-mean cross-entropy over the FULL
@@ -471,7 +471,7 @@ export async function trainLora(
 
 // ---------------------------------------------------------------------------
 // Segment planning: uniform planSegmentsBySize only. A full-attention
-// ISOLATION planner (kernel-review backlog #2 / docs/design/orpo-training.md
+// ISOLATION planner (kernel-review backlog #2 / `02d723a:docs/design/orpo-training.md`
 // §5) was built and A/B-measured 2026-07-02: ZERO peak win — mlx's sdpa
 // backward is O(L²) for EVERY layer (~3.5 GB/layer @8K e4b), sliding included,
 // so the worst segment is set by layer count alone and segment_size is the
@@ -512,9 +512,9 @@ async function sftLoop(
   const opt = createLoraOptimizer(params, lora, cfg, emit);
 
   // Segmented backward: stream the SFT backward segment-by-segment (only one
-  // segment's activations live at a time). Phase A is MiniCPM5 SFT B=1 only;
-  // it replaces the single value_and_grad below and is mutually exclusive with
-  // gradient checkpointing (see docs/design/orpo-training.md).
+  // segment's activations live at a time). It replaces the single
+  // value_and_grad below and is mutually exclusive with gradient checkpointing
+  // (see `02d723a:docs/design/orpo-training.md`).
   const useSegmented = cfg.segmentSize > 0;
   let segmented: SegmentedBackward | SegmentedBackwardGemma4 | null = null;
   if (useSegmented) {
@@ -576,12 +576,12 @@ async function sftLoop(
   // flash-fd-check.ts (deleted 2026-08-23; git history)), though ~30× slower than ops.sdpa.
   // Cleared in finally.
   //
-  // GEMMA GUARD (same convention as the launcher's env sanitization in
-  // cli.ts / job.ts, but enforced at the trainer): e4b on this path SIGTRAPed
+  // GEMMA GUARD (enforced at the trainer): e4b on this path SIGTRAPed
   // (uncatchable native crash) at multi-K sequence lengths (>=2K, reproduced in
-  // segmented-grad-test-e4b.ts (deleted 2026-08-23; git history); docs/reference/training.md)
+  // segmented-grad-test-e4b.ts (deleted 2026-08-23; git history);
+  // `02d723a:docs/reference/training.md`)
   // and has NOT been re-validated at that scale since the two kernel fixes —
-  // the regression tests stop at T<=256. cli.ts even defaults e4b seq to 8192,
+  // the regression tests stop at T<=256. apps/mlx-bun/src/cli/train.ts even defaults e4b seq to 8192,
   // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from a MiniCPM5 experiment
   // would otherwise ride silently into a crash mid-run. Refuse it for Gemma
   // until the >=2K re-validation lands; MiniCPM5 stays allowed.
@@ -1013,7 +1013,7 @@ async function orpoLoop(
 
       // One optimizer step over cfg.gradAccumSteps micro-batches (pass-through
       // when 1) — the long-context lever for a larger effective batch without
-      // the B>1 activation memory (see docs/design/orpo-training.md, Batching).
+      // the B>1 activation memory (see `02d723a:docs/design/orpo-training.md`, Batching).
       const { loss: lossVal, grads } = accumulateStep(cfg.gradAccumSteps, () => {
         currentBatch = batches.next().value as DpoBatch;
         // Per-micro-step dropout seed: constant across this micro-step's forward

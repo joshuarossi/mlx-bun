@@ -1,5 +1,4 @@
-// Batched sliding-window QUANTIZED KV — Phase 3 milestone 2 of
-// docs/design/unified-engine-frontier-plan.md: the composition that lets a
+// Batched sliding-window QUANTIZED KV — the composition that lets a
 // per-layer kv_config naming ROTATING layers (gemma) batch. No stack ships
 // this (mlx-lm's batched path is bf16-only; optiq's mixed-KV hook is
 // serial-only), so per the composition rule the oracle is the SERIAL
@@ -16,16 +15,16 @@
 // a real row reads.
 //
 // Subclasses RotatingQuantizedKVCache so Attention.forward's `instanceof`
-// dispatch (gemma4.ts) routes to the quantized path with the L1 model file
+// dispatch (packages/inference/src/models/gemma4/model.ts) routes to the quantized path with the L1 model file
 // untouched. PERSISTENT (like BatchedRotatingCache, unlike the ephemeral
 // per-step BatchedQuantDecodeMaskCache): the scheduler passes it through
 // every step; it self-tracks per-row offset/leftPad and the scalar ring
 // state. Multi-token blocks use the same chronological storage operation as
 // the bf16 layout; one-token updates keep the existing in-place ring kernel.
 //
-// Gates: tests/unit/batched-rotating-quant.test.ts (model-free byte-identity vs
+// Gates: packages/inference/tests/state/batched-rotating-quant.test.ts (model-free byte-identity vs
 // the serial oracle per row, through ring wrap, B=1 and B=2) + the gemma
-// scheduler gate in tests/parity/batched-kv-quant-parity.test.ts.
+// scheduler gate in `02d723a:tests/parity/batched-kv-quant-parity.test.ts`.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -284,7 +283,8 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
    *  (the oracle's `cache._idx = cache.keys.shape[2]`). Token-axis slicing
    *  is byte-safe (packing along HEAD_DIM — file header); per-row byte
    *  identity vs the serial oracle is the class invariant
-   *  (tests/batched-rotating-quant), extraction is a pure slice+copy. */
+   *  (packages/inference/tests/state/batched-rotating-quant.test.ts), extraction
+   *  is a pure slice+copy. */
   extractRow(i: number, limit = Infinity): RotatingQuantizedKVCache | null {
     if (!this.keys || !this.values) return null;
     const pad = Math.max(0, this.leftPad[i]!, this.#rows.activeLength - limit);

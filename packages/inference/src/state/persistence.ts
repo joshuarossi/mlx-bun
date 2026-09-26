@@ -2,9 +2,9 @@ import { type CheckpointAttachment } from "../contracts/mlx/checkpoint";
 import { cleanupFailure,disposeResources } from "../runtime/resources";
 import { attachmentBytes,disposeAttachments } from "./checkpoint";
 // KV-cache persistence: save prompt caches to disk, reload by streamed copy.
-// The serialization core of the SSD cold tier (docs/design/kv-cache.md).
+// The serialization core of the SSD cold tier (`02d723a:docs/design/kv-cache.md` §5).
 //
-// File layout (every tensor PAGE-ALIGNED — the Phase 1 corollary: files
+// File layout (every tensor PAGE-ALIGNED — files
 // we write can be mmap'd and handed to the GPU without copies):
 //   [magic "MLXBUNKV2\n"][u32 LE header length][u32 LE dataStart]
 //   [u64 LE header hash][JSON header][padding]
@@ -561,7 +561,7 @@ function* saveKvCacheSteps(path: string, tokens: number[], caches: Cache[], meta
       // sources — mlx save-transient measured 0 bytes, 2026-07-07). NOTE:
       // the hash+write still CPU-touch the live entry's unified-memory
       // pages, which makes them VISIBLE to ps RSS — accounting, not an
-      // allocation (see bench-serve.ts' per-leg RSS note).
+      // allocation (see `02d723a:scripts/bench-serve.ts`' per-leg RSS note).
       let srcIdx = 0;
       for (const e of [...entries, ...(attachments ?? [])]) {
         for (const slot of e.tensors) {

@@ -1,4 +1,4 @@
-// E0 expert-routing tracer (PLAN Phase 19 — expert offload).
+// E0 expert-routing tracer (expert offload).
 //
 // Records every MoE router decision as JSONL — one record per router call:
 //   { c: callSeq, l: layerIdx, s: [B, L, k], i: [flattened uint32 expert ids] }

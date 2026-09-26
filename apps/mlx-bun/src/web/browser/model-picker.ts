@@ -1,17 +1,17 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // Model picker (plan §5.6, §9 Phase 2): makes the nav model label
 // (#nav-model, previously a dead <span> with no click handler) open a
 // popover of every downloaded model from GET /library, each with its own
-// fit verdict computed on THIS Mac (`assessment`, from src/fit.ts) — not a
+// fit verdict computed on THIS Mac (`assessment`, from packages/inference/src/execution/fit.ts) — not a
 // generic heuristic like LM Studio's. Investigated: there is no in-process
-// model reload/swap path anywhere in src/server.ts or src/cli.ts (grepped
+// model reload/swap path anywhere in apps/mlx-bun/src/server/ or apps/mlx-bun/src/cli/ (grepped
 // for reload/swapModel/switchModel/loadModel — none exist; the runtime is
 // one model per process by design, same as mlx-lm). So rows offer a
 // copy-able `mlx-bun serve <id>` restart command instead of faking a live
-// swap — live swap is Phase 3's Hub item (docs/design/web-chat-redesign.md
-// §9 Phase 3 "Model Hub"), not invented here.
+// swap.
 
 import { $, setModelPopClose, openHubFromModelPicker } from "./shell";
 import { api } from "./api";
@@ -32,7 +32,7 @@ export interface LibraryRow {
 function gb(n: number): string { return (n / 2 ** 30).toFixed(1) + " GB"; }
 
 /** Three-tier verdict from the server's honest {fits, predicted_decode_tps}
- *  (src/fit.ts) — LM Studio's green/yellow/red convention layered on our own
+ *  (packages/inference/src/execution/fit.ts) — LM Studio's green/yellow/red convention layered on our own
  *  per-machine numbers, not a second prediction model. green: fits with
  *  headroom (≥10 tok/s decode — comfortably interactive); yellow: fits but
  *  slow (<10 tok/s — usable, sluggish); red: doesn't fit the memory budget;
@@ -85,7 +85,7 @@ function renderRow(m: LibraryRow): string {
 }
 
 /** Pure render of the popover body from a /library response. Exported for
- *  tests/using/web-app.test.ts's esc() discipline check (repo ids are
+ *  apps/mlx-bun/tests/web/browser.test.ts's esc() discipline check (repo ids are
  *  user-controlled HF strings — the same class of interpolation hazard
  *  finding #15 flagged for the adapter dropdown). */
 export function renderModelPopBodyHtml(models: LibraryRow[]): string {

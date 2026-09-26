@@ -1,5 +1,6 @@
-// DOM environment bootstrap for tests/web-app.test.ts (plan §7/§9 Phase 2
-// test harness). MUST be imported before any src/web/src/*.ts module — some
+// DOM environment bootstrap for apps/mlx-bun/tests/web/browser.test.ts (plan
+// §7/§9 Phase 2 test harness). MUST be imported before any
+// apps/mlx-bun/src/web/browser/*.ts module — some
 // of them do DOM/window lookups at module scope (e.g. shell.ts's
 // `window.matchMedia(...)` for the theme media query), so `document`/
 // `window` need to exist as globals before those modules' top-level code

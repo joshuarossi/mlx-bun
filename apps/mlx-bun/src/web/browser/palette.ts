@@ -15,7 +15,7 @@
 // the real control — never a copy of chat.ts's logic).
 //
 // Full-text "Search messages" delegates to the same GET /api/sessions/search
-// endpoint sessions.ts's sidebar fallback uses (src/serve/session-search.ts)
+// endpoint sessions.ts's sidebar fallback uses (apps/mlx-bun/src/chat/session-search.ts)
 // — one server-side implementation, two presentations.
 
 import { controllers, currentRoute, el, injectStyles, isDeveloperMode, setDeveloperMode, setPaletteClose, setPaletteIsOpen, setPaletteOpen, setTheme, trapFocus, type FocusTrap } from "./shell";
@@ -39,8 +39,7 @@ interface PaletteAction {
 }
 
 /** Pure: the static action list, independent of any live session data —
- *  independently testable (tests/using/web-app.test.ts asserts labels/ids without
- *  needing a DOM). Session rows and message-search hits are appended
+ *  independently testable without a DOM. Session rows and message-search hits are appended
  *  dynamically in refreshResults() below, not part of this list. */
 export function staticActions(): PaletteAction[] {
   return [

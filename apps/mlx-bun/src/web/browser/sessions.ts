@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // Recent-chats sidebar (list/search/fork/delete), the last-user-message
 // sibling `< i/n >` toggle (edit-and-resend branching, plan §5.2), and the
@@ -11,7 +12,7 @@
 //
 // Phase 3 additions (plan §9 Phase 3, beat-matrix Axis 10/11): full-text
 // "in messages" search fallback below the title filter (GET
-// /api/sessions/search, backed by src/serve/session-search.ts), an export
+// /api/sessions/search, backed by apps/mlx-bun/src/chat/session-search.ts), an export
 // action per session row (Markdown/JSON, via GET /api/sessions/export —
 // path-validated server-side under sessionDir exactly like pi-web's
 // isUnderSessionDir), and openSessionRowByPath(), the DOM-click bridge the
@@ -235,7 +236,7 @@ async function runMessageSearch(state: SidebarState, q: string, seq: number): Pr
  *  [start,end) ranges — same escape-then-restore discipline markdown.ts
  *  uses for code spans, applied here to search highlighting instead. Ranges
  *  are assumed non-overlapping and sorted (buildSnippet in
- *  src/serve/session-search.ts only ever emits one range per snippet
+ *  apps/mlx-bun/src/chat/session-search.ts only ever emits one range per snippet
  *  today, but this loop handles more without change). */
 export function highlightSnippetHtml(snippet: string, ranges: Array<[number, number]>): string {
   if (!ranges.length) return esc(snippet);

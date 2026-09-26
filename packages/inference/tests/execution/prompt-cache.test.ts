@@ -9,7 +9,7 @@ import type { PromptCacheEntry } from "../../src/state/prefix-cache";
 import type { Cache } from "../../src/contracts/mlx/cache";
 
 // LRU policy fixtures have no native arrays; native ownership is tested with
-// the concrete cache in checkpoint-state.test.ts.
+// the concrete cache in `02d723a:tests/unit/checkpoint-state.test.ts`.
 class PromptCache extends MlxPromptCache {
   constructor(...args: ConstructorParameters<typeof MlxPromptCache>) {
     super(args[0], args[1], args[2], args[3], () => {});

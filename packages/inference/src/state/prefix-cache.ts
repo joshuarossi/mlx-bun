@@ -5,7 +5,7 @@ import { minimumReusableOffset } from "./views";
 import { withResource, cleanupFailure, disposeResources, ownResource } from "../runtime/resources";
 // Byte-capped LRU prompt cache — the RAM tier of the Layer-0 KV store.
 //
-// The mlx-lm lesson (PLAN.md): a count-capped cache of multi-GB KV
+// The mlx-lm lesson: a count-capped cache of multi-GB KV
 // entries is an OOM footgun. Ours accounts bytes (sum of KV array bytes
 // per entry) and evicts least-recently-used until under the cap.
 //
@@ -59,7 +59,8 @@ function makeSharedRetain(retain: (() => void) | undefined): { acquire(): () => 
 
 /** The cold (SSD) tier the RAM cache tiers over. Structural — this module
  *  never imports ssd-cache (which imports us); the server binds
- *  SsdCacheStore + the model into this shape (src/server.ts). Lookup and
+ *  SsdCacheStore + the model into this shape
+ *  (apps/mlx-bun/src/engine/cache-services.ts). Lookup and
  *  restore failures return null; store returns false on failure. Operations
  *  that require persistence retain their donor if storing fails. */
 export interface ColdTier {

@@ -3,7 +3,7 @@
 // side rank logic). Mount N adapters on one quantized base, select per
 // request by id, never reload the base.
 //
-// Deviations from the reference, both deliberate (PLAN Phase 8):
+// Deviations from the reference, both deliberate:
 // - No ContextVar/serve-pin: our generation queue is serialized, so the
 //   active adapter is a plain field (LoraState) set by generate().
 // - Residual composition is mlx-lm LoRALinear / optiq apply.py
@@ -47,8 +47,8 @@ export interface AdapterInfo {
   skippedTensors: number;
   /** Actual resident bytes of this adapter's mounted lora_a/lora_b arrays
    *  (sum of MlxArray.nbytes — the real RAM cost while mounted, not the
-   *  on-disk safetensors size). Web chat's adapter routing table (plan
-   *  §5.6/§9 Phase 2) shows this per loaded adapter instead of guessing
+   *  on-disk safetensors size). Web chat's adapter routing table shows this
+   *  per loaded adapter instead of guessing
    *  from file size. */
   ramBytes: number;
 }

@@ -17,7 +17,8 @@
 // seed but not bit-matched to the Python tool's sampling.
 //
 // The forward reuses the existing full-sequence machinery
-// (src/train/forward.ts trainForward → model.forwardHidden + logitsFromHidden).
+// (packages/inference/src/scoring/full-sequence.ts trainForward →
+// model.forwardHidden + logitsFromHidden).
 
 import { clearCache, Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";

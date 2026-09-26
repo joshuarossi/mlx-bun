@@ -21,7 +21,7 @@ import { runtimeValue } from "../runtime/config";
 
 // Scoped wired limit, raised only for near-ceiling models. mlx-lm's
 // wired_limit context wires unconditionally per generation; we deviate
-// with a measured justification (PLAN Phase 6 verification findings):
+// with a measured justification:
 // - 26B-A4B (16.4 GB = 92% of the 17.8 GiB working set) NEEDS wiring —
 //   8.6 tok/s without, 32.3 with (Metal evicts weight buffers per token).
 // - 12B/e4b (≤47%) hit reference parity WITHOUT wiring, and wiring in a

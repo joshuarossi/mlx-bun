@@ -2,10 +2,11 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { artifactIdentity } from "../../../artifacts/identity";
 import { assistantGroups } from "../bindings/assistant-rows";
 // AssistantSource — the optiq KV-borrowing Gemma "-assistant" drafter
-// (src/spec/drafter.ts) behind the serve-time DraftSource seam. L2 oracle:
+// (packages/inference/src/models/gemma4/assistant.ts) behind the serve-time DraftSource seam. L2 oracle:
 // optiq spec_generate. This is the SAME drafter the standalone specGenerate
-// loop (src/spec/generate.ts) drives; here it plugs into the shared
-// verify/accept executor (src/spec/serve-loop.ts) so it composes with grammar,
+// loop (packages/inference/src/generation/speculative/generate.ts) drives; here
+// it plugs into the shared verify/accept executor
+// (packages/inference/src/generation/speculative/run.ts) so it composes with grammar,
 // logits processors, admission accounting, and stats like any other source.
 //
 // KV-borrowing (why the seam carries a TargetView): the drafter has NO cache

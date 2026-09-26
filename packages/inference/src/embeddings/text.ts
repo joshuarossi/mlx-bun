@@ -2,7 +2,7 @@
 // L2-normalized vector) with the Qwen3-Embedding input convention so the CLI
 // (`mlx-bun embed`), the server (`/v1/embeddings`), and in-repo experiments all
 // produce the SAME vectors — the ones verified bit-exact vs mlx-lm in
-// tests/parity/qwen3-embed-parity.test.ts.
+// `02d723a:tests/parity/qwen3-embed-parity.test.ts`.
 
 import { Qwen3Model } from "../models/qwen/qwen3";
 import type { RuntimeModel } from "../models/factory";

@@ -1,7 +1,7 @@
 // Tokenizer: @huggingface/tokenizers (pure JS/TS — no native code, no
-// WASM; embeds directly in `bun build --compile`). Decision spike result:
-// see PLAN.md Phase 1 findings. Correctness contract: round-trip parity
-// with the Python oracle's AutoTokenizer (goldens/tokenizer.json).
+// WASM; embeds directly in `bun build --compile`). Correctness contract:
+// round-trip parity with the Python oracle's AutoTokenizer
+// (`02d723a:goldens/tokenizer.json`).
 
 import { Tokenizer } from "@huggingface/tokenizers";
 
@@ -18,11 +18,12 @@ export interface LoadedTokenizer {
   readonly bosTokenId: number | null;
   readonly eosTokenId: number | null;
   /** Absolute path to tokenizer.json (the model snapshot dir's copy). Set by
-   *  loadTokenizer; read by src/grammar.ts to build the xgrammar TokenizerInfo
+   *  loadTokenizer; read by packages/inference/src/sampling/grammar.ts to build the xgrammar TokenizerInfo
    *  (vocab extraction + vocab-type detection for constrained decoding). */
   readonly tokenizerJsonPath?: string;
   /** config.json vocab_size, may exceed the tokenizer vocab length when the
-   *  embedding is padded to a power-of-two / 256. Read by src/grammar.ts to
+   *  embedding is padded to a power-of-two / 256. Read by
+   *  packages/inference/src/sampling/grammar.ts to
    *  size the logit bitmask against the model's logit width, not the
    *  tokenizer's. Set by the server when it loads config; not set by the
    *  bare loadTokenizer() helper (callers that need it pass modelDir + config). */

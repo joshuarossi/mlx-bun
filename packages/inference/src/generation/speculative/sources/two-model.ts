@@ -1,9 +1,11 @@
 // Two-model speculative drafting — mlx-lm parity (`mlx_lm.server
 // --draft-model`). A full second model drafts autoregressively; the serve
-// loop (src/spec/serve-loop.ts) verifies with the target. L1 oracle:
+// loop (packages/inference/src/generation/speculative/run.ts) verifies with the
+// target. L1 oracle:
 // mlx_lm.server with the same target/draft pair, greedy, token-for-token
 // (spec-vs-spec — both batch the verify lm-head, so neither is bit-exact to
-// stock decode at knife-edges; see src/spec/generate.ts header).
+// stock decode at knife-edges; see
+// packages/inference/src/generation/speculative/generate.ts header).
 //
 // Faithfulness notes (read from the oracle venv's generate.py):
 //  - drafts are sampled with the REQUEST sampler (generate.py:593-601) —
@@ -27,7 +29,8 @@ import { artifactIdentity } from "../../../artifacts/identity";
 import { configFingerprint } from "../../../artifacts/fingerprint";
 
 /** mlx-lm's prefill_step_size — the draft drain chunks at the same stride
- *  as the target's (serve-loop.ts); chunking is numerically exact for
+ *  as the target's (packages/inference/src/generation/speculative/run.ts);
+ *  chunking is numerically exact for
  *  causal attention. */
 const PREFILL_CHUNK = 2048;
 

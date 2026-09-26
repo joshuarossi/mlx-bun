@@ -1,5 +1,5 @@
 // Qwen3.5/3.8 multimodal RoPE (mRoPE) — the language-side position machinery
-// for vision requests (PLAN 14v), port of mlx-vlm's qwen3_5 language rope:
+// for vision requests, port of mlx-vlm's qwen3_5 language rope:
 // MRoPERotaryEmbedding (style "interleaved", mrope_section [11,11,10]) +
 // get_rope_index + the rope_deltas decode continuation.
 //

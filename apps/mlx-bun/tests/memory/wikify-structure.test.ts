@@ -3,7 +3,7 @@
 // reindex records via=main, near-duplicate-stub merge signals, series-banner
 // maintenance, the embedding silhouette (FAKE embed — the read path never
 // embeds), and Talk-page suggestion writing. No GPU; the real one-load embedding
-// silhouette lives in scripts/memory/eval-wikify-split.ts.
+// silhouette lives in `02d723a:scripts/memory/eval-wikify-split.ts`.
 
 import { describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";

@@ -7,7 +7,7 @@
 // Topics_to_Ignore.md) and are read in at synthesis time so the system governs
 // itself in its own substrate.
 //
-// See docs/design/dreaming-nightly-pipeline.md → "Synthesis runs on the local model".
+// See `02d723a:docs/design/dreaming-nightly-pipeline.md` §4 (the inference seam).
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

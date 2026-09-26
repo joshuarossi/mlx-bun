@@ -3,7 +3,7 @@
 // exercise: 12B (dense), e4b (per-layer-input embeddings + KV-shared
 // layers), 26B-A4B (MoE block: router + gather_qmm experts).
 //
-// Parity notes (see PLAN.md Phase 2 findings):
+// Parity notes:
 // - SDPA scale is 1.0 (Gemma4 normalizes q/k instead).
 // - Full-attention layers: global_head_dim 512, 1 global KV head,
 //   attention_k_eq_v (V = same projection as K, with un-scaled RMS norm);
@@ -25,10 +25,10 @@ import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
 import { isExpertTracing,recordRouting } from "../../runtime/expert-trace";
 
-// The shared, config-independent machinery lives in gemma4-base.ts
-// (Phase B extraction); this file keeps the architecture-specific
-// assembly that Phase C generates per model. Re-export the base so
-// existing importers keep one entry point.
+// The shared, config-independent machinery lives in packages/inference/src/layers/,
+// packages/inference/src/contracts/mlx/cache.ts and packages/inference/src/state/;
+// this file keeps the architecture-specific assembly that is generated per model.
+// Re-export the base so existing importers keep one entry point.
 
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
 import { LoraState,type LoraWeights } from "../../layers/lora";
@@ -75,14 +75,14 @@ export interface GradCheckpointCtx {
   keepAlive: Checkpoint[];
 }
 
-// Shared prompt-prefix plan (lever 7, e4b — docs/design/orpo-training.md). When
+// Shared prompt-prefix plan (lever 7, e4b — `02d723a:docs/design/orpo-training.md` §5.4). When
 // set, Attention ropes the concatenated [prompt(P); chosenResp(Rc); rejectedResp(Rr)]
 // sequence BLOCK-WISE — prompt at offset 0, EACH response reset to logical offset
 // P — instead of the uniform cache.offset, so ONE forward over the concat is
 // bit-exact with the two separate [prompt;resp] forwards (each response sees the
 // prompt's RoPE positions, not shifted-by-the-other-response). The matching
 // block-sparse + LOGICAL-window attention mask rides in via the prefix cache's
-// makeMask (src/train/prefix-shared.ts). Set around the single forward
+// makeMask (packages/training/src/prefix-shared.ts). Set around the single forward
 // (single-threaded), cleared after; null → the normal uniform-offset rope (every
 // other forward is untouched).
 export interface GemmaPrefixPlan { P: number; Rc: number; Rr: number }
@@ -131,8 +131,8 @@ class Attention {
       // MUST be computed on-device in f32 (arange/dims, then base**x)
       // exactly like the reference — computing them host-side in f64 and
       // rounding to f32 lands 17/64 of them 1 ulp off (f64 pow ≠ f32
-      // powf), a latent knife-edge that Phase 10's tiled values exposed
-      // as a 1-ulp q-rope divergence at layer 11 (Phase 2 porting rule:
+      // powf), a latent knife-edge that tiled values exposed
+      // as a 1-ulp q-rope divergence at layer 11 (porting rule:
       // replicate the helper's IMPLEMENTATION, not its formula).
       const rotated = Math.floor(this.headDim * rp.partialRotaryFactor);
       const n = this.headDim / 2;
@@ -178,7 +178,7 @@ class Attention {
   /** A number offset takes the static fast::rope; an array offset (set by
    *  compiled-decode trace adapters) takes the dynamic variant — same
    *  kernel, offset read from the array (bit-exactness asserted in
-   *  tests/unit/compile.test.ts). */
+   *  `02d723a:tests/unit/compile.test.ts`). */
   rope(x: MlxArray, offset: number | MlxArray): MlxArray {
     return typeof offset === "number"
       ? ops.rope(x, this.headDim, this.ropeBase, offset, this.ropeFreqs)
@@ -310,8 +310,8 @@ class Attention {
       // verified route: its dQ/dK/dV vjps are exact (finite-difference checked;
       // it's what mlx-lm's tuner differentiates). The two historical bugs were
       // in THIS flash kernel (spurious dK transpose, divergent dQ barrier),
-      // both fixed and gated by tests/unit/flash-attention.test.ts vs the ops.sdpa
-      // oracle — see flash-attention.ts's routing comment. Flash also remains
+      // both fixed and gated by `02d723a:tests/unit/flash-attention.test.ts` vs the ops.sdpa
+      // oracle — see packages/inference/src/kernels/attention/flash.ts's routing comment. Flash also remains
       // Gemma-guarded in the trainer (e4b >=2K SIGTRAP not yet re-validated).
       // Full layers → window 0 (pure causal); sliding layers → their window.
       const window = this.isSliding ? this.windowSize : 0;
@@ -759,8 +759,8 @@ export class Gemma4Model {
   /** LoRA-mountable linears, keyed by weight-file module path: optiq
    *  mount.py's 7 target suffixes PLUS the e2b/e4b per-layer-input
    *  projections — mlx-lm's trainer targets those on e4b and optiq's
-   *  mount silently drops their trained weights (deviation documented in
-   *  PLAN Phase 8 findings; we apply every adapter weight we can map).
+   *  mount silently drops their trained weights (we apply every adapter
+   *  weight we can map).
    *  Expert pools stay non-targets (LoRASwitchLinear is future work). */
   loraTargets(): Map<string, QuantizedLinear> {
     const out = new Map<string, QuantizedLinear>();
@@ -840,8 +840,8 @@ export class Gemma4Model {
    *  multimodal (vision/audio) path; `bidir` (bool [L]) marks image tokens,
    *  which attend bidirectionally among themselves (use_bidirectional_attention:
    *  "vision" — text stays causal; audio prompts pass NO bidir mask, and a
-   *  mixed image+audio prompt drops the image overlay too, §3.3 Q1 of
-   *  docs/design/generic-model-support.md). `ids` ([1, L], the spliced token ids)
+   *  mixed image+audio prompt drops the image overlay too,
+   *  `02d723a:docs/design/generic-model-support.md` §6.6). `ids` ([1, L], the spliced token ids)
    *  is required for per-layer-input models (e2b/e4b): multimodal soft-token
    *  positions get token 0's per-layer embedding, and their tower content
    *  enters only through the projection term (the merged hidden). Matches
@@ -1044,8 +1044,8 @@ export class Gemma4Model {
   }
 
 
-  // --- Segmented-backward support (docs/design/orpo-training.md
-  // §4 Phase B). These are ADDITIVE — forwardLayers is untouched. The segmented
+  // --- Segmented-backward support (`02d723a:docs/design/orpo-training.md`
+  // §5.3). These are ADDITIVE — forwardLayers is untouched. The segmented
   // driver builds masks + per-layer inputs ONCE, then drives runLayerRange per
   // segment, threading the KV-shared donor K/V across segment boundaries.
 

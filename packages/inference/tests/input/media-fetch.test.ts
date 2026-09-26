@@ -1,5 +1,5 @@
 // SSRF/resource-exhaustion policy for remote image_url/audio_url fetches
-// (src/media-fetch.ts). Model-free: the policy functions are pure, and the
+// (packages/inference/src/input/media-fetch.ts). Model-free: the policy functions are pure, and the
 // fetch-behavior tests (redirect re-validation, size cap, timeout) run
 // against an in-process loopback server — no external network, no weights.
 

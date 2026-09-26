@@ -17,7 +17,7 @@
 // preserving the logical Host header and HTTPS SNI, so the transport cannot
 // re-resolve to a private address between validation and connect.
 //
-// This module must stay free of mlx imports so tests/unit/media-fetch.test.ts
+// This module must stay free of mlx imports so packages/inference/tests/input/media-fetch.test.ts
 // runs model-free.
 
 import { lookup } from "node:dns/promises";
@@ -405,7 +405,8 @@ export async function fetchRestrictedHttpBytes(
  *  http(s) URLs go through the destination policy above, with every
  *  redirect hop re-validated, one wall-clock timeout, and a streaming
  *  size cap. Throws Error with a client-presentable message — callers
- *  surface it as a 400 (the prompt-build catch in server.ts). */
+ *  surface it as a 400 (the prompt-build catch in
+ *  apps/mlx-bun/src/server/chat-stage.ts). */
 /** Video clips are legitimately larger than images/audio: same SSRF guard
  *  and timeout discipline, quadruple the body cap (a 30 s 1080p H.264 clip
  *  runs tens of MB; frame sampling truncates long clips server-side). */

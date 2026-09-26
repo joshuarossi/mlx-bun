@@ -1,4 +1,4 @@
-// Qwen3.8 vision prompt assembly (PLAN 14v) — mirrors mlx-vlm's processor +
+// Qwen3.8 vision prompt assembly — mirrors mlx-vlm's processor +
 // get_input_embeddings flow:
 //
 //   template renders each {type:"image"} part as

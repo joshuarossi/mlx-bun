@@ -54,8 +54,9 @@ let nextPinId = 1;
 // Native no-op dtor: payload is always 0, and libc free(NULL) is defined to
 // do nothing — a dtor mlx can safely call from ANY thread. The pointed-to
 // memory's lifetime is the CALLER's contract (weight mmaps live for the
-// process; restored KV is COPIED at load since 2026-07-07 — see kv-store.ts
-// loadKvCache — so no restore mapping needs pinning anymore). Bun >= 1.4
+// process; restored KV is COPIED at load since 2026-07-07 — see
+// packages/inference/src/state/persistence.ts loadKvCache — so no restore
+// mapping needs pinning anymore). Bun >= 1.4
 // returns a numeric function address from .ptr; verified against dlsym on
 // 1.4.0 and 1.4.2. Keep the library open for every native destructor's lifetime.
 const libcFree = dlopen("/usr/lib/libSystem.B.dylib", {
@@ -165,7 +166,7 @@ export class MlxArray {
    *  the source bytes need not outlive the array and GPU ops are safe. Used to
    *  detach a value from its computation graph: `MlxArray.fromBytesCopy(
    *  x.rawBytes(), x.shape, x.dtype)` yields a graph-free leaf with x's exact
-   *  bytes (segmented-backward boundaries — src/train/segmented.ts). */
+   *  bytes (segmented-backward boundaries — packages/training/src/segmented.ts). */
   static fromBytesCopy(bytes: Uint8Array, shape: number[], dtype: Dtype): MlxArray {
     const sb = shapeBuf(shape);
     return new MlxArray(
@@ -210,7 +211,7 @@ export class MlxArray {
     return Number(C.mlx_array_ndim(this.handle));
   }
 
-  // NOTE on the DFG stale-read bug (lab/repro/bun-ffi-f64/ISSUE.md): the
+  // NOTE on the DFG stale-read bug (`02d723a:lab/repro/bun-ffi-f64/ISSUE.md`): the
   // toArrayBuffer readbacks below (shape/rawBytes/toFloat32) are safe.
   // The hazard is reading a *pre-existing* typed array after an FFI call
   // wrote through its pointer — the JIT forwards a stale value from before
@@ -285,7 +286,8 @@ export class MlxArray {
   /** ZERO-COPY view of the evaluated array's bytes — aliases the mlx
    *  buffer directly, no JS-heap copy. Valid only while THIS array is
    *  alive and unmutated: do not retain past dispose(). Built for
-   *  bulk-write paths (kv-store's streamed writer) where per-tensor
+   *  bulk-write paths (packages/inference/src/state/persistence.ts's streamed
+   *  writer) where per-tensor
    *  rawBytes() copies pile up in the JS heap faster than GC collects
    *  them — the residual A7 whole-entry RSS spike (2026-07-07). The
    *  array must be contiguous (ops.contiguous first for views), same
@@ -311,7 +313,7 @@ export class MlxArray {
    *  queues BEHIND everything already dispatched on the GPU stream — on the
    *  batched decode hot path, reading the pipeline register via toFloat32
    *  stalled the "overlapped" token read for a FULL step of GPU work every
-   *  token (the core of the Phase-0 B=1 gap; unified-engine plan Phase 2).
+   *  token (the core of the B=1 decode gap).
    *  Non-integer dtypes fall back to the rounded float readback. */
   toIntTokens(): number[] {
     if (this.dtype === Dtype.uint32) {

@@ -1,5 +1,6 @@
-// GENERATED-ADJACENT source module — part of the src/web/src/* split (plan
-// §7/§9 Phase 2). Built into src/web/app.js by scripts/build-web.ts.
+// GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
+// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// scripts/build-web.ts.
 //
 // The chat controller: WS wiring, thread render, streaming, tool cards,
 // approval card, queue bar. This is the orchestrator for composer.ts and
@@ -44,7 +45,7 @@ import { isRouteId } from "./ui-catalog";
 
 /* ────────────────────────────────────────────────────────────────────
    Chat-with-files RAG v1 — Sources panel (plan §9 Phase 3, beat matrix
-   Axis 5). Pure HTML builder so tests/using/web-app.test.ts can exercise the
+   Axis 5). Pure HTML builder so apps/mlx-bun/tests/web/browser.test.ts can exercise the
    esc() discipline directly, same reasoning as renderAdapterOptionsHtml
    etc. in composer.ts.
    ──────────────────────────────────────────────────────────────────── */
@@ -259,7 +260,7 @@ export function createChatController() {
    *  pointers are tracked module-side and re-derived whenever a `history`
    *  frame rebuilds #chat-thread wholesale (see renderHistory/endTurn below).
    *  Regenerate/edit-resend re-prompt on a new sibling branch WITHOUT a
-   *  `history` frame (resendFrom in pi-web.ts), so their click handlers below
+   *  `history` frame (resendFrom in apps/mlx-bun/src/chat/pi-backend.ts), so their click handlers below
    *  drop the stale lastAssistantMsgEl (and, for edit, update the surviving
    *  user bubble's text) themselves before the new reply streams in. */
   let lastUserMsgEl: HTMLElement | null = null;   // the <div class="msg user"> for the last user message
@@ -280,7 +281,7 @@ export function createChatController() {
     if (turnActive) return;
     if (!send({ type: "regenerate" })) { toast("Not connected to the agent yet.", "err"); return; }
     // The server re-prompts on a new sibling branch — it does not send a
-    // `history` frame for this (see resendFrom in pi-web.ts), so the old
+    // `history` frame for this (see resendFrom in apps/mlx-bun/src/chat/pi-backend.ts), so the old
     // reply would otherwise linger above the new one as it streams in.
     // Drop it now; startAssistant() appends the fresh reply right after.
     if (lastAssistantMsgEl) { lastAssistantMsgEl.remove(); lastAssistantMsgEl = null; }
@@ -297,7 +298,7 @@ export function createChatController() {
    *  the original text view; Send fires edit_resend, updates the surviving
    *  user bubble to the edited text in place, and drops the stale assistant
    *  reply — the server re-prompts on a new sibling branch without sending a
-   *  `history` frame (see resendFrom in pi-web.ts), so the old reply/text
+   *  `history` frame (see resendFrom in apps/mlx-bun/src/chat/pi-backend.ts), so the old reply/text
    *  would otherwise linger next to the new one as it streams in. */
   function startEditLast(m: HTMLElement): void {
     if (turnActive) return;
@@ -510,7 +511,7 @@ export function createChatController() {
    *  file-content proposals unreadable as raw JSON — but the textarea,
    *  pre-filled with the proposed args as JSON, is what actually gets sent:
    *  editing it and clicking Allow re-parses it and ships the edited object
-   *  as `editedArgs`, which pi-web.ts mutates onto the SDK's ToolCallEvent.input
+   *  as `editedArgs`, which apps/mlx-bun/src/chat/pi-backend.ts mutates onto the SDK's ToolCallEvent.input
    *  in place (the SDK's documented tool_call mutation contract). */
   function approvalCard(callId: string, tool: string, args: unknown): void {
     ensureAssistant();
@@ -825,7 +826,7 @@ export function createChatController() {
       // sends turn_end, so this is also where a one-shot next_turn sampling
       // override must be cleared client-side — the server clears its own
       // copy on this same failure path (clearArmedOneShotOnFailedPrompt in
-      // pi-web.ts), so the two stay in lockstep instead of the UI's "armed"
+      // apps/mlx-bun/src/chat/pi-backend.ts), so the two stay in lockstep instead of the UI's "armed"
       // pill lingering after the override it referred to is already gone.
       case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); clearOneShotArmed(composer); if (turnActive) endTurn(); break;
       // App-aware assistant (plan §6.6): navigate_app / spotlight_ui tool
@@ -911,7 +912,7 @@ export function createChatController() {
   }
 
   /** "Forget" a durable always-allow entry from the settings panel. REST,
-   *  not a WS frame — src/tool-approvals.ts is a plain server-side file, no
+   *  not a WS frame — apps/mlx-bun/src/chat/tool-approvals.ts is a plain server-side file, no
    *  live session state to touch, matching the hf-token settings routes'
    *  own GET/POST-over-fetch pattern. Re-renders the list from the response
    *  rather than waiting on a tool_approvals WS frame (this connection's
@@ -1033,7 +1034,7 @@ export function createChatController() {
     enter() {
       if (!ws || ws.readyState > 1) connect();
       $("chat-box").focus();
-      // Refresh the adapter list on every chat enter (web-ui-pass-plan.md
+      // Refresh the adapter list on every chat enter (`02d723a:docs/archive/planning/web-ui-pass-plan.md`
       // #15's staleness half): a training job that completed while the user
       // was elsewhere, or a manual drop into the adapters directory, should
       // show up without needing a full page reload. Cheap (one GET) and the

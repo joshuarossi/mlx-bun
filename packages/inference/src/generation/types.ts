@@ -78,7 +78,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   promptEmbeddings?: MlxArray;
   /** bool [L] marking image tokens (bidirectional attention among them).
    *  MUST be unset when the prompt contains any audio — audio prompts run
-   *  fully causal (docs/design/generic-model-support.md §3.3 Q1). */
+   *  fully causal (`02d723a:docs/design/generic-model-support.md` §6.6). */
   imageMask?: MlxArray;
   /** bool [L] marking ALL multimodal soft tokens (image | audio) for
    *  per-layer-input id zeroing (e2b/e4b), decoupled from imageMask so
@@ -98,7 +98,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** Convert once a cache's offset reaches this (uniform-kvBits default
    *  5000 = mlx-lm; kvConfig default 0 = optiq serve). */
   quantizedKvStart?: number;
-  /** TurboQuant scheme (docs/design/turboquant.md): rotation-based KV
+  /** TurboQuant scheme (`02d723a:docs/design/turboquant.md`): rotation-based KV
    *  quantization, a CLI-only runtime lever in the same class as uniform
    *  kvBits (mutually exclusive with kvBits/kvConfig — maybeQuantizeKv
    *  checks turboQuant first, so set at most one). Full-attention
@@ -106,7 +106,7 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
    *  RotatingKVCache (sliding-window) layers stay bf16 in v1 — a one-time
    *  warning names the limitation, never a throw. */
   turboQuant?: TurboQuantScheme;
-  /** OPTIONAL paged KV storage (docs/design/kv-cache.md): fresh
+  /** OPTIONAL paged KV storage (`02d723a:docs/design/kv-cache.md`): fresh
    *  full-attention KVCache layers are replaced with PagedKVCache (block
    *  pool + gather-to-contiguous) before prefill. Scope: B1/B>1
    *  Gemma4-family, bf16 — mutually exclusive with kvBits/kvConfig/
@@ -132,15 +132,16 @@ export interface GenerateOptions extends SamplerOptions, LogitsProcessorOptions 
   /** Capture the top-k (token id, logprob) pairs per emitted token from the
    *  same distribution (mlx_lm.server `top_logprobs`). 0/unset = off. */
   topLogprobs?: number;
-  /** Grammar-constrained decoding (src/grammar.ts): a compiled GrammarController
+  /** Grammar-constrained decoding (packages/inference/src/sampling/grammar.ts): a compiled GrammarController
    *  that masks invalid tokens to -inf each step. L2-class (oMLX oracle). When
    *  set, the decode loop takes a slightly different shape: it eager-reads the
    *  token id (acceptToken needs a JS number, which the pipelined loop defers),
    *  advances the matcher, and awaits the async mask precompute (which overlaps
    *  the GPU forward). Non-grammar requests keep the fast pipelined loop. */
   grammar?: GrammarController;
-  /** Token fast-forwarding (src/fill/, docs/design/speculative-decoding.md
-   *  "Token fast-forwarding"): a per-request table of DETERMINED token spans
+  /** Token fast-forwarding (packages/inference/src/generation/fill/,
+   *  `02d723a:docs/design/speculative-decoding.md` §7 "Token fast-forwarding"):
+   *  a per-request table of DETERMINED token spans
    *  (compiled from the request's `tools` + the chat template). When the
    *  stream enters one, the engine appends the whole span itself with ONE
    *  multi-token forward and resumes sampling after it.
@@ -171,7 +172,7 @@ export interface GenerateStats {
   cacheTokens: number[];
   /** Speculative-decoding telemetry (serve --draft-model path only).
    *  draftedByPos/acceptedByPos: per-draft-position round counts (index =
-   *  position within a round's block) — the Phase-1c per-position
+   *  position within a round's block) — the per-position
    *  acceptance signal. */
   spec?: {
     drafted: number; accepted: number; targetCalls: number;

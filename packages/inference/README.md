@@ -73,7 +73,7 @@ verifying their environment separately. New reports record runtime overrides,
 source/harness/native hashes, machine and plan; `--hash-weights` adds weight hashes.
 
 On 2026-09-25 UTC, `6b0fd69` matched main `02d723a` and its unchanged external
-`scripts/oracle/check-runtime.py` for the same MiniCPM snapshot above. All nine
+`02d723a:scripts/oracle/check-runtime.py` for the same MiniCPM snapshot above. All nine
 cases (contexts 0/64/320 × append lengths 1/8/128, prefix chunk 128, batch one)
 matched bit-for-bit for full logits, prefix/append state and continuation logits/state.
 The machine was the same M1 Max; Python was 3.14.5, MLX/MLX-Metal 0.32.2,

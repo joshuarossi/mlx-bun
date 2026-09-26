@@ -1,7 +1,6 @@
-// Resumable HF downloads with checksum verification (Phase 5).
+// Resumable HF downloads with checksum verification.
 //
-// The Python downloader failure modes this replaces (PLAN "Context /
-// lore"): Xet stalls (we speak plain HTTPS resolve/CDN), no resume on
+// The Python downloader failure modes this replaces: Xet stalls (we speak plain HTTPS resolve/CDN), no resume on
 // flaky links (we Range-resume partial blobs), and silent corruption
 // (every blob is verified — sha256 for LFS files against the API's
 // normalized LFS digest, git-blob sha1 for small files against blobId).
@@ -196,7 +195,7 @@ function acquireLock(blobPath: string, name: string, signal?: AbortSignal): () =
  *  `../../../../home/x/.ssh/authorized_keys` would otherwise resolve
  *  OUTSIDE the intended snapshots dir and write a symlink at an arbitrary
  *  filesystem path. Reachable over HTTP via POST /api/hub/download
- *  (src/hub-rest.ts), which passes any caller-supplied `repo` straight
+ *  (apps/mlx-bun/src/server/hub-routes.ts), which passes any caller-supplied `repo` straight
  *  through with no allowlist — this check is the actual gate, not that
  *  route. A leading `/` (absolute path) is equally rejected: join() would
  *  otherwise treat it as relative to snapDir and still normalize safely,
@@ -461,7 +460,7 @@ export async function downloadModel(
   // Fail the whole download closed (not skip-and-continue) if the repo's
   // file listing contains a path-traversal rfilename — see
   // isSafeRepoFilename's doc comment. This gates BOTH the CLI and the web
-  // Hub's POST /api/hub/download (src/hub-rest.ts), which accepts any
+  // Hub's POST /api/hub/download (apps/mlx-bun/src/server/hub-routes.ts), which accepts any
   // caller-supplied repo string with no allowlist of its own.
   for (const f of listing.files) {
     if (!isSafeRepoFilename(f.rfilename)) {

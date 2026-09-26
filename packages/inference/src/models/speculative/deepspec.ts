@@ -38,7 +38,7 @@ function disposing(old: MlxArray, next: MlxArray): MlxArray {
 // ---------------------------------------------------------------------------
 // Weight representation: every matmul weight and gather table loads as either
 // bf16 (the released checkpoint) or affine-quantized (a
-// scripts/dspark.ts quantize sibling). Detection is the house
+// `02d723a:scripts/dspark.ts` quantize sibling). Detection is the house
 // pattern — a `.scales` sibling key marks a quantized module; bits/group_size
 // come from the config's `quantization` block (per-module overrides + the
 // mlx `false` = kept-full-precision convention). Both formats flow through
@@ -334,7 +334,7 @@ export class DeepspecDrafter {
     // step 2, divided by FULL head_dim (not rotated_dims); tail padded with
     // +inf ⇒ angle pos/∞ = 0 ⇒ cos=1, sin=0 — the identity rotation, i.e.
     // passthrough on those dims (freqs is the wavelength array fast::rope
-    // divides position by, same convention as src/spec/drafter.ts's
+    // divides position by, same convention as packages/inference/src/models/gemma4/assistant.ts's
     // ProportionalRoPE port; verified vs mlx_lm rope_utils.ProportionalRoPE).
     const rotatedDims = Math.floor(this.headDim * cfg.partial_rotary_factor);
     const n = this.headDim / 2;
@@ -383,7 +383,7 @@ export class DeepspecDrafter {
   static async load(dir: string): Promise<DeepspecDrafter> {
     const raw = (await Bun.file(`${dir}/config.json`).json()) as Record<string, any>;
     const cfg = readConfig(raw);
-    // Quantized siblings (scripts/dspark.ts quantize) carry the house
+    // Quantized siblings (`02d723a:scripts/dspark.ts` quantize) carry the house
     // quantization block; the released bf16 checkpoint has none → null.
     const quant = parseQuantization(raw.quantization ?? raw.quantization_config);
     const w = await Weights.open(dir);

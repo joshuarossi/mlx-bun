@@ -1,6 +1,6 @@
 // Microphone capture for `mlx-bun dictate`: spawns the AVAudioEngine sidecar
 // (native/mic-capture.swift → `mlx-bun-mic-capture`), yields 16 kHz float32
-// PCM chunks and hotkey down/up events. Main's `src/audio/mic-capture.ts`.
+// PCM chunks and hotkey down/up events. Main's `02d723a:src/audio/mic-capture.ts`.
 // Resolution mirrors the library's frame extractor: env override → beside the
 // standalone executable → the app's staged dist/native. Stopping ends the
 // sidecar's stdin, terminates it, and joins it, so no capture process outlives

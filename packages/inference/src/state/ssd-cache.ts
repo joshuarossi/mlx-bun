@@ -1,5 +1,5 @@
 import type { CheckpointAttachment } from "../contracts/mlx/checkpoint";
-// SSD cold tier for the prompt/KV cache (docs/design/kv-cache.md).
+// SSD cold tier for the prompt/KV cache (`02d723a:docs/design/kv-cache.md` §5).
 //
 // Files ARE the database: no sidecar index. Layout
 //   <dir>/<configFingerprint>/<nsHash>/<uuid>.mlxkv
@@ -200,7 +200,7 @@ export class SsdCacheStore {
     return best ? { entry: best, prefixLen: bestLen } : null;
   }
 
-  /** Restore an entry via kv-store's STREAMED COPY (bounded host
+  /** Restore an entry via packages/inference/src/state/persistence.ts's STREAMED COPY (bounded host
    *  transient — live entry + one tensor; no mapping survives the call,
    *  the caches own their bytes). Bumps LRU mtime. On ANY failure the
    *  file is dropped and null returned. */
@@ -247,7 +247,8 @@ export class SsdCacheStore {
   }
 
   /** Persist an entry. Synchronous (the tier calls it on the idle serial
-   *  lane between requests); atomic via kv-store's tmp+fsync+rename. An
+   *  lane between requests); atomic via
+   *  packages/inference/src/state/persistence.ts's tmp+fsync+rename. An
    *  entry bigger than the cap is refused; disk/write failure is a warn-once
    *  soft-fail — serving never stalls on the cold tier. Existing entries in
    *  the same ns whose tokens are a PREFIX of the new entry are superseded

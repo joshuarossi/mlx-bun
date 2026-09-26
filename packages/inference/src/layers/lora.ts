@@ -14,7 +14,7 @@ export interface LoraWeights {
 /** Active-adapter state, shared by every mounted linear of one model.
  *  A plain field, NOT a ContextVar port: our generation queue is
  *  serialized, so exactly one request's adapters are active at a time
- *  (PLAN Phase 8 decision). Set/restored by generate(). */
+ *  Set/restored by generate(). */
 export class LoraState {
   active: string[] = [];
   /** Training-only LoRA-input dropout. `rate` is the drop probability; `seed` is

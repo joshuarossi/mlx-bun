@@ -8,7 +8,7 @@
 // n = min(ceil(duration_ms/40), 750) (processing_gemma4.py) — embed the full
 // sequence, then overwrite the soft-token rows with the towers' features.
 //
-// Attention semantics (docs/design/generic-model-support.md §3.3, resolved vs the oracle):
+// Attention semantics (`02d723a:docs/design/generic-model-support.md` §6.6, resolved vs the oracle):
 //   - image runs attend bidirectionally among themselves (bidirMask), BUT
 //     any audio token in the prompt disables the vision overlay entirely —
 //     mixed image+audio prompts run fully causal (bidirMask = null);
@@ -127,7 +127,7 @@ export async function extractImages(
  *  {type:"video"} form. Accepts {type:"video_url", video_url:{url}} (data:
  *  or http(s), same SSRF guard as images with the larger video body cap)
  *  and {type:"video"} with base64 `data`. Decode to frames happens later
- *  (vision/video-frames.ts — the AVFoundation sidecar). */
+ *  (packages/inference/src/input/vision/video-frames.ts — the AVFoundation sidecar). */
 export async function extractVideos(
   messages: ChatMessage[],
 ): Promise<{ messages: ChatMessage[]; videos: Uint8Array[] }> {
@@ -326,7 +326,7 @@ export async function buildMultimodalPrompt<P extends { softTokens: number }>(
             if (!cached) towers.vision!.cache?.put(keys[runIndex]!, feats);
             cast = feats.astype(embeds.dtype);
           } else {
-            // audio mirrors gen-e4b-audio-golden.py EXACTLY:
+            // audio mirrors `02d723a:scripts/oracle/gen-e4b-audio-golden.py` EXACTLY:
             //   features.astype(embeds.dtype) / embed_scale
             // — raw f32 embed_audio output, cast to bf16 FIRST, then divided by a
             // weak (dtype-following, i.e. bf16) embed_scale scalar. The order is

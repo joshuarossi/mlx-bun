@@ -1,11 +1,11 @@
 import { captureKvAttention } from "../../state/kv-attention-view";
 // UniversalDense — the Tier-0 config-driven dense llama-family module
-// (docs/design/generic-model-support.md §3.1). One module, shaped exactly
+// (`02d723a:docs/design/generic-model-support.md` §4.1). One module, shaped exactly
 // like qwen3.ts, with every arch delta selected by the UniversalArgs
 // descriptor (archs.ts). Monolith path only: no compiled
 // decode. Standard attention uses the shared plain/affine KV port; the
 // softcap branch retains plain KV. The bar is L1 bit-exactness
-// vs mlx-lm on this machine's GPU (tests/parity/universal-parity.test.ts).
+// vs mlx-lm on this machine's GPU (`02d723a:tests/parity/universal-parity.test.ts`).
 //
 // Porting discipline: each branch transcribes its mlx-lm source op-for-op
 // (q/k-norm before vs after reshape, rope order, scale points, softcap,

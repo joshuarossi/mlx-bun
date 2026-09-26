@@ -1,4 +1,4 @@
-// Transcription-only discovery (main's `src/serve/transcription-server.ts`):
+// Transcription-only discovery (main's `02d723a:src/serve/transcription-server.ts`):
 // `mlx-bun serve <whisper checkpoint>` serves the audio routes plus these
 // four read-only surfaces. No chat model, no prompt cache, no web app: the
 // process idles at a few tens of MB with the weights paged out.

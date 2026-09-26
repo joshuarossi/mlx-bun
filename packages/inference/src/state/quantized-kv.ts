@@ -201,7 +201,7 @@ export class QuantizedKVCache implements Cache {
   }
 
   /** Adopt persisted state (takes ownership of the triples' arrays) —
-   *  the quantized twin of KVCache.restoreState (kv-store persistence). */
+   *  the quantized twin of KVCache.restoreState (packages/inference/src/state/persistence.ts). */
   restoreState(keys: ops.QuantizedTensor, values: ops.QuantizedTensor, offset: number): void {
     this.dispose();
     this.keys = keys;
