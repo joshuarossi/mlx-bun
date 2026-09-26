@@ -195,6 +195,44 @@ const commands = {
     "gguf-path": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
     "upload-repo": { type: "string", description: "Not supported (mlx_lm.fuse flag); the command exits with an error" },
   } },
+  transcribe: { description: "Speech-to-text from an audio file with a local Whisper model (no server)", positional: "<audio-file> [query]",
+    usage: "usage: mlx-bun transcribe <audio-file> [query] [--language en] [--format text|json|verbose_json|srt|vtt]", options: {
+    model: { type: "string", description: "Whisper model directory or cached query (overrides the positional query) [default: the first downloaded whisper checkpoint]" },
+    query: { type: "string", description: "Cached Whisper query when no positional/model override is supplied" },
+    language: { type: "string", description: "ISO code or name (en, japanese); auto or omitted detects from the first 30 s" },
+    task: { type: "string", description: "transcribe | translate (to English) [default: transcribe]" },
+    "beam-size": { type: "string", description: "Beam search width [default: greedy]" },
+    temperature: { type: "string", description: "One sampling temperature; omitted runs the (0, 0.2, …, 1.0) fallback ladder like mlx-whisper" },
+    "no-fallback": { type: "boolean", description: "Temperature 0 only, no retry ladder" },
+    prompt: { type: "string", description: "Initial prompt (vocabulary hints / style)" },
+    "no-timestamps": { type: "boolean", description: "Decode text only (<|notimestamps|>)" },
+    "no-condition": { type: "boolean", description: "Do not condition each window on the previous text" },
+    vad: { type: "boolean", description: "Silero VAD gate: no detected speech prints an empty result and Whisper never runs (weights: ggml-org/whisper-vad in the HF cache)" },
+    "vad-threshold": { type: "string", description: "Speech probability threshold for --vad [default: 0.5]" },
+    "vad-model": { type: "string", description: "Explicit Silero ggml path for --vad" },
+    "vad-trim": { type: "boolean", description: "Accepted with --vad; the clip is still transcribed whole, as in main" },
+    "word-timestamps": { type: "boolean", description: "Word-level timestamps (verbose_json words)" },
+    faithful: { type: "boolean", description: "Run the oracle-parity graph instead of the fast path" },
+    "audio-ctx": { type: "string", description: "Lab: encode only n of the 1500 encoder positions (whisper.cpp -ac); degrades below ~1024" },
+    format: { type: "string", description: "text | json | verbose_json | srt | vtt [default: text]" },
+    verbose: { type: "boolean", description: "Print each segment with its time range as it decodes, then a realtime-factor summary (stderr)" },
+  } },
+  dictate: { description: "Push-to-talk: stream your microphone into Whisper, print/copy/type the text", positional: "[query]", options: {
+    model: { type: "string", description: "Whisper model directory or cached query for in-process transcription (overrides the positional query) [default: the first downloaded whisper checkpoint]" },
+    query: { type: "string", description: "Cached Whisper query when no positional/model override is supplied" },
+    server: { type: "string", description: "Use a running mlx-bun server's /v1/audio/sessions instead of loading the model here" },
+    hotkey: { type: "string", description: "Hold a key to talk instead of Enter toggling: macOS virtual keycode, value optional [default: 61 = Right Option]; needs Input Monitoring for your terminal" },
+    language: { type: "string", description: "Language code; auto detects [default: en]" },
+    "beam-size": { type: "string", description: "Beam search width [default: greedy]" },
+    prompt: { type: "string", description: "Initial prompt" },
+    vocabulary: { type: "string", description: "Comma-separated hint terms, fitted into the prompt budget" },
+    "no-vad": { type: "boolean", description: "Skip the Silero gate (by default silence never runs Whisper)" },
+    "idle-unload": { type: "string", description: "Release the weights after this many idle seconds; 0 = right after each take [default: 30]" },
+    resident: { type: "boolean", description: "Keep the weights loaded" },
+    copy: { type: "boolean", description: "Copy the transcript to the clipboard (pbcopy)" },
+    type: { type: "boolean", description: "Type it into the frontmost app via System Events keystrokes (needs Accessibility for your terminal)" },
+    "type-delay": { type: "string", description: "Seconds to wait before typing so you can Cmd-Tab [default: 1 in Enter mode, 0 with --hotkey]" },
+  } },
   memory: { description: "Your local AI's personal wiki: set it up, inspect it, run synthesis, schedule it", positional: "[subcommand] [args]",
     usage: "usage: mlx-bun memory <subcommand> [args] [options]", details: memoryDetails, options: {
     since: { type: "string", description: "synthesize: only conversations newer than this (parsed; the pipeline does not consume it yet)" },
@@ -244,7 +282,7 @@ export function parseCommand(command: Command, args: string[]): CommandArgs {
       throw new Error(usage(command));
     throw error;
   }
-  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" ? 2 : commands[command].positional ? 1 : 0;
+  const max = command === "memory" || command === "setup" ? Infinity : command === "generate" || command === "embed" || command === "transcribe" ? 2 : commands[command].positional ? 1 : 0;
   if (parsed.positionals.length > max) throw new Error(`Too many arguments for ${command}`);
   if (commands[command].positional.startsWith("<") && !parsed.positionals.length) throw new Error(usage(command));
   return parsed;

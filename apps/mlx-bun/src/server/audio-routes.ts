@@ -242,7 +242,7 @@ export function createAudioRoutes(host?: AudioRouteHost) {
       const format = (fields.response_format as string | undefined) ?? "json";
       if (!["json", "verbose_json"].includes(format)) return errorJson("sessions return json or verbose_json", 400);
       try {
-        const session = await service.createSession(params);
+        const session = await service.createSession({ ...params, signal: request.signal });
         sessionFormats.set(session.id, format as TranscriptionFormat);
         return Response.json({ id: session.id, model: service.modelId, vocabulary: session.vocabulary ?? null });
       } catch (e) {
@@ -253,7 +253,8 @@ export function createAudioRoutes(host?: AudioRouteHost) {
       const session = service.session(route.id);
       if (!session) return errorJson("unknown transcription session", 404);
       if (route.kind === "session-delete") {
-        session.close();
+        // 204 only once the feed or finish in flight has settled and the lease is back.
+        await session.close();
         sessionFormats.delete(route.id);
         return new Response(null, { status: 204 });
       }

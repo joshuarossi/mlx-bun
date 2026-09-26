@@ -13,8 +13,14 @@ import { JobStore } from "../src/jobs/db";
 import { createJobHost } from "../src/jobs/host";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 
+import { resolveMicCapture, MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
+
 const directory = dirname(process.execPath), temporary = resolve(process.argv[2]!);
 assert(import.meta.filename.startsWith("/$bunfs/"));
+assert.equal(await resolveMicCapture(), join(directory, MIC_CAPTURE_BINARY));
+const micHelp = Bun.spawnSync([join(directory, MIC_CAPTURE_BINARY), "--help"], { stdout: "pipe", stderr: "pipe" });
+assert.equal(micHelp.exitCode, 0, micHelp.stderr.toString());
+assert(micHelp.stdout.toString().includes("Usage: mlx-bun-mic-capture"));
 assert.equal(resolveLibmlxc(), join(directory, "libmlxc.dylib"));
 assert.equal(EXPERT_IO_LIBRARY, join(directory, "libmlx_bun_expert_io.dylib"));
 assert.equal(FRAME_EXTRACT_BINARY, join(directory, "mlx-bun-frame-extract"));
@@ -75,4 +81,4 @@ try {
   assert(spawned);
 } finally { await host.close(); }
 assert.equal(leases, 0);
-console.log("Relocated bundle: web, memory, fit, native paths, Photon and managed child passed (CPU only).");
+console.log("Relocated bundle: web, memory, fit, native paths, microphone helper, Photon and managed child passed (CPU only).");

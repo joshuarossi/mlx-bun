@@ -240,9 +240,10 @@ describe("audio route responses", () => {
 });
 
 /** The real service over a fake runtime: sessions exercise the service's own lifecycle. */
-function sessionService() {
+function sessionService(beforeLoad?: () => Promise<void>) {
   const runtime: TranscriptionRuntime = {
     async load() {
+      await beforeLoad?.();
       return {
         promptTokenBudget: 223, encode: text => text.split(/\s+/).filter(Boolean).map((_, index) => index),
         transcribe: async () => RESULT,
@@ -263,6 +264,28 @@ function sessionService() {
 }
 
 describe("streaming sessions", () => {
+  test("an aborted session-create request never registers an unreachable session or retains its weights", async () => {
+    const loading = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const service = sessionService(async () => { loading.resolve(); await release.promise; });
+    const routes = createAudioRoutes({ service: async () => service });
+    const controller = new AbortController();
+    const request = post("/v1/audio/sessions", { signal: controller.signal });
+    const response = routes.handle(request);
+    try {
+      await loading.promise;
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      release.resolve();
+      expect((await response)!.status).toBe(499);
+      expect(service.sessionCount).toBe(0);
+      expect(service.resident).toBe(false);
+      expect(service.stats.unloads).toBe(1);
+    } finally {
+      release.resolve();
+      await response;
+      await service.close();
+    }
+  });
+
   test("create, append float32 or container chunks, finish in the chosen format, and delete", async () => {
     const service = sessionService();
     const routes = createAudioRoutes({ service: async () => service });

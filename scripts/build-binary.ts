@@ -4,6 +4,8 @@ import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/ml
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
 import { buildWebBundle, OUTFILE } from "../apps/mlx-bun/src/web/build";
 
+import { MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY } from "../apps/mlx-bun/src/engine/mic-capture";
+
 const root = resolve(import.meta.dir, "..");
 const app = join(root, "apps/mlx-bun");
 
@@ -29,6 +31,7 @@ export async function buildBinary(output = join(root, "dist/bundle")): Promise<s
   const copies: [string, string][] = [
     ...MLX_FILES.map(name => [join(MLX_DIR, name), name] as [string, string]),
     ...INFERENCE_FILES.map(name => [join(INFERENCE_DIR, name), name] as [string, string]),
+    [MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY],
     [photon, "photon_rs_bg.wasm"], [join(root, "LICENSE"), "LICENSE"],
   ];
   const notices = await Promise.all(["mlx", "inference"].map(async name => {
