@@ -24,7 +24,9 @@ const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/v1/memory/synthes
 export const MODEL_ROUTED = new Set(["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings"]);
 
 const encoder = new TextEncoder(), decoder = new TextDecoder();
-const stripHopByHop = (headers: Headers) => {
+/** A copy without the hop-by-hop headers and the ones `Connection` names
+ * (also used by the library host, `cli/library-host.ts`). */
+export const stripHopByHop = (headers: Headers) => {
   const excluded = new Set(HOP_BY_HOP);
   for (const name of (headers.get("connection") ?? "").split(",")) excluded.add(name.trim().toLowerCase());
   const out = new Headers();
