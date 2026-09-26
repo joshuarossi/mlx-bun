@@ -123,8 +123,9 @@ a `draining` state from the worker while it serves), `GET /stats` (the worker's
 body with this process's `response_store` and an `engine` report on top; while
 the worker is down, 200 with only the parent's part and an `unavailable`
 message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
-`/admin/drain` stay unix-socket-only and keep answering 501 on TCP, as does
-`/v1/memory/synthesize`.
+`/admin/drain` stay unix-socket-only and keep answering 501 on TCP.
+`GET /v1/memory/synthesize` is served by this process's memory owner; its
+loopback completion client reaches the model through the proxy like any client.
 
 **Crashes.** An unexpected worker exit is respawned with main's budget: at most
 three restarts in a rolling 60-second window, and a worker that died within
