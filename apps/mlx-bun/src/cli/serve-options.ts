@@ -41,6 +41,8 @@ export interface ServeOptions {
   noOpen: boolean;
   /** Main's `--isolate`: the model runs in a worker process behind this process's proxy (serve-isolated.ts). */
   isolate?: boolean;
+  /** Main's `--model-pool`: resident worker cap under `--isolate` (jobs/worker-pool.ts); absent means 1. */
+  modelPool?: number;
   cache: CacheServiceOptions;
   request: RequestPrepOptions;
   /** App-owned vault and skill destinations; not CLI flags. */
