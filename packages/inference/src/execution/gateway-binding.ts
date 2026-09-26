@@ -1,6 +1,6 @@
 import { speculativePrefixNamespace, captureSpeculativeOptions } from "../generation/speculative/cache-identity";
 import { createOrdinaryContinuationRequest } from "./continuation-request";
-import type { MlxSerialServices } from "./serial-executor";
+import type { ContinuationServices } from "./continuation";
 import { bindPagedRequestState, pagedPrefixNamespace, type MlxRequestStatePolicy } from "../state/request-policy";
 import type { ExecutionContext } from "../contracts/portable/scheduling";
 import type { ModelConfig } from "../artifacts/config";
@@ -40,7 +40,7 @@ export interface MlxBatchGroup extends Pick<MlxBatchExecutionGroup,
  * Scheduling never inspects concrete model/cache classes. */
 export interface MlxGatewayBinding {
   mediaInput?(input: Vision): MlxPromptInput;
-  configureContinuation?(services: MlxSerialServices): void;
+  configureContinuation?(services: ContinuationServices): void;
   continuationRequest?(execution: ResolvedExecution | undefined, options: GenerateOptions, prompt: number[],
     onToken: Parameters<typeof createOrdinaryContinuationRequest>[0]["onToken"]): ReturnType<typeof createOrdinaryContinuationRequest> | undefined;
   readonly config: ModelConfig;
@@ -58,7 +58,7 @@ export interface MlxGatewayBinding {
 
 export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
   const runtime = runtimeConfig();
-  let continuationServices: MlxSerialServices | undefined;
+  let continuationServices: ContinuationServices | undefined;
   // Manual softcap attention is qualified for ordinary plain-KV requests.
   // Encoded attention and grouped methods need their own numerical evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
@@ -156,7 +156,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
-        grammarBatch: !plainSoftcap && runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
+        grammarBatch: !plainSoftcap,
         speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
           (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
           (!options.kvConfig?.length && model instanceof Qwen35Model &&

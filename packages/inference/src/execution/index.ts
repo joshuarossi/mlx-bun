@@ -9,7 +9,6 @@ export * from "./plan";
 export * from "./methods";
 export * from "./batch-group";
 export * from "./gateway-binding";
-export * from "./serial-executor";
 export * from "./row-sampling";
 export * from "./prompt-input";
 export * from "./qwen-prompt-input";
@@ -20,5 +19,3 @@ export * from "./continuation-request";
 export * from "./continuation-persistence";
 export * from "../runtime/resources";
 export * from "../runtime/config";
-
-export type { SerialRun } from "./input";

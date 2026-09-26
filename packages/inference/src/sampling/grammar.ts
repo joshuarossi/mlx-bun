@@ -598,7 +598,7 @@ function resolveGrammarRequest(req: GrammarRequest):
 
 /** Kill switch: MLX_BUN_GRAMMAR=0 disables grammar compilation entirely
  *  (requests degrade to prompt injection). Matches the project's envelope-gated
- *  kill-switch discipline (MLX_BUN_COMPILED_DECODE, MLX_BUN_GRAMMAR_BATCH, …). */
+ *  kill-switch discipline (MLX_BUN_COMPILED_DECODE, …). */
 export function grammarEnabled(): boolean {
   return runtimeValue("MLX_BUN_GRAMMAR") !== "0";
 }

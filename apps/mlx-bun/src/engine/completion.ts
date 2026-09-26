@@ -13,9 +13,9 @@ export interface GenerationPlacement {
 }
 
 const sharedExecutionExclusions = new Set([
-  "continuous-unavailable", "media-requires-serial", "adapters-require-serial",
-  "kv-scheme-requires-serial", "turbo-kv-requires-serial", "grammar-batching-disabled",
-  "paged-kv-requires-serial", "method-requires-serial",
+  "continuous-unavailable", "media-batch-unsupported", "adapter-batch-unsupported",
+  "kv-scheme-batch-unsupported", "turbo-kv-batch-unsupported", "grammar-batch-unsupported",
+  "paged-kv-batch-unsupported", "method-batch-unsupported",
 ]);
 
 /** A migrated request shape whose shared executor is not available yet.

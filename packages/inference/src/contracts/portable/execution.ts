@@ -57,7 +57,8 @@ export interface ResolvedExecution {
   /** Implementation-owned method ID. The built-in planner retains its known
    * methods; another model may register a different set without editing this contract. */
   readonly method: string;
-  readonly mechanism: "serial" | "continuous";
+  /** `unsupported`: no shared executor serves this request; `reasons` names why. */
+  readonly mechanism: "continuous" | "unsupported";
   readonly pagedKv: boolean;
   readonly promptCache: boolean;
   readonly checkpoint: boolean;

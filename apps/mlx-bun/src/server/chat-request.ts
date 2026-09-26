@@ -234,10 +234,8 @@ export function parseLogitBias(
 }
 
 /** Default seed for a request that didn't pin one. `Date.now()` alone is NOT
- *  request-unique: under `--batch N` the batch lane serves ONLY default-seed
- *  requests (explicit-seed requests use the serial mechanism, see
- *  GenerationGateway.place),
- *  so two identical prompts arriving in the same millisecond would share a seed
+ *  request-unique: concurrent requests share the continuous batch, so two
+ *  identical prompts arriving in the same millisecond would share a seed
  *  and — with per-row RNG keyed as stepKey(seed, generatedCount) — produce
  *  byte-identical completions, silently collapsing best-of-N diversity. Mix a
  *  per-process Weyl counter (golden-ratio increment, period 2^32) into the

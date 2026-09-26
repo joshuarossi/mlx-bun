@@ -52,20 +52,20 @@ for (const capacity of [1, 4]) test(`capacity ${capacity} uses the same continuo
 });
 
 test("unsupported methods report typed exclusion reasons without unrelated compilation diagnostics", () => {
-  const f = fake({ plan: () => ({ ...execution, method: "denoising", mechanism: "serial",
-    reasons: ["method-requires-serial", "compiled-decode-unavailable-for-request"] }) });
+  const f = fake({ plan: () => ({ ...execution, method: "denoising", mechanism: "unsupported",
+    reasons: ["method-batch-unsupported", "compiled-decode-unavailable-for-request"] }) });
   const gateway = new GenerationGateway(f.binding, 1);
   let failure: unknown;
   try { gateway.place(shape()); } catch (error) { failure = error; }
   expect(failure).toBeInstanceOf(UnsupportedExecutionError);
-  expect(failure).toMatchObject({ modelType: "replacement", method: "denoising", reasons: ["method-requires-serial"],
-    message: "model replacement method denoising does not support shared execution: method-requires-serial" });
+  expect(failure).toMatchObject({ modelType: "replacement", method: "denoising", reasons: ["method-batch-unsupported"],
+    message: "model replacement method denoising does not support shared execution: method-batch-unsupported" });
   expect(f.created).toBe(0);
 });
 
 test("unsupported cache capability is probed once even when every placement fails", () => {
   const f = fake({ plan: (_shape, _options, support) => ({ ...execution,
-    mechanism: support.continuous ? "continuous" : "serial", reasons: support.continuous ? [] : ["continuous-unavailable"] }) });
+    mechanism: support.continuous ? "continuous" : "unsupported", reasons: support.continuous ? [] : ["continuous-unavailable"] }) });
   let probes = 0;
   f.binding.cachesBatchable = () => { probes++; return false; };
   const gateway = new GenerationGateway(f.binding, 2);
@@ -186,7 +186,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits ordinary p
     expect(() => gateway.place(shape(), { fill: { plan: {} } } as GenerateOptions)).toThrow(UnsupportedExecutionError);
     // Even a caller advertising generic encoded support cannot qualify this graph.
     expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
-      { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("serial");
+      { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("unsupported");
     model.args.layerTypes = ["sliding_attention"];
     expect(binding.cachesBatchable()).toBe(false);
     expect(created).toBe(false);
