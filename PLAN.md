@@ -118,11 +118,16 @@ without one.
   notarization, including loading the signed native libraries from a relocated
   signed bundle. The native-blocked version check and mocked commands do not
   establish this acceptance.
-- [ ] Audit notices for the rest of the code compiled into the executable. Pi's
-  own MIT text ships (apps/mlx-bun/THIRD_PARTY_NOTICES.md); Pi's vendored
-  ansi-regex/strip-ansi (`dist/utils/ansi.js`, MIT) and the npm dependencies the
-  compiler bundles (Pi's and the app's) have no notice section, and the compiler
-  strips their source headers.
+- [ ] Reproduce the notices of third-party code embedded inside prebundled
+  dependencies, which metafile-derived coverage (scripts/bundle-notices.ts)
+  cannot see. Jiti 2.7.0's `dist/jiti.cjs` and `dist/babel.cjs` are an Rspack
+  prebundle (upstream `fd3bb289`); its module IDs are not a complete inventory
+  (concatenated `pathe` and `escape-string-regexp`, and code credited to
+  Leonardo Ascione, carry none). The build pins those files by sha256 until an
+  audit at that exact revision lands their notices. XGrammar's `lib/index.js`
+  likewise embeds a WASM build (picojson, Emscripten runtime) without notices,
+  and `json-bigint@1.0.0`'s `lib/parse.js` credits BSD-3 code from
+  secure-json-parse/bourne whose full license text is not installed.
 - [ ] Make partial signing retryable without weakening bundle integrity checks
   before the first real signed release. This is an operational improvement:
   today a partial signing failure safely requires rebuilding a fresh preparation.

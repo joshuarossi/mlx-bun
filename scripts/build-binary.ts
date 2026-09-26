@@ -1,9 +1,11 @@
-import { copyFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
-import { buildWebBundle, OUTFILE } from "../apps/mlx-bun/src/web/build";
+import { buildWeb, OUTFILE } from "../apps/mlx-bun/src/web/build";
 import { BUNDLE_FILES } from "./bundle-files";
+import { packageNotices, retainedInputs, retainedPackages } from "./bundle-notices";
 
 import { MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY } from "../apps/mlx-bun/src/engine/mic-capture";
 
@@ -14,21 +16,34 @@ const app = join(root, "apps/mlx-bun");
  * Bun preserves each asset directory's basename below /$bunfs/root/. The
  * generated JS is embedded as /$bunfs/root/app.js, which web/assets.ts selects
  * only in standalone execution; source checkouts retain dist/web fallback. */
-export async function compileApp(entry: string, output: string): Promise<void> {
+export async function compileApp(entry: string, output: string, metafile?: string): Promise<void> {
   const proc = Bun.spawn([process.execPath, "build", "--compile", entry, "--outfile", output,
     "--asset", join(app, "src/web/public"), "--asset", OUTFILE,
     "--asset", join(app, "src/memory/skills"),
-    "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig"],
+    "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig",
+    ...metafile ? [`--metafile=${metafile}`] : []],
     { cwd: root, stdout: "inherit", stderr: "inherit" });
   if (await proc.exited !== 0) throw new Error("Standalone compilation failed");
 }
 
-/** Installed package directories: Pi is compiled into the executable and
- * Photon (Pi's image dependency) supplies the WASM sidecar. */
-function installedDependencies(base: string) {
-  const from = join(base, "apps/mlx-bun"), pi = Bun.resolveSync("@earendil-works/pi-coding-agent", from);
-  return { pi: dirname(Bun.resolveSync("@earendil-works/pi-coding-agent/package.json", from)),
-    photon: dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(pi))) };
+/** The real build: the embedded browser bundle, then the executable. Returns
+ * every input file either build's metafile records as contributing bytes. */
+export async function compileBundle(executable: string): Promise<string[]> {
+  const web = await buildWeb();
+  await mkdir(dirname(OUTFILE), { recursive: true });
+  await Bun.write(OUTFILE, web.text);
+  const scratch = await mkdtemp(join(tmpdir(), "mlx-bun-metafile-"));
+  try {
+    const metafile = join(scratch, "metafile.json");
+    await compileApp(join(app, "src/cli/main.ts"), executable, metafile);
+    return [...retainedInputs(web.metafile, process.cwd()), ...retainedInputs(JSON.parse(await readFile(metafile, "utf8")), root)];
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+/** The installed Photon package (Pi's image dependency) supplies the WASM sidecar. */
+function photonDirectory(base: string) {
+  const pi = Bun.resolveSync("@earendil-works/pi-coding-agent", join(base, "apps/mlx-bun"));
+  return dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(pi)));
 }
 
 async function noticeText(path: string): Promise<string> {
@@ -43,28 +58,25 @@ async function installedManifest(directory: string): Promise<{ name: string; ver
   return manifest;
 }
 
-/** Pi packages compiled into the executable. Their npm packages ship no license
- * file, so apps/mlx-bun/THIRD_PARTY_NOTICES.md carries the upstream text. */
-const PI_PACKAGES = ["@earendil-works/pi-coding-agent", "@earendil-works/pi-ai",
-  "@earendil-works/pi-agent-core", "@earendil-works/pi-tui"] as const;
-
-/** Ordered sections of the bundle's THIRD_PARTY_NOTICES.md, verbatim from the
- * workspace, the installed Photon package, and the app-owned notices for Pi.
- * The app notice must name every installed Pi package at its installed version. */
-export async function bundleNotices(base = root): Promise<string[]> {
-  const { pi, photon } = installedDependencies(base);
+/** Ordered sections of the bundle's THIRD_PARTY_NOTICES.md: the package and
+ * app notices and Photon's installed license verbatim, then one section per
+ * third-party package in `inputs` (the build's retained files). A package that
+ * installs no license text needs its exact `name@version` named in one of the
+ * package or app notices, as apps/mlx-bun/THIRD_PARTY_NOTICES.md does for Pi. */
+export async function bundleNotices(inputs: string[], base = root): Promise<string[]> {
+  const photon = photonDirectory(base);
   const photonPackage = await installedManifest(photon);
+  const own: Record<string, string> = {};
+  for (const name of ["mlx", "inference"])
+    own[`@mlx-bun/${name}`] = await noticeText(join(base, "packages", name, "THIRD_PARTY_NOTICES.md"));
   const appNotice = await noticeText(join(base, "apps/mlx-bun/THIRD_PARTY_NOTICES.md"));
-  for (const name of PI_PACKAGES) {
-    const { version } = await installedManifest(dirname(Bun.resolveSync(`${name}/package.json`, pi)));
-    if (!appNotice.includes(`\`${name}@${version}\``))
-      throw new Error(`apps/mlx-bun/THIRD_PARTY_NOTICES.md does not cover the installed ${name}@${version}`);
-  }
+  // Photon's section below already carries its installed license verbatim.
+  const packages = (await retainedPackages(inputs)).filter(({ id }) => id !== `${photonPackage.name}@${photonPackage.version}`);
   return [
-    ...await Promise.all(["mlx", "inference"].map(async name =>
-      `# @mlx-bun/${name}\n\n${await noticeText(join(base, "packages", name, "THIRD_PARTY_NOTICES.md"))}`)),
+    ...Object.entries(own).map(([title, text]) => `# ${title}\n\n${text}`),
     `# ${photonPackage.name}@${photonPackage.version}\n\nCovers the bundled \`photon_rs_bg.wasm\`. License: ${photonPackage.license}.\n\n${await noticeText(join(photon, "LICENSE.md"))}`,
     `# mlx-bun\n\n${appNotice}`,
+    ...await packageNotices(packages, { ...own, "mlx-bun": appNotice }),
   ];
 }
 
@@ -72,23 +84,20 @@ export async function bundleNotices(base = root): Promise<string[]> {
  * publish, start a server, or load MLX. The complete directory is relocatable. */
 export async function buildBinary(output = join(root, "dist/bundle")): Promise<string> {
   const out = resolve(output);
-  const photon = join(installedDependencies(root).photon, "photon_rs_bg.wasm");
+  const photon = join(photonDirectory(root), "photon_rs_bg.wasm");
   const copies: [string, string][] = [
     ...MLX_FILES.map(name => [join(MLX_DIR, name), name] as [string, string]),
     ...INFERENCE_FILES.map(name => [join(INFERENCE_DIR, name), name] as [string, string]),
     [MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY],
     [photon, "photon_rs_bg.wasm"], [join(root, "LICENSE"), "LICENSE"],
   ];
-  const notices = await bundleNotices();
   for (const [source] of copies) {
     const info = await stat(source).catch(() => null);
     if (!info?.isFile() || !info.size) throw new Error(`Missing bundle input: ${source}. Stage package native files first.`);
   }
   await mkdir(out, { recursive: true });
-  await mkdir(dirname(OUTFILE), { recursive: true });
-  await Bun.write(OUTFILE, await buildWebBundle());
   const executable = join(out, "mlx-bun");
-  await compileApp(join(app, "src/cli/main.ts"), executable);
+  const notices = await bundleNotices(await compileBundle(executable));
   for (const [source, name] of copies) await copyFile(source, join(out, name));
   await Bun.write(join(out, "THIRD_PARTY_NOTICES.md"), notices.join("\n\n---\n\n"));
   for (const file of BUNDLE_FILES) {

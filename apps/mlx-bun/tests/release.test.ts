@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { gitBlobSha1 } from "@mlx-bun/hub/download";
 import { bundleNotices } from "../../../scripts/build-binary";
+import { packageNotices, retainedInputs, retainedPackages, REVIEWED, type Metafile } from "../../../scripts/bundle-notices";
 import { BUNDLE_FILES } from "../../../scripts/bundle-files";
 import { MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
 import { packageRelease, notarizeRelease, prepareRelease, publicationPlan, signRelease, type Run, type Verify } from "../../../scripts/prepare-release";
@@ -129,7 +130,7 @@ test("bundle notices carry the package notices, Photon's installed license and P
   const piDirectory = dirname(Bun.resolveSync("@earendil-works/pi-coding-agent/package.json", app));
   const photonDirectory = dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(Bun.resolveSync("@earendil-works/pi-coding-agent", app))));
   const photon = JSON.parse(await readFile(join(photonDirectory, "package.json"), "utf8"));
-  const [mlx, inference, photonNotice, appNotice, ...extra] = await bundleNotices();
+  const [mlx, inference, photonNotice, appNotice, ...extra] = await bundleNotices([]);
   expect(extra).toEqual([]);
   for (const [name, notice] of [["mlx", mlx], ["inference", inference]] as const)
     expect(notice).toBe(`# @mlx-bun/${name}\n\n${await readFile(join(root, "packages", name, "THIRD_PARTY_NOTICES.md"), "utf8")}`);
@@ -150,6 +151,118 @@ test("bundle notices carry the package notices, Photon's installed license and P
   expect(license).toContain("The above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.");
   const blob = notice.match(/git blob `([0-9a-f]{40})`/)![1];
   expect(gitBlobSha1(new TextEncoder().encode(license))).toBe(blob!);
+});
+
+async function packageTree(files: Record<string, string>) {
+  const root = await mkdtemp(join(tmpdir(), "mlx-notices-"));
+  for (const [path, text] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), text);
+  }
+  return root;
+}
+const manifest = (name: string, version?: string) => JSON.stringify({ name, version });
+
+test("notice coverage is every metafile input with output bytes, grouped by its nearest versioned package.json", async () => {
+  const root = await packageTree({
+    "node_modules/kept/package.json": manifest("kept", "1.0.0"), "node_modules/kept/LICENSE": "kept license\n",
+    "node_modules/kept/NOTICE": "kept notice\n", "node_modules/kept/esm/package.json": '{"type":"module"}',
+    "node_modules/kept/esm/index.js": "kept", "node_modules/kept/esm/unused.js": "unused",
+    "node_modules/dropped/package.json": manifest("dropped", "2.0.0"), "node_modules/dropped/index.js": "dropped",
+    "node_modules/other/package.json": manifest("other", "3.0.0"), "node_modules/other/licence.md": "other licence\n",
+    "node_modules/other/index.js": "other",
+    "packages/own/package.json": manifest("@mlx-bun/own", "0.0.0"), "packages/own/src/own.ts": "own",
+  });
+  try {
+    const compiled: Metafile = { outputs: { "./mlx-bun": { inputs: {
+      "node_modules/kept/esm/index.js": { bytesInOutput: 4 }, "node_modules/kept/esm/unused.js": { bytesInOutput: 0 },
+      "node_modules/dropped/index.js": { bytesInOutput: 0 }, "packages/own/src/own.ts": { bytesInOutput: 3 } } } } };
+    const browser: Metafile = { outputs: { "./main.js": { inputs: {
+      "../other/index.js": { bytesInOutput: 5 }, "../kept/esm/index.js": { bytesInOutput: 4 } } } } };
+    const packages = await retainedPackages([...retainedInputs(compiled, root), ...retainedInputs(browser, join(root, "node_modules/kept"))]);
+    expect(packages).toEqual([
+      { id: "kept@1.0.0", name: "kept", version: "1.0.0", directory: join(root, "node_modules/kept"), files: ["esm/index.js"] },
+      { id: "other@3.0.0", name: "other", version: "3.0.0", directory: join(root, "node_modules/other"), files: ["index.js"] },
+    ]);
+    expect(await packageNotices(packages, {})).toEqual([
+      "# kept@1.0.0\n\n## LICENSE\n\nkept license\n\n## NOTICE\n\nkept notice\n",
+      "# other@3.0.0\n\n## licence.md\n\nother licence\n",
+    ]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a retained package without installed license text needs a fallback naming its exact version", async () => {
+  const root = await packageTree({ "node_modules/bare/package.json": manifest("bare", "1.2.3"), "node_modules/bare/index.js": "bare" });
+  try {
+    const packages = await retainedPackages([join(root, "node_modules/bare/index.js")]);
+    await expect(packageNotices(packages, {})).rejects.toThrow("bare@1.2.3");
+    await expect(packageNotices(packages, { "mlx-bun": "Upstream text for `bare@1.2.4`." })).rejects.toThrow("bare@1.2.3");
+    expect(await packageNotices(packages, { "@mlx-bun/inference": "none", "mlx-bun": "Upstream text for `bare@1.2.3`." }))
+      .toEqual(["# bare@1.2.3\n\nNo license file is installed; the upstream text is in the `mlx-bun` section.\n"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("reviewed vendored license headers are copied verbatim only for retained files at the reviewed version", async () => {
+  const root = await packageTree({
+    "node_modules/host/package.json": manifest("host", "1.0.0"), "node_modules/host/LICENSE": "host license\n",
+    "node_modules/host/lib/vendor.js": "// host code\n/* Copyright (c) Vendor\n * MIT */\nexport {};\n",
+    "node_modules/host/lib/unretained.js": "/* Copyright (c) Unretained */\n",
+  });
+  try {
+    const packages = await retainedPackages([join(root, "node_modules/host/lib/vendor.js")]);
+    const headers: Record<string, [number, number]> = { "lib/vendor.js": [2, 3], "lib/unretained.js": [1, 1] };
+    expect(await packageNotices(packages, {}, { host: { version: "1.0.0", headers } })).toEqual([
+      "# host@1.0.0\n\n## LICENSE\n\nhost license\n\n## lib/vendor.js (vendored; license header verbatim)\n\n/* Copyright (c) Vendor\n * MIT */\n",
+    ]);
+    await expect(packageNotices(packages, {}, { host: { version: "0.9.0", headers } })).rejects.toThrow("host@1.0.0 was reviewed only at host@0.9.0");
+    await expect(packageNotices(packages, {}, { host: { version: "1.0.0", headers: { "lib/vendor.js": [1, 1] } } }))
+      .rejects.toThrow("lib/vendor.js:1-1 is not a license header");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Jiti's prebundle files must match the reviewed hashes at the reviewed version", async () => {
+  const root = await packageTree({
+    "node_modules/jiti/package.json": manifest("jiti", "2.7.0"), "node_modules/jiti/LICENSE": "jiti license\n",
+    "node_modules/jiti/dist/jiti.cjs": "changed", "node_modules/jiti/dist/extra.cjs": "new",
+    "node_modules/newer/node_modules/jiti/package.json": manifest("jiti", "2.7.1"),
+    "node_modules/newer/node_modules/jiti/dist/jiti.cjs": "newer",
+  });
+  try {
+    const hash = createHash("sha256").update("changed").digest("hex");
+    await expect(packageNotices(await retainedPackages([join(root, "node_modules/jiti/dist/jiti.cjs")]), {}))
+      .rejects.toThrow(`jiti@2.7.0 dist/jiti.cjs (sha256 ${hash}) is not a reviewed prebundle file`);
+    await expect(packageNotices(await retainedPackages([join(root, "node_modules/jiti/dist/extra.cjs")]), {}))
+      .rejects.toThrow("jiti@2.7.0 dist/extra.cjs");
+    await expect(packageNotices(await retainedPackages([join(root, "node_modules/newer/node_modules/jiti/dist/jiti.cjs")]), {}))
+      .rejects.toThrow("jiti@2.7.1 was reviewed only at jiti@2.7.0");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("the reviewed headers, Jiti hashes and XGrammar fallback match the installed packages", async () => {
+  const app = resolve(import.meta.dir, ".."), root = resolve(app, "../..");
+  const installed = (...chain: string[]) => chain.reduce((from, name) => Bun.resolveSync(name, dirname(from)), join(app, "package.json"));
+  const packages = await retainedPackages([installed("@earendil-works/pi-coding-agent"),
+    installed("@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"), installed("@earendil-works/pi-coding-agent", "jiti"),
+    installed("@earendil-works/pi-ai", "@mistralai/mistralai"),
+    installed("@earendil-works/pi-ai", "@google/genai", "google-auth-library", "gcp-metadata", "json-bigint")]);
+  expect(packages.map(({ name }) => name).sort()).toEqual(Object.keys(REVIEWED).sort());
+  const appNotice = await readFile(join(app, "THIRD_PARTY_NOTICES.md"), "utf8");
+  const sections = await packageNotices(packages.map(found => ({ ...found, files: Object.keys(REVIEWED[found.name]!.headers ?? REVIEWED[found.name]!.sha256!) })), { "mlx-bun": appNotice });
+  expect(sections.join("").match(/\(vendored; license header verbatim\)/g)).toHaveLength(5);
+  for (const text of ["Copyright (c) Sindre Sorhus", "MIT License - Copyright (c) 2025 opentui", "Copyright (c) 2024 Jason Miller", "(c) BSD-3-Clause"])
+    expect(sections.join("")).toContain(text);
+
+  // XGrammar's npm package ships no license file; the inference notice carries
+  // the upstream LICENSE and NOTICE blobs it names for the installed version.
+  const xgrammar = await retainedPackages([Bun.resolveSync("@mlc-ai/web-xgrammar", join(root, "packages/inference"))]);
+  const inference = await readFile(join(root, "packages/inference/THIRD_PARTY_NOTICES.md"), "utf8");
+  expect(await packageNotices(xgrammar, { "@mlx-bun/inference": inference }))
+    .toEqual([`# ${xgrammar[0]!.id}\n\nNo license file is installed; the upstream text is in the \`@mlx-bun/inference\` section.\n`]);
+  const section = inference.slice(inference.indexOf("## XGrammar"));
+  const [license, notice] = [...section.matchAll(/```text\n([^`]*)```/g)].map(match => match[1]!);
+  const blobs = [...section.matchAll(/git blob\s+`([0-9a-f]{40})`/g)].map(match => match[1]!);
+  expect(license).toStartWith("                                 Apache License\n");
+  expect([gitBlobSha1(new TextEncoder().encode(license)), gitBlobSha1(new TextEncoder().encode(notice!))]).toEqual(blobs);
 });
 
 test("publication order rejects cycles, unpackaged ranges, missing packages and incompatible versions", () => {

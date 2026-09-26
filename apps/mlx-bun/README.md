@@ -969,11 +969,19 @@ After staging the root native setup and the app helper with
 `bun run --filter mlx-bun build:native`, run `bun run build:binary` from the root.
 `dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
 WASM sidecar, the project license, and combined third-party notices: the MLX and
-inference package notices, Photon's installed Apache-2.0 license, and the app's
-own [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Pi is compiled into the
-executable and its npm packages ship no license file, so that file carries Pi's
-upstream MIT license verbatim with its source revision and git blob; the build
-fails unless it names every installed Pi package at its installed version.
+inference package notices, Photon's installed Apache-2.0 license, the app's own
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and one section per npm package
+the build retained. [bundle-notices.ts](../../scripts/bundle-notices.ts) reads the
+metafiles of the executable and embedded browser builds: every input that
+contributed bytes maps to its nearest `package.json` `name@version`; workspace
+packages are excluded. A section copies the installed LICENSE, LICENCE, NOTICE and
+COPYING files verbatim. Packages that install none (Pi, XGrammar) must be named at
+that exact `name@version` in the app or package notices, which carry the upstream
+text with its source revision; otherwise the build fails. Reviewed vendored license
+headers are copied from the installed files, and Jiti's prebundle files are pinned
+by sha256; another version of those packages fails the build until reviewed.
+Notices for code embedded in Jiti's prebundle and XGrammar's WASM build are not
+yet reproduced.
 Move the whole directory together. Web assets and the memory skill
 are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
@@ -981,9 +989,9 @@ build fallback. No terminal Pi assets are included.
 `bun run verify:binary` builds into temporary storage, archives the bundle with
 the release preparation's tar command, and removes the build. The shared
 acceptance then extracts the archive to another directory, compiles a consumer
-into that copy, checks every notice section, and installs the unchanged archive
-through the curl installer using a local curl stub and temporary home, then
-upgrades once. It checks the actual CLI and managed child plus the consumer for
+into that copy, checks every notice section of a fresh build, and installs the
+unchanged archive through the curl installer using a local curl stub and
+temporary home, then upgrades once. It checks the actual CLI and managed child plus the consumer for
 web, memory, synthetic registry/fit, native path resolution, microphone helper
 help, and Photon initialization in the relocated, installed, and retained
 previous bundles.
