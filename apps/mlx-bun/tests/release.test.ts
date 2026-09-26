@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { BUNDLE_FILES } from "../../../scripts/bundle-files";
+import { MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
 import { packageRelease, notarizeRelease, prepareRelease, publicationPlan, signRelease, type Run } from "../../../scripts/prepare-release";
 
 async function fixture() {
@@ -24,7 +25,7 @@ async function fixture() {
     if (command[1] === "pm") { await writeFile(command[4]!, "mock npm archive"); return ""; }
     if (command[0] === "tar" && command[1] === "-xOf")
       return JSON.stringify(command[2]!.includes("mlx-bun-mlx.tgz") ? packages[1] : packages[0]);
-    if (command[0] === "file") return /dylib$|frame-extract$|future-microphone-helper$/.test(command[2]!) ? "Mach-O 64-bit executable arm64" : "data";
+    if (command[0] === "file") return /dylib$|frame-extract$|mic-capture$|future-microphone-helper$/.test(command[2]!) ? "Mach-O 64-bit executable arm64" : "data";
     if (command[0] === "codesign") return "";
     if (command[0] === "ditto") { await writeFile(command.at(-1)!, "mock signed zip"); return ""; }
     if (command[0] === "xcrun") {
@@ -72,6 +73,18 @@ test("unsigned preparation reports pending publication decisions and creates com
   } finally { await f.close(); }
 });
 
+test("release preparation rejects a bundle missing the microphone helper", async () => {
+  const f = await fixture();
+  try {
+    await expect(prepareRelease(f.output, f.root, f.execute, async directory => {
+      const executable = await f.build(directory);
+      await rm(join(directory, MIC_CAPTURE_BINARY), { force: true });
+      return executable;
+    })).rejects.toThrow(`Missing bundle asset: ${MIC_CAPTURE_BINARY}`);
+    expect(await readdir(f.output)).not.toContain("unsigned");
+  } finally { await f.close(); }
+});
+
 test("publication order rejects cycles, unpackaged ranges, missing packages and incompatible versions", () => {
   const a = { name: "@mlx-bun/a", version: "1.0.0", dependencies: { "@mlx-bun/b": "1.0.0" } };
   const b = { name: "@mlx-bun/b", version: "1.0.0" };
@@ -90,6 +103,7 @@ test("signing handles every Mach-O before main, verifies each, and uses the pres
     const signing = f.commands.filter(command => command[0] === "codesign" && command.includes("--sign"));
     expect(signing.at(-1)?.at(-1)).toBe(join(f.output, "bundle/mlx-bun"));
     expect(signing.some(command => command.at(-1)?.endsWith("future-microphone-helper"))).toBe(true);
+    expect(signing.some(command => command.at(-1) === join(f.output, "bundle", MIC_CAPTURE_BINARY))).toBe(true);
     expect(signing.some(command => command.at(-1)?.endsWith("photon_rs_bg.wasm"))).toBe(false);
     for (const command of signing) {
       expect(command).toContain("--timestamp"); expect(command).toContain("runtime");
