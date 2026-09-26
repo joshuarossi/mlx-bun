@@ -9,7 +9,8 @@ import type { ChatTemplate, LoadedTokenizer } from "@mlx-bun/inference/input";
 import type { AdapterManager } from "@mlx-bun/inference/adapters";
 import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "@mlx-bun/inference/input/vision";
 import type { AudioTower } from "@mlx-bun/inference/models/audio/conformer";
-import { sidecarShipsAudioTower, fit } from "@mlx-bun/hub";
+import { sidecarShipsAudioTower } from "@mlx-bun/hub/registry";
+import { fit } from "@mlx-bun/inference/execution/fit";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 

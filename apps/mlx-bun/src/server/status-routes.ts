@@ -1,4 +1,4 @@
-import { detectChip, fit, skuMatrix, thisMachine, type MachineSpec } from "@mlx-bun/hub/fit";
+import { detectChip, fit, skuMatrix, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { createCacheServices } from "../engine/cache-services";
 import type { GenerationGateway } from "../engine/generation-gateway";

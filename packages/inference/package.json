@@ -86,6 +86,7 @@
     "./execution/engine": "./src/execution/engine.ts",
     "./execution/admission": "./src/execution/admission.ts",
     "./execution/cancellation": "./src/execution/cancellation.ts",
+    "./execution/fit": "./src/execution/fit.ts",
     "./runtime/resources": "./src/runtime/resources.ts",
     "./execution/request-policy": "./src/execution/request-policy.ts",
     "./models/diffusion-gemma/vision": "./src/models/diffusion-gemma/vision.ts",

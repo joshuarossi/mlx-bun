@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Registry, audioCapable, visionCapable } from "../src/registry";
+import { Registry, audioCapable, visionCapable } from "@mlx-bun/hub/registry";
 
 const hubs: string[] = [];
 afterAll(() => { for (const h of hubs) rmSync(h, { recursive: true, force: true }); });

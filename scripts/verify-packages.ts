@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -141,14 +141,27 @@ try {
   env.MLX_BUN_TEST_CLI = appEntry;
   try { console.log((await run([process.execPath, "test", ...verbTests.map(file => `./node_modules/mlx-bun/tests/${file}`)], consumer)).trim()); }
   finally { delete env.MLX_BUN_LIBMLXC; delete env.MLX_BUN_TEST_CLI; }
-  // Public hub protocol tests run against the installed tarball, including
-  // --app-only: local mock HTTP and explicit temporary token inputs, no MLX.
-  await mkdir(join(consumer, "hub-tests"));
-  for (const file of ["upload.test.ts", "token.test.ts"])
-    await cp(join(workspace, "packages/hub/tests", file), join(consumer, "hub-tests", file));
+  // The hub archive stands alone, including --app-only: it installs without any
+  // workspace package, every public entry imports with MLX unavailable, and its
+  // tests and shipped example run against the tarball (local mock HTTP, temporary
+  // caches and explicit token inputs).
+  const hubOnly = join(scratch, "hub-only");
+  await mkdir(join(hubOnly, "packages/hub/tests"), { recursive: true });
+  await Bun.write(join(hubOnly, "package.json"), JSON.stringify({
+    private: true, type: "module", dependencies: { "@mlx-bun/hub": dependencies["@mlx-bun/hub"] },
+  }, null, 2));
+  await run([process.execPath, "install", "--ignore-scripts"], hubOnly);
+  assert.deepEqual(await readdir(join(hubOnly, "node_modules/@mlx-bun")), ["hub"], "The hub archive installs other workspace packages");
+  const hubEntries = packages.find(candidate => candidate.name === "@mlx-bun/hub")!.entries;
+  await cp(join(hubOnly, "node_modules/@mlx-bun/hub/examples"), join(hubOnly, "packages/hub/examples"), { recursive: true });
+  for (const file of ["registry.test.ts", "registry-canonical.test.ts", "download.test.ts", "token.test.ts", "upload.test.ts", "list-models-example.test.ts"])
+    await cp(join(workspace, "packages/hub/tests", file), join(hubOnly, "packages/hub/tests", file));
+  await Bun.write(join(hubOnly, "imports.ts"), `for (const name of ${JSON.stringify(hubEntries)}) await import(name);`);
   env.MLX_BUN_LIBMLXC = "/does-not-exist";
-  try { console.log((await run([process.execPath, "test", "hub-tests"], consumer)).trim()); }
-  finally { delete env.MLX_BUN_LIBMLXC; }
+  try {
+    await run([process.execPath, "imports.ts"], hubOnly);
+    console.log((await run([process.execPath, "test", "packages"], hubOnly)).trim());
+  } finally { delete env.MLX_BUN_LIBMLXC; }
   if (args.includes("--app-only")) {
     console.log("Packed app passed CPU-only consumer tests.");
   } else {

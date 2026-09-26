@@ -1,6 +1,5 @@
-// Model hub entry points: discover local checkpoints, transfer artifacts through
-// Hugging Face, and estimate whether a model fits a machine. Estimates are
-// advisory; nothing here refuses work, and nothing here chooses a model for the caller.
+// Model hub entry points: discover local checkpoints and transfer artifacts through
+// Hugging Face. Nothing here chooses a model for the caller.
 export {
   Registry, DEFAULT_HUB, DEFAULT_DB, visionCapable, audioCapable, pickCanonicalRevision,
   sidecarShipsAudioTower, scanSnapshot, planRepoGc, planGc, executeGc,
@@ -13,10 +12,3 @@ export {
 export type { RepoFile, RepoListing, DownloadOptions, DownloadSpacePlan, DownloadStatus, HfTokenOptions } from "./download";
 export { createRepo, uploadFolder } from "./upload";
 export type { RepoType, CreateRepoOptions, UploadOptions, UploadResult } from "./upload";
-export {
-  fit, skuMatrix, thisMachine, detectChip,
-  kvBytesAt, kvQuantBytesPerElement, sdpaFallbackBytes,
-  APPLE_SKUS, DEFAULT_CHUNK, WIRED_FRACTION, TRANSIENT_PER_TOKEN,
-  DECODE_EFFICIENCY, MOE_DECODE_EFFICIENCY,
-} from "./fit";
-export type { MachineSpec, FitReport, FitKvScheme } from "./fit";

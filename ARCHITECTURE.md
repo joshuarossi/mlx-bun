@@ -87,8 +87,8 @@ directories need an explicit layer owner in this gate.
 
 `apps/mlx-bun` owns the runnable terminal application and its server and web
 surfaces. Its `cli/` domain parses arguments and presents results, consuming
-public library exports. Model discovery, acquisition, and fit remain in
-`@mlx-bun/hub`; numerical inference remains in `@mlx-bun/inference`.
+public library exports. Model discovery and acquisition remain in
+`@mlx-bun/hub`; fit estimates and numerical inference remain in `@mlx-bun/inference`.
 `engine/` owns loaded models and continuous scheduling. `server/` consumes its
 completion, preparation, and model-binding interfaces; HTTP request shapes,
 prompt policy, and JSON/SSE remain server-owned. The server borrows the engine,

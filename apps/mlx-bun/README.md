@@ -367,8 +367,8 @@ checkpoint fail. This checks HTTP/Pi behavior, not quantize jobs, a compiled-bin
 lifecycle, numerical parity, or performance.
 
 `server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
-Responses-history counters for `GET /stats`; `GET /fit` uses the public hub fit
-functions and the served artifact metadata. Predictions remain advisory and do
+Responses-history counters for `GET /stats`; `GET /fit` uses the public inference
+fit functions (`@mlx-bun/inference/execution/fit`) and the served artifact metadata. Predictions remain advisory and do
 not impose an admission limit. GLM admission accounting uses its actual explicit
 memory plan rather than the generic resident-weight estimate. Batch mode remains
 continuous even at capacity one. Pending SSD counters include the generation

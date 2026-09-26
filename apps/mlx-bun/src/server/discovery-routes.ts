@@ -1,7 +1,7 @@
 import type { ModelBinding } from "../engine/model-binding";
 import pkgJson from "../../package.json" with { type: "json" };
 import type { LoadedModelContext as ModelContext } from "../engine/model-host";
-import { fit } from "@mlx-bun/hub/fit";
+import { fit } from "@mlx-bun/inference/execution/fit";
 import { Registry } from "@mlx-bun/hub/registry";
 import type { DownloadStatus } from "@mlx-bun/hub/download";
 

@@ -418,7 +418,7 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
   const script = `
     import { mock } from "bun:test";
     import { strict as assert } from "node:assert";
-    import { fit } from "@mlx-bun/hub/fit";
+    import { fit } from "@mlx-bun/inference/execution/fit";
     import { runtimeValue } from "@mlx-bun/inference/runtime/config";
     const app = ${JSON.stringify(app)};
     const events = [];

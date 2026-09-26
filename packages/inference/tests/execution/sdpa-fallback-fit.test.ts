@@ -4,15 +4,9 @@
 // affine 10K-context Metal OOM on 24 GB: fit() advertised ~15.8K safe
 // context while the last prefill chunk materialized ~1.2 GB of bf16 scores.
 import { describe, expect, test } from "bun:test";
-import type { ModelConfig } from "@mlx-bun/inference/artifacts";
-import {
-  DEFAULT_CHUNK,
-  TRANSIENT_PER_TOKEN,
-  WIRED_FRACTION,
-  fit,
-  kvBytesAt,
-  sdpaFallbackBytes,
-} from "../src/fit";
+import type { ModelConfig } from "../../src/artifacts/config";
+import { DEFAULT_CHUNK, TRANSIENT_PER_TOKEN, WIRED_FRACTION, fit } from "../../src/execution/fit";
+import { kvBytesAt, sdpaFallbackBytes } from "../../src/state/kv-scheme";
 
 // mjriii/Qwen3.8-27B geometry (config.json): 64 layers, 16 full / 48 linear,
 // 24 heads × head_dim 256, 4 KV heads, 262144 positions.
