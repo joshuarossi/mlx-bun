@@ -113,6 +113,22 @@ test("--isolate is a parent-only boolean that selects the isolated composition a
   expect(run.starts).toHaveLength(1);
 });
 
+test("--model-pool is a parent-only integer >= 1 that applies with --isolate; without it the flag warns and is ignored, as main", async () => {
+  expect(parse("--isolate")).not.toHaveProperty("modelPool");
+  expect(parse("--isolate", "--model-pool", "2").modelPool).toBe(2);
+  for (const value of ["0", "1.5", "x"]) expect(() => parse("--isolate", "--model-pool", value)).toThrow("--model-pool expects an integer in [1, 9007199254740991]");
+  const warnings: string[] = [], warn = console.warn;
+  console.warn = (message: string) => { warnings.push(message); };
+  try { expect(parse("--model-pool", "2")).not.toHaveProperty("modelPool"); }
+  finally { console.warn = warn; }
+  expect(warnings).toEqual(["--model-pool has no effect without --isolate (child-per-model pool) — ignored"]);
+  const run = runtime(false);
+  const app = await runServe(parseCommand("serve", ["--isolate", "--model-pool", "3", "--port", "0"]), run.dependencies);
+  expect(run.starts[0]).toMatchObject({ isolate: true, modelPool: 3 });
+  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in an isolated engine worker (model pool 3)");
+  await app.close();
+});
+
 test("the Whisper companion flags keep main's spelling, units, and validation", () => {
   expect(parse("--whisper-model", "mlx-community/whisper-large-v3-turbo", "--whisper-idle-unload", "30", "--whisper-resident", "--preload").whisper)
     .toEqual({ model: "mlx-community/whisper-large-v3-turbo", idleUnloadSec: 30, resident: true, preload: true });

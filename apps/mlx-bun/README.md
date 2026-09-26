@@ -78,14 +78,16 @@ main's documented `--isolate` semantics with the deviations listed at the end.
 **Process layout.** `serve.ts` resolves the model as usual, then `startModelServer`
 composes `cli/serve-isolated.ts` instead of the direct host: the same persistent
 `createAppState` (web app, download owner, Responses history, memory, jobs,
-sessions, credentials, publishing), a parent-owned proxy, and one worker spawned
-through `jobs/worker-supervisor.ts` over `jobs/worker-process.ts`. The launch
+sessions, credentials, publishing), a parent-owned proxy, and a pool of workers
+(`jobs/worker-pool.ts`: one per exact `/v1/models` id up to `--model-pool`, one
+by default) each supervised by `jobs/worker-supervisor.ts` over
+`jobs/worker-process.ts`. A launch
 record pins the resolved model by path and carries the parsed serve options
 (draft and Whisper queries already resolved to directories, `isolate` cleared),
 so the worker never re-resolves a query; every exported `MLX_BUN_*` variable
 reaches it unchanged, and its output is forwarded to this process's log with a
-`[worker]` prefix. The socket lives in a private `mlx-worker-*` temp directory
-(0700, socket 0600) that this process removes on close. This process loads no
+`[worker]` prefix. Sockets live in a private `mlx-worker-*` temp directory
+(0700, sockets 0600), one per worker, that this process removes on close. This process loads no
 engine or native module: `serve.ts` imports the model half only inside the
 direct composition, and the [composition test](tests/serve-isolated.test.ts)
 gates both the static closure and the runtime with tripwire mocks.
@@ -100,7 +102,7 @@ that first ready line.
 
 **Application state.** The web app, Pi chat, the Responses history, jobs,
 downloads, sessions, memory, tool-approval settings, and hub GC (which still
-protects the served snapshot) live here and survive worker restarts. Pi runs in
+protects every resident or loading snapshot) live here and survive worker restarts. Pi runs in
 this process and reaches the model over loopback HTTP through the proxy, so web
 chat works under isolation (main answered 501 on `/ws/chat`).
 
@@ -116,10 +118,11 @@ process's store, the worker receives the resolved conversation without one (and
 the `x-mlx-bun-response-owner: parent` header), and the completed record is
 remembered here, so conversations survive a worker restart. The parent answers
 `GET /engine` (`{ isolated, state, pid, restarts, socket, model, last_exit,
-response_store }`; `state` is `starting`, `ready`, `restarting`, `exhausted`,
-or `closed`), `GET /health` (`{ status: "ok", isolated, engine: { state, pid,
-restarts, socket, model, last_exit, in_flight, leases } }` with the last two and
-a `draining` state from the worker while it serves), `GET /stats` (the worker's
+response_store, pool }`; `state` is `starting`, `ready`, `restarting`,
+`exhausted`, `closed`, or `evicted`; the worker fields describe the default
+worker), `GET /health` (`{ status: "ok", isolated, engine: { state, pid,
+restarts, socket, model, last_exit, in_flight, leases }, pool }` with `in_flight`,
+`leases`, and a `draining` state from the worker while it serves), `GET /stats` (the worker's
 body with this process's `response_store` and an `engine` report on top; while
 the worker is down, 200 with only the parent's part and an `unavailable`
 message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
@@ -165,8 +168,74 @@ only the respawn waits for a held lease. Pi's own SDK policy still retries a
 request refused with 502 before generation started (three attempts, 2/4/8 s),
 which rides out a fast respawn; a generation that started is never replayed.
 `--isolate` with a Whisper checkpoint as the main model is refused before
-anything starts. `--model-pool` is the next isolation step in
-[PLAN](../../PLAN.md).
+anything starts.
+
+## Model pool (`--model-pool`)
+
+`--model-pool <n>` (integer >= 1, default 1) sets how many model workers stay
+resident under `--isolate`; without `--isolate` it warns
+(`--model-pool has no effect without --isolate (child-per-model pool) — ignored`)
+and is ignored, as main. `jobs/worker-pool.ts` owns up to `n` supervisors keyed
+by exact `/v1/models` id, each on its own socket in the private directory, with
+the model resolved at startup as the default worker. The
+[pool test](tests/jobs/worker-pool.test.ts), the
+[proxy routing test](tests/server/proxy-routes.test.ts), and the
+[composition test](tests/serve-isolated.test.ts) drive these paths against fake
+workers; the opt-in [native pool test](tests/engine/model-pool.test.ts) keeps
+two real models resident and evicts at cap 1.
+
+**Routing.** `POST` bodies on `/v1/chat/completions`, `/v1/completions`,
+`/v1/messages`, `/v1/responses`, and `/v1/embeddings` are buffered to read
+`model` and forwarded to the chosen worker byte for byte. An **exact** id the
+worker's `/v1/models` lists (a supported canonical registry record, resolved
+without a scan or download) routes to that model's own worker, spawning it on
+first use; anything else (empty, Pi's `local`, a fuzzy name, `gpt-4`) rides the
+default worker, mlx-lm's ignored-field semantics, respawning it when it was
+evicted. A body that is not JSON goes to the default worker, which answers its
+own 400. Resolution misses are remembered until the library changes. Every
+other path (`/v1/models`, `/library`, `/stats`, cache admin, adapters) goes to
+the default worker while it is resident or loading, else to the most recently
+used resident, and never loads a model.
+
+**Cold starts and eviction.** Cold starts run one at a time; the resident
+workers keep serving while the new one loads (spawn-overlap). Each routed
+request refreshes its worker's LRU position. Once the new worker is ready it
+becomes routable and, over the cap, the least recently used worker (the default
+included) is deregistered at once, then drained (`POST /admin/drain` over its
+socket: no new admissions, generation in flight finishes) and stopped through
+its ordinary close, where the worker's cache services demote its prompt cache to
+the SSD tier when `--ssd-cache` is set; the next cold start waits for that stop.
+Naming the evicted id again respawns it. A cold start that fails answers only
+the request that caused it (502 with the worker's exit) and leaves the pool
+unchanged.
+
+**Jobs, invalidation, GC.** A managed job's execution lease covers every
+resident worker (one `/admin/lease` connection per worker) until the job's child
+exits and its logs drain. Admission joins already-started loads and draining
+evictions before leasing the resident workers; cold starts wait until all job
+leases release, so model loading never overlaps a job's GPU use. Cancellation
+and shutdown abort admission waits. A finished download or job refreshes every
+serving worker's library and forgets resolution misses. Hub GC refuses to prune
+the snapshot of any resident, queued/loading, or still-draining model.
+
+**Reporting.** `GET /engine` gains `pool: { cap, default, resident: [{ id, pid,
+state, restarts, socket }], loading: [ids] }` (residents least recently used
+first); its worker fields keep describing the default worker and are `null` with
+`state: "evicted"` while it is evicted. `GET /health` carries the same summary
+with resident ids only and `GET /stats` the full `engine` report. `/v1/models`
+keeps the available-model listing and merges each additional resident's own
+discovery row, so checkpoints resolved outside the shared registry still appear
+with their actual capabilities. Rows gain `resident: boolean` (and
+`loading: true` while a cold start runs). Peer discovery is bounded and preserves
+the base listing when another worker is unavailable.
+
+**Deviations from main.** Main clamped any bad `--model-pool` value to 1; here
+it is validated like the other numeric flags. Main forwarded every non-routed
+request to the default worker, respawning it when evicted, which the browser's
+`/stats` and `/library` polls would turn into a spawn loop at cap 1; here those
+requests never load a model. Main's requester waited for the victim's drain
+before its first answer; here the victim is deregistered at once and drained in
+the background, while the next cold start and any job lease wait for it.
 The CLI uses public library APIs. It does not own cache indexing, downloads,
 fit calculations, model graphs, or numerical execution.
 

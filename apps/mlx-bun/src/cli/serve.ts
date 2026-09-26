@@ -117,6 +117,10 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (!host.trim()) throw new Error("--host expects an address");
   const kvBudget = number("kv-budget");
   const maxTokens = number("max-tokens", 1, 10_000_000);
+  // Main's --model-pool: pool policy is the parent's and means nothing without a worker.
+  const isolate = args.values.isolate === true;
+  const modelPool = number("model-pool", 1, Number.MAX_SAFE_INTEGER, true);
+  if (modelPool !== undefined && !isolate) console.warn("--model-pool has no effect without --isolate (child-per-model pool) — ignored");
   const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
   const profileLimit = profileContext === undefined ? null : Number(profileContext);
   if (profileLimit !== null && (!Number.isSafeInteger(profileLimit) || profileLimit < 1))
@@ -137,7 +141,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(draft ? { draft } : {}),
     ...(mtpRaw !== undefined ? { mtp: ["on", "1", "true"].includes(mtpRaw) } : {}),
     ...(whisper ? { whisper } : {}),
-    readOnly: false, noOpen: args.values["no-open"] === true, isolate: args.values.isolate === true,
+    readOnly: false, noOpen: args.values["no-open"] === true, isolate,
+    ...(isolate && modelPool !== undefined ? { modelPool } : {}),
     cache, request,
   };
 }
@@ -283,7 +288,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     deps.log(`POST ${url.replace("/#/chat", "/v1/audio/transcriptions")} (${residency}; ${options.whisper?.preload ? "loaded" : "loads on first request"})\nStop: Ctrl+C`);
     return app;
   }
-  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? " in an isolated engine worker" : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
+  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? ` in an isolated engine worker (model pool ${options.modelPool ?? 1})` : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {
     try { await deps.open(url); } catch (error) { deps.error(error); }
   }

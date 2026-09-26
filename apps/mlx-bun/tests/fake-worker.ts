@@ -5,7 +5,10 @@
 // the socket. Behavior is driven by request content and `/fake/*` control
 // routes, so a test reaches everything through the parent's proxy. Env:
 // FAKE_WORKER_RECORD appends `{ argv, pid, launch }` per launch (the launch line as received);
-// FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load.
+// FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop (pool timing);
+// FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load;
+// FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only (a pool's failed cold start);
+// FAKE_WORKER_LOAD_MS delays the ready line, like a weights load.
 // FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
 import { appendFileSync } from "node:fs";
 
@@ -18,11 +21,14 @@ const launch = JSON.parse(launchLine, (_key, value: unknown) =>
   value !== null && typeof value === "object" && "$number" in value ? Number((value as { $number: string }).$number) : value) as
   { socketPath: string; model: { repoId: string; path: string }; options: Record<string, unknown> };
 if (process.env.FAKE_WORKER_RECORD) appendFileSync(process.env.FAKE_WORKER_RECORD, JSON.stringify({ argv: process.argv, pid: process.pid, launch: launchLine }) + "\n");
-if (process.env.FAKE_WORKER_FAIL === "start") { console.error("worker startup failed: fake load failure"); process.exit(1); }
-console.log(`loading ${launch.model.repoId}`);
-
 const modelId = launch.model.repoId;
-interface Seen { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown }
+const event = (name: string) => { if (process.env.FAKE_WORKER_EVENTS) appendFileSync(process.env.FAKE_WORKER_EVENTS, JSON.stringify({ event: name, model: modelId, pid: process.pid, at: Date.now() }) + "\n"); };
+if (process.env.FAKE_WORKER_FAIL === "start" || process.env.FAKE_WORKER_FAIL_MODEL === modelId) { console.error("worker startup failed: fake load failure"); process.exit(1); }
+console.log(`loading ${modelId}`);
+event("loading");
+if (process.env.FAKE_WORKER_LOAD_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_LOAD_MS));
+
+interface Seen { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown; raw?: string }
 const seen: Seen[] = [];
 const leases = new Set<object>();
 let draining = false, inFlight = 0, responseCount = 0;
@@ -30,7 +36,7 @@ const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
   id: "chatcmpl-fake", object: "chat.completion.chunk", created: 1, model: modelId, choices: [{ index: 0, delta, finish_reason: finish }],
 });
 const sse = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
-const event = (name: string, value: unknown) => `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
+const frame = (name: string, value: unknown) => `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
 /** The last user turn's text, from chat messages or Responses input items. */
 const userText = (body: { messages?: unknown; input?: unknown }): string => {
   const items = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input
@@ -71,9 +77,10 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   if (path === "/admin/drain") {
     draining = true;
     console.error("drain requested");
+    event("drain");
     return Response.json({ drained: true, state: "draining", model: modelId, in_flight: inFlight, leases: leases.size, waited_ms: 0, timed_out: false });
   }
-  if (path === "/fake/seen") return Response.json({ pid: process.pid, seen });
+  if (path === "/fake/seen") return Response.json({ pid: process.pid, model: modelId, seen });
   if (path === "/fake/crash") { crash(Number(url.searchParams.get("code") ?? "137")); return Response.json({ crashing: true }); }
   if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
   if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: modelId, object: "model", created: 1, owned_by: "mlx-bun",
@@ -84,7 +91,9 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     admission: { enforced_context_tokens: 2048, max_safe_context: 8192 }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: modelId, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
   if (path === "/v1/chat/completions" && request.method === "POST") {
-    const body = await request.json() as { stream?: boolean; messages?: { role: string; content: unknown }[] };
+    entry.raw = await request.text();
+    let body: { stream?: boolean; messages?: { role: string; content: unknown }[] };
+    try { body = JSON.parse(entry.raw) as typeof body; } catch { return Response.json({ error: { message: "invalid JSON body", type: "invalid_request_error" } }, { status: 400 }); }
     entry.body = body;
     const prompt = userText(body);
     if (!body.stream) return Response.json({ id: "chatcmpl-fake", object: "chat.completion", created: 1, model: modelId,
@@ -99,7 +108,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   if (path === "/v1/messages" && request.method === "POST") {
     const body = await request.json() as { messages?: { role: string; content: unknown }[] };
     entry.body = body;
-    return hold(request, encoder.encode(event("message_start", { type: "message_start", message: { id: "msg_fake", role: "assistant" } })), entry);
+    return hold(request, encoder.encode(frame("message_start", { type: "message_start", message: { id: "msg_fake", role: "assistant" } })), entry);
   }
   if (path === "/v1/responses" && request.method === "POST") {
     const body = await request.json() as { stream?: boolean; input?: unknown; instructions?: string | null; previous_response_id?: unknown };
@@ -109,15 +118,16 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
       output: [{ type: "message", id: `msg_${responseCount}`, role: "assistant", status: "completed", content: [{ type: "output_text", text: `echo: ${prompt}`, annotations: [] }] }],
       instructions: body.instructions ?? null };
     if (!body.stream) return Response.json(response);
-    if (prompt.includes("hang")) return hold(request, encoder.encode(event("response.created", { type: "response.created", response })), entry);
-    return new Response([event("response.created", { type: "response.created", response }),
-      event("response.output_text.delta", { type: "response.output_text.delta", delta: `echo: ${prompt}` }),
-      event("response.completed", { type: "response.completed", response })].join(""), { headers: { "content-type": "text/event-stream" } });
+    if (prompt.includes("hang")) return hold(request, encoder.encode(frame("response.created", { type: "response.created", response })), entry);
+    return new Response([frame("response.created", { type: "response.created", response }),
+      frame("response.output_text.delta", { type: "response.output_text.delta", delta: `echo: ${prompt}` }),
+      frame("response.completed", { type: "response.completed", response })].join(""), { headers: { "content-type": "text/event-stream" } });
   }
   return Response.json({ error: { message: "Not found" } }, { status: 404 });
 } } as unknown as Parameters<typeof Bun.serve>[0]);
 
 console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid })));
-const stop = () => { console.error("stopping"); void server.stop(true); process.exit(0); };
+event("ready");
+const stop = () => { console.error("stopping"); event("stop"); void server.stop(true); process.exit(0); };
 process.on("SIGTERM", stop);
 void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();
