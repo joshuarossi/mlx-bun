@@ -323,22 +323,65 @@ drain. Completed stage writes are resumable; cancellation does not roll them bac
 `GET /v1/memory/synthesize[?dry=1]` streams the run as SSE (`stage`/`log`/`done`
 events, a `summary`, then `[DONE]`; a failure ends with an `error` event); it is
 mounted only when composition supplies the pipeline. `mlx-bun memory` exposes
-main's subcommands: `status` (default), `open`, `list`, `search`, `toc`,
-`section`, `links`, `read`, `synthesize` (`--dry-run`; `--since`/`--model`
-parsed but not consumed, as in main), the stage workers `segment`, `extract`,
-`route`, `synthesize-stage` (`--limit`, `--convs`), and `link`. Model-driven
-subcommands talk to the server named by `--host`/`--port` (the serve defaults)
-and fail with a pointer to `mlx-bun serve` when none answers. The entity gold
-main read from `goldens/dreaming-entities-gold.json` is a published dataset:
-without that file the resolver runs unseeded (store aliases still fold).
-Deferred to the follow-up branch: `memory init`/`setup`, `schedule`,
-`unschedule`, and the schedule state in `status`, the `memory_status` tool, and
-`/api/memory/status`.
+main's subcommands: `init`/`setup` (the wizard below), `status` (default),
+`open`, `list`, `search`, `toc`, `section`, `links`, `read`, `synthesize`
+(`--dry-run`; `--since`/`--model` parsed but not consumed, as in main), the
+stage workers `segment`, `extract`, `route`, `synthesize-stage` (`--limit`,
+`--convs`), `link`, and `schedule`/`unschedule`. Model-driven subcommands talk
+to the server named by `--host`/`--port` (the serve defaults) and fail with a
+pointer to `mlx-bun serve` when none answers. The entity gold main read from
+`goldens/dreaming-entities-gold.json` is a published dataset: without that
+file the resolver runs unseeded (store aliases still fold).
 
 [Pipeline tests](tests/memory/) port main's model-free suites with fake stage
 calls, in-test vaults, and an in-test entity gold; the
 [client test](tests/server/memory-completion-client.test.ts) and
 [verb test](tests/memory-cli.test.ts) use a fake fetch and a temporary HOME.
+
+### Memory setup and nightly schedule
+
+`mlx-bun memory init` (also `memory setup`) runs main's onboarding wizard.
+`mlx-bun setup` is main's true alias of `mlx-bun memory`: `mlx-bun setup init`
+is the same wizard and a bare `mlx-bun setup` reports status. The wizard
+initializes the vault through the same `setupVault` as `POST /api/memory/init`
+(idempotent; no reference seeding), offers to import an existing wiki's
+`articles/` (main's prompt; default yes once a path is given; the import is
+committed), and offers to install the nightly synthesis job (main's prompt;
+default no; then asks for the time, default 03:00). A non-TTY stdin answers
+every prompt with its default, so a scripted run initializes the vault and
+installs nothing.
+
+`memory schedule [--at HH:MM]` writes main's launchd agent,
+`~/Library/LaunchAgents/com.mlx-bun.memory.plist` (label `com.mlx-bun.memory`,
+`StartCalendarInterval` at the local time, default 03:00, `RunAtLoad` off,
+`ProcessType` Background, logs in `~/.mlx-bun/logs/memory-synthesis.{out,err}.log`),
+then `launchctl unload` and `launchctl load -w` it; a failed load is reported,
+not thrown. `memory unschedule` runs `launchctl unload -w` and deletes the
+plist. The job runs `/bin/zsh -lc "exec <program> memory synthesize"`, where
+the program is the executable identity captured at startup
+(`jobs/executable.ts`) plus the CLI entry when running from source; it is
+never a PATH lookup and never `process.execPath` read later. Because synthesis
+runs through a serving mlx-bun, the job needs `mlx-bun serve` running at that
+time; every status surface says so (the improvement that the server should own
+the scheduled run is recorded in PLAN).
+
+`scheduleStatus` reports `installed` (plist present), `loaded` (`launchctl
+list com.mlx-bun.memory` succeeds), `at` (read back from the plist; `null`
+when absent or hand-edited), and `note` (what the job runs and needs).
+`memory status` prints it as the `nightly` line, `GET /api/memory/status`
+returns it as `schedule` beside `status` (absent when no vault exists), and
+the `memory_status` tool prints its `nightly` line; the memory skill tells the
+assistant not to claim a scheduled run happened unless the last synthesis
+commit shows it.
+
+`src/memory/schedule.ts` owns the plist and takes the home directory and the
+`launchctl` runner as seams; `cli/memory.ts` adds the vault root, the job's
+program, and the prompt; the tool and route factories take a `schedule` probe.
+[Schedule tests](tests/memory/schedule.test.ts) and the
+[setup verb test](tests/setup-cli.test.ts) drive every path under a temporary
+home with a recording `launchctl`, an injected vault root, and scripted
+answers; spawned runs use a temporary HOME and a non-TTY stdin. No test
+reaches the real launchd, `~/Library/LaunchAgents`, or `~/.mlx-bun`.
 
 ## Jobs, quantization, and fine-tuning
 
