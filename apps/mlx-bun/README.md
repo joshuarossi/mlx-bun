@@ -380,6 +380,32 @@ historical constants. The dashboard shows an unavailable marker
 when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
 synthetic counters and CPU fit inputs without a model or native MLX.
 
+## Client entry (`mlx-bun/client`)
+
+The package's one export, `mlx-bun/client` (`src/server/client.ts`), is main's
+embedding client. It imports no other module, so it loads without native MLX.
+
+- `createCompletionClient({ baseUrl, headers?, host? })` posts to
+  `<baseUrl>/chat/completions` (or `route: "completions"`) with the caller's
+  `headers` merged with `content-type: application/json`, the body with
+  `stream: false` forced, and the call's `signal`. The transport is the supplied
+  host's `forward`, otherwise the global `fetch`; the host stays the caller's.
+  A POST is never retried: a non-2xx status rejects with the status and response
+  text, and a result without a `choices` array rejects.
+- `createDirectHost(handler, shutdown?)` gives an in-process
+  `(Request) => Promise<Response>` handler the same host shape. It is an adapter,
+  not a model loader. `close()` refuses new work, waits for handlers in flight,
+  then calls `shutdown` once; a handler owns any response stream it returns, and
+  streams pass through unchanged.
+- Types: `EngineHost`, `CompletionClient`, `CompletionCall`, `CompletionResponse`.
+
+Main's `openIsolatedHost` and its `mlx-bun/engine` entry are deferred: main
+spawned `serve --model <model> ...arguments --unix <socket>`, while the current
+worker is the private `__worker` verb with a stdin launch record and a ready
+line (`jobs/worker-process.ts`); the two launch APIs must be reconciled first.
+The [client tests](tests/client.test.ts) import the entry through the export
+map with native MLX blocked; `verify-packages` repeats them from the installed package.
+
 ## Web chat backend
 
 `src/chat/protocol.ts` owns browser messages. `backend.ts` owns a per-server

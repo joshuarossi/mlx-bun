@@ -131,15 +131,16 @@ try {
   // Preserve source-relative imports while exercising only the installed app
   // and library artifacts, including the one-shot engine composition.
   // Verb tests that also import app sources run from the installed package's own
-  // tests directory; their spawned runs use the installed CLI entry.
+  // tests directory; their spawned runs use the installed CLI entry. The client
+  // test imports `mlx-bun/client` there through the installed export map.
   const installedTests = join(consumer, "node_modules/mlx-bun/tests");
   await mkdir(installedTests, { recursive: true });
-  const verbTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts",
-    "transcribe-cli.test.ts", "dictate-cli.test.ts", "memory-cli.test.ts", "setup-cli.test.ts"];
-  for (const file of verbTests) await cp(join(workspace, "apps/mlx-bun/tests", file), join(installedTests, file));
+  const appTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts",
+    "transcribe-cli.test.ts", "dictate-cli.test.ts", "memory-cli.test.ts", "setup-cli.test.ts", "client.test.ts"];
+  for (const file of appTests) await cp(join(workspace, "apps/mlx-bun/tests", file), join(installedTests, file));
   env.MLX_BUN_LIBMLXC = "/does-not-exist";
   env.MLX_BUN_TEST_CLI = appEntry;
-  try { console.log((await run([process.execPath, "test", ...verbTests.map(file => `./node_modules/mlx-bun/tests/${file}`)], consumer)).trim()); }
+  try { console.log((await run([process.execPath, "test", ...appTests.map(file => `./node_modules/mlx-bun/tests/${file}`)], consumer)).trim()); }
   finally { delete env.MLX_BUN_LIBMLXC; delete env.MLX_BUN_TEST_CLI; }
   // Public hub protocol tests run against the installed tarball, including
   // --app-only: local mock HTTP and explicit temporary token inputs, no MLX.
