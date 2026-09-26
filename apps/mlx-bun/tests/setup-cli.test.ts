@@ -26,6 +26,14 @@ function home() {
   return { home: root, vault: join(root, "vault"), plist: join(root, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`) };
 }
 
+function expectNoSchedule(paths: ReturnType<typeof home>) {
+  // macOS or the runtime may create Library caches even for --help. Assert the
+  // schedule owner's paths, not the absence of the entire OS namespace.
+  expect(existsSync(paths.plist)).toBe(false);
+  expect(existsSync(join(paths.home, "Library", "LaunchAgents"))).toBe(false);
+  expect(existsSync(join(paths.home, ".mlx-bun", "logs"))).toBe(false);
+}
+
 /** Run the verb in-process with every persistent seam injected (the vault root
  *  is a seam too: the process-wide MLX_BUN_WIKI is read once at startup, so an
  *  environment override cannot redirect it); captures the console (box, step,
@@ -145,7 +153,7 @@ test("setup init declines the nightly job by default and imports a seed vault on
   expect(declined.out).toContain("nightly    not scheduled · mlx-bun memory schedule to set it up");
   expect(declined.calls).toEqual([]);
   expect(existsSync(paths.plist)).toBe(false);
-  expect(existsSync(join(paths.home, "Library"))).toBe(false);
+  expectNoSchedule(paths);
   // A seed path without articles is skipped without a prompt; one with articles asks (default yes) and commits.
   const empty = join(paths.home, "empty-seed");
   mkdirSync(empty, { recursive: true });
@@ -183,7 +191,7 @@ test("a non-interactive setup creates the wiki, never prompts, and installs noth
   expect(result.out).toContain("nightly    not scheduled · mlx-bun memory schedule to set it up");
   expect(result.out).toContain("● memory is set up · 0 article(s) · 0 reference doc(s)");
   expect(existsSync(join(paths.vault, "Meta", "Editorial_Guidelines.md"))).toBe(true);
-  expect(existsSync(join(paths.home, "Library"))).toBe(false);
+  expectNoSchedule(paths);
   expect(existsSync(join(paths.home, ".mlx-bun"))).toBe(false);
   // `mlx-bun setup` is main's true alias of `mlx-bun memory`: bare, it reports status.
   const status = await cli(paths, "setup");
@@ -200,6 +208,7 @@ test("a non-interactive setup creates the wiki, never prompts, and installs noth
 
 test("setup --help and memory schedule --help document the wizard, the schedule, and --at without running anything", async () => {
   const paths = home();
+  mkdirSync(join(paths.home, "Library", "Caches"), { recursive: true });
   const setup = await cli(paths, "setup", "--help");
   expect(setup.code).toBe(0);
   expect(setup.err).toBe("");
@@ -213,7 +222,7 @@ test("setup --help and memory schedule --help document the wizard, the schedule,
   expect(schedule.code).toBe(0);
   expect(schedule.out).toContain("Usage: mlx-bun memory [subcommand] [args] [options]");
   expect(schedule.out).toContain("--at <value>             schedule: local wall-clock time for the nightly job, 24h HH:MM [default: 03:00]");
-  expect(existsSync(join(paths.home, "Library"))).toBe(false);
+  expectNoSchedule(paths);
   expect(existsSync(paths.vault)).toBe(false);
   const overview = await cli(paths, "--help");
   expect(overview.out).toMatch(/\n  setup\s+Set up your local AI's memory wiki \(alias of mlx-bun memory\)\n/);
