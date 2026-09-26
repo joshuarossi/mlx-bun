@@ -122,7 +122,7 @@ test("explicit embedding text wins over stdin and positional text", async () => 
 
 test("unsupported shared execution and embed capabilities fail clearly and close the engine", async () => {
   const run = harness();
-  run.engine.completion.place = () => { throw new UnsupportedExecutionError("diffusion", "denoising", ["method-requires-serial"]); };
+  run.engine.completion.place = () => { throw new UnsupportedExecutionError("diffusion", "denoising", ["method-batch-unsupported"]); };
   await expect(runInference("generate", parse("--prompt", "hi"), run.dependencies)).rejects.toThrow("does not support shared execution");
   expect(run.runs).toEqual([]); expect(run.writes).toEqual([]); expect(run.closed()).toBe(1);
   const unsupported = harness(false); unsupported.engine.binding = {};

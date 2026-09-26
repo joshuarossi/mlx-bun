@@ -1,8 +1,23 @@
+import type { Cache } from "../contracts/mlx/cache";
 import type { ResolvedExecution } from "../contracts/portable/execution";
 import { generationCheckpointKey } from "../generation/checkpoint-identity";
 import type { GenerateOptions } from "../generation/index";
 import { disposeResources } from "../runtime/resources";
+import type { MlxPrefixCache } from "../state/checkpoint";
 import type { ContinuationPersistence } from "./continuation-persistence";
+
+/** Cache and checkpoint services the application binds once per loaded model;
+ * the gateway binding reads them for paged state and qualified continuation. */
+export interface ContinuationServices {
+  readonly promptCache: MlxPrefixCache & { readonly maxBytes?: number };
+  readonly checkpoints: ContinuationStore | null;
+  readonly checkpointEveryTokens?: number;
+  readonly checkpointPersistence?: ContinuationPersistence;
+  /** Artifact, implementation, state ABI and codec identity captured at load. */
+  readonly identity: unknown;
+  adapterNamespace(adapters: string[]): string;
+  cloneState(caches: Cache[]): Cache[];
+}
 
 /** Shared persistence policy for compatibility and grouped ordinary drivers. */
 export function bindContinuationPolicy(input: {

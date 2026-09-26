@@ -3,7 +3,7 @@ import { bindMlxGateway } from "../../src/execution/gateway-binding";
 import { Gemma4Model } from "../../src/models/gemma4/model";
 import { Qwen35Model } from "../../src/models/qwen/qwen3_5";
 import { KVCache } from "../../src/state/kv";
-import type { MlxSerialServices } from "../../src/execution/serial-executor";
+import type { ContinuationServices } from "../../src/execution/continuation";
 
 const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false,
   kvQuant: false, turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
@@ -19,7 +19,7 @@ test(`ordinary shared continuation binds ${name} through its loaded backend`, ()
   const unconfigured = bindMlxGateway(model);
   const schedule = { continuous: true, quantizedBatch: true, checkpoints: true };
   expect(binding.plan(shape, {}, schedule).checkpoint).toBe(false);
-  binding.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as MlxSerialServices);
+  binding.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as ContinuationServices);
   expect(binding.plan(shape, {}, schedule)).toMatchObject({ mechanism: "continuous", checkpoint: true });
   const adapterShape = { ...shape, hasAdapters: true };
   expect(binding.plan(adapterShape, { adapters: ["upper"] }, schedule)).toMatchObject({

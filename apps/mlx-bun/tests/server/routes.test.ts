@@ -119,7 +119,7 @@ test("SSE closes with usage and DONE; cancelling a reader reaches its engine sig
 
 for (const stream of [false, true]) test(`unsupported execution returns JSON 501 before opening a stream (${stream})`, async () => {
   let disposed = 0;
-  const failure = new UnsupportedExecutionError("example", "denoising", ["method-requires-serial", "compiled-decode-unavailable-for-request"]);
+  const failure = new UnsupportedExecutionError("example", "denoising", ["method-batch-unsupported", "compiled-decode-unavailable-for-request"]);
   const run = harness(undefined, { place: () => { throw failure; },
     buildPrompt: async (_body, _tools, ownership) => {
       ownership.own({ dispose: () => { disposed++; } });
@@ -129,7 +129,7 @@ for (const stream of [false, true]) test(`unsupported execution returns JSON 501
   try {
     const response = (await run.routes.handle(request("/v1/chat/completions", { messages: [{ role: "user", content: "hi" }], stream })))!;
     expect(response.status).toBe(501); expect(response.headers.get("content-type")).toContain("application/json");
-    expect(await response.json()).toEqual({ error: { message: failure.message, type: "not_implemented", code: "unsupported_execution", reasons: ["method-requires-serial"] } });
+    expect(await response.json()).toEqual({ error: { message: failure.message, type: "not_implemented", code: "unsupported_execution", reasons: ["method-batch-unsupported"] } });
     expect(run.placements()).toBe(1); expect(run.seen).toHaveLength(0); expect(disposed).toBe(1);
     expect(logs).not.toHaveBeenCalled();
   } finally { logs.mockRestore(); }
@@ -199,7 +199,7 @@ test("Messages JSON and SSE use the shared engine and preserve usage and session
 
 for (const stream of [false, true]) test(`Messages capability admission precedes protocol output (${stream})`, async () => {
   let disposed = 0;
-  const failure = new UnsupportedExecutionError("example", "denoising", ["method-requires-serial"]);
+  const failure = new UnsupportedExecutionError("example", "denoising", ["method-batch-unsupported"]);
   const run = harness(undefined, { place: () => { throw failure; },
     buildPrompt: async (_body, _tools, ownership) => {
       ownership.own({ dispose: () => { disposed++; } });
@@ -209,7 +209,7 @@ for (const stream of [false, true]) test(`Messages capability admission precedes
   expect(response.status).toBe(501);
   expect(response.headers.get("content-type")).toContain("application/json");
   expect(await response.json()).toEqual({ type: "error", error: { type: "api_error", message: failure.message,
-    code: "unsupported_execution", reasons: ["method-requires-serial"] } });
+    code: "unsupported_execution", reasons: ["method-batch-unsupported"] } });
   expect(run.placements()).toBe(1); expect(run.seen).toHaveLength(0); expect(disposed).toBe(1);
 });
 
@@ -326,7 +326,7 @@ test("Responses retains completed JSON and SSE history, instructions, and cache 
 for (const stream of [false, true]) test(`Responses capability admission precedes protocol output and history (${stream})`, async () => {
   let disposed = 0;
   const history = new ResponseStore();
-  const failure = new UnsupportedExecutionError("example", "denoising", ["method-requires-serial"]);
+  const failure = new UnsupportedExecutionError("example", "denoising", ["method-batch-unsupported"]);
   const run = harness(undefined, { responseHistory: history, place: () => { throw failure; },
     buildPrompt: async (_body, _tools, ownership) => {
       ownership.own({ dispose: () => { disposed++; } });
@@ -336,7 +336,7 @@ for (const stream of [false, true]) test(`Responses capability admission precede
   expect(response.status).toBe(501);
   expect(response.headers.get("content-type")).toContain("application/json");
   expect(await response.json()).toEqual({ error: { type: "server_error", message: failure.message, param: null,
-    code: "unsupported_execution", reasons: ["method-requires-serial"] } });
+    code: "unsupported_execution", reasons: ["method-batch-unsupported"] } });
   expect(run.placements()).toBe(1); expect(run.seen).toHaveLength(0); expect(disposed).toBe(1); expect(history.size).toBe(0);
 });
 

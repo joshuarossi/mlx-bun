@@ -8,12 +8,12 @@ export function resolveExecution(
   const reasons: string[] = [];
   const sharedRequestExclusions = [
     [!capabilities.continuous, "continuous-unavailable"],
-    [request.hasVision && !capabilities.mediaBatch, "media-requires-serial"],
-    [request.hasAdapters && !capabilities.adapterBatch, "adapters-require-serial"],
-    [request.kvQuant && !capabilities.quantizedBatch, "kv-scheme-requires-serial"],
-    [request.turboQuant && !capabilities.turboQuantBatch, "turbo-kv-requires-serial"],
-    [request.hasGrammar && !capabilities.grammarBatch, "grammar-batching-disabled"],
-    [features.pagedKv && !capabilities.pagedBatch, "paged-kv-requires-serial"],
+    [request.hasVision && !capabilities.mediaBatch, "media-batch-unsupported"],
+    [request.hasAdapters && !capabilities.adapterBatch, "adapter-batch-unsupported"],
+    [request.kvQuant && !capabilities.quantizedBatch, "kv-scheme-batch-unsupported"],
+    [request.turboQuant && !capabilities.turboQuantBatch, "turbo-kv-batch-unsupported"],
+    [request.hasGrammar && !capabilities.grammarBatch, "grammar-batch-unsupported"],
+    [features.pagedKv && !capabilities.pagedBatch, "paged-kv-batch-unsupported"],
   ] as const;
   const sharedAdapterMethod = capabilities.sharedSpeculativeAdapters === true &&
     !sharedRequestExclusions.some(([excluded]) => excluded) &&
@@ -30,11 +30,11 @@ export function resolveExecution(
     (!request.turboQuant || capabilities.speculativeTurboQuant === true) && !features.pagedKv);
   const method = speculative ? "speculative" : capabilities.method;
   const continuousExclusions = [sharedRequestExclusions[0],
-    [!(capabilities.groupedMethods ?? ["autoregressive"]).includes(method), "method-requires-serial"],
+    [!(capabilities.groupedMethods ?? ["autoregressive"]).includes(method), "method-batch-unsupported"],
     ...sharedRequestExclusions.slice(1),
   ] as const;
   for (const [excluded, reason] of continuousExclusions) if (excluded) reasons.push(reason);
-  const mechanism = reasons.length ? "serial" : "continuous";
+  const mechanism = reasons.length ? "unsupported" : "continuous";
   if (request.hasDraft && !speculative) reasons.push("draft-incompatible-with-request");
   const pagedKv = features.pagedKv && !request.hasVision && !request.hasAdapters;
   if (features.pagedKv && !pagedKv) reasons.push("paged-kv-bypassed-for-media-or-adapters");
@@ -44,18 +44,16 @@ export function resolveExecution(
   const speculativeEcho = method === "speculative" && mechanism === "continuous" &&
     capabilities.sharedSpeculativeEcho === true;
   const fill = features.fill && !request.hasVision && !request.hasGrammar && !request.wantsLogprobs &&
-    (speculativeEcho || (method === "autoregressive" && (mechanism === "serial" || sharedFill) &&
-      !request.hasDraft && (!request.userSeed || sharedFill)));
+    (speculativeEcho || (method === "autoregressive" && sharedFill && !request.hasDraft));
   // Cache-format eligibility belongs to the method's append binding.
   if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
   const checkpoint = capabilities.checkpoints && method === "autoregressive" && !request.hasVision &&
-    (mechanism === "serial" || capabilities.sharedCheckpoints === true) && promptCache && !pagedKv && !request.hasGrammar &&
+    capabilities.sharedCheckpoints === true && promptCache && !pagedKv && !request.hasGrammar &&
     !features.fill && !request.wantsLogprobs;
   const compiledDecode = features.compiledDecode === true && capabilities.compiledDecode === true &&
     method === "autoregressive" && !request.hasAdapters && !pagedKv && !(sharedFill && fill);
   if (features.compiledDecode && !compiledDecode) reasons.push("compiled-decode-unavailable-for-request");
-  const grammarJump = grammarProposals || (features.grammarJump === true && request.hasGrammar &&
-    method === "autoregressive" && mechanism === "serial" && !request.wantsLogprobs);
+  const grammarJump = grammarProposals;
   if (features.grammarJump && request.hasGrammar && !grammarJump)
     reasons.push("grammar-jump-incompatible-with-request");
   return Object.freeze({ method, mechanism, pagedKv, promptCache, checkpoint, fill,

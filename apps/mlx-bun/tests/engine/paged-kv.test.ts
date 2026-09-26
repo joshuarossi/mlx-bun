@@ -47,6 +47,6 @@ test.skipIf(!other)("paged KV on a non-Gemma4 model answers the typed capability
     expect(response.status).toBe(501);
     const body = await response.json();
     expect(body.error).toMatchObject({ type: "not_implemented", code: "unsupported_execution" });
-    expect(body.error.reasons).toContain("paged-kv-requires-serial");
+    expect(body.error.reasons).toContain("paged-kv-batch-unsupported");
   } finally { try { await app?.close(); } finally { rmSync(root, { recursive: true, force: true }); } }
 }, 300_000);
