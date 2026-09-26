@@ -2,10 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fitModels } from "../examples/fit-models";
+import { listModels } from "../examples/list-models";
 
-/** A complete, tiny quantized checkpoint layout: enough for config parsing,
- *  registry scanning, and a fit estimate, with no tensor bytes that mean anything. */
+/** A complete, tiny quantized checkpoint layout: enough for registry scanning,
+ *  with no tensor bytes that mean anything. */
 function syntheticHub(): string {
   const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-example-"));
   const snapshot = join(hub, "models--example--tiny-qwen3-4bit", "snapshots", "0123abc");
@@ -23,15 +23,13 @@ function syntheticHub(): string {
   return hub;
 }
 
-test("the runnable example scans a cache, estimates fit, and releases the registry", async () => {
+test("the runnable example scans a cache, lists its models, and releases the registry", async () => {
   const hub = syntheticHub();
   try {
-    const machine = { name: "8GB", ramBytes: 8 * 2 ** 30, bandwidthGBs: 68 };
-    const reports = await fitModels(hub, 128, machine);
-    expect(reports).toHaveLength(1);
-    expect(reports[0]!.repoId).toBe("example/tiny-qwen3-4bit");
-    expect(reports[0]!.fits).toBe(true);
-    expect(reports[0]!.maxSafeContext).toBeGreaterThanOrEqual(128);
+    expect(await listModels(hub)).toEqual([{
+      repoId: "example/tiny-qwen3-4bit", modelType: "qwen3", weightsBytes: 4096, expertsBytes: 0,
+      vision: false, audio: false,
+    }]);
   } finally {
     rmSync(hub, { recursive: true, force: true });
   }

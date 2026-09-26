@@ -14,10 +14,10 @@ and optional in-process execution.
 - `packages/` — libraries you import, published under `@mlx-bun/`.
 
 [`@mlx-bun/mlx`](packages/mlx/README.md) owns the native MLX bindings.
-[`@mlx-bun/inference`](packages/inference/README.md) owns inference graphs, kernels, layers, input processing, and state.
+[`@mlx-bun/inference`](packages/inference/README.md) owns inference graphs, kernels, layers, input processing, state, and memory fit estimates.
 [`@mlx-bun/quantize`](packages/quantize/README.md) owns checkpoint quantization: calibration, sensitivity, mixed-precision allocation, rotation, and Trellis packing.
 [`@mlx-bun/training`](packages/training/README.md) owns LoRA and preference training, optimizers, losses, and adapter production.
-[`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry, Hugging Face downloads, and memory fit.
+[`@mlx-bun/hub`](packages/hub/README.md) owns the local model registry and Hugging Face downloads and uploads.
 [`mlx-bun`](apps/mlx-bun/README.md) owns the terminal app, server, and web surfaces; startup composes the migrated engine, HTTP API, and browser chat.
 The [public website](apps/website/README.md) owns user guides and build-only reference pages.
 See [the architecture](ARCHITECTURE.md) for ownership, contracts, and dependency rules.

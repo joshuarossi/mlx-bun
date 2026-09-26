@@ -46,9 +46,6 @@
     "packages/hub": {
       "name": "@mlx-bun/hub",
       "version": "0.0.0",
-      "dependencies": {
-        "@mlx-bun/inference": "workspace:*",
-      },
     },
     "packages/inference": {
       "name": "@mlx-bun/inference",

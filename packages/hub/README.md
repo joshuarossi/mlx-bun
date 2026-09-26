@@ -9,14 +9,16 @@ and fetches them.
 | `registry` | A `bun:sqlite` index over the Hugging Face cache: canonical revisions, vision/audio capability, garbage-collection plans. Reads headers, never tensor bytes, and never loads MLX. |
 | `download` | Resumable Hugging Face snapshot downloads with disk-space planning, a filename safety check, and caller-owned cancellation that keeps partials resumable. |
 | `upload` | Repository creation, preupload classification, basic LFS transfer, and NDJSON commits for model or dataset folders. Callers supply an explicit token or null. |
-| `fit` | Deterministic memory estimates: weights, KV bytes per token, prefill transients, and this machine's RAM and wired ceiling. |
 
-It does not own model loading, serving, application credential storage, or any
-HTTP route. Those consume it.
+It does not own model loading, memory estimates, serving, application credential
+storage, or any HTTP route. Those consume it; fit estimates live in
+[`@mlx-bun/inference/execution/fit`](../inference/README.md#optional-execution-and-persistence),
+which takes the registry's language-weight and expert bytes as inputs.
+The package has no workspace dependencies and never loads MLX.
 
-See the runnable [fit example](examples/fit-models.ts). It scans a cache, loads each
-model's configuration, estimates fit for a context length, and closes the registry.
-`bun packages/hub/examples/fit-models.ts [hub-directory] [context-tokens]` runs it
+See the runnable [listing example](examples/list-models.ts). It scans a cache, lists
+each model's type, weight and expert bytes, and vision and audio capability, and
+closes the registry. `bun packages/hub/examples/list-models.ts [hub-directory]` runs it
 against your own Hugging Face cache; the package test runs it against a synthetic one.
 
 Downloads read `HF_TOKEN` or `~/.cache/huggingface/token` for gated repos.

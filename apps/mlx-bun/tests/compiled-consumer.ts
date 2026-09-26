@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
-import { fit } from "@mlx-bun/hub/fit";
+import { fit } from "@mlx-bun/inference/execution/fit";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { resolveLibmlxc } from "../../../packages/mlx/src/native";
 import { EXPERT_IO_LIBRARY, FRAME_EXTRACT_BINARY, resolveInferenceNative } from "../../../packages/inference/src/runtime/native";

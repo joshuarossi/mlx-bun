@@ -1,5 +1,6 @@
 import { Registry } from "@mlx-bun/hub/registry";
-import { fit, skuMatrix, thisMachine, type FitKvScheme } from "@mlx-bun/hub/fit";
+import { fit, skuMatrix, thisMachine } from "@mlx-bun/inference/execution/fit";
+import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { isGlm52Config } from "@mlx-bun/inference/models/support";
@@ -295,7 +296,7 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
         // --kv-quant mirrors serve: bill the quantized cache's true bytes so
         // the reported window matches what serving with the same flag admits.
         const kvQuantOpt = opt("kv-quant");
-        let fitKvScheme: FitKvScheme | undefined;
+        let fitKvScheme: KvSchemeOptions | undefined;
         if (kvQuantOpt === "4" || kvQuantOpt === "8") {
           fitKvScheme = resolveKvScheme({ override: Number(kvQuantOpt) }).fitOptions;
         } else if (kvQuantOpt === "config") {

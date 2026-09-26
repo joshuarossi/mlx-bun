@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { fit, skuMatrix } from "@mlx-bun/hub/fit";
+import { fit, skuMatrix } from "@mlx-bun/inference/execution/fit";
 import { KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { createStatusRoutes } from "../../src/server/status-routes";

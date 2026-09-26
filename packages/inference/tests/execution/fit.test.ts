@@ -1,67 +1,48 @@
-// Registry + fit unit tests (fast tier — synthetic hub dir, in-memory db).
+// Fit estimate unit tests (fast tier — synthetic geometries, no weights).
 
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Registry } from "../src/registry";
-import { fit, kvBytesAt, skuMatrix } from "../src/fit";
-import type { ModelConfig } from "@mlx-bun/inference/artifacts";
+import { fitModel } from "../../examples/fit-model";
+import type { ModelConfig } from "../../src/artifacts/config";
+import { fit, skuMatrix } from "../../src/execution/fit";
+import { kvBytesAt } from "../../src/state/kv-scheme";
 
-function makeHub(): string {
-  const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-"));
-  const snap = join(hub, "models--test--tiny-4bit", "snapshots", "abc123");
-  mkdirSync(snap, { recursive: true });
-  writeFileSync(join(snap, "config.json"), JSON.stringify({
-    model_type: "gemma4_unified",
-    quantization: { bits: 4, group_size: 64, mode: "affine" },
-    text_config: { num_hidden_layers: 4, hidden_size: 256, vocab_size: 1000 },
-  }));
-  writeFileSync(join(snap, "model.safetensors"), new Uint8Array(1024));
-  writeFileSync(join(snap, "model.safetensors.index.json"), JSON.stringify({
-    metadata: { total_parameters: 123456789 },
-    weight_map: {},
-  }));
-  writeFileSync(join(snap, "optiq_vision.safetensors"), new Uint8Array(64));
-  writeFileSync(join(snap, "chat_template.jinja"), "{{ '<|tool_call>' }}");
-  writeFileSync(join(snap, "README.md"), "---\nlibrary_name: mlx\nlicense: gemma\n---\n# card\n");
-
-  const snap2 = join(hub, "models--test--big-bf16", "snapshots", "def456");
-  mkdirSync(snap2, { recursive: true });
-  writeFileSync(join(snap2, "config.json"), JSON.stringify({
-    model_type: "llama", num_hidden_layers: 2, hidden_size: 64, vocab_size: 100,
-  }));
-  writeFileSync(join(snap2, "model.safetensors"), new Uint8Array(4096));
-  return hub;
+async function importsWithoutMlx(specifier: string): Promise<number> {
+  const child = Bun.spawn([process.execPath, "-e", `await import(${JSON.stringify(specifier)})`], {
+    cwd: join(import.meta.dir, "../.."), env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
+    stdout: "ignore", stderr: "pipe",
+  });
+  await new Response(child.stderr).text();
+  return child.exited;
 }
 
-describe("Registry", () => {
-  test("scan indexes snapshots with capabilities", async () => {
-    const hub = makeHub();
-    const reg = new Registry(":memory:");
-    expect(await reg.scan(hub)).toBe(2);
+test("the fit entry and its example import without loading MLX", async () => {
+  expect(await importsWithoutMlx("@mlx-bun/inference/execution/fit")).toBe(0);
+  expect(await importsWithoutMlx("./examples/fit-model.ts")).toBe(0);
+  expect(await importsWithoutMlx("@mlx-bun/inference/execution")).not.toBe(0);
+});
 
-    const all = reg.list();
-    expect(all).toHaveLength(2);
-
-    const vision = reg.list({ vision: true });
-    expect(vision).toHaveLength(1);
-    expect(vision[0]!.repoId).toBe("test/tiny-4bit");
-    expect(vision[0]!.quantBits).toBe(4);
-    expect(vision[0]!.paramCount).toBe(123456789);
-    expect(vision[0]!.hasToolTemplate).toBe(true);
-    expect(vision[0]!.hasKvConfig).toBe(false);
-    expect(vision[0]!.license).toBe("gemma"); // model-card frontmatter
-    expect(reg.resolve("big").license).toBeNull(); // no README
-
-    const small = reg.list({ maxBytes: 2048 });
-    expect(small.map((m) => m.repoId)).toEqual(["test/tiny-4bit"]);
-
-    expect(reg.resolve("big").repoId).toBe("test/big-bf16");
-    expect(() => reg.resolve("test")).toThrow(/ambiguous/);
-    expect(() => reg.resolve("nope")).toThrow(/no model/);
-    rmSync(hub, { recursive: true, force: true });
-  });
+test("the runnable example bills every safetensors file in a checkpoint directory", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-bun-fit-example-"));
+  try {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({
+      model_type: "qwen3", hidden_size: 64, num_hidden_layers: 1, num_attention_heads: 2,
+      num_key_value_heads: 1, head_dim: 32, intermediate_size: 64, vocab_size: 64,
+      rms_norm_eps: 1e-6, max_position_embeddings: 128, tie_word_embeddings: true,
+      quantization: { group_size: 64, bits: 4 },
+    }));
+    writeFileSync(join(dir, "model.safetensors"), new Uint8Array(4096));
+    writeFileSync(join(dir, "optiq_vision.safetensors"), new Uint8Array(64));
+    const machine = { name: "8GB", ramBytes: 8 * 2 ** 30, bandwidthGBs: 68 };
+    const report = await fitModel(dir, 128, machine);
+    expect(report.weightsBytes).toBe(4160);
+    expect(report.fits).toBe(true);
+    expect(report.maxSafeContext).toBe(128);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe("fit", () => {

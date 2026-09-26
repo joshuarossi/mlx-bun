@@ -10,7 +10,14 @@ import {
   readlinkSync, readSync, rmSync, statSync,
 } from "node:fs";
 import { join } from "node:path";
-import { isDrafterModelType } from "@mlx-bun/inference/models/support";
+
+/** Speculative-decoding drafters declare themselves in config.json with a
+ *  `model_type` ending in `_assistant` (`gemma4_assistant`,
+ *  `gemma4_unified_assistant`). They are companion artifacts loaded by
+ *  explicit path, never selectable on their own. */
+function isDrafterArtifact(modelType: string): boolean {
+  return modelType.endsWith("_assistant");
+}
 
 export interface ModelRecord {
   path: string;
@@ -209,7 +216,7 @@ export class Registry {
    *  Speculative-decoding drafters are companion artifacts, never selectable on
    *  their own, so they never count as candidates here. */
   resolve(query: string): ModelRecord {
-    const matches = this.list({ query }).filter((m) => !isDrafterModelType(m.modelType));
+    const matches = this.list({ query }).filter((m) => !isDrafterArtifact(m.modelType));
     if (matches.length === 0) throw new Error(`no model matching "${query}" — run \`mlx-bun scan\``);
     // The HF cache can hold several revisions of one repo (snapshots/<hash>
     // dirs), each a registry row. Resolving a repo name must not be "ambiguous"

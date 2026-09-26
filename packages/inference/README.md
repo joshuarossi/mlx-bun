@@ -451,6 +451,15 @@ It opens no network listener. `createAutoregressiveMethod`,
 when a consumer needs sessions. `MlxBatchExecutionGroup` owns batched rows;
 `ExecutionCoordinator` and `driveExecutionGroup` coordinate its work.
 
+`execution/fit` estimates whether a model fits a machine at a context length:
+resident weights (bytes the caller supplies, such as a registry's), KV bytes from
+`state/kv-scheme`, and the prefill transient, against RAM × `WIRED_FRACTION` or an
+explicit budget. `fit` also solves the maximum safe context and predicts decode
+tokens per second from memory bandwidth; `skuMatrix` repeats it across Apple Silicon
+configurations. Estimates are advisory, and the entry imports without MLX. See the
+runnable [fit example](examples/fit-model.ts):
+`bun packages/inference/examples/fit-model.ts <checkpoint-directory> [context-tokens]`.
+
 `state` exposes `SsdCacheStore`, `TieredPromptCache`, and
 `SsdDurabilityCoordinator` for caller-configured persistence. Execution continuation
 helpers retain the existing sampler, pending-token, adapter, and cache identities

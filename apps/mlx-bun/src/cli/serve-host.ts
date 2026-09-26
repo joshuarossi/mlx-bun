@@ -4,7 +4,7 @@
 // AppState it is given and returns one close that releases everything it
 // created in the app's order.
 import { requireChatTemplate } from "../engine/model-host";
-import { fit } from "@mlx-bun/hub/fit";
+import { fit } from "@mlx-bun/inference/execution/fit";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { TranscriptionService } from "../engine/transcription-service";
 import { defaultWhisperModel } from "./model-selection";

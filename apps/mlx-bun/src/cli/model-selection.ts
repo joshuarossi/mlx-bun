@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Registry, scanSnapshot, type ModelRecord } from "@mlx-bun/hub/registry";
 import { downloadModel } from "@mlx-bun/hub/download";
-import { fit, thisMachine, type MachineSpec } from "@mlx-bun/hub/fit";
+import { fit, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 

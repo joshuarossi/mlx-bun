@@ -8,10 +8,10 @@ inference entry composes lower layers; public component subpaths let you use
 kernels, layers, graphs, state, and generation independently.
 
 - [MLX bindings](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/mlx/README.md): arrays, operations, native resource ownership.
-- [Inference](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/inference/README.md): graphs, loading, preprocessing, generation, and reusable execution.
+- [Inference](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/inference/README.md): graphs, loading, preprocessing, generation, reusable execution, and memory fit estimates.
 - [Quantization](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/quantize/README.md): checkpoint conversion and allocation.
 - [Training](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/training/README.md): adapter training and production.
-- [Hub](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/hub/README.md): model acquisition, discovery, and fit.
+- [Hub](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/hub/README.md): model acquisition and discovery.
 
 Start from the tested [array example](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/mlx/examples/arrays.ts)
 or [Qwen generation example](https://github.com/joshuarossi/mlx-bun/blob/refactor/monorepo/packages/inference/examples/qwen3-generate.ts).

@@ -1,5 +1,5 @@
 import { hfToken } from "@mlx-bun/hub/download";
-import { fit } from "@mlx-bun/hub/fit";
+import { fit } from "@mlx-bun/inference/execution/fit";
 import { Registry, visionCapable, type ModelRecord } from "@mlx-bun/hub/registry";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { supportTier } from "@mlx-bun/inference/models/support";

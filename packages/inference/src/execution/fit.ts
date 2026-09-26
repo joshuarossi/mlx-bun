@@ -9,17 +9,9 @@
 // (see PLAN.md baselines; eval DB validates predictions against peaks).
 
 import { totalmem } from "node:os";
-import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
-import type { MemoryPlan } from "@mlx-bun/inference/contracts/portable";
-import {
-  kvBytesAt,
-  kvQuantBytesPerElement,
-  sdpaFallbackBytes,
-  type KvSchemeOptions,
-} from "@mlx-bun/inference/state/kv-scheme";
-
-export { kvBytesAt, kvQuantBytesPerElement, sdpaFallbackBytes } from "@mlx-bun/inference/state/kv-scheme";
-export type FitKvScheme = KvSchemeOptions;
+import type { ModelConfig } from "../artifacts/config";
+import type { MemoryPlan } from "../contracts/portable/memory-plan";
+import { kvBytesAt, sdpaFallbackBytes, type KvSchemeOptions } from "../state/kv-scheme";
 
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
  *  reference machine (24.9 tok/s vs 30.3 ceiling @600 ctx). */
@@ -103,7 +95,7 @@ export function fit(
   usableBytes?: number,
   /** Active KV-quant scheme; a quantized cache holds more context in the
    *  same budget, so the solved ceiling (and admission) must bill it. */
-  kvScheme?: FitKvScheme,
+  kvScheme?: KvSchemeOptions,
 ): FitReport {
   const usable = usableBytes ?? machine.ramBytes * WIRED_FRACTION;
   // Prefill transient = the calibrated per-chunk-token constant + the
@@ -170,7 +162,7 @@ export function fit(
 /** The SKU matrix: which Apple Silicon configs run this model at `ctx`. */
 export function skuMatrix(
   config: ModelConfig, weightsBytes: number, ctx: number, expertsBytes = 0,
-  kvScheme?: FitKvScheme,
+  kvScheme?: KvSchemeOptions,
 ): { sku: string; ramGB: number; fits: boolean; maxContext: number; decodeTps: number }[] {
   const rows: ReturnType<typeof skuMatrix> = [];
   for (const sku of APPLE_SKUS) {
