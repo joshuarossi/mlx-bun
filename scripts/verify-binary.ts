@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { buildBinary, bundleNotices, compileApp } from "./build-binary";
+import { buildBinary, bundleNotices, compileApp, compileBundle } from "./build-binary";
 import { archiveCommand } from "./bundle-files";
 import { NATIVE_DIR as MLX_DIR, resolveLibmlxc } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, resolveInferenceNative } from "../packages/inference/src/runtime/native";
@@ -99,7 +99,7 @@ async function checkNotices(directory: string, label: string, sections: string[]
   const titles = sections.map(section => section.slice(2, section.indexOf("\n")));
   sections.forEach((section, index) =>
     assert(notices.includes(section), `${label} bundle must retain the complete ${titles[index]} notice`));
-  console.log(`${label} bundle notices: ${titles.join(", ")}.`);
+  console.log(`${label} bundle notices: all ${sections.length} sections retained.`);
 }
 
 /** CPU acceptance of a bundle archive, shared by `verify:binary` and release
@@ -110,9 +110,10 @@ async function checkNotices(directory: string, label: string, sections: string[]
  * upgrades once. Never writes to the archive's source bundle or the real home.
  * `model` additionally runs real GPU inference through the relocated server. */
 export async function verifyBundle({ archive, version, model }: { archive: string; version: string; model?: string }) {
-  const sections = await bundleNotices();
   const temporary = await mkdtemp(join(tmpdir(), "mlx-bundle-"));
   try {
+    // Expected notices come from a fresh real build of this workspace.
+    const sections = await bundleNotices(await compileBundle(join(temporary, "notice-build")));
     const override = process.env.MLX_BUN_LIBMLXC;
     try {
       delete process.env.MLX_BUN_LIBMLXC;
