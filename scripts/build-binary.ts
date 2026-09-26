@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
 import { buildWebBundle, OUTFILE } from "../apps/mlx-bun/src/web/build";
+import { BUNDLE_FILES } from "./bundle-files";
 
 import { MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY } from "../apps/mlx-bun/src/engine/mic-capture";
 
@@ -51,6 +52,9 @@ export async function buildBinary(output = join(root, "dist/bundle")): Promise<s
   await compileApp(join(app, "src/cli/main.ts"), executable);
   for (const [source, name] of copies) await copyFile(source, join(out, name));
   await Bun.write(join(out, "THIRD_PARTY_NOTICES.md"), notices.join("\n\n---\n\n"));
+  for (const file of BUNDLE_FILES) {
+    if (!(await stat(join(out, file))).size) throw new Error(`Empty bundle asset: ${file}`);
+  }
   return executable;
 }
 
