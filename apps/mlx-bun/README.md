@@ -211,11 +211,12 @@ unchanged.
 
 **Jobs, invalidation, GC.** A managed job's execution lease covers every
 resident worker (one `/admin/lease` connection per worker) until the job's child
-exits and its logs drain; a worker that becomes ready while a job holds leases
-takes one before it is routable, and a lease taken while a victim is draining
-waits for that worker to stop. A finished download or job refreshes every
+exits and its logs drain. Admission joins already-started loads and draining
+evictions before leasing the resident workers; cold starts wait until all job
+leases release, so model loading never overlaps a job's GPU use. Cancellation
+and shutdown abort admission waits. A finished download or job refreshes every
 serving worker's library and forgets resolution misses. Hub GC refuses to prune
-the snapshot of any resident or loading model.
+the snapshot of any resident, queued/loading, or still-draining model.
 
 **Reporting.** `GET /engine` gains `pool: { cap, default, resident: [{ id, pid,
 state, restarts, socket }], loading: [ids] }` (residents least recently used

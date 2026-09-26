@@ -157,7 +157,7 @@ test("cold starts run one at a time while the serving worker keeps answering; a 
   } finally { await pool.close(); fake.remove(); }
 });
 
-test("a managed job's lease spans every resident worker until disposed, a worker that becomes ready mid-job leases before it serves, and a draining eviction finishes first", async () => {
+test("a managed job leases every resident worker, holds back cold starts and respawns until disposal, and joins draining evictions first", async () => {
   const fake = fixture(3, { restarts: { max: 3, windowMs: 60_000, delayMs: 50 } });
   const { pool } = fake;
   try {
@@ -165,15 +165,19 @@ test("a managed job's lease spans every resident worker until disposed, a worker
     const b = await pool.workerFor("org/b");
     const lease = await pool.acquireExecutionLease(new AbortController().signal);
     expect([(await fake.health(a)).leases, (await fake.health(b)).leases]).toEqual([1, 1]);
-    // A worker spawned during the job holds the lease as soon as it is ready.
-    const c = await pool.workerFor("org/c");
-    expect((await fake.health(c)).leases).toBe(1);
+    // A cold start would touch the GPU while loading: it must not spawn at all.
+    const pendingC = pool.workerFor("org/c");
+    await Bun.sleep(50);
+    expect(pool.worker("org/c")).toBeUndefined();
+    expect(pool.servedPaths()).toContain("/models/org/c");
+    expect(fake.timeline().some(item => item.model === "org/c")).toBe(false);
     // A crashed worker's respawn waits for the job's release, as with one worker.
     process.kill(b.pid!, "SIGKILL");
     await until(() => b.state === "restarting", "the exit");
     await Bun.sleep(150);
     expect([b.state, b.pid]).toEqual(["restarting", null]);
     lease.dispose(); lease.dispose();
+    const c = await pendingC;
     await until(() => b.state === "ready", "the respawn after release");
     await until(async () => (await fake.health(a)).leases === 0 && (await fake.health(b)).leases === 0 && (await fake.health(c)).leases === 0, "every lease released");
     // A lease abandoned while a worker is down holds nothing anywhere.
@@ -231,4 +235,148 @@ test("close joins resident, loading, and evicting workers, refuses later routing
     expect(switching.errors.filter(line => line.startsWith("org/b:"))).toEqual(["org/b: drain requested", "org/b: stopping"]);
     expect(switching.sockets()).toEqual([]);
   } finally { await switching.pool.close(); switching.remove(); }
+});
+
+// Deferred supervisors make load, lease, and drain boundaries deterministic.
+// The socket tests above separately exercise the real supervisor protocol.
+function controlledPool(cap = 2) {
+  const workers = new Map<string, ReturnType<typeof controlledWorker>>();
+  const pool = createWorkerPool({ cap, defaultModel: record("org/a"), resolve: id => record(id),
+    socketFor: index => `/fake/worker-${index}.sock`, notice() {},
+    supervise(model, socketPath) { const worker = controlledWorker(model.repoId, socketPath); workers.set(model.repoId, worker); return worker.engine; } });
+  return { pool, workers };
+}
+function controlledWorker(modelId: string, socketPath: string) {
+  const ready = Promise.withResolvers<{ socketPath: string; modelId: string }>();
+  const stopped = Promise.withResolvers<void>();
+  const lease = Promise.withResolvers<{ dispose(): void }>();
+  let state: WorkerSupervisor["state"] = "starting", closeStarted = false, leases = 0, releases = 0;
+  let deferClose = false, deferLease = false;
+  const engine: WorkerSupervisor = {
+    get state() { return state; }, pid: 1, socketPath, modelId, restarts: 0, lastExit: null,
+    budget: { max: 2, windowMs: 60_000 }, ready: ready.promise,
+    whenReady: async () => { await ready.promise; }, fetch: async () => new Response("{}"), drain: async () => {},
+    acquireExecutionLease: async () => { leases++; return deferLease ? lease.promise : { dispose() { releases++; } }; },
+    close() { closeStarted = true; state = "closed"; ready.reject(new EngineUnavailableError("closed", null)); if (!deferClose) stopped.resolve(); return stopped.promise; },
+  };
+  return { engine, get closeStarted() { return closeStarted; }, get leases() { return leases; }, get releases() { return releases; },
+    load() { state = "ready"; ready.resolve({ modelId, socketPath }); },
+    holdClose() { deferClose = true; }, stop: () => stopped.resolve(),
+    holdLease() { deferLease = true; }, releaseLease() { lease.resolve({ dispose() { releases++; } }); },
+    failLease(error: Error) { lease.reject(error); } };
+}
+
+const turn = () => Bun.sleep(0);
+
+test("job admission joins the active load, covers it, and leaves queued cold starts blocked until disposal", async () => {
+  const { pool, workers } = controlledPool(3);
+  try {
+    workers.get("org/a")!.load(); await pool.ready; await turn();
+    const loadingB = pool.workerFor("org/b");
+    const loadingC = pool.workerFor("org/c");
+    let admitted = false;
+    const pendingLease = pool.acquireExecutionLease(new AbortController().signal).then(lease => { admitted = true; return lease; });
+    await turn();
+    expect(admitted).toBe(false);
+    expect(workers.get("org/c")).toBeUndefined();
+    workers.get("org/b")!.load(); await loadingB;
+    const lease = await pendingLease;
+    expect([workers.get("org/a")!.leases, workers.get("org/b")!.leases]).toEqual([1, 1]);
+    expect(workers.get("org/c")).toBeUndefined();
+    lease.dispose();
+    await turn();
+    workers.get("org/c")!.load(); await loadingC;
+    expect([workers.get("org/a")!.releases, workers.get("org/b")!.releases]).toEqual([1, 1]);
+  } finally { await pool.close(); }
+});
+
+test("GC retains an evicting snapshot until drain ends, and job cancellation does not wait for that drain", async () => {
+  const { pool, workers } = controlledPool(1);
+  const a = workers.get("org/a")!;
+  try {
+    a.load(); await pool.ready; await turn(); a.holdClose();
+    const loading = pool.workerFor("org/b"); workers.get("org/b")!.load(); await loading;
+    expect(a.closeStarted).toBe(true);
+    expect(pool.servedPaths().sort()).toEqual(["/models/org/a", "/models/org/b"]);
+    const controller = new AbortController();
+    const lease = rejection(pool.acquireExecutionLease(controller.signal));
+    controller.abort(new Error("cancelled while draining"));
+    expect((await lease as Error).message).toBe("cancelled while draining");
+    a.stop(); await turn();
+    expect(pool.servedPaths()).toEqual(["/models/org/b"]);
+  } finally { a.stop(); await pool.close(); }
+});
+
+test("failed pool lease admission releases the other workers and unblocks cold starts", async () => {
+  const { pool, workers } = controlledPool(3);
+  try {
+    workers.get("org/a")!.load(); await pool.ready; await turn();
+    const loading = pool.workerFor("org/b"); workers.get("org/b")!.load(); await loading;
+    workers.get("org/b")!.holdLease();
+    const lease = rejection(pool.acquireExecutionLease(new AbortController().signal));
+    await turn();
+    const next = pool.workerFor("org/c");
+    expect(workers.get("org/c")).toBeUndefined();
+    workers.get("org/b")!.failLease(new Error("worker lease failed"));
+    expect((await lease as Error).message).toBe("worker lease failed");
+    await turn();
+    expect(workers.get("org/a")!.releases).toBe(1);
+    workers.get("org/c")!.load(); await next;
+  } finally { await pool.close(); }
+});
+
+test("closing aborts pending pool admission and cold starts without resurrecting workers; late leases are disposed", async () => {
+  const { pool, workers } = controlledPool();
+  const a = workers.get("org/a")!;
+  try {
+    a.load(); await pool.ready; await turn(); a.holdLease();
+    const lease = rejection(pool.acquireExecutionLease(new AbortController().signal));
+    await turn();
+    const cold = rejection(pool.workerFor("org/b"));
+    await pool.close();
+    expect(await lease).toBeInstanceOf(EngineUnavailableError);
+    expect(await cold).toBeInstanceOf(EngineUnavailableError);
+    a.releaseLease(); await turn();
+    expect(a.releases).toBe(1);
+    expect(workers.size).toBe(1);
+    expect(pool.report()).toEqual({ cap: 2, default: "org/a", resident: [], loading: [] });
+    await expect(pool.acquireExecutionLease(new AbortController().signal)).rejects.toBeInstanceOf(EngineUnavailableError);
+  } finally { a.releaseLease(); await pool.close(); }
+});
+
+test("concurrent jobs cannot split ownership of workers and deadlock when their lease requests arrive in a different order", async () => {
+  const { pool, workers } = controlledPool();
+  const firstArrival = Promise.withResolvers<void>();
+  const granted: string[] = [];
+  // Each worker's execution lock is exclusive. Delay only the first request
+  // to A, emulating independent socket delivery order across the workers.
+  const mutex = (id: string) => {
+    let tail = Promise.resolve(), calls = 0;
+    return async () => {
+      const call = ++calls;
+      if (id === "a" && call === 1) await firstArrival.promise;
+      const previous = tail, done = Promise.withResolvers<void>();
+      tail = done.promise;
+      await previous;
+      granted.push(`${id}${call}`);
+      return { dispose: () => done.resolve() };
+    };
+  };
+  try {
+    workers.get("org/a")!.load(); await pool.ready; await turn();
+    const loading = pool.workerFor("org/b"); workers.get("org/b")!.load(); await loading; await turn();
+    workers.get("org/a")!.engine.acquireExecutionLease = mutex("a");
+    workers.get("org/b")!.engine.acquireExecutionLease = mutex("b");
+    const first = pool.acquireExecutionLease(new AbortController().signal);
+    void first.catch(() => {});
+    // Change LRU between callers: lock order must not follow usage order.
+    await pool.workerFor("org/a");
+    const second = pool.acquireExecutionLease(new AbortController().signal);
+    void second.catch(() => {});
+    await turn();
+    expect(granted).toEqual(["a2", "b1"]);
+    (await second).dispose();
+    firstArrival.resolve();
+    (await first).dispose();
+  } finally { firstArrival.resolve(); await pool.close(); }
 });

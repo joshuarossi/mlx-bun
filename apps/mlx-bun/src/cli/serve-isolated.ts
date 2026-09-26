@@ -125,7 +125,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ pool: workers, responses, downloads: () => state.downloads.snapshot(), modelId, startedAt: Date.now() });
     // Tool-approval settings and hub GC are CPU work over the parent's own
-    // files; GC still protects every snapshot a resident or loading worker serves.
+    // files; GC protects resident, queued/loading, and still-draining snapshots.
     const management = createManagementRoutes({ invalidateLibrary: proxy.invalidateLibrary,
       toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: () => workers.servedPaths() });
     const persistent = state.routes;

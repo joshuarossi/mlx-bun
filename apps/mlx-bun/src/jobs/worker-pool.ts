@@ -7,8 +7,8 @@
 // stopped through its own close (the worker demotes its prompt cache there),
 // and naming it again respawns it. Anything else — empty, an alias, a fuzzy
 // or unknown id — rides the default worker, mlx-lm's ignored-field semantics.
-// Managed jobs lease every resident worker; a worker that becomes ready while
-// a job holds leases takes one before it is routable.
+// Managed jobs wait for an active load/eviction, then lease every resident
+// worker. Cold starts wait until those leases have been released.
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { EngineUnavailableError, type WorkerSupervisor, type WorkerSupervisorState } from "./worker-supervisor";
@@ -58,12 +58,12 @@ export interface WorkerPool {
    * use; anything else the default worker, respawned when it was evicted. The
    * signal abandons the wait, not the load. */
   workerFor(modelField: string | null | undefined, signal?: AbortSignal): Promise<WorkerSupervisor>;
-  /** Snapshot paths GC must keep: every resident or loading model. */
+  /** Snapshot paths GC must keep: every resident, queued/loading, or draining model. */
   servedPaths(): string[];
   /** A finished download or job: refresh every serving worker's library and forget resolution misses. */
   invalidateLibrary(): void;
-  /** A managed job's lease over every resident worker, held until disposed and
-   * extended to a worker that becomes ready meanwhile; a draining eviction finishes first. */
+  /** Wait for active loads and draining evictions, then lease every resident
+   * worker. New cold starts wait until all acquired leases are disposed. */
   acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
   report(): PoolReport;
   /** Stop every worker (resident, loading, evicting) and join. Idempotent. */
@@ -84,10 +84,15 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
   let lru: string[] = []; // least recently used first
   const loading = new Map<string, Promise<Entry>>();
   const loadingEntries = new Map<string, Entry>();
+  const loadingModels = new Map<string, { model: ModelRecord; promise: Promise<Entry> }>();
   const evicting = new Set<Promise<void>>();
+  const draining = new Set<Entry>();
   const resolutions = new Map<string, ModelRecord | null>();
   const holders = new Set<Holder>();
   let spawned = 0, closed = false;
+  const shutdown = new AbortController();
+  let jobsReleased = Promise.withResolvers<void>();
+  let activeStart: Promise<void> | undefined;
 
   // Cold starts run one at a time. The slot is held through the eviction a
   // start causes, so the next load begins after the evicted worker has stopped.
@@ -117,9 +122,10 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
       notice(`evicting ${victimId} (pool cap ${cap}): draining, then stopping`);
       // The supervisor's close is the drain-then-stop path; the worker's own
       // close demotes its prompt cache before the process exits.
+      draining.add(victim);
       const done: Promise<void> = victim.engine.close()
         .catch(error => notice(`${victimId} did not stop cleanly: ${describe(error)}`))
-        .finally(() => evicting.delete(done));
+        .finally(() => { evicting.delete(done); draining.delete(victim); });
       evicting.add(done);
       work.push(done);
     }
@@ -129,19 +135,24 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
   const start = (id: string, model: ModelRecord, initial = false): Promise<Entry> => {
     const settled = Promise.withResolvers<Entry>();
     loading.set(id, settled.promise);
+    loadingModels.set(id, { model, promise: settled.promise });
     void settled.promise.catch(() => {});
     serialize(async () => {
       let entry: Entry | undefined;
+      let finished: ReturnType<typeof Promise.withResolvers<void>> | undefined;
       try {
+        // Register a load only after jobs release. A job arriving during a load
+        // waits for this load (including eviction), never for queued cold starts.
+        while (holders.size) await settle(jobsReleased.promise, shutdown.signal);
         if (closed) throw new EngineUnavailableError("closed", null);
+        finished = Promise.withResolvers<void>();
+        activeStart = finished.promise;
         const socketPath = options.socketFor(spawned++);
         if (!initial) notice(`loading ${id} on a new worker (socket ${socketPath})`);
         entry = { id, model, engine: options.supervise(model, socketPath), socketPath };
         loadingEntries.set(id, entry);
         await entry.engine.ready;
         if (closed) throw new EngineUnavailableError("closed", null);
-        // A job in progress owns the GPU: the new worker leases before it routes.
-        await Promise.allSettled([...holders].map(holder => holder.cover(entry!)));
         resident.set(id, entry);
         bump(id);
         loading.delete(id);
@@ -156,6 +167,10 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
         if (!initial) notice(`${id} did not load: ${describe(error)}`);
         settled.reject(error);
         if (entry) await entry.engine.close().catch(() => {});
+      } finally {
+        loadingEntries.delete(id);
+        if (loadingModels.get(id)?.promise === settled.promise) loadingModels.delete(id);
+        if (finished) { activeStart = undefined; finished.resolve(); }
       }
     });
     return settled.promise;
@@ -191,25 +206,36 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
   };
 
   const acquireExecutionLease = async (signal: AbortSignal): Promise<DisposableResource> => {
-    signal.throwIfAborted();
-    // A worker being evicted may still be finishing a generation: it stops first.
-    while (evicting.size) await Promise.allSettled([...evicting]);
+    signal = AbortSignal.any([signal, shutdown.signal]);
     signal.throwIfAborted();
     const holder: Holder = { disposed: false, leases: new Map(), cover(entry) {
       if (holder.disposed || holder.leases.has(entry)) return Promise.resolve();
       const lease = entry.engine.acquireExecutionLease(signal);
       holder.leases.set(entry, lease);
-      return lease.then(value => { if (holder.disposed) value.dispose(); }, error => { holder.leases.delete(entry); throw error; });
+      return lease.then(() => {}, error => { holder.leases.delete(entry); throw error; });
     } };
+    // Admission is synchronous: no new load can slip between draining the
+    // existing work and acquiring worker leases.
+    if (!holders.size) jobsReleased = Promise.withResolvers<void>();
     holders.add(holder);
     const dispose = () => {
       if (holder.disposed) return;
       holder.disposed = true;
       holders.delete(holder);
       for (const lease of holder.leases.values()) lease.then(value => value.dispose(), () => {});
+      if (!holders.size) jobsReleased.resolve();
     };
-    try { await Promise.all([...resident.values()].map(entry => holder.cover(entry))); }
-    catch (error) { dispose(); throw error; }
+    try {
+      if (activeStart) await settle(activeStart, signal);
+      if (evicting.size) await settle(Promise.allSettled([...evicting]), signal);
+      signal.throwIfAborted();
+      // Stable order prevents concurrent jobs from holding different workers
+      // while each waits for the other (the worker lease is exclusive).
+      for (const entry of [...resident.values()].sort((a, b) => a.id.localeCompare(b.id))) {
+        await settle(holder.cover(entry), signal);
+      }
+      signal.throwIfAborted();
+    } catch (error) { dispose(); throw error; }
     return { dispose };
   };
 
@@ -236,10 +262,11 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
     closed = true;
+    shutdown.abort(new EngineUnavailableError("closed", null));
     const entries = [...resident.values(), ...loadingEntries.values()];
     resident.clear();
     lru = [];
-    await Promise.allSettled([...entries.map(entry => entry.engine.close()), ...evicting, ...loading.values()]);
+    await Promise.allSettled([...entries.map(entry => entry.engine.close()), ...evicting, ...loading.values(), ...(activeStart ? [activeStart] : [])]);
     // A start still queued behind the slot rejects itself on its turn.
     while (loading.size) await Promise.allSettled([...loading.values()]);
   })();
@@ -254,7 +281,7 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
       return resident.get(defaultId)?.engine ?? loadingEntries.get(defaultId)?.engine ?? (recent === undefined ? undefined : resident.get(recent)!.engine);
     },
     workerFor,
-    servedPaths: () => [...new Set([...resident.values(), ...loadingEntries.values()].map(entry => entry.model.path))],
+    servedPaths: () => [...new Set([...resident.values(), ...draining].map(entry => entry.model.path).concat([...loadingModels.values()].map(({ model }) => model.path)))],
     invalidateLibrary, acquireExecutionLease, report, close,
   };
 }
