@@ -10,7 +10,7 @@
 import type { CommandArgs } from "./args";
 import { help } from "./args";
 import { box, renderHelp, style } from "./terminal";
-import { configureMemoryCompletionClient } from "../memory/model";
+import type { MemoryCompletionClient } from "../memory/model";
 import type { SynthesisEvent } from "../memory/events";
 import { createLoopbackMemoryClient } from "../server/memory-completion-client";
 import {
@@ -66,10 +66,9 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
   };
   const onEvent = (e: SynthesisEvent) => deps.log(e.type === "stage" ? `  ${style.dim("·")} ${e.message}` : `  ${e.message}`);
   /** The model-driven subcommands run their calls through the serving mlx-bun. */
-  const withServer = async <T>(work: () => Promise<T>): Promise<T> => {
+  const withServer = async <T>(work: (client: MemoryCompletionClient) => Promise<T>): Promise<T> => {
     const url = serverUrl(args);
-    const restore = configureMemoryCompletionClient(createLoopbackMemoryClient(() => url));
-    try { return await work(); } finally { restore(); }
+    return work(createLoopbackMemoryClient(() => url));
   };
 
   if (sub === "status") {
@@ -122,18 +121,18 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
     const store = new MemoryStore();
     deps.log("");
     try {
-      await withServer(async () => {
+      await withServer(async (client) => {
         if (sub === "segment") {
-          const r = await stages.runSegmentStage(store, { convIds, limit, onEvent });
+          const r = await stages.runSegmentStage(store, { root, client, convIds, limit, onEvent });
           deps.log(style.dim(`\n  segment: ${r.valid} segmented, ${r.chunks} chunks, ${r.skipped} skipped, ${r.errored} errored`));
         } else if (sub === "extract") {
-          const r = await stages.runExtractStage(store, { convIds, limit, onEvent });
+          const r = await stages.runExtractStage(store, { root, client, convIds, limit, onEvent });
           deps.log(style.dim(`\n  extract: ${r.extracted} chunk(s) extracted, ${r.remaining} still pending`));
         } else if (sub === "route") {
-          const r = await stages.runRouteStage(store, { convIds, onEvent });
+          const r = await stages.runRouteStage(store, { client, convIds, onEvent });
           deps.log(style.dim(`\n  route: ${r.decisions.length} entities — ${r.createEligible} create-eligible, ${r.captured.length} captured`));
         } else {
-          const r = await stages.runSynthesizeStage(store, { root, convIds, limit, onEvent });
+          const r = await stages.runSynthesizeStage(store, { root, client, convIds, limit, onEvent });
           deps.log(style.dim(`\n  synthesize: ${r.created.length} created, ${r.patched.length} patched, ${r.skippedByGate.length} gated`));
         }
       });
@@ -165,8 +164,8 @@ export async function runMemory(args: CommandArgs, supplied: Partial<MemoryDepen
     const { runSynthesis } = await import("../memory/pipeline");
     const dryRun = flag("dry-run");
     deps.log("");
-    const summary = await withServer(() => runSynthesis(
-      { since: opt("since") ?? undefined, model: opt("model") ?? undefined, dryRun, root },
+    const summary = await withServer((client) => runSynthesis(
+      { since: opt("since") ?? undefined, model: opt("model") ?? undefined, dryRun, root, client },
       onEvent,
     ));
     deps.log(style.dim(`\n  ${summary.note}`));

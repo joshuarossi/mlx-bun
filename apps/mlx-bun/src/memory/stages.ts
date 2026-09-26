@@ -22,7 +22,7 @@
 // DAG and the existing tests still pass.
 
 import { toEntityKind, type EntityKind } from "./article";
-import { chunkConversations, type ChunkCall, type ChunkResult } from "./chunk";
+import { chunkInput, chunkConversations, type ChunkCall, type ChunkResult } from "./chunk";
 import {
   firstSentences,
   routeSections,
@@ -32,7 +32,7 @@ import {
 } from "./cluster";
 import type { MemoryStore } from "./db";
 import { buildEntityPrompt, extractEntities, type ExtractCall } from "./entity";
-import { callLocalBatch, MAX_OUTPUT_TOKENS } from "./model";
+import { callLocal, callLocalBatch, createMemoryCalls, MAX_OUTPUT_TOKENS, type MemoryCompletionClient } from "./model";
 import type { SynthesisEvent } from "./events";
 import { loadMetaPolicy } from "./prompts";
 import {
@@ -136,9 +136,9 @@ function chunkLabel(store: MemoryStore, chunkId: string): string | null {
 
 /** `loadMetaPolicy` that never throws — a missing Meta page yields "" so a
  *  fixture/smoke vault without seeded Meta still runs. */
-function loadMetaPolicyQuiet(names: string[]): string {
+function loadMetaPolicyQuiet(names: string[], root?: string): string {
   try {
-    return loadMetaPolicy(names);
+    return loadMetaPolicy(names, root);
   } catch {
     return "";
   }
@@ -232,6 +232,9 @@ export interface PipelinePatched {
 // ===========================================================================
 
 export interface SegmentStageOptions {
+  root?: string;
+  client?: MemoryCompletionClient;
+  signal?: AbortSignal;
   /** Restrict to these conversation ids (default: every eligible conversation). */
   convIds?: string[];
   /** Cap the number of conversations (re)segmented this pass. */
@@ -254,9 +257,12 @@ export async function runSegmentStage(
   store: MemoryStore,
   opts: SegmentStageOptions = {},
 ): Promise<ChunkResult> {
+  opts.signal?.throwIfAborted();
+  const calls = opts.client ? createMemoryCalls(opts.client) : { callLocal };
   const result = await chunkConversations(
     store,
-    { convs: opts.convIds, limit: opts.limit, maxTokens: opts.maxTokens, call: opts.call },
+    { root: opts.root, signal: opts.signal, convs: opts.convIds, limit: opts.limit, maxTokens: opts.maxTokens,
+      call: opts.call ?? ((p, o) => calls.callLocal("chunk", chunkInput(p), o)) },
     opts.onEvent,
   );
   opts.onEvent?.({
@@ -272,6 +278,9 @@ export async function runSegmentStage(
 // ===========================================================================
 
 export interface ExtractStageOptions {
+  root?: string;
+  client?: MemoryCompletionClient;
+  signal?: AbortSignal;
   /** Restrict to these conversation ids (default: all). */
   convIds?: string[];
   /** Cap the number of chunks extracted this pass (default: all pending). */
@@ -317,7 +326,9 @@ export async function runExtractStage(
   store: MemoryStore,
   opts: ExtractStageOptions = {},
 ): Promise<ExtractStageResult> {
-  const policy = opts.policy ?? loadMetaPolicyQuiet(["Entities"]);
+  opts.signal?.throwIfAborted();
+  const calls = opts.client ? createMemoryCalls(opts.client) : { callLocal, callLocalBatch };
+  const policy = opts.policy ?? loadMetaPolicyQuiet(["Entities"], opts.root);
   const resolver = EntityResolver.fromStore(store);
   for (const s of goldSeeds()) resolver.register(s.canonical, s.aliases);
 
@@ -340,7 +351,8 @@ export async function runExtractStage(
   // the shared resolver folds canonicals in chronological order.
   if (!opts.call && targetIds.length > 1) {
     const inputs = targetIds.map((id) => ({ user: buildEntityPrompt(store.chunkText(id), policy) }));
-    const outputs = await callLocalBatch("entity", inputs, { maxTokens: MAX_OUTPUT_TOKENS });
+    const outputs = await calls.callLocalBatch("entity", inputs, { maxTokens: MAX_OUTPUT_TOKENS });
+    opts.signal?.throwIfAborted();
     let extracted = 0;
     for (let i = 0; i < targetIds.length; i++) {
       const out = outputs[i] ?? "";
@@ -356,10 +368,11 @@ export async function runExtractStage(
   // SERIAL fallback (injected `call`, single chunk, or batching disabled).
   let extracted = 0;
   for (const id of targetIds) {
+    opts.signal?.throwIfAborted();
     // Pass the (possibly empty) policy through: `|| undefined` made extractEntities
     // re-load Meta/Entities.md and THROW on a vault without it, while the batched
     // path above proceeds with "" — the serial path must match.
-    await extractEntities(store, id, { resolver, policy, call: opts.call });
+    await extractEntities(store, id, { resolver, policy, call: opts.call ?? ((p, o) => calls.callLocal("entity", { user: p }, o)) });
     extracted++;
     if (extracted % 10 === 0) {
       opts.onEvent?.({ type: "log", message: `  extracted ${extracted}/${target} chunks` });
@@ -373,6 +386,8 @@ export async function runExtractStage(
 // ===========================================================================
 
 export interface RouteStageOptions {
+  client?: MemoryCompletionClient;
+  signal?: AbortSignal;
   /** Restrict the routed chunk set to these conversation ids (default: all). */
   convIds?: string[];
   /** Run the subject-engagement model gate to promote a thin (single-chunk)
@@ -406,6 +421,8 @@ export async function runRouteStage(
   store: MemoryStore,
   opts: RouteStageOptions = {},
 ): Promise<RouteStageResult> {
+  opts.signal?.throwIfAborted();
+  const calls = opts.client ? createMemoryCalls(opts.client) : { callLocal };
   const { chunkIds } = chronoChunkIds(store, opts.convIds);
   const chunkSet = new Set(chunkIds);
 
@@ -435,7 +452,7 @@ export async function runRouteStage(
     for (const d of acc.decisions()) {
       if (d.action !== "capture") continue;
       for (const cid of entityChunkIdsChrono(store, d.entity, chunkSet)) {
-        if (await engagesAsSubject(d.entity, store.chunkText(cid))) {
+        if (await engagesAsSubject(d.entity, store.chunkText(cid), calls.callLocal)) {
           acc.enqueue(d.entity, cid, { subjectEngagement: true });
           break;
         }
@@ -511,6 +528,8 @@ export async function runRouteStage(
 // ===========================================================================
 
 export interface SynthesizeStageOptions {
+  client?: MemoryCompletionClient;
+  signal?: AbortSignal;
   /** Vault root (honors MLX_BUN_WIKI); defaults to `vaultRoot()`. */
   root?: string;
   /** Max articles to CREATE this pass (defaults to DEFAULT_ARTICLE_CAP). */
@@ -560,6 +579,10 @@ export async function runSynthesizeStage(
   store: MemoryStore,
   opts: SynthesizeStageOptions = {},
 ): Promise<SynthesizeStageResult> {
+  opts.signal?.throwIfAborted();
+  const calls = opts.client ? createMemoryCalls(opts.client) : { callLocal };
+  const call: SynthesisCall = opts.call ?? ((p, o) => calls.callLocal("synthesis", { user: p }, o));
+  const sectionCall: SectionCall = opts.sectionCall ?? ((p, o) => calls.callLocal("section", { user: p }, o));
   const root = opts.root ?? vaultRoot();
   const cap = opts.limit ?? DEFAULT_ARTICLE_CAP;
   const emit = opts.onEvent ?? (() => {});
@@ -613,6 +636,7 @@ export async function runSynthesizeStage(
   emit({ type: "stage", stage: "create", message: `create: drafting ${targets.length} entity article(s) (cap ${cap})` });
 
   for (const entity of targets) {
+    opts.signal?.throwIfAborted();
     const cids = entityChunkIdsChrono(store, entity, runChunks); // chronological feed
     const kind = meta.kindByCanonical.get(entity) ?? "thing";
     let res;
@@ -623,11 +647,12 @@ export async function runSynthesizeStage(
         chunkIds: cids,
         root,
         aliases: meta.aliasesByCanonical.get(entity) ?? [],
-        call: opts.call,
+        call,
         commit: false,
         now: opts.now,
       });
     } catch (err) {
+      opts.signal?.throwIfAborted();
       skippedByGate.push(entity);
       emit({ type: "log", message: `  skipped ${entity} (error: ${String(err)})` });
       continue;
@@ -673,7 +698,9 @@ export async function runSynthesizeStage(
   const patched: PipelinePatched[] = [];
   let patchNoops = 0;
   for (const { entity, stem } of patchTargets) {
+    opts.signal?.throwIfAborted();
     for (const cid of entityChunkIdsChrono(store, entity, runChunks)) {
+    opts.signal?.throwIfAborted();
       let article: SectionRouteArticle;
       try {
         const { content } = await readArticle(root, stem);
@@ -686,14 +713,14 @@ export async function runSynthesizeStage(
         label: chunkLabel(store, cid),
         gist: firstSentences(store.chunkText(cid), 2),
       };
-      const routeRes = await routeSections(chunk, article, { call: opts.sectionCall });
+      const routeRes = await routeSections(chunk, article, { call: sectionCall });
       for (const anchor of routeRes.matchedAnchors) {
         const pr = await synthesizePatch(store, {
           stem,
           anchor,
           chunkId: cid,
           root,
-          call: opts.call,
+          call,
           commit: false,
           now: opts.now,
         });
@@ -716,7 +743,7 @@ export async function runSynthesizeStage(
           anchor,
           chunkId: cid,
           root,
-          call: opts.call,
+          call,
           commit: false,
           now: opts.now,
         });
@@ -739,10 +766,12 @@ export async function runSynthesizeStage(
   const reconciled: string[] = [];
   const touchedStems = [...new Set(patched.map((p) => p.stem))];
   for (const stem of touchedStems) {
+    opts.signal?.throwIfAborted();
     let rr;
     try {
-      rr = await reconcileArticle(store, stem, { root, call: opts.call, commit: false, now: opts.now });
+      rr = await reconcileArticle(store, stem, { root, call, commit: false, now: opts.now });
     } catch (err) {
+      opts.signal?.throwIfAborted();
       emit({ type: "log", message: `  reconcile error ${stem}: ${String(err)}` });
       continue;
     }
@@ -765,6 +794,7 @@ export async function runSynthesizeStage(
   emit({ type: "stage", stage: "reconcile", message: `reconcile: ${reconciled.length} article(s) made consistent` });
 
   const wrote = created.length + patched.length + reconciled.length;
+  opts.signal?.throwIfAborted();
   if (opts.commit !== false && wrote) {
     await commitVault(
       root,

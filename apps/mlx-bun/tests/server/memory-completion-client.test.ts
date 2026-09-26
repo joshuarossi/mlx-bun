@@ -51,7 +51,10 @@ describe("loopback memory completion client", () => {
     expect(seen[0]!.headers.Authorization).toBe("Bearer sk-mlx-bun-local");
     expect(seen[0]!.body).toEqual({
       model: "local", messages: memoryMessages("entity", { user: "chunk body" }), max_tokens: 64_000,
-      temperature: 0, stream: false, adapter: "none",
+      temperature: 0, top_p: 0, top_k: 0, min_p: 0,
+      repetition_penalty: 1, presence_penalty: 0, frequency_penalty: 0, logit_bias: {},
+      xtc_probability: 0, xtc_threshold: 0, hlg: { enabled: false },
+      chat_template_kwargs: { enable_thinking: null }, stream: false, adapter: "none",
     });
     expect(seen[0]!.body.messages[0]).toEqual({ role: "system", content: expect.stringContaining("entity extractor") });
     expect(seen[0]!.body.messages[1]).toEqual({ role: "user", content: "chunk body" });
@@ -165,4 +168,36 @@ describe("loopback memory completion client", () => {
     expect(seen.filter((s) => s.path === "/v1/adapters" && s.method === "POST")).toHaveLength(2);
     expect(seen.at(-1)!.body.adapter).toBe("memory-chunk");
   });
+});
+
+
+test("a failed batch stops admission, aborts siblings, and joins them before rejecting the original error", async () => {
+  temporaryHome();
+  restoreRuntime = configureRuntime({ MLX_BUN_MEMORY_BATCH: "2" });
+  const started: string[] = [];
+  const bothStarted = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const sawAbort = Promise.withResolvers<void>();
+  let settled = false;
+  const client = createLoopbackMemoryClient(base, { fetch: fetcher(async (_url, init) => {
+    const name = JSON.parse(String(init!.body)).messages.at(-1).content;
+    started.push(name);
+    if (started.length === 2) bothStarted.resolve();
+    if (name === "first") {
+      await bothStarted.promise;
+      return new Response("original failure", { status: 500 });
+    }
+    init!.signal!.addEventListener("abort", () => sawAbort.resolve(), { once: true });
+    await release.promise; // Simulates a transport that needs cleanup after abort.
+    throw new Error("sibling cleanup failure");
+  }) });
+  const result = client.completeBatch(["first", "second", "third", "fourth"].map(user => ({ stage: "entity", input: { user }, maxTokens: 8 })))
+    .then(value => { settled = true; return value; }, error => { settled = true; return error; });
+  try {
+    await sawAbort.promise;
+    expect(started).toEqual(["first", "second"]);
+    expect(settled).toBe(false);
+  } finally { release.resolve(); }
+  expect(String(await result)).toContain("500: original failure");
+  expect(started).toEqual(["first", "second"]);
 });

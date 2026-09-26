@@ -471,13 +471,14 @@ export interface WikifyVaultSummary {
  * own change (or is a NO-OP).
  */
 export async function wikifyVault(
-  opts: { root?: string; call?: SynthesisCall; commit?: boolean; floor?: number } = {},
+  opts: { root?: string; signal?: AbortSignal; call?: SynthesisCall; commit?: boolean; floor?: number } = {},
 ): Promise<WikifyVaultSummary> {
   const root = opts.root ?? vaultRoot();
   const stems = await listArticles(root);
   const edited: string[] = [];
   const results: WikifyArticleResult[] = [];
   for (const stem of stems) {
+    opts.signal?.throwIfAborted();
     const r = await wikifyArticle({ stem, root, call: opts.call, commit: opts.commit, floor: opts.floor });
     results.push(r);
     if (r.status === "edited") edited.push(stem);

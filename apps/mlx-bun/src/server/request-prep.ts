@@ -71,11 +71,12 @@ export function createRequestPrep(input: {
 
   // Effective enable_thinking for a request, with the same precedence the chat
   // template uses (extracted so sampling and template rendering can't disagree):
-  // explicit chat_template_kwargs.enable_thinking → reasoning_effort ("none" =
+  // explicit chat_template_kwargs.enable_thinking (null = template default) → reasoning_effort ("none" =
   // off) → server --thinking default → model default (MiniCPM5 → off). undefined
   // means "not a switchable-thinking model / leave the template default".
   const resolveEnableThinking = (req: ChatRequestParams): boolean | undefined => {
     const explicit = req.chat_template_kwargs?.enable_thinking;
+    if (explicit === null) return undefined;
     if (typeof explicit === "boolean") return explicit;
     const effort = req.reasoning_effort;
     if (effort !== undefined) return effort !== "none";

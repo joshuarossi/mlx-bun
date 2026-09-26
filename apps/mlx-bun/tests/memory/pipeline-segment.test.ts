@@ -10,7 +10,7 @@
 
 import { describe, expect, it, afterEach } from "bun:test";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -28,8 +28,7 @@ afterEach(() => {
 });
 
 /** A throwaway vault with the Meta policy pages SEGMENT inlines (Chunking +
- *  Topics_to_Ignore). chunkConversations reads the GLOBAL vaultRoot for these,
- *  so we point MLX_BUN_WIKI at this same root. */
+ *  Topics_to_Ignore). Also selects it for standalone legacy callers. */
 async function seedVault(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "dreaming-pipeline-segment-"));
   await mkdir(join(root, "articles"), { recursive: true });
@@ -138,4 +137,74 @@ describe("pipeline — SEGMENT runs our chunker (not a no-op)", () => {
     expect(segmentCalls).toBe(0);
     store.close();
   });
+});
+
+
+it("an explicit pipeline root governs segmentation and extraction despite a different global vault", async () => {
+  const served = await seedVault();
+  const other = await seedVault(); // global default deliberately differs
+  const store = seedStore();
+  const calls: { stage: string; user: string }[] = [];
+  try {
+    for (const root of [served, other]) for (const name of ["Chunking", "Topics_to_Ignore", "Entities"])
+      await writeFile(join(root, "Meta", `${name}.md`), `${root === served ? "SELECTED" : "WRONG"}_${name}_POLICY`);
+    await runPipeline(store, { root: served, commit: false, client: {
+      async complete(request) {
+        calls.push({ stage: request.stage, user: request.input.user });
+        return request.stage === "chunk" ? JSON.stringify({ chunks: [
+          { start_message_uuid: "m0", end_message_uuid: "m1", label: "tripod" },
+        ] }) : "";
+      },
+      async completeBatch() { throw new Error("single chunk should use complete"); },
+    } });
+    expect(calls.map(call => call.stage)).toEqual(["chunk", "entity"]);
+    expect(calls[0]!.user).toContain("SELECTED_Chunking_POLICY");
+    expect(calls[0]!.user).toContain("SELECTED_Topics_to_Ignore_POLICY");
+    expect(calls[1]!.user).toContain("SELECTED_Entities_POLICY");
+    expect(calls.every(call => !call.user.includes("WRONG_"))).toBe(true);
+  } finally {
+    store.close();
+    await Promise.all([served, other].map(root => rm(root, { recursive: true, force: true })));
+  }
+});
+
+
+it("cancelling segmentation rejects the pipeline before persisting its returned chunk or starting extraction", async () => {
+  const root = await seedVault();
+  const store = seedStore();
+  const abort = new AbortController();
+  const started: string[] = [];
+  try {
+    await expect(runPipeline(store, { root, commit: false, signal: abort.signal, client: {
+      async complete(request) {
+        started.push(request.stage);
+        abort.abort(new Error("cancel synthesis"));
+        return JSON.stringify({ chunks: [{ start_message_uuid: "m0", end_message_uuid: "m1", label: "tripod" }] });
+      },
+      async completeBatch() { throw new Error("unexpected batch"); },
+    } })).rejects.toThrow("cancel synthesis");
+    expect(started).toEqual(["chunk"]);
+    expect(store.db.query("SELECT COUNT(*) AS n FROM chunks").get()).toEqual({ n: 0 });
+    expect(store.db.query("SELECT chunked_at FROM conversations WHERE conv = ?").get(CONV)).toEqual({ chunked_at: null });
+  } finally { store.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+it("an abort during the segment call persists nothing: no chunk rows, no watermark, no articles", async () => {
+  const root = await seedVault();
+  const store = seedStore();
+  const controller = new AbortController();
+  let calls = 0;
+  const segmentCall: ChunkCall = async () => {
+    calls++;
+    controller.abort(new Error("client disconnected"));
+    return JSON.stringify({ chunks: [{ start_message_uuid: "m0", end_message_uuid: "m1", label: "never persisted" }] });
+  };
+  try {
+    await expect(runPipeline(store, { root, convIds: [CONV], segmentCall, extractCall: async () => "X", commit: false, signal: controller.signal }))
+      .rejects.toThrow("client disconnected");
+    expect(calls).toBe(1);
+    expect((store.db.query("SELECT COUNT(*) AS n FROM chunks WHERE conv = ?").get(CONV) as { n: number }).n).toBe(0);
+    expect((store.db.query("SELECT chunked_at FROM conversations WHERE conv = ?").get(CONV) as { chunked_at: number | null }).chunked_at).toBeNull();
+    expect(await readdir(join(root, "articles"))).toEqual([]);
+  } finally { store.close(); await rm(root, { recursive: true, force: true }); }
 });

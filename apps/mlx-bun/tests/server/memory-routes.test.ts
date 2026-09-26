@@ -399,7 +399,7 @@ test("init rejects a symlink escaping the allowed vault and temporary trees", as
 
 describe("GET /v1/memory/synthesize (present only when composition supplies the pipeline)", () => {
   function synthesizer() {
-    const calls: { dryRun: boolean }[] = [];
+    const calls: { dryRun: boolean; signal?: AbortSignal }[] = [];
     const routes = createMemoryRoutes({ root: () => routeRoot, synthesize: async (options, onEvent) => {
       calls.push(options);
       onEvent({ type: "stage", stage: "ingest", message: "ingest: planned (dry-run)" });
@@ -423,9 +423,9 @@ describe("GET /v1/memory/synthesize (present only when composition supplies the 
       'data: {"type":"summary","implemented":true,"stages":["ingest"],"note":"dry-run: DAG wired; no model calls made."}',
       "data: [DONE]",
     ]);
-    expect(calls).toEqual([{ dryRun: true }]);
+    expect(calls).toEqual([{ dryRun: true, signal: expect.any(AbortSignal) }]);
     await (await synth.handle(new Request("http://x/v1/memory/synthesize")))!.text();
-    expect(calls[1]).toEqual({ dryRun: false });
+    expect(calls[1]).toEqual({ dryRun: false, signal: expect.any(AbortSignal) });
   });
 
   test("a pipeline failure becomes a terminal error event instead of a broken stream", async () => {

@@ -43,12 +43,12 @@ export const STAGE_PROMPTS: Record<string, string> = {
  * them for inlining into a stage prompt. Each `name` addresses
  * `<vault>/Meta/<name>.md` (a trailing `.md` is accepted and normalized).
  *
- * The vault root honors the MLX_BUN_WIKI override (see {@link vaultRoot}).
+ * An explicit root governs this read; otherwise use {@link vaultRoot}.
  *
  * @throws {Error} If a requested Meta page does not exist on disk, naming it.
  */
-export function loadMetaPolicy(names: string[]): string {
-  const metaDir = join(vaultRoot(), "Meta");
+export function loadMetaPolicy(names: string[], root = vaultRoot()): string {
+  const metaDir = join(root, "Meta");
   const sections: string[] = [];
   for (const name of names) {
     const stem = name.trim().endsWith(".md") ? name.trim().slice(0, -3) : name.trim();

@@ -21,6 +21,7 @@
 // USER-ACTION (P6-T5) — the agent never starts it; `scripts/experiments`
 // drives a bounded handful of conversations through `runPipeline` directly.
 
+import { createMemoryCalls, type MemoryCompletionClient } from "./model";
 import type { ChunkCall } from "./chunk";
 import type { SectionCall } from "./cluster";
 import { runLinkStage } from "./crosslink";
@@ -54,6 +55,8 @@ export type { SynthesisEvent, SynthesisStage } from "./events";
 import type { SynthesisEvent, SynthesisStage } from "./events";
 
 export interface SynthesisOptions {
+  client?: MemoryCompletionClient;
+  signal?: AbortSignal;
   /** Only synthesize conversations newer than this (ISO date / conv cursor). */
   since?: string;
   /** Override the synthesis model (default e4b). Reserved — the stages resolve
@@ -88,6 +91,8 @@ const STAGES: SynthesisStage[] = [
 // ---- pipeline run ----------------------------------------------------------
 
 export interface PipelineOptions {
+  client?: MemoryCompletionClient;
+  signal?: AbortSignal;
   /** Restrict the run to these conversation ids; default every conversation. */
   convIds?: string[];
   /** Vault root (honors MLX_BUN_WIKI); defaults to `vaultRoot()`. */
@@ -145,6 +150,7 @@ export async function runPipeline(
   store: MemoryStore,
   opts: PipelineOptions = {},
 ): Promise<PipelineResult> {
+  opts.signal?.throwIfAborted();
   const root = opts.root ?? vaultRoot();
   const cap = opts.articleCap ?? 20;
   const emit = opts.onEvent ?? (() => {});
@@ -154,27 +160,35 @@ export async function runPipeline(
   // SEGMENT — (re)chunk every in-scope conversation whose chunked_at is NULL or
   // stale, oldest-first, then proceed on the fresh chunks. A re-run is a no-op
   // (watermark). We do NOT reuse any external chunks.
-  await runSegmentStage(store, { convIds: opts.convIds, call: opts.segmentCall, onEvent: opts.onEvent });
+  await runSegmentStage(store, { root, client: opts.client, signal: opts.signal, convIds: opts.convIds, call: opts.segmentCall, onEvent: opts.onEvent });
+
+  opts.signal?.throwIfAborted();
 
   // Chronological run scope (oldest conversation first) for the result counts.
   const { convs, chunkIds } = chronoChunkIds(store, opts.convIds);
   emit({ type: "log", message: `operating on ${convs} conversation(s), ${chunkIds.length} chunk(s)` });
 
   // ENTITY-EXTRACT — every not-yet-extracted chunk, chronological + resumable.
-  await runExtractStage(store, { convIds: opts.convIds, call: opts.extractCall, onEvent: opts.onEvent });
+  await runExtractStage(store, { root, client: opts.client, signal: opts.signal, convIds: opts.convIds, call: opts.extractCall, onEvent: opts.onEvent });
+
+  opts.signal?.throwIfAborted();
 
   // ROUTE — deterministic create/capture over chunk_entities + CREATE gate;
   // persists notable + captures thin subjects into _captured (still searchable)
   // so SYNTHESIZE reads the decision back.
   const route = await runRouteStage(store, {
+    client: opts.client, signal: opts.signal,
     convIds: opts.convIds,
     useSubjectGate: opts.useSubjectGate,
     onEvent: opts.onEvent,
   });
 
+  opts.signal?.throwIfAborted();
+
   // SYNTHESIZE — chronological CREATE (oldest entity first, oldest chunk first so
   // the latest statement dominates) + SECTION-ROUTE → PATCH self-healing fold.
   const synth = await runSynthesizeStage(store, {
+    client: opts.client, signal: opts.signal,
     root,
     limit: cap,
     convIds: opts.convIds,
@@ -186,10 +200,14 @@ export async function runPipeline(
     onEvent: opts.onEvent,
   });
 
+  opts.signal?.throwIfAborted();
+
   // CROSS-LINK — build the EDGES synthesis (bounded to one article) cannot:
   // inline-link first mentions of other articles + rebuild each ## See also from
   // mentions + co-occurrence. Deterministic (no model) and idempotent.
   await runLinkStage(store, { root, commit: opts.commit, onEvent: (e) => emit({ type: e.type, message: e.message }) });
+
+  opts.signal?.throwIfAborted();
 
   emit({
     type: "done",
@@ -219,6 +237,7 @@ export async function runSynthesis(
   opts: SynthesisOptions = {},
   onEvent?: (e: SynthesisEvent) => void,
 ): Promise<SynthesisSummary> {
+  opts.signal?.throwIfAborted();
   if (opts.dryRun) {
     onEvent?.({ type: "log", message: "dry-run — no model calls, nothing will be written." });
     for (const stage of STAGES) onEvent?.({ type: "stage", stage, message: `${stage}: planned (dry-run)` });
@@ -230,7 +249,7 @@ export async function runSynthesis(
   try {
     // WRITE branch: ingest → segment → extract → route → create → commit.
     const root = opts.root ?? vaultRoot();
-    const result = await runPipeline(store, { root, onEvent });
+    const result = await runPipeline(store, { root, client: opts.client, signal: opts.signal, onEvent });
 
     // WIKIFY branch: the periodic editorial sweep over EVERY article (P8). Runs
     // after the write branch so freshly-created and patched articles are tightened
@@ -240,10 +259,14 @@ export async function runSynthesis(
     onEvent?.({ type: "stage", stage: "wikify", message: "wikify: editorial sweep over every article" });
     let editedCount = 0;
     try {
-      const sweep = await wikifyVault({ root });
+      const calls = opts.client ? createMemoryCalls(opts.client) : undefined;
+      const sweep = await wikifyVault({ root, signal: opts.signal,
+        call: calls ? (p, o) => calls.callLocal("editor", { user: p }, o) : undefined });
+      opts.signal?.throwIfAborted();
       editedCount = sweep.edited.length;
       onEvent?.({ type: "log", message: `  wikify edited ${editedCount}/${sweep.results.length} article(s)` });
     } catch (err) {
+      opts.signal?.throwIfAborted();
       onEvent?.({ type: "log", message: `  wikify sweep skipped (error: ${String(err)})` });
     }
     onEvent?.({

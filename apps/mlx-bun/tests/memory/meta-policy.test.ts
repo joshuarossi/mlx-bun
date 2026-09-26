@@ -10,6 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { loadMetaPolicy } from "../../src/memory/prompts";
+import { MemoryStore, chunkId } from "../../src/memory/db";
+import { synthesizeCreate, synthesizePatch, synthesizeNewSection } from "../../src/memory/synthesize";
+import { LEAD_ANCHOR } from "../../src/memory/cluster";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 
 describe("loadMetaPolicy", () => {
@@ -64,4 +67,39 @@ describe("loadMetaPolicy", () => {
   test("throws naming the missing file when a Meta page is absent", () => {
     expect(() => loadMetaPolicy(["Does_Not_Exist"])).toThrow("Does_Not_Exist.md");
   });
+});
+
+
+test("CREATE, section/lead PATCH and new sections use the owning vault's editorial policy", async () => {
+  const home = mkdtempSync(join(tmpdir(), "memory-policy-owners-"));
+  const selected = join(home, "selected"), other = join(home, "other");
+  const restore = configureRuntime({ MLX_BUN_WIKI: other });
+  const store = new MemoryStore(":memory:");
+  const conv = "11112222-0000-0000-0000-000000000000", id = chunkId(conv, 0, 0);
+  try {
+    for (const root of [selected, other]) {
+      mkdirSync(join(root, "Meta"), { recursive: true });
+      mkdirSync(join(root, "articles"), { recursive: true });
+      for (const name of ["Article_Conventions", "Infobox_Schemas", "Entities"])
+        writeFileSync(join(root, "Meta", `${name}.md`), `${root === selected ? "SELECTED" : "WRONG"}_${name}_POLICY`);
+    }
+    writeFileSync(join(selected, "articles", "Camera.md"), "# Camera\n\n**Camera** is a useful body.\n\n## Lenses\n\nA lens helps framing.\n");
+    store.db.run("INSERT INTO conversations (conv, source, title, updated_at) VALUES (?,?,?,?)", [conv, "test", "Camera", 1700000000000]);
+    store.db.run("INSERT INTO messages (conv, position, role, uuid, text) VALUES (?,?,?,?,?)", [conv, 0, "user", "m0", "I use this camera with a portrait lens."]);
+    store.db.run("INSERT INTO chunks (id, conv, start, end, label) VALUES (?,?,?,?,?)", [id, conv, 0, 0, "Camera"]);
+    const prompts: string[] = [];
+    const call = async (prompt: string) => { prompts.push(prompt); throw new Error("stop after policy read"); };
+    const common = { root: selected, call, commit: false };
+    await expect(synthesizeCreate(store, { ...common, entity: "Camera", chunkIds: [id] })).rejects.toThrow("stop after policy read");
+    for (const anchor of ["lenses", LEAD_ANCHOR])
+      await expect(synthesizePatch(store, { ...common, stem: "Camera", anchor, chunkId: id })).rejects.toThrow("stop after policy read");
+    await expect(synthesizeNewSection(store, { ...common, stem: "Camera", title: "Travel", anchor: "travel", chunkId: id })).rejects.toThrow("stop after policy read");
+    expect(prompts).toHaveLength(4);
+    for (const prompt of prompts) {
+      expect(prompt).toContain("SELECTED_Article_Conventions_POLICY");
+      expect(prompt).not.toContain("WRONG_");
+    }
+    expect(prompts[0]).toContain("SELECTED_Infobox_Schemas_POLICY");
+    expect(prompts[0]).toContain("SELECTED_Entities_POLICY");
+  } finally { store.close(); restore(); rmSync(home, { recursive: true, force: true }); }
 });

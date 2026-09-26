@@ -157,9 +157,9 @@ export function createMemoryCalls(client: MemoryCompletionClient) {
 
 let configured: MemoryCompletionClient | undefined;
 
-/** Install the client the stage defaults (`callLocal` / `callLocalBatch`) use for
- *  the rest of the process (or until the returned restore runs). Composition
- *  roots call this once with the loopback client; tests inject fakes. */
+/** Optional fallback for standalone stage callers using `callLocal` defaults.
+ * CLI/server composition passes a client explicitly per run. The restore is for
+ * scoped tests or callers that deliberately install process-wide defaults. */
 export function configureMemoryCompletionClient(client: MemoryCompletionClient | undefined): () => void {
   const previous = configured;
   configured = client;

@@ -86,10 +86,10 @@ export function buildEntityPrompt(text: string, policy: string): string {
 export async function extractEntityNamesRaw(
   text: string,
   policy?: string,
-  opts?: { maxTokens?: number; call?: ExtractCall },
+  opts?: { root?: string; maxTokens?: number; call?: ExtractCall },
 ): Promise<{ entities: ExtractedEntity[]; rawLines: number }> {
   if (!text.trim()) return { entities: [], rawLines: 0 };
-  const pol = policy ?? loadMetaPolicy(["Entities"]);
+  const pol = policy ?? loadMetaPolicy(["Entities"], opts?.root);
   const prompt = buildEntityPrompt(text, pol);
   const call: ExtractCall = opts?.call ?? ((p, o) => callLocal("entity", { user: p }, o));
   const out = await call(prompt, { maxTokens: opts?.maxTokens ?? 128 });
@@ -111,7 +111,7 @@ export async function extractEntityNamesRaw(
 export async function extractEntityNames(
   text: string,
   policy?: string,
-  opts?: { maxTokens?: number; call?: ExtractCall },
+  opts?: { root?: string; maxTokens?: number; call?: ExtractCall },
 ): Promise<ExtractedEntity[]> {
   return (await extractEntityNamesRaw(text, policy, opts)).entities;
 }
@@ -137,7 +137,7 @@ export async function extractEntityNames(
 export async function extractEntities(
   store: MemoryStore,
   chunkId: string,
-  opts?: { maxTokens?: number; policy?: string; resolver?: EntityResolver; call?: ExtractCall },
+  opts?: { root?: string; maxTokens?: number; policy?: string; resolver?: EntityResolver; call?: ExtractCall },
 ): Promise<ExtractedEntity[]> {
   const text = store.chunkText(chunkId);
   const extracted = await extractEntityNames(text, opts?.policy, opts);

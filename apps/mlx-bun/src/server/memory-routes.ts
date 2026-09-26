@@ -12,7 +12,7 @@ import type { SynthesisSummary } from "../memory/pipeline";
 
 /** The synthesis entry composition mounts under GET /v1/memory/synthesize:
  * main's `runSynthesis`, bound to the served vault and the loopback client. */
-export type MemorySynthesize = (options: { dryRun: boolean }, onEvent: (event: SynthesisEvent) => void) => Promise<SynthesisSummary>;
+export type MemorySynthesize = (options: { dryRun: boolean; signal?: AbortSignal }, onEvent: (event: SynthesisEvent) => void) => Promise<SynthesisSummary>;
 
 /** Request-only memory API. The caller supplies the vault root; no model or
  * listener is created, and the handler owns no long-lived resources. The
@@ -252,22 +252,39 @@ export function createMemoryRoutes(options: { root?: () => string; referenceSour
   // `?dry=1` plans the stages without model calls or writes. Registered under
   // `/v1/` for historical reasons; not part of the OpenAI surface.
 
-  function handleMemorySynthesize(url: URL, synthesize: MemorySynthesize): Response {
+  function handleMemorySynthesize(request: Request, url: URL, synthesize: MemorySynthesize): Response {
     const dryRun = url.searchParams.get("dry") === "1";
     const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      async start(controller) {
-        const send = (event: unknown) =>
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-        try {
-          const summary = await synthesize({ dryRun }, (event) => send(event));
-          send({ type: "summary", ...summary });
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        } catch (error) {
-          send({ type: "error", message: (error as Error).message });
-        } finally {
-          controller.close();
-        }
+    const abort = new AbortController();
+    const onAbort = () => abort.abort(request.signal.reason);
+    request.signal.addEventListener("abort", onAbort, { once: true });
+    if (request.signal.aborted) onAbort();
+    let cancelled = false;
+    let work: Promise<void>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (event: unknown) => {
+          if (!abort.signal.aborted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        };
+        work = (async () => {
+          try {
+            abort.signal.throwIfAborted();
+            const summary = await synthesize({ dryRun, signal: abort.signal }, send);
+            abort.signal.throwIfAborted();
+            send({ type: "summary", ...summary });
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          } catch (error) {
+            send({ type: "error", message: (error as Error).message });
+          } finally {
+            request.signal.removeEventListener("abort", onAbort);
+            if (!cancelled) controller.close();
+          }
+        })();
+      },
+      cancel(reason) {
+        cancelled = true;
+        abort.abort(reason ?? new Error("memory synthesis stream cancelled"));
+        return work;
       },
     });
     return new Response(stream, {
@@ -283,7 +300,7 @@ export function createMemoryRoutes(options: { root?: () => string; referenceSour
     async handle(request: Request): Promise<Response | null> {
       const url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/v1/memory/synthesize" && options.synthesize)
-        return handleMemorySynthesize(url, options.synthesize);
+        return handleMemorySynthesize(request, url, options.synthesize);
       switch (`${request.method} ${url.pathname}`) {
         case "GET /api/memory/status": return handleMemoryStatus();
         case "GET /api/memory/list": return handleMemoryList();

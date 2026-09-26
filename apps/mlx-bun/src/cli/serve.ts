@@ -229,13 +229,13 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   const [{ loadContext, modelServingBinding, createCacheServices, createAppEngine },
     { createCompletionRoutes }, { createMemoryRoutes }, { startServer }, { createPiBackend }, { createWebHandler },
     { configureRuntime }, { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { vaultRoot }, { createMemorySurface }, { createSessionRoutes }, { createCacheRoutes },
-    { createLoopbackMemoryClient }, { configureMemoryCompletionClient }, { runSynthesis }] = await Promise.all([
+    { createMemorySynthesis }] = await Promise.all([
     import("../engine"), import("../server/routes"), import("../server/memory-routes"), import("../server/start"),
     import("../chat/pi-backend"), import("../web/assets"),
     import("@mlx-bun/inference/runtime/config"), import("../server/generated-token-history"), import("../server/status-routes"),
     import("../server/management-routes"), import("../server/adapter-routes"),
     import("../memory/vault"), import("../memory/surface"), import("../server/session-routes"), import("../server/cache-routes"),
-    import("../server/memory-completion-client"), import("../memory/model"), import("../memory/pipeline"),
+    import("../server/memory-synthesis"),
   ]);
   const [{ createDownloadOwner }, { Registry }, { TranscriptionService }, { createAudioRoutes }] = await Promise.all([
     import("../hub/downloads"), import("@mlx-bun/hub/registry"), import("../engine/transcription-service"), import("../server/audio-routes")]);
@@ -249,11 +249,11 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   // model, on close and on startup failure alike, so a later app in the same
   // process starts from the state it found. Offload restore never unmaps.
   // The restore runs once: a repeated close must not undo a later app's settings.
-  let restoreOffload: (() => void) | undefined, restoreAllocator: (() => void) | undefined, restoreMemoryClient: (() => void) | undefined, restored = false;
+  let restoreOffload: (() => void) | undefined, restoreAllocator: (() => void) | undefined, restored = false;
   const restoreProcess = () => {
     if (restored) return;
     restored = true;
-    try { restoreMemoryClient?.(); } finally { try { restoreOffload?.(); } finally { try { restoreAllocator?.(); } finally { restoreRuntime(); } } }
+    try { restoreOffload?.(); } finally { try { restoreAllocator?.(); } finally { restoreRuntime(); } }
   };
   let cleanup: (() => void | Promise<unknown>) | undefined;
   try {
@@ -390,8 +390,10 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
           storage.jobsLogs ?? (storage.jobsDb !== undefined ? join(dirname(storage.jobsDb), "jobs") : undefined)),
       } : {}),
     });
+    let synthesis: ReturnType<typeof createMemorySynthesis> | undefined;
     const closeApp = async () => {
       const errors: unknown[] = [];
+      try { await synthesis?.close(); } catch (error) { errors.push(error); }
       try { await jobs.close(); } catch (error) { errors.push(error); }
       // Whisper weights release before the chat model; in-flight takes drained with the listener.
       try { (await transcription)?.close(); } catch (error) { errors.push(error); }
@@ -411,12 +413,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       getJob: id => jobs.ensureStore().get(id),
     }) });
     let boundPort = options.port;
-    // Memory synthesis reaches the engine only through this server's own
-    // /v1/chat/completions: the stage seams get the loopback client for the
-    // app's lifetime, and the SSE route runs main's pipeline over the served vault.
-    restoreMemoryClient = configureMemoryCompletionClient(createLoopbackMemoryClient(() => `http://127.0.0.1:${boundPort}`));
-    const memory = createMemoryRoutes({ root: () => memoryPaths.vault,
-      synthesize: (synthesis, onEvent) => runSynthesis({ ...synthesis, root: memoryPaths.vault }, onEvent) });
+    // The synthesis owner cancels and joins loopback requests before engine drain.
+    synthesis = createMemorySynthesis({ root: memoryPaths.vault, apiUrl: () => `http://127.0.0.1:${boundPort}` });
+    const memory = createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run });
     const datasetRunner = createDatasetRunner();
     const datasetRoutes = createDatasetRoutes({ serverPort: () => boundPort,
       submit: (config, output) => jobs.submitTask("dataset", config, datasetRunner, output) });
@@ -441,7 +440,7 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
       beforeDrain: async () => {
         const errors: unknown[] = [];
         try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
-        for (const result of await Promise.allSettled([jobs.close(), downloads.close()]))
+        for (const result of await Promise.allSettled([synthesis!.close(), jobs.close(), downloads.close()]))
           if (result.status === "rejected") errors.push(result.reason);
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "background shutdown failed");

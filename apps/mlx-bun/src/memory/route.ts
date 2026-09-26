@@ -116,6 +116,7 @@ export async function disambiguate(
 export async function engagesAsSubject(
   entity: string,
   chunkText: string,
+  complete: typeof callLocal = callLocal,
 ): Promise<boolean> {
   const prompt =
     `${chunkText}\n\n---\n` +
@@ -123,7 +124,7 @@ export async function engagesAsSubject(
     `SUBJECT — a topic, idea, person, project, or thing the user is actually ` +
     `thinking about and discussing — rather than mentioning it only in passing? ` +
     `Answer yes or no.`;
-  return parseBinary(await callLocal("route", { user: prompt }, { maxTokens: MAX_OUTPUT_TOKENS }));
+  return parseBinary(await complete("route", { user: prompt }, { maxTokens: MAX_OUTPUT_TOKENS }));
 }
 
 // ---- CREATE gate (pure) ----------------------------------------------------

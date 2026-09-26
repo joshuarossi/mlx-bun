@@ -113,6 +113,9 @@ export interface ChunkResult {
 export type ChunkCall = (prompt: string, opts?: { maxTokens?: number }) => Promise<string>;
 
 export interface ChunkOptions {
+  signal?: AbortSignal;
+  /** Vault whose Meta policy governs this run. */
+  root?: string;
   /** Restrict to these conv ids (the smoke/eval path). Default: all eligible. */
   convs?: string[];
   /** Cap the number of conversations processed this run. */
@@ -216,12 +219,12 @@ export async function chunkConversations(
 
   // Inline the Meta policy once per run — pages change only by hand-edit, so a
   // single bounded prefill per conversation (no agent loop) is all we need. LAZY:
-  // loadMetaPolicy reads the (global) vault and THROWS on a missing page, so we
+  // loadMetaPolicy reads the selected vault and THROWS on a missing page, so we
   // defer it until a conversation is actually sent to the model — a run with no
   // eligible/attempted conversations (the common pipeline no-op) never needs it.
   let promptHeadCache: string | undefined;
   const promptHead = (): string =>
-    (promptHeadCache ??= CHUNK_PROMPT.replace("{{META_DOCS}}", loadMetaPolicy(META_POLICY_PAGES)));
+    (promptHeadCache ??= CHUNK_PROMPT.replace("{{META_DOCS}}", loadMetaPolicy(META_POLICY_PAGES, opts.root)));
 
   const eligible = selectEligible(store, opts);
   result.conversations = eligible.length;
@@ -242,6 +245,7 @@ export async function chunkConversations(
 
   let i = 0;
   for (const c of eligible) {
+    opts.signal?.throwIfAborted();
     i++;
     const allMsgs = msgQuery.all(c.conv) as MsgRow[];
     const nonEmpty = allMsgs.filter((m) => m.text && m.text.trim());
@@ -265,7 +269,9 @@ export async function chunkConversations(
     let response: string;
     try {
       response = await call(prompt, { maxTokens: opts.maxTokens ?? 2048 });
+      opts.signal?.throwIfAborted();
     } catch (err) {
+      opts.signal?.throwIfAborted();
       onEvent?.({ type: "log", stage: "chunk", message: `[${i}/${eligible.length}] ${c.conv}: model error: ${String(err)}` });
       result.errored++;
       continue;

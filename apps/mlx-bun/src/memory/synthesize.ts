@@ -657,6 +657,7 @@ async function draftCleanProse(
 }
 
 export interface CreateDeps {
+  root?: string;
   /** Model call; defaults to `callLocal("synthesis", …)`. */
   call?: SynthesisCall;
   /** Other article stems (for wikilink resolution); defaults to the vault list. */
@@ -701,7 +702,7 @@ export async function createArticle(
   const stems = new Set(deps.stems ?? []);
   stems.add(stem);
   const otherArticles = otherArticlesBlock(stems, stem);
-  const policy = loadMetaPolicyQuiet(["Article_Conventions", "Infobox_Schemas", "Entities"]);
+  const policy = loadMetaPolicyQuiet(["Article_Conventions", "Infobox_Schemas", "Entities"], deps.root);
   const { byConv, entries } = buildFootnoteMap(chunks);
 
   // OUTLINE → sections; assign chunks; drop sections that won no chunk.
@@ -790,9 +791,9 @@ export async function createArticle(
 
 /** `loadMetaPolicy` that never throws — a missing Meta page yields an empty
  *  policy block so a fixture/smoke vault without seeded Meta still drafts. */
-function loadMetaPolicyQuiet(names: string[]): string {
+function loadMetaPolicyQuiet(names: string[], root?: string): string {
   try {
-    return loadMetaPolicy(names);
+    return loadMetaPolicy(names, root);
   } catch {
     return "";
   }
@@ -868,7 +869,7 @@ export async function synthesizeCreate(
 
   const stems = new Set(await listArticles(root));
   const outcome = await createArticle(opts.entity, opts.kind ?? "thing", chunks, {
-    call: opts.call,
+    root, call: opts.call,
     stems,
     aliases: opts.aliases,
   });
@@ -1207,6 +1208,7 @@ export interface PatchInput {
 }
 
 export interface PatchDeps {
+  root?: string;
   /** Model call; defaults to `callLocal("synthesis", …)` (same stage as CREATE). */
   call?: SynthesisCall;
   /** Other article stems for wikilink resolution. */
@@ -1265,7 +1267,7 @@ export async function patchSection(input: PatchInput, deps: PatchDeps = {}): Pro
   const stems = new Set(deps.stems ?? []);
   stems.add(stem);
   const otherArticles = otherArticlesBlock(stems, stem);
-  const policy = loadMetaPolicyQuiet(["Article_Conventions"]);
+  const policy = loadMetaPolicyQuiet(["Article_Conventions"], deps.root);
 
   // Assign the chunk's footnote: reuse the conversation's existing marker, else
   // mint maxN+1 (keeps the article bijective+contiguous → NORMALIZE no-ops).
@@ -1355,7 +1357,7 @@ async function patchLead(
   const stems = new Set(deps.stems ?? []);
   stems.add(stem);
   const otherArticles = otherArticlesBlock(stems, stem);
-  const policy = loadMetaPolicyQuiet(["Article_Conventions"]);
+  const policy = loadMetaPolicyQuiet(["Article_Conventions"], deps.root);
 
   // Assign the chunk's footnote exactly as the section path does.
   const state = articleFootnoteState(article);
@@ -1492,7 +1494,7 @@ export async function synthesizePatch(store: MemoryStore, opts: SynthesizePatchO
   if (!chunk) return { ...base, reason: `chunk not found: ${opts.chunkId}` };
 
   const stems = new Set(await listArticles(root));
-  const outcome = await patchSection({ article, anchor: opts.anchor, chunk }, { call: opts.call, stems, stem: opts.stem });
+  const outcome = await patchSection({ article, anchor: opts.anchor, chunk }, { root, call: opts.call, stems, stem: opts.stem });
 
   if (outcome.action !== "patched" || outcome.content == null) {
     return { ...base, skippedByGate: true, reason: outcome.reason, footnote: outcome.footnote };
@@ -1607,7 +1609,7 @@ export async function synthesizeNewSection(
   const stems = new Set(await listArticles(root));
   const outcome = await patchSection(
     { article: withSection, anchor: opts.anchor, chunk },
-    { call: opts.call, stems, stem: opts.stem },
+    { root, call: opts.call, stems, stem: opts.stem },
   );
 
   if (outcome.action !== "patched" || outcome.content == null) {
