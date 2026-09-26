@@ -13,8 +13,10 @@ export interface WorkerRoutesOptions {
   /** The `/v1/models` id the parent addresses this worker by. */
   modelId: string;
   /** The host's exclusive execution lease: it resolves once generation in
-   * flight has finished, so drain waits on it and jobs hold it. */
-  acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
+   * flight has finished, so drain waits on it and jobs hold it. A host without
+   * one (the transcription-only app) answers `/admin/lease` with 501 and
+   * drains on admitted requests alone. */
+  acquireExecutionLease?(signal: AbortSignal): Promise<DisposableResource>;
   /** Drain waits at most this long for in-flight work; a request body may
    * lower it (`timeout_ms`). Default 120 s, the app's shutdown deadline. */
   drainTimeoutMs?: number;
@@ -46,9 +48,11 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
   // the lease, so the parent dying cannot strand the worker's execution lock.
   const lease = async (request: Request): Promise<Response> => {
     const closing = () => Response.json({ error: { message: "worker is closing", type: "unavailable" } }, { status: 503 });
+    const acquire = options.acquireExecutionLease;
+    if (!acquire) return Response.json({ error: { message: "this worker has no execution lease", type: "not_implemented", path: "/admin/lease" } }, { status: 501 });
     if (closed) return closing();
     let lease: DisposableResource;
-    try { lease = await track(options.acquireExecutionLease(AbortSignal.any([request.signal, shutdown.signal]))); }
+    try { lease = await track(acquire(AbortSignal.any([request.signal, shutdown.signal]))); }
     catch (error) {
       if (closed) return closing();
       if (request.signal.aborted) return new Response(null, { status: 499 });
@@ -102,7 +106,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
         idleWaiters.add(wake);
         signal.addEventListener("abort", stop, { once: true });
       });
-      (await track(options.acquireExecutionLease(signal))).dispose();
+      if (options.acquireExecutionLease) (await track(options.acquireExecutionLease(signal))).dispose();
       drained = !closed;
     } catch (error) { if (!signal.aborted) throw error; }
     return Response.json({ drained, state: state(), model: options.modelId, in_flight: inFlight, leases: held.size,

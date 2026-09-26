@@ -16,6 +16,7 @@ import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { createPiBackend } from "../chat/pi-backend";
 import { PI_LOCAL_MODEL_ID } from "../chat/provider";
 import { createWorkerPool, type WorkerPool } from "../jobs/worker-pool";
+import { WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import { superviseWorker, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
 import { createManagementRoutes } from "../server/management-routes";
 import { createProxyRoutes } from "../server/proxy-routes";
@@ -106,7 +107,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
         entry: hooks.entry ?? fileURLToPath(new URL("./worker-entry.ts", import.meta.url)),
         socketPath,
         // The worker gets the resolved model and options; the flag itself is the parent's.
-        launch: { socketPath, model: record, options: { ...options, isolate: false } },
+        launch: { version: WORKER_PROTOCOL_VERSION, socketPath, model: record, options: { ...options, isolate: false } },
         ...(hooks.restarts ? { restarts: hooks.restarts } : {}),
         ...(hooks.env ? { env: hooks.env } : {}),
         ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}),

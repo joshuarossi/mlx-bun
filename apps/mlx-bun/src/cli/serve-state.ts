@@ -44,6 +44,9 @@ export interface AppStateOptions {
 export interface ModelHostLink {
   /** The public port loopback clients (dataset jobs) target. */
   readonly port: number;
+  /** Internal (worker app form): the Unix socket the host listens on instead
+   * of TCP. Loopback clients then fetch over it; their URL's port is a placeholder. */
+  readonly unix?: string;
   /** Managed GPU jobs hold this lease until their child exits and logs drain. */
   acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
   /** A finished download or job changes the model library the host lists. */
@@ -105,11 +108,15 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: join(homedir(), ".mlx-bun", "skills") };
   const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
-  const datasetRunner = createDatasetRunner();
+  // Loopback clients reach the attached host's own API: over its Unix socket
+  // when it listens on one, else over TCP to its port.
+  const loopback = ((url: string | URL | Request, init?: RequestInit) =>
+    fetch(url, host?.unix ? { ...init, unix: host.unix } as RequestInit : init)) as typeof fetch;
+  const datasetRunner = createDatasetRunner({ loopback });
   // Memory synthesis reaches the model only through the attached host's own
   // /v1/chat/completions; the owner cancels and joins its runs before jobs and
   // downloads close, ahead of any engine drain.
-  const synthesis = createMemorySynthesis({ root: memoryPaths.vault, apiUrl: () => `http://127.0.0.1:${host?.port ?? options.port}` });
+  const synthesis = createMemorySynthesis({ root: memoryPaths.vault, apiUrl: () => `http://127.0.0.1:${host?.port ?? options.port}`, http: { fetch: loopback } });
   const routes: AppState["routes"] = {
     hub: createHubRoutes({ downloads }),
     sessions: createSessionRoutes(sessionDir),

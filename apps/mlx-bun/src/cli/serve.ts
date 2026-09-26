@@ -1,12 +1,12 @@
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
-import type { CommandArgs } from "./args";
+import { parseCommand, type CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { DraftKind } from "../engine/model-host";
-import { createAppState } from "./serve-state";
-import type { RunningModelHost } from "./serve-host";
+import { createAppState, type AppState, type ModelHostLink } from "./serve-state";
+import type { ModelHostHooks, RunningModelHost, RunningWorkerHost } from "./serve-host";
 import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
 
 // The composition lives in two halves: serve-state (persistent, CPU-only) and
@@ -147,22 +147,46 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   };
 }
 
+/** Internal (the worker app form, `cli/worker-entry.ts`), never a CLI flag:
+ * listen on a Unix socket, let the worker's admin surface wrap the routes and
+ * close ahead of the app's producers, and see the model host's link while it
+ * is attached (the admin lease reaches the gateway through it). */
+export interface AppSocketHooks extends Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> {
+  link?: { current?: ModelHostLink };
+}
+
+/** Lend the host's link to the state and keep it in `holder` while attached. */
+function observeLink(state: AppState, holder: { current?: ModelHostLink }): AppState {
+  return { ...state, attach(link) {
+    const detach = state.attach(link);
+    holder.current = link;
+    return () => { if (holder.current === link) holder.current = undefined; detach(); };
+  } };
+}
+
 /** CLI composition: the persistent state first, then the model host that
  * borrows it. The host stops the state's producers inside its drain step, so
  * jobs and downloads end while the engine is alive, as before the split. */
-export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
+export async function startModelServer(model: ModelRecord, options: ServeOptions, hooks: AppSocketHooks = {}): Promise<RunningApp> {
   // --isolate: the same persistent state, with the model host in a worker process behind a proxy.
-  if (options.isolate) return (await import("./serve-isolated")).startIsolatedServer(model, options);
+  if (options.isolate) {
+    // A nested isolated app would bind TCP and never the launch socket.
+    if (hooks.unix) throw new Error("--isolate is not supported in a worker app launch");
+    return (await import("./serve-isolated")).startIsolatedServer(model, options);
+  }
   const { startModelHost } = await import("./serve-host");
   const state = await createAppState(options, options.storagePaths ?? {});
-  let host: RunningModelHost;
-  try { host = await startModelHost(state, model, options, { beforeDrain: state.close }); }
-  catch (error) {
+  let host: RunningModelHost | RunningWorkerHost;
+  try {
+    host = await startModelHost(hooks.link ? observeLink(state, hooks.link) : state, model, options, {
+      ...(hooks.unix ? { unix: hooks.unix } : {}), ...(hooks.routes ? { routes: hooks.routes } : {}),
+      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await state.close(); } } });
+  } catch (error) {
     try { await state.close(); }
     catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
     throw error;
   }
-  return { port: host.port, downloads: state.downloads, async close() {
+  return { ...("port" in host ? { port: host.port } : {}), downloads: state.downloads, async close() {
     const errors: unknown[] = [];
     try { await host.close(); } catch (error) { errors.push(error); }
     // The host's drain already closed the state; a repeated failure here is the same one.
@@ -173,8 +197,31 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
 
 /** Main's `serve <whisper checkpoint>`: the transcription-only host has no
  * chat model, jobs, downloads, or web app, so no persistent state is composed. */
-export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
-  return (await import("./serve-host")).startTranscriptionHost(model, options);
+export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions,
+  hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
+  return (await import("./serve-host")).startTranscriptionHost(model, options, hooks);
+}
+
+/** Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s. */
+export function shutdownTimeoutMs(): number {
+  const raw = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
+  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
+}
+
+/** Internal (the worker app form; a parent may call it to fail fast before
+ * spawning): serve arguments parsed and validated exactly as the CLI does,
+ * minus what cannot run behind a launch socket. `--host`, `--port`, and
+ * `--no-open` are accepted and never steer the socket bind. `--isolate` and
+ * `--model-pool` are refused: a nested isolated app binds TCP, never the
+ * socket. A missing or empty model is refused: automatic selection may
+ * download the starter model. */
+export function validateAppLaunchArgv(argv: readonly string[]): CommandArgs {
+  const args = parseCommand("serve", [...argv]);
+  for (const flag of ["isolate", "model-pool"])
+    if (args.values[flag] !== undefined) throw new Error(`--${flag} is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket`);
+  if (!parseServeOptions(args).query?.trim())
+    throw new Error("a worker app launch needs a non-empty --model: automatic selection may download the starter model");
+  return args;
 }
 
 export interface SignalPort {
@@ -229,14 +276,25 @@ const defaults: ServeDependencies = {
   error: error => console.error(error instanceof Error ? error.message : String(error)),
 };
 
-export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<RunningApp> {
+/** `aborted`: a stop signal landed during startup, so the app is already
+ * closed and was never announced (no URL, no browser). */
+export interface ServedApp extends RunningApp { readonly aborted: boolean }
+
+/** runServe's rejection when a stop signal cancels startup before an app
+ * exists. A load failure, or a failed close of an app a stop interrupted,
+ * rejects with its own error instead. */
+export class StartupCancelledError extends Error {
+  constructor() { super("startup cancelled by signal"); this.name = "StartupCancelledError"; }
+}
+
+export async function runServe(args: CommandArgs, supplied: Partial<ServeDependencies> = {}): Promise<ServedApp> {
   let options = parseServeOptions(args);
   const deps = { ...defaults, ...supplied };
   // A signal before the app exists cancels selection (a starter download stays
   // resumable) and, once the model has loaded, closes the app right away; the
   // shutdown handlers take over as soon as the listener is up.
   const startup = new AbortController();
-  const cancelStartup = () => startup.abort(new Error("startup cancelled by signal"));
+  const cancelStartup = () => startup.abort(new StartupCancelledError());
   deps.signals.on("SIGINT", cancelStartup); deps.signals.on("SIGTERM", cancelStartup);
   let running: RunningApp | undefined, selection: Awaited<ReturnType<typeof resolveModelAuto>> | undefined, removeSignals = () => {};
   let closed: Promise<void> | undefined;
@@ -268,24 +326,26 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
       deps.log(`Loading ${selection.m.repoId}${selection.picked ? " (auto-selected)" : ""}`);
       running = await deps.start(selection.m, options);
     }
-    // Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s.
-    const rawTimeout = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
-    removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error,
-      ...(Number.isFinite(rawTimeout) && rawTimeout > 0 ? { timeoutMs: rawTimeout } : {}) });
+    removeSignals = installShutdownHandlers(close, { signals: deps.signals, exit: deps.exit, error: deps.error, timeoutMs: shutdownTimeoutMs() });
   } finally { deps.signals.removeListener("SIGINT", cancelStartup); deps.signals.removeListener("SIGTERM", cancelStartup); }
-  const app: RunningApp = { port: running.port, downloads: running.downloads, close };
-  if (startup.signal.aborted) { await close(); return app; }
+  const app: ServedApp = { port: running.port, downloads: running.downloads, close, aborted: false };
+  if (startup.signal.aborted) { await close(); return { ...app, aborted: true }; }
   if (selection.recommended) {
     // Main started this transfer during selection and dropped its handle; the
     // app's owner now carries it, reports it on /downloads, and joins it at shutdown.
     try { running.downloads.start(selection.recommended); } catch (error) { deps.error(error); }
   }
-  const url = browserUrl(options.hostname, running.port);
+  // Socket mode (the worker app form) has no URL to announce and no browser to open.
+  const url = running.port === undefined ? undefined : browserUrl(options.hostname, running.port);
   if (selection.m.modelType === "whisper") {
     // No web app: nothing to open. Residency is the policy the flags set.
     const idle = options.whisper?.idleUnloadSec ?? 0;
     const residency = options.whisper?.resident ? "always resident" : idle === 0 ? "released after every take" : `idle unload ${idle}s`;
-    deps.log(`POST ${url.replace("/#/chat", "/v1/audio/transcriptions")} (${residency}; ${options.whisper?.preload ? "loaded" : "loads on first request"})\nStop: Ctrl+C`);
+    deps.log(`POST ${url ? url.replace("/#/chat", "/v1/audio/transcriptions") : "/v1/audio/transcriptions over the Unix socket"} (${residency}; ${options.whisper?.preload ? "loaded" : "loads on first request"})${url ? "\nStop: Ctrl+C" : ""}`);
+    return app;
+  }
+  if (!url) {
+    deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity}) over the Unix socket`);
     return app;
   }
   deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? ` in an isolated engine worker (model pool ${options.modelPool ?? 1})` : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
