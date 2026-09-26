@@ -6,12 +6,14 @@ import type { CacheServiceOptions } from "../engine/cache-services";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { DraftKind } from "../engine/model-host";
 import { createAppState } from "./serve-state";
-import { startModelHost, startTranscriptionHost, type RunningModelHost } from "./serve-host";
+import type { RunningModelHost } from "./serve-host";
 import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
 
 // The composition lives in two halves: serve-state (persistent, CPU-only) and
 // serve-host (model-scoped). This module parses flags, composes both, and owns
-// the process (signals, browser, shutdown deadline).
+// the process (signals, browser, shutdown deadline). The model half is
+// imported only by the composition that runs it, so an isolated parent
+// (serve-isolated.ts) never loads the engine.
 export { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions };
 
 /** Validate before opening a registry, loading a model, or creating a listener. */
@@ -135,7 +137,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(draft ? { draft } : {}),
     ...(mtpRaw !== undefined ? { mtp: ["on", "1", "true"].includes(mtpRaw) } : {}),
     ...(whisper ? { whisper } : {}),
-    readOnly: false, noOpen: args.values["no-open"] === true,
+    readOnly: false, noOpen: args.values["no-open"] === true, isolate: args.values.isolate === true,
     cache, request,
   };
 }
@@ -144,6 +146,9 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
  * borrows it. The host stops the state's producers inside its drain step, so
  * jobs and downloads end while the engine is alive, as before the split. */
 export async function startModelServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
+  // --isolate: the same persistent state, with the model host in a worker process behind a proxy.
+  if (options.isolate) return (await import("./serve-isolated")).startIsolatedServer(model, options);
+  const { startModelHost } = await import("./serve-host");
   const state = await createAppState(options, options.storagePaths ?? {});
   let host: RunningModelHost;
   try { host = await startModelHost(state, model, options, { beforeDrain: state.close }); }
@@ -163,8 +168,8 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
 
 /** Main's `serve <whisper checkpoint>`: the transcription-only host has no
  * chat model, jobs, downloads, or web app, so no persistent state is composed. */
-export function startTranscriptionServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
-  return startTranscriptionHost(model, options);
+export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions): Promise<RunningApp> {
+  return (await import("./serve-host")).startTranscriptionHost(model, options);
 }
 
 export interface SignalPort {
@@ -237,6 +242,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     startup.signal.throwIfAborted();
     if (selection.m.modelType === "whisper") {
       // Main: a Whisper checkpoint as the main model starts the transcription-only server.
+      if (options.isolate) throw new Error("--isolate is not supported for the transcription-only server: a Whisper checkpoint as the main model has no chat model to isolate");
       deps.log(`Serving ${selection.m.repoId} as a transcription-only server${options.whisper?.preload ? " (loading the weights first)" : ""}`);
       running = await deps.startTranscription(selection.m, options);
     } else {
@@ -277,7 +283,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     deps.log(`POST ${url.replace("/#/chat", "/v1/audio/transcriptions")} (${residency}; ${options.whisper?.preload ? "loaded" : "loads on first request"})\nStop: Ctrl+C`);
     return app;
   }
-  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
+  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? " in an isolated engine worker" : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {
     try { await deps.open(url); } catch (error) { deps.error(error); }
   }
