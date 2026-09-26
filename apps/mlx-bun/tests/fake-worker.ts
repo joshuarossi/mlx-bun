@@ -145,8 +145,6 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   return Response.json({ error: { message: "Not found" } }, { status: 404 });
 } } as unknown as Parameters<typeof Bun.serve>[0]);
 
-console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid, version: launch.version })));
-event("ready");
 const stop = async () => {
   console.error("stopping"); event("stop");
   if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
@@ -154,3 +152,6 @@ const stop = async () => {
 };
 process.on("SIGTERM", stop);
 void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();
+// Ready only once SIGTERM and the parent's departure are handled, so a stop right after readiness is always observed.
+console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid, version: launch.version })));
+event("ready");

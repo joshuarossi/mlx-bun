@@ -40,15 +40,11 @@ export function webChatToolAllowlist(memoryToolNames: readonly string[] = [], co
 export const LOOP_HYGIENE = {
   /** After this many consecutive FAILED calls with the same signature
    *  (name + JSON-stable args), the nudge text asks the model to change
-   *  approach instead of repeating verbatim. optiq Lab's documented
-   *  budget (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-   *  beat-matrix Axis 7) is 3. */
+   *  approach instead of repeating verbatim. */
   MAX_CONSECUTIVE_FAILURES: 3,
   /** Cap on AgentSession's turnIndex (one assistant-response round, per
    *  agent-session.js's _turnIndex) within a single user prompt before
-   *  every further tool call is blocked with a force-finish nudge.
-   *  optiq Lab's documented cap (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
-   *  beat-matrix Axis 7) is 25. */
+   *  every further tool call is blocked with a force-finish nudge. */
   MAX_TOOL_TURNS: 25,
 } as const;
 

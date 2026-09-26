@@ -97,7 +97,7 @@ export function renderModelPopBodyHtml(models: LibraryRow[]): string {
   const rows = pickModel(models).map(renderRow).join("");
   return (
     rows +
-    '<div class="mp-foot-note">Fit is predicted for THIS Mac (@mlx-bun/inference/execution/fit), not a generic guess. ' +
+    '<div class="mp-foot-note">Fit is predicted for THIS Mac, not a generic guess. ' +
     "Switching the served model restarts the process — there's no live " +
     "in-process swap yet; copy the command above and restart.</div>" +
     browseRow
