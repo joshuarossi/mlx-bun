@@ -333,8 +333,12 @@ Hugging Face credential and upload routes are described under publishing below.
 Inside `server/`, request parsing and prompt preparation precede the single-use
 admission plan. The completion executor consumes the engine contract; the sink
 and OpenAI wire modules own reasoning/tool/content events, JSON, and SSE.
-`prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` adapts
-HTTP content parts to the library's numerical input builders. Grammar and media
+`prompt-contracts.ts` describes owned media inputs; `media-prompt.ts` owns the
+HTTP media policy (which content parts are present, the video guard, and the 400
+text for each refusal) and delegates to the loaded model's media preparation.
+`engine/media-preparation.ts` binds one route per family when the model loads;
+each route borrows the context's tokenizer, template, token ids and lazily loaded
+towers and calls the library's numerical input builders. Grammar and media
 work enter the engine's preparation domain before allocating native resources.
 Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
 requests and semantic completion events, including tools, thinking, and usage.

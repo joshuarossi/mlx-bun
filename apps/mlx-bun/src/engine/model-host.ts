@@ -9,6 +9,7 @@ import type { ChatTemplate, LoadedTokenizer } from "@mlx-bun/inference/input";
 import type { AdapterManager } from "@mlx-bun/inference/adapters";
 import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "@mlx-bun/inference/input/vision";
 import type { AudioTower } from "@mlx-bun/inference/models/audio/conformer";
+import type { MediaPreparation } from "./media-preparation";
 import { sidecarShipsAudioTower } from "@mlx-bun/hub/registry";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
@@ -50,6 +51,8 @@ export interface ModelContext<Model = RuntimeModel> {
   loadAudio: (() => AudioTower) | null;
   /** null when the model has no `audio_config` (audio-incapable). */
   audioTokenIds: AudioTokenIds | null;
+  /** Family media preparation, bound once at load; borrows this context. */
+  media: MediaPreparation;
   adapters: AdapterService;
   /** Per-layer KV quantization from the repo's kv_config.json (null if
    *  absent). Applied by default — optiq serve's headline behavior;
@@ -413,7 +416,22 @@ export async function loadContext(
       const gemma = model;
       owned.add({ dispose() { CompiledDecode.release(gemma); } });
     }
-    const context = {
+    const template = await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => ChatTemplate.load(dir));
+    const id = modelId ?? modelDir.split("/").filter(Boolean).at(-1)!;
+    const visionTokenIds = {
+      imageTokenId: (config.raw.image_token_id as number) ?? 258880,
+      boiTokenId: (config.raw.boi_token_id as number) ?? 255999,
+      eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
+    };
+    const audioTokenIds = config.raw.audio_config
+      ? {
+          audioTokenId: (config.raw.audio_token_id as number) ?? 258881,
+          boaTokenId: (config.raw.boa_token_id as number) ?? 256000,
+          eoaTokenId: (config.raw.eoa_token_id as number) ?? 258883,
+        }
+      : null;
+    const { bindMediaPreparation } = await import("./media-preparation");
+    const context: Omit<ModelContext, "dispose"> = {
       draft,
       model,
       profile,
@@ -422,8 +440,8 @@ export async function loadContext(
       kvConfig: config.kvQuant,
       genDefaults: await loadGenSamplingDefaults(modelDir),
       tokenizer,
-      template: await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => ChatTemplate.load(dir)),
-      modelId: modelId ?? modelDir.split("/").filter(Boolean).at(-1)!,
+      template,
+      modelId: id,
       // Vision is loaded lazily (getVisionTower) — text-only sessions never
       // pay for the tower. The loader picks the encoder-free gemma4_unified
       // (12B) tower vs the SigLIP encoder (e2b/e4b/26B/31B) by the sidecar's
@@ -431,22 +449,18 @@ export async function loadContext(
       // MiniCPM5 never ships one.
       vision: null,
       loadVision: await makeVisionLoader(modelDir, model, config),
-      visionTokenIds: {
-        imageTokenId: (config.raw.image_token_id as number) ?? 258880,
-        boiTokenId: (config.raw.boi_token_id as number) ?? 255999,
-        eoiTokenId: (config.raw.eoi_token_id as number) ?? 258882,
-      },
+      visionTokenIds,
       // Audio mirrors vision: lazy tower from the same sidecar, loaded on the
-      // first audio request only (docs/design/generic-model-support.md A4).
+      // first audio request only (`02d723a:docs/design/generic-model-support.md` §6.6).
       audio: null,
       loadAudio: await makeAudioLoader(modelDir, model, config),
-      audioTokenIds: config.raw.audio_config
-        ? {
-            audioTokenId: (config.raw.audio_token_id as number) ?? 258881,
-            boaTokenId: (config.raw.boa_token_id as number) ?? 256000,
-            eoaTokenId: (config.raw.eoa_token_id as number) ?? 258883,
-          }
-        : null,
+      audioTokenIds,
+      // The family route is chosen once; it borrows the towers through this
+      // context's lazy slots, so the context stays their only owner.
+      media: await bindMediaPreparation({
+        modelId: id, tokenizer, template, visionTokenIds, audioTokenIds,
+        visionTower: () => getVisionTower(context), audioTower: () => getAudioTower(context),
+      }, model),
     };
     return ownModelContext(context, [...owned].reverse());
   } catch (error) { return cleanupFailure(error, () => disposeResources([...owned].reverse())); }
@@ -494,7 +508,7 @@ export async function makeVisionLoader(
  *  to load is a capability gap, not a fatal error: returns null and the
  *  request is answered with a 400 (the loader is cleared so we don't retry
  *  a known-bad load every request). */
-export function getVisionTower(ctx: LoadedModelContext): VisionEncoder | null {
+export function getVisionTower(ctx: Pick<ModelContext<unknown>, "vision" | "loadVision">): VisionEncoder | null {
   if (ctx.vision) return ctx.vision;
   if (!ctx.loadVision) return null;
   try {
@@ -536,7 +550,7 @@ export async function makeAudioLoader(
  *  degrade. A failed load is not retried every request. (The stub-sidecar
  *  case — the local 12B state — never gets here: makeAudioLoader checks the
  *  sidecar header and returns a null loader.) */
-export function getAudioTower(ctx: LoadedModelContext): AudioTower | null {
+export function getAudioTower(ctx: Pick<ModelContext<unknown>, "audio" | "loadAudio">): AudioTower | null {
   if (ctx.audio) return ctx.audio;
   if (!ctx.loadAudio) return null;
   try {
