@@ -32,6 +32,7 @@ jobs:
           bun run --cwd packages/mlx build:native "$RUNNER_TEMP/mlx-native"
           bun run --cwd packages/mlx stage:native "$RUNNER_TEMP/mlx-native/lib"
           bun run --cwd packages/inference build:native
+          bun run --cwd apps/mlx-bun build:native
       - run: bun run test
       - name: Exercise training numerics with staged native libraries
         run: bun run --filter @mlx-bun/training test:native
