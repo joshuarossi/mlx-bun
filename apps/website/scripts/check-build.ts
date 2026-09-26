@@ -6,7 +6,7 @@ const root = resolve(import.meta.dir, "../../.."), dist = resolve(import.meta.di
 const pages = new Map<string, string>();
 for await (const path of new Bun.Glob("**/*.html").scan(dist))
   pages.set(`/${path}`, await readFile(resolve(dist, path), "utf8"));
-if (!pages.has("/index.html") || !pages.has("/reference/cli/index.html")) throw new Error("Missing site entry or CLI reference");
+if (!pages.has("/index.html") || !pages.has("/reference/cli/index.html") || !pages.has("/api/index.html")) throw new Error("Missing site entry, CLI reference, or library API");
 // Public URLs from the previous site remain navigable, even when their old
 // prose is deliberately replaced by a redirect to the current explanation.
 for (const path of ["getting-started/introduction", "getting-started/installation", "getting-started/quickstart",

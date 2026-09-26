@@ -36,6 +36,7 @@ export default defineConfig({
       ] },
       { label: 'Developers', items: [
         { label: 'Using the libraries', slug: 'guides/library' },
+        { label: 'Library API', link: '/api/' },
         { label: 'CLI reference', slug: 'reference/cli' },
         { label: 'Correctness', slug: 'about/correctness' },
       ] },
