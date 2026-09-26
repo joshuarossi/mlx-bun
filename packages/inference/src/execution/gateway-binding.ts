@@ -59,10 +59,14 @@ export interface MlxGatewayBinding {
 export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
   const runtime = runtimeConfig();
   let continuationServices: MlxSerialServices | undefined;
+  // Manual softcap attention is qualified for ordinary plain-KV requests.
+  // Encoded attention and grouped methods need their own numerical evidence.
+  const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model };
   const cachesBatchable = () => {
     if (model instanceof UniversalDenseModel)
-      return !model.args.maskArray && !model.args.layerTypes?.includes("sliding_attention");
+      return (!model.args.maskArray || model.args.modelType === "gemma2") &&
+        !model.args.layerTypes?.includes("sliding_attention");
     const caches = model.makeCache();
     try {
       const ssm = runtime.value("MLX_BUN_BATCH_SSM") !== "0";
@@ -75,14 +79,14 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     try { return caches.every(cache => targetRowLayoutFactory(cache) !== undefined); }
     finally { disposeResources(caches); }
   };
-  const speculative = draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
+  const speculative = !plainSoftcap && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
-  const grammarProvider = runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
+  const grammarProvider = !plainSoftcap && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
     Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
-  const adapterState = "loraState" in model ? model.loraState : undefined;
-  const fillRequests = supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
+  const adapterState = !plainSoftcap && "loraState" in model ? model.loraState : undefined;
+  const fillRequests = !plainSoftcap && supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
     bindEmbeddingsInput((ids, caches, start) => start > 0 ? model.forwardHidden(ids, caches)
       : model.forwardEmbeddings(input.embeddings,
@@ -133,7 +137,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        sharedCheckpoints: !!continuationServices?.checkpointPersistence &&
+        continuous: scheduling.continuous && !(plainSoftcap && (request.hasDraft || options.fill)),
+        quantizedBatch: !plainSoftcap && scheduling.quantizedBatch,
+        sharedCheckpoints: !plainSoftcap && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
@@ -146,11 +152,11 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         speculativeLogprobs: scheduling.continuous && !!sharedMethod,
         sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
-        turboQuantBatch: scheduling.quantizedBatch,
+        turboQuantBatch: !plainSoftcap && scheduling.quantizedBatch,
         speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
-        grammarBatch: runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
+        grammarBatch: !plainSoftcap && runtime.value("MLX_BUN_GRAMMAR_BATCH") !== "0",
         speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
           (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
           (!options.kvConfig?.length && model instanceof Qwen35Model &&
@@ -165,6 +171,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     },
     cachesBatchable,
     kvBatchable(scheme) {
+      if (plainSoftcap && scheme.kind !== "bf16") return false;
       const caches = model.makeCache();
       try {
         return scheme.batchable(model.config,

@@ -56,7 +56,9 @@ export interface ChatRequestParams {
    *  adds preserve_thinking (keep think blocks from history; template default
    *  true — better prompt-cache reuse in agent loops). */
   chat_template_kwargs?: {
-    enable_thinking?: boolean;
+    /** Absent inherits server/model defaults; a boolean overrides them.
+     * null leaves thinking to the chat template itself, bypassing both defaults. */
+    enable_thinking?: boolean | null;
     preserve_thinking?: boolean;
     [key: string]: unknown;
   };

@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from "node:path";
 const workspace = resolve(import.meta.dir, "..");
 const args = process.argv.slice(2);
 if (args.includes("--help")) {
-  console.log("Usage: bun scripts/verify-packages.ts [--keep] [--app-only]\nPack workspace libraries and the app, install into a temporary Bun project, import every public entry,\nand run model-free consumer tests and examples against bundled natives.\nRequires staged native artifacts; does not download models or publish packages.\n--keep retains the temporary project for inspection.\n--app-only checks the installed CLI without building or loading native libraries.");
+  console.log("Usage: bun scripts/verify-packages.ts [--keep] [--app-only]\nPack workspace libraries and the app, install into a temporary Bun project, import every public entry,\nand run model-free consumer tests and examples against bundled natives.\nRequires staged native artifacts; does not download models or publish packages.\n--keep retains the temporary project for inspection.\n--app-only checks the installed CLI and builds the microphone helper without loading MLX or accessing audio.");
   process.exit(0);
 }
 if (args.some(arg => arg !== "--keep" && arg !== "--app-only")) throw new Error("Unknown option; use --help");
@@ -34,8 +34,10 @@ try {
     const directory = dirname(join(workspace, path));
     const archive = join(archives, `${basename(directory)}.tgz`);
     console.log(`Packing ${manifest.name}`);
-    if (manifest.name === "mlx-bun" && args.includes("--app-only"))
+    if (manifest.name === "mlx-bun" && args.includes("--app-only")) {
       await run([process.execPath, "run", "build:web"], directory);
+      await run([process.execPath, "run", "build:native"], directory);
+    }
     await run([process.execPath, "pm", "pack", "--filename", archive, "--quiet", ...(args.includes("--app-only") ? ["--ignore-scripts"] : [])], directory);
     const packed = JSON.parse(await run(["tar", "-xOf", archive, "package/package.json"], workspace));
     for (const [name, range] of Object.entries(packed.dependencies ?? {})) {
@@ -94,6 +96,14 @@ try {
   assert.equal(await realpath(linkedBin), await realpath(join(workspace, "apps/mlx-bun/bin/mlx-bun.mjs")));
   assert.equal(await run([linkedBin, "--version"], consumer, noNative), version);
   await run([process.execPath, "-e", `
+    const { resolveMicCapture, MIC_CAPTURE_STAGED } = await import("./node_modules/mlx-bun/src/engine/mic-capture.ts");
+    const { realpathSync } = await import("node:fs");
+    const helper = await resolveMicCapture();
+    if (helper !== MIC_CAPTURE_STAGED || !realpathSync(helper).startsWith(realpathSync(process.cwd()) + "/"))
+      throw new Error("Microphone helper escaped installed package");
+    const check = Bun.spawnSync([helper, "--help"], { stdout: "pipe", stderr: "pipe" });
+    if (check.exitCode !== 0 || !check.stdout.toString().includes("Usage: mlx-bun-mic-capture"))
+      throw new Error("Installed microphone helper failed help: " + check.stderr.toString());
     const { createWebHandler } = await import("./node_modules/mlx-bun/src/web/assets.ts");
     const handle = await createWebHandler();
     for (const path of ["/", "/assets/app.js", "/assets/hljs.js", "/assets/hljs.css", "/assets/icon.svg", "/manifest.webmanifest", "/sw.js"]) {
@@ -124,7 +134,8 @@ try {
   // tests directory; their spawned runs use the installed CLI entry.
   const installedTests = join(consumer, "node_modules/mlx-bun/tests");
   await mkdir(installedTests, { recursive: true });
-  const verbTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts"];
+  const verbTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts",
+    "transcribe-cli.test.ts", "dictate-cli.test.ts", "memory-cli.test.ts"];
   for (const file of verbTests) await cp(join(workspace, "apps/mlx-bun/tests", file), join(installedTests, file));
   env.MLX_BUN_LIBMLXC = "/does-not-exist";
   env.MLX_BUN_TEST_CLI = appEntry;

@@ -17,6 +17,8 @@ interface Harness {
   gate: { promise: Promise<void> } | null;
   /** Blocks `load` until released. */
   loadGate: { promise: Promise<void> } | null;
+  /** Blocks every session `feed` and `finish` until released; null runs immediately. */
+  feedGate: { promise: Promise<void> } | null;
   vadSegments: { start: number; end: number }[];
   clock: { now: number };
   timers: { scheduled: { id: number; ms: number; fn: () => void }[]; fire(): void };
@@ -28,7 +30,7 @@ function harness(): Harness {
   const scheduled: Harness["timers"]["scheduled"] = [];
   let nextTimer = 1;
   const h: Harness = {
-    events, transcribed, clock, gate: null, loadGate: null, vadSegments: [],
+    events, transcribed, clock, gate: null, loadGate: null, feedGate: null, vadSegments: [],
     timers: { scheduled, fire() { const timer = scheduled.shift(); timer?.fn(); } },
     runtime: {
       async load(dir) {
@@ -52,10 +54,11 @@ function harness(): Harness {
             const run: WhisperRun = {
               get segments() { return segments; },
               feedSilent(samples) { fed += samples.length; events.push(`silent ${samples.length}`); },
-              async feed(samples) { fed += samples.length; events.push(`feed ${samples.length}`); segments.push(segment(segments.length, ` chunk${segments.length}`)); },
+              async feed(samples) { fed += samples.length; events.push(`feed ${samples.length}`); await h.feedGate?.promise; segments.push(segment(segments.length, ` chunk${segments.length}`)); },
               async finish() {
                 if (finished) throw new Error("finished twice");
                 finished = true; events.push(`finish ${fed}`);
+                await h.feedGate?.promise;
                 return { text: segments.map(s => s.text).join("") + ` (${fed})`, segments, language: options.language ?? "en" };
               },
             };
@@ -304,4 +307,92 @@ test("a session whose run fails to start releases its reservation and the idle p
   expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
   loaded.start = start;
   await expect(whisper.transcribe(take)).resolves.toMatchObject({ result: { text: " hello" } });
+});
+
+test("deleting a session during an in-flight feed joins the feed before the weights are released", async () => {
+  const h = harness();
+  const whisper = service(h);
+  const session = await whisper.createSession();
+  let release!: () => void;
+  h.feedGate = { promise: new Promise<void>(resolve => { release = resolve; }) };
+  const fed = session.append(take).catch(error => error);
+  await Bun.sleep(0);
+  expect(h.events).toEqual(["load /whisper", "feed 16000"]);
+  let closed = false;
+  const closing = session.close().then(() => { closed = true; });
+  await Bun.sleep(0);
+  expect(closed).toBe(false);
+  expect(whisper.sessionCount).toBe(1); expect(whisper.resident).toBe(true);
+  expect(whisper.unload()).toBe(false);
+  expect(() => session.append(take)).toThrow(TranscriptionError);
+  release();
+  await closing; await fed;
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  expect(h.events).toEqual(["load /whisper", "feed 16000", "dispose"]);
+  await session.close();
+});
+
+test("deleting a session while it finishes waits for the finish, which still returns its result", async () => {
+  const h = harness();
+  const whisper = service(h);
+  const session = await whisper.createSession();
+  await session.append(new Float32Array(1000));
+  let release!: () => void;
+  h.feedGate = { promise: new Promise<void>(resolve => { release = resolve; }) };
+  const finishing = session.finish();
+  await Bun.sleep(0);
+  let closed = false;
+  const closing = session.close().then(() => { closed = true; });
+  await Bun.sleep(0);
+  expect(closed).toBe(false); expect(whisper.resident).toBe(true);
+  release();
+  expect((await finishing).result.text).toBe(" chunk0 (1000)");
+  await closing;
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  expect(h.events).toEqual(["load /whisper", "feed 1000", "finish 1000", "dispose"]);
+});
+
+test("closing the service stops admission, skips pending session work, joins the active take, then releases once", async () => {
+  const h = harness();
+  const whisper = service(h, { idleUnloadSec: 60 });
+  let releaseTake!: () => void;
+  h.gate = { promise: new Promise<void>(resolve => { releaseTake = resolve; }) };
+  const outcome = whisper.transcribe(take);
+  const session = await whisper.createSession();
+  const fed = session.append(take).catch(error => error);
+  await Bun.sleep(0);
+  expect(h.events).toEqual(["load /whisper", "transcribe 16000"]);
+  let closed = false;
+  const closing = whisper.close().then(() => { closed = true; });
+  await Bun.sleep(0);
+  expect(closed).toBe(false);
+  expect(h.events).not.toContain("dispose");
+  await expect(whisper.transcribe(take)).rejects.toMatchObject({ status: 503 });
+  await expect(whisper.createSession()).rejects.toMatchObject({ status: 503 });
+  releaseTake();
+  expect((await outcome).result.text).toBe(" hello");
+  expect(await fed).toBeInstanceOf(TranscriptionError);
+  await closing;
+  expect(closed).toBe(true);
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  expect(h.events).toEqual(["load /whisper", "transcribe 16000", "dispose"]);
+  await whisper.close();
+  expect(h.events.filter(event => event === "dispose")).toEqual(["dispose"]);
+});
+
+test("a session creation aborted by its request after the load releases the reservation and registers nothing", async () => {
+  const h = harness();
+  let releaseVad!: () => void;
+  const pending = new Promise<void>(resolve => { releaseVad = resolve; });
+  const whisper = service(h, { runtime: { ...h.runtime, vad: async path => { await pending; return h.runtime.vad(path); } } });
+  const request = new AbortController();
+  const creating = whisper.createSession({ vad: {}, signal: request.signal });
+  await Bun.sleep(0);
+  expect(whisper.resident).toBe(true);
+  request.abort(new Error("client gone"));
+  releaseVad();
+  await expect(creating).rejects.toThrow("client gone");
+  expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
+  expect(whisper.unload()).toBe(false);
+  expect(h.events).toEqual(["load /whisper", "vad load", "dispose"]);
 });

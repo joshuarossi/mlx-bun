@@ -58,7 +58,8 @@ The [executable behavior examples](tests/hub-cli.test.ts) demonstrate scanning,
 listing, fit estimates, and safe GC against a temporary synthetic cache with
 native MLX blocked. Run them with `bun run --filter mlx-bun test`.
 `bun scripts/verify-packages.ts --app-only` repeats those tests through an
-installed package artifact, without building or loading native libraries.
+installed package artifact, compiling only the app microphone helper and never
+loading MLX or accessing audio.
 
 `gc` previews changes unless `--yes` is supplied; `--dry-run` always prevents
 deletion. Cache location and Hugging Face credentials follow the
@@ -290,9 +291,55 @@ embedding remains part of the release migration.
 
 [Tool tests](tests/memory/tools.test.ts) exercise temporary vaults, and the
 [SDK test](tests/chat-runtime.test.ts) executes a memory tool through a real
-read-only Pi session with a synthetic loopback model. Synthesis, nightly
-scheduling, and the memory CLI remain unavailable; status and skill guidance
-say so explicitly. No read tool starts those lifecycles.
+read-only Pi session with a synthetic loopback model. No read tool starts a
+synthesis run.
+
+### Memory synthesis
+
+Main's nightly pipeline lives under `src/memory/` unchanged in prompts, stage
+order, database schema (`db.ts`, `~/.cache/mlx-bun/memory.sqlite`), vault
+layout, Git usage, and the dedup/normalize/reconcile rules: `pipeline.ts` drives
+the four resumable, chronological stage workers in `stages.ts` (SEGMENT via
+`chunk.ts`, ENTITY-EXTRACT via `entity.ts` + `resolve.ts`, ROUTE via `route.ts`,
+SYNTHESIZE via `synthesize.ts`/`cluster.ts`/`reconcile.ts`), then the
+deterministic `crosslink.ts` pass and the `wikify.ts` editorial sweep. `events.ts`
+holds the shared event contract so no stage imports the orchestrator.
+
+The engine is reached only through `model.ts`'s `MemoryCompletionClient` seam.
+The memory domain defines the interface; composition injects the one
+implementation, `server/memory-completion-client.ts`, which posts each stage
+call to a serving mlx-bun's own `/v1/chat/completions` (raw greedy sampling,
+neutral logit processors and the model template's thinking defaults, the
+stage's system/user turns, `adapter: "memory-chunk"` for the chunk stage when
+`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise) so
+synthesis rides the continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
+(default 1) bounds the calls in flight per batched stage. Nothing in the memory
+domain loads a model, and no serial lane exists. Each run receives its client
+and vault root explicitly; Meta policy reads use that same vault. A failed batch
+stops admission, cancels siblings, and joins them before returning its error.
+`server/memory-synthesis.ts` owns active server runs: request/body cancellation
+aborts the run, and server shutdown cancels and joins all synthesis before engine
+drain. Completed stage writes are resumable; cancellation does not roll them back.
+
+`GET /v1/memory/synthesize[?dry=1]` streams the run as SSE (`stage`/`log`/`done`
+events, a `summary`, then `[DONE]`; a failure ends with an `error` event); it is
+mounted only when composition supplies the pipeline. `mlx-bun memory` exposes
+main's subcommands: `status` (default), `open`, `list`, `search`, `toc`,
+`section`, `links`, `read`, `synthesize` (`--dry-run`; `--since`/`--model`
+parsed but not consumed, as in main), the stage workers `segment`, `extract`,
+`route`, `synthesize-stage` (`--limit`, `--convs`), and `link`. Model-driven
+subcommands talk to the server named by `--host`/`--port` (the serve defaults)
+and fail with a pointer to `mlx-bun serve` when none answers. The entity gold
+main read from `goldens/dreaming-entities-gold.json` is a published dataset:
+without that file the resolver runs unseeded (store aliases still fold).
+Deferred to the follow-up branch: `memory init`/`setup`, `schedule`,
+`unschedule`, and the schedule state in `status`, the `memory_status` tool, and
+`/api/memory/status`.
+
+[Pipeline tests](tests/memory/) port main's model-free suites with fake stage
+calls, in-test vaults, and an in-test entity gold; the
+[client test](tests/server/memory-completion-client.test.ts) and
+[verb test](tests/memory-cli.test.ts) use a fake fetch and a temporary HOME.
 
 ## Jobs, quantization, and fine-tuning
 
@@ -498,12 +545,66 @@ cover the flags, both `runServe` branches, and both compositions. The opt-in
 (`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_WHISPER_MODEL=<snapshot directory>`)
 serves a real checkpoint, transcribes a synthesized tone, and pages the weights
 out through the unload route; transcript parity against mlx-whisper is the
-library's contract, not this app check. The `transcribe` and `dictate` verbs
-and microphone capture are not ported yet ([PLAN](../../PLAN.md)).
+library's contract, not this app check.
+
+`mlx-bun transcribe <audio-file> [query]` is main's one-shot speech-to-text
+verb over the same service, no server. The clip is read and decoded (WAV
+through the exact PCM parser, anything CoreAudio reads through AudioToolbox)
+before any model is resolved, so a bad file never opens the registry. The
+model is `--model`, else the second positional, else `--query`, else the first
+downloaded `whisper` checkpoint (the `mlx-bun get` hint when none).
+`--language`, `--task translate`, `--beam-size`, `--temperature`,
+`--no-fallback`, `--prompt`, `--no-timestamps`, `--no-condition`,
+`--word-timestamps`, `--faithful`, and `--audio-ctx` keep main's decoding
+policy (the `(0, 0.2, …, 1.0)` fallback ladder unless a temperature or
+`--no-fallback` is given). `--vad` (with `--vad-threshold` and `--vad-model`)
+prints an empty result and never loads Whisper when the Silero gate finds no
+speech; `--vad-trim` is accepted without cropping, as in main. `--format` is
+`text` (default) | `json` | `verbose_json` | `srt` | `vtt`; `--verbose` prints
+each segment as it decodes and a realtime summary on stderr. SIGINT aborts the
+decode or the take, releases the weights, and exits 1. The file CLI accepts
+clips under 0.1 s, as main did; HTTP keeps its existing minimum duration.
+
+`mlx-bun dictate [query]` is main's push-to-talk loop. `engine/mic-capture.ts`
+spawns the AVAudioEngine sidecar (`native/mic-capture.swift` →
+`mlx-bun-mic-capture`: 16 kHz mono float32 PCM on stdout; `ready`, `hotkey
+down`, `hotkey up`, and `error:` lines on stderr; macOS asks for Microphone
+permission on first use), resolved from `MLX_BUN_MIC_CAPTURE`, beside the
+standalone executable, or the package's `dist/native/`. Source checkouts stage it
+explicitly with `bun run --filter mlx-bun build:native` (requires swiftc);
+`prepack` builds it into the published artifact. Runtime never compiles helpers.
+Enter starts and stops a take (`q` or
+Ctrl-C quits); `--hotkey [keycode]` holds a key instead (default 61, Right
+Option; needs Input Monitoring). Every 250 ms of audio feeds a transcription
+session while you speak, so the text lands about one window after the take
+ends, and the Silero gate keeps silence from running Whisper (`--no-vad` skips
+it and, unlike main, does not load its weights). The transcript prints;
+`--copy` pipes it to `pbcopy`; `--type` sends System Events keystrokes after
+`--type-delay` (1 s in Enter mode, 0 with `--hotkey`; needs Accessibility).
+The backend is the in-process service with `--idle-unload <s>` (default 30;
+0 = release after every take) and `--resident`, or `--server <url>` for a
+running server's `/v1/audio/sessions`. Stopping ends the sidecar's stdin,
+terminates it, joins it (SIGKILL after two seconds), and only then releases
+the weights. It cancels and joins session requests and active transcription,
+cleans up the open session, and prevents delayed copying or typing after
+cancellation. Ctrl-C exits 0, as in main.
+
+The [transcribe tests](tests/transcribe-cli.test.ts) and
+[dictate tests](tests/dictate-cli.test.ts) run both verbs over the real
+service with a fake runtime and a fake capture source (generated WAV and PCM,
+every format, chunked feeding, the VAD gate, residency, delivery, the server
+backend, cancellation joining the capture before the weights release) and
+spawn the CLI for help and error paths; they also run against the installed
+artifact in `verify-packages --app-only`. The
+[mic capture tests](tests/engine/mic-capture.test.ts) cover resolution, the
+sidecar protocol, and the terminate-and-join with shell stand-ins. A real
+microphone is exercised only by hand; package and relocated-bundle verification
+resolve the shipped helper and run `--help` before any audio initialization.
 
 ## Standalone bundle
 
-After staging the root native setup, run `bun run build:binary` from the root.
+After staging the root native setup and the app helper with
+`bun run --filter mlx-bun build:native`, run `bun run build:binary` from the root.
 `dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
 WASM sidecar, the project license, and combined MLX/inference third-party notices.
 Move the whole directory together. Web assets and the memory skill
@@ -513,7 +614,8 @@ build fallback. No terminal Pi assets are included.
 `bun run verify:binary` builds into temporary storage, relocates the directory,
 installs it through the curl installer using a local archive and temporary home,
 and checks the actual CLI and managed child plus a compiled consumer for web,
-memory, synthetic registry/fit, native path resolution and Photon initialization.
+memory, synthetic registry/fit, native path resolution, microphone helper help,
+and Photon initialization.
 The default performs no MLX/GPU operation or remote download. Mac CI runs this check.
 With exclusive GPU access, `bun run verify:binary --model /path/to/cached-model`
 also starts the actual relocated executable, checks its web assets, `/stats`,

@@ -73,8 +73,9 @@ name-drop unrelated remembered facts to sound familiar.
 
 The memory panel can browse the vault and explicitly initialize one with the
 user's agreement. These tools only read existing articles and references.
-Synthesis, nightly scheduling, and the memory CLI are unavailable during this
-migration. Do not claim they ran or offer their commands. `memory_status`
+Synthesis runs on demand: `mlx-bun memory synthesize` (or the web app's
+synthesize route) against a serving mlx-bun. Nightly scheduling is unavailable
+during this migration; do not claim a scheduled run happened. `memory_status`
 reports the vault and historical synthesis commits, not a live scheduler.
 
 ## What not to do
