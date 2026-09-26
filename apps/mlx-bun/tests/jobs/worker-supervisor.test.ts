@@ -174,3 +174,46 @@ test("close drains the serving worker before stopping it, joins a respawn in pro
     expect(existsSync(loading.socketPath)).toBe(false);
   } finally { await loading.engine.close(); loading.remove(); }
 });
+
+
+test("an already cancelled job and a cancellation at the readiness handoff never acquire a worker lease", async () => {
+  const fake = fixture();
+  try {
+    await fake.engine.ready;
+    for (const immediately of [true, false]) {
+      const cancelled = new AbortController();
+      const reason = new Error("job cancelled before acquisition");
+      if (immediately) cancelled.abort(reason);
+      const pending = fake.engine.acquireExecutionLease(cancelled.signal);
+      if (!immediately) cancelled.abort(reason);
+      // Dispose an incorrectly granted lease too, so the regression leaves no connection behind.
+      const result = await pending.then(lease => { lease.dispose(); return undefined; }, error => error);
+      expect(result).toBe(reason);
+    }
+    expect((await health(fake.engine)).leases).toBe(0);
+    const seen = await (await fake.engine.fetch("http://engine/fake/seen")).json() as { seen: { path: string }[] };
+    expect(seen.seen.some(request => request.path === "/admin/lease")).toBe(false);
+  } finally { await fake.engine.close(); fake.remove(); }
+});
+
+
+test("a respawn with an invalid readiness handshake is stopped and joined before the restart budget is spent", async () => {
+  let launches = 0;
+  const pids: number[] = [];
+  const fake = fixture({ spawn: ((command: string[], options: { env?: Record<string, string | undefined>; stdin: "pipe"; stdout: "pipe"; stderr: "pipe" }) => {
+    const process = Bun.spawn(command, { ...options,
+      env: { ...options.env, FAKE_WORKER_BAD_READY: launches++ === 0 ? "0" : "1" },
+    });
+    pids.push(process.pid);
+    return process;
+  }) as typeof Bun.spawn });
+  try {
+    await fake.engine.ready;
+    process.kill(fake.engine.pid!, "SIGKILL");
+    await until(() => fake.engine.state === "exhausted", "invalid handshakes to exhaust the restart budget", 2_000);
+    expect(launches).toBe(3);
+    expect(fake.engine.pid).toBeNull();
+    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+    expect(fake.errors.filter(line => line === "stopping")).toHaveLength(2);
+  } finally { await fake.engine.close(); fake.remove(); }
+});

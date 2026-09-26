@@ -25,8 +25,10 @@ export const MODEL_ROUTED = new Set(["/v1/chat/completions", "/v1/completions", 
 
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const stripHopByHop = (headers: Headers) => {
+  const excluded = new Set(HOP_BY_HOP);
+  for (const name of (headers.get("connection") ?? "").split(",")) excluded.add(name.trim().toLowerCase());
   const out = new Headers();
-  headers.forEach((value, key) => { if (!HOP_BY_HOP.has(key.toLowerCase())) out.set(key, value); });
+  headers.forEach((value, key) => { if (!excluded.has(key.toLowerCase())) out.set(key, value); });
   return out;
 };
 

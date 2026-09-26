@@ -9,6 +9,7 @@
 // FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load;
 // FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only (a pool's failed cold start);
 // FAKE_WORKER_LOAD_MS delays the ready line, like a weights load.
+// FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
 import { appendFileSync } from "node:fs";
 
 const PREFIX = "<mlx-bun-worker>";
@@ -125,7 +126,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   return Response.json({ error: { message: "Not found" } }, { status: 404 });
 } } as unknown as Parameters<typeof Bun.serve>[0]);
 
-console.log(PREFIX + JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid }));
+console.log(PREFIX + (process.env.FAKE_WORKER_BAD_READY === "1" ? "invalid-json" : JSON.stringify({ type: "ready", socketPath: launch.socketPath, modelId, pid: process.pid })));
 event("ready");
 const stop = () => { console.error("stopping"); event("stop"); void server.stop(true); process.exit(0); };
 process.on("SIGTERM", stop);
