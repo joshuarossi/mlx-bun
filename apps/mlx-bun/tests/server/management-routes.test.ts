@@ -98,12 +98,15 @@ test("a failed post-deletion registry scan still closes and invalidates discover
   expect(existsSync(join(repo, "snapshots/old"))).toBe(false);
 });
 
-test("GC refuses to prune an active superseded model, including a symlinked model path", async () => {
+test("GC refuses to prune an active superseded model, including a symlinked model path and any model a pool serves or loads", async () => {
   const { root, hub, repo } = syntheticCache();
   const snapshot = join(repo, "snapshots/old"), alias = join(root, "active-model");
   symlinkSync(snapshot, alias);
-  for (const servedModelPath of [snapshot, alias]) {
-    const routes = createManagementRoutes({ hubDirectory: hub, servedModelPath,
+  const served: Pick<Parameters<typeof createManagementRoutes>[0], "servedModelPath" | "servedModelPaths">[] = [{ servedModelPath: snapshot }, { servedModelPath: alias },
+    // A pool's set is read at execution time; one resident or loading model on the snapshot is enough.
+    { servedModelPaths: () => [join(repo, "snapshots/current"), alias] }, { servedModelPath: join(repo, "snapshots/current"), servedModelPaths: () => [snapshot] }];
+  for (const paths of served) {
+    const routes = createManagementRoutes({ hubDirectory: hub, ...paths,
       createRegistry() { throw new Error("must not rescan a rejected deletion"); },
       invalidateLibrary() { throw new Error("must not invalidate without deletion"); } });
     const response = (await routes.handle(request("/api/gc/execute", "POST", { yes: true })))!;

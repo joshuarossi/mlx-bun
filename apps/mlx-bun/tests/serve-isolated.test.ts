@@ -18,6 +18,7 @@ const entry = join(app, "tests/fake-worker.ts");
 const workerEnv = { MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
 const model = (root: string) => ({ repoId: "org/model", path: join(root, "model"), modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 }) as ModelRecord;
 const workerDirs = () => readdirSync(tmpdir()).filter(name => name.startsWith("mlx-worker-")).length;
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 test("the isolated composition and the serve entry never reach the engine or the native library through a runtime import", () => {
   // Static gate over import closures (type-only imports elided), following
@@ -110,6 +111,7 @@ test("the parent composes the persistent state and the proxy without the engine 
     assert.equal(await (await get("/")).text(), "web");
     const engine = await (await get("/engine")).json();
     assert.deepEqual([engine.isolated, engine.state, engine.pid, engine.restarts, engine.model, engine.socket, engine.last_exit], [true, "ready", launches[0].pid, 0, "org/model", launch.socketPath, null]);
+    assert.deepEqual(engine.pool, { cap: 1, default: "org/model", resident: [{ id: "org/model", pid: launches[0].pid, state: "ready", restarts: 0, socket: launch.socketPath }], loading: [] });
     assert.ok(dirname(engine.socket).startsWith(join(process.env.TMPDIR_PROBE, "mlx-worker-")) && existsSync(engine.socket));
     assert.deepEqual(notices, ["engine worker pid " + launches[0].pid + " ready (socket " + engine.socket + ")"]);
     assert.deepEqual(await (await get("/api/hub/local")).json(), { ok: true, models: [] });
@@ -129,11 +131,13 @@ test("the parent composes the persistent state and the proxy without the engine 
     assert.equal((await get("/unknown")).status, 404);
     const health = await (await get("/health")).json();
     assert.deepEqual([health.status, health.isolated, health.engine.state, health.engine.pid, health.engine.in_flight, health.engine.leases], ["ok", true, "ready", launches[0].pid, 0, 0]);
+    assert.deepEqual(health.pool, { cap: 1, default: "org/model", resident: ["org/model"], loading: [] });
     const stats = await (await get("/stats")).json();
     assert.deepEqual(stats.response_store, { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 });
     assert.deepEqual([stats.server.model, stats.admission.enforced_context_tokens, stats.engine.state], ["org/model", 2048, "ready"]);
     // Model-scoped routes reach the worker.
-    assert.equal((await (await get("/v1/models")).json()).data[0].id, "org/model");
+    const listed = (await (await get("/v1/models")).json()).data[0];
+    assert.deepEqual([listed.id, listed.resident], ["org/model", true]);
     const completion = await (await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "x", messages: [{ role: "user", content: "hi" }] }) })).json();
     assert.equal(completion.choices[0].message.content, "echo: hi");
     const seen = await (await get("/fake/seen")).json();
@@ -256,4 +260,65 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   expect(workerLog.slice(2)).toEqual(["drain requested", "stopping"]);
   expect(existsSync(dirname(socket))).toBe(false);
   expect(workerDirs()).toBe(before);
+}, 40_000);
+
+test("the model pool through the real composition: exact ids reach their own workers on sockets in the same private directory, the least recently used is evicted at the cap and respawned when named again, and shutdown joins every worker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-pool-"));
+  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--model-pool", "2", "--port", "0", "--no-open"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const records = ["org/model", "org/second", "org/third"].map(id => ({ ...model(root), repoId: id, path: join(root, id.split("/")[1]!) }) as ModelRecord);
+  const notices: string[] = [], workerLog: string[] = [];
+  const before = workerDirs();
+  const running = await startIsolatedServer(records[0]!, options, { entry, env: workerEnv, restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
+    createRegistry: () => ({ listCanonical: () => records, close() {} }),
+    notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) });
+  const base = `http://127.0.0.1:${running.port}`;
+  const chat = async (model?: string) => {
+    const response = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...(model ? { model } : {}), messages: [{ role: "user", content: "hi" }] }) });
+    return (await response.json() as { model: string }).model;
+  };
+  const engine = async () => await (await fetch(`${base}/engine`)).json() as { state: string; pid: number | null; socket: string | null;
+    pool: { cap: number; default: string; resident: { id: string; pid: number | null; state: string; restarts: number; socket: string }[]; loading: string[] } };
+  const pids: number[] = [];
+  let socketDir = "";
+  try {
+    const first = await engine();
+    pids.push(first.pid!);
+    socketDir = dirname(first.socket!);
+    expect(first.pool).toEqual({ cap: 2, default: "org/model", resident: [{ id: "org/model", pid: first.pid, state: "ready", restarts: 0, socket: first.socket! }], loading: [] });
+    // Two turns to two ids reach two workers.
+    expect(await chat("org/model")).toBe("org/model");
+    expect(await chat("org/second")).toBe("org/second");
+    const two = await engine();
+    expect(two.pool.resident.map(worker => worker.id)).toEqual(["org/model", "org/second"]);
+    expect(two.pool.resident.map(worker => dirname(worker.socket))).toEqual([socketDir, socketDir]);
+    pids.push(two.pool.resident[1]!.pid!);
+    expect(new Set(pids).size).toBe(2);
+    expect(notices).toContain(`engine worker pid ${pids[1]} ready for org/second (socket ${two.pool.resident[1]!.socket})`);
+    expect(await (await fetch(`${base}/v1/models`)).json()).toMatchObject({ data: [{ id: "org/model", resident: true }] });
+    // A third id evicts the least recently used (the default): its worker drains and stops, the parent's default fields go null, an empty model field brings it back.
+    expect(await chat("org/third")).toBe("org/third");
+    const three = await engine();
+    expect([three.state, three.pid, three.socket, three.pool.resident.map(worker => worker.id), three.pool.loading]).toEqual(["evicted", null, null, ["org/second", "org/third"], []]);
+    pids.push(three.pool.resident[1]!.pid!);
+    await until(() => !alive(pids[0]!), "the evicted default worker to exit");
+    expect(notices).toContain("evicting org/model (pool cap 2): draining, then stopping");
+    expect(await (await fetch(`${base}/health`)).json()).toMatchObject({ engine: { state: "evicted", pid: null }, pool: { cap: 2, default: "org/model", resident: ["org/second", "org/third"], loading: [] } });
+    expect(await chat()).toBe("org/model");
+    const back = await engine();
+    expect([back.state, back.pool.resident.map(worker => worker.id)]).toEqual(["ready", ["org/third", "org/model"]]);
+    pids.push(back.pid!);
+    expect(new Set(pids).size).toBe(4);
+  } finally {
+    await running.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+  for (const pid of pids) expect(alive(pid)).toBe(false);
+  expect(existsSync(socketDir)).toBe(false);
+  expect(workerDirs()).toBe(before);
+  expect(workerLog.filter(line => line.startsWith("loading"))).toEqual(["loading org/model", "loading org/second", "loading org/third", "loading org/model"]);
+  expect(workerLog.filter(line => line === "drain requested")).toHaveLength(4);
 }, 40_000);
