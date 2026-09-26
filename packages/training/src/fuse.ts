@@ -22,7 +22,7 @@ import { Weights } from "@mlx-bun/inference/artifacts";
 import { loadModelConfig, quantFor } from "@mlx-bun/inference/artifacts/config";
 import { loadAdapterTensors, readAdapterScale, adapterWeightsFile } from "@mlx-bun/inference/adapters";
 import { writeShardedSafetensors, type NamedTensor } from "@mlx-bun/inference/artifacts";
-import { copyAuxFiles } from "@mlx-bun/quantize/config-writer";
+import { copyAuxFiles } from "@mlx-bun/inference/artifacts/auxiliary-files";
 
 /** Quantize the allocator cache this often (in modules processed). */
 const CACHE_CLEAR_EVERY = 16;

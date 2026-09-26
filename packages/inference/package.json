@@ -78,6 +78,7 @@
     "./contracts/portable": "./src/contracts/portable/index.ts",
     "./contracts/mlx": "./src/contracts/mlx/index.ts",
     "./artifacts/config": "./src/artifacts/config.ts",
+    "./artifacts/auxiliary-files": "./src/artifacts/auxiliary-files.ts",
     "./models/support": "./src/models/support.ts",
     "./state/kv-scheme": "./src/state/kv-scheme.ts",
     "./artifacts/glm52/memory": "./src/artifacts/glm52/memory.ts",
