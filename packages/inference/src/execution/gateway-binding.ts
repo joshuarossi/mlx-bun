@@ -14,6 +14,8 @@ import { isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state
 import { SSMCache } from "../state/ssm";
 import { Gemma4Model } from "../models/gemma4/model";
 import { Qwen35Model } from "../models/qwen/qwen3_5";
+import { MiniCPM5Model } from "../models/minicpm5/model";
+import { affineQuantizedKvStart } from "../state/kv-maintenance";
 import { runtimeConfig, type RuntimeConfig } from "../runtime/config";
 import { disposeResources } from "../runtime/resources";
 import { legacyCompiledDecodeAvailable } from "../generation/bindings/autoregressive";
@@ -63,7 +65,14 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // grammar-constrained and adapter requests. Encoded attention and grouped
   // methods (speculative, fill) need their own numerical evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
-  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model };
+  // Delayed affine KV (plain rows convert once they pass quantizedKvStart) batches row by row for these families.
+  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model || model instanceof MiniCPM5Model };
+  // MiniCPM5's delayed affine KV is qualified for ordinary continuous decoding
+  // only. A draft or fill request over it is refused, as for softcap models;
+  // grammar jump falls back to ordinary masking and generation checkpoints
+  // skip it, until those compositions have their own evidence.
+  const delayedAffineOrdinaryOnly = (options: GenerateOptions) => model instanceof MiniCPM5Model && !options.turboQuant &&
+    (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   const cachesBatchable = () => {
     if (model instanceof UniversalDenseModel)
       return (!model.args.maskArray || model.args.modelType === "gemma2") &&
@@ -134,13 +143,14 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       } };
     } } : {}),
     plan(request, options, scheduling) {
+      const ordinaryOnly = delayedAffineOrdinaryOnly(options);
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(plainSoftcap && (request.hasDraft || options.fill)),
+        continuous: scheduling.continuous && !((plainSoftcap || ordinaryOnly) && (request.hasDraft || options.fill)),
         quantizedBatch: !plainSoftcap && scheduling.quantizedBatch,
-        sharedCheckpoints: !plainSoftcap && !!continuationServices?.checkpointPersistence &&
+        sharedCheckpoints: !ordinaryOnly && !plainSoftcap && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
@@ -160,7 +170,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         // The batch group coordinates per-row grammar for every family; masks
         // come from the shared sampler, so no model qualifies or declines them.
         grammarBatch: true,
-        speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
+        speculativeKvQuant: !ordinaryOnly && (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
           (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
           (!options.kvConfig?.length && model instanceof Qwen35Model &&
             (options.kvBits === 4 || (scheduling.continuous && !!sharedMethod && options.kvBits === 8)) &&
