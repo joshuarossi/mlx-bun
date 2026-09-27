@@ -161,10 +161,15 @@ This does not qualify every combination or multi-row configured-draft requests.
 Only the first cold decode/resume token may have signed versus unsigned int32
 metadata; its raw bytes, value and computed state must match exactly. Supplied
 fill also falls back to ordinary decoding without adapters or a configured draft:
-main ignored it on these graphs because no affine append binding exists. A
-main-only B1 baseline on MiniCPM5-1B and Qwen2.5-0.5B passed supplied strict/echo
-fill against no-fill controls with delayed KV4, zero fill use, identical full
-logits and valid cache planes. Candidate numerical qualification is pending.
+main ignored it on these graphs because no affine append binding exists.
+Paired B1 acceptance on cached MiniCPM5-1B and Qwen2.5-0.5B matched main and
+no-fill controls for supplied strict/echo fill, unseeded greedy sampling and
+KV4 starting at token 8. Each request generated 16 tokens across conversion;
+all 17 forward states, 16 full-vocabulary projections and valid cache planes
+matched, and every fill hook stayed unused. Main planned fill and disabled it
+inside generation; the new planner reports `fill-incompatible-with-request`
+and selects ordinary continuous decoding. This pair does not qualify B2 or
+cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
 delayed speculation, sliding descriptors and softcap encoded KV remain excluded. These checks do not cover cross-version checkpoint
 files, hard-kill durability, an external oracle or performance.
