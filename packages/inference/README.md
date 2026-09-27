@@ -87,6 +87,26 @@ test passed with measured main references. This covers these paths only, not
 stochastic speculative verification, other models, performance or full-candidate
 qualification. Raw evidence remains external.
 
+Three opt-in consumers repeat these checks. The
+[rotating-join test](tests/execution/rotating-join.test.ts) takes
+`MLX_BUN_TEST_ROTATING_JOIN_MODEL` (a Gemma4 artifact with sliding layers) and, for a
+custom graph over a Llama-family artifact's unchanged weights,
+`MLX_BUN_TEST_ROTATING_JOIN_WINDOW`; it runs late joins and two-row preparation with
+the prompt tail split off and on, each against the same run reading rows through an
+independent newest-window selection, and compares merged rows with their solo state.
+The [Gemma4 assistant test](tests/parity/gemma4-assistant.test.ts) takes
+`MLX_BUN_TEST_ASSISTANT_TARGET` and `MLX_BUN_TEST_ASSISTANT_DRAFT` and compares donor
+attention and deterministic draft chains with independently selected donors past the
+window. The [DiffusionGemma window test](tests/parity/diffusion-gemma-window.test.ts)
+takes `MLX_BUN_TEST_DIFFUSION_WINDOW_MODEL`, `MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE`
+(a directory holding `manifest.json` and raw tensors, produced outside this
+repository) and `MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE_SHA256`; the manifest pins
+the inputs, artifact files, producing runtime and every tensor. The artifact, inputs,
+geometry and reference tensors are verified before native libraries load; the
+producing runtime (MLX version, GPU architecture) is checked right after the native
+import, and each produced tensor's shape and dtype before its bytes. Each of these
+tests skips only when none of its settings is present.
+
 
 ### Repeatable runtime comparison
 
