@@ -4,6 +4,7 @@ import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config
 import { Gemma4Model } from "../../src/models/gemma4/model";
 import { UniversalDenseModel } from "../../src/models/universal/dense";
 import { KVCache } from "../../src/state/kv";
+import { RotatingKVCache } from "../../src/state/rotating-kv";
 import { KvScheme } from "../../src/state/kv-scheme";
 import type { GenerateOptions } from "../../src/generation/index";
 import type { ResolvedExecution } from "../../src/contracts/portable/execution";
@@ -218,8 +219,9 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding only",
   for (const scheme of [resolveKvScheme({ override: 4, quantizedKvStart: 64 }), resolveKvScheme({ override: 8, quantizedKvStart: 64 }),
     resolveKvScheme({ override: "config", config, quantizedKvStart: 64 })])
     expect(binding.kvBatchable(scheme)).toBe(true);
-  // A family without the capability still refuses a delayed start.
-  expect(bindMlxGateway(dense()).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
+  // A model without the capability still refuses a delayed start.
+  expect(bindMlxGateway(universal({ attnLogitSoftcap: 50, maskArray: true, modelType: "gemma2" }))
+    .kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
   expect(bindMlxGateway(dense()).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
 
   binding.configureContinuation!({ checkpointPersistence: {} } as never);
@@ -247,6 +249,67 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding only",
   expect(masked).toMatchObject({ mechanism: "continuous", method: "autoregressive", grammarJump: false });
   expect(masked.reasons).toContain("grammar-jump-incompatible-with-request");
   expect(jump.plan({ ...kv, hasGrammar: true }, immediate, { continuous: true, quantizedBatch: true, checkpoints: false }).grammarJump).toBe(true);
+});
+
+/** A universal descriptor over the model's own makeCache: caches follow the descriptor. */
+function universal(args: Record<string, unknown> = {}, layers = 4): UniversalDenseModel {
+  const descriptor = { modelType: "qwen2", maskArray: false, attnLogitSoftcap: null, layerTypes: null, slidingWindow: null,
+    numHiddenLayers: layers, ...args };
+  return Object.assign(Object.create(UniversalDenseModel.prototype), {
+    args: descriptor,
+    config: { modelType: descriptor.modelType, text: { enableMoeBlock: false, numHiddenLayers: layers,
+      layerTypes: (descriptor.layerTypes as string[] | null) ?? Array(layers).fill("full_attention") }, eosTokenIds: [] },
+    loraState: { active: [] },
+  });
+}
+
+test("plain universal KV batches delayed affine KV for ordinary continuous decoding only", () => {
+  const model = universal();
+  expect(model.makeCache().every(cache => cache instanceof KVCache && !(cache instanceof RotatingKVCache))).toBe(true);
+  const binding = bindMlxGateway(model, { provider: { grouped: {} } as never, numDraftTokens: 4 });
+  const config = [{ layerIdx: 0, bits: 8, groupSize: 64 }, { layerIdx: 2, bits: 4, groupSize: 64 }];
+  const delayedSchemes = [resolveKvScheme({ override: 4, quantizedKvStart: 8 }), resolveKvScheme({ override: 8, quantizedKvStart: 8 }),
+    resolveKvScheme({ override: "config", config, quantizedKvStart: 8 })];
+  for (const scheme of delayedSchemes) expect(binding.kvBatchable(scheme)).toBe(true);
+  // Descriptors whose layers are not all plain KV, or whose graph is not
+  // qualified, keep refusing a delayed start; immediate conversion is unchanged.
+  const sliding = universal({ modelType: "llama", layerTypes: ["full_attention", "sliding_attention", "full_attention", "sliding_attention"], slidingWindow: 16 });
+  expect(sliding.makeCache().some(cache => cache instanceof RotatingKVCache)).toBe(true);
+  for (const other of [sliding, universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 }),
+    universal({ modelType: "llama", maskArray: true })])
+    for (const scheme of delayedSchemes) expect({ other: other.args, batchable: bindMlxGateway(other).kvBatchable(scheme) })
+      .toEqual({ other: other.args, batchable: false });
+  expect(bindMlxGateway(universal({ modelType: "llama", maskArray: true })).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
+
+  binding.configureContinuation!({ checkpointPersistence: {} } as never);
+  const kv = { ...shape, kvQuant: true }, scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
+  const fill = { fill: { plan: { echo: false } } } as never;
+  for (const delayed of [{ kvBits: 4, quantizedKvStart: 8 }, { kvBits: 8 }, { kvConfig: config, quantizedKvStart: 8 }] as const) {
+    expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: false });
+    // Grammar and logprobs ride shared sampling; seeded and penalized sampling are ordinary.
+    for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }, { userSeed: true, hasRepetitionPenalty: true }])
+      expect(binding.plan({ ...kv, ...request }, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
+    // Drafts, fill and adapters over delayed affine KV are refused explicitly.
+    const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }],
+      [{ ...kv, hasAdapters: true }, { ...delayed, adapters: ["upper"] }]];
+    for (const [request, options] of refusals) {
+      const refused = binding.plan(request, options, scheduling);
+      expect(refused.mechanism).toBe("unsupported");
+      expect(refused.reasons).toContain("continuous-unavailable");
+    }
+  }
+  // Immediate quantization and plain KV keep their existing placement, adapters included.
+  const immediate = { kvBits: 4, quantizedKvStart: 0 };
+  expect(binding.plan(kv, immediate, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: true });
+  expect(binding.plan({ ...kv, hasDraft: true }, immediate, scheduling).method).toBe("speculative");
+  expect(binding.plan({ ...kv, hasAdapters: true }, { ...immediate, adapters: ["upper"] }, scheduling).mechanism).toBe("continuous");
+  expect(binding.plan({ ...shape, hasAdapters: true }, { adapters: ["upper"] }, scheduling).mechanism).toBe("continuous");
+  expect(binding.plan({ ...shape, hasDraft: true }, {}, scheduling).method).toBe("speculative");
+  // Grammar jump over delayed affine KV falls back to ordinary grammar masking with its reason.
+  const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(universal()));
+  const masked = jump.plan({ ...kv, hasGrammar: true }, { kvBits: 4, quantizedKvStart: 8 }, { continuous: true, quantizedBatch: true, checkpoints: false });
+  expect(masked).toMatchObject({ mechanism: "continuous", method: "autoregressive", grammarJump: false });
+  expect(masked.reasons).toContain("grammar-jump-incompatible-with-request");
 });
 
 // A strict or echo fill session; placement reads only its plan.
