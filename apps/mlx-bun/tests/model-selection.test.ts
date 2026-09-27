@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import { chooseAutoModel, DEFAULT_REPO_ID, resolveModelAuto, STARTER_REPO_ID, type ModelSelectionDependencies } from "../src/cli/model-selection";
+import { chooseAutoModel, DEFAULT_REPO_ID, STARTER_REPO_ID } from "../src/cli/model-choice";
+import { resolveModelAuto, type ModelSelectionDependencies } from "../src/cli/model-selection";
 
 const model = (repoId: string, sizeBytes = 100, modelType = "qwen3") => ({ repoId, sizeBytes, modelType, path: `/${repoId}` }) as ModelRecord;
 function selection(initial: ModelRecord[]) {

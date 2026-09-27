@@ -9,7 +9,8 @@
   },
   "exports": {
     "./client": "./src/server/client.ts",
-    "./engine": "./src/cli/engine-entry.ts"
+    "./engine": "./src/cli/engine-entry.ts",
+    "./selection": "./src/cli/model-choice.ts"
   },
   "engines": {
     "bun": ">=1.4.2"
