@@ -236,7 +236,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
   const { KVCache } = await import("@mlx-bun/inference/state");
   const { KvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
-    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
+    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
     makeCache: () => [new KVCache()], loraState: { active: [] },
   });
@@ -299,7 +299,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 places shared gen
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
-    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
+    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
     makeCache: () => [new KVCache()], loraState: { active: [] },
   });

@@ -1,14 +1,54 @@
 // Opt in with MLX_BUN_TEST_CONTINUATION_MODEL=/cached/checkpoint. No downloads.
 // Optional MLX_BUN_TEST_CONTINUATION_ADAPTER=/cached/adapter enables isolation checks.
+// Optional MLX_BUN_TEST_CONTINUATION_WINDOW=<n> builds a custom graph over a
+// Llama-family artifact's unchanged weights: alternating sliding (window n) and
+// full layers, one descriptor for the parsed config and the graph arguments.
+// It is not a published model.
+// Optional MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS=1 also restores interrupted
+// checkpoints in a fresh process: the parent writes them to a directory it owns,
+// releases its weights, runs this test once as a bounded child
+// (MLX_BUN_TEST_CONTINUATION_PHASE=child, which only restores and never spawns),
+// joins it, and then removes the directory.
 import { expect, test, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
+import type { Cache } from "@mlx-bun/inference/contracts/mlx";
 const target = Bun.env.MLX_BUN_TEST_CONTINUATION_MODEL;
 const adapter = Bun.env.MLX_BUN_TEST_CONTINUATION_ADAPTER;
 if (target && !existsSync(`${target}/config.json`)) throw new Error(`unavailable model: ${target}`);
 if (adapter && !existsSync(`${adapter}/adapters.safetensors`)) throw new Error(`unavailable adapter: ${adapter}`);
+const windowSetting = Bun.env.MLX_BUN_TEST_CONTINUATION_WINDOW;
+const freshProcess = Bun.env.MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS === "1";
+const phase = Bun.env.MLX_BUN_TEST_CONTINUATION_PHASE ?? "parent";
+const childDirectory = Bun.env.MLX_BUN_TEST_CONTINUATION_DIR;
+if (windowSetting !== undefined && !/^[1-9]\d*$/.test(windowSetting.trim()))
+  throw new Error("MLX_BUN_TEST_CONTINUATION_WINDOW must be a positive integer");
+if (phase !== "parent" && phase !== "child") throw new Error(`unknown continuation phase: ${phase}`);
+if ((phase === "child") !== !!childDirectory) throw new Error("the child phase and its directory come together");
+if (phase === "child" && freshProcess) throw new Error("a child never spawns another restore");
+
+/** The artifact's config, or the custom window descriptor applied to both the
+ * parsed config and the raw arguments the graph is built from. */
+async function continuationConfig() {
+  const { loadModelConfig } = await import("@mlx-bun/inference/artifacts");
+  const config = await loadModelConfig(target!);
+  if (windowSetting === undefined) return config;
+  if (!["llama", "mistral"].includes(config.modelType)) throw new Error(`a custom window needs a Llama-family artifact, not ${config.modelType}`);
+  const window = Number(windowSetting);
+  const types = Array.from({ length: config.text.numHiddenLayers }, (_, i) => i % 2 === 0 ? "sliding_attention" : "full_attention");
+  const raw = (config.raw.text_config ?? config.raw) as Record<string, unknown>;
+  raw.layer_types = [...types]; raw.sliding_window = window;
+  config.text.layerTypes = [...types]; config.text.slidingWindow = window;
+  return config;
+}
+/** The graph must carry the custom descriptor it was built from. */
+function checkDescriptor(model: { args?: { layerTypes?: string[] | null; slidingWindow?: number | null } }, config: { text: { layerTypes: string[]; slidingWindow: number } }) {
+  if (windowSetting === undefined) return;
+  expect({ layerTypes: model.args?.layerTypes, slidingWindow: model.args?.slidingWindow })
+    .toEqual({ layerTypes: config.text.layerTypes, slidingWindow: config.text.slidingWindow });
+}
 
 test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history from interrupted SSD checkpoints", async () => {
   const { AdapterManager } = await import("@mlx-bun/inference/adapters");
@@ -22,11 +62,37 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const ops = await import("@mlx-bun/mlx/ops");
   const { leaseCacheState, minimumReusableOffset, PromptCache, cloneKvCaches } = await import("@mlx-bun/inference/state");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
-  const directory = mkdtempSync(join(tmpdir(), "ordinary-continuation-"));
+  const directory = phase === "child" ? childDirectory! : mkdtempSync(join(tmpdir(), "ordinary-continuation-"));
   const weights = await Weights.open(target!);
+  let released = false;
   let manager: InstanceType<typeof AdapterManager> | undefined;
+  type Restore = { keys: string[]; tokens: number[] };
+  const expectedFresh: Record<number, { outputs: number[][]; captured: Record<string, string> } & Restore> = {};
+  /** What a restored run must show: each row restores its last interrupted
+   * capture (`tokens`, committed token counts in ascending order), then
+   * captures exactly the control's later checkpoints (`keys`, never empty). */
+  const restoredKeys = (batch: number, prompt: readonly number[], control: Map<string, string>, interrupted: Map<string, string>): Restore => {
+    const parse = (key: string) => { const [, row, generated] = /^row-(\d+):(\d+)$/.exec(key)!.map(Number); return { row: row!, generated: generated! }; };
+    const restoredAt = new Map<number, number>();
+    for (const key of interrupted.keys()) {
+      const { row, generated } = parse(key);
+      restoredAt.set(row, Math.max(restoredAt.get(row) ?? 0, generated));
+    }
+    expect([...restoredAt.keys()].sort((x, y) => x - y)).toEqual(Array.from({ length: batch }, (_, row) => row));
+    const keys = [...control.keys()].filter(key => parse(key).generated > restoredAt.get(parse(key).row)!).sort();
+    expect(keys.length).toBeGreaterThan(0);
+    return { keys, tokens: [...restoredAt.values()].map(generated => prompt.length + generated).sort((x, y) => x - y) };
+  };
+  const expectRestored = (replayed: { captured: Map<string, string>; restored: number[] }, expected: Restore, control: (key: string) => string | undefined) => {
+    expect(expected.keys.length).toBeGreaterThan(0);
+    expect([...replayed.restored].sort((x, y) => x - y)).toEqual(expected.tokens);
+    expect([...replayed.captured.keys()].sort()).toEqual(expected.keys);
+    for (const key of expected.keys) { expect(typeof control(key)).toBe("string"); expect(replayed.captured.get(key)).toBe(control(key)!); }
+  };
   try {
-    const model = createModel(weights, await loadModelConfig(target!));
+    const config = await continuationConfig();
+    const model = createModel(weights, config);
+    checkDescriptor(model as never, config);
     if (!("loraState" in model) || !model.loraState) throw new Error("continuation test requires adapter state");
     manager = new AdapterManager(model);
     const adapters = manager;
@@ -34,6 +100,51 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
     const adapterNamespace = adapter ? adapters.cacheNamespace(["upper"]) : "";
     const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
     const kv = await continuationKv(prompt.length);
+    /** A saved or restored checkpoint of `tokens` committed tokens (always
+     * after the prefill). Delayed conversion gives each converted cache the
+     * offset it converted at as its reuse floor. A start within the prompt
+     * converts at the first prefill maintenance boundary at or past it (a drain
+     * chunk's end or the prompt's end); a later start converts inside the next
+     * decode append once the committed offset has reached it, so a checkpoint
+     * of exactly `start` tokens taken after a decode step is still plain.
+     * Other artifacts may carry recurrent or other non-KV state, so they check
+     * only the floor's bound;
+     * the custom window graph is sliding and full KV layers throughout, so it
+     * also pins the exact floor, every offset, and each layer's planes:
+     * six encoded (K then V packed/scales/biases) once converted, two plain
+     * before and for layers a per-layer scheme leaves unconverted. */
+    const checkSaved = (caches: readonly Cache[], tokens: number) => {
+      if (kv.mode === "bf16" || kv.start === 0) return;
+      const converted = kv.start <= prompt.length || tokens > kv.start;
+      const minimum = minimumReusableOffset(caches);
+      if (windowSetting === undefined) {
+        if (converted) expect(minimum).toBeGreaterThanOrEqual(kv.start);
+        else expect(minimum).toBe(0);
+        return;
+      }
+      if (!converted) expect(minimum).toBe(0);
+      else if (kv.start > prompt.length) expect(minimum).toBe(kv.start);
+      else { expect(minimum).toBeGreaterThanOrEqual(kv.start); expect(minimum).toBeLessThanOrEqual(prompt.length); }
+      const layers = kv.options.kvConfig ? new Map(kv.options.kvConfig.map(entry => [entry.layerIdx, entry])) : null;
+      caches.forEach((cache, layer) => {
+        expect(cache.offset).toBe(tokens);
+        if (kv.mode === "turbo") return;
+        const spec = layers ? layers.get(layer) : { bits: kv.options.kvBits!, groupSize: kv.options.kvGroupSize ?? 64 };
+        const lease = leaseCacheState(cache);
+        try {
+          const planes = lease.borrow();
+          if (!converted || !spec) { expect(planes).toHaveLength(2); return; }
+          expect(planes).toHaveLength(6);
+          for (const at of [0, 3]) {
+            const [packed, scales, biases] = [planes[at]!, planes[at + 1]!, planes[at + 2]!];
+            expect(packed.dtypeName).toBe("uint32");
+            expect(biases.shape).toEqual(scales.shape);
+            expect(packed.shape.slice(0, 3)).toEqual(scales.shape.slice(0, 3));
+            expect(packed.shape[3]! * 32).toBe(scales.shape[3]! * spec.groupSize * spec.bits);
+          }
+        } finally { lease.close(); }
+      });
+    };
     const widths: number[] = [];
     const forward = model.forwardHidden.bind(model);
     const probe = (active: string[]) => {
@@ -61,7 +172,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         });
         const group = binding.createBatchGroup({ maxBatch: batch, kvScheme: kv.scheme, admissionHeld: () => held });
         const aborts = Array.from({ length: batch }, () => new AbortController());
-        const captured = new Map<string, string>();
+        const captured = new Map<string, string>(), restored: number[] = [];
         let idle!: () => void;
         const idleGate = new Promise<void>(resolve => { idle = resolve; });
         const persistence = new ContinuationPersistence(store, { maxBytes: 1024 ** 3,
@@ -81,7 +192,25 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: true });
           expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
           for (const [row, tokens] of outputs.entries()) requests.push(createOrdinaryContinuationRequest({
-            store, persistence, restore: entry => store.restore(entry, model), interval: 4, prompt,
+            store, persistence, interval: 4, prompt,
+            restore: entry => {
+              const loaded = store.restore(entry, model);
+              if (!loaded) return loaded;
+              try {
+                checkSaved(loaded.caches, loaded.tokens.length);
+                const planes = loaded.caches.map(cache => { const lease = leaseCacheState(cache); try { return lease.borrow().length; } finally { lease.close(); } });
+                console.log(`[continuation-restore] ${phase} B${batch} row ${row}: ${loaded.tokens.length} tokens, offsets ` +
+                  `${[...new Set(loaded.caches.map(cache => cache.offset))]}, minimum ${minimumReusableOffset(loaded.caches)}, ` +
+                  `planes ${[...new Set(planes)]} over ${loaded.caches.length} caches`);
+              } catch (error) {
+                // Ownership passes to the caller only on return.
+                for (const cache of loaded.caches) cache.dispose();
+                for (const attachment of loaded.attachments ?? []) for (const tensor of attachment.tensors) tensor.dispose();
+                throw error;
+              }
+              restored.push(loaded.tokens.length);
+              return loaded;
+            },
             options: { ...options, seed: 42 + row }, execution, identity: "same-B-fixture",
             onToken(token) {
               tokens.push(token);
@@ -95,12 +224,8 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
             const enqueue = request.continuation.captureOwned;
             request.continuation.captureOwned = state => {
               const digest = new Bun.CryptoHasher("sha256");
-              const minimum = minimumReusableOffset(state.caches);
               digest.update(JSON.stringify(state.caches.map(cache => ({ offset: cache.offset, minimum: cache.minimumReusableOffset ?? 0 }))));
-              if (kv.mode !== "bf16" && kv.start > 0) {
-                if (state.cacheTokens.length < kv.start) expect(minimum).toBe(0);
-                else expect(minimum).toBeGreaterThanOrEqual(kv.start);
-              }
+              checkSaved(state.caches, state.cacheTokens.length);
               for (const cache of state.caches) {
                 const lease = leaseCacheState(cache);
                 try { for (const plane of lease.borrow()) {
@@ -120,7 +245,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           expect(results.map(result => result.status)).toEqual(Array(batch).fill(interrupt ? "rejected" : "fulfilled"));
           expect(activeContexts.length).toBeGreaterThan(0);
           expect(activeContexts.every(ids => JSON.stringify(ids) === JSON.stringify(useAdapter ? ["upper"] : []))).toBe(true);
-          return { outputs, captured };
+          return { outputs, captured, restored };
         } finally {
           for (const abort of aborts) abort.abort(new Error("continuation test cleanup"));
           try { await group.close(); }
@@ -132,6 +257,19 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           expect(model.loraState!.active).toEqual([]);
         }
       };
+      if (phase === "child") {
+        // Fresh process: only restore the parent's interrupted checkpoints and
+        // continue exactly as the parent's uninterrupted control did.
+        const expected = JSON.parse(readFileSync(join(directory, "fresh-expected.json"), "utf8"))[batch];
+        const store = new SsdCacheStore(settings("fresh"));
+        expect(store.scan()).toBe(batch);
+        const replayed = await run(store, false);
+        expect(replayed.outputs).toEqual(expected.outputs);
+        expectRestored(replayed, expected, key => expected.captured[key]);
+        expect(store.stats.restores).toBe(batch);
+        expect(new SsdCacheStore(settings("fresh")).scan()).toBe(0);
+        continue;
+      }
       widths.length = 0;
       const control = await run(new SsdCacheStore(settings("control")), false);
       expect(widths).toContain(batch);
@@ -153,20 +291,55 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       const replayed = await run(restarted, false);
       expect(replayed.outputs).toEqual(control.outputs);
       for (const [key, hash] of interrupted.captured) expect(hash).toBe(control.captured.get(key)!);
-      for (const [key, hash] of replayed.captured) expect(hash).toBe(control.captured.get(key)!);
+      expect(control.restored).toEqual([]);
+      expectRestored(replayed, restoredKeys(batch, prompt, control.captured, interrupted.captured), key => control.captured.get(key));
       expect(restarted.stats.restores).toBe(batch);
       expect(new SsdCacheStore(settings("restart")).scan()).toBe(0);
+      if (freshProcess) {
+        // Interrupted checkpoints for the fresh-process restore, left on disk.
+        const fresh = await run(new SsdCacheStore(settings("fresh")), true);
+        expect(fresh.outputs.map(tokens => tokens.length)).toEqual(Array(batch).fill(kv.interruptAt));
+        for (const [key, hash] of fresh.captured) expect(hash).toBe(control.captured.get(key)!);
+        expectedFresh[batch] = { outputs: control.outputs, captured: Object.fromEntries(control.captured),
+          ...restoredKeys(batch, prompt, control.captured, fresh.captured) };
+      }
     }
+    if (phase === "child") return;
     if (adapter) {
       expect(manager.unmount("upper")).toBeGreaterThan(0);
       expect(manager.list()).toEqual([]);
       expect(probe(["upper"])).toEqual(baseLogits!);
     }
+    if (freshProcess) {
+      writeFileSync(join(directory, "fresh-expected.json"), JSON.stringify(expectedFresh));
+      // Release this process's model before the child loads its own: no
+      // overlapping GPU work and no parent weights held during the restore.
+      if (adapter && manager.list().length) manager.unmount("upper");
+      (model as { dispose?: () => void }).dispose?.();
+      weights.dispose(); clearCache(); released = true;
+      const child = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path, "--test-name-pattern", "^ordinary B1/B4 restore"], {
+        env: { ...process.env, MLX_BUN_TEST_CONTINUATION_PHASE: "child", MLX_BUN_TEST_CONTINUATION_DIR: directory,
+          MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS: "0" },
+        stdout: "pipe", stderr: "pipe", timeout: 240_000, killSignal: "SIGKILL" });
+      const stdout = child.stdout.toString(), stderr = child.stderr.toString(), output = stdout + stderr;
+      if (child.exitCode !== 0 || !output.includes("(pass) ordinary B1/B4 restore") || !/\b1 pass\b/.test(output) || !/\b0 fail\b/.test(output)) {
+        const diagnostics = `fresh-process restore child: exit ${child.exitCode}, signal ${child.signalCode ?? "none"}` +
+          `${child.exitedDueToTimeout ? ", killed at its deadline" : ""}\n--- child stdout ---\n${stdout}\n--- child stderr ---\n${stderr}`;
+        console.error(diagnostics);
+        throw new Error(diagnostics);
+      }
+      for (const line of output.split("\n")) if (line.startsWith("[continuation-restore] child")) console.log(line);
+    }
   } finally {
     try { if (adapter && manager?.list().length) manager.unmount("upper"); }
-    finally { weights.dispose(); clearCache(); rmSync(directory, { recursive: true, force: true }); }
+    finally {
+      if (!released) weights.dispose();
+      clearCache();
+      // The parent owns the directory; the child never removes it.
+      if (phase === "parent") rmSync(directory, { recursive: true, force: true });
+    }
   }
-}, 300_000);
+}, freshProcess ? 600_000 : 300_000);
 
 // Uses the same artifact/adapter opt-ins as continuation; a positive start is
 // required so this cannot pass by exercising only already-encoded caches.
@@ -183,7 +356,9 @@ test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START |
   const weights = await Weights.open(target!);
   let manager: InstanceType<typeof AdapterManager> | undefined;
   try {
-    const model = createModel(weights, await loadModelConfig(target!));
+    const config = await continuationConfig();
+    const model = createModel(weights, config);
+    checkDescriptor(model as never, config);
     manager = new AdapterManager(model);
     const adapters = manager, prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
     const kv = await continuationKv(prompt.length);

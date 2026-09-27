@@ -65,6 +65,9 @@ class UniversalAttention {
   readonly oProj: AnyLinear;
   readonly qNorm: RMSNorm | null;
   readonly kNorm: RMSNorm | null;
+  /** Bound at construction: the score softcap selects manual attention over
+   * plain K/V arrays; without it, view attention also reads encoded KV. */
+  readonly softcap: number | null;
 
   constructor(
     weights: Weights,
@@ -74,6 +77,7 @@ class UniversalAttention {
     readonly rope: UniversalRope,
     audit: WeightAudit,
   ) {
+    this.softcap = a.attnLogitSoftcap;
     if (a.fusedQkv) {
       this.qkvProj = loadLinear(weights, `${prefix}.qkv_proj`, config, audit);
       this.qProj = this.kProj = this.vProj = null;
@@ -147,7 +151,7 @@ class UniversalAttention {
 
     let attn: MlxArray;
     try {
-      if (a.attnLogitSoftcap !== null) {
+      if (this.softcap !== null) {
         const [keys, values] = cache.updateAndFetch(k, v);
         try { attn = this.#softcapAttention(q, keys, values, mask, B, L); }
         finally { keys.dispose(); values.dispose(); }
@@ -195,7 +199,7 @@ class UniversalAttention {
     queries.dispose();
 
     // tanh(scores / cap) * cap — same composition as logitSoftcap.
-    scores = disposing(scores, logitSoftcap(scores, a.attnLogitSoftcap!));
+    scores = disposing(scores, logitSoftcap(scores, this.softcap!));
 
     if (mask.mode === "array" && mask.arr) {
       // bool mask: where(mask, scores, finfo(scores.dtype).min)
@@ -452,6 +456,8 @@ export class UniversalDenseModel {
   // Cache layout and mask groups come from the same descriptor facts, bound
   // at construction; later edits to `args` cannot make them disagree.
   readonly #masks: UniversalMaskRecipe;
+  /** Whether every attention layer, as bound, reads encoded (affine) KV views. */
+  readonly encodedKvAttention: boolean;
   readonly #cacheWindows: readonly (number | null)[];
 
   constructor(weights: Weights, config: ModelConfig, args?: UniversalArgs) {
@@ -478,6 +484,7 @@ export class UniversalDenseModel {
       { length: a.numHiddenLayers },
       (_, i) => new UniversalLayer(weights, config, `model.layers.${i}`, a, this.ropes[i]!, audit),
     );
+    this.encodedKvAttention = this.layers.every(layer => layer.attn.softcap === null);
     this.finalNorm = a.norm === "layernorm"
       ? loadLayerNorm(weights, "model.norm", a.normEps, audit)
       : loadRmsNorm(weights, "model.norm", a.normEps, a.norm === "rmsnorm_plus_one", audit);

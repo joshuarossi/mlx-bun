@@ -87,6 +87,8 @@ const { RotatingKVCache } = await import("../../../src/state/rotating-kv");
 const { BatchedRotatingCache } = await import("../../../src/state/batched-rotating");
 const { rotatingSourcePosition } = await import("../../../src/state/rotating-kv-layout");
 const { plainRowStorage, temporalStorageView } = await import("../../../src/state/batched-row-storage");
+const { bindMlxGateway } = await import("../../../src/execution/gateway-binding");
+const { resolveKvScheme } = await import("../../../src/state/kv-scheme");
 function fixture() {
   const raw = { model_type: "gemma2", hidden_size: 32, num_hidden_layers: 1,
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
@@ -260,7 +262,9 @@ function mixedFixture(types: string[], explicitMask: boolean) {
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
     intermediate_size: 64, vocab_size: 96, rms_norm_eps: 1e-6,
     query_pre_attn_scalar: 16, attn_logit_softcapping: 50, final_logit_softcapping: 30 };
-  const config = { modelType: "gemma2", raw, quantization: null } as unknown as ModelConfig;
+  // The text facts gateway policy reads (layer types, window); the graph itself takes explicit args.
+  const config = { modelType: "gemma2", raw, quantization: null,
+    text: { numHiddenLayers: types.length, layerTypes: [...types], slidingWindow: W } } as unknown as ModelConfig;
   const arrays = new Map<string, MlxArray>();
   const add = (name: string, shape: number[]) => {
     using values = MlxArray.fromFloat32(Float32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
@@ -451,6 +455,41 @@ describe.skipIf(!native)("Universal construction binding", () => {
     try {
       expect(layout(caches[0]!)).toEqual(expected);
       expect(expected).toEqual(types.map(type => type === S ? W : "full"));
+      for (const tokens of CHUNKS) {
+        using a = edited.forward(tokens, caches[0]!), b = fresh.forward(tokens, caches[1]!);
+        expect(a.rawBytes()).toEqual(b.rawBytes());
+      }
+    } finally { caches.forEach(dispose); f.dispose(); g.dispose(); }
+  });
+});
+
+describe.skipIf(!native)("Universal attention bound at construction", () => {
+  const immediate = () => resolveKvScheme({ override: 4, quantizedKvStart: 0 });
+  const delayed = () => resolveKvScheme({ override: 4, quantizedKvStart: 64 });
+  test("a softcap graph keeps manual attention over plain KV after its descriptor drops the softcap", () => {
+    const f = fixture(), edited = f.make(), fresh = f.make();
+    const caches = [edited.makeCache(), fresh.makeCache()];
+    try {
+      expect(edited.encodedKvAttention).toBe(false);
+      edited.args.attnLogitSoftcap = null;
+      expect(edited.encodedKvAttention).toBe(false);
+      expect([bindMlxGateway(edited).kvBatchable(immediate()), bindMlxGateway(edited).kvBatchable(delayed())]).toEqual([false, false]);
+      for (const tokens of [[2, 4, 7], [8, 3], [6]]) {
+        using a = edited.forward(tokens, caches[0]!), b = fresh.forward(tokens, caches[1]!);
+        expect(a.rawBytes()).toEqual(b.rawBytes());
+      }
+    } finally { caches.forEach(dispose); f.dispose(); }
+  });
+
+  for (const [order, types] of ORDERS) test(`${order}: an encoded-KV graph keeps view attention after its descriptor gains a softcap`, () => {
+    // Separate fixtures build identical weights and separate descriptors.
+    const f = mixedFixture(types, false), g = mixedFixture(types, false), edited = f.make(), fresh = g.make();
+    const caches = [edited.makeCache(), fresh.makeCache()];
+    try {
+      expect(edited.encodedKvAttention).toBe(true);
+      edited.args.attnLogitSoftcap = 50;
+      expect(edited.encodedKvAttention).toBe(true);
+      expect([bindMlxGateway(edited).kvBatchable(immediate()), bindMlxGateway(edited).kvBatchable(delayed())]).toEqual([true, true]);
       for (const tokens of CHUNKS) {
         using a = edited.forward(tokens, caches[0]!), b = fresh.forward(tokens, caches[1]!);
         expect(a.rawBytes()).toEqual(b.rawBytes());

@@ -267,7 +267,25 @@ inside generation; the new planner reports `fill-incompatible-with-request`
 and selects ordinary continuous decoding. This pair does not qualify B2 or
 cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
-delayed speculation, sliding descriptors and softcap encoded KV remain excluded. These checks do not cover cross-version checkpoint
+delayed speculation and softcap encoded KV remain excluded. Universal graphs
+with sliding layers take the same ordinary delayed path when their bound
+attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
+a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8
+(not a published model) matched main's serial path at B1 in full logits and all
+valid cache planes for bf16, immediate affine, KV4 and KV8 converting in decode
+after the ring wrapped, and KV4 converting in prefill at token 32. Gateway and
+direct execution agreed at B1 and B2, with rows converting separately, a
+prefill-converted joiner, a cancelled row's survivor and same-group reuse
+matching a fresh group; the continuation test restored B1 and B4 rows in a
+fresh process for KV4 and KV8. Gemma4's delayed rotating rows share the
+single-row adoption: on e4b OptiQ-4bit, one-block and wrapped singletons matched
+main's serial path through conversion (hidden states, logits, valid planes and
+physical ring order), as did the speculative target layout and two rows in both
+orders at the same batch width; main-produced wrapped checkpoints loaded into
+both trees gave identical adoption and continuation, and RAM and disk restores
+agreed. A restored wrapped ring's continuation can still differ from the live
+one ([State and attention](#state-and-attention)). Captures and their content
+pins remain external. These checks do not cover cross-version checkpoint
 files, hard-kill durability, an external oracle or performance.
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
@@ -518,6 +536,14 @@ A rotating cache's `temporalView()` is its live window: the newest
 `min(offset, maxSize)` positions in chronological order, including right after a
 multi-token write leaves the ring oversized. Serial, batched, speculative and
 aligned rotating layouts select the same window.
+A single solo rotating row adopted into a shared layout keeps its physical
+columns, ring phase and offset, so it attends over its keys in the solo cache's
+order and later writes land where the solo cache's would; several rows are
+aligned in temporal order behind their left padding. `extractRow`, like mlx-lm's
+`BatchRotatingKVCache.extract`, and persistence store a row in temporal order,
+so a restored wrapped ring starts a new physical phase: its continuation can
+differ from the live row's, in main as well. RAM and disk restores agreed in the
+checks below.
 
 - `state/`: storage layout, positions, row membership, precision transitions,
   snapshots, and persistence. `persistence.worker.js` performs CPU disk I/O.
