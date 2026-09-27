@@ -1,9 +1,12 @@
 // The private admin surface an isolation worker serves on its Unix socket,
 // ahead of the model routes: readiness for the parent, a connection-owned
-// execution lease for managed GPU jobs, and a drain that stops admission and
-// waits for the work in flight. It is never mounted on a TCP listener, where
-// these paths keep answering 501 from the migration list.
+// execution lease for managed GPU jobs, a drain that stops admission and
+// waits for the work in flight, and the default model worker's memory task
+// model for the parent's synthesis. It is never mounted on a TCP listener,
+// where lease and drain keep answering 501 from the migration list and the
+// memory path is unknown (404).
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
 
 export interface WorkerRouteGroup { handle(request: Request): Promise<Response | null> }
 
@@ -21,9 +24,40 @@ export interface WorkerRoutesOptions {
    * lower it (`timeout_ms`). Default 120 s, the app's shutdown deadline. */
   drainTimeoutMs?: number;
   pid?: number;
+  /** The model form's memory task model (Gemma-4 e4b with its chunk adapter,
+   * loaded by the first call): `POST /admin/memory/complete` runs one memory
+   * `complete` or `completeBatch` on it for the `--isolate` parent's synthesis,
+   * under the execution lease; the call that loads it loads exactly the
+   * snapshot the call carries. The composition owns it and closes it after
+   * `close()` has joined the calls. Without it (or without a lease) the route
+   * answers 501. */
+  memoryTaskModel?: { clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient };
+}
+
+/** The private memory call's body: one `complete` (a single row) or one
+ * `completeBatch`, and `snapshot`, the task model directory the parent
+ * selected and retains on this worker, the one a loading call loads. */
+export interface WorkerMemoryCall { call: "complete" | "completeBatch"; snapshot: string; requests: MemoryCompletionRequest[] }
+
+function parseMemoryCall(value: unknown): WorkerMemoryCall {
+  const body = value as { call?: unknown; snapshot?: unknown; requests?: unknown } | null;
+  if (!body || typeof body !== "object" || (body.call !== "complete" && body.call !== "completeBatch"))
+    throw new Error('call expects "complete" or "completeBatch"');
+  if (typeof body.snapshot !== "string" || !body.snapshot) throw new Error("snapshot expects the selected task model directory");
+  if (!Array.isArray(body.requests) || (body.call === "complete" && body.requests.length !== 1))
+    throw new Error(body.call === "complete" ? "complete expects exactly one request" : "requests expects an array");
+  const requests = body.requests.map((row: unknown, index): MemoryCompletionRequest => {
+    const { stage, input, maxTokens } = (row ?? {}) as { stage?: unknown; input?: { system?: unknown; user?: unknown } | null; maxTokens?: unknown };
+    if (typeof stage !== "string" || !stage || !input || typeof input !== "object" || typeof input.user !== "string" ||
+      (input.system !== undefined && typeof input.system !== "string") || typeof maxTokens !== "number" || !Number.isSafeInteger(maxTokens) || maxTokens < 1)
+      throw new Error(`requests[${index}] expects { stage, input: { system?, user }, maxTokens >= 1 }`);
+    return { stage, input: { ...(input.system !== undefined ? { system: input.system as string } : {}), user: input.user }, maxTokens };
+  });
+  return { call: body.call, snapshot: body.snapshot, requests };
 }
 
 const encoder = new TextEncoder();
+const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 const methodNotAllowed = (allow: string) => Response.json({ error: { message: `use ${allow}` } }, { status: 405, headers: { allow } });
 
 /** The group is a wrapper so it can count the model requests it admits;
@@ -43,11 +77,11 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
   const state = (): WorkerState => draining ? "draining" : "ready";
   const health = () => Response.json({ status: "ok", state: state(), model: options.modelId,
     pid: options.pid ?? process.pid, in_flight: inFlight, leases: held.size });
+  const closing = () => Response.json({ error: { message: "worker is closing", type: "unavailable" } }, { status: 503 });
 
   // A parent-managed GPU job holds this response open. The connection owns
   // the lease, so the parent dying cannot strand the worker's execution lock.
   const lease = async (request: Request): Promise<Response> => {
-    const closing = () => Response.json({ error: { message: "worker is closing", type: "unavailable" } }, { status: 503 });
     const acquire = options.acquireExecutionLease;
     if (!acquire) return Response.json({ error: { message: "this worker has no execution lease", type: "not_implemented", path: "/admin/lease" } }, { status: 501 });
     if (closed) return closing();
@@ -76,6 +110,40 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
       start(controller) { entry.controller = controller; controller.enqueue(encoder.encode("leased\n")); },
       cancel() { entry.release(); },
     }), { headers: { "content-type": "application/octet-stream" } });
+  };
+
+  // The parent's synthesis sends one memory stage call or batch; the ordered
+  // raw outputs answer it (`{ outputs }`). The execution lease is taken before
+  // the task model's lazy load (of the call's snapshot) and released only
+  // after every row has joined, so memory work never overlaps generation or a
+  // managed job's lease. The parent disconnecting (a cancelled run, its
+  // shutdown) or close() aborts the rows; close() joins them.
+  const memory = async (request: Request): Promise<Response> => {
+    const task = options.memoryTaskModel, acquire = options.acquireExecutionLease;
+    if (!task || !acquire) return Response.json({ error: { message: "this worker has no memory task model", type: "not_implemented", path: "/admin/memory/complete" } }, { status: 501 });
+    if (closed) return closing();
+    let body: WorkerMemoryCall;
+    try { body = parseMemoryCall(await request.json()); }
+    catch (error) {
+      if (request.signal.aborted) return new Response(null, { status: 499 });
+      return Response.json({ error: { message: `invalid memory call: ${describe(error)}`, type: "invalid_request_error" } }, { status: 400 });
+    }
+    const signal = AbortSignal.any([request.signal, shutdown.signal]);
+    try {
+      const outputs = await track((async () => {
+        const exclusive = await acquire(signal);
+        try {
+          signal.throwIfAborted();
+          const client = task.clientFor(signal, body.snapshot);
+          return body.call === "complete" ? [await client.complete(body.requests[0]!)] : await client.completeBatch(body.requests);
+        } finally { exclusive.dispose(); }
+      })());
+      return Response.json({ outputs });
+    } catch (error) {
+      if (closed) return closing();
+      if (request.signal.aborted) return new Response(null, { status: 499 });
+      return Response.json({ error: { message: describe(error), type: "memory_failed" } }, { status: 500 });
+    }
   };
 
   // Drain: no new model request is admitted from now on (503), then wait for
@@ -123,12 +191,16 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
         if (pathname === "/admin/drain") return request.method === "POST" ? drain(request) : methodNotAllowed("POST");
         if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
         inFlight++;
-        try { return await model.handle(request); }
-        finally { if (--inFlight === 0) for (const wake of [...idleWaiters]) wake(); }
+        try {
+          // Memory calls are admitted and drained like model requests.
+          if (pathname === "/admin/memory/complete") return request.method === "POST" ? await memory(request) : methodNotAllowed("POST");
+          return await model.handle(request);
+        } finally { if (--inFlight === 0) for (const wake of [...idleWaiters]) wake(); }
       } };
     },
-    /** Shutdown: refuse new leases, cancel pending acquisitions and join them,
-     * and release every connection-held lease and end its stream, so the
+    /** Shutdown: refuse new leases and memory calls, cancel pending
+     * acquisitions and memory calls and join them (every row settled), and
+     * release every connection-held lease and end its stream, so the
      * listener's graceful stop is not waiting on a job's open connection. */
     async close(): Promise<void> {
       closed = true;

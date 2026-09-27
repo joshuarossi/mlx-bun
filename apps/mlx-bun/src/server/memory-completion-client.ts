@@ -1,9 +1,15 @@
-// Loopback memory completion client: the one implementation of the memory
-// domain's `MemoryCompletionClient`. Every stage call becomes a request to a
-// serving mlx-bun's own /v1/chat/completions, so synthesis rides the
-// continuous-batching scheduler like any other client — nothing here loads a
-// model or owns tensors. Composition roots (`serve`, the `memory` verb) build
-// explicit clients; the server creates one signal-bound client per synthesis run.
+// HTTP memory completion clients: the memory domain's `MemoryCompletionClient`
+// over a transport, never loading a model or owning tensors (the in-process
+// task model is `cli/memory-engine.ts`). Composition roots build explicit
+// clients; the server creates one signal-bound client per synthesis run.
+//
+// - The loopback client: every stage call becomes a request to a serving
+//   mlx-bun's own /v1/chat/completions, so synthesis rides the
+//   continuous-batching scheduler like any other client (`memory
+//   --host`/`--port`).
+// - The worker client (the `--isolate` parent): every stage call or batch is
+//   one request to the default model worker's private `/admin/memory/complete`,
+//   where that worker's memory task model runs it.
 //
 // Main's in-process client decoded greedily on the base model, activating the
 // trained `memory-chunk` adapter for the `chunk` stage only. The same policy
@@ -15,6 +21,7 @@
 // into synthesis.
 
 import { adapterDirFor, memoryBatchSize, memoryMessages, type MemoryCompletionClient, type MemoryCompletionRequest } from "../memory/model";
+import type { WorkerMemoryCall } from "./worker-routes";
 
 export interface MemoryClientHttp { fetch?: typeof fetch; signal?: AbortSignal }
 
@@ -101,4 +108,53 @@ export function createLoopbackMemoryClient(apiUrl: () => string, http: MemoryCli
   }
 
   return { complete, completeBatch };
+}
+
+/** Where one memory call goes: the worker (a pool supervisor's socket fetch)
+ * and the task model snapshot selected for it, which that worker loads if
+ * this call is the one that loads its task model. */
+export interface MemoryTarget { worker: { fetch(url: string, init?: RequestInit): Promise<Response> }; snapshot: string }
+
+/** The `--isolate` parent's client for one synthesis run: each `complete` or
+ * `completeBatch` is one POST of the rows and the selected snapshot to the
+ * private `/admin/memory/complete` of the worker `select` returns (the
+ * default model worker), answered with the ordered raw outputs. A failed
+ * selection fails the call as it is. The worker's task model runs the call
+ * under the worker's own execution lease; none is taken here (a pool lease
+ * would wait on that worker). The run's signal aborts the request, and the
+ * worker then aborts and joins every row. A call is never retried: a worker
+ * that stops mid-call fails it rather than replay a POST. */
+export function createWorkerMemoryClient(select: (signal: AbortSignal) => Promise<MemoryTarget>, signal: AbortSignal): MemoryCompletionClient {
+  const send = async (call: Omit<WorkerMemoryCall, "snapshot">): Promise<string[]> => {
+    signal.throwIfAborted();
+    const { worker, snapshot } = await select(signal);
+    const body: WorkerMemoryCall = { call: call.call, snapshot, requests: call.requests };
+    let response: Response;
+    try {
+      response = await worker.fetch("http://engine/admin/memory/complete", { method: "POST",
+        headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
+    } catch (error) {
+      if (signal.aborted) throw signal.reason;
+      throw new Error(`memory: the model worker did not complete the task model ${body.call} (${error instanceof Error ? error.message : String(error)}); it is not retried`);
+    }
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      let message = detail;
+      try {
+        const parsed = JSON.parse(detail) as { error?: { message?: unknown } } | null;
+        if (typeof parsed?.error?.message === "string") message = parsed.error.message;
+      } catch { /* not JSON: the text itself */ }
+      throw new Error(`memory: the model worker's task model ${body.call} failed (${response.status}): ${message.slice(0, 400)}`);
+    }
+    const { outputs } = await response.json() as { outputs?: unknown };
+    signal.throwIfAborted();
+    if (!Array.isArray(outputs) || outputs.length !== body.requests.length || !outputs.every(output => typeof output === "string"))
+      throw new Error(`memory: the model worker's task model ${body.call} answered no ordered outputs`);
+    return outputs as string[];
+  };
+  return {
+    complete: async request => (await send({ call: "complete", requests: [request] }))[0]!,
+    // An empty batch is answered here, as the task model answers it: without a call.
+    completeBatch: async requests => requests.length ? send({ call: "completeBatch", requests: [...requests] }) : [],
+  };
 }

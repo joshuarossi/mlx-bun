@@ -23,18 +23,19 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
     "POST /api/hub/download implemented [falls through if !options.downloads]", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
     "POST /v1/audio/sessions/{id}/finish implemented [falls through if !host]", "* /engine 501 not migrated"]) expect(serve).toContain(row);
   const isolate = rows(baseline, "isolate");
-  for (const row of ["* /admin/lease served by parent", "GET /engine implemented", "POST /v1/responses routed by model id", "POST /v1/embeddings routed by model id",
+  for (const row of ["* /admin/lease served by parent", "* /admin/memory/complete served by parent", "GET /engine implemented", "POST /v1/responses routed by model id", "POST /v1/embeddings routed by model id",
     "* (any other path) forwarded to the worker", "* /admin/lease 501 not migrated", "* /engine 501 not migrated"]) expect(isolate).toContain(row);
   expect(isolate).not.toContain("POST /v1/chat/completions implemented");
   const worker = rows(baseline, "worker");
-  for (const row of ["GET /health implemented", "* /health 405 method not allowed", "POST /admin/lease implemented", "POST /v1/chat/completions implemented"]) expect(worker).toContain(row);
+  for (const row of ["GET /health implemented", "* /health 405 method not allowed", "POST /admin/lease implemented", "POST /admin/memory/complete implemented",
+    "* /admin/memory/complete 405 method not allowed", "POST /v1/chat/completions implemented"]) expect(worker).toContain(row);
   // The admin routes answer first: discovery's /health and the listener's 501 for the admin paths are unreachable here.
   expect(worker.filter(row => row.includes(" /health ") || row.startsWith("* /admin/lease 501"))).toEqual(["GET /health implemented", "* /health 405 method not allowed"]);
   // The worker state stands in for the persistent groups with ones that serve nothing.
   expect(worker.some(row => /^\S+ \/api\/(hub|jobs|memory|sessions|quantize|dataset)\b/.test(row))).toBe(false);
   // The app launch form: the Server app, web and chat included, with the same admin routes ahead of its groups.
   const appWorker = rows(baseline, "app-worker");
-  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(1, 7), ...serve.slice(13).filter(row => !/^(GET \/health|\* \/admin\/(lease|drain) 501)/.test(row))]);
+  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(1, 9), ...serve.slice(13).filter(row => !/^(GET \/health|\* \/admin\/(lease|drain) 501)/.test(row))]);
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
   const transcription = rows(baseline, "transcription");
   expect(transcription).toContain("GET /ws/chat WebSocket upgrade (no chat model)");

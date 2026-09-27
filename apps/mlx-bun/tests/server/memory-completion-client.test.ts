@@ -3,14 +3,16 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
-import { createLoopbackMemoryClient } from "../../src/server/memory-completion-client";
+import { createLoopbackMemoryClient, createWorkerMemoryClient, type MemoryTarget } from "../../src/server/memory-completion-client";
 import { memoryMessages } from "../../src/memory/model";
 import { CHUNK_SYSTEM, chunkInput } from "../../src/memory/chunk";
 
-// The loopback client is the only implementation of the memory domain's
-// completion seam: every stage call is one POST to the serving mlx-bun's own
+// The HTTP implementations of the memory domain's completion seam. The loopback
+// client posts every stage call to the serving mlx-bun's own
 // /v1/chat/completions, greedy, with main's adapter policy (memory-chunk for the
-// chunk stage when present, base otherwise). Fake fetch; no server, no model.
+// chunk stage when present, base otherwise); the --isolate parent's worker
+// client posts each call or batch to the default model worker's private route.
+// Fake fetch; no server, no model.
 
 interface Seen { method: string; path: string; body: any; headers: Record<string, string> }
 const fetcher = (fn: (input: string | URL | Request, init?: RequestInit) => Promise<Response>) => fn as typeof fetch;
@@ -200,4 +202,74 @@ test("a failed batch stops admission, aborts siblings, and joins them before rej
   } finally { release.resolve(); }
   expect(String(await result)).toContain("500: original failure");
   expect(started).toEqual(["first", "second"]);
+});
+
+describe("worker memory completion client", () => {
+  const rows = (users: string[]) => users.map(user => ({ stage: "entity", input: { user }, maxTokens: 8 }));
+  function fakeWorker(reply: (body: { call: string; requests: { input: { user: string } }[] }, init: RequestInit) => Response | Promise<Response> =
+    body => Response.json({ outputs: body.requests.map(row => `task ${row.input.user}`) })) {
+    const seen: { url: string; method?: string; body: unknown; headers: unknown; signal?: AbortSignal | null }[] = [];
+    let selected = 0;
+    const worker: MemoryTarget["worker"] = { async fetch(url: string, init: RequestInit = {}) {
+      seen.push({ url, method: init.method, body: JSON.parse(String(init.body)), headers: init.headers, signal: init.signal });
+      return reply(JSON.parse(String(init.body)), init);
+    } };
+    // Each selection picks the snapshot anew; the call carries the one selected for it.
+    return { seen, get selected() { return selected; },
+      select: async (signal: AbortSignal): Promise<MemoryTarget> => { selected++; signal.throwIfAborted(); return { worker, snapshot: `/hub/snapshots/rev${selected}` }; } };
+  }
+
+  test("each call or batch is one POST of the rows and the snapshot selected for it to the selected worker's private route, answered with its ordered raw outputs", async () => {
+    const fake = fakeWorker();
+    const client = createWorkerMemoryClient(fake.select, new AbortController().signal);
+    expect(await client.completeBatch(rows(["a", "b", "c"]))).toEqual(["task a", "task b", "task c"]);
+    expect(await client.complete({ stage: "route", input: { system: "yes or no", user: "d" }, maxTokens: 4 })).toBe("task d");
+    // An empty batch is answered without a call, as the task model answers it.
+    expect(await client.completeBatch([])).toEqual([]);
+    expect(fake.selected).toBe(2);
+    expect(fake.seen.map(({ url, method, body, headers }) => ({ url, method, body, headers }))).toEqual([
+      { url: "http://engine/admin/memory/complete", method: "POST", headers: { "content-type": "application/json" },
+        body: { call: "completeBatch", snapshot: "/hub/snapshots/rev1", requests: rows(["a", "b", "c"]) } },
+      { url: "http://engine/admin/memory/complete", method: "POST", headers: { "content-type": "application/json" },
+        body: { call: "complete", snapshot: "/hub/snapshots/rev2", requests: [{ stage: "route", input: { system: "yes or no", user: "d" }, maxTokens: 4 }] } },
+    ]);
+  });
+
+  test("a failed call carries the worker's message; a stopped worker fails the call once, never retried; a failed selection fails it as it is; malformed outputs are refused", async () => {
+    const failing = fakeWorker(() => Response.json({ error: { message: "row failed", type: "memory_failed" } }, { status: 500 }));
+    await expect(createWorkerMemoryClient(failing.select, new AbortController().signal).completeBatch(rows(["a"])))
+      .rejects.toThrow("memory: the model worker's task model completeBatch failed (500): row failed");
+    const draining = fakeWorker(() => new Response("worker is draining", { status: 503 }));
+    await expect(createWorkerMemoryClient(draining.select, new AbortController().signal).complete(rows(["a"])[0]!))
+      .rejects.toThrow("memory: the model worker's task model complete failed (503): worker is draining");
+    const died = fakeWorker(() => { throw new Error("The socket connection was closed unexpectedly"); });
+    await expect(createWorkerMemoryClient(died.select, new AbortController().signal).completeBatch(rows(["a", "b"])))
+      .rejects.toThrow("memory: the model worker did not complete the task model completeBatch (The socket connection was closed unexpectedly); it is not retried");
+    expect([died.selected, died.seen.length]).toEqual([1, 1]);
+    const missing = new Error("memory: Gemma-4-e4b is not downloaded");
+    const unselected = createWorkerMemoryClient(async () => { throw missing; }, new AbortController().signal);
+    await expect(unselected.complete(rows(["a"])[0]!)).rejects.toBe(missing);
+    for (const outputs of [undefined, ["only one"], ["a", 2]]) {
+      const odd = fakeWorker(() => Response.json({ outputs }));
+      await expect(createWorkerMemoryClient(odd.select, new AbortController().signal).completeBatch(rows(["a", "b"])))
+        .rejects.toThrow("memory: the model worker's task model completeBatch answered no ordered outputs");
+    }
+  });
+
+  test("the run's signal aborts the request in flight and starts nothing once aborted", async () => {
+    const run = new AbortController();
+    const reached = Promise.withResolvers<void>();
+    const fake = fakeWorker((_body, init) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      reached.resolve();
+    }));
+    const client = createWorkerMemoryClient(fake.select, run.signal);
+    const pending = client.completeBatch(rows(["a", "b"]));
+    await reached.promise;
+    run.abort(new Error("run cancelled"));
+    await expect(pending).rejects.toThrow("run cancelled");
+    expect(fake.seen[0]!.signal).toBe(run.signal);
+    await expect(client.complete(rows(["c"])[0]!)).rejects.toThrow("run cancelled");
+    expect([fake.selected, fake.seen.length]).toEqual([1, 1]);
+  });
 });

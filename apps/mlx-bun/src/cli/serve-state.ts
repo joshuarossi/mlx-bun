@@ -25,7 +25,6 @@ import { createHubRoutes } from "../server/hub-routes";
 import { createJobRoutes } from "../server/job-routes";
 import type { InProcessMemoryClient } from "./memory-engine";
 import type { MemoryCompletionClient } from "../memory/model";
-import { createLoopbackMemoryClient } from "../server/memory-completion-client";
 import { createMemoryRoutes } from "../server/memory-routes";
 import { createMemorySynthesis } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
@@ -41,12 +40,14 @@ export interface AppStateOptions {
   port: number;
   memoryPaths?: { vault: string; skills: string };
   chatPaths?: PiBackendPaths;
-  /** Memory synthesis's model: main's memory task model (Gemma-4 e4b with its
-   * chunk adapter), created by the first run and kept until close. The direct
-   * composition supplies it. Without it (the --isolate parent, which loads no
-   * model) runs use the attached host's served model over loopback, a recorded
-   * preservation gap rather than the final behavior. */
+  /** Memory synthesis's model in the direct composition: main's memory task
+   * model (Gemma-4 e4b with its chunk adapter), created by the first run and
+   * kept until close, each call under the attached host's execution lease. */
   memoryTaskModel?: () => InProcessMemoryClient;
+  /** Memory synthesis's model in a process that loads none (the --isolate
+   * parent): one run's client for a task model another process owns and
+   * leases itself (the default model worker's). Nothing is leased here. */
+  memoryCompletions?: (signal: AbortSignal) => MemoryCompletionClient;
 }
 
 /** What a live model host lends the persistent services while it serves. */
@@ -126,10 +127,10 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // load with the first completion) and kept until close, as in main. Each of
   // its completions or batches runs under the attached host's execution lease,
   // taken before the weights load and released once every started row joined,
-  // so memory work never overlaps a managed job. Without a task model (the
-  // --isolate parent) runs use the attached host's served model over loopback,
-  // which must not take that lease. Close cancels and joins the runs, then
-  // closes the task model, all ahead of any engine drain.
+  // so memory work never overlaps a managed job. The --isolate parent owns no
+  // task model: its client reaches the default model worker's, which takes that
+  // worker's lease itself, so none is taken here. Close cancels and joins the
+  // runs, then closes the task model, all ahead of any engine drain.
   let taskModel: InProcessMemoryClient | undefined;
   const leased = (client: MemoryCompletionClient, signal: AbortSignal): MemoryCompletionClient => {
     const hold = async <T>(work: () => Promise<T>) => {
@@ -138,9 +139,11 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     };
     return { complete: request => hold(() => client.complete(request)), completeBatch: requests => hold(() => client.completeBatch(requests)) };
   };
-  const synthesis = createMemorySynthesis({ root: memoryPaths.vault,
-    client: signal => options.memoryTaskModel ? leased((taskModel ??= options.memoryTaskModel()).clientFor(signal), signal)
-      : createLoopbackMemoryClient(() => `http://127.0.0.1:${host?.port ?? options.port}`, { fetch: loopback, signal }) });
+  const synthesis = createMemorySynthesis({ root: memoryPaths.vault, client: signal => {
+    if (options.memoryTaskModel) return leased((taskModel ??= options.memoryTaskModel()).clientFor(signal), signal);
+    if (options.memoryCompletions) return options.memoryCompletions(signal);
+    throw new Error("memory synthesis has no task model in this composition");
+  } });
   const routes: AppState["routes"] = {
     hub: createHubRoutes({ downloads }),
     sessions: createSessionRoutes(sessionDir),

@@ -13,17 +13,35 @@
 //
 // Importing this module never loads MLX. The engine is reached only through a
 // {@link MemoryCompletionClient} that the app's composition roots inject: the
-// `memory` verb loads the task model in-process on first use (cli/memory-engine),
-// or, with explicit --host/--port, a loopback HTTP client onto a serving mlx-bun;
-// `serve` injects its loopback client. Nothing here talks to a model directly;
-// with no client configured the seams throw a clear error.
+// `memory` verb and `serve` load the task model in-process on first use
+// (cli/memory-engine), `memory --host/--port` uses a loopback HTTP client onto
+// a serving mlx-bun, and the `serve --isolate` parent a client for the default
+// model worker's task model. Nothing here talks to a model directly; with no
+// client configured the seams throw a clear error.
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULT_HUB, pickCanonicalRevision, scanSnapshot, type ModelRecord } from "@mlx-bun/hub/registry";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 
 /** The memory task model main's synthesis loaded when it had no client
  *  supplied. Owned here, independent of the app's starter-model default. */
 export const MEMORY_TASK_MODEL = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
+
+/** Main's resolution: a cached snapshot of the task model carrying config.json
+ *  (the canonical revision when several are cached), or main's fetch hint.
+ *  Reads the cache only (no MLX, never a download), so a process that loads
+ *  no model can select the snapshot another one loads. */
+export async function locateTaskModel(repoId: string, hub = DEFAULT_HUB): Promise<string> {
+  const snapshots = join(hub, `models--${repoId.replace("/", "--")}`, "snapshots");
+  const candidates = existsSync(snapshots)
+    ? readdirSync(snapshots).map(name => join(snapshots, name)).filter(dir => existsSync(join(dir, "config.json"))) : [];
+  const records = (await Promise.all(candidates.map(dir => scanSnapshot(dir, repoId))))
+    .filter((record): record is ModelRecord => record !== null);
+  if (!records.length)
+    throw new Error(`memory: Gemma-4-e4b is not downloaded (looked under ${snapshots}). Fetch it first: HF_HUB_DISABLE_XET=1 hf download ${repoId}`);
+  return pickCanonicalRevision(records).path;
+}
 
 /** Per-stage adapter dir, or undefined when none is symlinked (run base). Only
  *  the `chunk` stage has a trained adapter on disk today (`memory-chunk`). */

@@ -146,8 +146,7 @@ test.skipIf(!native || !servedModel)("serve's own synthesis runs on the task mod
   }
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
-  const { locateTaskModel } = await import("../../src/cli/memory-engine");
-  const { MEMORY_TASK_MODEL } = await import("../../src/memory/model");
+  const { MEMORY_TASK_MODEL, locateTaskModel } = await import("../../src/memory/model");
   const model = await scanSnapshot(servedModel!, "test-model");
   if (!model) throw new Error("MLX_BUN_APP_TEST_MODEL has no loadable checkpoint");
   const { activeMemory } = await import("@mlx-bun/mlx/ffi");

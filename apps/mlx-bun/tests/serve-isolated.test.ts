@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
@@ -56,10 +57,34 @@ test("the isolated composition and the serve entry never reach the engine or the
   expect(closure("src/cli/main.ts", true).engine).toEqual([]);
 });
 
-async function runChild(script: string, env: Record<string, string> = {}) {
-  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
-    env: { ...process.env, ...workerEnv, ...env } });
-  const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+/** Run a child script in its own process group, so every worker it spawns is
+ * in reach: past the deadline the whole group is killed and the call fails.
+ * Either way the group is joined before this returns: workers the child left
+ * behind get a grace to exit on their closed stdin, then are killed. */
+async function runChild(script: string, env: Record<string, string> = {}, deadlineMs = 25_000) {
+  const child = spawn(process.execPath, ["--eval", script], { cwd: app, env: { ...process.env, ...workerEnv, ...env },
+    detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  const group = -child.pid!;
+  const alive = () => { try { process.kill(group, 0); return true; } catch { return false; } };
+  const kill = () => { try { process.kill(group, "SIGKILL"); } catch { /* the group is gone */ } };
+  const read = (stream: NodeJS.ReadableStream) => new Promise<string>(resolve => {
+    let text = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => { text += chunk; });
+    stream.on("end", () => resolve(text));
+  });
+  const exited = new Promise<number | null>(resolve => child.once("exit", code => resolve(code)));
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; kill(); }, deadlineMs);
+  const [code, stdout, stderr] = await Promise.all([exited, read(child.stdout!), read(child.stderr!)]);
+  clearTimeout(deadline);
+  const grace = Date.now() + 5_000, limit = grace + 5_000;
+  while (alive()) {
+    if (Date.now() > limit) throw new Error(`process group ${-group} did not exit after SIGKILL`);
+    if (Date.now() > grace) kill();
+    await Bun.sleep(20);
+  }
+  if (timedOut) throw new Error(`child script exceeded ${deadlineMs} ms; its process group was killed and joined\n${stderr}`);
   return { code, stdout, stderr };
 }
 async function until(check: () => boolean | Promise<boolean>, what: string, timeoutMs = 10_000) {
@@ -95,60 +120,63 @@ test("the parent composes the persistent state and the proxy without the engine 
     const notices = [];
     const env = { FAKE_WORKER_RECORD: record, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
     const running = await startIsolatedServer(model, options, { entry: process.env.FAKE_WORKER, env, restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice: line => notices.push(line) });
-    // The spawn: the captured executable, the entry, and the launch record with the model pinned and the options serialized (Infinity intact, the flag the parent's).
-    const launches = readFileSync(record, "utf8").trim().split("\\n").map(line => JSON.parse(line));
-    assert.equal(launches.length, 1);
-    assert.deepEqual(launches[0].argv.slice(0, 2), [executablePath, process.env.FAKE_WORKER]);
-    assert.equal(executablePath, process.execPath);
-    const launch = decodeLaunch(launches[0].launch);
-    assert.deepEqual(launch.model, model);
-    assert.deepEqual(launch.options, decodeLaunch(encodeLaunch({ ...options, isolate: false })));
-    assert.equal(launch.options.cache.ssdCacheMaxBytes, Infinity);
-    assert.ok(launch.socketPath.endsWith("/engine.sock"));
-    assert.equal(launch.version, WORKER_PROTOCOL_VERSION, "the model form carries the protocol version");
-    const base = "http://127.0.0.1:" + running.port;
-    const get = (path, init) => fetch(base + path, init);
-    // The parent's own answers.
-    assert.equal(await (await get("/")).text(), "web");
-    const engine = await (await get("/engine")).json();
-    assert.deepEqual([engine.isolated, engine.state, engine.pid, engine.restarts, engine.model, engine.socket, engine.last_exit], [true, "ready", launches[0].pid, 0, "org/model", launch.socketPath, null]);
-    assert.deepEqual(engine.pool, { cap: 1, default: "org/model", resident: [{ id: "org/model", pid: launches[0].pid, state: "ready", restarts: 0, socket: launch.socketPath }], loading: [] });
-    assert.ok(dirname(engine.socket).startsWith(join(process.env.TMPDIR_PROBE, "mlx-worker-")) && existsSync(engine.socket));
-    assert.deepEqual(notices, ["engine worker pid " + launches[0].pid + " ready (socket " + engine.socket + ")"]);
-    assert.deepEqual(await (await get("/api/hub/local")).json(), { ok: true, models: [] });
-    assert.deepEqual(await (await get("/api/jobs")).json(), { ok: true, jobs: [] });
-    assert.deepEqual(await (await get("/downloads")).json(), { downloads: [] });
-    assert.deepEqual(await (await get("/api/settings/tool-approvals")).json(), { ok: true, alwaysAllow: [] });
-    assert.deepEqual(await (await get("/api/settings/hf-token")).json(), { ok: true, hasToken: false });
-    const status = await (await get("/api/memory/status")).json();
-    assert.deepEqual([status.ok, status.enabled], [false, false]);
-    for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }]])
-      assert.equal((await get(path, init)).status, 501, path);
-    // Memory synthesis is parent-owned (its loopback client reaches the model through this proxy):
-    // the dry run streams from the parent without touching the worker.
-    const synthesize = await get("/v1/memory/synthesize?dry=1");
-    assert.equal(synthesize.status, 200);
-    assert.match(await synthesize.text(), /\[DONE\]/);
-    assert.equal((await get("/unknown")).status, 404);
-    const health = await (await get("/health")).json();
-    assert.deepEqual([health.status, health.isolated, health.engine.state, health.engine.pid, health.engine.in_flight, health.engine.leases], ["ok", true, "ready", launches[0].pid, 0, 0]);
-    assert.deepEqual(health.pool, { cap: 1, default: "org/model", resident: ["org/model"], loading: [] });
-    const stats = await (await get("/stats")).json();
-    assert.deepEqual(stats.response_store, { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 });
-    assert.deepEqual([stats.server.model, stats.admission.enforced_context_tokens, stats.engine.state], ["org/model", 2048, "ready"]);
-    // Model-scoped routes reach the worker.
-    const listed = (await (await get("/v1/models")).json()).data[0];
-    assert.deepEqual([listed.id, listed.resident], ["org/model", true]);
-    const completion = await (await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "x", messages: [{ role: "user", content: "hi" }] }) })).json();
-    assert.equal(completion.choices[0].message.content, "echo: hi");
-    const seen = await (await get("/fake/seen")).json();
-    assert.deepEqual(seen.seen.filter(entry => entry.path.startsWith("/api") || entry.path === "/engine" || entry.path === "/downloads" || entry.path.startsWith("/admin")), []);
-    // The parent's link lends the worker's execution lease to managed jobs.
-    // Close: the worker is drained then stopped, the socket directory is gone, the state is closed.
-    await running.close(); await running.close();
-    assert.ok(!existsSync(dirname(engine.socket)), "the socket directory is removed");
-    assert.throws(() => process.kill(launches[0].pid, 0), "the worker has exited");
-    assert.throws(() => running.downloads.start("org/x"), /downloads are closed/);
+    // A failed assertion still closes the server, stopping its workers and removing their sockets.
+    try {
+      // The spawn: the captured executable, the entry, and the launch record with the model pinned and the options serialized (Infinity intact, the flag the parent's).
+      const launches = readFileSync(record, "utf8").trim().split("\\n").map(line => JSON.parse(line));
+      assert.equal(launches.length, 1);
+      assert.deepEqual(launches[0].argv.slice(0, 2), [executablePath, process.env.FAKE_WORKER]);
+      assert.equal(executablePath, process.execPath);
+      const launch = decodeLaunch(launches[0].launch);
+      assert.deepEqual(launch.model, model);
+      assert.deepEqual(launch.options, decodeLaunch(encodeLaunch({ ...options, isolate: false })));
+      assert.equal(launch.options.cache.ssdCacheMaxBytes, Infinity);
+      assert.ok(launch.socketPath.endsWith("/engine.sock"));
+      assert.equal(launch.version, WORKER_PROTOCOL_VERSION, "the model form carries the protocol version");
+      const base = "http://127.0.0.1:" + running.port;
+      const get = (path, init) => fetch(base + path, init);
+      // The parent's own answers.
+      assert.equal(await (await get("/")).text(), "web");
+      const engine = await (await get("/engine")).json();
+      assert.deepEqual([engine.isolated, engine.state, engine.pid, engine.restarts, engine.model, engine.socket, engine.last_exit], [true, "ready", launches[0].pid, 0, "org/model", launch.socketPath, null]);
+      assert.deepEqual(engine.pool, { cap: 1, default: "org/model", resident: [{ id: "org/model", pid: launches[0].pid, state: "ready", restarts: 0, socket: launch.socketPath }], loading: [] });
+      assert.ok(dirname(engine.socket).startsWith(join(process.env.TMPDIR_PROBE, "mlx-worker-")) && existsSync(engine.socket));
+      assert.deepEqual(notices, ["engine worker pid " + launches[0].pid + " ready (socket " + engine.socket + ")"]);
+      assert.deepEqual(await (await get("/api/hub/local")).json(), { ok: true, models: [] });
+      assert.deepEqual(await (await get("/api/jobs")).json(), { ok: true, jobs: [] });
+      assert.deepEqual(await (await get("/downloads")).json(), { downloads: [] });
+      assert.deepEqual(await (await get("/api/settings/tool-approvals")).json(), { ok: true, alwaysAllow: [] });
+      assert.deepEqual(await (await get("/api/settings/hf-token")).json(), { ok: true, hasToken: false });
+      const status = await (await get("/api/memory/status")).json();
+      assert.deepEqual([status.ok, status.enabled], [false, false]);
+      for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }]])
+        assert.equal((await get(path, init)).status, 501, path);
+      // Memory synthesis is parent-owned (its loopback client reaches the model through this proxy):
+      // the dry run streams from the parent without touching the worker.
+      const synthesize = await get("/v1/memory/synthesize?dry=1");
+      assert.equal(synthesize.status, 200);
+      assert.match(await synthesize.text(), /\[DONE\]/);
+      assert.equal((await get("/unknown")).status, 404);
+      const health = await (await get("/health")).json();
+      assert.deepEqual([health.status, health.isolated, health.engine.state, health.engine.pid, health.engine.in_flight, health.engine.leases], ["ok", true, "ready", launches[0].pid, 0, 0]);
+      assert.deepEqual(health.pool, { cap: 1, default: "org/model", resident: ["org/model"], loading: [] });
+      const stats = await (await get("/stats")).json();
+      assert.deepEqual(stats.response_store, { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 });
+      assert.deepEqual([stats.server.model, stats.admission.enforced_context_tokens, stats.engine.state], ["org/model", 2048, "ready"]);
+      // Model-scoped routes reach the worker.
+      const listed = (await (await get("/v1/models")).json()).data[0];
+      assert.deepEqual([listed.id, listed.resident], ["org/model", true]);
+      const completion = await (await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "x", messages: [{ role: "user", content: "hi" }] }) })).json();
+      assert.equal(completion.choices[0].message.content, "echo: hi");
+      const seen = await (await get("/fake/seen")).json();
+      assert.deepEqual(seen.seen.filter(entry => entry.path.startsWith("/api") || entry.path === "/engine" || entry.path === "/downloads" || entry.path.startsWith("/admin")), []);
+      // The parent's link lends the worker's execution lease to managed jobs.
+      // Close: the worker is drained then stopped, the socket directory is gone, the state is closed.
+      await running.close(); await running.close();
+      assert.ok(!existsSync(dirname(engine.socket)), "the socket directory is removed");
+      assert.throws(() => process.kill(launches[0].pid, 0), "the worker has exited");
+      assert.throws(() => running.downloads.start("org/x"), /downloads are closed/);
+    } finally { await running.close(); }
     // A first load that fails: startup rejects with the worker's exit; the first load is never retried and nothing stays behind.
     const failure = await startIsolatedServer(model, options, { entry: process.env.FAKE_WORKER, env: { ...env, FAKE_WORKER_FAIL: "start" }, notice: line => notices.push(line) })
       .then(() => { throw new Error("must fail"); }, error => error);
@@ -167,6 +195,200 @@ test("the parent composes the persistent state and the proxy without the engine 
     expect(workerDirs()).toBe(before);
   } finally { rmSync(home, { recursive: true, force: true }); }
 }, 30_000);
+
+// The memory synthesis scripts share this parent: tripwires for the engine,
+// the native library and a parent-side task model, and a pipeline stand-in that
+// sends one batch over the rows the script picks, then one single call.
+const memoryPreamble = `
+  import { mock } from "bun:test";
+  import { strict as assert } from "node:assert";
+  import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+  import { dirname, join } from "node:path";
+  const app = ${JSON.stringify(app)};
+  const root = process.env.HOME;
+  mock.module(app + "src/engine/index.ts", () => { throw new Error("engine imported"); });
+  mock.module(app + "src/engine/model-host.ts", () => { throw new Error("model host imported"); });
+  mock.module(app + "src/cli/memory-engine.ts", () => { throw new Error("task model imported by the parent"); });
+  mock.module("@mlx-bun/mlx/ffi", () => { throw new Error("native library loaded"); });
+  mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
+  let rows = [];
+  mock.module(app + "src/memory/pipeline.ts", () => ({ async runSynthesis(options, onEvent) {
+    const batch = await options.client.completeBatch(rows.map(user => ({ stage: "entity", input: { user }, maxTokens: 8 })));
+    const single = await options.client.complete({ stage: "route", input: { system: "yes or no", user: "single" }, maxTokens: 4 });
+    onEvent({ type: "log", message: JSON.stringify([...batch, single]) });
+    return { implemented: true, stages: ["entity", "route"], note: "probe" };
+  } }));
+  const { startIsolatedServer } = await import(app + "src/cli/serve-isolated.ts");
+  const { parseServeOptions } = await import(app + "src/cli/serve.ts");
+  const { parseCommand } = await import(app + "src/cli/args.ts");
+  const until = async (check, what) => { const end = Date.now() + 10000; while (!await check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(10); } };
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open"]));
+  options.chatPaths = { sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const records = ["org/model", "org/other"].map(id => ({ repoId: id, path: join(root, id.split("/")[1]), modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 }));
+  const eventsFile = join(root, "events.jsonl"), lines = [];
+  const started = [];
+  const start = async env => {
+    const running = await startIsolatedServer(records[0], options, { entry: process.env.FAKE_WORKER,
+      env: { FAKE_WORKER_EVENTS: eventsFile, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", ...env },
+      restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, createRegistry: () => ({ listCanonical: () => records, close() {} }),
+      notice: line => lines.push(line), log: line => lines.push(line), error: line => lines.push(line) });
+    started.push(running);
+    return running;
+  };
+  const events = () => existsSync(eventsFile) ? readFileSync(eventsFile, "utf8").trim().split("\\n").map(line => JSON.parse(line)) : [];
+  // The task model's cache: each new revision moves refs/main, the parent's canonical selection, leaving the previous one prunable.
+  const repo = join(process.env.HF_HUB_CACHE, "models--mlx-community--gemma-4-e4b-it-OptiQ-4bit");
+  const revision = name => {
+    mkdirSync(join(repo, "snapshots", name), { recursive: true });
+    writeFileSync(join(repo, "snapshots", name, "config.json"), JSON.stringify({ model_type: "gemma4" }));
+    writeFileSync(join(repo, "snapshots", name, "model.safetensors"), new Uint8Array(64));
+    mkdirSync(join(repo, "refs"), { recursive: true }); writeFileSync(join(repo, "refs", "main"), name);
+  };
+  const snapshot = name => existsSync(join(repo, "snapshots", name));
+  try {
+`;
+// Every server the script started is closed (idempotently) even when an
+// assertion failed, so its workers stop and their sockets are removed.
+const memoryCleanup = `
+  } finally { for (const running of started) await running.close().catch(() => {}); }
+`;
+const memoryRequest = (base: string) => `
+  const base = ${base};
+  const get = (path, init) => fetch(base + path, init);
+  const engine = async () => await (await get("/engine")).json();
+  const fakeSeen = async () => await (await get("/fake/seen")).json();
+  const memoryCalls = async () => (await fakeSeen()).seen.filter(entry => entry.path === "/admin/memory/complete");
+`;
+
+test("memory synthesis under isolation: the parent keeps the pipeline and SSE, each stage call or batch runs on the default worker's task model over its private route without a pool lease, a cancelled run aborts the worker's call, a crash fails the call without a replay, and shutdown aborts it", async () => {
+  const script = memoryPreamble + `
+    const running = await start({});
+  ` + memoryRequest(`"http://127.0.0.1:" + running.port`) + `
+    const socket = (await engine()).socket;
+    // Without a cached task model the parent's selection fails the run; the worker is never called.
+    rows = ["alpha"];
+    assert.match(await (await get("/v1/memory/synthesize")).text(), /"type":"error","message":"memory: Gemma-4-e4b is not downloaded \\(looked under /);
+    assert.deepEqual(await memoryCalls(), []);
+    // Ordered raw outputs from the worker's task model; each call carries the parent's selected snapshot; the served model's routes are never called.
+    revision("first");
+    const selected = join(repo, "snapshots", "first");
+    rows = ["alpha", "beta", "gamma"];
+    const text = await (await get("/v1/memory/synthesize")).text();
+    assert.ok(text.includes(JSON.stringify({ type: "log", message: JSON.stringify(["task entity: alpha", "task entity: beta", "task entity: gamma", "task route: single"]) })), text);
+    assert.match(text, /\\[DONE\\]/);
+    assert.deepEqual((await memoryCalls()).map(entry => entry.body), [
+      { call: "completeBatch", snapshot: selected, requests: rows.map(user => ({ stage: "entity", input: { user }, maxTokens: 8 })) },
+      { call: "complete", snapshot: selected, requests: [{ stage: "route", input: { system: "yes or no", user: "single" }, maxTokens: 4 }] }]);
+    assert.deepEqual((await (await get("/fake/seen")).json()).seen.filter(entry => entry.method === "POST" && entry.path.startsWith("/v1/")), []);
+    // The private route is the worker's socket surface: the parent's TCP listener never forwards it.
+    for (const init of [{ method: "POST", body: "{}" }, { method: "GET" }]) assert.equal((await get("/admin/memory/complete", init)).status, 404);
+    assert.equal((await memoryCalls()).length, 2);
+    // A held call is in flight on the worker, and the parent holds no lease there; cancelling the SSE request aborts it.
+    rows = ["hold then cancel"];
+    const client = new AbortController();
+    // (The SSE response carries no bytes before the pipeline's first event, so the body is read without waiting on it first.)
+    const cancelled = get("/v1/memory/synthesize", { signal: client.signal }).then(response => response.text()).catch(error => error.name);
+    await until(async () => (await memoryCalls()).length === 3, "the cancelled run's call");
+    const health = (await (await get("/health")).json()).engine;
+    assert.deepEqual([health.in_flight, health.leases], [1, 0]);
+    client.abort();
+    assert.equal(await cancelled, "AbortError");
+    await until(async () => (await memoryCalls())[2].aborted && events().at(-1).event === "memory aborted", "the worker to see the cancellation");
+    // A worker that dies under a call fails the run; the respawned worker never sees the call again.
+    const crashed = (await engine()).pid;
+    rows = ["crash now"];
+    const failed = await (await get("/v1/memory/synthesize")).text();
+    assert.match(failed, /"type":"error","message":"memory: the model worker did not complete the task model completeBatch \\(.+\\); it is not retried"/);
+    assert.ok(!failed.includes("[DONE]"));
+    await until(async () => { const report = await engine(); return report.state === "ready" && report.pid !== crashed; }, "the respawn");
+    assert.deepEqual(await memoryCalls(), []);
+    assert.equal(events().filter(item => item.pid === crashed && item.event === "memory").length, 4);
+    // Parent shutdown mid-call aborts it on the worker, which joins it before it stops.
+    const respawned = (await engine()).pid;
+    rows = ["hold through shutdown"];
+    const interrupted = get("/v1/memory/synthesize").then(response => response.text());
+    await until(async () => (await memoryCalls()).length === 1, "the call before shutdown");
+    await running.close();
+    assert.ok(!(await interrupted).includes("[DONE]"));
+    const last = events().filter(item => item.pid === respawned).map(item => item.event).filter(event => event !== "loading" && event !== "ready");
+    assert.deepEqual(last.filter(event => event !== "drain"), ["memory", "memory aborted", "stop"]);
+    assert.ok(last.includes("drain"));
+    assert.ok(!existsSync(dirname(socket)), "the socket directory is removed");
+    assert.ok(!alive(respawned), "the worker has exited");
+    assert.ok(lines.some(line => line.includes("exited with code 137 — respawning (restart 1/1)")), lines.join("\\n"));
+  ` + memoryCleanup;
+  const home = mkdtempSync(join(tmpdir(), "mlx-isolated-memory-"));
+  const before = workerDirs();
+  try {
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(workerDirs()).toBe(before);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 40_000);
+
+test("the task model snapshot the parent selects for a worker, the one that worker loads, stays out of hub GC for the worker's lifetime: through a canonical change before the load, idle after calls, after a client disconnect before the worker's join, and through eviction, until the worker has closed", async () => {
+  const script = memoryPreamble + `
+    revision("first");
+    // Worker stops take a while, so an evicted worker is observably draining; an aborted call joins late.
+    const running = await start({ FAKE_WORKER_STOP_MS: "1000", FAKE_WORKER_MEMORY_JOIN_MS: "300" });
+  ` + memoryRequest(`"http://127.0.0.1:" + running.port`) + `
+    const gc = async () => { const response = await get("/api/gc/execute", { method: "POST", body: JSON.stringify({ yes: true }) }); return [response.status, (await response.json()).snapshots]; };
+    // The parent selects "first" and the worker holds the call before its load; a new revision moves the canonical selection meanwhile.
+    rows = ["hold before the load"];
+    const loading = get("/v1/memory/synthesize").then(response => response.text());
+    await until(async () => (await memoryCalls()).length === 1, "the held call");
+    revision("second");
+    assert.deepEqual(await gc(), [409, undefined]);
+    assert.deepEqual(await (await get("/fake/memory/release")).json(), { released: 1 });
+    assert.match(await loading, /\\[DONE\\]/);
+    // The worker loaded the snapshot the call carried, not the new canonical one, and it stays protected while the worker idles.
+    assert.equal((await fakeSeen()).task_snapshot, join(repo, "snapshots", "first"));
+    assert.deepEqual((await memoryCalls()).map(entry => entry.body.snapshot), [join(repo, "snapshots", "first"), join(repo, "snapshots", "second")]);
+    assert.deepEqual(await gc(), [409, undefined]);
+    assert.ok(snapshot("first"));
+    // Eviction: another exact id at cap 1 replaces the default worker; its snapshots stay protected while it drains and stops.
+    const evicted = (await engine()).pid;
+    const other = await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "org/other", messages: [{ role: "user", content: "hi" }] }) });
+    assert.equal((await other.json()).model, "org/other");
+    assert.ok(alive(evicted));
+    assert.deepEqual(await gc(), [409, undefined]);
+    assert.ok(alive(evicted) && snapshot("first"));
+    // Once that worker has closed, GC prunes the snapshot it had loaded.
+    await until(() => !alive(evicted), "the evicted worker to exit");
+    let pruned;
+    await until(async () => (pruned = await gc())[0] === 200, "GC after the worker closed");
+    assert.deepEqual(pruned, [200, 1]);
+    assert.ok(!snapshot("first") && snapshot("second"));
+    // A client disconnect: the call reaches a respawned default worker with "second" selected; the client leaves before the worker's join.
+    rows = ["hold then cancel"];
+    const client = new AbortController();
+    const cancelled = get("/v1/memory/synthesize", { signal: client.signal }).then(response => response.text()).catch(error => error.name);
+    await until(async () => (await engine()).state === "ready" && (await memoryCalls()).length === 1, "the respawned default worker's call");
+    const respawned = (await engine()).pid;
+    assert.notEqual(respawned, evicted);
+    assert.equal((await memoryCalls())[0].body.snapshot, join(repo, "snapshots", "second"));
+    client.abort();
+    assert.equal(await cancelled, "AbortError");
+    revision("third");
+    assert.deepEqual(await gc(), [409, undefined]);
+    assert.ok(!events().some(item => item.pid === respawned && item.event === "memory aborted"), "the worker has not joined the call yet");
+    await until(() => events().some(item => item.pid === respawned && item.event === "memory aborted"), "the worker's join");
+    assert.deepEqual(await gc(), [409, undefined]);
+    assert.ok(snapshot("second"));
+    await running.close();
+    assert.ok(!alive(respawned));
+  ` + memoryCleanup;
+  const home = mkdtempSync(join(tmpdir(), "mlx-isolated-memory-gc-"));
+  const before = workerDirs();
+  try {
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(workerDirs()).toBe(before);
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 40_000);
 
 function openChat(base: URL) {
   const frames: ServerMessage[] = [];
