@@ -1,0 +1,756 @@
+// Qwen MTP speculative generation through the shared batch group at B2 with
+// generated-prefix persistence: the Trellis target and its folded MTP draft
+// through the public gateway binding (depth 2, plain KV, EOS disabled). Two
+// requests with unequal prompts (32 and 25 tokens, rendered here from their
+// text) run together; request 0 retires by an `onToken` stop at its 14th
+// token, an abort or a consumer failure at its 10th, and request 1 runs to its
+// 24-token budget, greedy, plus a seeded (temperature 0.7, seed 42) stop case.
+// Every target forward, projection, draft round and commit is observed, with
+// each row's committed target state (extracted through its layout, attributed
+// to its request through joins and filters) at entry and after every commit.
+// Checked within this tree:
+// - each commit closes one verify round whose forward is [pending, ...proposals]
+//   on the same target layouts; every projection is finite and full width;
+// - every committed row is the exact inventory from the model's config and the
+//   artifact's activation dtype, at the offset its draft processed, advancing by
+//   accepted + 1 while the request continues;
+// - B2 then request 1 alone; per row, while B2, accepted and rejected proposals
+//   and a later two-row round after a rejection;
+// - callbacks equal the returned tokens and are accounted for by the rounds;
+//   retirement outcomes are exact;
+// - a stopped or finished request publishes one generated checkpoint equal to
+//   its terminal committed target and draft state; a cancelled or failed one
+//   publishes none (prompt checkpoints are allowed);
+// - both requests continue together from those checkpoints (12 tokens): twice
+//   from RAM with identical records and unchanged snapshots, and once in a fresh
+//   process from the flushed SSD store with records identical to RAM.
+// Main/new equality is external evidence, not asserted here. Not covered: B>2,
+// KV quantization, HTTP, performance, an external oracle.
+// Opt in with both of
+//   MLX_BUN_TEST_MTP_TARGET=/qwen3.8-trellis/snapshot
+//   MLX_BUN_TEST_MTP_DRAFT=/qwen3.8-mtp-draft/snapshot
+// None set skips; any other combination fails. The fresh-process phase is this
+// file run with MLX_BUN_TEST_MTP_PHASE=child and MLX_BUN_TEST_MTP_DIR set; the
+// parent starts it only after releasing its own model.
+import { expect, spyOn, test } from "bun:test";
+import { strict as assert } from "node:assert";
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { optInAll, releaseAll, sha256 } from "./real-weight-inputs";
+
+type A = any;
+const OPT_IN = ["MLX_BUN_TEST_MTP_TARGET", "MLX_BUN_TEST_MTP_DRAFT"] as const;
+const PHASE = Bun.env.MLX_BUN_TEST_MTP_PHASE ?? "parent", CHILD_DIR = Bun.env.MLX_BUN_TEST_MTP_DIR;
+if (PHASE !== "parent" && PHASE !== "child") throw new Error("MLX_BUN_TEST_MTP_PHASE must be parent or child");
+if (PHASE === "child" && !CHILD_DIR) throw new Error("the child phase needs MLX_BUN_TEST_MTP_DIR");
+const DEPTH = 2, BUDGET = 24, CONTINUATION = 12, SUFFIX = [11, 12, 13];
+const PROMPTS = ["Write a bash one-liner that counts lines in all .ts files, then explain it briefly.",
+  "List the planets of the solar system in order from the Sun."];
+const GREEDY = { temperature: 0 }, SEEDED = { temperature: 0.7, seed: 42 };
+/** Request 0 retires at `at` by its action; request 1 runs to the budget. */
+const CASES = [
+  { name: "g-stop", sampling: GREEDY, action: "stop", at: 14, continued: true },
+  { name: "g-cancel", sampling: GREEDY, action: "cancel", at: 10, continued: false },
+  { name: "g-fail", sampling: GREEDY, action: "fail", at: 10, continued: false },
+  { name: "s-stop", sampling: SEEDED, action: "stop", at: 14, continued: true },
+] as const;
+type Case = typeof CASES[number];
+const json = (value: unknown) => JSON.stringify(value);
+const HEX = /^[0-9a-f]{64}$/;
+
+function optIn(env: Record<string, string | undefined>) {
+  const values = optInAll(env, OPT_IN, "Qwen MTP group prefix");
+  if (!values) return null;
+  for (const name of OPT_IN) if (!existsSync(join(values[name], "config.json"))) throw new Error(`${name}: no config.json at ${values[name]}`);
+  return { target: values[OPT_IN[0]], draft: values[OPT_IN[1]] };
+}
+
+/** The activation dtype: the stored dtype of the quantized embedding's scales,
+ * read from the owning shard's header only. */
+function activationDtype(model: string): string {
+  const index = JSON.parse(readFileSync(join(model, "model.safetensors.index.json"), "utf8")).weight_map as Record<string, string>;
+  const name = Object.keys(index).find(k => /(^|\.)embed_tokens\.scales$/.test(k) && !k.includes("visual"));
+  if (!name) throw new Error("no quantized embedding scales in the index");
+  const fd = openSync(join(model, index[name]!), "r");
+  try {
+    const prefix = Buffer.alloc(8);
+    assert.equal(readSync(fd, prefix, 0, 8, 0), 8, "no safetensors header");
+    const length = Number(prefix.readBigUInt64LE(0));
+    assert(Number.isSafeInteger(length) && length > 1 && length < (1 << 28), `header length ${length}`);
+    const body = Buffer.alloc(length);
+    assert.equal(readSync(fd, body, 0, length, 8), length, "truncated header");
+    const dtype = ({ BF16: "bfloat16", F16: "float16", F32: "float32" } as Record<string, string>)[JSON.parse(body.toString("utf8"))[name]?.dtype];
+    if (!dtype) throw new Error("embedding scales dtype unsupported");
+    return dtype;
+  } finally { closeSync(fd); }
+}
+
+/** One committed row's exact inventory, in layer order. */
+interface Geometry { layers: ("kv" | "ssm")[]; kv: { heads: number; dim: number; dtype: string };
+  conv: { shape: number[]; dtype: string }; recurrent: { shape: number[]; dtype: string } }
+/** Attention layers keep K/V [1, kv heads, offset, head dim]; linear-attention
+ * layers keep the conv tail [1, kernel - 1, 2 * key heads * key dim + value
+ * heads * value dim] in the activation dtype and the recurrent state [1, value
+ * heads, value dim, key dim] in float32 (gatedDeltaUpdate's state type). */
+function geometryFor(config: A, activation: string): Geometry {
+  const t = config.text_config ?? config;
+  const layers = (t.layer_types ?? []).map((type: string) => type === "full_attention" ? "kv" : type === "linear_attention" ? "ssm" : `unsupported:${type}`);
+  if (!layers.length || layers.some((l: string) => l.startsWith("unsupported")) || layers.length !== t.num_hidden_layers) throw new Error("unsupported layer types");
+  const convDim = 2 * t.linear_num_key_heads * t.linear_key_head_dim + t.linear_num_value_heads * t.linear_value_head_dim;
+  return { layers, kv: { heads: t.num_key_value_heads, dim: t.head_dim, dtype: activation },
+    conv: { shape: [1, t.linear_conv_kernel_dim - 1, convDim], dtype: activation },
+    recurrent: { shape: [1, t.linear_num_value_heads, t.linear_value_head_dim, t.linear_key_head_dim], dtype: "float32" } };
+}
+
+// ---- checks over recorded submissions (no native code; exercised on CPU below) ----------
+type Fail = (message: string) => void;
+function rowOffset(row: A, geometry: Geometry, where: string, fail: Fail): number | null {
+  const layers = row?.layers;
+  if (!Array.isArray(layers) || layers.length !== geometry.layers.length) { fail(`${where}: ${layers?.length} layers, expected ${geometry.layers.length}`); return null; }
+  const offsets = new Set<number>();
+  for (let i = 0; i < layers.length; i++) {
+    const l = layers[i], kind = geometry.layers[i]!;
+    if (!Array.isArray(l?.arrays) || l.arrays.length !== 2 || !l.arrays.every((a: A) => HEX.test(a?.sha256 ?? ""))) { fail(`${where} layer ${i}: malformed layer`); return null; }
+    const want = kind === "kv"
+      ? { signature: "kv:plain", arrays: [0, 1].map(() => ({ shape: [1, geometry.kv.heads, l.offset, geometry.kv.dim], dtype: geometry.kv.dtype })) }
+      : { signature: "ssm", arrays: [geometry.conv, geometry.recurrent].map(g => ({ shape: g.shape, dtype: g.dtype })) };
+    const got = { signature: l.signature, arrays: l.arrays.map((a: A) => ({ shape: a.shape, dtype: a.dtype })) };
+    if (!Number.isSafeInteger(l.offset) || json(got) !== json(want)) { fail(`${where} layer ${i}: ${json(got)}, expected ${json(want)}`); return null; }
+    if (kind === "kv") offsets.add(l.offset);
+  }
+  if (offsets.size !== 1) { fail(`${where}: attention offsets ${json([...offsets])}`); return null; }
+  return [...offsets][0]!;
+}
+/** Verify rounds: each commit closes one draft, one armed verify forward whose
+ * rows are [pending, ...proposals] on the same layouts, and one projection of
+ * that width; finite full-width projections; qwen-mtp-v1 draft checkpoints. */
+function checkRounds(sub: A, vocab: number, where: string, fail: Fail) {
+  if (!Array.isArray(sub?.events)) return fail(`${where}: no events`);
+  let last = -1;
+  sub.events.forEach((e: A, i: number) => {
+    if (e.event === "project") {
+      const [B, P, W] = e.logits?.shape ?? [];
+      if (e.logits?.finite !== true || W !== vocab || !HEX.test(e.logits?.sha256 ?? "") || e.argmax?.length !== B || e.argmax.some((r: A) => r.length !== P))
+        fail(`${where} event ${i}: projection ${json(e.logits)}`);
+    } else if (e.event === "commit") {
+      const window = sub.events.slice(last + 1, i); last = i;
+      const drafts = window.filter((w: A) => w.event === "draft");
+      if (drafts.length !== 1) return fail(`${where} commit ${i}: ${drafts.length} drafts in its round`);
+      const d = drafts[0], B = e.accepted?.length;
+      if (!B || d.proposals?.length !== B || d.pending?.length !== B) return fail(`${where} commit ${i}: rows`);
+      const verify = window.filter((w: A) => w.event === "forward" && w.ids?.length === B &&
+        w.ids.every((r: number[], row: number) => json(r) === json([d.pending[row], ...d.proposals[row]])));
+      if (verify.length !== 1) return fail(`${where} commit ${i}: ${verify.length} verify forwards of [pending, ...proposals]`);
+      if (verify[0].verify !== true || verify[0].sameLayouts !== true || window.filter((w: A) => w.event === "forward" && w.verify).length !== 1)
+        fail(`${where} commit ${i}: the verify forward was not the armed round on the target layouts`);
+      const L = verify[0].ids[0].length;
+      if (window.filter((w: A) => w.event === "project" && w.logits?.shape?.[0] === B && w.logits?.shape?.[1] === L).length !== 1)
+        fail(`${where} commit ${i}: no single ${B}x${L} verify projection`);
+      e.accepted.forEach((a: number, row: number) => { if (!Number.isSafeInteger(a) || a < 0 || a > d.proposals[row].length) fail(`${where} commit ${i}: accepted ${a}`); });
+      for (const c of e.drafts ?? []) if (c.schema !== "qwen-mtp-v1" || c.metadata?.draftOffset !== c.processedTokens - 1 || !c.tensors?.every((t: A) => HEX.test(t.sha256 ?? "")))
+        fail(`${where} commit ${i}: draft checkpoint`);
+      if (e.drafts?.length !== B) fail(`${where} commit ${i}: ${e.drafts?.length} draft checkpoints`);
+    }
+  });
+  if (!sub.events.some((e: A) => e.event === "commit")) fail(`${where}: no verify rounds`);
+}
+/** Which request published a checkpoint: the request whose submitted cache
+ * session ID it carries (passed unchanged to prompt and generated captures; the
+ * composed namespace is not used), and whether it extends that request's
+ * submitted prompt. An unknown session is unattributed (-1); token content is
+ * validated separately and never decides the request. */
+function attributePut(tokens: readonly number[], sessionId: unknown, sessions: readonly string[], prompts: readonly (readonly number[])[]) {
+  const row = typeof sessionId === "string" ? sessions.indexOf(sessionId) : -1;
+  return { row, kind: row >= 0 && tokens.length > prompts[row]!.length ? "generated" as const : "prompt" as const };
+}
+const commitPairs = (events: A[]) => events.flatMap((e: A, i: number) =>
+  e.event === "commit" && events[i + 1]?.event === "state" && events[i + 1].at === "commit" && Array.isArray(events[i + 1].rows) ? [{ commit: e, state: events[i + 1], index: i }] : []);
+/** Committed target state per request, membership, and completeness against what the submission returned. */
+function checkStates(sub: A, prompts: number[][], sessions: string[], geometry: Geometry, where: string, fail: Fail) {
+  const events: A[] = sub?.events ?? [];
+  let members: number[] = [], entry: A = null, pending: A = null;
+  events.forEach((e: A, i: number) => {
+    if (e.event === "join") {
+      if (!Array.isArray(e.requests) || !e.requests.every((q: A) => q === 0 || q === 1)) return fail(`${where} event ${i}: join without an identified request`);
+      members = [...members, ...e.requests];
+      if (new Set(members).size !== members.length) fail(`${where} event ${i}: a request joined twice`);
+    } else if (e.event === "filter") {
+      members = (e.keep ?? []).map((r: number) => members[r]);
+      if (json(e.members) !== json(members)) fail(`${where} event ${i}: filter membership`);
+    } else if (e.event === "commit") {
+      if (pending) fail(`${where} event ${i}: the previous commit has no committed state`);
+      if (e.accepted?.length !== members.length) fail(`${where} event ${i}: ${e.accepted?.length} rows committed, ${members.length} members`);
+      pending = i;
+    } else if (e.event === "state") {
+      if (e.error || json(e.members) !== json(members) || e.rows?.length !== members.length || e.rows.some((r: A, k: number) => r.request !== members[k]))
+        return fail(`${where} event ${i}: ${e.at} state (${e.error ?? `${e.rows?.length} rows`}) for members ${json(members)}`);
+      if (e.at === "entry") { if (entry || pending !== null) fail(`${where} event ${i}: entry state not before the first round`); entry = e; }
+      else if (pending !== i - 1) fail(`${where} event ${i}: commit state not right after its commit`);
+      else pending = null;
+    }
+  });
+  if (pending !== null) fail(`${where}: the last commit has no committed state`);
+  if (!entry) return fail(`${where}: no entry state`);
+  const pairs = commitPairs(events), last = new Map<number, number>();
+  for (const r of entry.rows) { const o = rowOffset(r, geometry, `${where} entry request ${r.request}`, fail); if (o !== null) last.set(r.request, o); }
+  pairs.forEach(({ commit, state, index }, j) => state.rows.forEach((r: A, k: number) => {
+    const at = `${where} commit ${index} request ${r.request}`, o = rowOffset(r, geometry, at, fail), before = last.get(r.request);
+    if (o === null) return;
+    if (o !== commit.drafts?.[k]?.processedTokens) fail(`${at}: target offset ${o}, draft processed ${commit.drafts?.[k]?.processedTokens}`);
+    const continues = pairs.slice(j + 1).some(p => p.state.rows.some((x: A) => x.request === r.request));
+    if (before === undefined) fail(`${at}: no earlier committed state`);
+    else if (continues ? o - before !== commit.accepted[k] + 1 : o - before < 1 || o - before > commit.accepted[k] + 1) fail(`${at}: advanced ${o - before} with accepted ${commit.accepted[k]}`);
+    last.set(r.request, o);
+  }));
+  prompts.forEach((prompt, q) => {
+    const tokens: number[] = sub?.tokens?.[q] ?? [], callbacks = events.filter((e: A) => e.event === "token" && e.row === q);
+    if (json(callbacks.map((e: A) => e.token)) !== json(tokens) || callbacks.some((e: A, i: number) => e.index !== i + 1))
+      fail(`${where}: request ${q} callbacks ${callbacks.length} do not match its ${tokens.length} returned tokens`);
+    const outcome = sub?.outcomes?.[q]?.compared;
+    if (outcome?.status === "fulfilled" && outcome.generatedTokens !== tokens.length) fail(`${where}: request ${q} generatedTokens ${outcome.generatedTokens}`);
+    const mine = pairs.flatMap(p => { const k = p.state.rows.findIndex((r: A) => r.request === q); return k < 0 ? [] : [p.commit.accepted[k] as number]; });
+    if (!mine.length) return fail(`${where}: request ${q} has no committed rounds`);
+    const before = 1 + mine.slice(0, -1).reduce((n, a) => n + a + 1, 0);
+    if (tokens.length < before + 1 || tokens.length > before + mine.at(-1)! + 1) fail(`${where}: request ${q} emitted ${tokens.length} tokens beyond its rounds`);
+  });
+  events.forEach((p: A, i: number) => {
+    if (p.event !== "put") return;
+    if (!(p.row >= 0 && p.row < prompts.length) || p.sessionId !== sessions[p.row]) return fail(`${where} event ${i}: unattributed put (session ${json(p.sessionId)})`);
+    if (p.kind === "prompt") {
+      const prompt = prompts[p.row]!;
+      if (!(p.ids?.length >= 1 && p.ids.length <= prompt.length && json(p.ids) === json(prompt.slice(0, p.ids.length))))
+        fail(`${where} event ${i}: prompt put is not a prefix of request ${p.row}'s prompt`);
+      return;
+    }
+    if (p.kind !== "generated") return fail(`${where} event ${i}: put kind ${p.kind}`);
+    const q = p.row, at = `${where} request ${q} generated put`;
+    const transcript = [...prompts[q]!, ...(sub.tokens?.[q] ?? [])], missing = transcript.length - p.ids.length;
+    if (json(p.ids) !== json(transcript.slice(0, p.ids.length)) || missing < 0 || missing > 1) fail(`${at}: not the transcript less at most its pending token`);
+    if (json(p.digest?.attachments?.map((a: A) => a[0])) !== json(["qwen-mtp-v1"]) || p.digest.attachments[0][1]?.draftOffset !== p.ids.length - 1) fail(`${at}: attachment`);
+    const terminal = commitPairs(events.slice(0, i)).filter(x => x.state.rows.some((r: A) => r.request === q)).at(-1);
+    if (!terminal) return fail(`${at}: no committed state before it`);
+    const k = terminal.state.rows.findIndex((r: A) => r.request === q), row = terminal.state.rows[k], draft = terminal.commit.drafts?.[k];
+    const offset = rowOffset(row, geometry, `${at} terminal state`, fail);
+    if (offset !== p.ids.length || draft?.processedTokens !== p.ids.length) fail(`${at}: ${p.ids.length} ids, terminal committed offset ${offset}`);
+    if (json(p.digest?.offsets) !== json(row.layers.map((l: A) => l.offset)) ||
+        json(p.digest?.arrays) !== json([...row.layers.flatMap((l: A) => l.arrays), ...(draft?.tensors ?? [])]))
+      fail(`${at}: published planes are not the terminal committed target and draft state`);
+  });
+}
+/** Compared form of a submission: namespaces out, outcomes through the deterministic whitelist. */
+const SPEC = ["drafted", "accepted", "targetCalls", "draftedByPos", "acceptedByPos", "rejected", "rounds", "acceptanceLengths", "tokensPerForward", "forwardsSaved"];
+function project(sub: A) {
+  const whitelist = (v: A) => v && Object.fromEntries(["status", "reason", "promptTokens", "generatedTokens", "cachedTokens", "finishReason", "spec"]
+    .filter(k => k in v).map(k => [k, k === "spec" && v.spec ? Object.fromEntries(SPEC.map(s => [s, v.spec[s] ?? null])) : v[k]]));
+  return { events: (sub?.events ?? []).map((e: A) => { if (e.event !== "put") return e; const { namespace: _, ...rest } = e; return rest; }),
+    tokens: sub?.tokens, outcomes: (sub?.outcomes ?? []).map((x: A) => whitelist(x.compared)) };
+}
+const puts = (sub: A, kind: string) => (sub?.events ?? []).filter((e: A) => e.event === "put" && e.kind === kind);
+/** Everything this tree must hold for one case, its RAM continuations and, when given, its fresh-process restore. */
+function checkCase(c: Case, rec: A, restore: A | undefined, prompts: number[][], vocab: number, geometry: Geometry, fail: Fail) {
+  const at = c.name;
+  if (!rec) return fail(`${at}: missing record`);
+  if (rec.error) return fail(`${at}: error ${String(rec.error).split("\n")[0]}`);
+  if (json(rec.prompts) !== json(prompts)) fail(`${at}: prompts`);
+  const g = rec.generation;
+  checkRounds(g, vocab, `${at} generation`, fail);
+  const sessions = [0, 1].map(q => `${c.name}-${q}`);
+  checkStates(g, prompts, sessions, geometry, `${at} generation`, fail);
+  const commits = (g?.events ?? []).filter((e: A) => e.event === "commit"), states = (g?.events ?? []).filter((e: A) => e.event === "state" && e.at === "commit");
+  if (!commits.some((e: A) => e.accepted.length === 2) || !(g?.events ?? []).some((e: A) => e.event === "token" && e.activeRows === 2)) fail(`${at}: B2 was never active`);
+  if (!states.some((e: A) => json([...(e.members ?? [])].sort()) === "[0,1]") || json(states.at(-1)?.members) !== "[1]") fail(`${at}: membership is not both requests, then request 1 alone`);
+  const [t0, t1] = g?.tokens ?? [], o = (g?.outcomes ?? []).map((x: A) => x.compared);
+  if (!(c.action === "cancel" ? t0?.length >= c.at && t0?.length <= c.at + DEPTH : t0?.length === c.at)) fail(`${at}: request 0 emitted ${t0?.length} tokens`);
+  if (t1?.length !== BUDGET) fail(`${at}: request 1 emitted ${t1?.length} tokens`);
+  const want0 = c.action === "stop" ? { status: "fulfilled", finishReason: "stop", generatedTokens: c.at }
+    : { status: "rejected", reason: c.action === "cancel" ? "cancelled consumer" : "failed consumer" };
+  for (const [k, v] of Object.entries(want0)) if (o[0]?.[k] !== v) fail(`${at}: request 0 ${k} ${o[0]?.[k]}`);
+  if (o[1]?.status !== "fulfilled" || o[1]?.finishReason !== "length" || o[1]?.generatedTokens !== BUDGET) fail(`${at}: request 1 outcome`);
+  const generated = puts(g, "generated");
+  if (json(generated.map((p: A) => p.row).sort()) !== json(c.action === "stop" ? [0, 1] : [1])) fail(`${at}: generated puts for requests ${json(generated.map((p: A) => p.row))}`);
+  if (!puts(g, "prompt").length) fail(`${at}: no prompt checkpoints`);
+  const rounds: A[] = [];
+  let draft: A = null;
+  for (const e of g?.events ?? []) { if (e.event === "draft") draft = e; if (e.event === "commit" && e.accepted.length === 2 && draft) rounds.push({ proposals: draft.proposals, accepted: e.accepted }); }
+  for (const row of [0, 1]) {
+    const rejectedAt = rounds.findIndex(r => r.accepted[row] < r.proposals[row].length);
+    if (!rounds.some(r => r.accepted[row] > 0) || rejectedAt < 0 || rejectedAt === rounds.length - 1)
+      fail(`${at}: not qualified: row ${row} needs accepted and rejected proposals and a later two-row round while B2 (first rejection ${rejectedAt} of ${rounds.length})`);
+  }
+  if (rec.flush?.durable !== true || rec.flush?.pendingBytes !== 0) fail(`${at}: drain`);
+  if (!c.continued) return;
+  const byRow = [0, 1].map(q => generated.find((p: A) => p.row === q));
+  const continuationPrompts = prompts.map((prompt, q) => [...prompt, ...(g.tokens?.[q] ?? []), ...SUFFIX]);
+  const checkContinuation = (sub: A, where: string) => {
+    checkRounds(sub, vocab, where, fail);
+    checkStates(sub, continuationPrompts, sessions, geometry, where, fail);
+    if (json(puts(sub, "generated").map((p: A) => p.row).sort()) !== "[0,1]") fail(`${where}: generated puts`);
+    if (sub?.outcomes?.length !== 2) fail(`${where}: rows`);
+    (sub?.outcomes ?? []).forEach((x: A, q: number) => {
+      const v = x.compared;
+      if (v?.status !== "fulfilled" || v.finishReason !== "length" || v.generatedTokens !== CONTINUATION || v.cachedTokens !== byRow[q]?.ids?.length) fail(`${where}: request ${q} ${json(v)}`);
+    });
+  };
+  if (!Array.isArray(rec.ram) || rec.ram.length !== 2) return fail(`${at}: ${rec.ram?.length} RAM continuations`);
+  rec.ram.forEach((r: A, i: number) => {
+    checkContinuation(r, `${at} RAM ${i}`);
+    for (const [label, takes] of [["before", r.takeBefore], ["after", r.takeAfter]] as const) byRow.forEach((p: A, q: number) => {
+      if (!p || json(takes?.[q]?.digest) !== json(p.digest) || takes?.[q]?.tokens !== p.ids.length) fail(`${at} RAM ${i}: take ${label} request ${q} differs from its put`);
+    });
+  });
+  if (json(project(rec.ram[0])) !== json(project(rec.ram[1]))) fail(`${at}: the RAM continuations differ`);
+  if (rec.continuationFlush?.durable !== true || rec.continuationFlush?.pendingBytes !== 0) fail(`${at}: continuation flush`);
+  if (restore === undefined) return;
+  const w = `${at} restore`;
+  if (!restore || restore.error) return fail(`${w}: ${restore ? String(restore.error).split("\n")[0] : "missing"}`);
+  if (restore.ssdUnchanged !== true) fail(`${w}: the SSD directory changed after the parent flushed it`);
+  if (!(restore.scanned > 0)) fail(`${w}: scan found ${restore.scanned}`);
+  byRow.forEach((p: A, q: number) => { if (!p || json(restore.take?.[q]?.digest) !== json(p.digest) || restore.take?.[q]?.tokens !== p.ids.length) fail(`${w}: take request ${q} differs from its put`); });
+  checkContinuation(restore, w);
+  if (json(project(restore)) !== json(project(rec.ram[0]))) fail(`${w}: the SSD continuation differs from the RAM continuation`);
+}
+const problems = (body: (fail: Fail) => void) => { const out: string[] = []; body(m => { if (out.length < 30) out.push(m); }); return out; };
+
+// ---- recording (native) ----------------------------------------------------------------
+async function record(inputs: { target: string; draft: string }, directory: string, phase: "parent" | "child") {
+  const { loadModelConfig, Weights, createModel, loadTokenizer, ChatTemplate } = await import("@mlx-bun/inference");
+  const { QwenMtpProvider } = await import("@mlx-bun/inference/generation/speculative");
+  const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
+  const { PromptCache, SsdCacheStore, TieredPromptCache, cloneKvCaches, leaseCacheStates, disposeAttachments } = await import("@mlx-bun/inference/state");
+  const { disposeResources } = await import("@mlx-bun/inference/execution");
+  const ops = await import("@mlx-bun/mlx/ops");
+  const { clearCache } = await import("@mlx-bun/mlx/ffi");
+  const config = await loadModelConfig(inputs.target);
+  const tokenizer = await loadTokenizer(inputs.target), template = await ChatTemplate.load(inputs.target);
+  const prompts = PROMPTS.map(text => {
+    const ids = tokenizer.encode(template.render([{ role: "user", content: text }], { enableThinking: false }));
+    return ids[0] === ids[1] && ids[0] === tokenizer.bosTokenId ? ids.slice(1) : ids;
+  });
+  assert.notEqual(prompts[0]!.length, prompts[1]!.length, "requests are identified by their unequal prompt lengths");
+  const geometry = geometryFor(JSON.parse(readFileSync(join(inputs.target, "config.json"), "utf8")), activationDtype(inputs.target));
+  const weights = await Weights.open(inputs.target);
+  const releases: (() => void)[] = [];
+  const records: Record<string, A> = {};
+  try {
+    const model = createModel(weights, config) as A;
+    const provider = await QwenMtpProvider.load(inputs.draft);
+    releases.push(() => provider.dispose());
+    const tensor = (value: A, finite = false) => {
+      using compact = ops.contiguous(value);
+      const out: A = { shape: [...compact.shape], dtype: compact.dtypeName, sha256: sha256(compact.rawBytesView()) };
+      if (finite) out.finite = (compact.toFloat32() as Float32Array).every(Number.isFinite);
+      return out;
+    };
+    const planes = (cache: A) => {
+      const values = cache.state();
+      try {
+        return { signature: cache.signature(), offset: cache.offset, arrays: values.map((value: A) => {
+          const s = value.shape;
+          const view = cache.signature() !== "ssm" && s.length === 4 && s[2] > cache.offset ? value.slice([0, 0, 0, 0], [s[0], s[1], cache.offset, s[3]]) : null;
+          try { return tensor(view ?? value); } finally { view?.dispose(); }
+        }) };
+      } finally { if (cache.stateNeedsDispose) for (const value of values) value.dispose(); }
+    };
+    const rowStates = (caches: A[], members: number[]) => members.map((request, row) => ({ request, layers: caches.map((layout: A) => {
+      const solo = layout.extractRow(row);
+      try { return planes(solo); } finally { solo.dispose(); }
+    }) }));
+    const digest = (entry: { caches: A[]; attachments?: A[] }) => {
+      const clone = cloneKvCaches(entry.caches);
+      try {
+        const arrays: A[] = [], lease = leaseCacheStates(clone);
+        try { for (const a of [...lease.borrow(), ...(entry.attachments ?? []).flatMap((x: A) => x.tensors)]) arrays.push(tensor(a)); }
+        finally { lease.close(); }
+        return { offsets: clone.map((c: A) => c.offset), attachments: (entry.attachments ?? []).map((a: A) => [a.schema, a.metadata]), arrays };
+      } finally { disposeResources(clone); }
+    };
+    const checkpoint = (value: A) => ({ processedTokens: value.processedTokens, schema: value.attachment.schema,
+      metadata: value.attachment.metadata, tensors: value.attachment.tensors.map((t: A) => tensor(t)) });
+    let log: A[] | null = null;
+    let context: { lengths: number[]; prompts: number[][]; sessions: string[]; members: number[]; targetCaches: A[] | null; joined: boolean;
+      arm: { pending: number[]; depth: number; proposals: number[][] | null } | null; layouts: A[] | null } | null = null;
+    const note = (event: A) => { log?.push(event); };
+    const isVerify = (rows: number[][]) => {
+      const arm = context?.arm;
+      if (!arm || rows.length !== arm.pending.length) return false;
+      const width = arm.proposals ? 1 + Math.max(0, ...arm.proposals.map(p => p.length)) : arm.depth + 1;
+      return rows.every((row, r) => row.length === width && row[0] === arm.pending[r] &&
+        (!arm.proposals || row.slice(1).every((t, i) => t === (i < arm.proposals![r]!.length ? arm.proposals![r]![i] : arm.pending[r]))));
+    };
+    // Observers, installed before the gateway binds projectLogits.
+    const forwardHidden = model.forwardHidden.bind(model), logitsFromHidden = model.logitsFromHidden.bind(model);
+    const forwardSpy = spyOn(model, "forwardHidden").mockImplementation((input: A, caches: A[], ...rest: A[]) => {
+      const flat = input.toIntTokens() as number[], [B, L] = input.shape;
+      const event: A = { event: "forward", ids: Array.from({ length: B }, (_, r) => flat.slice(r * L, (r + 1) * L)) };
+      if (isVerify(event.ids)) {
+        event.verify = true; context!.arm = null;
+        if (context!.layouts === null) context!.layouts = caches;
+        event.sameLayouts = context!.layouts === caches;
+        if (context!.joined) { note({ event: "state", at: "entry", members: [...context!.members], rows: rowStates(caches, context!.members) }); context!.joined = false; }
+        context!.targetCaches = caches;
+      }
+      const hidden = forwardHidden(input, caches, ...rest);
+      try { event.hidden = tensor(hidden); note(event); } catch (error) { hidden.dispose(); throw error; }
+      return hidden;
+    });
+    releases.push(() => forwardSpy.mockRestore());
+    const logitsSpy = spyOn(model, "logitsFromHidden").mockImplementation((hidden: A, ...rest: A[]) => {
+      const logits = logitsFromHidden(hidden, ...rest);
+      try {
+        using arg = ops.argmaxAxis(logits, -1);
+        const [B, P] = logits.shape, flat = arg.toIntTokens() as number[];
+        note({ event: "project", logits: tensor(logits, true), argmax: Array.from({ length: B }, (_, r) => flat.slice(r * P, (r + 1) * P)) });
+      } catch (error) { logits.dispose(); throw error; }
+      return logits;
+    });
+    releases.push(() => logitsSpy.mockRestore());
+    const observeRows = (rows: A, kind: "decode" | "prefill") => {
+      const draft = rows.draft.bind(rows), commit = rows.commit.bind(rows), capture = rows.capture.bind(rows);
+      rows.draft = async (pending: number[], depth: number, steps: number[]) => {
+        const proposals = await draft(pending, depth, steps);
+        note({ event: "draft", pending: [...pending], depth, steps: [...steps], proposals });
+        if (context && kind === "decode") context.arm = { pending: [...pending], depth, proposals: proposals.map((p: number[]) => [...p]) };
+        return proposals;
+      };
+      if (rows.draftDevice) {
+        const device = rows.draftDevice.bind(rows);
+        rows.draftDevice = (pending: number[], depth: number, steps: number[]) => {
+          const lazy = device(pending, depth, steps);
+          if (!lazy) return lazy;
+          if (context && kind === "decode") context.arm = { pending: [...pending], depth, proposals: null };
+          return { tokens: lazy.tokens, resolve(read: readonly number[]) {
+            const proposals = lazy.resolve(read);
+            note({ event: "draft", pending: [...pending], depth, steps: [...steps], proposals, device: true });
+            return proposals;
+          } };
+        };
+      }
+      rows.commit = async (accepted: number[], ctx: A) => {
+        await commit(accepted, ctx);
+        const drafts: A[] = [];
+        for (let row = 0; row < rows.rowCount; row++) {
+          const value = capture(row);
+          try { drafts.push(checkpoint(value)); } finally { disposeAttachments([value.attachment]); }
+        }
+        note({ event: "commit", accepted: [...accepted], drafts });
+        // The target transaction resolves before draft.commit: these are committed rows.
+        const caches = context?.targetCaches;
+        if (context) context.targetCaches = null;
+        if (!caches || context!.members.length !== accepted.length) note({ event: "state", at: "commit", error: "no verify forward in this round" });
+        else note({ event: "state", at: "commit", members: [...context!.members], rows: rowStates(caches, context!.members) });
+      };
+      rows.capture = (row: number) => {
+        const value = capture(row);
+        try { note({ event: "group-capture", kind, row, draft: checkpoint(value) }); } catch (error) { disposeAttachments([value.attachment]); throw error; }
+        return value;
+      };
+      if (kind === "decode") {
+        const requestFor = (processed: number) => {
+          const matches = context!.lengths.flatMap((length, q) => length === processed ? [q] : []);
+          return matches.length === 1 ? matches[0]! : -1;
+        };
+        const joined = (checkpoints: A[]) => {
+          const requests = checkpoints.map((c: A) => requestFor(c.processedTokens));
+          return () => { context!.members.push(...requests); context!.joined = true; note({ event: "join", requests, processed: checkpoints.map((c: A) => c.processedTokens) }); };
+        };
+        const prepareAppend = rows.prepareAppend.bind(rows), append = rows.append.bind(rows), filterRows = rows.filterRows.bind(rows);
+        rows.prepareAppend = (checkpoints: A[]) => {
+          const apply = joined(checkpoints), change = prepareAppend(checkpoints);
+          return { commit() { change.commit(); apply(); }, dispose() { change.dispose(); } };
+        };
+        rows.append = (checkpoints: A[]) => { const apply = joined(checkpoints); append(checkpoints); apply(); };
+        rows.filterRows = (keep: readonly number[]) => {
+          filterRows(keep);
+          context!.members = keep.map(row => context!.members[row]!);
+          note({ event: "filter", keep: [...keep], members: [...context!.members] });
+        };
+      }
+      return rows;
+    };
+    const open = provider.grouped.open.bind(provider.grouped), openPrefill = provider.grouped.openPrefill.bind(provider.grouped);
+    const openSpy = spyOn(provider.grouped, "open").mockImplementation((options: A) => observeRows(open(options), "decode"));
+    const prefillSpy = spyOn(provider.grouped, "openPrefill").mockImplementation((options: A) => observeRows(openPrefill(options), "prefill"));
+    releases.push(() => openSpy.mockRestore(), () => prefillSpy.mockRestore());
+    const binding = bindMlxGateway(model, { provider, numDraftTokens: DEPTH });
+    const methodFor = (sampling: A, maxTokens: number) => {
+      const options = { ...sampling, maxTokens };
+      const plan = binding.plan({ hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: "seed" in sampling,
+        kvQuant: false, turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true }, options,
+      { continuous: true, quantizedBatch: false, checkpoints: false });
+      assert.equal(plan.method, "speculative"); assert.equal(plan.mechanism, "continuous");
+      const method = binding.methodRequest!(plan, options);
+      assert(method, "the MTP method must bind");
+      return method;
+    };
+    const storeOptions = (name: string) => ({ dir: join(directory, "ssd", name), maxBytes: 4 * 1024 ** 3, modelId: inputs.target,
+      configFingerprint: "qwen-mtp-group-prefix", tokenizerHash: "qwen-mtp-group-prefix", verify: true, storage: { layout: "blocks" as const } });
+    const cold = (ssd: A, async = false) => ({
+      find(tokens: number[], ns: string) { const hit = ssd.find(tokens, ns); return hit ? { prefixLen: hit.prefixLen, handle: hit.entry } : null; },
+      restore(handle: A) { const hit = ssd.restore(handle, model); return hit ? { ...hit, retain() {} } : null; },
+      ...(async ? { async restoreAsync(handle: A) { const hit = await ssd.restoreAsync(handle, model); return hit ? { ...hit, retain() {} } : null; } } : {}),
+      store: (tokens: number[], caches: A[], ns: string, attachments: A[]) => ssd.store(tokens, caches, ns, attachments),
+    });
+    const manifest = (dir: string) => {
+      const files: Record<string, string> = {};
+      const walk = (at: string) => { for (const name of readdirSync(at).sort()) { const path = join(at, name);
+        if (statSync(path).isDirectory()) walk(path); else files[relative(dir, path)] = sha256(readFileSync(path)); } };
+      walk(dir); return files;
+    };
+    const observePuts = (cache: A) => {
+      const put = cache.put.bind(cache);
+      return spyOn(cache, "put").mockImplementation((...args: A[]) => {
+        const tokens: number[] = args[0], { row, kind } = attributePut(tokens, args[5], context?.sessions ?? [], context?.prompts ?? []);
+        note({ event: "put", row, kind, ids: [...tokens], namespace: args[2], sessionId: args[5] ?? null, digest: digest({ caches: args[1], attachments: args[4] }) });
+        return put(...args);
+      });
+    };
+    const outcome = (settled: PromiseSettledResult<A>) => settled.status === "rejected"
+      ? { compared: { status: "rejected", reason: String(settled.reason?.message ?? settled.reason) } }
+      : { compared: { status: "fulfilled", promptTokens: settled.value.promptTokens, generatedTokens: settled.value.generatedTokens,
+        cachedTokens: settled.value.cachedTokens, finishReason: settled.value.finishReason,
+        spec: settled.value.spec ? Object.fromEntries(SPEC.map(k => [k, settled.value.spec[k] ?? null])) : null }, diagnostic: settled.value };
+    const submit = async (cache: A, requests: { promptIds: number[]; method: A; name: string; maxTokens: number; signal?: AbortSignal; onToken?: (count: number) => boolean | void }[]) => {
+      const events: A[] = [], tokens: number[][] = requests.map(() => []);
+      log = events;
+      context = { lengths: requests.map(r => r.promptIds.length), prompts: requests.map(r => [...r.promptIds]), sessions: requests.map((r, q) => `${r.name}-${q}`),
+        members: [], targetCaches: null, joined: false, arm: null, layouts: null };
+      const group = binding.createBatchGroup({ maxBatch: 2, promptCache: cache });
+      let settled: PromiseSettledResult<A>[];
+      try {
+        settled = await Promise.allSettled(requests.map((request, q) => group.submit({ method: request.method, promptIds: request.promptIds,
+          cacheNamespace: `${request.name}-${q}`, cacheSessionId: `${request.name}-${q}`, maxTokens: request.maxTokens,
+          eosTokenIds: [], ...(request.signal ? { signal: request.signal } : {}),
+          onToken(token: number) { tokens[q]!.push(token); note({ event: "token", row: q, token, index: tokens[q]!.length, activeRows: group.activeRows }); return request.onToken?.(tokens[q]!.length); } })));
+      } finally { await group.close(); log = null; context = null; }
+      return { events, tokens, outcomes: settled.map(outcome) };
+    };
+    const continuation = (c: Case, outputs: number[][]) => prompts.map((prompt, q) => ({ name: c.name, promptIds: [...prompt, ...outputs[q]!, ...SUFFIX],
+      method: methodFor(c.sampling, CONTINUATION), maxTokens: CONTINUATION }));
+    const take = (cache: A, put: A) => {
+      const hit = cache.take([...put.ids, 31], put.namespace);
+      if (!hit) return null;
+      try { return { tokens: hit.tokens.length, digest: digest(hit) }; }
+      finally { disposeResources([...hit.caches, { dispose: () => disposeAttachments(hit.attachments) }, { dispose: () => hit.retain?.() }]); }
+    };
+    if (phase === "parent") {
+      for (const c of CASES) {
+        const ssd = new SsdCacheStore(storeOptions(c.name)), cache = new TieredPromptCache(4 * 1024 ** 3, ssd, cold(ssd));
+        const putSpy = observePuts(cache), aborted = new AbortController();
+        const rec: A = { case: c, prompts };
+        let primary = false;
+        try {
+          rec.generation = await submit(cache, prompts.map((promptIds, q) => ({ name: c.name, promptIds, method: methodFor(c.sampling, BUDGET), maxTokens: BUDGET,
+            ...(q === 0 && c.action === "cancel" ? { signal: aborted.signal } : {}),
+            onToken: q !== 0 ? undefined : (count: number) => {
+              if (count !== c.at) return;
+              if (c.action === "stop") return false;
+              if (c.action === "fail") throw new Error("failed consumer");
+              aborted.abort(new Error("cancelled consumer"));
+            } })));
+          const drained = await cache.durability.flush();
+          rec.flush = { durable: drained.durable, pendingBytes: cache.spillQueue.pendingBytes };
+          if (c.continued) {
+            const snapshots = puts(rec.generation, "generated").sort((a: A, b: A) => a.row - b.row);
+            rec.ram = [];
+            for (let repeat = 0; repeat < 2; repeat++) {
+              const takeBefore = snapshots.map((p: A) => take(cache, p));
+              const sub = await submit(cache, continuation(c, rec.generation.tokens));
+              rec.ram.push({ takeBefore, ...sub, takeAfter: snapshots.map((p: A) => take(cache, p)) });
+            }
+            const flushed = await cache.durability.flush();
+            rec.continuationFlush = { durable: flushed.durable, pendingBytes: cache.spillQueue.pendingBytes };
+            rec.snapshots = { outputs: rec.generation.tokens, puts: snapshots.map((p: A) => ({ ids: p.ids, namespace: p.namespace, digest: p.digest })),
+              ssd: manifest(storeOptions(c.name).dir) };
+          }
+        } catch (error) { primary = true; rec.error = String((error as Error)?.stack ?? error); }
+        finally {
+          try { await cache.durability.flush(); } catch (error) { if (!primary) throw error; }
+          finally { putSpy.mockRestore(); cache.clear(); clearCache(); }
+        }
+        records[c.name] = rec;
+      }
+    } else {
+      const expected = JSON.parse(readFileSync(join(directory, "expected.json"), "utf8"));
+      for (const c of CASES.filter(c => c.continued)) {
+        const snapshots = expected[c.name].snapshots, dir = storeOptions(c.name).dir;
+        const rec: A = { ssdUnchanged: existsSync(dir) && json(manifest(dir)) === json(snapshots.ssd) };
+        const restarted = new SsdCacheStore(storeOptions(c.name));
+        rec.scanned = restarted.scan();
+        const cache = new PromptCache(4 * 1024 ** 3, null, cold(restarted, true)), putSpy = observePuts(cache);
+        try {
+          rec.take = [];
+          for (const p of snapshots.puts) {
+            const release = await cache.prefetch([...p.ids, 31], p.namespace);
+            try { rec.take.push(take(cache, p)); } finally { release(); }
+          }
+          Object.assign(rec, await submit(cache, continuation(c, snapshots.outputs)));
+        } catch (error) { rec.error = String((error as Error)?.stack ?? error); }
+        finally { putSpy.mockRestore(); cache.clear(); clearCache(); }
+        records[c.name] = rec;
+      }
+    }
+  } finally {
+    try { releaseAll(releases.reverse()); }
+    finally {
+      try { weights.dispose(); }
+      finally { releaseAll([...weights.shards.files.values()].map(file => () => file.mmap.unmap()).concat([() => clearCache()])); }
+    }
+  }
+  return { records, prompts, geometry, vocab: config.text.vocabSize as number };
+}
+
+const inputs = optIn(Bun.env);
+
+test.skipIf(!inputs || PHASE !== "parent")("Qwen MTP B2: retirement, committed row state and generated prefixes from RAM and a fresh process", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "qwen-mtp-group-prefix-"));
+  try {
+    const { records, prompts, geometry, vocab } = await record(inputs!, directory, "parent");
+    writeFileSync(join(directory, "expected.json"), json(Object.fromEntries(CASES.filter(c => c.continued).map(c => [c.name, { snapshots: records[c.name].snapshots }]))));
+    // The parent has released its model and weights; the child loads its own.
+    const child = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path, "--test-name-pattern", "fresh-process SSD continuation"], {
+      env: { ...Bun.env, MLX_BUN_TEST_MTP_PHASE: "child", MLX_BUN_TEST_MTP_DIR: directory }, stdout: "pipe", stderr: "pipe" });
+    const restoreFile = join(directory, "restore.json");
+    assert(child.exitCode === 0 && existsSync(restoreFile), `fresh-process phase failed (${child.exitCode}): ${child.stderr.toString().slice(-2000)}`);
+    const restored = JSON.parse(readFileSync(restoreFile, "utf8"));
+    const found = problems(fail => { for (const c of CASES) checkCase(c, records[c.name], c.continued ? restored[c.name] ?? null : undefined, prompts, vocab, geometry, fail); });
+    expect(found).toEqual([]);
+    const summary = CASES.map(c => {
+      const g = records[c.name].generation, rounds = g.events.filter((e: A) => e.event === "commit");
+      return { case: c.name, tokens: g.tokens.map((t: number[]) => t.length), rounds: rounds.length, twoRowRounds: rounds.filter((e: A) => e.accepted.length === 2).length,
+        generatedPuts: puts(g, "generated").map((p: A) => [p.row, p.ids.length]), promptPuts: puts(g, "prompt").length };
+    });
+    console.log(json({ status: "pass", scope: "B2 depth 2 plain KV; within-tree contract; main parity is external", prompts: prompts.map(p => p.length), summary }));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}, 1_800_000);
+
+test.skipIf(!inputs || PHASE !== "child")("Qwen MTP B2 fresh-process SSD continuation (child phase)", async () => {
+  const { records } = await record(inputs!, CHILD_DIR!, "child");
+  writeFileSync(join(CHILD_DIR!, "restore.json"), json(records));
+}, 900_000);
+
+// ---- CPU-only validation (synthetic records; no native libraries) ------------------------
+const V = 248320;
+const GEOMETRY = geometryFor({ num_hidden_layers: 8, num_key_value_heads: 4, head_dim: 256, linear_num_key_heads: 16, linear_key_head_dim: 128,
+  linear_num_value_heads: 48, linear_value_head_dim: 128, linear_conv_kernel_dim: 4,
+  layer_types: Array.from({ length: 8 }, (_, i) => (i + 1) % 4 === 0 ? "full_attention" : "linear_attention") }, "bfloat16");
+const P = [Array.from({ length: 32 }, (_, i) => 1000 + i), Array.from({ length: 25 }, (_, i) => 2000 + i)];
+const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
+const fake = (key: string, shape: number[], dtype = "bfloat16") => ({ shape, dtype, sha256: sha256(key) });
+function synthetic(key: string, prompts: number[][], twoRow: number[][], oneRow: number[][], publish: boolean[], name = "g-stop") {
+  const offsets = prompts.map(p => p.length), tokens: number[][] = [[], []], events: A[] = [];
+  let members = [0, 1], last: A = null;
+  const layers = (tag: string, offset: number) => GEOMETRY.layers.map((kind, i) => kind === "kv"
+    ? { signature: "kv:plain", offset, arrays: ["k", "v"].map(p => fake(`${tag}:${i}:${p}:${offset}`, [1, 4, offset, 256])) }
+    : { signature: "ssm", offset, arrays: [fake(`${tag}:${i}:c:${offset}`, GEOMETRY.conv.shape), fake(`${tag}:${i}:r:${offset}`, GEOMETRY.recurrent.shape, "float32")] });
+  const emit = (q: number) => { tokens[q]!.push(10_000 * (q + 1) + tokens[q]!.length); events.push({ event: "token", row: q, token: tokens[q]!.at(-1), index: tokens[q]!.length, activeRows: members.length }); };
+  const put = (q: number) => {
+    const k = last.state.rows.findIndex((r: A) => r.request === q), row = last.state.rows[k], draft = last.commit.drafts[k];
+    const ids = [...prompts[q]!, ...tokens[q]!].slice(0, offsets[q]);
+    events.push({ event: "put", row: q, kind: "generated", ids, namespace: `ns-${q}`, sessionId: `${name}-${q}`, digest: { offsets: row.layers.map((l: A) => l.offset),
+      attachments: [["qwen-mtp-v1", { draftOffset: ids.length - 1 }]], arrays: [...row.layers.flatMap((l: A) => l.arrays), ...draft.tensors] } });
+  };
+  if (key.startsWith("gen")) for (const q of [0, 1]) events.push({ event: "put", row: q, kind: "prompt", ids: prompts[q]!.slice(0, -1), sessionId: `${name}-${q}`, digest: {} });
+  emit(0); emit(1);
+  events.push({ event: "join", requests: [0, 1], processed: [...offsets] });
+  [...twoRow.map(a => ({ a, two: true })), ...oneRow.map(a => ({ a, two: false }))].forEach(({ a, two }, i) => {
+    if (!two && members.length === 2) { if (publish[0]) put(0); members = [1]; events.push({ event: "filter", keep: [1], members: [1] }); }
+    const pending = members.map(q => tokens[q]!.at(-1)!), proposals = members.map((_, r) => [300 + i, 400 + r]);
+    events.push({ event: "draft", pending, depth: 2, proposals });
+    if (i === 0) events.push({ event: "state", at: "entry", members: [...members], rows: members.map(q => ({ request: q, layers: layers(`${key}:e${q}`, offsets[q]!) })) });
+    events.push({ event: "forward", ids: pending.map((p, r) => [p, ...proposals[r]!]), verify: true, sameLayouts: true, hidden: fake(`${key}:h${i}`, [1]) });
+    events.push({ event: "project", logits: { shape: [members.length, 3, V], sha256: sha256(`${key}:l${i}`), finite: true }, argmax: members.map(() => [1, 2, 3]) });
+    members.forEach((q, k) => { for (let t = 0; t <= a[k]!; t++) emit(q); offsets[q]! += a[k]! + 1; });
+    const commit = { event: "commit", accepted: [...a], drafts: members.map(q => ({ processedTokens: offsets[q], schema: "qwen-mtp-v1",
+      metadata: { draftOffset: offsets[q]! - 1 }, tensors: [fake(`${key}:d${i}:${q}`, [1, 1, 5120])] })) };
+    const state = { event: "state", at: "commit", members: [...members], rows: members.map(q => ({ request: q, layers: layers(`${key}:c${i}:${q}`, offsets[q]!) })) };
+    events.push(commit, state); last = { commit, state };
+  });
+  if (members.length === 2) { if (publish[0]) put(0); if (publish[1]) put(1); } else if (publish[1]) put(1);
+  return { events, tokens };
+}
+const done = (reason: string, n: number, cached = 0) => ({ compared: { status: "fulfilled", generatedTokens: n, cachedTokens: cached, finishReason: reason, spec: {} } });
+function fixture(c: Case, twoRow = [[2, 1], [0, 2], [2, 0], [1, 2], [2, 2], [0, 2]], oneRow = [[2], [2], [1]]) {
+  const g: A = synthetic(`gen-${c.name}`, P, twoRow, oneRow, [true, true]);
+  g.outcomes = [done("stop", g.tokens[0].length), done("length", g.tokens[1].length)];
+  const rec: A = { prompts: P, generation: g, flush: { durable: true, pendingBytes: 0 } };
+  const snap = (q: number) => g.events.find((e: A) => e.kind === "generated" && e.row === q);
+  const takes = [0, 1].map(q => ({ tokens: snap(q).ids.length, digest: clone(snap(q).digest) }));
+  const cont = () => { const s: A = synthetic(`cont-${c.name}`, P.map((p, q) => [...p, ...g.tokens[q], ...SUFFIX]), [[2, 2], [2, 1], [2, 2], [1, 2]], [], [true, true]);
+    s.outcomes = [0, 1].map(q => done("length", CONTINUATION, snap(q).ids.length)); return s; };
+  rec.ram = [0, 1].map(() => ({ takeBefore: clone(takes), ...cont(), takeAfter: clone(takes) }));
+  rec.continuationFlush = { durable: true, pendingBytes: 0 };
+  return { rec, restore: { ssdUnchanged: true, scanned: 2, take: clone(takes), ...cont() } };
+}
+const STOP = CASES[0];
+// Records are plain data, as the lane writes them: no shared references between a put and its state.
+const check = (mutate: (f: A) => void = () => {}) => { const f = clone(fixture(STOP)); mutate(f); return problems(fail => checkCase(STOP, f.rec, f.restore, P, V, GEOMETRY, fail)); };
+const ev = (sub: A, kind: string) => sub.events.filter((e: A) => e.event === kind);
+
+test("opt-in is all or nothing (CPU only)", () => {
+  expect(optIn({})).toBeNull();
+  expect(() => optIn({ [OPT_IN[0]]: "/t" })).toThrow("missing or blank");
+  expect(() => optIn({ [OPT_IN[0]]: "/nonexistent-target", [OPT_IN[1]]: "/nonexistent-draft" })).toThrow("no config.json");
+});
+
+test("a complete, consistent B2 record passes the within-tree checks (CPU only)", () => {
+  expect(check()).toEqual([]);
+  expect(fixture(STOP).rec.generation.tokens.map((t: number[]) => t.length)).toEqual([14, 24]);
+});
+
+test("missing or inconsistent observations fail (CPU only)", () => {
+  const fails = (mutate: (f: A) => void, pattern: RegExp) => expect(check(mutate).join("\n")).toMatch(pattern);
+  fails(f => { const s = f.rec.generation; s.events = s.events.filter((e: A) => !(e.event === "token" && e.activeRows === 1)); }, /callbacks/);
+  fails(f => { const e = f.rec.generation.events, c = e.map((z: A) => z.event).lastIndexOf("commit"), d = e.map((z: A) => z.event).lastIndexOf("draft");
+    f.rec.generation.events = [...e.slice(0, d), ...e.slice(d).filter((z: A, j: number) => !["draft", "forward", "project", "commit", "state"].includes(z.event) || d + j > c + 1)]; },
+  /beyond its rounds|terminal|published/);
+  fails(f => { for (const s of ev(f.rec.generation, "state")) for (const r of s.rows) r.layers = r.layers.filter((l: A) => l.signature !== "ssm"); }, /layers, expected 8/);
+  fails(f => { ev(f.rec.generation, "state")[2].rows[0].layers[3].arrays.pop(); }, /malformed layer/);
+  fails(f => { ev(f.rec.generation, "state")[1].rows[0].layers[0].arrays[1].dtype = "bfloat16"; }, /layer 0/);
+  fails(f => { const s = f.rec.generation; s.events.splice(s.events.indexOf(ev(s, "state")[2]), 1); }, /committed state/);
+  fails(f => { ev(f.rec.generation, "state")[2].error = "no verify forward in this round"; }, /no verify forward/);
+  fails(f => { delete ev(f.rec.generation, "forward")[1].verify; }, /armed round/);
+  fails(f => { ev(f.rec.generation, "forward")[1].ids[0][1] = 5; }, /verify forwards/);
+  fails(f => { ev(f.rec.generation, "project")[0].logits.finite = false; }, /projection/);
+  fails(f => { for (const e of f.rec.generation.events) { if (e.event === "filter") { e.keep = [0]; e.members = [0]; } if (e.event === "state" && e.members.length === 1) { e.members = [0]; e.rows[0].request = 0; } } },
+    /membership|advanced|request 0/);
+  fails(f => { ev(f.rec.generation, "commit")[2].drafts[0].processedTokens += 1; }, /draft processed/);
+  fails(f => { f.rec.generation.events.find((e: A) => e.kind === "generated" && e.row === 0).digest.arrays[3].sha256 = sha256("x"); }, /published planes/);
+  fails(f => { f.rec.generation.events.push({ ...clone(f.rec.generation.events.find((e: A) => e.kind === "generated" && e.row === 1)) }); }, /generated puts/);
+  fails(f => { f.rec.generation.outcomes[0].compared.finishReason = "length"; }, /request 0 finishReason/);
+  fails(f => { f.rec.ram[1].tokens[0][3] = 1; }, /RAM continuations differ|callbacks/);
+  fails(f => { f.rec.ram[1].takeAfter[1].digest.arrays[0].sha256 = sha256("x"); }, /take after request 1/);
+  fails(f => { f.restore.ssdUnchanged = false; }, /SSD directory changed/);
+  fails(f => { ev(f.restore, "project")[2].logits.sha256 = sha256("x"); }, /SSD continuation differs/);
+  fails(f => { delete f.rec.flush; }, /drain/);
+  fails(f => { f.rec.error = "boom"; }, /error boom/);
+});
+
+test("checkpoints are attributed by their session, and their tokens validated separately (CPU only)", () => {
+  const sessions = ["g-stop-0", "g-stop-1"];
+  expect(attributePut(P[0]!.slice(0, -1), "g-stop-0", sessions, P)).toEqual({ row: 0, kind: "prompt" });
+  expect(attributePut(P[1]!.slice(0, -1), "g-stop-1", sessions, P)).toEqual({ row: 1, kind: "prompt" });
+  expect(attributePut([...P[0]!, 5, 6], "g-stop-0", sessions, P)).toEqual({ row: 0, kind: "generated" });
+  expect(attributePut(P[0]!.slice(0, 20), "g-stop-1", sessions, P)).toEqual({ row: 1, kind: "prompt" });
+  expect(attributePut(P[0]!.slice(0, -1), "other-0", sessions, P).row).toBe(-1);
+  expect(attributePut(P[0]!.slice(0, -1), undefined, sessions, P).row).toBe(-1);
+  const fails = (mutate: (f: A) => void, pattern: RegExp) => expect(check(mutate).join("\n")).toMatch(pattern);
+  fails(f => { f.rec.generation.events.find((e: A) => e.kind === "prompt" && e.row === 1).ids[7] += 1; }, /not a prefix of request 1/);
+  fails(f => { f.rec.generation.events.find((e: A) => e.kind === "prompt" && e.row === 1).ids = P[0]!.slice(0, 24); }, /not a prefix of request 1/);
+  fails(f => { const p = f.rec.generation.events.find((e: A) => e.kind === "prompt" && e.row === 0); p.row = -1; p.sessionId = "other-0"; }, /unattributed put/);
+  fails(f => { f.rec.generation.events.find((e: A) => e.kind === "prompt" && e.row === 0).sessionId = "g-stop-1"; }, /unattributed put/);
+  fails(f => { f.rec.generation.events = f.rec.generation.events.filter((e: A) => e.kind !== "prompt"); }, /no prompt checkpoints/);
+});
+
+test("a run without rejections while both rows are active is not qualified (CPU only)", () => {
+  const f = fixture(STOP, [[2, 1], [2, 2], [2, 0], [2, 2], [0, 2]], [[2], [2], [2], [1]]);
+  expect(problems(fail => checkCase(STOP, f.rec, f.restore, P, V, GEOMETRY, fail)).join("\n")).toMatch(/not qualified: row 0/);
+});
+
+test("timings are not compared; whitelisted counters are (CPU only)", () => {
+  const a = fixture(STOP).rec.ram[0], b = clone(a);
+  b.outcomes[0].diagnostic = { decodeMs: 1, spec: { phaseMs: { verify: 3 } } };
+  expect(json(project(a))).toEqual(json(project(b)));
+  b.outcomes[0].compared.spec.accepted = 99;
+  expect(json(project(a))).not.toEqual(json(project(b)));
+});
