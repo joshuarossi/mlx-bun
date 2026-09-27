@@ -134,10 +134,11 @@ async function setup(dir: string) {
       return tokens;
     }),
     continuous: (g: InstanceType<typeof GenerationGateway>, ids: number[], options: GenerateOptions, signal?: AbortSignal,
-      onToken?: (token: number, emitted: number) => void) => {
+      onToken?: (token: number, emitted: number) => void | boolean) => {
       const tokens: number[] = [];
       const request = shape(options);
-      return g.run(ids, options, token => { tokens.push(token); onToken?.(token, tokens.length); }, undefined,
+      // A consumer returning false stops its row after that token.
+      return g.run(ids, options, token => { tokens.push(token); return onToken?.(token, tokens.length); }, undefined,
         request, g.place(request, options), signal).then(() => tokens);
     },
     traced,
@@ -251,6 +252,117 @@ describe.skipIf(!native || !modelDir)("Gemma2 grammar and adapters on the shared
     expect(mixed.value.slice(0, 2)).toEqual(adapterOnly.value);
     expect(mixed.value.slice(2)).toEqual(plainOnly.value);
     expect(adapterOnly.value).not.toEqual(plainOnly.value);
+  }, 900_000);
+
+  test("plain fill runs inside its adapter context: four-row groups, joins and replacement, partition from base rows, a same-context cancellation control, no leak", async () => {
+    const { FillSession } = await import("@mlx-bun/inference/generation/fill");
+    const eos = env.ctx.model.config.eosTokenIds;
+    const lists = ["red apples, green pears, warm bread, a blue kite", "seven paper boats, an old clock, a quiet train, fresh snow",
+      "two owls, a tall pine, a stone bridge, a cold river", "a brass bell, a wool coat, a clay pot, a paper map",
+      "a green door, a copper kettle, a linen shirt, a salt marsh"];
+    const prompts = lists.map(list => env.prompt(`Here is a list: ${list}. Copy the list exactly, then copy it a second time.`));
+    const base = await env.direct(prompts[2]!, { maxTokens: 16, temperature: 0 });
+    // Joins and cancellations fire on observed fill state: when a row's fill
+    // has accepted its first echo span.
+    type Row = { prompt: number; adapter: boolean; joinOnEcho?: number; afterFinish?: number; stopAt?: number; cancelOnEcho?: boolean };
+    type Outcome = { tokens: number[]; status: string; echo: number; engagedAt?: number; cancelledAt?: number };
+    // One gateway per scenario; every row runs echo fill over its own prompt.
+    const scenario = (spec: Row[]) => env.withGateway(4, gateway => env.traced(async () => {
+      const outcomes: Outcome[] = spec.map(() => ({ tokens: [], status: "pending", echo: 0 }));
+      const sessions: InstanceType<typeof FillSession>[] = [], order: string[] = [], started: Promise<void>[] = [];
+      const start = (index: number): Promise<void> => {
+        const row = spec[index]!, abort = new AbortController(), outcome = outcomes[index]!;
+        const session = sessions[index] = new FillSession({ rows: [], eos,
+          echo: { k: 4, maxSpan: 8, maxCandidates: 24, indexMax: 131072 } }, prompts[row.prompt]!);
+        const options: GenerateOptions = { maxTokens: 48, temperature: 0, fill: session,
+          ...(row.adapter ? { adapters: ["generated-lora"] } : {}) };
+        order.push(`submit:${index}`);
+        return env.continuous(gateway, prompts[row.prompt]!, options, abort.signal, (token, emitted) => {
+          outcome.tokens.push(token); order.push(`token:${index}`);
+          if (outcome.engagedAt === undefined && session.stats.echo > 0) {
+            outcome.engagedAt = emitted;
+            spec.forEach((other, joiner) => { if (other.joinOnEcho === index) started.push(start(joiner)); });
+            if (row.cancelOnEcho) { outcome.cancelledAt = emitted; abort.abort(new Error("client left")); }
+          }
+          return row.stopAt === emitted ? false : undefined;
+        }).then(() => { outcome.status = "done"; }, (error: Error) => { outcome.status = error.message; })
+          .then(() => {
+            outcome.echo = session.stats.echo; order.push(`finish:${index}`);
+            spec.forEach((other, next) => { if (other.afterFinish === index) started.push(start(next)); });
+          });
+      };
+      spec.forEach((row, index) => { if (row.joinOnEcho === undefined && row.afterFinish === undefined) started.push(start(index)); });
+      for (let seen = -1; seen !== started.length;) { seen = started.length; await Promise.all([...started]); }
+      return { outcomes, order };
+    }));
+    const context = (run: Awaited<ReturnType<typeof scenario>>, adapters: string) => ({
+      calls: run.trace.calls.filter((_, index) => run.trace.batches[index]!.adapters === adapters),
+      rows: run.trace.batches.filter(batch => batch.adapters === adapters).map(batch => batch.rows),
+    });
+    const tokens = (run: Awaited<ReturnType<typeof scenario>>) => run.value.outcomes.map(outcome => outcome.tokens);
+    const done = (run: Awaited<ReturnType<typeof scenario>>) =>
+      expect(run.value.outcomes.map(outcome => outcome.status)).toEqual(run.value.outcomes.map(() => "done"));
+    const adapter = (prompt: number, extra: Partial<Row> = {}): Row => ({ prompt, adapter: true, ...extra });
+    const plain = (prompt: number): Row => ({ prompt, adapter: false });
+
+    // Four adapter fill rows share one context and one batch; fill engages.
+    const four = await scenario([0, 1, 2, 3].map(prompt => adapter(prompt)));
+    done(four);
+    expect(Math.max(...context(four, "generated-lora").rows)).toBe(4);
+    expect(four.value.outcomes.some(outcome => outcome.echo > 0)).toBe(true);
+    // A mixed submission partitions by context and reproduces each context alone.
+    const adapterPair = await scenario([adapter(0), adapter(1)]), plainPair = await scenario([plain(2), plain(3)]);
+    const mixed = await scenario([adapter(0), adapter(1), plain(2), plain(3)]);
+    for (const run of [adapterPair, plainPair, mixed]) done(run);
+    for (const adapted of [true, false])
+      expect(mixed.value.outcomes.filter((_, index) => index < 2 === adapted).some(outcome => outcome.echo > 0)).toBe(true);
+    expect(new Set(mixed.trace.batches.map(batch => batch.adapters))).toEqual(new Set(["generated-lora", ""]));
+    expect(context(mixed, "generated-lora")).toEqual(context(adapterPair, "generated-lora"));
+    expect(context(mixed, "")).toEqual(context(plainPair, ""));
+    expect(tokens(mixed)).toEqual([...tokens(adapterPair), ...tokens(plainPair)]);
+    // The adapter changes fill output for the same prompts (both runs complete first).
+    const adaptedPair = await scenario([adapter(2), adapter(3)]);
+    done(adaptedPair);
+    expect(tokens(adaptedPair)).not.toEqual(tokens(plainPair));
+    // A late join once row 0's fill has accepted an echo span, while row 0 is
+    // still active, and a replacement after row 0 finishes, in one context.
+    const joined = await scenario([adapter(0), adapter(1, { joinOnEcho: 0 }), adapter(4, { afterFinish: 0 })]);
+    const engaged = joined.value.outcomes[0]!.engagedAt;
+    if (engaged === undefined) throw new Error("row 0's fill never accepted an echo span; the join did not run");
+    done(joined);
+    const order = joined.value.order;
+    expect(engaged).toBeLessThan(joined.value.outcomes[0]!.tokens.length);
+    expect(order.indexOf("submit:1")).toBeGreaterThan(order.indexOf("submit:0"));
+    expect(order.indexOf("submit:1")).toBeLessThan(order.indexOf("finish:0"));
+    // Row 0 still emits after the joiner's first decoded token: they overlapped in the context's group.
+    const joinerDecoded = order.indexOf("token:1", order.indexOf("token:1") + 1);
+    expect(joinerDecoded).toBeGreaterThan(-1);
+    expect(order.lastIndexOf("token:0")).toBeGreaterThan(joinerDecoded);
+    expect(order.indexOf("submit:2")).toBeGreaterThan(order.indexOf("finish:0"));
+    expect(Math.max(...context(joined, "generated-lora").rows)).toBeGreaterThanOrEqual(2);
+    expect(joined.value.outcomes.slice(1).some(outcome => outcome.echo > 0)).toBe(true);
+    // Cancelling row 1 as soon as its fill accepts an echo span, and stopping it
+    // at that same emitted count, both remove it before the next forward: its
+    // peers in the same context must match that control in tokens and every
+    // recorded call.
+    const cancelled = await scenario([adapter(0), adapter(1, { cancelOnEcho: true }), adapter(2), adapter(3)]);
+    const at = cancelled.value.outcomes[1]!.cancelledAt;
+    if (at === undefined) throw new Error("row 1's fill never accepted an echo span; the cancellation case did not run");
+    const stopped = await scenario([adapter(0), adapter(1, { stopAt: at }), adapter(2), adapter(3)]);
+    expect(cancelled.value.outcomes[1]).toMatchObject({ status: "client left" });
+    expect(cancelled.value.outcomes[1]!.tokens).toHaveLength(at);
+    expect(cancelled.value.outcomes[1]!.tokens).toEqual(stopped.value.outcomes[1]!.tokens);
+    done(stopped);
+    expect(stopped.value.outcomes[1]!.tokens).toHaveLength(at);
+    expect(Math.max(...context(cancelled, "generated-lora").rows)).toBe(4);
+    for (const survivor of [0, 2, 3]) {
+      expect(cancelled.value.outcomes[survivor]).toMatchObject({ status: "done" });
+      expect(cancelled.value.outcomes[survivor]!.tokens).toEqual(stopped.value.outcomes[survivor]!.tokens);
+    }
+    expect(context(cancelled, "generated-lora")).toEqual(context(stopped, "generated-lora"));
+    // Nothing leaks: adapter state is clear and base generation is unchanged.
+    expect(env.ctx.model.loraState!.active).toEqual([]);
+    expect((await env.direct(prompts[2]!, { maxTokens: 16, temperature: 0 })).value).toEqual(base.value);
   }, 900_000);
 
   test("HTTP grammar and adapter completions answer 200, streamed and not, and an abandoned stream releases its row", async () => {
