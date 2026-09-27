@@ -138,7 +138,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const services = continuationServices;
       if (!services?.checkpoints || !services.checkpointPersistence)
         throw new Error("qualified continuation requires bound persistence services");
-      return createOrdinaryContinuationRequest({ options, prompt, onToken, execution,
+      // A checkpointed plan never pages: as main's serial executor did, a media or
+      // adapter request that bypassed the server-wide paging flag runs without it.
+      const { pagedKv: _bypassed, ...scoped } = options;
+      return createOrdinaryContinuationRequest({ options: scoped, prompt, onToken, execution,
         store: services.checkpoints, persistence: services.checkpointPersistence,
         restore: entry => services.checkpoints!.restore(entry, model),
         interval: services.checkpointEveryTokens!, identity: services.identity });
@@ -184,9 +187,11 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         continuous: scheduling.continuous && !(ordinaryOnly && !ignoredAdapterDraft && (request.hasDraft || options.fill)) &&
           !(plainSoftcap && request.hasDraft && !softcapDraft),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
+        // Paging is decided on the resolved plan, which never checkpoints a paged
+        // row; an adapter row that bypasses paging checkpoints as main's serial path did.
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
           (!request.hasDraft || ignoredAdapterDraft) && !request.hasVision && !request.hasGrammar &&
-          !request.wantsLogprobs && !options.fill && !options.pagedKv,
+          !request.wantsLogprobs && !options.fill,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         mediaBatch: !!mediaInput,
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
