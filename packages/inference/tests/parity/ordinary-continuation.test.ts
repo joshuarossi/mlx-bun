@@ -65,7 +65,27 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const weights = await Weights.open(target!);
   let released = false;
   let manager: InstanceType<typeof AdapterManager> | undefined;
-  const expectedFresh: Record<number, { outputs: number[][]; captured: Record<string, string> }> = {};
+  const expectedFresh: Record<number, { outputs: number[][]; captured: Record<string, string>; keys: string[] }> = {};
+  /** The checkpoints a restored run must capture: the control's captures after
+   * each row's last interrupted capture (the checkpoint it restores). Every row
+   * must have been interrupted after a capture, and the set is never empty. */
+  const restoredKeys = (batch: number, control: Map<string, string>, interrupted: Map<string, string>) => {
+    const parse = (key: string) => { const [, row, generated] = /^row-(\d+):(\d+)$/.exec(key)!.map(Number); return { row: row!, generated: generated! }; };
+    const restoredAt = new Map<number, number>();
+    for (const key of interrupted.keys()) {
+      const { row, generated } = parse(key);
+      restoredAt.set(row, Math.max(restoredAt.get(row) ?? 0, generated));
+    }
+    expect([...restoredAt.keys()].sort((x, y) => x - y)).toEqual(Array.from({ length: batch }, (_, row) => row));
+    const keys = [...control.keys()].filter(key => parse(key).generated > restoredAt.get(parse(key).row)!).sort();
+    expect(keys.length).toBeGreaterThan(0);
+    return keys;
+  };
+  const expectRestored = (captured: Map<string, string>, keys: readonly string[], control: (key: string) => string | undefined) => {
+    expect(keys.length).toBeGreaterThan(0);
+    expect([...captured.keys()].sort()).toEqual([...keys]);
+    for (const key of keys) { expect(typeof control(key)).toBe("string"); expect(captured.get(key)).toBe(control(key)!); }
+  };
   try {
     const config = await continuationConfig();
     const model = createModel(weights, config);
@@ -183,7 +203,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         expect(store.scan()).toBe(batch);
         const replayed = await run(store, false);
         expect(replayed.outputs).toEqual(expected.outputs);
-        for (const [key, hash] of replayed.captured) expect(hash).toBe(expected.captured[key]);
+        expectRestored(replayed.captured, expected.keys, key => expected.captured[key]);
         expect(store.stats.restores).toBe(batch);
         expect(new SsdCacheStore(settings("fresh")).scan()).toBe(0);
         continue;
@@ -209,14 +229,16 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       const replayed = await run(restarted, false);
       expect(replayed.outputs).toEqual(control.outputs);
       for (const [key, hash] of interrupted.captured) expect(hash).toBe(control.captured.get(key)!);
-      for (const [key, hash] of replayed.captured) expect(hash).toBe(control.captured.get(key)!);
+      expectRestored(replayed.captured, restoredKeys(batch, control.captured, interrupted.captured), key => control.captured.get(key));
       expect(restarted.stats.restores).toBe(batch);
       expect(new SsdCacheStore(settings("restart")).scan()).toBe(0);
       if (freshProcess) {
         // Interrupted checkpoints for the fresh-process restore, left on disk.
         const fresh = await run(new SsdCacheStore(settings("fresh")), true);
         expect(fresh.outputs.map(tokens => tokens.length)).toEqual(Array(batch).fill(kv.interruptAt));
-        expectedFresh[batch] = { outputs: control.outputs, captured: Object.fromEntries(control.captured) };
+        for (const [key, hash] of fresh.captured) expect(hash).toBe(control.captured.get(key)!);
+        expectedFresh[batch] = { outputs: control.outputs, captured: Object.fromEntries(control.captured),
+          keys: restoredKeys(batch, control.captured, fresh.captured) };
       }
     }
     if (phase === "child") return;
@@ -236,9 +258,13 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         env: { ...process.env, MLX_BUN_TEST_CONTINUATION_PHASE: "child", MLX_BUN_TEST_CONTINUATION_DIR: directory,
           MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS: "0" },
         stdout: "pipe", stderr: "pipe", timeout: 240_000, killSignal: "SIGKILL" });
-      const output = child.stdout.toString() + child.stderr.toString();
-      expect({ exitCode: child.exitCode, output: output.includes("(pass) ordinary B1/B4 restore") && /\b1 pass\b/.test(output) && /\b0 fail\b/.test(output) })
-        .toEqual({ exitCode: 0, output: true });
+      const stdout = child.stdout.toString(), stderr = child.stderr.toString(), output = stdout + stderr;
+      if (child.exitCode !== 0 || !output.includes("(pass) ordinary B1/B4 restore") || !/\b1 pass\b/.test(output) || !/\b0 fail\b/.test(output)) {
+        const diagnostics = `fresh-process restore child: exit ${child.exitCode}, signal ${child.signalCode ?? "none"}` +
+          `${child.exitedDueToTimeout ? ", killed at its deadline" : ""}\n--- child stdout ---\n${stdout}\n--- child stderr ---\n${stderr}`;
+        console.error(diagnostics);
+        throw new Error(diagnostics);
+      }
     }
   } finally {
     try { if (adapter && manager?.list().length) manager.unmount("upper"); }
