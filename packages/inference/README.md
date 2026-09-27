@@ -99,10 +99,15 @@ The [Gemma4 assistant test](tests/parity/gemma4-assistant.test.ts) takes
 attention and deterministic draft chains with independently selected donors past the
 window. Its separate generation consumer uses the real assistant provider at B1,
 depth 2, with plain KV below the sliding window, and compares greedy output with
-ordinary generation. It checks complete
-forward blocks and retained K/V against independent direct-graph replay, including
+ordinary generation. It checks complete forward blocks and retained K/V against independent direct-graph replay, including
 acceptance, rejection and continuation; this is not main or external-oracle parity.
-Real-weight execution of that generation consumer is pending. The [DiffusionGemma window test](tests/parity/diffusion-gemma-window.test.ts)
+On 2026-09-27 UTC, this consumer passed at `9be1c241` on an M1 Max with 32 GiB
+(macOS 27.0, Bun 1.4.2), using e4b `98d7dc6a` and assistant `844e008e`. Its 67
+output tokens matched ordinary generation; 44 rounds included 24 accepted
+proposals and 39 genuine target-disagreement rounds. All 45 forward blocks and
+the retained state matched the direct replay byte for byte. This does not qualify
+B>1, persistence or performance. Captures and their content pins remain external.
+The [DiffusionGemma window test](tests/parity/diffusion-gemma-window.test.ts)
 takes `MLX_BUN_TEST_DIFFUSION_WINDOW_MODEL`, `MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE`
 (a directory holding `manifest.json` and raw tensors, produced outside this
 repository) and `MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE_SHA256`; the manifest pins
