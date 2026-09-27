@@ -49,6 +49,18 @@ migration. Existing migration gaps remain required work in the feature table.
   cache. Exit: supported KV attention paths use the cache contract with real-model
   numerical, continuation, cancellation and batched-execution coverage. This
   records the ownership and target; it does not introduce a new package now.
+- [ ] Make a rotating cache's `temporalView` return the newest window after a
+  multi-token write (owner: cache library, `state/rotating-kv.ts` and
+  `state/rotating-quantized-kv.ts`). Observed with tagged columns on main 02d723a
+  and here (MLX 0.32.2, window 8): once a multi-token write leaves the buffer longer
+  than the window (one write longer than it, a chunk after a wrap, or successive
+  chunks crossing it), the view returns the oldest window's positions instead of the
+  newest; the quantized cache `toQuantized` builds from that buffer does the same;
+  the next single-token write restores the newest window. The batched rotating
+  caches already select the newest window (`rotatingSourcePosition`). Which
+  production paths read the view in that state has not been traced; current
+  numerics are preserved until a paired reproduction and a separate fix with its
+  own evidence.
 
 ## Migrate the application
 
