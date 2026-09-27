@@ -94,7 +94,9 @@ function fixture() {
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
     intermediate_size: 64, vocab_size: 96, rms_norm_eps: 1e-6,
     query_pre_attn_scalar: 16, attn_logit_softcapping: 50, final_logit_softcapping: 30 };
-  const config = { modelType: "gemma2", raw, quantization: null } as unknown as ModelConfig;
+  // The text facts gateway policy reads; Universal Gemma2 has no sliding layers.
+  const config = { modelType: "gemma2", raw, quantization: null,
+    text: { numHiddenLayers: 1, layerTypes: ["full_attention"] } } as unknown as ModelConfig;
   const arrays = new Map<string, MlxArray>();
   const add = (name: string, shape: number[]) => {
     using values = MlxArray.fromFloat32(Float32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
@@ -257,9 +259,9 @@ describe.skipIf(!native)("Gemma2 manual attention native masks", () => {
 // masks) whose descriptor alternates full and sliding layers, in both orders.
 // No published model has this shape; it is library composition.
 const W = 4, F = "full_attention", S = "sliding_attention";
-function mixedFixture(types: string[], explicitMask: boolean) {
+function mixedFixture(types: string[], explicitMask: boolean, headDim = 4) {
   const raw = { model_type: "gemma2", hidden_size: 32, num_hidden_layers: types.length,
-    num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
+    num_attention_heads: 8, num_key_value_heads: 4, head_dim: headDim,
     intermediate_size: 64, vocab_size: 96, rms_norm_eps: 1e-6,
     query_pre_attn_scalar: 16, attn_logit_softcapping: 50, final_logit_softcapping: 30 };
   // The text facts gateway policy reads (layer types, window); the graph itself takes explicit args.
@@ -273,8 +275,8 @@ function mixedFixture(types: string[], explicitMask: boolean) {
   };
   add("model.embed_tokens.weight", [96, 32]); add("model.norm.weight", [32]);
   for (let layer = 0; layer < types.length; layer++) for (const [name, shape] of Object.entries({
-    "self_attn.q_proj": [32, 32], "self_attn.k_proj": [16, 32], "self_attn.v_proj": [16, 32],
-    "self_attn.o_proj": [32, 32], "mlp.gate_proj": [64, 32], "mlp.up_proj": [64, 32], "mlp.down_proj": [32, 64],
+    "self_attn.q_proj": [8 * headDim, 32], "self_attn.k_proj": [4 * headDim, 32], "self_attn.v_proj": [4 * headDim, 32],
+    "self_attn.o_proj": [32, 8 * headDim], "mlp.gate_proj": [64, 32], "mlp.up_proj": [64, 32], "mlp.down_proj": [32, 64],
     "input_layernorm": [32], "post_attention_layernorm": [32], "pre_feedforward_layernorm": [32], "post_feedforward_layernorm": [32],
   })) add(`model.layers.${layer}.${name}.weight`, shape);
   const weights = { shards: { files: new Map() }, tensorNames: [...arrays.keys()],
@@ -1397,11 +1399,14 @@ test.skipIf(!native || !artifact)("a structurally equivalent delegating provider
 // may finish there), then only that row is rejected, before any shared append.
 describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   const types = [F, S, F, S];
+  // Rows that pass the transition in prefill convert for real: affine
+  // quantization needs a head dimension divisible by its group size (64).
+  const HEAD_DIM = 64;
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
   const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number } = {}) => {
     const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
-    const f = mixedFixture(types, true), model = f.make();
+    const f = mixedFixture(types, true, HEAD_DIM), model = f.make();
     const binding = bindMlxGateway(model);
     const kvScheme = start === null ? undefined : resolveKvScheme({ override: 4, quantizedKvStart: start });
     let held = false;
@@ -1549,9 +1554,11 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     const scheme = resolveKvScheme({ override: 4, quantizedKvStart: 9 });   // A (5 tokens) may produce 9 - 5 + 1 = 5
     const run = async (name: string, interruptAt?: number, sibling = false) => {
       // A fresh graph, binding and group per run: only the SSD directory is shared.
-      const f = mixedFixture(types, true), model = f.make(), binding = bindMlxGateway(model);
+      const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), binding = bindMlxGateway(model);
       const store = new SsdCacheStore({ dir: join(directory, name), maxBytes: 1 << 30, modelId: "synthetic-gemma2",
         configFingerprint: `plain-kv-continuation:${scheme.cacheKey}`, tokenizerHash: "fixture", verify: true });
+      // A fresh store indexes the durable records it finds, as a restarted server does.
+      const scanned = store.scan();
       const persistence = new ContinuationPersistence(store, { maxBytes: 1 << 30 });
       const prefix = new PromptCache(1 << 20, null, null, cloneKvCaches);
       binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 2,
@@ -1588,7 +1595,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           .then(stats => stats.finishReason as string, (error: Error) => error.name) : undefined;
         held = false; group.kick();
         const outcome = await a, siblingOutcome = await b;
-        return { tokens, outcome, restored, captured, sibling: b ? { tokens: siblingTokens, outcome: siblingOutcome } : undefined };
+        return { tokens, outcome, scanned, restored, captured, sibling: b ? { tokens: siblingTokens, outcome: siblingOutcome } : undefined };
       } finally {
         try { await group.close(); } finally {
           try { await persistence.flush(); } finally { request.dispose(); siblingSampling?.dispose(); prefix.clear(); f.dispose(); }
@@ -1597,12 +1604,15 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     };
     try {
       const control = await run("control");
-      expect({ tokens: control.tokens, outcome: control.outcome }).toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "PlainKvReadError" });
+      expect({ tokens: control.tokens, outcome: control.outcome, scanned: control.scanned, restored: control.restored })
+        .toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "PlainKvReadError", scanned: 0, restored: [] });
       expect([...control.captured.keys()]).toEqual([2, 4]);
       const interrupted = await run("restart", 3);
-      expect(interrupted.outcome).toBe("AbortError");
+      expect({ outcome: interrupted.outcome, scanned: interrupted.scanned, restored: interrupted.restored })
+        .toEqual({ outcome: "AbortError", scanned: 0, restored: [] });
       expect(interrupted.captured.get(2)).toBe(control.captured.get(2)!);
       const resumed = await run("restart", undefined, true);
+      expect(resumed.scanned).toBe(1);   // the interrupted row's record at 2, and only it
       expect(resumed.restored).toEqual([A.length + 2]);
       expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
       expect(resumed.captured.get(4)).toBe(control.captured.get(4)!);
