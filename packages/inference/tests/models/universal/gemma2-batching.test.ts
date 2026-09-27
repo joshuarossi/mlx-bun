@@ -94,7 +94,7 @@ function fixture() {
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
     intermediate_size: 64, vocab_size: 96, rms_norm_eps: 1e-6,
     query_pre_attn_scalar: 16, attn_logit_softcapping: 50, final_logit_softcapping: 30 };
-  // The text facts gateway policy reads; Universal Gemma2 has no sliding layers.
+  // The text facts gateway policy reads; this one-layer fixture uses full attention.
   const config = { modelType: "gemma2", raw, quantization: null,
     text: { numHiddenLayers: 1, layerTypes: ["full_attention"] } } as unknown as ModelConfig;
   const arrays = new Map<string, MlxArray>();
