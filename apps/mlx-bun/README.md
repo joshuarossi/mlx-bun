@@ -48,8 +48,10 @@ Programmatic composition still accepts explicit context and read-only policy.
 
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
 `hub.ts` owns model-management presentation; `terminal.ts` owns formatting.
-`model-selection.ts` owns automatic selection policy. `serve.ts` parses the
-serve flags and owns the process; its composition is split in two halves:
+`model-selection.ts` owns automatic selection policy; its pure choices live in
+`model-choice.ts` ([`mlx-bun/selection`](#selection-entry-mlx-bunselection)).
+`serve.ts` parses the serve flags and owns the process; its composition is
+split in two halves:
 `serve-state.ts` creates the persistent, CPU-only state that outlives a loaded
 model (web assets, the download owner, Responses history, memory, jobs,
 sessions, credentials, and their routes) and never imports the engine or a
@@ -467,8 +469,8 @@ without `initializeMlx`. It loads without native MLX and starts nothing on
 import. It re-exports the client above, `createInferenceEngine` and
 `CancellationSource` with main's generation contract types from
 `@mlx-bun/inference`, and adds `openIsolatedHost`. Main's `initializeMlx` and
-the native root (`.`) compatibility API are not provided; they are tracked
-separately.
+the rest of the native root (`.`) compatibility API are not provided; they are
+tracked separately. The root's selection helpers are `mlx-bun/selection` (below).
 
 ```ts
 import { createCompletionClient, openIsolatedHost } from "mlx-bun/engine";
@@ -512,6 +514,24 @@ refusal and startup behaviors are covered by C2a's
 `MLX_BUN_APP_TEST_MODEL` and/or `MLX_BUN_APP_TEST_WHISPER_MODEL`) runs real
 consumers, including a standalone CLI as `command`, under a temporary HOME;
 its real-HOME check is a names-only guard.
+
+## Selection entry (`mlx-bun/selection`)
+
+`mlx-bun/selection` (`src/cli/model-choice.ts`) is main's pure model-selection
+helpers from `src/fit.ts`. It imports no module, so it loads without native MLX.
+It exports `DEFAULT_REPO_ID`, `STARTER_REPO_ID`, `COEXIST_FRACTION`,
+`chooseAutoModel(candidates, preferredRepo, fitsFull, fitsCoexist)` (the
+automatic rule `model-selection.ts` applies), and
+`largestRecommendedRepoId(ramBytes)` (the 26B at 48 GiB or more, the 12B at
+24 GiB or more, otherwise `DEFAULT_REPO_ID`; an explicit opt-in that automatic
+selection never calls). Migrating from main's root: `recommendedRepoId()` is
+`DEFAULT_REPO_ID`; `largestRecommendedRepoId()` is
+`largestRecommendedRepoId(totalmem())` (RAM is now required); `chooseAutoModel`,
+`COEXIST_FRACTION` and `DEFAULT_REPO_ID` import from `mlx-bun/selection`.
+
+The [selection tests](tests/selection-entry.test.ts) import the entry through the
+export map with native MLX blocked; `verify-packages` repeats them from the
+installed package.
 
 ## Web chat backend
 

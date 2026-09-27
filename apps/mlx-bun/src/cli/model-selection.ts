@@ -5,23 +5,7 @@ import { downloadModel } from "@mlx-bun/hub/download";
 import { fit, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
-
-// Application choices, not hub policy: discovery and fit remain reusable libraries.
-export const DEFAULT_REPO_ID = "mlx-community/gemma-4-e4b-it-OptiQ-4bit";
-export const STARTER_REPO_ID = "mlx-community/MiniCPM5-1B-OptiQ-4bit";
-export const COEXIST_FRACTION = 0.6;
-
-/** Prefer e4b when it fits; otherwise retain room for other apps where possible.
- * Explicit model selection does not use these advisory fit predicates. */
-export function chooseAutoModel<T extends { repoId: string; sizeBytes: number }>(
-  candidates: readonly T[], preferredRepo: string,
-  fitsFull: (candidate: T) => boolean, fitsCoexist: (candidate: T) => boolean,
-): T | undefined {
-  const preferred = candidates.find(candidate => candidate.repoId === preferredRepo);
-  if (preferred && fitsFull(preferred)) return preferred;
-  const largest = [...candidates].sort((a, b) => b.sizeBytes - a.sizeBytes);
-  return largest.find(fitsCoexist) ?? largest.find(fitsFull);
-}
+import { chooseAutoModel, COEXIST_FRACTION, DEFAULT_REPO_ID, STARTER_REPO_ID } from "./model-choice";
 
 type ModelRegistry = Pick<Registry, "list" | "resolve" | "scan" | "close">;
 export interface ModelSelectionDependencies {
