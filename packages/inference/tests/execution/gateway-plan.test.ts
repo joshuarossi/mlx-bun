@@ -10,6 +10,7 @@ import type { GenerateOptions } from "../../src/generation/index";
 import type { ResolvedExecution } from "../../src/contracts/portable/execution";
 import type { RuntimeModel } from "../../src/models/factory";
 import { NgramProvider } from "../../src/generation/speculative/sources/ngram-source";
+import type { DraftProvider } from "../../src/generation/speculative/source";
 import { TwoModelProvider } from "../../src/generation/speculative/sources/two-model";
 import { FillSession } from "../../src/generation/fill/session";
 import { DiffusionGemmaModel } from "../../src/models/diffusion-gemma/model";
@@ -376,7 +377,17 @@ function twoModelDraft(): TwoModelProvider {
     grouped: { checkpointNamespace: () => "gemma2-draft", open: unexpected, openPrefill: unexpected } }) as TwoModelProvider;
 }
 
-test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new NgramProvider(), "ngram"]] as const)(
+/** The n-gram provider's operations behind a plain object: no class identity, same contracts. */
+function delegatingNgram(): DraftProvider {
+  const inner = new NgramProvider(), grouped = inner.grouped;
+  return { id: "ngram-delegate", weightsBytes: 0, open: options => inner.open(options), dispose: () => inner.dispose(),
+    grouped: { checkpointNamespace: () => grouped.checkpointNamespace!(), supportsTargetAdapters: grouped.supportsTargetAdapters,
+      ...(grouped.targetTapLayers ? { targetTapLayers: target => grouped.targetTapLayers!(target) } : {}),
+      open: options => grouped.open(options), openPrefill: options => grouped.openPrefill(options) } };
+}
+
+test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new NgramProvider(), "ngram"],
+  ["delegating n-gram", delegatingNgram, "ngram-delegate"]] as const)(
   "Gemma2 softcap speculates with the %s provider over plain KV", (_, provider, id) => {
   const binding = bindMlxGateway(softcapUniversal(), { provider: provider(), numDraftTokens: 3 });
   const scheduling = { ...schedule, continuous: binding.cachesBatchable(), checkpoints: true };
@@ -418,7 +429,7 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
     .toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: false });
 });
 
-test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] as const)(
+test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], ["delegating n-gram", delegatingNgram]] as const)(
   "Gemma2 softcap ignores fill with the %s draft, as main's serial verifier did", (_, provider) => {
   const binding = bindMlxGateway(softcapUniversal(), { provider: provider(), numDraftTokens: 3 });
   const scheduling = { ...schedule, continuous: binding.cachesBatchable() };
@@ -467,7 +478,7 @@ test("softcap drafts ignore echo even if their provider advertises external toke
   }
 });
 
-test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] as const)(
+test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], ["delegating n-gram", delegatingNgram]] as const)(
   "Gemma2 softcap adapters ignore the %s draft and fill, preserving ordinary decoding", (_, provider) => {
   const model = softcapUniversal();
   const binding = bindMlxGateway(model, { provider: provider(), numDraftTokens: 3 });
@@ -504,21 +515,54 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] 
   }
 });
 
-test("Gemma2 softcap keeps other grouped draft providers unsupported", () => {
+test.each(families)("%s places a delegating provider exactly like the provider it delegates to", (_, model) => {
+  const direct = bindMlxGateway(model(), { provider: new NgramProvider(), numDraftTokens: 3 });
+  const delegate = bindMlxGateway(model(), { provider: delegatingNgram(), numDraftTokens: 3 });
+  for (const extra of [{}, { userSeed: true }, { hasGrammar: true }, { wantsLogprobs: true }, { hasAdapters: true },
+    { hasRepetitionPenalty: true }] as const) {
+    const request = { ...shape, hasDraft: true, ...extra };
+    const options: GenerateOptions = "hasAdapters" in extra ? { adapters: ["upper"] } : {};
+    const expected = direct.plan(request, options, { ...schedule, continuous: direct.cachesBatchable() });
+    const plan = delegate.plan(request, options, { ...schedule, continuous: delegate.cachesBatchable() });
+    expect({ extra, plan }).toEqual({ extra, plan: expected });
+    if (plan.method === "speculative" && plan.mechanism === "continuous")
+      expect(JSON.parse(delegate.methodRequest!(plan, options)!.key).slice(0, 2)).toEqual(["speculative", "ngram-delegate"]);
+  }
+});
+
+/** A provider whose rows tap target hidden layers; placement must never open its rows. */
+function tapper(layers: readonly number[]) {
   const unexpected = () => { throw new Error("placement opened draft rows"); };
-  const other = { id: "other", weightsBytes: 0, grouped: { checkpointNamespace: () => "other", open: unexpected, openPrefill: unexpected } };
-  const binding = bindMlxGateway(softcapUniversal(), { provider: other as never, numDraftTokens: 3 });
-  const plan = binding.plan({ ...shape, hasDraft: true }, {}, { ...schedule, continuous: binding.cachesBatchable() });
-  expect(plan).toMatchObject({ method: "speculative", mechanism: "unsupported" });
-  expect(refusals(plan)).toEqual(["continuous-unavailable", "method-batch-unsupported"]);
-  const adapted = binding.plan({ ...shape, hasDraft: true, hasAdapters: true },
-    { adapters: ["upper"], ...fillOptions(true) }, schedule);
-  expect(adapted).toMatchObject({ method: "autoregressive", mechanism: "unsupported", fill: false });
-  expect(refusals(adapted)).toEqual(["continuous-unavailable"]);
-  expect(binding.methodRequest!(adapted, fillOptions(true))).toBeUndefined();
-  // The same provider places on a qualified family.
-  const qualified = bindMlxGateway(qualifiedFamilies[0]![1](), { provider: other as never, numDraftTokens: 3 });
-  expect(qualified.plan({ ...shape, hasDraft: true }, {}, schedule)).toMatchObject({ method: "speculative", mechanism: "continuous" });
+  const taps = Object.freeze([...layers]);
+  return { id: "tapper", weightsBytes: 0, grouped: { checkpointNamespace: () => "tapper",
+    targetTapLayers: () => taps, open: unexpected, openPrefill: unexpected } } as never;
+}
+
+test("a provider that taps target layers binds only where the forward captures them; otherwise placement refuses it", () => {
+  const request = { ...shape, hasDraft: true };
+  const refused = (binding: MlxGatewayBinding) => {
+    const plan = binding.plan(request, {}, { ...schedule, continuous: binding.cachesBatchable() });
+    expect(plan).toMatchObject({ method: "speculative", mechanism: "unsupported" });
+    expect(refusals(plan)).toEqual(["method-batch-unsupported"]);
+    expect(plan.reasons).not.toContain("draft-incompatible-with-request");
+  };
+  // Graphs without a hidden-tap operation, softcap or not, refuse it rather than decode ordinarily.
+  refused(bindMlxGateway(softcapUniversal(), { provider: tapper([2, 5]), numDraftTokens: 3 }));
+  refused(bindMlxGateway(qualifiedFamilies[0]![1](), { provider: tapper([2, 5]), numDraftTokens: 3 }));
+  // The Gemma4 graph fields its legacy target view reads, with and without the hidden-tap operation.
+  const graph = (tap: boolean) => Object.assign(gemma4(), { numDonors: 8,
+    layers: Array.from({ length: 8 }, () => ({ layerType: "full_attention" })), ...(tap ? { hiddenTap: null } : {}),
+    config: { modelType: "gemma4", text: { enableMoeBlock: false, numHiddenLayers: 8 }, eosTokenIds: [] } });
+  refused(bindMlxGateway(graph(false), { provider: tapper([2]), numDraftTokens: 3 }));
+  // A graph whose forward captures hidden layers binds it within its layer range,
+  // the post-final-norm sentinel included, and refuses layers beyond it.
+  expect(bindMlxGateway(graph(true), { provider: tapper([2, 8]), numDraftTokens: 3 }).plan(request, {}, schedule))
+    .toMatchObject({ method: "speculative", mechanism: "continuous" });
+  refused(bindMlxGateway(graph(true), { provider: tapper([9]), numDraftTokens: 3 }));
+  // Declaring no taps needs no tap operation.
+  for (const model of [softcapUniversal(), qualifiedFamilies[0]![1]()])
+    expect(bindMlxGateway(model, { provider: tapper([]), numDraftTokens: 3 }).plan(request, {}, { ...schedule, continuous: true }))
+      .toMatchObject({ method: "speculative", mechanism: "continuous" });
 });
 
 test("Gemma2 softcap fill runs with adapters and keeps encoded KV and unbound drafts unsupported", () => {
@@ -527,7 +571,7 @@ test("Gemma2 softcap fill runs with adapters and keeps encoded KV and unbound dr
   for (const [binding, request, expected] of [
     [plain, { ...shape, kvQuant: true }, ["kv-scheme-batch-unsupported"]],
     [plain, { ...shape, turboQuant: true }, ["turbo-kv-batch-unsupported"]],
-    [plain, { ...shape, hasDraft: true }, ["continuous-unavailable", "method-batch-unsupported"]],
+    [plain, { ...shape, hasDraft: true }, ["method-batch-unsupported"]],
   ] as const) {
     const plan = binding.plan(request, options, { ...schedule, continuous: binding.cachesBatchable() });
     expect({ request, plan }).toMatchObject({ request, plan: { mechanism: "unsupported", fill: false } });

@@ -6,12 +6,13 @@ import { type Cache } from "../../src/contracts/mlx/cache";
 import type { RuntimeModel } from "../../src/models/factory";
 import { captureKvAttention } from "../../src/state/kv-attention-view";
 import { NgramProvider } from "../../src/generation/speculative/sources/ngram-source";
+import type { DraftProvider } from "../../src/generation/speculative/source";
 import { PromptCache } from "../../src/state/prefix-cache";
 import { runtimeConfig } from "../../src/runtime/config";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 
-function fixture() {
+function fixture(provider: Pick<DraftProvider, "id" | "grouped"> & { dispose(): void } = new NgramProvider(), graph: object = {}) {
   const shapes: number[][] = [], inputs: number[][] = [];
   const snapshots: { tokens: number[]; history: number[]; offset: number }[] = [];
   const failures: { row: Row; error: unknown }[] = [], joined: Row[] = [];
@@ -23,8 +24,9 @@ function fixture() {
       return ops.reshape(ids, [ids.shape[0]!, ids.shape[1]!, 1]);
     },
     logitsFromHidden(hidden: MlxArray) { return ops.copyOf(hidden); },
+    ...graph,
   } as unknown as RuntimeModel;
-  const cache = new PromptCache(1024 ** 2), provider = new NgramProvider();
+  const cache = new PromptCache(1024 ** 2);
   const host: MlxGroupMethodHost = { rows: joined, runtime: runtimeConfig(), prefillChunkSize: 3,
     promptCache: { take: cache.take.bind(cache), put(tokens, caches, namespace, retain, attachments) {
       snapshots.push({ tokens: [...tokens], history: attachments![0]!.tensors[0]!.toIntTokens(), offset: caches[0]!.offset });
@@ -33,7 +35,7 @@ function fixture() {
     join(row) { joined.push(row); }, filterRows() {},
     async publish(row, token) { return row.req.onToken(token); }, finish() {},
   };
-  const binding = bindSpeculativeGroupRequests(model, provider, 2)({ temperature: 0, maxTokens: 2 });
+  const binding = bindSpeculativeGroupRequests(model, provider, 2)!({ temperature: 0, maxTokens: 2 });
   const method = binding.open(host);
   const row = (tokens: number[], signal?: AbortSignal): Row => {
     const request: Row = { req: { method: binding, promptIds: tokens, maxTokens: 2, eosTokenIds: [], signal,
@@ -137,4 +139,56 @@ test("a first-token consumer failure leaves an unfinished speculative prefill ru
     expect(f.snapshots).toEqual([{ tokens: b.req.promptIds.slice(0, -1),
       history: b.req.promptIds.slice(0, -1), offset: 6 }]);
   } finally { preparation.dispose(); f.dispose(); }
+});
+
+test("rows that tap target layers their provider did not declare are refused before any forward and disposed", async () => {
+  let disposed = 0;
+  const undeclared = { id: "undeclared", dispose() {}, grouped: { checkpointNamespace: () => "undeclared",
+    open: () => { throw new Error("decode rows must not open"); },
+    openPrefill: () => ({ tapLayers: [0], dispose() { disposed++; } }) } };
+  const f = fixture(undeclared as never), row = f.row([1, 2, 3, 4]);
+  let thrown: unknown;
+  try { await drain(f.method.prepare(row)); } catch (error) { thrown = error; }
+  try {
+    const errors = [thrown, ...f.failures.map(failure => failure.error)].filter(Boolean).map(String);
+    expect(errors.some(error => error.includes("draft provider undeclared taps [0] but declared []"))).toBe(true);
+    expect(disposed).toBe(1);
+    expect(f.shapes).toEqual([]);
+  } finally { f.dispose(); }
+});
+
+test("rows that tap exactly the layers resolved for their target are admitted", () => {
+  let appended = 0, disposed = 0;
+  const rows = { tapLayers: [0], prefillMode: "tail-split", namespace: "declared", rowCount: 0,
+    append() { appended++; }, filterRows() {}, materialize() {}, dispose() { disposed++; } };
+  const declared = { id: "declared", dispose() {}, grouped: { checkpointNamespace: () => "declared",
+    targetTapLayers: () => [0], open: () => { throw new Error("decode rows must not open"); }, openPrefill: () => rows } };
+  // The graph offers the hidden-tap operation over one layer, so the binding admits the declaration.
+  const f = fixture(declared as never, { hiddenTap: null,
+    config: { modelType: "fixture", eosTokenIds: [], text: { numHiddenLayers: 1 } } }), row = f.row([1, 2, 3, 4]);
+  try {
+    f.method.prepare(row);
+    expect({ appended, disposed, failures: f.failures.length }).toEqual({ appended: 1, disposed: 0, failures: 0 });
+  } finally { f.dispose(); }
+});
+
+test("the binding checks its own snapshot of the declared taps: a later change to the provider's list is refused", () => {
+  const taps = [0];
+  let disposed = 0;
+  const rows = { tapLayers: taps, prefillMode: "tail-split", namespace: "mutable", rowCount: 0,
+    append() {}, filterRows() {}, materialize() {}, dispose() { disposed++; } };
+  const mutable = { id: "mutable", dispose() {}, grouped: { checkpointNamespace: () => "mutable",
+    targetTapLayers: () => taps, open: () => { throw new Error("decode rows must not open"); }, openPrefill: () => rows } };
+  const f = fixture(mutable as never, { hiddenTap: null,
+    config: { modelType: "fixture", eosTokenIds: [], text: { numHiddenLayers: 1 } } }), row = f.row([1, 2, 3, 4]);
+  // After the binding checked [0], the provider's shared list gains a layer this graph cannot capture.
+  taps.push(5);
+  let thrown: unknown;
+  try { f.method.prepare(row); } catch (error) { thrown = error; }
+  try {
+    const errors = [thrown, ...f.failures.map(failure => failure.error)].filter(Boolean).map(String);
+    expect(errors.some(error => error.includes("draft provider mutable taps [0,5] but declared [0]"))).toBe(true);
+    expect(disposed).toBe(1);
+    expect(f.shapes).toEqual([]);
+  } finally { f.dispose(); }
 });

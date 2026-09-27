@@ -11,6 +11,8 @@ import { applyStateChanges } from "../../src/runtime/resources";
 import { MlxStateRows } from "../../src/state/rows";
 import { BatchedKVCache } from "../../src/state/batched-kv";
 import { KVCache } from "../../src/state/kv";
+import { Qwen35Model } from "../../src/models/qwen/qwen3_5";
+import { bindSpeculativeGroupRequests } from "../../src/execution/speculative-group";
 
 let directory: string;
 let openSpy: ReturnType<typeof spyOn<typeof Weights, "open">>;
@@ -258,4 +260,26 @@ test("prefill membership borrows the same checkpoints without constructing a sam
     } finally { decode.dispose(); for (const tensor of restored.attachment.tensors) tensor.dispose(); }
     expect(hidden.toFloat32Host()).toEqual(new Float32Array(8).fill(7));
   } finally { prefill.dispose(); hidden.dispose(); provider.dispose(); }
+});
+
+test("Qwen MTP declares the target tap its grouped rows consume, resolved from the bound target", async () => {
+  const provider = await QwenMtpProvider.load(directory);
+  const unused = () => { throw new Error("declaration must not execute the model"); };
+  try {
+    const target = { identity: {}, qwenMtp: { hiddenSize: 8, layerCount: 3, embed: unused, logitsFromHidden: unused } };
+    const declared = provider.grouped.targetTapLayers!(target);
+    expect(declared).toEqual([2]);
+    for (const open of [() => provider.grouped.open({ target, sampling: { sample: unused }, checkpoints: [] }),
+      () => provider.grouped.openPrefill({ target, checkpoints: [] })]) {
+      const rows = open();
+      try { expect(rows.tapLayers).toEqual(declared); } finally { rows.dispose(); }
+    }
+    // The speculative binding resolves it against the legacy target view: it binds
+    // where the target forward captures hidden layers and refuses where it cannot.
+    const qwen = (tap: boolean) => Object.assign(Object.create(Qwen35Model.prototype), {
+      config: { modelType: "qwen3_5", eosTokenIds: [], text: { enableMoeBlock: false, hiddenSize: 8, numHiddenLayers: 3, vocabSize: 16 } },
+      embed: { encode: unused }, lmHead: null, makeCache: () => [], ...(tap ? { hiddenTap: null } : {}) }) as Qwen35Model;
+    expect(bindSpeculativeGroupRequests(qwen(true), provider, 2)).toBeDefined();
+    expect(bindSpeculativeGroupRequests(qwen(false), provider, 2)).toBeUndefined();
+  } finally { provider.dispose(); }
 });

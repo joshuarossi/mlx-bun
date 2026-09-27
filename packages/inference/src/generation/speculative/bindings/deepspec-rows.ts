@@ -12,11 +12,11 @@ export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDra
 }
 
 export function deepspecGroups(drafter: DeepspecDrafter, namespace: string): GroupedDraftProvider {
-  return projectedDraftGroups(namespace, target => {
+  return projectedDraftGroups(namespace, drafter.tapLayers, target => {
     bindDeepspecTarget(target, drafter);
     return {
       namespace, schema: "deepspec-context-v1",
-      layers: drafter.cfg.num_hidden_layers, tapLayers: drafter.tapLayers,
+      layers: drafter.cfg.num_hidden_layers,
       project(hidden, positions) {
         using projected = drafter.projectContext(hidden);
         return drafter.projectContextKVRows(projected, positions);

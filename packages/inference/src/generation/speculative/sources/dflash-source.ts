@@ -51,13 +51,13 @@ export class DflashProvider implements DraftProvider {
     this.id = id;
     this.weightsBytes = weightsBytes;
     this.gamma = drafter.cfg.gamma;
-    this.grouped = projectedDraftGroups(namespace, target => {
+    this.grouped = projectedDraftGroups(namespace, drafter.cfg.tapLayers, target => {
       if (!target.gemmaTaps) throw new Error("DSpark drafter requires a Gemma4 target");
       const projection = target.gemmaTaps.projection;
       const minConf = runtimeValue("MLX_BUN_DSPARK_MINCONF");
       return {
         namespace, schema: "dflash-context-v1",
-        layers: drafter.cfg.nLayers, tapLayers: drafter.cfg.tapLayers,
+        layers: drafter.cfg.nLayers,
         project: hidden => drafter.projectContextRows(hidden),
         draft(context, pending, _positions, depth) {
           return drafter.forwardRows(projection, null, pending, depth, {
