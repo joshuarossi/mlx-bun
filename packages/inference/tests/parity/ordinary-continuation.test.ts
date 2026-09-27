@@ -14,6 +14,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
+import type { Cache } from "@mlx-bun/inference/contracts/mlx";
 const target = Bun.env.MLX_BUN_TEST_CONTINUATION_MODEL;
 const adapter = Bun.env.MLX_BUN_TEST_CONTINUATION_ADAPTER;
 if (target && !existsSync(`${target}/config.json`)) throw new Error(`unavailable model: ${target}`);
@@ -65,11 +66,12 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const weights = await Weights.open(target!);
   let released = false;
   let manager: InstanceType<typeof AdapterManager> | undefined;
-  const expectedFresh: Record<number, { outputs: number[][]; captured: Record<string, string>; keys: string[] }> = {};
-  /** The checkpoints a restored run must capture: the control's captures after
-   * each row's last interrupted capture (the checkpoint it restores). Every row
-   * must have been interrupted after a capture, and the set is never empty. */
-  const restoredKeys = (batch: number, control: Map<string, string>, interrupted: Map<string, string>) => {
+  type Restore = { keys: string[]; tokens: number[] };
+  const expectedFresh: Record<number, { outputs: number[][]; captured: Record<string, string> } & Restore> = {};
+  /** What a restored run must show: each row restores its last interrupted
+   * capture (`tokens`, committed token counts in ascending order), then
+   * captures exactly the control's later checkpoints (`keys`, never empty). */
+  const restoredKeys = (batch: number, prompt: readonly number[], control: Map<string, string>, interrupted: Map<string, string>): Restore => {
     const parse = (key: string) => { const [, row, generated] = /^row-(\d+):(\d+)$/.exec(key)!.map(Number); return { row: row!, generated: generated! }; };
     const restoredAt = new Map<number, number>();
     for (const key of interrupted.keys()) {
@@ -79,12 +81,13 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
     expect([...restoredAt.keys()].sort((x, y) => x - y)).toEqual(Array.from({ length: batch }, (_, row) => row));
     const keys = [...control.keys()].filter(key => parse(key).generated > restoredAt.get(parse(key).row)!).sort();
     expect(keys.length).toBeGreaterThan(0);
-    return keys;
+    return { keys, tokens: [...restoredAt.values()].map(generated => prompt.length + generated).sort((x, y) => x - y) };
   };
-  const expectRestored = (captured: Map<string, string>, keys: readonly string[], control: (key: string) => string | undefined) => {
-    expect(keys.length).toBeGreaterThan(0);
-    expect([...captured.keys()].sort()).toEqual([...keys]);
-    for (const key of keys) { expect(typeof control(key)).toBe("string"); expect(captured.get(key)).toBe(control(key)!); }
+  const expectRestored = (replayed: { captured: Map<string, string>; restored: number[] }, expected: Restore, control: (key: string) => string | undefined) => {
+    expect(expected.keys.length).toBeGreaterThan(0);
+    expect([...replayed.restored].sort((x, y) => x - y)).toEqual(expected.tokens);
+    expect([...replayed.captured.keys()].sort()).toEqual(expected.keys);
+    for (const key of expected.keys) { expect(typeof control(key)).toBe("string"); expect(replayed.captured.get(key)).toBe(control(key)!); }
   };
   try {
     const config = await continuationConfig();
@@ -97,6 +100,37 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
     const adapterNamespace = adapter ? adapters.cacheNamespace(["upper"]) : "";
     const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
     const kv = await continuationKv(prompt.length);
+    /** A saved or restored checkpoint of `tokens` committed tokens. Delayed
+     * conversion gives each converted cache the offset it converted at as its
+     * reuse floor. Prefill splits at the start and converts at that chunk
+     * boundary; decode converts inside the next append once the committed
+     * offset has reached the start, so a checkpoint of exactly `start` tokens
+     * taken after a decode step is still plain. Converted affine caches hold
+     * six encoded planes (K then V packed/scales/biases), unconverted two. */
+    const checkSaved = (caches: readonly Cache[], tokens: number) => {
+      if (kv.mode === "bf16" || kv.start === 0) return;
+      const converted = kv.start <= prompt.length ? tokens >= kv.start : tokens > kv.start;
+      expect(minimumReusableOffset(caches)).toBe(converted ? kv.start : 0);
+      const layers = kv.options.kvConfig ? new Map(kv.options.kvConfig.map(entry => [entry.layerIdx, entry])) : null;
+      caches.forEach((cache, layer) => {
+        expect(cache.offset).toBe(tokens);
+        if (kv.mode === "turbo") return;
+        const spec = layers ? layers.get(layer) : { bits: kv.options.kvBits!, groupSize: kv.options.kvGroupSize ?? 64 };
+        const lease = leaseCacheState(cache);
+        try {
+          const planes = lease.borrow();
+          if (!converted || !spec) { expect(planes).toHaveLength(2); return; }
+          expect(planes).toHaveLength(6);
+          for (const at of [0, 3]) {
+            const [packed, scales, biases] = [planes[at]!, planes[at + 1]!, planes[at + 2]!];
+            expect(packed.dtypeName).toBe("uint32");
+            expect(biases.shape).toEqual(scales.shape);
+            expect(packed.shape.slice(0, 3)).toEqual(scales.shape.slice(0, 3));
+            expect(packed.shape[3]! * 32).toBe(scales.shape[3]! * spec.groupSize * spec.bits);
+          }
+        } finally { lease.close(); }
+      });
+    };
     const widths: number[] = [];
     const forward = model.forwardHidden.bind(model);
     const probe = (active: string[]) => {
@@ -124,7 +158,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         });
         const group = binding.createBatchGroup({ maxBatch: batch, kvScheme: kv.scheme, admissionHeld: () => held });
         const aborts = Array.from({ length: batch }, () => new AbortController());
-        const captured = new Map<string, string>();
+        const captured = new Map<string, string>(), restored: number[] = [];
         let idle!: () => void;
         const idleGate = new Promise<void>(resolve => { idle = resolve; });
         const persistence = new ContinuationPersistence(store, { maxBytes: 1024 ** 3,
@@ -144,7 +178,18 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: true });
           expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
           for (const [row, tokens] of outputs.entries()) requests.push(createOrdinaryContinuationRequest({
-            store, persistence, restore: entry => store.restore(entry, model), interval: 4, prompt,
+            store, persistence, interval: 4, prompt,
+            restore: entry => {
+              const loaded = store.restore(entry, model);
+              if (loaded) {
+                checkSaved(loaded.caches, loaded.tokens.length); restored.push(loaded.tokens.length);
+                const planes = loaded.caches.map(cache => { const lease = leaseCacheState(cache); try { return lease.borrow().length; } finally { lease.close(); } });
+                console.log(`[continuation-restore] ${phase} B${batch} row ${row}: ${loaded.tokens.length} tokens, offsets ` +
+                  `${[...new Set(loaded.caches.map(cache => cache.offset))]}, minimum ${minimumReusableOffset(loaded.caches)}, ` +
+                  `planes ${[...new Set(planes)]} over ${loaded.caches.length} caches`);
+              }
+              return loaded;
+            },
             options: { ...options, seed: 42 + row }, execution, identity: "same-B-fixture",
             onToken(token) {
               tokens.push(token);
@@ -158,12 +203,8 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
             const enqueue = request.continuation.captureOwned;
             request.continuation.captureOwned = state => {
               const digest = new Bun.CryptoHasher("sha256");
-              const minimum = minimumReusableOffset(state.caches);
               digest.update(JSON.stringify(state.caches.map(cache => ({ offset: cache.offset, minimum: cache.minimumReusableOffset ?? 0 }))));
-              if (kv.mode !== "bf16" && kv.start > 0) {
-                if (state.cacheTokens.length < kv.start) expect(minimum).toBe(0);
-                else expect(minimum).toBeGreaterThanOrEqual(kv.start);
-              }
+              checkSaved(state.caches, state.cacheTokens.length);
               for (const cache of state.caches) {
                 const lease = leaseCacheState(cache);
                 try { for (const plane of lease.borrow()) {
@@ -183,7 +224,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           expect(results.map(result => result.status)).toEqual(Array(batch).fill(interrupt ? "rejected" : "fulfilled"));
           expect(activeContexts.length).toBeGreaterThan(0);
           expect(activeContexts.every(ids => JSON.stringify(ids) === JSON.stringify(useAdapter ? ["upper"] : []))).toBe(true);
-          return { outputs, captured };
+          return { outputs, captured, restored };
         } finally {
           for (const abort of aborts) abort.abort(new Error("continuation test cleanup"));
           try { await group.close(); }
@@ -203,7 +244,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         expect(store.scan()).toBe(batch);
         const replayed = await run(store, false);
         expect(replayed.outputs).toEqual(expected.outputs);
-        expectRestored(replayed.captured, expected.keys, key => expected.captured[key]);
+        expectRestored(replayed, expected, key => expected.captured[key]);
         expect(store.stats.restores).toBe(batch);
         expect(new SsdCacheStore(settings("fresh")).scan()).toBe(0);
         continue;
@@ -229,7 +270,8 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       const replayed = await run(restarted, false);
       expect(replayed.outputs).toEqual(control.outputs);
       for (const [key, hash] of interrupted.captured) expect(hash).toBe(control.captured.get(key)!);
-      expectRestored(replayed.captured, restoredKeys(batch, control.captured, interrupted.captured), key => control.captured.get(key));
+      expect(control.restored).toEqual([]);
+      expectRestored(replayed, restoredKeys(batch, prompt, control.captured, interrupted.captured), key => control.captured.get(key));
       expect(restarted.stats.restores).toBe(batch);
       expect(new SsdCacheStore(settings("restart")).scan()).toBe(0);
       if (freshProcess) {
@@ -238,7 +280,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         expect(fresh.outputs.map(tokens => tokens.length)).toEqual(Array(batch).fill(kv.interruptAt));
         for (const [key, hash] of fresh.captured) expect(hash).toBe(control.captured.get(key)!);
         expectedFresh[batch] = { outputs: control.outputs, captured: Object.fromEntries(control.captured),
-          keys: restoredKeys(batch, control.captured, fresh.captured) };
+          ...restoredKeys(batch, prompt, control.captured, fresh.captured) };
       }
     }
     if (phase === "child") return;
@@ -265,6 +307,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         console.error(diagnostics);
         throw new Error(diagnostics);
       }
+      for (const line of output.split("\n")) if (line.startsWith("[continuation-restore] child")) console.log(line);
     }
   } finally {
     try { if (adapter && manager?.list().length) manager.unmount("upper"); }
