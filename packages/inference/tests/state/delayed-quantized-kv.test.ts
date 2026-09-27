@@ -167,10 +167,11 @@ test("plain reads are owned by the caller and outlive later appends", () => {
   try {
     using k1 = tensor(2, 1, 1, 31), v1 = tensor(2, 1, 1, 32), k2 = tensor(2, 1, 1, 33), v2 = tensor(2, 1, 1, 34);
     const [held, heldValues] = group.updateAndFetch(k1, v1);
-    const before = [digest(held), digest(heldValues)];
-    for (const a of group.updateAndFetch(k2, v2)) a.dispose();   // disposing a read leaves the cache intact
-    expect([digest(held), digest(heldValues)]).toEqual(before);     // an earlier read keeps its contents
-    held.dispose(); heldValues.dispose();
+    try {
+      const before = [digest(held), digest(heldValues)];
+      for (const a of group.updateAndFetch(k2, v2)) a.dispose();   // disposing a read leaves the cache intact
+      expect([digest(held), digest(heldValues)]).toEqual(before);     // an earlier read keeps its contents
+    } finally { held.dispose(); heldValues.dispose(); }
     for (let row = 0; row < 2; row++) {
       for (const [k, v] of [[k1, v1], [k2, v2]] as const) {
         using kr = k.slice([row, 0, 0, 0], [row + 1, 1, 1, 64]), vr = v.slice([row, 0, 0, 0], [row + 1, 1, 1, 64]);
@@ -227,10 +228,12 @@ test("prefill defers conversion: a plain read past the offset appends while pref
     try {
       for (let row = 0; row < 2; row++) {
         using kr = k.slice([row, 0, 0, 0], [row + 1, 1, 2, 64]), vr = v.slice([row, 0, 0, 0], [row + 1, 1, 2, 64]);
-        const [ck] = control[row]!.updateAndFetch(kr, vr);
-        const pad = group.leftPad[row]!;
-        using gk = keys.slice([row, 0, pad, 0], [row + 1, 1, pad + control[row]!.offset, 64]);
-        try { expect(digest(gk)).toBe(digest(ck)); } finally { ck.dispose(); }
+        const [ck, cv] = control[row]!.updateAndFetch(kr, vr);
+        try {
+          const pad = group.leftPad[row]!, end = pad + control[row]!.offset;
+          using gk = keys.slice([row, 0, pad, 0], [row + 1, 1, end, 64]), gv = values.slice([row, 0, pad, 0], [row + 1, 1, end, 64]);
+          expect([digest(gk), digest(gv)]).toEqual([digest(ck), digest(cv)]);
+        } finally { ck.dispose(); cv.dispose(); }
       }
     } finally { keys.dispose(); values.dispose(); group.endPrefill(); }
     expect(group.rowOffsets).toEqual([8, 5]);
@@ -238,4 +241,65 @@ test("prefill defers conversion: a plain read past the offset appends while pref
     expect(() => group.updateAndFetch(k1, v1)).toThrow("mixed precision rows use their attention state");
     expect(group.rowOffsets).toEqual([8, 5]);
   } finally { group.dispose(); for (const c of [...source, ...control]) c.dispose(); }
+});
+
+for (const side of ["left", "right"] as const)
+test(`${side}-padded full prefill reads plain, finalizes its positions and decodes as the plain view and serial rows`, () => {
+  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 64 });
+  const lengths = [3, 6], L = 6, pads = lengths.map(n => L - n);
+  const group = new DelayedQuantizedKVCache(64, 4, 64, maintain), twin = new DelayedQuantizedKVCache(64, 4, 64, maintain);
+  const control = lengths.map(() => new KVCache());
+  const attentionMatches = (q: MlxArray, k: MlxArray, v: MlxArray, keys: MlxArray, values: MlxArray, mask: ReturnType<typeof group.makeMask>, twinMask: typeof mask, at: string) => {
+    expect(twinMask.mode, at).toBe(mask.mode);
+    using out = ops.sdpa(q, keys, values, 0.125, mask.mode, mask.arr);
+    const view = twin.appendAndFetch(k, v);
+    try { using expected = view.attend(q, 0.125, twinMask); expect(digest(out), at).toBe(digest(expected)); } finally { view.dispose(); }
+  };
+  try {
+    // The cohort's own prefill hooks on an empty wrapper: fresh padded rows.
+    for (const cache of [group, twin]) {
+      cache.beginPrefill();
+      cache.preparePrefill({ lengths, ...(side === "left" ? { leftPadding: pads } : { rightPadding: pads }) });
+    }
+    {
+      using q = tensor(2, 2, L, 81), k = tensor(2, 1, L, 82), v = tensor(2, 1, L, 83);
+      const mask = group.makeMask(L, null), twinMask = twin.makeMask(L, null);
+      try {
+        const [keys, values] = group.updateAndFetch(k, v);
+        try { attentionMatches(q, k, v, keys, values, mask, twinMask, "prefill"); } finally { keys.dispose(); values.dispose(); }
+      } finally { mask.arr?.dispose(); twinMask.arr?.dispose(); }
+      // Serial rows hold only each request's own tokens.
+      for (let row = 0; row < 2; row++) {
+        const from = side === "left" ? pads[row]! : 0, to = from + lengths[row]!;
+        using kr = k.slice([row, 0, from, 0], [row + 1, 1, to, 64]), vr = v.slice([row, 0, from, 0], [row + 1, 1, to, 64]);
+        for (const a of control[row]!.updateAndFetch(kr, vr)) a.dispose();
+      }
+    }
+    for (const cache of [group, twin]) { cache.finalizePrefill(); cache.endPrefill(); }
+    expect(group.rowOffsets).toEqual(lengths);
+    for (let step = 0; step < 3; step++) {
+      using q = tensor(2, 2, 1, 90 + step), k = tensor(2, 1, 1, 93 + step), v = tensor(2, 1, 1, 96 + step);
+      const mask = group.makeMask(1, null), twinMask = twin.makeMask(1, null);
+      const offsets = [...group.rowOffsets], rowPads = [...group.leftPad];
+      try {
+        const [keys, values] = group.updateAndFetch(k, v);
+        try {
+          attentionMatches(q, k, v, keys, values, mask, twinMask, `decode ${step}`);
+          for (let row = 0; row < 2; row++) {
+            using kr = k.slice([row, 0, 0, 0], [row + 1, 1, 1, 64]), vr = v.slice([row, 0, 0, 0], [row + 1, 1, 1, 64]);
+            const [ck, cv] = control[row]!.updateAndFetch(kr, vr);
+            try {
+              const from = rowPads[row]!, to = from + offsets[row]! + 1;
+              using gk = keys.slice([row, 0, from, 0], [row + 1, 1, to, 64]), gv = values.slice([row, 0, from, 0], [row + 1, 1, to, 64]);
+              expect([digest(gk), digest(gv)], `decode ${step} row ${row}`).toEqual([digest(ck), digest(cv)]);
+            } finally { ck.dispose(); cv.dispose(); }
+          }
+        } finally { keys.dispose(); values.dispose(); }
+      } finally { mask.arr?.dispose(); twinMask.arr?.dispose(); }
+      for (let row = 0; row < 2; row++) {
+        const state = group.extractRow(row);
+        try { expect(hashes(state), `decode ${step} row ${row} state`).toEqual(hashes(control[row]!)); } finally { state.dispose(); }
+      }
+    }
+  } finally { group.dispose(); twin.dispose(); for (const c of control) c.dispose(); }
 });
