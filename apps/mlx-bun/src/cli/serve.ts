@@ -5,8 +5,8 @@ import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { DraftKind } from "../engine/model-host";
-import { createAppState, type AppState, type ModelHostLink } from "./serve-state";
-import type { ModelHostHooks, RunningModelHost, RunningWorkerHost } from "./serve-host";
+import { createAppState, type AppState, type AppStateOptions, type AppStoragePaths, type ModelHostLink } from "./serve-state";
+import type { ModelHostHooks } from "./serve-host";
 import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
 
 // The composition lives in two halves: serve-state (persistent, CPU-only) and
@@ -121,10 +121,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   const isolate = args.values.isolate === true;
   const modelPool = number("model-pool", 1, Number.MAX_SAFE_INTEGER, true);
   if (modelPool !== undefined && !isolate) console.warn("--model-pool has no effect without --isolate (child-per-model pool) — ignored");
-  const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
-  const profileLimit = profileContext === undefined ? null : Number(profileContext);
-  if (profileLimit !== null && (!Number.isSafeInteger(profileLimit) || profileLimit < 1))
-    throw new Error("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer");
+  const profileLimit = profileContextLimit();
   return {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
     hostname: host, port: number("port", 0, 65535, true) ?? 8080,
@@ -147,6 +144,15 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   };
 }
 
+/** Main's MLX_BUN_RD_CONTEXT_LIMIT: the enforced context cap when set, else none. */
+export function profileContextLimit(): number | null {
+  const profileContext = runtimeValue("MLX_BUN_RD_CONTEXT_LIMIT");
+  const profileLimit = profileContext === undefined ? null : Number(profileContext);
+  if (profileLimit !== null && (!Number.isSafeInteger(profileLimit) || profileLimit < 1))
+    throw new Error("MLX_BUN_RD_CONTEXT_LIMIT must be a positive integer");
+  return profileLimit;
+}
+
 /** Internal (the worker app form, `cli/worker-entry.ts`), never a CLI flag:
  * listen on a Unix socket, let the worker's admin surface wrap the routes and
  * close ahead of the app's producers, and see the model host's link while it
@@ -164,6 +170,32 @@ function observeLink(state: AppState, holder: { current?: ModelHostLink }): AppS
   } };
 }
 
+/** The app's lifetime around one model host (the CLI's and `mlx-bun/server`'s):
+ * the persistent state first, then the host that borrows it. `start` makes the
+ * host's drain step close the state's producers while the engine is alive; a
+ * failed start closes the state. Close resolves with the host's own result once
+ * the state has closed too. */
+export async function startApp<Host extends { close(): Promise<unknown> }>(options: AppStateOptions, storagePaths: AppStoragePaths,
+  start: (state: AppState) => Promise<Host>) {
+  const state = await createAppState(options, storagePaths);
+  let host: Host;
+  try { host = await start(state); }
+  catch (error) {
+    try { await state.close(); }
+    catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
+    throw error;
+  }
+  return { state, host, async close(): Promise<Awaited<ReturnType<Host["close"]>>> {
+    const errors: unknown[] = [];
+    let result: unknown;
+    try { result = await host.close(); } catch (error) { errors.push(error); }
+    // The host's drain already closed the state; a repeated failure here is the same one.
+    try { await state.close(); } catch (error) { errors.push(error); }
+    if (errors.length) throw errors[0];
+    return result as Awaited<ReturnType<Host["close"]>>;
+  } };
+}
+
 /** CLI composition: the persistent state first, then the model host that
  * borrows it. The host stops the state's producers inside its drain step, so
  * jobs and downloads end while the engine is alive, as before the split. */
@@ -176,24 +208,11 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
   }
   const [{ startModelHost }, { createInProcessMemoryClient }] = await Promise.all([import("./serve-host"), import("./memory-engine")]);
   // Memory synthesis gets main's own task model, loaded by the first run (the isolated parent has none).
-  const state = await createAppState({ ...options, memoryTaskModel: () => createInProcessMemoryClient() }, options.storagePaths ?? {});
-  let host: RunningModelHost | RunningWorkerHost;
-  try {
-    host = await startModelHost(hooks.link ? observeLink(state, hooks.link) : state, model, options, {
+  const app = await startApp({ ...options, memoryTaskModel: () => createInProcessMemoryClient() }, options.storagePaths ?? {},
+    state => startModelHost(hooks.link ? observeLink(state, hooks.link) : state, model, options, {
       ...(hooks.unix ? { unix: hooks.unix } : {}), ...(hooks.routes ? { routes: hooks.routes } : {}),
-      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await state.close(); } } });
-  } catch (error) {
-    try { await state.close(); }
-    catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
-    throw error;
-  }
-  return { ...("port" in host ? { port: host.port } : {}), downloads: state.downloads, async close() {
-    const errors: unknown[] = [];
-    try { await host.close(); } catch (error) { errors.push(error); }
-    // The host's drain already closed the state; a repeated failure here is the same one.
-    try { await state.close(); } catch (error) { errors.push(error); }
-    if (errors.length) throw errors[0];
-  } };
+      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await state.close(); } } }));
+  return { ...("port" in app.host ? { port: app.host.port } : {}), downloads: app.state.downloads, async close() { await app.close(); } };
 }
 
 /** Main's `serve <whisper checkpoint>`: the transcription-only host has no

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { createCompletionClient, createDirectHost, type CompletionClient, type CompletionCall,
-  type CompletionResponse, type EngineHost } from "mlx-bun/client";
+import { createCompletionClient, createDirectHost, type BatchCompletionClient, type CompletionClient, type CompletionCall,
+  type CompletionResponse, type EngineHost, type TaskClient } from "mlx-bun/client";
 
 // The public `mlx-bun/client` entry, imported through the package export map
 // as a consumer would. No model, no native library; transports are recorded
@@ -33,6 +33,10 @@ test("the entry imports through the export map without native MLX and exposes on
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     expect(JSON.parse(stdout)).toEqual(["createCompletionClient", "createDirectHost"]);
   } finally { clearTimeout(deadline); }
+  // Main's completion contracts beside CompletionClient are types only.
+  const batch: BatchCompletionClient<number, number> = { complete: async value => value, completeBatch: async values => [...values] };
+  const task: TaskClient<number, string, number> = { async run(value, report) { report("done"); return value; } };
+  expect([await batch.completeBatch([1, 2]), await task.run(3, () => {})]).toEqual([[1, 2], 3]);
 });
 
 test("requests post the exact route with merged JSON headers and a non-streaming body", async () => {

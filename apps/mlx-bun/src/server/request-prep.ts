@@ -55,7 +55,6 @@ export function createRequestPrep(input: {
   tokenHistory?: PromptTokenHistory;
 }) {
   const { ctx, serverOptions, kvScheme, defaultGeneratedTokens } = input;
-  requireChatTemplate(ctx);
 
   // XTC never removes EOS or the newline token: mlx_lm.server passes
   // [tokenizer.eos_token_id, tokenizer.encode("\n")] as xtc_special_tokens.
@@ -195,6 +194,8 @@ export function createRequestPrep(input: {
     req: ChatRequestParams,
     tools: ToolDefinition[] | null,
   ): { ids: number[]; startInThinking: boolean } => {
+    // A context without a template serves only through a supplied prompt builder.
+    requireChatTemplate(ctx);
     const opts = templateOptionsFor(req, tools);
     const { rendered, ids } = textPrompt(ctx.template, ctx.tokenizer, normalizeMessages(req.messages), opts);
     return { ids: input.tokenHistory?.resolve(rendered, ids) ?? ids,
@@ -220,6 +221,8 @@ export function createRequestPrep(input: {
     tools: ToolDefinition[] | null,
     trimmed: number[],
   ): number => {
+    // Outside the best-effort probe: a builder asking for it needs a template.
+    requireChatTemplate(ctx);
     const opts = templateOptionsFor(req, tools);
     const mode = `${opts.enableThinking}|${!!tools?.length}|${opts.reasoningEffort ?? ""}|${opts.preserveThinking ?? ""}`;
     const primer = primerLenByMode.get(mode);
@@ -308,6 +311,8 @@ export function createRequestPrep(input: {
     const mode = resolveFillMode();
     if (mode === "off") return null;
     if (!tools?.length) return null;
+    // The determined spans come from the template; a builder-only context has none.
+    if (!ctx.template) return null;
     // Seed support is selected by the execution binding after placement.
     // Injected tokens are never sampled — they have no logprob row.
     if (req.logprobs === true) return null;

@@ -6,7 +6,7 @@
 import type { EngineHost } from "../server/client";
 
 export { createCompletionClient, createDirectHost } from "../server/client";
-export type { CompletionCall, CompletionClient, CompletionResponse, EngineHost } from "../server/client";
+export type { BatchCompletionClient, CompletionCall, CompletionClient, CompletionResponse, EngineHost, TaskClient } from "../server/client";
 export { createInferenceEngine } from "@mlx-bun/inference/execution/engine";
 export { CancellationSource } from "@mlx-bun/inference/execution/cancellation";
 export type {
