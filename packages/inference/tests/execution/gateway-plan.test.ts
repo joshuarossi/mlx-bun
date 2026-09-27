@@ -213,8 +213,9 @@ function dense(layers = 4): UniversalDenseModel {
   });
 }
 
-test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding only", () => {
+test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and its generation checkpoints", () => {
   const binding = bindMlxGateway(minicpm5(), { provider: { grouped: {} } as never, numDraftTokens: 4 });
+  const unconfigured = bindMlxGateway(minicpm5(), { provider: { grouped: {} } as never, numDraftTokens: 4 });
   const config = [{ layerIdx: 0, bits: 8, groupSize: 64 }, { layerIdx: 2, bits: 4, groupSize: 64 }];
   for (const scheme of [resolveKvScheme({ override: 4, quantizedKvStart: 64 }), resolveKvScheme({ override: 8, quantizedKvStart: 64 }),
     resolveKvScheme({ override: "config", config, quantizedKvStart: 64 })])
@@ -228,7 +229,14 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding only",
   const kv = { ...shape, kvQuant: true }, scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
   const fill = { fill: { plan: { echo: false } } } as never;
   for (const delayed of [{ kvBits: 4, quantizedKvStart: 64 }, { kvBits: 8 }, { kvConfig: config, quantizedKvStart: 64 }] as const) {
-    expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: false });
+    // Main checkpointed MiniCPM5's delayed affine generation through its serial executor.
+    expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+    expect(binding.plan({ ...kv, userSeed: true, hasRepetitionPenalty: true }, { ...delayed, seed: 3, repetitionPenalty: 1.1 }, scheduling))
+      .toMatchObject({ mechanism: "continuous", checkpoint: true });
+    expect(unconfigured.plan(kv, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
+    // Grammar and logprobs stay continuous without checkpoints, as for every family.
+    for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }])
+      expect(binding.plan({ ...kv, ...request }, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
     // A draft or fill over delayed affine KV is refused explicitly, never silently dropped.
     for (const [request, options] of [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }]] as const) {
       const refused = binding.plan(request, options, scheduling);
