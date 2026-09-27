@@ -1,7 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { generateAutoregressive } from "../../src/generation/index";
+import { bindLegacyAutoregressiveModel } from "../../src/generation/bindings/autoregressive";
+import { stepKey } from "../../src/sampling/sampler";
+import { bindGrammarGroupRequests } from "../../src/execution/grammar-group";
 import { MlxBatchExecutionGroup } from "../../src/execution/batch-group";
 import { type BatchRequest } from "../../src/execution/batch-types";
 import * as ops from "@mlx-bun/mlx/ops";
+import { MlxArray } from "@mlx-bun/mlx/array";
+import { disposeResources } from "../../src/runtime/resources";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { KVCache } from "../../src/state/kv";
 import type { RuntimeModel } from "../../src/models/factory";
@@ -457,3 +463,233 @@ test.each(["finish", "cancel", "consumer", "grammar"])("mixed work preserves row
     expect(group.activeRows + group.pendingRows).toBe(0);
   } finally { await group.close(); }
 });
+
+
+function grammarGroupFixture() {
+  const f = fixture();
+  const forwards: { owner: number; ids: number[] }[] = [];
+  const owners = new Map<import("../../src/contracts/mlx/cache").Cache, number>();
+  f.model.forwardHidden = (ids, caches) => {
+    const tokens = ids.toIntTokens();
+    if (!owners.has(caches[0]!)) owners.set(caches[0]!, owners.size);
+    forwards.push({ owner: owners.get(caches[0]!)!, ids: tokens });
+    using kv = MlxArray.fromFloat32(new Float32Array(tokens.length * 8), [1, 1, tokens.length, 8]);
+    const results = caches[0]!.updateAndFetch(kv, kv);
+    for (const result of results) result.dispose();
+    return MlxArray.fromFloat32(Float32Array.from(tokens), [1, tokens.length, 1]);
+  };
+  f.model.logitsFromHidden = hidden => {
+    const ids = [...hidden.toFloat32Host()];
+    const values = new Float32Array(ids.length * 16);
+    ids.forEach((token, index) => { values[index * 16 + (token + 1) % 16] = 20; });
+    return MlxArray.fromFloat32(values, [1, ids.length, 16]);
+  };
+  const method = bindGrammarGroupRequests(f.model);
+  const request = (forcedIds: number[], terminal = false, overrides: import("../../src/generation/index").GenerateOptions = {}) => {
+    let jumped = false, terminated = false, disposed = 0;
+    const accepted: number[] = [], tokens: number[] = [];
+    const grammar = {
+      get isTerminated() { return terminated; }, ready: async () => {},
+      applyMask: (scores: import("@mlx-bun/mlx/array").MlxArray) => scores,
+      accept(token: number) { accepted.push(token); },
+      jumpForward(budget: number) {
+        if (jumped || budget < 2) return null;
+        jumped = true;
+        const ids = forcedIds.slice(0, budget);
+        accepted.push(...ids); terminated = terminal && ids.length === forcedIds.length;
+        return ids;
+      },
+      dispose() { disposed++; },
+    } as unknown as import("../../src/sampling/grammar").GrammarController;
+    const options = { temperature: 0, ...overrides, grammar };
+    return { grammar, options, accepted, tokens, get disposed() { return disposed; },
+      input: { promptIds: [0, 1], maxTokens: overrides.maxTokens ?? 6, eosTokenIds: [], grammar,
+        method: method(options), onToken(token: number) { tokens.push(token); } } satisfies BatchRequest };
+  };
+  return { ...f, forwards, request };
+}
+
+for (const cancel of ["none", "callback-false", "abort-false", "abort-last"] as const) {
+  test(`shared forced grammar spans preserve ownership and peers: ${cancel}`, async () => {
+    const f = grammarGroupFixture(), first = f.request([3, 4], true), peer = f.request([3, 4, 5], true);
+    const stored: { tokens: number[]; caches: import("../../src/contracts/mlx/cache").Cache[] }[] = [];
+    const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, prefillChunkSize: 1,
+      promptCache: { take: () => null, put(tokens, caches) { stored.push({ tokens: [...tokens], caches }); } } });
+    const abort = new AbortController(), reason = new Error("cancel forced publication");
+    let simultaneous = false;
+    const matchers = [first.grammar, peer.grammar];
+    try {
+      const a = group.submit({ ...first.input, signal: abort.signal, onToken(token) {
+        simultaneous ||= group.activeRows === 2;
+        expect(f.forwards.some(call => JSON.stringify(call.ids) === "[2,3,4]")).toBe(true);
+        first.tokens.push(token);
+        if (cancel === "callback-false") return false;
+        if (cancel === "abort-false") { abort.abort(reason); return false; }
+        if (cancel === "abort-last" && token === 4) abort.abort(reason);
+      } }).then(stats => ({ stats, error: undefined }), error => ({ stats: undefined, error }));
+      const b = group.submit(peer.input);
+      const [outcome, survivor] = await Promise.all([a, b]);
+      expect(simultaneous).toBe(true);
+      expect(peer.tokens).toEqual([2, 3, 4, 5]);
+      expect(survivor).toMatchObject({ generatedTokens: 4, finishReason: "stop" });
+      if (cancel.startsWith("abort")) {
+        expect(outcome.error).toBe(reason); expect(outcome.stats).toBeUndefined();
+        expect(stored).toHaveLength(1);
+      } else {
+        expect(outcome.error).toBeUndefined();
+        expect(outcome.stats).toMatchObject({ generatedTokens: cancel === "none" ? 3 : 1, finishReason: "stop" });
+        expect(stored).toHaveLength(2);
+        expect(stored.some(entry => JSON.stringify(entry.tokens) === "[0,1,2,3,4]")).toBe(true);
+      }
+      for (const entry of stored) expect(entry.caches[0]!.offset).toBe(entry.tokens.length);
+      expect(first.disposed + peer.disposed).toBe(0); // borrowed matchers
+      const again = f.request([3, 4], true);
+      matchers.push(again.grammar);
+      const recovered = await group.submit(again.input);
+      expect(again.tokens).toEqual([2, 3, 4]);
+      expect(recovered.generatedTokens).toBe(3);
+      expect(group.activeRows + group.pendingRows).toBe(0);
+    } finally {
+      try { await group.close(); }
+      finally {
+        disposeResources([...stored.flatMap(entry => entry.caches), ...matchers]);
+      }
+    }
+    expect(f.calls.disposals).toBe(f.calls.allocations);
+  });
+}
+
+test("forced-span pending disposal failure rejects without publishing final cache and leaves its peer usable", async () => {
+  const f = grammarGroupFixture(), first = f.request([3, 4]), peer = f.request([3, 4, 5], true);
+  const stored: { tokens: number[]; caches: import("../../src/contracts/mlx/cache").Cache[] }[] = [];
+  const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, prefillChunkSize: 1,
+    promptCache: { take: () => null, put(tokens, caches) { stored.push({ tokens: [...tokens], caches }); } } });
+  const original = ops.asyncEvalAll;
+  const failure = new Error("pending dispose failed");
+  let injected = false;
+  const mock = spyOn(ops, "asyncEvalAll").mockImplementation(arrays => {
+    original(arrays);
+    if (!injected && arrays.length === 1 && arrays[0]!.toIntTokens()[0] === 5) {
+      injected = true;
+      const array = arrays[0]!, dispose = array.dispose.bind(array);
+      array.dispose = () => { array.dispose = dispose; dispose(); throw failure; };
+    }
+  });
+  try {
+    const failed = group.submit({ ...first.input, onToken() { return false; } })
+      .then(() => null, error => error);
+    const survived = group.submit(peer.input);
+    expect(await failed).toBe(failure);
+    expect(await survived).toMatchObject({ generatedTokens: 4, finishReason: "stop" });
+    expect(injected).toBe(true);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.tokens).toEqual([0, 1, 2, 3, 4, 5]);
+  } finally {
+    try { await group.close(); }
+    finally {
+      mock.mockRestore();
+      for (const entry of stored) for (const cache of entry.caches) cache.dispose();
+      first.grammar.dispose(); peer.grammar.dispose();
+    }
+  }
+  expect(f.calls.allocations).toBe(f.calls.disposals);
+});
+
+
+test("shared nonterminal grammar preserves seeded draw positions and committed processor history", async () => {
+  const f = grammarGroupFixture();
+  f.model.logitsFromHidden = hidden => MlxArray.fromFloat32(new Float32Array(hidden.shape[1]! * 16), [1, hidden.shape[1]!, 16]);
+  const options = { seed: 42, temperature: 0.8, presencePenalty: 0.8, frequencyPenalty: 0.4,
+    repetitionPenalty: 1.1, maxTokens: 6, eosTokenIds: [], prefillChunkSize: 1,
+    decodePolicy: { compiledDecode: false, grammarJump: true } };
+  const direct = f.request([3, 4], false, options), grouped = f.request([3, 4], false, options);
+  let lane: "direct" | "grouped" = "direct";
+  const captures = { direct: [] as { key: number[]; scores: number[] }[], grouped: [] as { key: number[]; scores: number[] }[] };
+  const categorical = ops.randomCategorical;
+  const mock = spyOn(ops, "randomCategorical").mockImplementation((scores, key) => {
+    captures[lane].push({ key: key!.toIntTokens(), scores: [...scores.toFloat32Host()] });
+    return categorical(scores, key);
+  });
+  const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, prefillChunkSize: 1 });
+  try {
+    const generation = generateAutoregressive(bindLegacyAutoregressiveModel(f.model), direct.input.promptIds, direct.options);
+    for await (const { token } of generation) direct.tokens.push(token);
+    const directForwards = f.forwards.splice(0).map(call => call.ids);
+    lane = "grouped";
+    const stats = await group.submit(grouped.input);
+    expect(stats).toMatchObject({ generatedTokens: 6, finishReason: "length" });
+    expect(grouped.tokens).toEqual(direct.tokens);
+    expect(grouped.accepted).toEqual(direct.accepted);
+    expect(f.forwards.map(call => call.ids)).toEqual(directForwards);
+    expect(captures.grouped).toEqual(captures.direct);
+    const expected = [0, 3, 4, 5].map(step => { using key = stepKey(42, step); return key.toIntTokens(); });
+    expect(captures.grouped.map(sample => sample.key)).toEqual(expected);
+    const untouched = Array.from({ length: 16 }, (_, id) => id)
+      .find(id => ![0, 1, grouped.tokens[0]!, 3, 4].includes(id))!;
+    for (const forced of [3, 4]) {
+      const before = captures.grouped[0]!.scores, after = captures.grouped[1]!.scores;
+      expect(after[forced]! - after[untouched]!).toBeLessThan(before[forced]! - before[untouched]!);
+    }
+  } finally {
+    try { await group.close(); }
+    finally { mock.mockRestore(); grouped.grammar.dispose(); }
+  }
+  expect(f.calls.allocations).toBe(f.calls.disposals);
+});
+
+for (const maxTokens of [1, 3]) {
+  test(`shared grammar respects the exact remaining token budget: ${maxTokens}`, async () => {
+    const f = grammarGroupFixture(), row = f.request([3, 4, 5], false, { maxTokens });
+    const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, prefillChunkSize: 1 });
+    try {
+      expect(await group.submit(row.input)).toMatchObject({ generatedTokens: maxTokens, finishReason: "length" });
+      expect(row.tokens).toEqual(maxTokens === 1 ? [2] : [2, 3, 4]);
+      expect(row.accepted).toEqual(maxTokens === 1 ? [] : [2, 3, 4]);
+      expect(f.forwards.map(call => call.ids)).toEqual(maxTokens === 1 ? [[0], [1]] : [[0], [1], [2, 3, 4]]);
+      expect(row.disposed).toBe(0);
+    } finally { try { await group.close(); } finally { row.grammar.dispose(); } }
+    expect(f.calls.allocations).toBe(f.calls.disposals);
+  });
+}
+
+
+for (const failCleanup of [false, true]) {
+  test(`shared grammar cleans cancellation between advances before settling: cleanup failure ${failCleanup}`, async () => {
+    const f = grammarGroupFixture(), cancelled = f.request([3, 4]), peer = f.request([3, 4, 5], true);
+    peer.input.promptIds = [8, 1];
+    const abort = new AbortController(), reason = new Error("abort between advances"), cleanup = new Error("cancelled cache cleanup failed");
+    let owner: KVCache | undefined, releases = 0;
+    const forward = f.model.forwardHidden.bind(f.model);
+    f.model.forwardHidden = (ids, caches) => {
+      const hidden = forward(ids, caches);
+      if (!owner) {
+        owner = caches[0] as KVCache;
+        const dispose = owner.dispose.bind(owner);
+        owner.dispose = () => { releases++; dispose(); if (failCleanup) throw cleanup; };
+      } else if (ids.toIntTokens()[0] === 8) abort.abort(reason);
+      return hidden;
+    };
+    const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, prefillChunkSize: 1 });
+    try {
+      const first = group.submit({ ...cancelled.input, signal: abort.signal }).then(() => null, error => {
+        expect(releases).toBe(1);
+        expect(owner!.keys).toBeNull(); expect(owner!.values).toBeNull();
+        return error;
+      });
+      const second = group.submit(peer.input);
+      const error = await first;
+      if (failCleanup) {
+        expect(error).toBeInstanceOf(AggregateError);
+        expect(error.errors).toEqual([reason, cleanup]);
+      } else expect(error).toBe(reason);
+      expect(cancelled.tokens).toEqual([]);
+      expect(await second).toMatchObject({ generatedTokens: 4, finishReason: "stop" });
+      expect(peer.tokens).toEqual([2, 3, 4, 5]);
+      expect(group.activeRows + group.pendingRows).toBe(0);
+    } finally {
+      try { await group.close(); }
+      finally { cancelled.grammar.dispose(); peer.grammar.dispose(); }
+    }
+    expect(f.calls.allocations).toBe(f.calls.disposals);
+  });
+}

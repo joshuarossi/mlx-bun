@@ -205,6 +205,21 @@ The app gateway's real Gemma2 placement test uses the same
 that test only checks placement and allocates no tensors. Native-blocked CPU
 runs skip this check; synthetic gateway tests remain CPU-only.
 
+With `MLX_BUN_GRAMMAR_JUMP=1`, Gemma2 plain-KV ordinary requests preserve
+main's direct forced spans through the shared scheduler: one graph append for
+`[pending, ...forced]`, with no sampling of forced IDs. Graphs already using
+verified grammar proposals retain that behavior. Paired greedy Gemma2-2B checks
+against main passed a terminating choice and nonterminal JSON schema, including
+full-vocabulary logits, all 26 valid KV layers, masks and publication order.
+Separate real-gateway checks passed callback stop inside a committed span,
+retention and restoration of the complete prefix, fixed-suffix continuation,
+mid-span cancellation with an active peer, and same-scheduler recovery. Graph
+calls remain B1; this is not stacked batching or an all-model qualification.
+The shared gateway owns prefix transfer and, as on main's shared path, returns
+an empty `stats.cacheTokens`; direct generation retains its exact cache history.
+No full-stats, HTTP cancellation, abort-last/abort-plus-stop, oracle or performance
+identity is claimed by these checks.
+
 Shared Gemma2 qualifies plain KV, including grammar-constrained and adapter
 requests; the opt-in [constrained Gemma2 test](../../apps/mlx-bun/tests/engine/gemma2-constrained.test.ts)
 compares them exactly with direct generation. Plain-KV fill uses the shared fill

@@ -62,7 +62,10 @@ export function resolveExecution(
   const compiledDecode = features.compiledDecode === true && capabilities.compiledDecode === true &&
     method === "autoregressive" && !request.hasAdapters && !pagedKv && !(sharedFill && fill);
   if (features.compiledDecode && !compiledDecode) reasons.push("compiled-decode-unavailable-for-request");
-  const grammarJump = grammarProposals;
+  const directGrammarJump = features.grammarJump === true && request.hasGrammar &&
+    !request.wantsLogprobs && method === "autoregressive" && mechanism === "continuous" &&
+    capabilities.sharedGrammarJump === true;
+  const grammarJump = grammarProposals || directGrammarJump;
   if (features.grammarJump && request.hasGrammar && !grammarJump)
     reasons.push("grammar-jump-incompatible-with-request");
   return Object.freeze({ method, mechanism, pagedKv, promptCache, checkpoint, fill,

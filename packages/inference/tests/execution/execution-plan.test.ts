@@ -152,7 +152,7 @@ test("compiled replay permission is fixed by graph capability and request compos
   expect(resolveExecution({ ...request, hasVision: true }, supported, { ...features, pagedKv: true }).compiledDecode).toBe(true);
 });
 
-test("grammar jump comes only from shared grammar proposals, never an unsupported plan", () => {
+test("grammar jump requires a qualified shared method, never an unsupported plan", () => {
   const features = { pagedKv: false, fill: false, grammarJump: true };
   const grammar = { ...request, hasGrammar: true };
   const unavailable = { ...capabilities, continuous: false };
@@ -320,4 +320,29 @@ test.each([
   expect(plan).toMatchObject({ mechanism: "unsupported", fill: false, grammarJump: false });
   expect(plan.reasons[0]).toBe(reason);
   expect(plan.reasons.filter(entry => entry.endsWith("-unsupported") || entry === "continuous-unavailable")).toEqual([reason]);
+});
+
+
+test("committed grammar spans stay AR and do not replace verified grammar proposals", () => {
+  const features = { pagedKv: false, fill: true, grammarJump: true };
+  const grammar = { ...request, hasGrammar: true };
+  const spans = { ...capabilities, adapterBatch: true, sharedGrammarJump: true };
+  expect(resolveExecution(grammar, spans, features)).toMatchObject({
+    method: "autoregressive", mechanism: "continuous", grammarJump: true,
+    checkpoint: false, promptCache: true, fill: false,
+  });
+  // An ignored draft is not an additional grammar restriction: the final
+  // selected ordinary method is what main's direct grammar policy consumed.
+  expect(resolveExecution({ ...grammar, hasAdapters: true, hasDraft: true }, spans, features))
+    .toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true });
+  for (const [req, cap] of [[{ ...grammar, wantsLogprobs: true }, spans],
+    [grammar, { ...spans, continuous: false }], [request, spans],
+    [grammar, { ...spans, sharedGrammarJump: false }]] as const)
+    expect(resolveExecution(req, cap, features).grammarJump).toBe(false);
+  const proposals = { ...spans, sharedGrammarProposals: true,
+    groupedMethods: ["autoregressive", "speculative"] };
+  expect(resolveExecution(grammar, proposals, features))
+    .toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: true });
+  expect(resolveExecution({ ...grammar, hasDraft: true }, proposals, features))
+    .toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: false });
 });
