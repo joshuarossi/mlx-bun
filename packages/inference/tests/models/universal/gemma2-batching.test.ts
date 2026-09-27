@@ -137,7 +137,10 @@ const dispose = (caches: Cache[]) => { for (const cache of caches) cache.dispose
 test.skipIf(!native)("a fill group's last row leaving with a pipelined token drains the same scheduler for reuse", async () => {
   const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
   const { FillSession } = await import("../../../src/generation/fill");
-  const { activeMemory } = await import("@mlx-bun/mlx/ffi");
+  const { activeMemory, synchronize } = await import("@mlx-bun/mlx/ffi");
+  const { gpuStream } = await import("@mlx-bun/mlx/array");
+  // Pipelined work still in flight holds buffers until it completes.
+  const settled = () => { synchronize(gpuStream); return activeMemory(); };
   const f = fixture(), model = f.make();
   const binding = bindMlxGateway(model);
   const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
@@ -167,13 +170,13 @@ test.skipIf(!native)("a fill group's last row leaving with a pipelined token dra
     const full = await run();
     expect(full.tokens).toHaveLength(8);
     expect(full.outcome).toBe("length");
-    const memory: number[] = [activeMemory()];
+    const memory: number[] = [settled()];
     for (let cycle = 0; cycle < 3; cycle++) {
       expect(await run({ stopAfter: 3 })).toEqual({ tokens: full.tokens.slice(0, 3), outcome: "stop" });
       // The abort lands inside the third token's delivery; nothing follows it.
       expect(await run({ cancelAfter: 3 })).toEqual({ tokens: full.tokens.slice(0, 3), outcome: "AbortError" });
       expect(await run()).toEqual(full);
-      memory.push(activeMemory());
+      memory.push(settled());
     }
     // Released with its row: no growth across stop, cancel and full cycles.
     expect(memory.every(bytes => bytes === memory[0])).toBe(true);
