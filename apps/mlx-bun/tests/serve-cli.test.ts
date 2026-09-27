@@ -5,6 +5,7 @@ import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { browserUrl, installShutdownHandlers, parseServeOptions, resolveServingLimits, runServe, validatePagedServingOptions, type ServeDependencies, type ServeOptions } from "../src/cli/serve";
+import { decodeLaunch, encodeLaunch } from "../src/jobs/worker-process";
 
 const parse = (...args: string[]) => parseServeOptions(parseCommand("serve", args));
 const model = { repoId: "example/model", path: "/model" } as ModelRecord;
@@ -69,9 +70,29 @@ test("ordinary models receive no inferred context or generation cap from GLM com
     .toEqual({ contextLimit: 4096, defaultGeneratedTokens: 512 });
 });
 
+test("serving parses main's TurboQuant spec into the cache scheme, through the isolated launch", () => {
+  expect(parse("--kv-quant", "turbo").cache).toEqual({ turboQuant: { kBits: 8, vBits: 3 } });
+  expect(parse("--kv-quant", "turbo:k4v2").cache).toEqual({ turboQuant: { kBits: 4, vBits: 2 } });
+  // Cache services resolve it as main's standalone scheme: TurboQuant from decode start.
+  const { cache } = parse("--kv-quant", "turbo:k5v4");
+  expect(resolveKvScheme({ override: cache.kvQuant, turboQuant: cache.turboQuant, quantizedKvStart: cache.quantizedKvStart })
+    .generationOptions).toEqual({ turboQuant: { kBits: 5, vBits: 4 }, quantizedKvStart: 0 });
+  // An isolated worker receives the parent's resolved options as its launch record.
+  expect((decodeLaunch(encodeLaunch({ ...parse("--isolate", "--kv-quant", "turbo:k4v3"), isolate: false })) as ServeOptions).cache)
+    .toEqual({ turboQuant: { kBits: 4, vBits: 3 } });
+  for (const [spec, message] of [["turbo:k3v3", "kBits must be one of 2,4,5,8 (got 3)"],
+    ["turbo:k8v6", "vBits must be one of 2,3,4,5,8 (got 6)"], ["turbo:8", 'must look like "turbo:k<bits>v<bits>"'],
+    ["turbo8", "--kv-quant expects off|config|4|8|turbo[:k<bits>v<bits>]"]] as const)
+    expect(() => parse("--kv-quant", spec)).toThrow(message);
+  // Paging keeps refusing TurboQuant at startup.
+  const paged = parse("--paged-kv", "--kv-quant", "turbo");
+  expect(() => validatePagedServingOptions(paged.request.pagedKv, resolveKvScheme({ turboQuant: paged.cache.turboQuant }).generationOptions, false))
+    .toThrow("per-layer and TurboQuant pages are not implemented");
+});
+
 test("invalid serving input fails before model selection", async () => {
   for (const args of [["--batch", "0"], ["--batch", "1.5"], ["--port", "65536"],
-    ["--temp", "6"], ["--top-p", "2"], ["--thinking", "maybe"], ["--kv-quant", "3"],
+    ["--temp", "6"], ["--top-p", "2"], ["--thinking", "maybe"], ["--kv-quant", "3"], ["--kv-quant", "turbo:k3v3"],
     ["--ssd-cache-verify"], ["--generation-checkpoint", "128"], ["--ssd-cache", "/cache", "--prompt-cache", "0"]]) {
     let selected = false;
     await expect(runServe(parseCommand("serve", args), { resolve: async () => { selected = true; throw new Error("must not select"); } })).rejects.toThrow();
