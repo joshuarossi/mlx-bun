@@ -258,9 +258,14 @@ sampling: full logits, all 42 layer outputs and the final norm by hash, and all
 24 donor states at every forward (20 plain sliding rings; the 4 full donors
 plain on the prefill forward and TurboQuant, all five planes, from the next),
 checkpoint saves at 4, 8 and 12, an interruption at 10 and a fresh-process
-resume from the durable record at 8. B1/B4 runs of the continuation test on
-this artifact are pending; grouped TurboQuant rows, a delayed TurboQuant start,
-hard-kill durability, external-oracle parity and performance are not claimed.
+resume from the durable record at 8. Within this tree, the continuation test
+passed on the same artifact at B1 and B4 with TurboQuant from token 0: seeded
+sampling (temperature 0.7, seed 42 plus the row, repetition penalty 1.1) for
+16 tokens, interrupted at 6 with durable checkpoints at 4, then restored in the
+same process and in a fresh one; every restored record held 12 tokens over 24
+caches of 2 or 5 planes. The main-paired evidence is B1 only; a wrapped sliding
+ring, a delayed TurboQuant start, hard-kill durability, external-oracle parity
+and performance are not claimed.
 
 MiniCPM5 and these universal graphs also ignore a configured draft and supplied
 fill for adapter requests, as main did; requested logprobs remain available.
