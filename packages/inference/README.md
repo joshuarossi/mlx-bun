@@ -186,10 +186,14 @@ proposing row verifies beside an empty, right-padded peer and rounds where no ro
 proposes, swaps the padded peer's content without changing the target's forwards,
 proposals, tokens or logits (greedy and seeded), cancels a ragged third row against
 a same-count stop control, and checks main's grammar gate. Encoded
-KV, other draft providers, drafts with adapters or fill, and
+KV, other draft providers, adapter-free drafts with fill, and
 paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
+A plain-KV adapter request with a configured TwoModel or Ngram draft uses
+ordinary continuous decoding and ignores both draft and fill, as main did.
+This is an ordinary fallback, not adapter speculation support; real-weight
+acceptance for this composition remains pending.
 
 The [Trellis specialization test](tests/parity/trellis-shared-m.test.ts) takes
 `MLX_BUN_TEST_TRELLIS_MODEL=/cached/packed-qwen`. It preserves main's variant
