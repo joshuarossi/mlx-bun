@@ -224,16 +224,17 @@ function assistantRound(drafts: readonly number[], predictions: readonly number[
   assert.equal(predictions.length, drafts.length + 1, "every verify position needs a prediction");
   assert(Number.isInteger(remaining) && remaining > 0, "positive remaining budget");
   assert([...drafts, ...predictions].every(id => Number.isInteger(id) && id >= 0 && id < vocab), "in-vocabulary IDs");
-  let accepted = 0;
+  let accepted = 0, disagreed = false;
   const emitted: number[] = [];
   for (let i = 0; i < predictions.length && emitted.length < remaining; i++) {
     const token = predictions[i]!, matches = i < drafts.length && token === drafts[i];
     if (matches) accepted++;
+    else if (i < drafts.length) disagreed = true;
     if (eos.includes(token)) break;
     emitted.push(token);
     if (!matches) break;
   }
-  return { accepted, emitted, retained: Math.min(accepted, emitted.length) };
+  return { accepted, emitted, retained: Math.min(accepted, emitted.length), disagreed };
 }
 
 // This is a generation consumer, separate from donor selection above. Ordinary
@@ -248,6 +249,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
   const { loadTokenizer, ChatTemplate } = await import("@mlx-bun/inference/input");
   const { AssistantProvider } = await import("@mlx-bun/inference/generation/speculative");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
+  const { bindSpeculativeTargetModel } = await import("@mlx-bun/inference/generation/speculative/binding");
   const ops = await import("@mlx-bun/mlx/ops");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
   const config = await loadModelConfig(inputs!.target), dtype = storedFloatDtype(inputs!.target);
@@ -263,6 +265,8 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
     cleanup.push(() => { if ("dispose" in model) model.dispose(); });
     const replay = createModel(weights, config);
     cleanup.push(() => { if ("dispose" in replay) replay.dispose(); });
+    const replayBinding = bindSpeculativeTargetModel(replay);
+    const prefillTokens = prompt.length - Number(replayBinding.prefillTailSplit);
     const provider = await AssistantProvider.load(inputs!.draft);
     cleanup.push(() => provider.dispose());
     const options = { temperature: 0, maxTokens, prefillChunkSize: prompt.length };
@@ -275,7 +279,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
     const replayCaches: Cache[] = replay.makeCache();
     cleanup.push(() => releaseAll(replayCaches.map(cache => () => cache.dispose())));
     const output: number[] = [], processed: number[] = [];
-    type Round = { pending: number; proposals: number[]; start: number; outputStart: number; predictions?: number[]; accepted?: number; retained?: number; committedState?: string[] };
+    type Round = { pending: number; proposals: number[]; start: number; outputStart: number; predictions?: number[]; accepted?: number; retained?: number; disagreed?: boolean; committedState?: string[] };
     const rounds: Round[] = [];
     const forwards: { ids: number[]; offset: number; logits: string; state: string[] }[] = [];
     let active: Round | undefined, liveCaches: Cache[] = [], opens = 0;
@@ -298,8 +302,10 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
         const actual = caches[layer]!, wanted = replayCaches[layer]!;
         assert.equal(actual.offset, offset, `layer ${layer} committed offset`);
         assert.equal(wanted.offset, offset, `layer ${layer} replay offset`);
-        const a = actual.state(), b = wanted.state();
+        const a = actual.state();
+        let b: MlxArray[] = [];
         try {
+          b = wanted.state();
           assert.equal(a.length, offset ? 2 : 0, `layer ${layer} plain K/V only`);
           assert.equal(b.length, a.length);
           const full = config.text.layerTypes[layer] === "full_attention";
@@ -323,10 +329,18 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
     const forward = spyOn(model, "forwardHidden").mockImplementation((ids, caches) => {
       assert.deepEqual(ids.shape, [1, ids.shape[1]], "B1 inputs");
       const values = ids.toIntTokens();
+      if (!active) {
+        assert.equal(forwards.length, 0, "one unchunked assistant prefill");
+        assert.equal(values.length, prefillTokens, "actual tail-split prefill extent");
+      }
       assert.deepEqual(values, active ? [active.pending, ...active.proposals] : prompt.slice(processed.length, processed.length + values.length), "exact prompt/verify inputs");
       state(caches, processed.length);
       const hidden = originalForward(ids, caches);
+      let pin: { close(): void } | undefined;
       try {
+        // Match the bound verify policy only for verify blocks. Gemma4 currently
+        // has no pin operation; other target bindings may own one.
+        if (active) pin = replayBinding.pinVerify?.();
         using reference = replay.forwardHidden(ids, replayCaches);
         using actualLogits = model.logitsFromHidden(hidden), wantedLogits = replay.logitsFromHidden(reference);
         const logits = same(actualLogits, wantedLogits, [1, values.length, vocab], "full target logits");
@@ -340,6 +354,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
         }
         return hidden;
       } catch (error) { hidden.dispose(); throw error; }
+      finally { pin?.close(); }
     });
     cleanup.push(() => forward.mockRestore());
     const originalOpen = provider.grouped.open.bind(provider.grouped);
@@ -367,7 +382,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
         processed.length = active.start + 1 + expected.retained;
         assert.deepEqual(processed, [...prompt, ...output].slice(0, processed.length), "committed token identity");
         active.committedState = state(liveCaches, processed.length); // target rollback has already run
-        active.accepted = expected.accepted; active.retained = expected.retained;
+        active.accepted = expected.accepted; active.retained = expected.retained; active.disagreed = expected.disagreed;
         await commit(kept, context);
         active = undefined;
       };
@@ -393,13 +408,15 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
       const accepted = rounds.reduce((sum, round) => sum + round.accepted!, 0);
       const drafted = rounds.reduce((sum, round) => sum + round.proposals.length, 0);
       assert(accepted > 0 && drafted > accepted, "nonzero accepted and rejected proposals required");
-      assert(rounds.slice(0, -1).some(round => round.accepted! < round.proposals.length), "must continue after a rejection");
+      assert(rounds.slice(0, -1).some(round => round.disagreed &&
+        round.proposals[round.accepted!] !== round.predictions![round.accepted!]),
+      "must continue after a target/proposal disagreement, not budget or EOS truncation");
       assert.equal(stats.spec!.drafted, drafted); assert.equal(stats.spec!.accepted, accepted);
       assert.equal(stats.spec!.rejected, drafted - accepted); assert.equal(stats.spec!.rounds, rounds.length);
       assert.equal(forwards.length, rounds.length + 1, "one prefill plus every verification");
       assert.equal(stats.spec!.targetCalls, forwards.length);
       console.log(JSON.stringify({ scope: "B1/plain/below-window assistant generation; direct-graph exact-block replay, not main/oracle parity",
-        depth, prompt, output, ordinaryStats: ordinary.stats, stats, rounds, forwards }));
+        depth, prefillTokens, prompt, output, ordinaryStats: ordinary.stats, stats, rounds, forwards }));
     } finally { await group.close(); }
     assert.equal(group.activeRows, 0); assert.equal(group.pendingRows, 0);
   } finally {
@@ -439,10 +456,12 @@ test("donors must hold the scripted positions: a missing or wrong rollback fails
 
 
 test("assistant acceptance checks complete verification, EOS, final budget and retained rollback (CPU only)", () => {
-  expect(assistantRound([4, 5], [4, 5, 6], 8, [9], 10)).toEqual({ accepted: 2, emitted: [4, 5, 6], retained: 2 });
-  expect(assistantRound([4, 5], [4, 7, 6], 8, [9], 10)).toEqual({ accepted: 1, emitted: [4, 7], retained: 1 });
-  expect(assistantRound([4, 9], [4, 9, 6], 8, [9], 10)).toEqual({ accepted: 2, emitted: [4], retained: 1 });
-  expect(assistantRound([4, 5], [4, 5, 6], 1, [9], 10)).toEqual({ accepted: 1, emitted: [4], retained: 1 });
+  expect(assistantRound([4, 5], [4, 5, 6], 8, [9], 10)).toEqual({ accepted: 2, emitted: [4, 5, 6], retained: 2, disagreed: false });
+  expect(assistantRound([4, 5], [4, 7, 6], 8, [9], 10)).toEqual({ accepted: 1, emitted: [4, 7], retained: 1, disagreed: true });
+  expect(assistantRound([4, 9], [4, 9, 6], 8, [9], 10)).toEqual({ accepted: 2, emitted: [4], retained: 1, disagreed: false });
+  expect(assistantRound([4, 5], [4, 5, 6], 1, [9], 10)).toEqual({ accepted: 1, emitted: [4], retained: 1, disagreed: false });
+  expect(assistantRound([4, 5], [4, 7, 6], 1, [9], 10).disagreed).toBe(false); // unreached after budget
+  expect(assistantRound([9, 5], [9, 7, 6], 8, [9], 10).disagreed).toBe(false); // unreached after EOS
   expect(() => assistantRound([4, 5], [4], 8, [], 10)).toThrow("every verify position");
   expect(() => assistantRound([4, 5], [4, 5, 10], 8, [], 10)).toThrow("in-vocabulary");
   expect(() => assistantRound([4, 5], [4, 5, -1], 8, [], 10)).toThrow("in-vocabulary");
