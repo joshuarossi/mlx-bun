@@ -100,27 +100,31 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
     const adapterNamespace = adapter ? adapters.cacheNamespace(["upper"]) : "";
     const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
     const kv = await continuationKv(prompt.length);
-    /** A saved or restored checkpoint of `tokens` committed tokens. Delayed
-     * conversion gives each converted cache the offset it converted at as its
-     * reuse floor. Prefill splits at the start and converts at that chunk
-     * boundary; decode converts inside the next append once the committed
-     * offset has reached the start, so a checkpoint of exactly `start` tokens
-     * taken after a decode step is still plain. Other artifacts may carry
-     * recurrent or other non-KV state, so they check only the floor's bound;
+    /** A saved or restored checkpoint of `tokens` committed tokens (always
+     * after the prefill). Delayed conversion gives each converted cache the
+     * offset it converted at as its reuse floor. A start within the prompt
+     * converts at the first prefill maintenance boundary at or past it (a drain
+     * chunk's end or the prompt's end); a later start converts inside the next
+     * decode append once the committed offset has reached it, so a checkpoint
+     * of exactly `start` tokens taken after a decode step is still plain.
+     * Other artifacts may carry recurrent or other non-KV state, so they check
+     * only the floor's bound;
      * the custom window graph is sliding and full KV layers throughout, so it
      * also pins the exact floor, every offset, and each layer's planes:
      * six encoded (K then V packed/scales/biases) once converted, two plain
      * before and for layers a per-layer scheme leaves unconverted. */
     const checkSaved = (caches: readonly Cache[], tokens: number) => {
       if (kv.mode === "bf16" || kv.start === 0) return;
-      const converted = kv.start <= prompt.length ? tokens >= kv.start : tokens > kv.start;
+      const converted = kv.start <= prompt.length || tokens > kv.start;
       const minimum = minimumReusableOffset(caches);
       if (windowSetting === undefined) {
         if (converted) expect(minimum).toBeGreaterThanOrEqual(kv.start);
         else expect(minimum).toBe(0);
         return;
       }
-      expect(minimum).toBe(converted ? kv.start : 0);
+      if (!converted) expect(minimum).toBe(0);
+      else if (kv.start > prompt.length) expect(minimum).toBe(kv.start);
+      else { expect(minimum).toBeGreaterThanOrEqual(kv.start); expect(minimum).toBeLessThanOrEqual(prompt.length); }
       const layers = kv.options.kvConfig ? new Map(kv.options.kvConfig.map(entry => [entry.layerIdx, entry])) : null;
       caches.forEach((cache, layer) => {
         expect(cache.offset).toBe(tokens);
