@@ -256,7 +256,8 @@ proposing row verifies beside an empty, right-padded peer and rounds where no ro
 proposes, swaps the padded peer's content without changing the target's forwards,
 proposals, tokens or logits (greedy and seeded), cancels a ragged third row against
 a same-count stop control, and checks main's grammar gate. Encoded
-KV, other draft providers, and paging retain typed unsupported placement.
+KV, draft providers whose rows tap target hidden layers (this graph has no tap
+operation), and paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 A plain-KV adapter request with a configured TwoModel or Ngram draft uses
@@ -548,6 +549,14 @@ and `models/speculative/*`. Proposal sources live in `generation/speculative/sou
 verification and acceptance belong to `generation/speculative`; batched draft work
 belongs to `generation/speculative/bindings`; draft checkpoints belong to `state/speculative`.
 Existing sampling, rejection, rollback, and specialized kernel behavior is preserved.
+
+Grouped speculation binds any provider whose operations the target meets: batchable
+caches, row layouts for verification and rollback, and a forward that captures the
+hidden layers the provider taps. A provider whose rows tap target layers declares
+them with `targetTapLayers(target)` on its grouped provider; the binding resolves
+the list once for the bound target, rows opened for it must tap exactly that list,
+and placement refuses the provider when the target forward cannot capture those
+layers. The post-final-norm sentinel (index = layer count) is the forward output.
 
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,
 and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.

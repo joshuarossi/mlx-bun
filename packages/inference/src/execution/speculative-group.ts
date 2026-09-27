@@ -42,9 +42,14 @@ interface RequestState {
 }
 
 /** Binding owns graph/layout selection. The executor receives only the method
- * key and lifecycle; sampling, checkpoints and numerical state remain ports. */
+ * key and lifecycle; sampling, checkpoints and numerical state remain ports.
+ * Undefined when the target cannot capture the hidden layers the provider taps. */
 export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
   const binding = bindSpeculativeTargetModel(model);
+  // Resolved once for this target into a snapshot the binding owns: the checked
+  // list cannot change afterwards, and prefill and decode rows must tap exactly it.
+  const taps = Object.freeze([...(provider.grouped?.targetTapLayers?.(bindLegacyDraftTarget(model, [])) ?? [])]);
+  if (!binding.supportsTapLayers(taps)) return undefined;
   return (input: GenerateOptions): MlxGroupMethodRequest => {
     const options = captureSpeculativeOptions(input);
     return {
@@ -52,9 +57,19 @@ export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: Pick
         options.kvGroupSize ?? 64, options.quantizedKvStart ?? null, options.turboQuant ?? null,
         ...(options.kvConfig?.length ? [options.kvConfig] : [])]),
       data: options,
-      open: host => new SpeculativeGroup(host, model, provider, binding, depth),
+      open: host => new SpeculativeGroup(host, model, provider, binding, depth, taps),
     };
   };
+}
+
+/** Rows must tap exactly the target layers resolved for their provider at binding time. */
+function declaredTaps<Rows extends { readonly tapLayers: readonly number[]; dispose(): void }>(
+  provider: Pick<DraftProvider, "id">, declared: readonly number[], rows: Rows): Rows {
+  if (rows.tapLayers.length !== declared.length || rows.tapLayers.some((layer, index) => layer !== declared[index])) {
+    rows.dispose();
+    throw new Error(`draft provider ${provider.id} taps [${rows.tapLayers}] but declared [${declared}]`);
+  }
+  return rows;
 }
 
 class SpeculativeGroup implements MlxGroupedMethod {
@@ -64,7 +79,8 @@ class SpeculativeGroup implements MlxGroupedMethod {
   #steps = 0;
 
   constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel,
-    readonly provider: Pick<DraftProvider, "id" | "grouped">, readonly binding: MlxSpeculativeTargetBinding, readonly depth: number) {}
+    readonly provider: Pick<DraftProvider, "id" | "grouped">, readonly binding: MlxSpeculativeTargetBinding, readonly depth: number,
+    readonly taps: readonly number[]) {}
 
   get runningTokens(): number {
     const rows = this.host.rows;
@@ -141,7 +157,8 @@ class SpeculativeGroup implements MlxGroupedMethod {
         const previous = prefix?.rowCount ?? 0;
         try {
           caches = method.binding.makeCache();
-          prefix ??= method.provider.grouped!.openPrefill({ target: bindLegacyDraftTarget(method.model, caches), checkpoints: [] });
+          prefix ??= declaredTaps(method.provider, method.taps,
+            method.provider.grouped!.openPrefill({ target: bindLegacyDraftTarget(method.model, caches), checkpoints: [] }));
           const prompt = row.req.promptIds;
           const pendingPrompt = prefix.prefillMode !== "full" && method.binding.prefillTailSplit && prompt.length > 1;
           request.prefixLength = prompt.length - Number(pendingPrompt);
@@ -254,10 +271,10 @@ class SpeculativeGroup implements MlxGroupedMethod {
               }
               maintain.prepareBatch?.(state.caches);
               this.#target ??= new MlxStateRows(state.caches.map(targetCacheLayout));
-              this.#draft ??= this.provider.grouped!.open({ target: bindLegacyDraftTarget(this.model, this.#target.caches),
+              this.#draft ??= declaredTaps(this.provider, this.taps, this.provider.grouped!.open({ target: bindLegacyDraftTarget(this.model, this.#target.caches),
                 checkpoints: [], sampling: { sample: (lp, steps) => this.#sampleDraftRows(lp, steps), greedy: greedyDraftPolicy(),
                   vocabulary: this.#draftVocabulary() },
-                constraints: { propose: async (row, maxTokens) => this.host.rows[row]!.req.grammar?.proposeTokens(maxTokens) ?? [] } });
+                constraints: { propose: async (row, maxTokens) => this.host.rows[row]!.req.grammar?.proposeTokens(maxTokens) ?? [] } }));
               applyStateChanges([() => this.#target!.prepareAppend(state.caches),
                 () => this.#draft!.prepareAppend([state.draft]), () => ({ commit: () => {
                   state.request.retain = state.retain; state.retain = undefined;

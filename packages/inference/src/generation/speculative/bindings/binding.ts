@@ -29,6 +29,8 @@ export interface MlxSpeculativeBinding {
   bindRollback(caches: Cache[]): SpeculativeTransaction;
   forward(ids: MlxArray, caches: Cache[], tapLayers?: number[], work?: MlxForwardWork):
     Promise<{ hidden: MlxArray; ctxML: MlxArray | null }>;
+  /** Whether `forward` can capture these hidden layers (a provider's declared taps). */
+  supportsTapLayers(layers: readonly number[]): boolean;
   projectLogits(hidden: MlxArray): MlxArray;
   /** Establish the implementation's verify kernel context; restore on close. */
   pinVerify?(): { close(): void };
@@ -50,6 +52,10 @@ export function bindSpeculativeTargetModel(model: RuntimeModel): MlxSpeculativeT
     makeCache: model.makeCache.bind(model),
     bindRollback: bindCacheRollback,
     forward: (ids, caches, tapLayers, work) => legacyForwardWithTaps(model, ids, caches, tapLayers, work),
+    // legacyForwardWithTaps captures layers 0..nLayers-1 through the model's
+    // hidden tap and the post-final-norm sentinel nLayers from the forward output.
+    supportsTapLayers: layers => !layers.length || ("hiddenTap" in model && layers.every(layer =>
+      Number.isInteger(layer) && layer >= 0 && layer <= model.config.text.numHiddenLayers)),
     projectLogits: model.logitsFromHidden.bind(model),
     ...("setSpecKernelPinned" in model ? {
       pinVerify() {
@@ -109,6 +115,11 @@ async function legacyForwardWithTaps(
     hidden = work ? await work(ids, caches, { captureLayer(layer, h) {
       if (layers.has(layer)) cap.set(layer, ops.contiguous(h));
     } }) : model.forwardHidden(ids, caches);
+    // The post-final-norm sentinel is this forward's own output. A graph whose
+    // tap stops at its last layer still supplies it: an owned copy, released
+    // with the other captures.
+    const sentinel = model.config.text.numHiddenLayers;
+    if (layers.has(sentinel) && !cap.has(sentinel)) cap.set(sentinel, ops.contiguous(hidden));
     const perLayer = tapLayers.map((li) => {
       const a = cap.get(li);
       if (!a) throw new Error(`spec tap: layer ${li} not captured`);
