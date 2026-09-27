@@ -3,7 +3,7 @@
 // even when one fails. No native imports.
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { createReadStream, readFileSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 export const sha256 = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -40,6 +40,37 @@ export async function verifyArtifact(model: string, pins: { files: Record<string
     assert(isSha256(pin), `${name}: invalid SHA-256`);
     assert.equal(await fileSha256(join(model, name)), pin, `weights ${name} differ from their pin`);
   }
+}
+
+const FLOATING: Record<string, string> = { F16: "float16", BF16: "bfloat16", F32: "float32", F64: "float64" };
+/** The one floating dtype a selected model artifact stores, from the
+ * safetensors headers of the shards its index names (or its single
+ * model.safetensors). For the consumers' artifacts, whose Universal and Gemma4
+ * graphs load stored tensors without casting, this is the expected KV dtype;
+ * it is not a claim about every graph. A config's dtype describes the source
+ * model and is not consulted. Artifacts with no floating tensors, or with more
+ * than one floating dtype, are unsupported rather than inferred. */
+export function storedFloatDtype(model: string): string {
+  const index = join(model, "model.safetensors.index.json");
+  const shards = existsSync(index)
+    ? [...new Set(Object.values((JSON.parse(readFileSync(index, "utf8")) as { weight_map?: Record<string, string> }).weight_map ?? {}))]
+    : ["model.safetensors"];
+  const found = new Set<string>();
+  for (const shard of shards) {
+    const fd = openSync(join(model, shard), "r");
+    try {
+      const prefix = Buffer.alloc(8);
+      assert.equal(readSync(fd, prefix, 0, 8, 0), 8, `${shard}: no safetensors header`);
+      const length = Number(prefix.readBigUInt64LE(0));
+      assert(Number.isSafeInteger(length) && length > 1 && length < (1 << 28), `${shard}: header length ${length}`);
+      const header = Buffer.alloc(length);
+      assert.equal(readSync(fd, header, 0, length, 8), length, `${shard}: truncated header`);
+      for (const [name, entry] of Object.entries(JSON.parse(header.toString("utf8")) as Record<string, { dtype?: string }>))
+        if (name !== "__metadata__" && entry.dtype! in FLOATING) found.add(FLOATING[entry.dtype!]!);
+    } finally { closeSync(fd); }
+  }
+  if (found.size !== 1) throw new Error(`${model}: stored floating dtypes [${[...found].join(", ")}]; exactly one is supported`);
+  return [...found][0]!;
 }
 
 /** Run every release even when one throws, then rethrow the first failure. */

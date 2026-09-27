@@ -18,11 +18,12 @@
 // The window without a model, or a blank value, fails.
 import { expect, test } from "bun:test";
 import { strict as assert } from "node:assert";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "../../src/contracts/mlx/cache";
-import { releaseAll, sha256 } from "../parity/real-weight-inputs";
+import { releaseAll, sha256, storedFloatDtype } from "../parity/real-weight-inputs";
 
 const MODEL = "MLX_BUN_TEST_ROTATING_JOIN_MODEL", WINDOW = "MLX_BUN_TEST_ROTATING_JOIN_WINDOW";
 const FIRST = 40, JOINER = 24, JOIN_AFTER = 5;
@@ -43,18 +44,19 @@ function optIn(env: Record<string, string | undefined>) {
   if (window !== undefined) {
     assert(["llama", "mistral"].includes(raw.model_type), `a custom window needs a Llama-family artifact, not ${raw.model_type}`);
     return { model, custom: descriptorFor(t.num_hidden_layers, Number(window)), window: Number(window), vocab: t.vocab_size as number,
-      kv: kvGeometryFor(raw, "universal") };
+      kv: kvGeometryFor(raw, "universal", storedFloatDtype(model)) };
   }
   assert(String(raw.model_type).startsWith("gemma4") && t.sliding_window > 0 && (t.layer_types ?? []).includes("sliding_attention"),
     "a published artifact must be Gemma4 with sliding layers");
-  return { model, custom: null, window: t.sliding_window as number, vocab: t.vocab_size as number, kv: kvGeometryFor(raw, "gemma4") };
+  return { model, custom: null, window: t.sliding_window as number, vocab: t.vocab_size as number, kv: kvGeometryFor(raw, "gemma4", storedFloatDtype(model)) };
 }
-/** K/V heads, head dimension and dtype per layer kind, as the family's attention
+/** K/V heads and head dimension per layer kind, as the family's attention
  * derives them from the config (Gemma4: global dimension and, with k = v, global
- * heads on full layers; Universal: the same on every layer). */
-export function kvGeometryFor(raw: Record<string, any>, family: "gemma4" | "universal") {
-  const t = raw.text_config ?? raw, dtype = t.dtype ?? raw.torch_dtype ?? t.torch_dtype;
-  assert(typeof dtype === "string" && dtype, "the config does not state its dtype");
+ * heads on full layers; Universal: the same on every layer), with the dtype the
+ * artifact stores (storedFloatDtype), never the config's. */
+export function kvGeometryFor(raw: Record<string, any>, family: "gemma4" | "universal", dtype: string) {
+  const t = raw.text_config ?? raw;
+  assert(typeof dtype === "string" && dtype, "no stored dtype");
   const heads = t.num_key_value_heads as number, dim = (t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads)) as number;
   if (family === "universal") return { dtype, rotating: { heads, dim }, full: { heads, dim } };
   return { dtype, rotating: { heads, dim },
@@ -337,11 +339,55 @@ test("a custom descriptor is one value source; the plan brackets the window (CPU
 test("K/V geometry follows each family's attention (CPU only)", () => {
   const gemma = { model_type: "gemma4", text_config: { num_key_value_heads: 2, head_dim: 256, global_head_dim: 512, attention_k_eq_v: false,
     num_global_key_value_heads: 4, dtype: "bfloat16", hidden_size: 2560, num_attention_heads: 8 } };
-  expect(kvGeometryFor(gemma, "gemma4")).toEqual({ dtype: "bfloat16", rotating: { heads: 2, dim: 256 }, full: { heads: 2, dim: 512 } });
-  expect(kvGeometryFor({ ...gemma, text_config: { ...gemma.text_config, attention_k_eq_v: true } }, "gemma4").full).toEqual({ heads: 4, dim: 512 });
+  expect(kvGeometryFor(gemma, "gemma4", "bfloat16")).toEqual({ dtype: "bfloat16", rotating: { heads: 2, dim: 256 }, full: { heads: 2, dim: 512 } });
+  expect(kvGeometryFor({ ...gemma, text_config: { ...gemma.text_config, attention_k_eq_v: true } }, "gemma4", "bfloat16").full).toEqual({ heads: 4, dim: 512 });
   const llama = { model_type: "llama", torch_dtype: "bfloat16", num_key_value_heads: 8, hidden_size: 3072, num_attention_heads: 24 };
-  expect(kvGeometryFor(llama, "universal")).toEqual({ dtype: "bfloat16", rotating: { heads: 8, dim: 128 }, full: { heads: 8, dim: 128 } });
-  expect(() => kvGeometryFor({ ...llama, torch_dtype: undefined }, "universal")).toThrow("does not state its dtype");
+  expect(kvGeometryFor(llama, "universal", "float16")).toEqual({ dtype: "float16", rotating: { heads: 8, dim: 128 }, full: { heads: 8, dim: 128 } });
+  expect(() => kvGeometryFor(llama, "universal", "")).toThrow("no stored dtype");
+});
+
+test("the KV dtype pin is the artifact's one stored floating dtype, not its config (CPU only)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "stored-dtype-"));
+  /** A header-only safetensors shard: the tensors' dtypes, zero-filled data. */
+  const shard = (name: string, dtypes: string[]) => {
+    let offset = 0;
+    const entries = Object.fromEntries(dtypes.map((dtype, i) => {
+      const bytes = dtype === "F32" || dtype === "U32" ? 4 : 2, entry = [`t${i}`, { dtype, shape: [1], data_offsets: [offset, offset + bytes] }];
+      offset += bytes; return entry;
+    }));
+    const header = Buffer.from(JSON.stringify({ __metadata__: { format: "mlx" }, ...entries })), prefix = Buffer.alloc(8);
+    prefix.writeBigUInt64LE(BigInt(header.length));
+    writeFileSync(join(dir, name), Buffer.concat([prefix, header, Buffer.alloc(offset)]));
+  };
+  const artifact = (config: object, shards: Record<string, string[]>, indexed = true) => {
+    rmSync(dir, { recursive: true, force: true }); mkdirSync(dir);
+    writeFileSync(join(dir, "config.json"), JSON.stringify(config));
+    for (const [name, dtypes] of Object.entries(shards)) shard(name, dtypes);
+    if (indexed) writeFileSync(join(dir, "model.safetensors.index.json"), JSON.stringify({ weight_map:
+      Object.fromEntries(Object.keys(shards).map((name, i) => [`w${i}`, name])) }));
+    return dir;
+  };
+  try {
+    // An MLX conversion stores float16 while its config names the source bfloat16.
+    const llama = { model_type: "llama", torch_dtype: "bfloat16", num_hidden_layers: 4, num_key_value_heads: 8,
+      hidden_size: 3072, num_attention_heads: 24, vocab_size: 128256 };
+    expect(storedFloatDtype(artifact(llama, { "model.safetensors": ["F16", "U32", "F16"] }))).toBe("float16");
+    expect(kvGeometryFor(llama, "universal", storedFloatDtype(dir)).dtype).toBe("float16");
+    expect(storedFloatDtype(artifact(llama, { "model.safetensors": ["BF16", "U32"] }, false))).toBe("bfloat16");
+    expect(storedFloatDtype(artifact(llama, { "a.safetensors": ["F32"], "b.safetensors": ["U32", "F32"] }))).toBe("float32");
+    // Mixed floating inputs, within or across shards, and none at all are unsupported.
+    expect(() => storedFloatDtype(artifact(llama, { "model.safetensors": ["F16", "BF16"] }))).toThrow("exactly one is supported");
+    expect(() => storedFloatDtype(artifact(llama, { "a.safetensors": ["F16"], "b.safetensors": ["F32"] }))).toThrow("exactly one is supported");
+    expect(() => storedFloatDtype(artifact(llama, { "model.safetensors": ["U32"] }))).toThrow("exactly one is supported");
+    writeFileSync(join(dir, "model.safetensors"), Buffer.alloc(4));
+    expect(() => storedFloatDtype(dir)).toThrow("no safetensors header");
+    const oversized = Buffer.alloc(16); oversized.writeBigUInt64LE(1n << 40n);
+    writeFileSync(join(dir, "model.safetensors"), oversized);
+    expect(() => storedFloatDtype(dir)).toThrow("header length");
+    const truncated = Buffer.alloc(16); truncated.writeBigUInt64LE(64n);
+    writeFileSync(join(dir, "model.safetensors"), truncated);
+    expect(() => storedFloatDtype(dir)).toThrow("truncated header");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the run check rejects misattributed, incomplete or malformed records (CPU only)", () => {
