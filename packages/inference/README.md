@@ -547,7 +547,13 @@ its cancellation check interrupts unfinished image work. With the measured main
 image reference, the real-weight check passed image cancellation beside a live
 text survivor and image/text reuse on the same group, preserving survivor and
 recovery tokens and checking state/table disposal calls and caller-owned pixels.
-This does not establish allocator leak freedom or HTTP cancellation.
+The disposal checks do not establish allocator leak freedom. Separate paired B1
+HTTP acceptance against main passed image SSE disconnect after the first decoder
+step, server cancellation, prepared-pixel release, drain and same-server image/text
+recovery. Both clients received headers and the initial role frame, with no canvas
+tokens published before cancellation. Recovery tokens, messages, finish, usage and
+prepared inputs matched controls and main. Concurrent HTTP rows, full logits/KV
+planes, external-oracle parity and performance remain unqualified.
 
 `execution/fit` estimates whether a model fits a machine at a context length:
 resident weights (bytes the caller supplies, such as a registry's), KV bytes from
