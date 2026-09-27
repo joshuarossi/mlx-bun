@@ -46,8 +46,9 @@ interface RequestState {
  * Undefined when the target cannot capture the hidden layers the provider taps. */
 export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
   const binding = bindSpeculativeTargetModel(model);
-  // Resolved once for this target; prefill and decode rows must tap exactly this list.
-  const taps = provider.grouped?.targetTapLayers?.(bindLegacyDraftTarget(model, [])) ?? [];
+  // Resolved once for this target into a snapshot the binding owns: the checked
+  // list cannot change afterwards, and prefill and decode rows must tap exactly it.
+  const taps = Object.freeze([...(provider.grouped?.targetTapLayers?.(bindLegacyDraftTarget(model, [])) ?? [])]);
   if (!binding.supportsTapLayers(taps)) return undefined;
   return (input: GenerateOptions): MlxGroupMethodRequest => {
     const options = captureSpeculativeOptions(input);

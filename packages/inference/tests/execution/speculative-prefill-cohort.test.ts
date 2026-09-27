@@ -171,3 +171,24 @@ test("rows that tap exactly the layers resolved for their target are admitted", 
     expect({ appended, disposed, failures: f.failures.length }).toEqual({ appended: 1, disposed: 0, failures: 0 });
   } finally { f.dispose(); }
 });
+
+test("the binding checks its own snapshot of the declared taps: a later change to the provider's list is refused", () => {
+  const taps = [0];
+  let disposed = 0;
+  const rows = { tapLayers: taps, prefillMode: "tail-split", namespace: "mutable", rowCount: 0,
+    append() {}, filterRows() {}, materialize() {}, dispose() { disposed++; } };
+  const mutable = { id: "mutable", dispose() {}, grouped: { checkpointNamespace: () => "mutable",
+    targetTapLayers: () => taps, open: () => { throw new Error("decode rows must not open"); }, openPrefill: () => rows } };
+  const f = fixture(mutable as never, { hiddenTap: null,
+    config: { modelType: "fixture", eosTokenIds: [], text: { numHiddenLayers: 1 } } }), row = f.row([1, 2, 3, 4]);
+  // After the binding checked [0], the provider's shared list gains a layer this graph cannot capture.
+  taps.push(5);
+  let thrown: unknown;
+  try { f.method.prepare(row); } catch (error) { thrown = error; }
+  try {
+    const errors = [thrown, ...f.failures.map(failure => failure.error)].filter(Boolean).map(String);
+    expect(errors.some(error => error.includes("draft provider mutable taps [0,5] but declared [0]"))).toBe(true);
+    expect(disposed).toBe(1);
+    expect(f.shapes).toEqual([]);
+  } finally { f.dispose(); }
+});
