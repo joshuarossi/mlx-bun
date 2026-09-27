@@ -134,6 +134,10 @@ function subsection(section: string, heading: string): string {
 }
 const namedBlobs = (text: string) => [...text.matchAll(/git blob\s+`([0-9a-f]{40})`/g)].map(match => match[1]!);
 const blobOf = (text: string) => gitBlobSha1(new TextEncoder().encode(text));
+/** The upstream bytes of a reproduced text: restores the disclosed line-ending spaces (1-based
+ * line → count) and, with `crlf`, the CRLF line endings; nothing else may differ. */
+const upstream = (text: string, spaces: Record<number, number>, crlf = false) =>
+  text.split("\n").map((line, index) => line + " ".repeat(spaces[index + 1] ?? 0)).join(crlf ? "\r\n" : "\n");
 
 test("bundle notices carry the package notices, Photon's installed license and Pi's upstream license verbatim", async () => {
   expect(verifyBundle).toBeFunction();
@@ -171,16 +175,16 @@ test("bundle notices carry the package notices, Photon's installed license and P
   expect(gitBlobSha1(new TextEncoder().encode(license))).toBe(blob!);
   // The 58th has no license text; the section records its manifest's statement instead.
   expect(jiti.replace(/\s+/g, " ")).toContain('its `package.json`, `"author": "Warner"` and `"license": "MIT"`');
-  // Code Jiti copies: the upstream license blobs named, byte for byte, except TypeScript's
-  // LICENSE.txt, shown with LF line endings and its one line-ending space removed.
+  // Code Jiti copies: the upstream license blobs named, byte for byte, except TypeScript's two
+  // files, whose whole texts are those blobs once the disclosed whitespace is restored.
   for (const heading of ["### import-meta-env plugin code", "### import-meta-paths plugin code"]) {
     const part = subsection(jiti, heading);
     expect(fenced(part).map(blobOf)).toEqual(namedBlobs(part));
   }
   const typescript = subsection(jiti, "### TypeScript compiler code in the copied metadata plugin");
   const [copyright, apache] = fenced(typescript);
-  expect(copyright).toContain("\nCopyright (c) Microsoft Corporation. All rights reserved.\n");
-  expect(blobOf(apache!.replace("licenses/\n", "licenses/ \n").replaceAll("\n", "\r\n"))).toBe(namedBlobs(typescript).at(-1)!);
+  expect([blobOf(upstream(copyright!, { 2: 1, 5: 2, 6: 1, 9: 1, 10: 1, 11: 1 })), blobOf(upstream(apache!, { 5: 1 }, true))])
+    .toEqual(namedBlobs(typescript).slice(1));
 });
 
 async function packageTree(files: Record<string, string>) {
@@ -343,14 +347,16 @@ test("the reviewed headers, Jiti hashes and XGrammar fallback match the installe
   const header = picojson.match(/```text\n([^`]*)```/)![1]!;
   expect(header).toStartWith("/*\n * Copyright 2009-2010 Cybozu Labs, Inc.\n");
   expect(createHash("sha256").update(header).digest("hex")).toBe(picojson.match(/lines 1-27 \(sha256\s+`([0-9a-f]{64})`\)/)![1]!);
-  // The Emscripten 3.1.56 texts are the blobs named, byte for byte, except the one
-  // line-ending space removed from its LICENSE.
-  const emscripten = subsection(whole, "### Emscripten 3.1.56 runtime in the XGrammar WASM"), [em, ...libraries] = fenced(emscripten);
-  expect([blobOf(em!.replace("    written permission.\n", "    written permission. \n")), ...libraries.map(blobOf)]).toEqual(namedBlobs(emscripten));
+  // The Emscripten texts (3.1.56's, the release-era match) are the blobs named, byte for byte,
+  // except the space ending its LICENSE's line 60.
+  const emscripten = subsection(whole, "### Emscripten runtime in the XGrammar WASM (3.1.56 release-era match)");
+  const [em, ...libraries] = fenced(emscripten);
+  expect([blobOf(upstream(em!, { 60: 1 })), ...libraries.map(blobOf)]).toEqual(namedBlobs(emscripten));
 
   // What the notices say of the pinned bytes: Jiti's babel.cjs keeps the copied plugins and
-  // the parameter decorator; XGrammar's runtime is Emscripten 3.1.56's (it sets Module.ready
-  // and has no WebAssembly check), and its WASM keeps musl, libc++ and libc++abi strings.
+  // the parameter decorator; XGrammar's runtime glue has both fingerprints of the 3.1.56
+  // release-era match (Module["ready"] present, WebAssembly check absent), and its WASM keeps
+  // musl, libc++ and libc++abi strings.
   const babel = await readFile(join(packages.find(({ name }) => name === "jiti")!.directory, "dist/babel.cjs"), "utf8");
   for (const text of ['name:"@import-meta-env/babel"', "require('url').pathToFileURL(__filename).toString()",
     "function serializeTypeList(", "babel-plugin-parameter-decorator@1.0.16/"]) expect(babel).toContain(text);

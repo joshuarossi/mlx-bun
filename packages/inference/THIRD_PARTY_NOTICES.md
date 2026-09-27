@@ -2123,23 +2123,25 @@ picojson's type-check strings. Below, that header's lines 1-27 (sha256
  */
 ```
 
-### Emscripten 3.1.56 runtime in the XGrammar WASM
+### Emscripten runtime in the XGrammar WASM (3.1.56 release-era match)
 
 `lib/index.js` also carries Emscripten's JavaScript runtime, and the WASM links Emscripten's
-C and C++ runtime libraries. Upstream CI (an Ubuntu workflow that installs the SDK's `latest`
-release) did not make this build: the WASM names a macOS source path,
+C and C++ runtime libraries. The toolchain that produced this build is not recorded: the WASM
+has no producers section, and upstream CI (an Ubuntu workflow that installs the SDK's `latest`
+release) did not make it, since the WASM names a macOS source path,
 `/Users/akaashrp/Documents/xgrammar/cpp/tokenizer_info.cc`, the npm publisher is `akaashrp`,
-and the package has no provenance attestation. The WASM has no producers section, but its
-runtime is Emscripten 3.1.56 (tag commit `cf90417346b78455089e64eb909d71d091ecc055`): it lacks
-the WebAssembly support check that Emscripten commit `5f9ee699090a074c140e94ed2d4cc85f1080526e`
-(3.1.56) dropped from builds without assertions, and it still sets `Module["ready"]`, which
-commit `5dbbd714f1836abd4ab456fce35925310f0a17b9` (3.1.57) removed; 3.1.56 is the only release
-between them, and none of the files below changed between them. The runtime includes
+and the package has no provenance attestation. Its runtime glue is a release-era match for
+Emscripten 3.1.56 (tag commit `cf90417346b78455089e64eb909d71d091ecc055`), inferred from two
+runtime-glue fingerprints: WebAssembly-check absence (Emscripten commit
+`5f9ee699090a074c140e94ed2d4cc85f1080526e`, in 3.1.56, dropped that check from builds without
+assertions) and `Module["ready"]` presence (commit `5dbbd714f1836abd4ab456fce35925310f0a17b9`,
+in 3.1.57, removed it). 3.1.56 is the only release between those commits, and none of the
+files below changed between them. The runtime includes
 Emscripten's Node.js-derived `PATH` code, and the WASM retains strings of musl's `vfprintf.c`
 (`-+   0X0x`, `(null)`), libc++ (`NSt3__28ios_baseE`, `%a %b %d %H:%M:%S %Y`) and libc++abi
 (`terminate_handler unexpectedly returned`, `N10__cxxabiv117__class_type_infoE`). Below, from
-3.1.56: `LICENSE` (git blob `70cabe388d27da221bd769c50b427a35354f4f1d`; one line-ending space
-removed), then verbatim `system/lib/libc/musl/COPYRIGHT` (git blob
+3.1.56: `LICENSE` (git blob `70cabe388d27da221bd769c50b427a35354f4f1d`) with the space ending
+line 60 removed, then byte for byte `system/lib/libc/musl/COPYRIGHT` (git blob
 `c1628e9ac84f927fe791124ec172fb61c760bb9b`), `system/lib/libcxx/LICENSE.TXT` (git blob
 `e159d283443f92ac78b964d2bccebe8f95d5d445`) and `system/lib/libcxxabi/LICENSE.TXT` (git blob
 `b75c0441bcd5be32b5a07e2a1ffc7e67b6d99f16`). Whether the WASM also links LLVM compiler-rt

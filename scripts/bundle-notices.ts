@@ -55,9 +55,11 @@ export const REVIEWED: Reviewed = {
     "lib/parse.js": "a0d37ada5af598f4285e465ebf428ef03d570305a2437aa0cd2653861061cc4f",
     "lib/stringify.js": "04e4d734559017bbcb259b01e04334f7c8ccd991b29a7833aabfff5e7af5f728",
   } },
-  // Emscripten 3.1.56 WASM build of upstream commit ace2321a29471130f3f64fb1882741a5547c6f36: the
-  // inference notice's XGrammar section (LICENSE, NOTICE, picojson's header and the notices of
-  // the Emscripten runtime, musl, libc++ and libc++abi).
+  // Emscripten WASM build of upstream commit ace2321a29471130f3f64fb1882741a5547c6f36, by an
+  // unrecorded toolchain whose runtime glue is a release-era match for Emscripten 3.1.56 (inferred
+  // from two runtime-glue fingerprints: WebAssembly-check absence and Module["ready"] presence):
+  // the inference notice's XGrammar section (LICENSE, NOTICE, picojson's header and 3.1.56's
+  // Emscripten, musl, libc++ and libc++abi texts).
   "@mlc-ai/web-xgrammar": { version: "0.1.27", sha256: {
     "lib/index.js": "803713906fb3e53483ab03f33244a64d8ed818820be9abe520e615754bfd3e24",
   } },
@@ -76,10 +78,10 @@ export const REVIEWED: Reviewed = {
 export const CURATED: Record<string, Record<string, string>> = {
   "apps/mlx-bun/THIRD_PARTY_NOTICES.md": {
     "## Pi": "9756bd6ea6b0f1528e2acd38b80268b093bc854fcd3e6d6aeb29f93c861ee2ff",
-    "## Jiti 2.7.0 prebundle": "f7c38e1a80f525f096805906a7484bd988bb17323174b6509b84fe43d012c783",
+    "## Jiti 2.7.0 prebundle": "d92fcfa53e540b598d6842a20c90c29a92c142d9162226aacc5f0ff01312ec91",
     "## json-bigint 1.0.0 copied code": "eb03ce6552d2906b0662a905f1cfd63b902b5b05d8b0f7c2545b01c2c87a1d36",
   },
-  "packages/inference/THIRD_PARTY_NOTICES.md": { "## XGrammar": "e460d419b37f969cc8e9f90e4d0dfa90710ee7d1ce1eeb58fb3f181801d3a8cd" },
+  "packages/inference/THIRD_PARTY_NOTICES.md": { "## XGrammar": "226e81596b8d905f71eaa95f54c380085efb7ecd640a4a6044f3da039e79d71d" },
 };
 
 /** The `## ` section of `notice` that starts with the line `heading`. */

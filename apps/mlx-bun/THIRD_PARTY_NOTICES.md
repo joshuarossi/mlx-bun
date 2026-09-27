@@ -639,8 +639,10 @@ The same plugin's `serialize-type.ts` says (lines 146-148 and 256-260) that its
 https://github.com/microsoft/TypeScript at commit `2932421370df720f0ccfea63aaf628e32e881429`,
 `src/compiler/transformers/ts.ts` (git blob `63d621c6654393f49cc2b936bcf98427aff47d91`);
 `dist/babel.cjs` retains both functions under those names. Below, from that commit:
-`CopyrightNotice.txt` (git blob `884a031325b653f269efa5e6966d6abcdeb0f117`) and `LICENSE.txt`
-(git blob `8746124b277914d0f0fd9cf4aef2ed3b587143d9`), whose CRLF line endings are shown as LF.
+`CopyrightNotice.txt` (git blob `884a031325b653f269efa5e6966d6abcdeb0f117`) with the spaces
+ending lines 2, 5 (two), 6, 9, 10 and 11 removed, and `LICENSE.txt` (git blob
+`8746124b277914d0f0fd9cf4aef2ed3b587143d9`) with its CRLF line endings shown as LF and the
+space ending line 5 removed; otherwise byte for byte.
 
 ```text
 /*! *****************************************************************************
