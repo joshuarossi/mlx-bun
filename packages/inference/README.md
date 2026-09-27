@@ -97,8 +97,9 @@ independent newest-window selection, and compares merged rows with their solo st
 The [Gemma4 assistant test](tests/parity/gemma4-assistant.test.ts) takes
 `MLX_BUN_TEST_ASSISTANT_TARGET` and `MLX_BUN_TEST_ASSISTANT_DRAFT` and compares donor
 attention and deterministic draft chains with independently selected donors past the
-window. Its separate generation consumer uses the real assistant provider at B1 with
-plain KV and compares greedy output with ordinary generation. It checks complete
+window. Its separate generation consumer uses the real assistant provider at B1,
+depth 2, with plain KV below the sliding window, and compares greedy output with
+ordinary generation. It checks complete
 forward blocks and retained K/V against independent direct-graph replay, including
 acceptance, rejection and continuation; this is not main or external-oracle parity.
 Real-weight execution of that generation consumer is pending. The [DiffusionGemma window test](tests/parity/diffusion-gemma-window.test.ts)
