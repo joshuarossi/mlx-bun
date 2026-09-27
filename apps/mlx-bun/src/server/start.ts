@@ -24,7 +24,9 @@ export async function startServer(input: {
    * before waiting for HTTP/SSE responses to drain. */
   beforeDrain?(): void | Promise<void>;
   closeEngine(): Promise<void>;
-}, options: { port?: number; hostname?: string;
+}, options: { port?: number;
+  /** Omitted: loopback (127.0.0.1). null: Bun's default, every interface. */
+  hostname?: string | null;
   /** Internal (worker mode): bind this Unix socket path instead of TCP; `port`
    * and `hostname` are then ignored. A stale file is replaced, the socket is
    * narrowed to owner-only right after the bind, and close removes it. */
@@ -70,7 +72,8 @@ export async function startServer(input: {
     // must never time out either.
     server = options.unix
       ? Bun.serve<ChatSocketData>({ unix: options.unix, ...handlers } as unknown as Parameters<typeof Bun.serve<ChatSocketData>>[0])
-      : Bun.serve<ChatSocketData>({ port: options.port ?? 8080, hostname: options.hostname ?? "127.0.0.1", ...handlers });
+      : Bun.serve<ChatSocketData>({ port: options.port ?? 8080,
+        ...(options.hostname === null ? {} : { hostname: options.hostname ?? "127.0.0.1" }), ...handlers });
     if (options.unix) chmodSync(options.unix, 0o600);
     return { server, close };
   } catch (error) {

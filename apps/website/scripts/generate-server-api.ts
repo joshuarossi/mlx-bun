@@ -476,7 +476,7 @@ class Inventory {
     const entry = this.fn(cli("worker-entry.ts"), "runWorkerEntry"), hosts = called(entry, "startModelHost"), first = hosts[0]?.arguments[0] && skip(hosts[0].arguments[0]);
     if (hosts.length !== 1 || !first || !ts.isCallExpression(first) || first.expression.getText() !== "createWorkerState")
       return this.fail(hosts[0] ?? entry, "unrecognized composition shape; expected startModelHost(createWorkerState(…), …)");
-    const admin = this.wrapper(props(hosts[0]!.arguments[3]).get("routes"), hosts[0]!), host = this.mode("serve-host.ts", "startModelHost", worker);
+    const admin = this.wrapper(props(hosts[0]!.arguments[3]).get("routes"), hosts[0]!), host = this.mode("serve-host.ts", "startContextHost", worker);
     // The `app` launch form: runServe's own compositions on the socket, each passed `socket(model, lease)`, whose routes hook is the admin wrap.
     const runner = this.fn(cli("worker-entry.ts"), "runAppWorker"), runs = called(runner, "runServe"), callbacks = props(runs[0]?.arguments[1]);
     const leases = [["start", "startModelServer"], ["startTranscription", "startTranscriptionServer"]].map(([key, composition]) => {
@@ -489,11 +489,11 @@ class Inventory {
       this.wrapper(props(returned).get("routes"), helper);
       return made.arguments[1]?.getText() !== "false";
     });
-    const serve = this.mode("serve-host.ts", "startModelHost", app, web), transcription = this.mode("serve-host.ts", "startTranscriptionHost", new Map());
+    const serve = this.mode("serve-host.ts", "startContextHost", app, web), transcription = this.mode("serve-host.ts", "startTranscriptionHost", new Map());
     if (!host.wrapped || !transcription.wrapped) this.fail(host.wrapped ? transcription.node : host.node, "the host must let the worker's admin routes wrap its routes");
     const lease = (leased: boolean) => leased ? "with" : "without";
     return [
-      { id: "serve", title: "Server", ...serve, intro: "`mlx-bun serve`: one process owns the loaded model, the browser app, chat, and jobs." },
+      { id: "serve", title: "Server", ...serve, intro: "`mlx-bun serve`, and `createServer` from `mlx-bun/server` over a caller's loaded context: one process owns the loaded model, the browser app, chat, and jobs." },
       { id: "isolate", title: "Isolated server (`--isolate`)", ...this.mode("serve-isolated.ts", "startIsolatedServer", app, web),
         intro: "`mlx-bun serve --isolate`: this process keeps the browser app, chat, jobs, and Responses history; models run in worker processes (one per model under `--model-pool`)." },
       { id: "worker", title: "Isolation worker socket", ...host, node: hosts[0]! as ts.Node, groups: [admin, ...host.groups],

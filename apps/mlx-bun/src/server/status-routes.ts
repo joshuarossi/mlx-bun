@@ -1,5 +1,4 @@
 import { detectChip, fit, skuMatrix, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
-import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { createCacheServices } from "../engine/cache-services";
 import type { GenerationGateway } from "../engine/generation-gateway";
 import type { LoadedModelContext } from "../engine/model-host";
@@ -27,7 +26,8 @@ export function createStatusRoutes(input: {
   gateway: Pick<GenerationGateway, "activeRows" | "pendingRows" | "submittedRows" | "kvBytes">;
   diagnostics: ModelBinding["diagnostics"];
   responseStats(): { entries: number; bytes: number; max_bytes: number; ttl_ms: number };
-  artifact: Pick<ModelRecord, "expertsBytes" | "sizeBytes">;
+  /** The served artifact's registry sizes; a caller-built context may know neither (main's 0 and null). */
+  artifact: { expertsBytes: number; sizeBytes: number | null };
   capacity: number;
   contextLimit: number | null;
   startedAt: number;

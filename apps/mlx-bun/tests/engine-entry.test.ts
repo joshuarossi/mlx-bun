@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync }
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { CancellationSource, createCompletionClient, createDirectHost, createInferenceEngine, openIsolatedHost,
-  type CancelReason, type EngineHost, type GenerationEvent, type RunControl } from "mlx-bun/engine";
+  type BatchCompletionClient, type CancelReason, type EngineHost, type GenerationEvent, type RunControl, type TaskClient } from "mlx-bun/engine";
 import { openLibraryHost, type LibraryHostSeams } from "../src/cli/library-host";
 import { WORKER_PROTOCOL_VERSION } from "../src/jobs/worker-process";
 import { RestartBudgetExhaustedError } from "../src/jobs/worker-supervisor";
@@ -84,6 +84,14 @@ test("the entry imports through the export map without native MLX and exposes ex
   expect([cancellation.reason, reasons]).toEqual(["requested", ["requested"]]);
   const control: RunControl = { output: "collect", cancellation }, event: GenerationEvent = { type: "progress", completed: 1 };
   expect([control.output, event.type, typeof createInferenceEngine]).toEqual(["collect", "progress", "function"]);
+  // Main's batch and task client contracts (types only).
+  const batch: BatchCompletionClient<string, number> = { complete: async request => request.length,
+    completeBatch: async requests => requests.map(request => request.length) };
+  const task: TaskClient<string, number, string> = { async run(request, report, cancel) {
+    report(request.length); return `${request}:${cancel?.reason}`; } };
+  const progress: number[] = [];
+  expect([await batch.completeBatch(["a", "bc"]), await task.run("abc", value => progress.push(value), cancellation), progress])
+    .toEqual([[1, 2], "abc:requested", [3]]);
 });
 
 test("a blank model, a refused flag, or a bad argument rejects in the caller before anything is spawned; transport-only flags are accepted", async () => {

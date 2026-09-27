@@ -55,11 +55,16 @@ split in two halves:
 `serve-state.ts` creates the persistent, CPU-only state that outlives a loaded
 model (web assets, the download owner, Responses history, memory, jobs,
 sessions, credentials, and their routes) and never imports the engine or a
-native module at runtime; `serve-host.ts` creates the model-scoped host
-(native binding, caches, engine, Whisper companion, model routes, Pi backend,
-listener), borrowing that state by parameter and lending it an execution
-lease, library invalidation, and the bound port through an attached link.
-`startModelServer` composes both with one close in the app's order.
+native module at runtime; `serve-host.ts` creates the model-scoped host,
+borrowing that state by parameter and lending it an execution lease, library
+invalidation, and the bound port through an attached link. Its
+`startModelHost` is the CLI's loader (runtime switches, expert offload, the
+model context, the startup adapter) and hands the context to
+`startContextHost`, which serves one loaded context (binding, caches, engine,
+Whisper companion, model routes, Pi backend, listener) and releases it by the
+ownership it is given. `startApp` (`serve.ts`) composes the state and one host
+with one close in the app's order; `startModelServer` and
+[`mlx-bun/server`](#server-entry-mlx-bunserver) use it.
 
 Worker mode serves over a Unix socket a parent supplies, in another process.
 `jobs/worker-process.ts` is the parent-side owner: it spawns the executable
@@ -458,7 +463,10 @@ imports no other module, so it loads without native MLX. `mlx-bun/engine`
   not a model loader. `close()` refuses new work, waits for handlers in flight,
   then calls `shutdown` once; a handler owns any response stream it returns, and
   streams pass through unchanged.
-- Types: `EngineHost`, `CompletionClient`, `CompletionCall`, `CompletionResponse`.
+- Types: `EngineHost`, `CompletionCall`, `CompletionResponse`, and main's
+  completion contracts `CompletionClient`, `BatchCompletionClient` (ordered
+  `completeBatch`), and `TaskClient` (`run` with progress and an optional
+  `Cancellation`).
 
 The [client tests](tests/client.test.ts) import the entry through the export
 map with native MLX blocked; `verify-packages` repeats them from the installed package.
@@ -467,11 +475,13 @@ map with native MLX blocked; `verify-packages` repeats them from the installed p
 
 `mlx-bun/engine` (`src/cli/engine-entry.ts`) is main's `src/library.ts`
 without `initializeMlx`. It loads without native MLX and starts nothing on
-import. It re-exports the client above, `createInferenceEngine` and
-`CancellationSource` with main's generation contract types from
-`@mlx-bun/inference`, and adds `openIsolatedHost`. Main's `initializeMlx` and
-the rest of the native root (`.`) compatibility API are not provided; they are
-tracked separately. The root's selection helpers are `mlx-bun/selection` (below).
+import. It re-exports the client above with its contract types,
+`createInferenceEngine` and `CancellationSource` with main's generation
+contract types from `@mlx-bun/inference`, and adds `openIsolatedHost`. Main's
+`initializeMlx` and the native root (`.`) compatibility API are not provided;
+they are tracked separately. The root's selection helpers are
+`mlx-bun/selection` (below), and main's in-process server is
+[`mlx-bun/server`](#server-entry-mlx-bunserver).
 
 ```ts
 import { createCompletionClient, openIsolatedHost } from "mlx-bun/engine";
@@ -533,6 +543,107 @@ selection never calls). Migrating from main's root: `recommendedRepoId()` is
 The [selection tests](tests/selection-entry.test.ts) import the entry through the
 export map with native MLX blocked; `verify-packages` repeats them from the
 installed package.
+
+## Server entry (`mlx-bun/server`)
+
+`mlx-bun/server` (`src/cli/server-entry.ts`) restores main's in-process
+`createServer` and `loadContext`. It loads without native MLX and starts nothing
+on import. `createServer` composes the app `mlx-bun serve` composes (`startApp`,
+then `startContextHost`) around a context the caller loaded, so it serves the
+full app: every HTTP route, the browser app, Pi web chat on `/ws/chat`, jobs,
+hub, memory, sessions, and publishing. It parses no CLI arguments, installs no
+signal handler, opens no browser, and downloads nothing. The function's JSDoc
+states the option, ownership, and close rules.
+
+```ts
+import { createServer, loadContext } from "mlx-bun/server";
+
+const context = await loadContext("/path/to/hf-snapshot", "my-model");
+const server = await createServer(context, 8080, { hostname: "127.0.0.1", memoryBudgetBytes: 12e9 });
+try {
+  console.log(`API http://127.0.0.1:${server.port}/v1`);
+} finally {
+  const { stopped, durability } = await server.close();
+  if (stopped) context.dispose();
+  if (!durability.durable) console.warn("cache persistence incomplete", durability);
+}
+```
+
+- Options are serve's settings under their programmatic names (`capacity`,
+  `contextLimit`, `defaultGeneratedTokens`, `kvBudgetBytes`,
+  `memoryBudgetBytes`, `cache`, `request`, `whisper`, `readOnly`, and the
+  `memoryPaths`, `chatPaths`, and `storagePaths` store overrides). Defaults
+  follow main's library: port 0 binds an ephemeral port, an omitted `hostname`
+  binds every interface (tests pass `127.0.0.1`), capacity 8, bf16 KV, an 8 GB
+  RAM prompt cache, and `MLX_BUN_RD_CONTEXT_LIMIT` as the context cap when set.
+  User stores default to HOME and are shared with other mlx-bun processes
+  without locks, as for the CLI.
+- A supplied graph: `binding` (`ModelBinding`) replaces the built-in numerics
+  and `buildPrompt` (`ModelPromptBuilder` returning `BuiltPrompt`) replaces
+  chat prompt construction. Both reach the engine and routes as given, with no
+  registry lookup, model class, or reload. A context without a chat template is
+  refused (`model <id> has no chat template`) unless `buildPrompt` builds its
+  prompts; such a builder returns `probeStableLen: false`. `artifact` (`path`,
+  `sizeBytes`, `expertsBytes`) only describes the weights for `/fit`, `/stats`,
+  and hub GC protection.
+- Ownership: the context is borrowed by default, as in main. Close and every
+  failed start release what the server created and leave the context usable,
+  including for another server; the caller disposes it after close resolves
+  with `stopped: true`. `ownership: "owned"` makes the server dispose it exactly
+  once, after execution drains or when startup fails. The rule is
+  `createAppEngine`'s `ownership` option (`releaseContext`,
+  `engine/model-host.ts`), applied by the host and the entry until the engine
+  takes the context.
+- `close({ timeoutMs = 120_000 })` resolves `{ stopped, timedOut, durability }`
+  with the final cache flush's result, `durable: false` included. One drain runs
+  however often it is called. At the deadline it resolves `stopped: false,
+  timedOut: true` with the pending counters and `durable: false` while the
+  drain continues; nothing is released under running execution. `flush()`
+  flushes cache persistence while serving.
+- Process-wide state: the server applies no runtime switches and activates no
+  expert offload; those stay with the process's runtime configuration and the
+  CLI's loader. It sets the MLX allocator limit from a GLM plan or
+  `memoryBudgetBytes` and restores the value it found on close and on a failed
+  start. The limit is one per process: servers running at the same time share
+  it and the last applied wins. Sequential servers over one context are
+  supported. The Pi SDK's `proper-lockfile` registers `signal-exit`'s listeners
+  on SIGINT, SIGTERM, and other signals when the app's modules first load
+  (under the CLI too); they re-raise the signal when no other listener exists.
+
+Migration from main (`02d723a`):
+
+| main | `mlx-bun/server` |
+| --- | --- |
+| `createServer(ctx, port = 0, serverOptions)` returned Bun's `Server` | `await createServer(context, port = 0, options)` returns `{ port, flush, close }` |
+| `shutdownServer(server, timeoutMs = 120_000)` → `{ stopped, timedOut, durability }` | `server.close({ timeoutMs })`, the same result; `server.stop()` becomes `await server.close()` |
+| `flushServerCacheDurability(server)` | `server.flush()` |
+| `loadContext(dir, id?, { implementations, profiles, … })` | the same, from `mlx-bun/server` |
+| `ServerContext`, `ServingContext` | `ModelContext`, `LoadedModelContext` |
+| `ServerContext.serving?: ModelServingBinding` | `options.binding` (`ModelBinding`) and `options.buildPrompt` for `serving.buildPrompt`; `createSerial` has no counterpart, since every request runs on the shared scheduler through `binding.gateway` |
+| `ModelPromptBuilder`, `BuiltPrompt` | the same names |
+| `batch` (1 pinned main's serial executor) | `capacity` (1 is the continuous scheduler at capacity one) |
+| `promptCacheBytes`, `kvQuant`, `quantizedKvStart`, `turboQuant`, `ssdCacheDir`, `ssdCacheMaxBytes`, `ssdDemoteIdleSec`, `ssdCacheVerify`, `generationCheckpointTokens` | `cache.*` |
+| `pagedKv`, `defaultThinking`, `defaultTemperature`, `defaultTopP`, `defaultTopK`, `hlg` | `request.*` |
+| `defaultMaxTokens` | `defaultGeneratedTokens` |
+| `whisperModelDir`, `whisperModelId`, `whisperIdleUnloadSec`, `whisperResident` | `whisper.modelDir`, `.modelId`, `.idleUnloadSec`, `.resident` |
+| `kvBudgetBytes`, `memoryBudgetBytes`, `hostname`, `defaultAdapter` | the same |
+| `owner` | not an option; `/stats` reports `embedded` |
+| `unixSocket` | not provided; the private worker launch forms own Unix sockets |
+| `CompletionClient`, `BatchCompletionClient`, `TaskClient` (`mlx-bun/engine`) | the same, from `mlx-bun/engine` or `mlx-bun/client` |
+| `mlx-bun/package.json` | the same subpath |
+
+The [server entry tests](tests/server-entry.test.ts) import the entry through
+the export map with native MLX blocked, then compose the real app over a
+supplied binding in child processes with a temporary HOME: main's model
+replacement shape (one context, five sequential servers), the full app and
+`/ws/chat`, the template-less builder path, startup failures (options, state,
+caches, bind) under both ownerships, and close's deadline, drain, and
+durability evidence.
+`verify-packages` repeats them from the installed package. The opt-in
+[native test](tests/engine/in-process-server.test.ts) (`MLX_BUN_TEST_NATIVE=1`
+with `MLX_BUN_APP_TEST_MODEL`) serves a real loaded context through a caller
+binding under a temporary HOME, aborts a live stream during close, and reuses
+the borrowed context for a second server.
 
 ## Web chat backend
 

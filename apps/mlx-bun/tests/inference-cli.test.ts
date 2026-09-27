@@ -149,7 +149,12 @@ test("missing templates remain a server error while optional one-shot loading re
   await expect(loadContextTemplate("/unused", true, load)).rejects.toThrow("no chat template found");
   const run = harness(false);
   expect(() => requireChatTemplate(run.context)).toThrow("has no chat template");
-  expect(() => createRequestPrep({ ctx: run.context, serverOptions: {}, kvScheme: {}, defaultGeneratedTokens: undefined })).toThrow("has no chat template");
+  // Serving refuses at the template's consumers, so a supplied prompt builder can serve without one;
+  // the stable-boundary probe refuses outside its best-effort fallback.
+  const prep = createRequestPrep({ ctx: run.context, serverOptions: {}, kvScheme: {}, defaultGeneratedTokens: undefined });
+  const request = { messages: [{ role: "user" as const, content: "hi" }] };
+  expect(() => prep.promptIdsFor(request, null)).toThrow("has no chat template");
+  expect(() => prep.stableLenFor(request, null, [1, 2, 3])).toThrow("has no chat template");
 });
 
 test("shared text prompt keeps HTTP duplicate-BOS correction separate from CLI no-specials encoding", () => {

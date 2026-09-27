@@ -132,14 +132,15 @@ try {
   // and library artifacts, including the one-shot engine composition.
   // Verb tests that also import app sources run from the installed package's own
   // tests directory; their spawned runs use the installed CLI entry. The client,
-  // engine and selection tests import `mlx-bun/client`, `mlx-bun/engine` and
-  // `mlx-bun/selection` there through the installed export map; the engine
-  // test's worker is the fake one beside it.
+  // engine, selection and server tests import `mlx-bun/client`, `mlx-bun/engine`,
+  // `mlx-bun/selection`, `mlx-bun/server` and `mlx-bun/package.json` there through
+  // the installed export map; the engine test's worker is the fake one beside it,
+  // and the server test composes the installed app over a supplied binding.
   const installedTests = join(consumer, "node_modules/mlx-bun/tests");
   await mkdir(installedTests, { recursive: true });
   const appTests = ["launcher.test.ts", "inference-cli.test.ts", "upload-cli.test.ts", "convert-cli.test.ts", "train-cli.test.ts",
     "transcribe-cli.test.ts", "dictate-cli.test.ts", "memory-cli.test.ts", "setup-cli.test.ts", "client.test.ts", "engine-entry.test.ts",
-    "selection-entry.test.ts"];
+    "selection-entry.test.ts", "server-entry.test.ts"];
   for (const file of [...appTests, "fake-worker.ts"]) await cp(join(workspace, "apps/mlx-bun/tests", file), join(installedTests, file));
   env.MLX_BUN_LIBMLXC = "/does-not-exist";
   env.MLX_BUN_TEST_CLI = appEntry;

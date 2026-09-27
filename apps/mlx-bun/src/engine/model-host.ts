@@ -565,6 +565,16 @@ export function getAudioTower(ctx: Pick<ModelContext<unknown>, "audio" | "loadAu
   }
 }
 
+/** Who releases a served context. "owned": its server disposes it once, after
+ * execution drains, including when startup fails. "borrowed": its server never
+ * disposes it; the caller keeps it usable and disposes it after the server closed. */
+export type ContextOwnership = "owned" | "borrowed";
+
+/** The one release rule every serving composition applies to its context. */
+export function releaseContext(context: { dispose(): void }, ownership: ContextOwnership): void {
+  if (ownership === "owned") context.dispose();
+}
+
 /** Attach an idempotent owner to a loaded context. Supplied resources are owned,
  * never borrowed; all are attempted even when an individual cleanup fails. */
 export function ownModelContext<Model extends ServedModelInfo>(
