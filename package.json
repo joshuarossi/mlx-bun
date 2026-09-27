@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "typecheck": "bun run --filter '*' typecheck && tsc --project scripts/tsconfig.json",
-    "test": "bun run --filter '*' test",
+    "test": "bun run --filter '*' test && bun test ./scripts",
     "verify:packages": "bun scripts/verify-packages.ts",
     "build:binary": "bun scripts/build-binary.ts",
     "verify:binary": "bun scripts/verify-binary.ts",

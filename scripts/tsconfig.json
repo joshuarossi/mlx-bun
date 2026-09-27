@@ -3,11 +3,16 @@
     "target": "ESNext",
     "module": "Preserve",
     "moduleResolution": "bundler",
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["*.ts"]
+  "include": [
+    "*.ts",
+    "bench/**/*.ts"
+  ]
 }
