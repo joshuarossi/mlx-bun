@@ -22,24 +22,27 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const ops = await import("@mlx-bun/mlx/ops");
   const { leaseCacheState, minimumReusableOffset, PromptCache, cloneKvCaches } = await import("@mlx-bun/inference/state");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
-  const weights = await Weights.open(target!), model = createModel(weights, await loadModelConfig(target!));
-  if (!("loraState" in model) || !model.loraState) { weights.dispose(); throw new Error("continuation test requires adapter state"); }
-  const manager = new AdapterManager(model);
-  if (adapter) await manager.mount("upper", adapter);
-  const adapterNamespace = adapter ? manager.cacheNamespace(["upper"]) : "";
   const directory = mkdtempSync(join(tmpdir(), "ordinary-continuation-"));
-  const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
-  const kv = await continuationKv(prompt.length);
-  const widths: number[] = [];
-  const forward = model.forwardHidden.bind(model);
-  const probe = (active: string[]) => {
-    const previous = model.loraState!.active, caches = model.makeCache();
-    model.loraState!.active = active;
-    try { using logits = model.forward(prompt, caches); using exact = ops.contiguous(logits); return Buffer.from(exact.rawBytes()); }
-    finally { model.loraState!.active = previous; for (const cache of caches) cache.dispose(); }
-  };
-  const baseLogits = adapter ? probe([]) : undefined;
+  const weights = await Weights.open(target!);
+  let manager: InstanceType<typeof AdapterManager> | undefined;
   try {
+    const model = createModel(weights, await loadModelConfig(target!));
+    if (!("loraState" in model) || !model.loraState) throw new Error("continuation test requires adapter state");
+    manager = new AdapterManager(model);
+    const adapters = manager;
+    if (adapter) await manager.mount("upper", adapter);
+    const adapterNamespace = adapter ? adapters.cacheNamespace(["upper"]) : "";
+    const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
+    const kv = await continuationKv(prompt.length);
+    const widths: number[] = [];
+    const forward = model.forwardHidden.bind(model);
+    const probe = (active: string[]) => {
+      const previous = model.loraState!.active, caches = model.makeCache();
+      model.loraState!.active = active;
+      try { using logits = model.forward(prompt, caches); using exact = ops.contiguous(logits); return Buffer.from(exact.rawBytes()); }
+      finally { model.loraState!.active = previous; for (const cache of caches) cache.dispose(); }
+    };
+    const baseLogits = adapter ? probe([]) : undefined;
     if (adapter) {
       expect(manager.list()).toHaveLength(1);
       expect(probe(["upper"])).not.toEqual(baseLogits!);
@@ -65,49 +68,50 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           runStep: async step => { await idleGate; return step(); } });
         const outputs: number[][] = Array.from({ length: batch }, () => []);
         const prefix = new PromptCache(1024 ** 2, null, null, cloneKvCaches);
-        binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 4,
-          checkpointPersistence: persistence, identity: "same-B-fixture", cloneState: cloneKvCaches,
-          adapterNamespace: ids => manager.cacheNamespace(ids) });
-        const options = { ...kv.options, ...(useAdapter ? { adapters: ["upper"] } : {}), maxTokens: 16,
-          temperature: 0.7, seedWasExplicit: true, repetitionPenalty: 1.1, repetitionContextSize: 32 };
-        const execution = binding.plan({ hasVision: false, hasAdapters: useAdapter, hasRepetitionPenalty: true,
-          userSeed: true, kvQuant: kv.scheme.kind !== "bf16" && kv.scheme.kind !== "turbo", turboQuant: kv.scheme.kind === "turbo",
-          hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
-        { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: true });
-        expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
-        const requests = outputs.map((tokens, row) => createOrdinaryContinuationRequest({
-          store, persistence, restore: entry => store.restore(entry, model), interval: 4, prompt,
-          options: { ...options, seed: 42 + row }, execution, identity: "same-B-fixture",
-          onToken(token) {
-            tokens.push(token);
-            if (interrupt && tokens.length === kv.interruptAt) {
-              if (row % 2 === 0) aborts[row]!.abort(new Error("interrupted request"));
-              else throw new Error("interrupted consumer");
-            }
-          },
-        }));
-        for (const [row, request] of requests.entries()) {
-          const enqueue = request.continuation.captureOwned;
-          request.continuation.captureOwned = state => {
-            const digest = new Bun.CryptoHasher("sha256");
-            const minimum = minimumReusableOffset(state.caches);
-            digest.update(JSON.stringify(state.caches.map(cache => ({ offset: cache.offset, minimum: cache.minimumReusableOffset ?? 0 }))));
-            if (kv.mode !== "bf16" && kv.start > 0) {
-              if (state.cacheTokens.length < kv.start) expect(minimum).toBe(0);
-              else expect(minimum).toBeGreaterThanOrEqual(kv.start);
-            }
-            for (const cache of state.caches) {
-              const lease = leaseCacheState(cache);
-              try { for (const plane of lease.borrow()) {
-                using exact = ops.contiguous(plane);
-                digest.update(JSON.stringify(plane.shape)); digest.update(exact.rawBytes());
-              } } finally { lease.close(); }
-            }
-            captured.set(`row-${row}:${state.generatedTokens}`, digest.digest("hex"));
-            enqueue(state);
-          };
-        }
+        const requests: ReturnType<typeof createOrdinaryContinuationRequest>[] = [];
         try {
+          binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 4,
+            checkpointPersistence: persistence, identity: "same-B-fixture", cloneState: cloneKvCaches,
+            adapterNamespace: ids => adapters.cacheNamespace(ids) });
+          const options = { ...kv.options, ...(useAdapter ? { adapters: ["upper"] } : {}), maxTokens: 16,
+            temperature: 0.7, seedWasExplicit: true, repetitionPenalty: 1.1, repetitionContextSize: 32 };
+          const execution = binding.plan({ hasVision: false, hasAdapters: useAdapter, hasRepetitionPenalty: true,
+            userSeed: true, kvQuant: kv.scheme.kind !== "bf16" && kv.scheme.kind !== "turbo", turboQuant: kv.scheme.kind === "turbo",
+            hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
+          { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: true });
+          expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+          for (const [row, tokens] of outputs.entries()) requests.push(createOrdinaryContinuationRequest({
+            store, persistence, restore: entry => store.restore(entry, model), interval: 4, prompt,
+            options: { ...options, seed: 42 + row }, execution, identity: "same-B-fixture",
+            onToken(token) {
+              tokens.push(token);
+              if (interrupt && tokens.length === kv.interruptAt) {
+                if (row % 2 === 0) aborts[row]!.abort(new Error("interrupted request"));
+                else throw new Error("interrupted consumer");
+              }
+            },
+          }));
+          for (const [row, request] of requests.entries()) {
+            const enqueue = request.continuation.captureOwned;
+            request.continuation.captureOwned = state => {
+              const digest = new Bun.CryptoHasher("sha256");
+              const minimum = minimumReusableOffset(state.caches);
+              digest.update(JSON.stringify(state.caches.map(cache => ({ offset: cache.offset, minimum: cache.minimumReusableOffset ?? 0 }))));
+              if (kv.mode !== "bf16" && kv.start > 0) {
+                if (state.cacheTokens.length < kv.start) expect(minimum).toBe(0);
+                else expect(minimum).toBeGreaterThanOrEqual(kv.start);
+              }
+              for (const cache of state.caches) {
+                const lease = leaseCacheState(cache);
+                try { for (const plane of lease.borrow()) {
+                  using exact = ops.contiguous(plane);
+                  digest.update(JSON.stringify(plane.shape)); digest.update(exact.rawBytes());
+                } } finally { lease.close(); }
+              }
+              captured.set(`row-${row}:${state.generatedTokens}`, digest.digest("hex"));
+              enqueue(state);
+            };
+          }
           const pending = requests.map((request, row) => group.submit({ ...request, promptIds: prompt,
             cacheNamespace: adapter ? namespace : `row-${row}`, context, signal: aborts[row]!.signal, compiledDecode: false, maxTokens: 16, eosTokenIds: [] }));
           held = false; group.kick();
@@ -118,8 +122,13 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           expect(activeContexts.every(ids => JSON.stringify(ids) === JSON.stringify(useAdapter ? ["upper"] : []))).toBe(true);
           return { outputs, captured };
         } finally {
-          await group.close(); contextGraph.mockRestore(); idle(); await persistence.flush();
-          requests.forEach(request => request.dispose()); prefix.clear(); clearCache();
+          for (const abort of aborts) abort.abort(new Error("continuation test cleanup"));
+          try { await group.close(); }
+          finally {
+            contextGraph.mockRestore(); idle();
+            try { await persistence.flush(); }
+            finally { requests.forEach(request => request.dispose()); prefix.clear(); clearCache(); }
+          }
           expect(model.loraState!.active).toEqual([]);
         }
       };
@@ -153,7 +162,10 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       expect(manager.list()).toEqual([]);
       expect(probe(["upper"])).toEqual(baseLogits!);
     }
-  } finally { if (adapter && manager.list().length) manager.unmount("upper"); weights.dispose(); clearCache(); rmSync(directory, { recursive: true, force: true }); }
+  } finally {
+    try { if (adapter && manager?.list().length) manager.unmount("upper"); }
+    finally { weights.dispose(); clearCache(); rmSync(directory, { recursive: true, force: true }); }
+  }
 }, 300_000);
 
 // Uses the same artifact/adapter opt-ins as continuation; a positive start is
@@ -166,20 +178,58 @@ test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START |
   const { AdapterManager } = await import("@mlx-bun/inference/adapters");
   const { bindMlxGateway, createRowSampling } = await import("@mlx-bun/inference/execution");
   const { makeStepSampler } = await import("@mlx-bun/inference/sampling");
-  const { leaseCacheState } = await import("@mlx-bun/inference/state");
+  const { leaseCacheState, isBatchableCache } = await import("@mlx-bun/inference/state");
   const ops = await import("@mlx-bun/mlx/ops");
-  const weights = await Weights.open(target!), model = createModel(weights, await loadModelConfig(target!));
-  const manager = new AdapterManager(model), prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
-  const kv = await continuationKv(prompt.length);
-  if (!["4", "8", "per-layer"].includes(kv.mode) || kv.start <= 0 || kv.start >= prompt.length + 16)
-    throw new Error("adapter lifecycle requires delayed affine conversion inside the generated sequence");
-  const binding = bindMlxGateway(model);
-  const hash = (array: import("@mlx-bun/mlx/array").MlxArray) => {
-    using exact = ops.contiguous(array);
-    return [array.shape, array.dtype, new Bun.CryptoHasher("sha256").update(exact.rawBytes()).digest("hex")];
-  };
+  const weights = await Weights.open(target!);
+  let manager: InstanceType<typeof AdapterManager> | undefined;
   try {
-    await manager.mount("upper", adapter!);
+    const model = createModel(weights, await loadModelConfig(target!));
+    manager = new AdapterManager(model);
+    const adapters = manager, prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
+    const kv = await continuationKv(prompt.length);
+    if (!["4", "8", "per-layer"].includes(kv.mode) || kv.start <= 0 || kv.start >= prompt.length + 16)
+      throw new Error("adapter lifecycle requires delayed affine conversion inside the generated sequence");
+    const binding = bindMlxGateway(model);
+    const hash = (array: import("@mlx-bun/mlx/array").MlxArray) => {
+      using exact = ops.contiguous(array);
+      return [array.shape, array.dtype, new Bun.CryptoHasher("sha256").update(exact.rawBytes()).digest("hex")];
+    };
+    const validCache = (cache: ReturnType<typeof model.makeCache>[number]): unknown => {
+      // Batchable codecs own row extraction: it removes padding and retains
+      // the original packed/scales/biases representation without dequantizing.
+      if (isBatchableCache(cache)) {
+        const rows: unknown[] = [];
+        expect(cache.batchSize).toBeGreaterThan(0);
+        for (let row = 0; row < cache.batchSize!; row++) {
+          const extracted = cache.extractRow(row);
+          try { rows.push(validCache(extracted)); } finally { extracted.dispose(); }
+        }
+        return rows;
+      }
+      const lease = leaseCacheState(cache);
+      try {
+        const planes = lease.borrow();
+        expect([2, 6]).toContain(planes.length);
+        const batch = planes[0]!.shape[0]!;
+        const port = cache as typeof cache & { ropeOffsetArr?: import("@mlx-bun/mlx/array").MlxArray; leftPadding?: number; minimumReusableOffset?: number };
+        // Ordinary full-KV mask wrappers expose logical row positions through
+        // their RoPE port; raw state() may still include alignment and capacity.
+        const positions = port.ropeOffsetArr ? [...port.ropeOffsetArr.toFloat32()] : Array(batch).fill(cache.offset);
+        expect(positions).toHaveLength(batch);
+        return positions.map((offset, row) => {
+          const start = port.leftPadding ?? cache.offset - offset, end = start + offset;
+          expect(Number.isSafeInteger(offset) && offset > 0 && start >= 0).toBe(true);
+          return { offset, minimum: port.minimumReusableOffset ?? 0, planes: planes.map(plane => {
+            expect(plane.shape).toHaveLength(4);
+            expect(plane.shape[0]).toBe(batch);
+            expect(plane.shape[2]!).toBeGreaterThanOrEqual(end);
+            using valid = plane.slice([row, 0, start, 0], [row + 1, plane.shape[1]!, end, plane.shape[3]!]);
+            return hash(valid);
+          }) };
+        });
+      } finally { lease.close(); }
+    };
+    await adapters.mount("upper", adapter!);
     const scenario = async (batch: number, cancel: boolean, baseOnly = false) => {
       let held = true, leased = false, joined = false, queuedBase = false;
       const group = binding.createBatchGroup({ maxBatch: batch, kvScheme: kv.scheme, admissionHeld: () => held,
@@ -192,57 +242,60 @@ test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START |
         }
       };
       const calls: unknown[] = [], widths: number[] = [], active: string[] = [], outputs: number[][] = [];
-      const jobs: Promise<{ status: string; error?: unknown }>[] = [], samplers: { dispose(): void }[] = [];
+      type JobResult = { status: "fulfilled"; stats: Awaited<ReturnType<typeof group.submit>> } | { status: "rejected"; error: unknown };
+      const jobs: Promise<JobResult>[] = [], samplers: { dispose(): void }[] = [];
       const aborts: AbortController[] = [];
-      const forward = model.forwardHidden.bind(model), project = model.logitsFromHidden.bind(model);
-      const context = () => model.loraState!.active.join(",");
-      const hidden = spyOn(model, "forwardHidden").mockImplementation((ids, caches) => {
-        const value = forward(ids, caches);
-        try {
-          const planes = caches.map(cache => {
-            const lease = leaseCacheState(cache);
-            try { return [cache.offset, ...lease.borrow().map(hash)]; } finally { lease.close(); }
-          });
-          calls.push(["forward", context(), hash(ids), planes]); widths.push(ids.shape[0]!); active.push(context());
-        } catch (error) { value.dispose(); throw error; }
-        return value;
-      });
-      const logits = spyOn(model, "logitsFromHidden").mockImplementation(value => {
-        const result = project(value);
-        try { calls.push(["logits", context(), hash(result)]); } catch (error) { result.dispose(); throw error; }
-        return result;
-      });
-      const enqueue = (row: number, adapted: boolean) => {
-        const tokens: number[] = []; outputs[row] = tokens;
-        const abort = new AbortController(); aborts.push(abort);
-        const ids = row === batch - 1 && adapted ? [...prompt, 42, 43] : prompt;
-        const options = { ...kv.options, maxTokens: row === 1 && !cancel ? 4 : 16, temperature: 0,
-          ...(adapted ? { adapters: ["upper"] } : {}) };
-        const execution = binding.plan({ hasVision: false, hasAdapters: adapted, hasRepetitionPenalty: false,
-          userSeed: false, kvQuant: true, turboQuant: false, hasLogitsExtras: false,
-          hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
-        { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: false });
-        expect(execution).toMatchObject({ mechanism: "continuous", method: "autoregressive", fill: false });
-        const sampling = createRowSampling(makeStepSampler(options, { tokenRepresentation: "device",
-          grammarWait: "external", historyUpdate: "after-sample", initialHistory: ids }), token => {
-          tokens.push(token);
-          if (adapted && row === 0 && tokens.length === 2 && !joined) {
-            joined = true; enqueue(batch - 1, true);
-            // Queue the incompatible context only after the joiner; it must
-            // wait until every adapter row (including the join) retires.
-            queuedBase = true; enqueue(batch, false);
-          }
-          if (adapted && cancel && row === 1 && tokens.length === 3) abort.abort(new Error("boundary cancellation"));
-        });
-        samplers.push(sampling);
-        jobs[row] = group.submit({ promptIds: ids, ...sampling, maxTokens: options.maxTokens, eosTokenIds: [],
-          context: adapted ? binding.bindAdapterContext!(["upper"], "upper") : undefined,
-          cacheNamespace: adapted ? manager.cacheNamespace(["upper"]) : "", signal: abort.signal,
-          onAdmitted() { expect(context()).toBe(adapted ? "upper" : ""); }, compiledDecode: false,
-        }).then(() => ({ status: "fulfilled" }), error => ({ status: "rejected", error }));
-      };
-      const timer = setTimeout(() => { for (const abort of aborts) abort.abort(new Error("adapter lifecycle deadline")); }, 120_000);
+      let hidden: { mockRestore(): void } | undefined, logits: { mockRestore(): void } | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
+        const forward = model.forwardHidden.bind(model), project = model.logitsFromHidden.bind(model);
+        const context = () => model.loraState!.active.join(",");
+        hidden = spyOn(model, "forwardHidden").mockImplementation((ids, caches) => {
+          const value = forward(ids, caches);
+          try {
+            const planes = caches.map(validCache);
+            calls.push(["forward", context(), hash(ids), planes]); widths.push(ids.shape[0]!); active.push(context());
+          } catch (error) { value.dispose(); throw error; }
+          return value;
+        });
+        logits = spyOn(model, "logitsFromHidden").mockImplementation(value => {
+          const result = project(value);
+          try { calls.push(["logits", context(), hash(result)]); } catch (error) { result.dispose(); throw error; }
+          return result;
+        });
+        const enqueue = (row: number, adapted: boolean) => {
+          const tokens: number[] = []; outputs[row] = tokens;
+          const abort = new AbortController(); aborts.push(abort);
+          const ids = row === batch - 1 && adapted ? [...prompt, 42, 43] : prompt;
+          const options = { ...kv.options, maxTokens: row === 1 && !cancel ? 4 : 16, temperature: 0,
+            ...(adapted ? { adapters: ["upper"] } : {}) };
+          const execution = binding.plan({ hasVision: false, hasAdapters: adapted, hasRepetitionPenalty: false,
+            userSeed: false, kvQuant: true, turboQuant: false, hasLogitsExtras: false,
+            hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
+          { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: false });
+          expect(execution).toMatchObject({ mechanism: "continuous", method: "autoregressive", fill: false });
+          const sampling = createRowSampling(makeStepSampler(options, { tokenRepresentation: "device",
+            grammarWait: "external", historyUpdate: "after-sample", initialHistory: ids }), token => {
+            tokens.push(token);
+            if (adapted && row === 0 && tokens.length === 2 && !joined) {
+              joined = true; enqueue(batch - 1, true);
+              // Queue the incompatible context only after the joiner; it must
+              // wait until every adapter row (including the join) retires.
+              expect(group.activeRows).toBeGreaterThan(0);
+              expect(context()).toBe("upper");
+              queuedBase = true; enqueue(batch, false);
+              expect(group.pendingRows).toBeGreaterThan(0);
+            }
+            if (adapted && cancel && row === 1 && tokens.length === 3) abort.abort(new Error("boundary cancellation"));
+          });
+          samplers.push(sampling);
+          jobs[row] = group.submit({ promptIds: ids, ...sampling, maxTokens: options.maxTokens, eosTokenIds: [],
+            context: adapted ? binding.bindAdapterContext!(["upper"], "upper") : undefined,
+            cacheNamespace: adapted ? adapters.cacheNamespace(["upper"]) : "", signal: abort.signal,
+            onAdmitted() { expect(context()).toBe(adapted ? "upper" : ""); }, compiledDecode: false,
+          }).then(stats => ({ status: "fulfilled", stats }), error => ({ status: "rejected", error }));
+        };
+        timer = setTimeout(() => { for (const abort of aborts) abort.abort(new Error("adapter lifecycle deadline")); }, 120_000);
         if (baseOnly) enqueue(batch, false);
         else for (let row = 0; row < batch - 1; row++) enqueue(row, true);
         held = false; group.kick();
@@ -260,21 +313,41 @@ test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START |
             expect(outputs[1]).toHaveLength(3);
           }
         }
-        for (const [index, result] of results.entries()) if (!cancel || index !== 1) expect(result.status).toBe("fulfilled");
+        for (const [row, output] of outputs.entries()) {
+          if (!output) continue;
+          const result = await jobs[row]!;
+          const expected = !baseOnly && row === 1 ? (cancel ? 3 : 4) : 16;
+          expect(output).toHaveLength(expected);
+          if (!baseOnly && cancel && row === 1) expect(result.status).toBe("rejected");
+          else {
+            expect(result.status).toBe("fulfilled");
+            if (result.status === "fulfilled") expect(result.stats).toMatchObject({ generatedTokens: expected, finishReason: "length" });
+          }
+        }
         await drained();
         expect(group.activeRows + group.pendingRows).toBe(0);
         const beforeReuse = calls.length, baseTokens = outputs[batch]!.slice();
         // Reuse the very same scheduler after complete drain.
-        enqueue(batch + 1, false); expect(await jobs[batch + 1]).toEqual({ status: "fulfilled" }); await drained();
+        enqueue(batch + 1, false);
+        expect(await jobs[batch + 1]).toMatchObject({ status: "fulfilled", stats: { generatedTokens: 16, finishReason: "length" } });
+        await drained();
+        expect(outputs[batch + 1]).toHaveLength(16);
         expect(outputs[batch + 1]).toEqual(baseTokens);
         const baseCalls = calls.slice(0, beforeReuse).filter(call => (call as unknown[])[1] === "");
         expect(calls.slice(beforeReuse)).toEqual(baseCalls);
         return { calls: calls.slice(0, beforeReuse), outputs, widths, active };
       } finally {
-        clearTimeout(timer); for (const abort of aborts) abort.abort(new Error("test cleanup"));
-        await group.close(); await Promise.all(jobs.filter(Boolean));
-        hidden.mockRestore(); logits.mockRestore(); samplers.forEach(sampler => sampler.dispose());
-        expect(model.loraState!.active).toEqual([]);
+        if (timer) clearTimeout(timer);
+        for (const abort of aborts) abort.abort(new Error("test cleanup"));
+        try { await group.close(); }
+        finally {
+          try { await Promise.all(jobs.filter(Boolean)); }
+          finally {
+            hidden?.mockRestore(); logits?.mockRestore();
+            try { for (const sampler of samplers) sampler.dispose(); }
+            finally { expect(model.loraState!.active).toEqual([]); }
+          }
+        }
       }
     };
     for (const batch of [2, 4]) {
@@ -288,7 +361,7 @@ test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START |
       const base = await scenario(batch, false, true);
       expect(cancelled.calls.filter(call => (call as unknown[])[1] === "")).toEqual(base.calls);
     }
-  } finally { if (manager.list().length) manager.unmount("upper"); weights.dispose(); }
+  } finally { try { if (manager?.list().length) manager.unmount("upper"); } finally { weights.dispose(); } }
 }, 900_000);
 
 /** Explicit parity matrix; defaults retain the original bf16 fixture. */
