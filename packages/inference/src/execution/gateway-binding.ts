@@ -68,9 +68,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // grammar-constrained and adapter requests, for plain-KV fill through the
   // shared fill binding, for shared generation continuation checkpoints, and
   // for two-model and n-gram drafts (below); plain-KV fill runs inside the request's adapter
-  // context like any other row. Adapter-bearing drafted requests ignore the
-  // draft and fill, as main did, and decode ordinarily. Encoded attention, other
-  // drafts, and adapter-free drafts with fill need their own evidence.
+  // context like any other row. Configured drafts ignore fill, as main did;
+  // adapter-bearing drafted requests also ignore the draft and decode ordinarily.
+  // Encoded attention and other draft providers remain unsupported.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
@@ -180,7 +180,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         ...scheduling,
         continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill ||
           (universalPlainKv && request.hasAdapters))) &&
-          !(plainSoftcap && request.hasDraft && (!softcapDraft || (!request.hasAdapters && !!options.fill))),
+          !(plainSoftcap && request.hasDraft && !softcapDraft),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
@@ -191,7 +191,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         sharedFill: !!fillRequests && !!options.fill,
-        sharedSpeculativeEcho: !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
+        // Main's softcap serial verifier ignored fill, including echo proposals.
+        sharedSpeculativeEcho: !plainSoftcap && !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         // As main's serial path did, logprobs keep a softcap request ordinary.
         speculativeLogprobs: scheduling.continuous && !!sharedMethod && !softcapDraft,
         // Main served softcap adapters ordinarily even when a draft was configured.
