@@ -86,32 +86,33 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // context like any other row. Configured drafts ignore fill, as main did;
   // adapter-bearing drafted requests also ignore the draft and decode ordinarily.
   // Encoded attention remains unsupported.
-  const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
+  // From the graph as bound (its attention layers), not the mutable descriptor.
+  const plainSoftcap = model instanceof UniversalDenseModel && model.encodedKvAttention === false;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
   const denoising = model instanceof DiffusionGemmaModel ? bindDenoisingGroupRequests(bindLegacyDenoisingModel(model)) : undefined;
   const tokenMethods = !plainSoftcap && !denoising;
-  // A universal descriptor without softcap, mask array or sliding layer type:
-  // makeCache gives every layer a plain KVCache, the layout delayed affine
-  // conversion supports. The scheme's per-layer cache guard still decides.
-  const universalPlainKv = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap === null &&
-    !model.args.maskArray && !model.args.layerTypes?.includes("sliding_attention");
-  // Delayed affine KV (plain rows convert once they pass quantizedKvStart) batches row by row for these families.
-  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model ||
-    model instanceof MiniCPM5Model || universalPlainKv };
-  const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
-    (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
-  // MiniCPM5's and plain universal delayed affine KV are qualified for ordinary
-  // continuous decoding only. Adapter requests ignore a configured draft and
-  // fill, as main did; actual delayed speculation and fill remain refused.
-  // Grammar jump falls back to ordinary masking. Generation checkpoints are
-  // qualified for both. Plain universal adapters use the same row context.
-  const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
-    (model instanceof MiniCPM5Model || universalPlainKv) && delayedAffine(options);
   // The graph's state operations, probed once when the binding is built and
   // released on every path. Only these facts are retained; planning never
   // allocates or touches a probe. Denoising rows keep private encoder state.
   const storage = denoising ? null : probeStorage(model, runtime.value("MLX_BUN_BATCH_SSM") !== "0");
+  // A graph whose bound attention reads encoded KV views (its own construction
+  // fact) and whose every cache layer, plain or rotating, converts row by row.
+  // The scheme's per-layer cache guard still decides.
+  const encodedKvRows = (model as { encodedKvAttention?: boolean }).encodedKvAttention === true &&
+    !!storage?.convertible.length && storage.convertible.every(Boolean);
+  // Delayed affine KV (rows convert once they pass quantizedKvStart) batches row by row.
+  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model ||
+    model instanceof MiniCPM5Model || encodedKvRows };
+  const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
+    (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
+  // MiniCPM5's and encoded-KV graphs' delayed affine KV are qualified for ordinary
+  // continuous decoding only. Adapter requests ignore a configured draft and
+  // fill, as main did; actual delayed speculation and fill remain refused.
+  // Grammar jump falls back to ordinary masking. Generation checkpoints are
+  // qualified for both. Their adapters use the same row context.
+  const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
+    (model instanceof MiniCPM5Model || encodedKvRows) && delayedAffine(options);
   const cachesBatchable = () => storage?.batchable ?? true;
   const supportsTargetRows = () => storage?.targetRows ?? false;
   // Grouped speculation needs batchable caches, row layouts for verification and
@@ -193,7 +194,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         // Paging is decided on the resolved plan, which never checkpoints a paged
         // row; an adapter row that bypasses paging checkpoints as main's serial path did.
-        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
+        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || encodedKvRows) && !!continuationServices?.checkpointPersistence &&
           (!request.hasDraft || ignoredAdapterDraft) && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,

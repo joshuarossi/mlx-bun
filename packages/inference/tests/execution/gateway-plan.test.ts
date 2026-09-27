@@ -39,7 +39,7 @@ function gemma4(): Gemma4Model {
 
 function softcapUniversal(): UniversalDenseModel {
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
-    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
+    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
     makeCache: () => [new KVCache()], loraState: { active: [] },
   });
@@ -217,7 +217,7 @@ function minicpm5(layers = 4): MiniCPM5Model {
 
 function dense(layers = 4): UniversalDenseModel {
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
-    args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null },
+    args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null }, encodedKvAttention: true,
     config: { modelType: "llama", text: { enableMoeBlock: false, numHiddenLayers: layers, layerTypes: Array(layers).fill("full_attention") }, eosTokenIds: [] },
     makeCache: () => Array.from({ length: layers }, () => new KVCache()), loraState: { active: [] },
   });
@@ -275,6 +275,8 @@ function universal(args: Record<string, unknown> = {}, layers = 4): UniversalDen
     numHiddenLayers: layers, ...args };
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: descriptor,
+    // The bound attention fact a constructed graph derives from this descriptor.
+    encodedKvAttention: descriptor.attnLogitSoftcap === null,
     makeCache: () => universalCacheWindows(descriptor as unknown as UniversalArgs)
       .map(window => window ? new RotatingKVCache(window) : new KVCache()),
     config: { modelType: descriptor.modelType, text: { enableMoeBlock: false, numHiddenLayers: layers,
@@ -283,23 +285,23 @@ function universal(args: Record<string, unknown> = {}, layers = 4): UniversalDen
   });
 }
 
-test("plain universal KV batches delayed affine KV for ordinary continuous decoding and its generation checkpoints", () => {
-  const model = universal();
-  expect(model.makeCache().every(cache => cache instanceof KVCache && !(cache instanceof RotatingKVCache))).toBe(true);
+// Graphs whose bound attention reads encoded KV and whose layers all convert,
+// plain or rotating, share one delayed-affine policy.
+const SLIDING = ["full_attention", "sliding_attention", "full_attention", "sliding_attention"];
+for (const [name, make] of [
+  ["plain", () => universal()],
+  ["mixed full/sliding", () => universal({ modelType: "llama", layerTypes: SLIDING, slidingWindow: 16 })],
+  ["mixed sliding/full", () => universal({ modelType: "llama", layerTypes: [...SLIDING].reverse(), slidingWindow: 16 })],
+  ["explicit mask, mixed", () => universal({ modelType: "llama", maskArray: true, layerTypes: SLIDING, slidingWindow: 16 })],
+] as [string, () => UniversalDenseModel][]) test(`${name} universal KV batches delayed affine KV for ordinary continuous decoding and its generation checkpoints`, () => {
+  const model = make();
+  expect(model.makeCache().some(cache => cache instanceof RotatingKVCache)).toBe(name !== "plain");
   const binding = bindMlxGateway(model, { provider: { grouped: {} } as never, numDraftTokens: 4 });
   const config = [{ layerIdx: 0, bits: 8, groupSize: 64 }, { layerIdx: 2, bits: 4, groupSize: 64 }];
   const delayedSchemes = [resolveKvScheme({ override: 4, quantizedKvStart: 8 }), resolveKvScheme({ override: 8, quantizedKvStart: 8 }),
     resolveKvScheme({ override: "config", config, quantizedKvStart: 8 })];
   for (const scheme of delayedSchemes) expect(binding.kvBatchable(scheme)).toBe(true);
-  // Descriptors whose layers are not all plain KV, or whose graph is not
-  // qualified, keep refusing a delayed start; immediate conversion is unchanged.
-  const sliding = universal({ modelType: "llama", layerTypes: ["full_attention", "sliding_attention", "full_attention", "sliding_attention"], slidingWindow: 16 });
-  expect(sliding.makeCache().some(cache => cache instanceof RotatingKVCache)).toBe(true);
-  for (const other of [sliding, universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 }),
-    universal({ modelType: "llama", maskArray: true })])
-    for (const scheme of delayedSchemes) expect({ other: other.args, batchable: bindMlxGateway(other).kvBatchable(scheme) })
-      .toEqual({ other: other.args, batchable: false });
-  expect(bindMlxGateway(universal({ modelType: "llama", maskArray: true })).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
+  expect(binding.kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
 
   binding.configureContinuation!({ checkpointPersistence: {} } as never);
   const kv = { ...shape, kvQuant: true }, scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
@@ -309,7 +311,7 @@ test("plain universal KV batches delayed affine KV for ordinary continuous decod
     expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
     expect(binding.plan({ ...kv, userSeed: true, hasRepetitionPenalty: true }, { ...delayed, seed: 3, repetitionPenalty: 1.1 }, scheduling))
       .toMatchObject({ mechanism: "continuous", checkpoint: true });
-    expect(bindMlxGateway(universal()).plan(kv, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
+    expect(bindMlxGateway(make()).plan(kv, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
     // Grammar and logprobs ride shared sampling, without checkpoints as for every family.
     for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }])
       expect(binding.plan({ ...kv, ...request }, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
@@ -666,6 +668,36 @@ test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
     }
   });
 
+test("delayed affine KV needs the graph's encoded-attention fact and convertible layers", () => {
+  const delayed = resolveKvScheme({ override: 4, quantizedKvStart: 64 });
+  const plan = (model: UniversalDenseModel) => bindMlxGateway(model).kvBatchable(delayed);
+  // Manual softcap attention reads plain arrays only.
+  expect(plan(universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 }))).toBe(false);
+  // A graph that does not state the fact is not assumed to read encoded KV.
+  const silent = universal(); delete (silent as { encodedKvAttention?: boolean }).encodedKvAttention;
+  expect(plan(silent)).toBe(false);
+  // A layer without an affine conversion keeps the whole graph off delayed batching.
+  const recurrent = universal(); recurrent.makeCache = () => [new KVCache(), new SSMCache(), new KVCache(), new KVCache()];
+  expect(plan(recurrent)).toBe(false);
+});
+
+test("gateway policy follows the graph as bound, not a later descriptor", () => {
+  const immediate = resolveKvScheme({ override: 4, quantizedKvStart: 0 }), delayed = resolveKvScheme({ override: 4, quantizedKvStart: 64 });
+  // Bound without softcap; the descriptor later claims one: still encoded KV, not a softcap graph.
+  const encoded = universal({ modelType: "llama", layerTypes: SLIDING, slidingWindow: 16 });
+  (encoded.args as { attnLogitSoftcap: number | null }).attnLogitSoftcap = 50;
+  const a = bindMlxGateway(encoded);
+  expect([a.kvBatchable(immediate), a.kvBatchable(delayed)]).toEqual([true, true]);
+  // Bound with softcap; the descriptor later drops it: still manual attention over plain KV only.
+  const softcap = universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 });
+  (softcap.args as { attnLogitSoftcap: number | null }).attnLogitSoftcap = null;
+  const b = bindMlxGateway(softcap);
+  expect([b.kvBatchable(immediate), b.kvBatchable(delayed), b.kvBatchable(new KvScheme("bf16", {}))]).toEqual([false, false, true]);
+  // Its token-method policy is the softcap graph's, whatever the descriptor now says.
+  const request = { ...shape, hasGrammar: true };
+  expect(bindMlxGateway(softcap).plan(request, {}, schedule)).toEqual(bindMlxGateway(softcapUniversal()).plan(request, {}, schedule));
+});
+
 const LAYERS = ["full_attention", "sliding_attention", "full_attention", "sliding_attention"];
 
 test("universal graphs batch and bind drafts through the operations their caches provide", () => {
@@ -705,7 +737,8 @@ test("storage is probed once per binding, released on every path and never touch
   for (let round = 0; round < 3; round++) {
     expect(binding.cachesBatchable()).toBe(true);
     expect(binding.kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
-    expect(binding.kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
+    // Encoded-KV attention with every layer convertible: a delayed start batches too.
+    expect(binding.kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(true);
     for (const request of [shape, { ...shape, hasDraft: true }, { ...shape, kvQuant: true }]) place(binding, request);
   }
   expect({ made, released: released.length }).toEqual({ made: 1, released: 4 });

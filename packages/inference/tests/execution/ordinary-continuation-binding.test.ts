@@ -51,7 +51,7 @@ test(`ordinary shared continuation binds ${name} through its loaded backend`, ()
 }
 
 test("Gemma2 softcap plans shared continuation for plain KV only, keeping every other exclusion", () => {
-  const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
+  const model = Object.assign(Object.create(UniversalDenseModel.prototype), { encodedKvAttention: false,
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
     makeCache: () => [new KVCache()], loraState: { active: [] },

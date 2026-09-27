@@ -233,7 +233,9 @@ inside generation; the new planner reports `fill-incompatible-with-request`
 and selects ordinary continuous decoding. This pair does not qualify B2 or
 cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
-delayed speculation, sliding descriptors and softcap encoded KV remain excluded. These checks do not cover cross-version checkpoint
+delayed speculation and softcap encoded KV remain excluded. Universal graphs
+with sliding layers now take the same ordinary delayed path when their bound
+attention reads encoded KV; the checks above cover plain-KV graphs only. These checks do not cover cross-version checkpoint
 files, hard-kill durability, an external oracle or performance.
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
