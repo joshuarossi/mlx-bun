@@ -2083,3 +2083,44 @@ XGrammar
 
 Copyright (c) 2024 by XGrammar Contributors
 ```
+
+### picojson in the XGrammar WASM
+
+The package's `lib/index.js` (sha256
+`803713906fb3e53483ab03f33244a64d8ed818820be9abe520e615754bfd3e24`) embeds XGrammar's
+Emscripten WASM build, which compiles picojson from `3rdparty/picojson/picojson.h` at the
+same commit (git blob `5dcd86840955115dcf7c3cb3c524a0a502938519`); the WASM retains
+picojson's type-check strings. Below, that header's lines 1-27 (sha256
+`52a7da16781b4b899382c9ddfcf059235cdee73e2f45cfd7402c2ae9a2e9d28d`). The notices of the
+Emscripten runtime linked into the same WASM are not reproduced: upstream built with the
+SDK's `latest` release, so the exact runtime version is unknown.
+
+```text
+/*
+ * Copyright 2009-2010 Cybozu Labs, Inc.
+ * Copyright 2011-2014 Kazuho Oku
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+```
