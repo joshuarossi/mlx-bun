@@ -1441,12 +1441,15 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       async close() { try { await group.close(); expect(group.activeRows + group.pendingRows).toBe(0); } finally { f.dispose(); } } };
   };
   const A = [2, 4, 7, 9, 3], B = [5, 8];
-  /** Every projection's complete logits, in order. */
+  /** Every projection's complete logits, in order: shape, dtype and bytes, so
+   * matching geometry is asserted along with the values. */
   const projections = (env: Awaited<ReturnType<typeof setup>>) => {
-    const seen: string[] = [], project = env.model.logitsFromHidden.bind(env.model);
+    const seen: { shape: number[]; dtype: string; sha256: string }[] = [], project = env.model.logitsFromHidden.bind(env.model);
     env.model.logitsFromHidden = (hidden: MlxArray) => {
       const logits = project(hidden);
-      seen.push(createHash("sha256").update(logits.rawBytes()).digest("hex")); return logits;
+      seen.push({ shape: [...logits.shape], dtype: logits.dtypeName,
+        sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
+      return logits;
     };
     return seen;
   };
@@ -1536,16 +1539,29 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     const plain = await setup(null);
     try {
       const soloA = await plain.submit(A, 8);
+      // The boundary flush reads A's last token before the next build, so A leaves
+      // the batch there however it ends: the geometry of A leaving by budget.
+      // A plain group can keep a row whose consumer cancelled during its last
+      // token callback in one more batched forward (#emit checks the signal on the
+      // next token), so each case's same-ending control checks tokens and outcomes,
+      // and the budget control checks every projection.
+      const geometry = await setup(null, { pipeline: false }), gl = projections(geometry);
+      try {
+        expect(await geometry.together([A, 3], [B, 5]))
+          .toEqual([{ tokens: soloA.tokens.slice(0, 3), outcome: "length" }, expect.anything()]);
+      } finally { await geometry.close(); }
       for (const [maxTokens, end, outcome] of [[8, { stopAfter: 3 }, "stop"], [8, { cancelAfter: 3 }, "AbortError"], [3, {}, "length"]] as const) {
         const control = await setup(null, { pipeline: false }), delayed = await setup(7);
         try {
-          const pl = projections(control), dl = projections(delayed);
+          const dl = projections(delayed);
           const [left, peer] = await control.together([A, maxTokens, end], [B, 5]);
           const [a, b] = await delayed.together([A, maxTokens, end], [B, 5]);
+          // The last plain token is published once, with no extra publication, and
+          // the row ends by its own reason (a cancellation keeps its AbortError).
           expect(a, outcome).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome });
           expect(left, outcome).toEqual(a);
           expect(b, outcome).toEqual(peer);
-          expect(dl, outcome).toEqual(pl);
+          expect(dl, outcome).toEqual(gl);
         } finally { await control.close(); await delayed.close(); }
       }
     } finally { await plain.close(); }
