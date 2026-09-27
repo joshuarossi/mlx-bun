@@ -101,8 +101,11 @@ window. The [DiffusionGemma window test](tests/parity/diffusion-gemma-window.tes
 takes `MLX_BUN_TEST_DIFFUSION_WINDOW_MODEL`, `MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE`
 (a directory holding `manifest.json` and raw tensors, produced outside this
 repository) and `MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE_SHA256`; the manifest pins
-the inputs, artifact files, producing runtime and every tensor. Each of these tests
-skips only when none of its settings is present.
+the inputs, artifact files, producing runtime and every tensor. The artifact, inputs,
+geometry and reference tensors are verified before native libraries load; the
+producing runtime (MLX version, GPU architecture) is checked right after the native
+import, and each produced tensor's shape and dtype before its bytes. Each of these
+tests skips only when none of its settings is present.
 
 
 ### Repeatable runtime comparison

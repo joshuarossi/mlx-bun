@@ -6,7 +6,10 @@
 // selection through the source position. Both runs must agree on every forward
 // (rows, IDs), projection, token and each row's valid state before every decode
 // forward; in late joins, each merged row's state must equal its own solo (B1)
-// state at the same offset. Compiled decode is off so every step is observed.
+// state at the same offset. Every recorded K and V must have the head count and
+// dimension the config fixes for its layer, the config's dtype and the expected
+// width; projections must be finite [1, 1, vocab] rows of the dtype a one-token
+// probe produces. Compiled decode is off so every step is observed.
 // Opt in with
 //   MLX_BUN_TEST_ROTATING_JOIN_MODEL=/model/snapshot (a Gemma4 artifact with sliding layers)
 // and optionally, for a custom graph over a Llama-family artifact's unchanged
@@ -39,11 +42,23 @@ function optIn(env: Record<string, string | undefined>) {
   const raw = JSON.parse(readFileSync(join(model, "config.json"), "utf8")), t = raw.text_config ?? raw;
   if (window !== undefined) {
     assert(["llama", "mistral"].includes(raw.model_type), `a custom window needs a Llama-family artifact, not ${raw.model_type}`);
-    return { model, custom: descriptorFor(t.num_hidden_layers, Number(window)), window: Number(window), vocab: t.vocab_size as number };
+    return { model, custom: descriptorFor(t.num_hidden_layers, Number(window)), window: Number(window), vocab: t.vocab_size as number,
+      kv: kvGeometryFor(raw, "universal") };
   }
   assert(String(raw.model_type).startsWith("gemma4") && t.sliding_window > 0 && (t.layer_types ?? []).includes("sliding_attention"),
     "a published artifact must be Gemma4 with sliding layers");
-  return { model, custom: null, window: t.sliding_window as number, vocab: t.vocab_size as number };
+  return { model, custom: null, window: t.sliding_window as number, vocab: t.vocab_size as number, kv: kvGeometryFor(raw, "gemma4") };
+}
+/** K/V heads, head dimension and dtype per layer kind, as the family's attention
+ * derives them from the config (Gemma4: global dimension and, with k = v, global
+ * heads on full layers; Universal: the same on every layer). */
+export function kvGeometryFor(raw: Record<string, any>, family: "gemma4" | "universal") {
+  const t = raw.text_config ?? raw, dtype = t.dtype ?? raw.torch_dtype ?? t.torch_dtype;
+  assert(typeof dtype === "string" && dtype, "the config does not state its dtype");
+  const heads = t.num_key_value_heads as number, dim = (t.head_dim ?? Math.floor(t.hidden_size / t.num_attention_heads)) as number;
+  if (family === "universal") return { dtype, rotating: { heads, dim }, full: { heads, dim } };
+  return { dtype, rotating: { heads, dim },
+    full: { heads: t.attention_k_eq_v ? (t.num_global_key_value_heads ?? heads) : heads, dim: (t.global_head_dim ?? dim) as number } };
 }
 interface Scenario { name: string; mode: "b1" | "late" | "initial"; rows: string[]; tailSplit: 0 | 1; budgets: number[] }
 /** Prompts around the window, and the scenarios. */
@@ -60,12 +75,18 @@ export function planFor(window: number, vocab: number) {
 }
 
 // ---- report checks (pure; no native libraries) ----------------------------------------------
-export interface Layer { kind: "rotating" | "full"; offset: number; shape: number[]; dtype: string; keys: string; values: string }
+export interface Tensor { shape: number[]; dtype: string; sha: string }
+export interface Layer { kind: "rotating" | "full"; offset: number; keys: Tensor; values: Tensor }
+export interface Projection { shape: number[]; dtype: string; sha: string; finite: boolean }
 export interface Forward { B: number; L: number; labels: string[]; ids: number[][]; states: { offset: number; layers: Layer[] }[] | null;
-  projections: { sha: string; finite: boolean; width: number }[] }
+  projections: Projection[] }
+export interface Pins { layers: ("rotating" | "full")[]; window: number; vocab: number; projectionDtype: string;
+  kv: { dtype: string; rotating: { heads: number; dim: number }; full: { heads: number; dim: number } } }
 export interface Run { forwards: Forward[]; tokens: Record<string, number[]>; finish: Record<string, string>; joinedAfter: number | null }
 /** Attribution, budgets and state completeness of one run against its scenario. */
-export function checkRun(run: Run, scenario: Scenario, prompts: Record<string, number[]>, pins: { layers: ("rotating" | "full")[]; window: number; vocab: number }) {
+export function checkRun(run: Run, scenario: Scenario, prompts: Record<string, number[]>, pins: Pins) {
+  const tensorOk = (x: Tensor, shape: number[], dtype: string) =>
+    JSON.stringify(x?.shape) === JSON.stringify(shape) && x.dtype === dtype && /^[0-9a-f]{64}$/.test(x.sha);
   const cursor: Record<string, number> = {}, projected: Record<string, number> = {};
   scenario.rows.forEach((row, i) => {
     assert.equal(run.finish[row], "length", `${row} finished ${run.finish[row]}`);
@@ -86,7 +107,7 @@ export function checkRun(run: Run, scenario: Scenario, prompts: Record<string, n
     if (f.projections.length) {
       assert.equal(f.projections.length, f.B, `${at}: ${f.projections.length} projected rows for B=${f.B}`);
       f.projections.forEach((p, r) => {
-        assert(p.finite && /^[0-9a-f]{64}$/.test(p.sha) && p.width === pins.vocab, `${at}: projection ${r} invalid`);
+        assert(p.finite && tensorOk(p, [1, 1, pins.vocab], pins.projectionDtype), `${at}: projection ${r} invalid ${JSON.stringify(p).slice(0, 120)}`);
         projected[f.labels[r]!] = (projected[f.labels[r]!] ?? 0) + 1;
       });
     }
@@ -96,9 +117,10 @@ export function checkRun(run: Run, scenario: Scenario, prompts: Record<string, n
       assert.equal(state.offset, before[f.labels[r]!], `${at}: row ${r} state offset ${state.offset}, expected ${before[f.labels[r]!]}`);
       assert.equal(state.layers.length, pins.layers.length, `${at}: row ${r} state has ${state.layers.length} layers, the graph has ${pins.layers.length}`);
       state.layers.forEach((layer, j) => {
-        const width = layer.kind === "rotating" ? Math.min(layer.offset, pins.window) : layer.offset;
-        assert(layer.kind === pins.layers[j] && layer.offset === state.offset && layer.shape.length === 4 && layer.shape[2] === width &&
-          layer.dtype.length > 0 && /^[0-9a-f]{64}$/.test(layer.keys) && /^[0-9a-f]{64}$/.test(layer.values), `${at}: row ${r} layer ${j} invalid`);
+        const kind = pins.layers[j]!, { heads, dim } = pins.kv[kind];
+        const shape = [1, heads, kind === "rotating" ? Math.min(state.offset, pins.window) : state.offset, dim];
+        assert(layer.kind === kind && layer.offset === state.offset && tensorOk(layer.keys, shape, pins.kv.dtype) &&
+          tensorOk(layer.values, shape, pins.kv.dtype), `${at}: row ${r} layer ${j} invalid ${JSON.stringify(layer).slice(0, 160)}`);
       });
     }
   });
@@ -130,38 +152,45 @@ test.skipIf(!inputs)("rotating rows keep their newest window through late joins 
   const { rotatingSourcePosition } = await import("../../src/state/rotating-kv-layout");
   const { plainRowStorage, temporalStorageView } = await import("../../src/state/batched-row-storage");
   const hash = (a: MlxArray) => { const c = ops.contiguous(a); try { return sha256(new Uint8Array(c.rawBytes())); } finally { c.dispose(); } };
-  /** A serial rotating cache's newest min(offset, window) rows, through the source position. */
-  const newest = (c: InstanceType<typeof RotatingKVCache>): [MlxArray, MlxArray] => {
+  const tensor = (a: MlxArray): Tensor => ({ shape: [...a.shape], dtype: a.dtypeName, sha: hash(a) });
+  /** A serial rotating cache's newest min(offset, window) rows, through the source
+   * position; each view is handed to `own` as soon as it exists. */
+  const newest = (c: InstanceType<typeof RotatingKVCache>, own: (a: MlxArray) => MlxArray): [MlxArray, MlxArray] => {
     const state = rotatingSourcePosition(c), valid = Math.min(c.offset, c.maxSize);
     const range = { from: Math.max(0, state.activeLength - valid), to: state.activeLength };
-    return [temporalStorageView(plainRowStorage, c.keys!, state, range), temporalStorageView(plainRowStorage, c.values!, state, range)];
+    const keys = own(temporalStorageView(plainRowStorage, c.keys!, state, range));
+    return [keys, own(temporalStorageView(plainRowStorage, c.values!, state, range))];
   };
-  const layer = (kind: "rotating" | "full", offset: number, k: MlxArray, v: MlxArray): Layer =>
-    ({ kind, offset, shape: [...k.shape], dtype: k.dtypeName, keys: hash(k), values: hash(v) });
-  /** Every row's valid state, read through public state only. */
+  /** Every row's valid state, read through public state only. Views made for a
+   * layer are released before the next layer, even when a read throws. */
   const rowStates = (caches: Cache[], B: number) => {
     const rows = Array.from({ length: B }, () => ({ offset: -1, layers: [] as Layer[] }));
     const batched = caches.find(c => c instanceof BatchedRotatingCache) as InstanceType<typeof BatchedRotatingCache> | undefined;
     for (const c of caches) {
-      if (c instanceof RotatingKVCache) {
-        assert.equal(B, 1, "serial rotating cache in a multi-row forward");
-        const [k, v] = newest(c); try { rows[0]!.layers.push(layer("rotating", c.offset, k, v)); } finally { releaseAll([() => k.dispose(), () => v.dispose()]); }
-      } else if (c instanceof BatchedRotatingCache) {
-        for (let r = 0; r < B; r++) {
-          const e = c.extractRow(r)!, [k, v] = newest(e);
-          try { rows[r]!.layers.push(layer("rotating", c.offsetArr[r]!, k, v)); } finally { releaseAll([() => k.dispose(), () => v.dispose(), () => e.dispose()]); }
+      const owned: (() => void)[] = [];
+      const own = <T extends { dispose(): void }>(a: T): T => { owned.push(() => a.dispose()); return a; };
+      try {
+        if (c instanceof RotatingKVCache) {
+          assert.equal(B, 1, "serial rotating cache in a multi-row forward");
+          const [k, v] = newest(c, own);
+          rows[0]!.layers.push({ kind: "rotating", offset: c.offset, keys: tensor(k), values: tensor(v) });
+        } else if (c instanceof BatchedRotatingCache) {
+          for (let r = 0; r < B; r++) {
+            const [k, v] = newest(own(c.extractRow(r)!), own);
+            rows[r]!.layers.push({ kind: "rotating", offset: c.offsetArr[r]!, keys: tensor(k), values: tensor(v) });
+          }
+        } else {
+          // Full layers: rows are right-aligned in the batched buffer; each holds its own offset.
+          assert(c instanceof KVCache || c instanceof BatchedDecodeMaskCache, `unsupported cache ${c.signature()}`);
+          const [keys, values] = c.state(), width = c.offset;
+          for (let r = 0; r < B; r++) {
+            const valid = B === 1 ? width : batched!.offsetArr[r]!;
+            const cut = (a: MlxArray) => own(a.slice([r, 0, width - valid, 0], [r + 1, a.shape[1]!, width, a.shape[3]!]));
+            const k = cut(keys!), v = cut(values!);
+            rows[r]!.layers.push({ kind: "full", offset: valid, keys: tensor(k), values: tensor(v) });
+          }
         }
-      } else {
-        // Full layers: rows are right-aligned in the batched buffer; each holds its own offset.
-        assert(c instanceof KVCache || c instanceof BatchedDecodeMaskCache, `unsupported cache ${c.signature()}`);
-        const [keys, values] = c.state(), width = c.offset;
-        for (let r = 0; r < B; r++) {
-          const valid = B === 1 ? width : batched!.offsetArr[r]!;
-          const cut = (a: MlxArray) => a.slice([r, 0, width - valid, 0], [r + 1, a.shape[1]!, width, a.shape[3]!]);
-          const k = cut(keys!), v = cut(values!);
-          try { rows[r]!.layers.push(layer("full", valid, k, v)); } finally { releaseAll([() => k.dispose(), () => v.dispose()]); }
-        }
-      }
+      } finally { releaseAll(owned.reverse()); }
     }
     for (const row of rows) row.offset = row.layers[0]!.offset;
     return rows;
@@ -182,11 +211,18 @@ test.skipIf(!inputs)("rotating rows keep their newest window through late joins 
       const args = (model as unknown as { args: { layerTypes: string[]; slidingWindow: number } }).args;
       expect({ layerTypes: args.layerTypes, slidingWindow: args.slidingWindow }).toEqual(custom);
     }
-    const probe = model.makeCache();
-    const kinds = probe.map(c => c instanceof RotatingKVCache ? "rotating" as const : "full" as const);
-    releaseAll(probe.map(c => () => c.dispose()));
-    const pins = { layers: kinds, window, vocab };
     const { prompts, scenarios } = planFor(window, vocab);
+    // Layer kinds from the graph's caches; the projection dtype from a one-token probe.
+    const probe = model.makeCache();
+    let kinds: ("rotating" | "full")[], projectionDtype: string;
+    try {
+      kinds = probe.map(c => c instanceof RotatingKVCache ? "rotating" as const : "full" as const);
+      using ids = ops.fromInt32([prompts.A![0]!], [1, 1]);
+      using h = model.forwardHidden(ids, probe);
+      using logits = model.logitsFromHidden(h);
+      projectionDtype = logits.dtypeName;
+    } finally { releaseAll(probe.map(c => () => c.dispose())); }
+    const pins: Pins = { layers: kinds, window, vocab, projectionDtype, kv: inputs!.kv };
     const run = async (scenario: Scenario): Promise<Run> => {
       const forwards: Forward[] = [], labelsOf = new WeakMap<object, string[]>(), assigned = new Set<string>(), admitted = new Set<string>();
       const finished = new Set<string>(), tokens: Record<string, number[]> = Object.fromEntries(scenario.rows.map(r => [r, []]));
@@ -216,14 +252,17 @@ test.skipIf(!inputs)("rotating rows keep their newest window through late joins 
         return forwardHidden.call(this, ids, caches);
       };
       model.logitsFromHidden = function (this: typeof model, hidden: MlxArray) {
-        const out = logitsFromHidden.call(this, hidden), [B, L, V] = out.shape as [number, number, number];
-        assert(current && current.B === B, "a projection without its forward");
-        for (let r = 0; r < B; r++) {
-          using row = out.slice([r, L - 1, 0], [r + 1, L, V]);
-          current.projections.push({ sha: hash(row), finite: [...row.toFloat32()].every(Number.isFinite), width: V });
-        }
-        current = null;
-        return out;
+        const out = logitsFromHidden.call(this, hidden);
+        try {
+          const [B, L, V] = out.shape as [number, number, number];
+          assert(current && current.B === B, "a projection without its forward");
+          for (let r = 0; r < B; r++) {
+            using row = out.slice([r, L - 1, 0], [r + 1, L, V]);
+            current.projections.push({ shape: [...row.shape], dtype: row.dtypeName, sha: hash(row), finite: [...row.toFloat32()].every(Number.isFinite) });
+          }
+          current = null;
+          return out;
+        } catch (error) { out.dispose(); throw error; }
       };
       const runtime = createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: String(scenario.tailSplit), MLX_BUN_COMPILED_DECODE: "0" });
       const group = bindMlxGateway(model).createBatchGroup({ maxBatch: scenario.mode === "b1" ? 1 : 2, prefillChunkSize: 2048, runtime });
@@ -246,7 +285,12 @@ test.skipIf(!inputs)("rotating rows keep their newest window through late joins 
       } finally { model.forwardHidden = forwardHidden; model.logitsFromHidden = logitsFromHidden; await group.close(); }
       return { forwards, tokens, finish, joinedAfter };
     };
-    const independent = function (this: InstanceType<typeof RotatingKVCache>) { return newest(this); };
+    // The caller owns the returned views; a failed read releases what it made.
+    const independent = function (this: InstanceType<typeof RotatingKVCache>) {
+      const made: MlxArray[] = [];
+      try { return newest(this, a => { made.push(a); return a; }); }
+      catch (error) { releaseAll(made.map(a => () => a.dispose())); throw error; }
+    };
     const b1: Record<string, Run> = {};
     for (const scenario of scenarios) {
       const plain = await run(scenario);
@@ -290,14 +334,28 @@ test("a custom descriptor is one value source; the plan brackets the window (CPU
   expect(scenarios.filter(s => s.mode !== "b1").every(s => scenarios.some(b => b.mode === "b1" && b.rows[0] === s.rows[1] && b.tailSplit === s.tailSplit))).toBe(true);
 });
 
+test("K/V geometry follows each family's attention (CPU only)", () => {
+  const gemma = { model_type: "gemma4", text_config: { num_key_value_heads: 2, head_dim: 256, global_head_dim: 512, attention_k_eq_v: false,
+    num_global_key_value_heads: 4, dtype: "bfloat16", hidden_size: 2560, num_attention_heads: 8 } };
+  expect(kvGeometryFor(gemma, "gemma4")).toEqual({ dtype: "bfloat16", rotating: { heads: 2, dim: 256 }, full: { heads: 2, dim: 512 } });
+  expect(kvGeometryFor({ ...gemma, text_config: { ...gemma.text_config, attention_k_eq_v: true } }, "gemma4").full).toEqual({ heads: 4, dim: 512 });
+  const llama = { model_type: "llama", torch_dtype: "bfloat16", num_key_value_heads: 8, hidden_size: 3072, num_attention_heads: 24 };
+  expect(kvGeometryFor(llama, "universal")).toEqual({ dtype: "bfloat16", rotating: { heads: 8, dim: 128 }, full: { heads: 8, dim: 128 } });
+  expect(() => kvGeometryFor({ ...llama, torch_dtype: undefined }, "universal")).toThrow("does not state its dtype");
+});
+
 test("the run check rejects misattributed, incomplete or malformed records (CPU only)", () => {
-  const prompts = { A: [10, 11, 12], B: [20, 21] }, pins = { layers: ["rotating", "full"] as ("rotating" | "full")[], window: 2, vocab: 5 };
+  const prompts = { A: [10, 11, 12], B: [20, 21] };
+  const pins: Pins = { layers: ["rotating", "full"], window: 2, vocab: 5, projectionDtype: "bfloat16",
+    kv: { dtype: "bfloat16", rotating: { heads: 1, dim: 2 }, full: { heads: 1, dim: 4 } } };
   const scenario: Scenario = { name: "late A+B", mode: "late", rows: ["A", "B"], tailSplit: 0, budgets: [3, 2] };
   const h = (c: string) => c.repeat(64);
-  const state = (offset: number) => ({ offset, layers: [{ kind: "rotating" as const, offset, shape: [1, 1, Math.min(offset, 2), 2], dtype: "bfloat16", keys: h("a"), values: h("b") },
-    { kind: "full" as const, offset, shape: [1, 1, offset, 2], dtype: "bfloat16", keys: h("c"), values: h("d") }] });
-  const p = () => ({ sha: h("e"), finite: true, width: 5 });
-  // A: prompt 3 then tokens 1,2,3; B joins after A's first token: prompt 2 then tokens 4,5 (+1 extra step).
+  const kv = (shape: number[], c: string): Tensor => ({ shape, dtype: "bfloat16", sha: h(c) });
+  const state = (offset: number) => ({ offset, layers: [
+    { kind: "rotating" as const, offset, keys: kv([1, 1, Math.min(offset, 2), 2], "a"), values: kv([1, 1, Math.min(offset, 2), 2], "b") },
+    { kind: "full" as const, offset, keys: kv([1, 1, offset, 4], "c"), values: kv([1, 1, offset, 4], "d") }] });
+  const p = (): Projection => ({ shape: [1, 1, 5], dtype: "bfloat16", sha: h("e"), finite: true });
+  // A: prompt 3 then tokens 1,2,3; B joins: prompt 2 then tokens 4,5 (+1 extra step).
   const valid = (): Run => ({ tokens: { A: [1, 2, 3], B: [4, 5] }, finish: { A: "length", B: "length" }, joinedAfter: JOIN_AFTER, forwards: [
     { B: 1, L: 3, labels: ["A"], ids: [[10, 11, 12]], states: null, projections: [p()] },
     { B: 1, L: 2, labels: ["B"], ids: [[20, 21]], states: null, projections: [p()] },
@@ -306,16 +364,23 @@ test("the run check rejects misattributed, incomplete or malformed records (CPU 
   ] });
   expect(() => checkRun(valid(), scenario, prompts, pins)).not.toThrow();
   const rejects = (change: (r: Run) => void, message: string) => { const r = valid(); change(r); expect(() => checkRun(r, scenario, prompts, pins)).toThrow(message); };
+  const layer = (r: Run, f: number, row: number, j: number) => r.forwards[f]!.states![row]!.layers[j]!;
   rejects(r => { r.forwards[2]!.labels.reverse(); }, "does not continue its history");
   rejects(r => { r.forwards[3]!.ids[0] = [9]; }, "does not continue its history");
   rejects(r => { r.forwards.pop(); }, "positions");
   rejects(r => { r.forwards[2]!.projections.pop(); }, "projected rows for B=2");
   rejects(r => { r.forwards[2]!.states = null; }, "decode forward without every row's state");
   rejects(r => { for (const s of r.forwards[3]!.states!) s.layers.pop(); }, "state has 1 layers, the graph has 2");
-  rejects(r => { r.forwards[3]!.states![0]!.layers[0]!.shape[2] = 3; }, "layer 0 invalid");
-  rejects(r => { r.forwards[3]!.states![1]!.layers[1]!.kind = "rotating"; }, "layer 1 invalid");
+  rejects(r => { layer(r, 3, 0, 0).keys.shape[2] = 3; }, "layer 0 invalid");
+  rejects(r => { layer(r, 3, 1, 1).kind = "rotating"; }, "layer 1 invalid");
+  // Equal-byte reshapes, other dtypes, and V metadata that disagrees with K.
+  rejects(r => { layer(r, 2, 0, 1).keys.shape = [1, 2, 3, 2]; }, "layer 1 invalid");
+  rejects(r => { layer(r, 2, 1, 0).keys.dtype = "float16"; }, "layer 0 invalid");
+  rejects(r => { layer(r, 3, 0, 1).values.shape = [1, 1, 4, 2]; }, "layer 1 invalid");
+  rejects(r => { layer(r, 3, 1, 0).values.dtype = "float32"; }, "layer 0 invalid");
   rejects(r => { r.forwards[2]!.projections[0]!.finite = false; }, "projection 0 invalid");
-  rejects(r => { r.forwards[2]!.projections[1]!.width = 4; }, "projection 1 invalid");
+  rejects(r => { r.forwards[2]!.projections[1]!.shape = [1, 5]; }, "projection 1 invalid");
+  rejects(r => { r.forwards[3]!.projections[0]!.dtype = "float32"; }, "projection 0 invalid");
   rejects(r => { r.tokens.B!.pop(); }, "B emitted 1, budget 2");
   rejects(r => { r.finish.A = "stop"; }, "A finished stop");
   rejects(r => { r.joinedAfter = 1; }, "the join happened after 1 tokens");

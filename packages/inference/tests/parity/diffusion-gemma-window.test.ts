@@ -9,8 +9,11 @@
 //   MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE=/reference/dir (manifest.json + raw tensors)
 //   MLX_BUN_TEST_DIFFUSION_WINDOW_REFERENCE_SHA256=<manifest SHA-256>
 // None set skips; any other combination fails. The manifest pins the inputs,
-// the artifact files, the producing runtime and every raw tensor; all of it is
-// verified before native libraries load.
+// the artifact files, the producing runtime and every raw tensor. The artifact,
+// inputs, geometry and every reference tensor are verified before native
+// libraries load; the runtime identity (MLX version, GPU architecture) is checked
+// right after the native import, before the model loads. Every produced tensor's
+// shape and dtype are checked against the pinned geometry before its bytes.
 import { expect, test } from "bun:test";
 import { strict as assert } from "node:assert";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -83,22 +86,28 @@ async function verifyInputs(inputs: { model: string; reference: string; manifest
     const sliding = g.types[i] === "sliding_attention", { heads, dim } = sliding ? g.sliding : g.full;
     assert(l.layer === i && l.type === g.types[i] && l.offset === prompt, `layer ${i}: ${l.type} offset ${l.offset}, config ${g.types[i]} at ${prompt}`);
     const shape = [1, heads, sliding ? g.window - 1 : prompt, dim];
-    return { keys: read(l.keys, `layer ${i} keys`, shape, "bfloat16"), values: read(l.values, `layer ${i} values`, shape, "bfloat16") };
+    return { shape, keys: read(l.keys, `layer ${i} keys`, shape, "bfloat16"), values: read(l.values, `layer ${i} values`, shape, "bfloat16") };
   });
-  const logits = read(manifest.logits, "logits", [1, g.canvas, g.vocab], "float32");
-  return { manifest, geometry: g, layers, logits };
+  const logitsShape = [1, g.canvas, g.vocab];
+  const logits = read(manifest.logits, "logits", logitsShape, "float32");
+  return { manifest, geometry: g, layers, logits, logitsShape };
 }
 
-/** Identical bytes, and finite values on the produced side (the reference side was checked). */
-function compareBytes(what: string, actual: Uint8Array, expected: Uint8Array, dtype: "bfloat16" | "float32") {
-  assert(floatValues(actual, dtype).every(Number.isFinite), `${what}: non-finite value`);
-  assert(Buffer.from(actual).equals(Buffer.from(expected)), `${what}: differs from the reference`);
+type Produced = { shape: number[]; dtype: string; bytes: Uint8Array };
+/** A produced tensor passes only with the pinned shape and dtype, the matching
+ * extent, finite values and the reference's exact bytes (checked in that order). */
+function compareProduced(what: string, produced: Produced, expected: Uint8Array, shape: number[], dtype: "bfloat16" | "float32") {
+  assert.deepEqual(produced.shape, shape, `${what}: produced shape ${JSON.stringify(produced.shape)}, pinned ${JSON.stringify(shape)}`);
+  assert.equal(dtypeName(produced.dtype), dtype, `${what}: produced dtype ${produced.dtype}, pinned ${dtype}`);
+  assert.equal(produced.bytes.byteLength, shape.reduce((a, b) => a * b, 1) * (dtype === "float32" ? 4 : 2), `${what}: produced extent differs from its shape`);
+  assert(floatValues(produced.bytes, dtype).every(Number.isFinite), `${what}: non-finite value`);
+  assert(Buffer.from(produced.bytes).equals(Buffer.from(expected)), `${what}: differs from the reference`);
 }
 
 const inputs = optIn(Bun.env);
 
 test.skipIf(!inputs)("DiffusionGemma past the window: selected encoder K/V and first-pass logits match the external reference", async () => {
-  const { manifest, geometry, layers, logits: expectedLogits } = await verifyInputs(inputs!);
+  const { manifest, geometry, layers, logits: expectedLogits, logitsShape } = await verifyInputs(inputs!);
   const ffi = await import("@mlx-bun/mlx/ffi");
   assert(ffi.MLX_VERSION === manifest.runtime.mlx && ffi.deviceArchitecture() === manifest.runtime.architecture,
     `reference/runtime mismatch: the reference was produced with MLX ${manifest.runtime.mlx} on ${manifest.runtime.architecture}, ` +
@@ -106,7 +115,10 @@ test.skipIf(!inputs)("DiffusionGemma past the window: selected encoder K/V and f
   const ops = await import("@mlx-bun/mlx/ops");
   const { MlxArray } = await import("@mlx-bun/mlx/array");
   const { loadModelConfig, Weights, createModel } = await import("@mlx-bun/inference");
-  const raw = (a: MlxArray) => { const c = ops.contiguous(a); try { return new Uint8Array(c.rawBytes()); } finally { c.dispose(); } };
+  const produced = (a: MlxArray): Produced => {
+    const c = ops.contiguous(a);
+    try { return { shape: [...c.shape], dtype: c.dtypeName, bytes: new Uint8Array(c.rawBytes()) }; } finally { c.dispose(); }
+  };
   const weights = await Weights.open(inputs!.model);
   let cache: Cache[] = [];
   try {
@@ -114,22 +126,26 @@ test.skipIf(!inputs)("DiffusionGemma past the window: selected encoder K/V and f
     cache = model.prefill(manifest.inputs.prompt);
     expect(cache).toHaveLength(geometry.layers);
     cache.forEach((c, i) => {
-      // The decoder's selection: the newest window - 1 encoder positions on sliding layers.
-      const views = (c as RotatingKVCache | KVCache).temporalView().map(a => {
-        if (geometry.types[i] !== "sliding_attention") return a;
-        const length = a.shape[2]!, keep = geometry.window - 1;
-        const cut = a.slice([0, 0, length - keep, 0], a.shape); a.dispose(); return cut;
-      });
+      // The decoder's selection: the newest window - 1 encoder positions on sliding
+      // layers. Every view acquired here, original or cut, is released below.
+      const owned: MlxArray[] = [...(c as RotatingKVCache | KVCache).temporalView()];
       try {
-        compareBytes(`layer ${i} keys`, raw(views[0]!), layers[i]!.keys, "bfloat16");
-        compareBytes(`layer ${i} values`, raw(views[1]!), layers[i]!.values, "bfloat16");
-      } finally { releaseAll(views.map(a => () => a.dispose())); }
+        const [keys, values] = owned.slice(0, 2).map(a => {
+          if (geometry.types[i] !== "sliding_attention") return a;
+          const length = a.shape[2]!, keep = geometry.window - 1;
+          const cut = a.slice([0, 0, length - keep, 0], a.shape);
+          owned.push(cut);
+          return cut;
+        }) as [MlxArray, MlxArray];
+        compareProduced(`layer ${i} keys`, produced(keys), layers[i]!.keys, layers[i]!.shape, "bfloat16");
+        compareProduced(`layer ${i} values`, produced(values), layers[i]!.values, layers[i]!.shape, "bfloat16");
+      } finally { releaseAll(owned.map(a => () => a.dispose())); }
     });
     const canvas = MlxArray.fromInt32(Int32Array.from(manifest.inputs.canvas), [1, manifest.inputs.canvas.length]);
     let logits: MlxArray | null = null;
     try {
       logits = model.decoderLogits(canvas, cache, null);
-      compareBytes("logits", raw(logits), expectedLogits, "float32");
+      compareProduced("logits", produced(logits), expectedLogits, logitsShape, "float32");
     } finally { releaseAll([() => canvas.dispose(), () => logits?.dispose()]); }
   } finally {
     // Caches, then weights, then the shard mappings Weights.dispose leaves mapped.
@@ -215,9 +231,15 @@ test("incomplete, altered or mismatched references fail before any native load (
   await rejects(s => { s.manifest.runtime.architecture = ""; }, "runtime identity missing");
 });
 
-test("produced tensors pass only as finite, identical bytes (CPU only)", () => {
+test("produced tensors pass only with pinned shape and dtype, finite values and identical bytes (CPU only)", () => {
   const f32 = (...xs: number[]) => new Uint8Array(new Float32Array(xs).buffer);
-  compareBytes("x", f32(1, 2), f32(1, 2), "float32");
-  expect(() => compareBytes("x", f32(1, Number.NaN), f32(1, Number.NaN), "float32")).toThrow("non-finite");
-  expect(() => compareBytes("x", f32(1, 0), f32(1, -0), "float32")).toThrow("differs from the reference");
+  const out = (bytes: Uint8Array, shape = [1, 2], dtype = "float32"): Produced => ({ shape, dtype, bytes });
+  compareProduced("x", out(f32(1, 2)), f32(1, 2), [1, 2], "float32");
+  // Equal bytes do not excuse a reshape or a different dtype.
+  expect(() => compareProduced("x", out(f32(1, 2), [2, 1]), f32(1, 2), [1, 2], "float32")).toThrow("x: produced shape [2,1], pinned [1,2]");
+  expect(() => compareProduced("x", out(f32(1, 2), [1, 2], "float16"), f32(1, 2), [1, 2], "float32")).toThrow("x: produced dtype float16, pinned float32");
+  expect(() => compareProduced("k", out(new Uint8Array(4), [1, 2], "bfloat16"), new Uint8Array(4), [1, 2], "float32")).toThrow("produced dtype bfloat16");
+  expect(() => compareProduced("x", out(f32(1, 2, 3)), f32(1, 2, 3), [1, 2], "float32")).toThrow("produced extent differs");
+  expect(() => compareProduced("x", out(f32(1, Number.NaN)), f32(1, Number.NaN), [1, 2], "float32")).toThrow("non-finite");
+  expect(() => compareProduced("x", out(f32(1, 0)), f32(1, -0), [1, 2], "float32")).toThrow("differs from the reference");
 });

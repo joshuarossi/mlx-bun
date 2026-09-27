@@ -1,12 +1,14 @@
 // Gemma4 assistant drafter against a real target's donor caches, past the
 // sliding window. The target's plain rotating and full caches go through a
-// prefill longer than the window, a multi-token verify block, a rollback and a
-// decode. At each state the donor reader's attention (plain, and affine after
-// conversion) and the deterministic draft chain (greedy, no RNG) fed by it must
-// equal the same computations over donor rows selected independently of
-// temporalView, byte for byte, with finite values and in-vocabulary tokens.
-// This checks donor selection only; it is not an external oracle comparison and
-// makes no claim about stochastic target verification. Opt in with both of
+// prefill of N tokens (longer than the window), a 4-token verify block, a
+// rollback of 2 and a decode; the donors must hold exactly N, N+4, N+2 and N+3
+// positions at those states. At each state the donor reader's attention (plain,
+// and affine after conversion) and the deterministic draft chain (greedy, no
+// RNG) fed by it must equal the same computations over donor rows selected
+// independently of temporalView: same shape and dtype, finite, identical bytes,
+// in-vocabulary tokens. This checks donor selection only; it is not an external
+// oracle comparison and makes no claim about stochastic target verification.
+// Opt in with both of
 //   MLX_BUN_TEST_ASSISTANT_TARGET=/gemma4/target/snapshot
 //   MLX_BUN_TEST_ASSISTANT_DRAFT=/gemma4/assistant/snapshot
 // None set skips; any other combination fails.
@@ -45,6 +47,16 @@ function promptFor(window: number, vocab: number): number[] {
   const next = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0);
   return [2, ...Array.from({ length: window + Math.ceil(window / 3) - 1 }, () => 1000 + next() % (vocab - 2000))];
 }
+/** The scripted states and the positions each donor must then hold. */
+const STATES = (n: number) => [[`prefill ${n}`, n], ["verify block 4", n + 4], ["rollback 2", n + 2], ["decode 1", n + 3]] as const;
+/** Both donors hold the scripted positions, and the reader sees the expected widths. */
+function assertDonorOffsets(state: string, got: { sliding: number; full: number; slidingWidth: number; fullWidth: number },
+  expected: number, window: number) {
+  assert(got.sliding === expected && got.full === expected,
+    `${state}: donors hold ${got.sliding}/${got.full} positions, the script expects ${expected}`);
+  assert(got.slidingWidth === Math.min(expected, window) && got.fullWidth === expected,
+    `${state}: donor views ${got.slidingWidth}/${got.fullWidth} wide, expected ${Math.min(expected, window)}/${expected}`);
+}
 
 const inputs = optIn(Bun.env);
 
@@ -63,17 +75,20 @@ test.skipIf(!inputs)("Gemma4 assistant: donor attention and draft chains equal i
   const assistant = await import("../../src/models/gemma4/assistant");
   const { quantizedSdpa } = await import("../../src/layers/quantized-attention");
   type Triple = Ops.QuantizedTensor;
+  type Rows = MlxArray | Triple;
+  const release = (x: Rows) => { if ("packed" in x) releaseAll([() => x.packed.dispose(), () => x.scales.dispose(), () => x.biases.dispose()]); else x.dispose(); };
   const bytes = (a: MlxArray) => { const c = ops.contiguous(a); try { return Buffer.from(c.rawBytes()); } finally { c.dispose(); } };
+  /** Same pinned shape, same dtype, finite values, identical bytes. */
   const expectSame = (what: string, got: MlxArray, want: MlxArray, shape: number[]) => {
-    expect({ what, shape: got.shape }).toEqual({ what, shape });
-    expect({ what, shape: want.shape }).toEqual({ what, shape });
+    expect({ what, got: [got.shape, got.dtypeName], want: [want.shape, want.dtypeName] })
+      .toEqual({ what, got: [shape, want.dtypeName], want: [shape, got.dtypeName] });
     expect({ what, finite: [...got.toFloat32()].every(Number.isFinite) && [...want.toFloat32()].every(Number.isFinite) }).toEqual({ what, finite: true });
     expect({ what, equal: bytes(got).equals(bytes(want)) }).toEqual({ what, equal: true });
   };
 
   const config = await loadModelConfig(inputs!.target);
   const weights = await Weights.open(inputs!.target);
-  const owned: (() => void)[] = [];
+  const held: (() => void)[] = [];
   let drafter: GemmaAssistantDrafter | null = null, caches: Cache[] = [];
   try {
     const model = createModel(weights, config) as unknown as {
@@ -89,53 +104,76 @@ test.skipIf(!inputs)("Gemma4 assistant: donor attention and draft chains equal i
     const greedy = (h: MlxArray) => { using logits = model.logitsFromHidden(h); using arg = ops.argmaxAxis(logits, -1); return arg.toIntTokens()[0]!; };
     const forward = (ids: number[]) => { using x = ops.fromInt32(ids, [1, ids.length]); return model.forwardHidden(x, caches); };
     const at = (h: MlxArray, i: number) => h.slice([0, i, 0], [1, i + 1, h.shape[2]!]);
-    /** Donor rows chosen independently of temporalView: the newest positions, or every full position. */
-    const select = (c: Cache, sliding: boolean, quantized: boolean): [MlxArray | Triple, MlxArray | Triple] => {
+    /** Donor rows chosen independently of temporalView, each registered as it is made. */
+    const select = (c: Cache, sliding: boolean, quantized: boolean, own: (x: Rows) => void): [Rows, Rows] => {
       const cache = c as unknown as { keys: never; values: never; offset: number; maxSize: number };
+      const rows: Rows[] = [];
+      const add = (x: Rows) => { own(x); rows.push(x); };
       if (sliding) {
         const state = rotatingSourcePosition(c as never), valid = Math.min(cache.offset, cache.maxSize);
         const range = { from: Math.max(0, state.activeLength - valid), to: state.activeLength };
         const storage = (quantized ? quantizedRowStorage : plainRowStorage) as typeof plainRowStorage;
-        return [temporalStorageView(storage, cache.keys, state, range), temporalStorageView(storage, cache.values, state, range)];
+        add(temporalStorageView(storage, cache.keys, state, range)); add(temporalStorageView(storage, cache.values, state, range));
+      } else {
+        const cut = (a: MlxArray) => a.slice([0, 0, 0, 0], [a.shape[0]!, a.shape[1]!, cache.offset, a.shape[3]!]);
+        for (const source of [cache.keys, cache.values] as (MlxArray | Triple)[]) {
+          if (!("packed" in source)) { add(cut(source)); continue; }
+          const parts: MlxArray[] = [];
+          try { for (const part of [source.packed, source.scales, source.biases]) parts.push(cut(part)); }
+          catch (error) { releaseAll(parts.map(p => () => p.dispose())); throw error; }
+          add({ packed: parts[0]!, scales: parts[1]!, biases: parts[2]! });
+        }
       }
-      const cut = (a: MlxArray) => a.slice([0, 0, 0, 0], [a.shape[0]!, a.shape[1]!, cache.offset, a.shape[3]!]);
-      const cutTriple = (q: Triple) => ({ packed: cut(q.packed), scales: cut(q.scales), biases: cut(q.biases) });
-      return quantized ? [cutTriple(cache.keys), cutTriple(cache.values)] : [cut(cache.keys), cut(cache.values)];
+      return rows as [Rows, Rows];
     };
-    const release = (x: MlxArray | Triple) => { if ("packed" in x) { x.packed.dispose(); x.scales.dispose(); x.biases.dispose(); } else x.dispose(); };
     let seed = 12345;
     const query = (D: number, dtype: MlxArray["dtype"]) => {
       const data = Float32Array.from({ length: t.numAttentionHeads * D }, () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 2 ** 32) * 2 - 1);
       using f = MlxArray.fromFloat32(data, [1, t.numAttentionHeads, 1, D]);
       return f.astype(dtype);
     };
-    const chain = (shared: Parameters<NonNullable<typeof drafter>["forwardRows"]>[2], anchor: MlxArray, pending: number, position: number) => {
+    /** One deterministic draft chain. Partial output is released if a step throws. */
+    const chain = (shared: Parameters<GemmaAssistantDrafter["forwardRows"]>[2], anchor: MlxArray, pending: number, position: number) => {
       const steps: { token: number; hidden: MlxArray }[] = [];
       let token = pending, hidden = anchor;
-      for (let k = 0; k < STEPS; k++) {
-        using e = embed(token);
-        const step = drafter!.forwardRows(e, hidden, shared, position + k);
-        token = step.tokens.toIntTokens()[0]!; step.tokens.dispose();
-        steps.push({ token, hidden: step.nextHidden }); hidden = step.nextHidden;
-      }
-      return steps;
+      try {
+        for (let k = 0; k < STEPS; k++) {
+          using e = embed(token);
+          const step = drafter!.forwardRows(e, hidden, shared, position + k);
+          const entry = { token: -1, hidden: step.nextHidden };
+          steps.push(entry); // owned before the tokens are read or released
+          try { entry.token = step.tokens.toIntTokens()[0]!; } finally { step.tokens.dispose(); }
+          token = entry.token; hidden = step.nextHidden;
+        }
+        return steps;
+      } catch (error) { releaseAll(steps.map(s => () => s.hidden.dispose())); throw error; }
     };
-    const check = (state: string, anchor: MlxArray, pending: number) => {
-      const position = caches[fullAt]!.offset - 1;
+    const check = (state: string, expected: number, anchor: MlxArray, pending: number) => {
+      const position = expected - 1;
       for (const quantized of [false, true]) {
-        const label = `${state} ${quantized ? "affine" : "plain"}`;
-        const pair = quantized ? cloneKvCaches([caches[slidingAt]!, caches[fullAt]!]).map(c => (c as KVCache).toQuantized(GROUP, BITS) as unknown as Cache)
-          : [caches[slidingAt]!, caches[fullAt]!];
-        const reader = readAssistantDonors(pair[0]!, pair[1]!);
-        const selected = [select(pair[0]!, true, quantized), select(pair[1]!, false, quantized)];
-        const chains: { token: number; hidden: MlxArray }[][] = [];
+        const label = `${state} ${quantized ? "affine" : "plain"}`, owned: (() => void)[] = [];
+        const own = (x: Rows) => { owned.push(() => release(x)); };
         try {
+          let pair: Cache[] = [caches[slidingAt]!, caches[fullAt]!];
+          if (quantized) {
+            const clones = cloneKvCaches(pair), converted: Cache[] = [];
+            owned.push(() => releaseAll(clones.map(c => () => c.dispose())));
+            for (const clone of clones) {
+              const q = (clone as KVCache).toQuantized(GROUP, BITS) as unknown as Cache;
+              converted.push(q); owned.push(() => q.dispose());
+            }
+            pair = converted;
+          }
+          const views: ReturnType<typeof captureKvDonorAttention>[] = [];
+          for (const c of pair) { const view = captureKvDonorAttention(c); owned.push(() => view.dispose()); views.push(view); }
+          assertDonorOffsets(label, { sliding: pair[0]!.offset, full: pair[1]!.offset, slidingWidth: views[0]!.width, fullWidth: views[1]!.width }, expected, window);
+          const reader = readAssistantDonors(pair[0]!, pair[1]!);
+          owned.push(() => reader.dispose());
+          const selected = [select(pair[0]!, true, quantized, own), select(pair[1]!, false, quantized, own)];
           // Donor attention, layer by layer.
           for (const [index, layer] of (["sliding", "full"] as const).entries()) {
-            const cache = pair[index]!, width = layer === "sliding" ? Math.min(cache.offset, window) : cache.offset;
-            const view = captureKvDonorAttention(cache);
-            try { expect({ label, layer, width: view.width }).toEqual({ label, layer, width }); } finally { view.dispose(); }
             const [k, v] = selected[index]!, keys = ("packed" in k ? k.scales : k) as MlxArray;
+            const width = layer === "sliding" ? Math.min(expected, window) : expected;
             const D = "packed" in k ? k.packed.shape[3]! * 32 / BITS : k.shape[3]!;
             expect({ label, layer, selected: keys.shape[2] }).toEqual({ label, layer, selected: width });
             using q = query(D, keys.dtype);
@@ -144,39 +182,36 @@ test.skipIf(!inputs)("Gemma4 assistant: donor attention and draft chains equal i
               : ops.sdpa(q, k, v as MlxArray, D ** -0.5, "", null);
             expectSame(`${label} ${layer} attention`, got, want, [1, t.numAttentionHeads, 1, D]);
           }
-          // The deterministic draft chain, fed each way.
-          const bind = ([k, v]: (MlxArray | Triple)[]) => ({ attend: (q: MlxArray, scale: number) =>
+          // The deterministic draft chain, fed each way; each chain is owned before the next runs.
+          const bind = ([k, v]: Rows[]) => ({ attend: (q: MlxArray, scale: number) =>
             quantizedSdpa(q, k as Triple, v as Triple, scale, { mode: "", arr: null }, GROUP, BITS) });
           const independent = quantized ? { sliding: bind(selected[0]!), full: bind(selected[1]!) }
             : assistant.plainAssistantDonors({ sliding: selected[0] as [MlxArray, MlxArray], full: selected[1] as [MlxArray, MlxArray] }, position);
-          chains.push(chain(reader, anchor, pending, position), chain(independent, anchor, pending, position));
-          chains[0]!.forEach((got, i) => {
-            const want = chains[1]![i]!;
-            expect({ label, step: i, token: got.token, inVocabulary: got.token >= 0 && got.token < vocab })
-              .toEqual({ label, step: i, token: want.token, inVocabulary: true });
-            expectSame(`${label} chain step ${i}`, got.hidden, want.hidden, [1, 1, hidden]);
+          const got = chain(reader, anchor, pending, position);
+          owned.push(() => releaseAll(got.map(s => () => s.hidden.dispose())));
+          const want = chain(independent, anchor, pending, position);
+          owned.push(() => releaseAll(want.map(s => () => s.hidden.dispose())));
+          got.forEach((step, i) => {
+            expect({ label, step: i, token: step.token, inVocabulary: step.token >= 0 && step.token < vocab })
+              .toEqual({ label, step: i, token: want[i]!.token, inVocabulary: true });
+            expectSame(`${label} chain step ${i}`, step.hidden, want[i]!.hidden, [1, 1, hidden]);
           });
-        } finally {
-          releaseAll([() => reader.dispose(), ...selected.flat().map(x => () => release(x)),
-            ...chains.flat().map(s => () => s.hidden.dispose()), ...(quantized ? pair.map(c => () => c.dispose()) : [])]);
-        }
+        } finally { releaseAll(owned.reverse()); }
       }
     };
-    const prompt = promptFor(window, vocab);
-    let h = forward(prompt), anchor = at(h, prompt.length - 1); h.dispose();
-    owned.push(() => anchor.dispose());
-    check(`prefill ${prompt.length}`, anchor, greedy(anchor));
-    const block = forward([greedy(anchor), 5002, 5003, 5004]);
-    owned.push(() => block.dispose());
-    const blockAnchor = at(block, 3); owned.push(() => blockAnchor.dispose());
-    check("verify block 4", blockAnchor, greedy(blockAnchor));
+    const prompt = promptFor(window, vocab), [prefill, verify, rollback, decode] = STATES(prompt.length);
+    const hold = (a: MlxArray) => { held.push(() => a.dispose()); return a; };
+    const h = hold(forward(prompt)), anchor = hold(at(h, prompt.length - 1));
+    check(prefill[0], prefill[1], anchor, greedy(anchor));
+    const block = hold(forward([greedy(anchor), 5002, 5003, 5004])), blockAnchor = hold(at(block, 3));
+    check(verify[0], verify[1], blockAnchor, greedy(blockAnchor));
     for (const c of caches) { if (c instanceof RotatingKVCache) c.trim(2, true); else c.trim(2); }
-    const kept = at(block, 1); owned.push(() => kept.dispose());
-    check("rollback 2", kept, greedy(kept));
-    h = forward([greedy(kept)]); const decoded = at(h, 0); h.dispose(); owned.push(() => decoded.dispose());
-    check("decode 1", decoded, greedy(decoded));
+    const kept = hold(at(block, 1));
+    check(rollback[0], rollback[1], kept, greedy(kept));
+    const next = hold(forward([greedy(kept)])), decoded = hold(at(next, 0));
+    check(decode[0], decode[1], decoded, greedy(decoded));
   } finally {
-    try { releaseAll([...owned, ...caches.map(c => () => c.dispose()), () => drafter?.dispose()]); } finally {
+    try { releaseAll([...held, ...caches.map(c => () => c.dispose()), () => drafter?.dispose()]); } finally {
       try { weights.dispose(); } finally { releaseAll([...weights.shards.files.values()].map(file => () => file.mmap.unmap())); }
     }
   }
@@ -195,4 +230,15 @@ test("the prompt is deterministic, in vocabulary, and longer than the window (CP
   expect(prompt).toEqual(promptFor(512, 262_144));
   expect(prompt.length).toBeGreaterThan(512);
   expect(prompt.every(id => Number.isInteger(id) && id >= 0 && id < 262_144)).toBe(true);
+});
+
+test("donors must hold the scripted positions: a missing or wrong rollback fails (CPU only)", () => {
+  const n = 683, window = 512, [, verify, rollback] = STATES(n);
+  expect(STATES(n).map(([, offset]) => offset)).toEqual([n, n + 4, n + 2, n + 3]);
+  const at = (offset: number) => ({ sliding: offset, full: offset, slidingWidth: Math.min(offset, window), fullWidth: offset });
+  assertDonorOffsets(rollback[0], at(rollback[1]), rollback[1], window);
+  // A rollback that did nothing leaves the verify block's positions.
+  expect(() => assertDonorOffsets(rollback[0], at(verify[1]), rollback[1], window)).toThrow("donors hold 687/687 positions, the script expects 685");
+  expect(() => assertDonorOffsets(rollback[0], { ...at(rollback[1]), full: rollback[1] + 1 }, rollback[1], window)).toThrow("685/686");
+  expect(() => assertDonorOffsets(rollback[0], { ...at(rollback[1]), slidingWidth: 513 }, rollback[1], window)).toThrow("donor views 513/685 wide");
 });
