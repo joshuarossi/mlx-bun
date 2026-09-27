@@ -68,8 +68,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // grammar-constrained and adapter requests, for plain-KV fill through the
   // shared fill binding, for shared generation continuation checkpoints, and
   // for two-model and n-gram drafts (below); plain-KV fill runs inside the request's adapter
-  // context like any other row. Encoded attention, other drafts, and drafts
-  // with adapters or fill need their own evidence.
+  // context like any other row. Adapter-bearing drafted requests ignore the
+  // draft and fill, as main did, and decode ordinarily. Encoded attention, other
+  // drafts, and adapter-free drafts with fill need their own evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
@@ -179,7 +180,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         ...scheduling,
         continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill ||
           (universalPlainKv && request.hasAdapters))) &&
-          !(plainSoftcap && request.hasDraft && (!softcapDraft || request.hasAdapters || !!options.fill)),
+          !(plainSoftcap && request.hasDraft && (!softcapDraft || (!request.hasAdapters && !!options.fill))),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
@@ -193,7 +194,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         sharedSpeculativeEcho: !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         // As main's serial path did, logprobs keep a softcap request ordinary.
         speculativeLogprobs: scheduling.continuous && !!sharedMethod && !softcapDraft,
-        sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
+        // Main served softcap adapters ordinarily even when a draft was configured.
+        sharedSpeculativeAdapters: !plainSoftcap && scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
         turboQuantBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
