@@ -533,40 +533,44 @@ describe.skipIf(!native)("Universal forward ownership", () => {
 
   test("throwing destructors never release an array twice and never leak the survivor", () => {
     const f = mixedFixture([S, F, S, F], true), model = f.make();
-    // A mask destructor fails after every layer ran: the last hidden state is still released.
-    let caches = model.makeCache();
     try {
-      counting(count => {
-        const seen = instrument(model);
-        let failing: MlxArray | null = null;
-        caches[1]!.makeMask = (length: number) => {
-          const arr = failing = createCausalMask(length, 0, null), release = arr.dispose.bind(arr);
-          arr.dispose = () => { release(); throw new Error("mask release failed"); };
-          return { mode: "array", arr };
-        };
-        using ids = tokens();
-        expect(() => model.forwardHidden(ids, caches)).toThrow("mask release failed");
-        for (const array of [...seen.hidden, ...[...seen.masks].filter(mask => mask !== failing)]) expect(count(array)).toBe(1);
-      });
-    } finally { dispose(caches); }
-    // The last hidden state's destructor fails after the final norm: the result is released.
-    caches = model.makeCache();
-    try {
-      counting(count => {
-        const layers = model.layers, last = layers[layers.length - 1]!, forward = last.forward.bind(last);
-        let normalized: MlxArray | null = null;
-        last.forward = ((x: MlxArray, mask: Mask, cache: Cache) => {
-          const out = forward(x, mask, cache), release = out.dispose.bind(out);
-          out.dispose = () => { release(); throw new Error("hidden release failed"); };
-          return out;
-        }) as never;
-        const norm = model.finalNorm.forward.bind(model.finalNorm);
-        model.finalNorm.forward = ((x: MlxArray) => normalized = norm(x)) as never;
-        using ids = tokens();
-        expect(() => model.forwardHidden(ids, caches)).toThrow("hidden release failed");
-        expect(count(normalized!)).toBe(1);
-      });
-    } finally { dispose(caches); f.dispose(); }
+      // A mask destructor fails after every layer ran: it is not retried and the last hidden state is still released.
+      let caches = model.makeCache();
+      try {
+        counting(count => {
+          const seen = instrument(model);
+          let failing: MlxArray | null = null;
+          caches[1]!.makeMask = (length: number) => {
+            const arr = failing = createCausalMask(length, 0, null), release = arr.dispose.bind(arr);
+            arr.dispose = () => { release(); throw new Error("mask release failed"); };
+            return { mode: "array", arr };
+          };
+          using ids = tokens();
+          expect(() => model.forwardHidden(ids, caches)).toThrow("mask release failed");
+          expect(failing).not.toBeNull();
+          for (const array of [...seen.hidden, ...seen.masks]) expect(count(array)).toBe(1);
+          expect(count(failing!)).toBe(1);
+        });
+      } finally { dispose(caches); }
+      // The last hidden state's destructor fails after the final norm: the result is released.
+      caches = model.makeCache();
+      try {
+        counting(count => {
+          const layers = model.layers, last = layers[layers.length - 1]!, forward = last.forward.bind(last);
+          let normalized: MlxArray | null = null;
+          last.forward = ((x: MlxArray, mask: Mask, cache: Cache) => {
+            const out = forward(x, mask, cache), release = out.dispose.bind(out);
+            out.dispose = () => { release(); throw new Error("hidden release failed"); };
+            return out;
+          }) as never;
+          const norm = model.finalNorm.forward.bind(model.finalNorm);
+          model.finalNorm.forward = ((x: MlxArray) => normalized = norm(x)) as never;
+          using ids = tokens();
+          expect(() => model.forwardHidden(ids, caches)).toThrow("hidden release failed");
+          expect(count(normalized!)).toBe(1);
+        });
+      } finally { dispose(caches); }
+    } finally { f.dispose(); }
   });
 });
 
