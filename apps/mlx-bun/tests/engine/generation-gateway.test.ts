@@ -230,7 +230,7 @@ test("exclusive mutations share the scheduler lock and release aborted waiters",
 
 // Importing the real graph/binding loads MLX, even though placement creates no
 // tensors. Keep this qualification check out of the native-blocked CPU suite.
-test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, grammar and adapter requests and rejects unqualified shared compositions before execution", async () => {
+test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, grammar, adapter and plain fill requests and rejects unqualified shared compositions before execution", async () => {
   const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
@@ -259,7 +259,11 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
       expect(() => gateway.place({ ...shape(), ...request })).toThrow(UnsupportedExecutionError);
     expect(() => gateway.place({ ...shape(), hasAdapters: true }, { pagedKv: {} })).toThrow(UnsupportedExecutionError);
     expect(() => gateway.place(shape(), { pagedKv: {} })).toThrow(UnsupportedExecutionError);
-    expect(() => gateway.place(shape(), { fill: { plan: {} } } as GenerateOptions)).toThrow(UnsupportedExecutionError);
+    const fill = { fill: { plan: { echo: null } } } as GenerateOptions;
+    expect(gateway.place(shape(), fill)).toMatchObject({ mechanism: "continuous",
+      execution: { method: "autoregressive", compiledDecode: false, fill: true, checkpoint: false } });
+    for (const request of [{ hasAdapters: true }, { kvQuant: true }, { turboQuant: true }, { hasDraft: true }])
+      expect(() => gateway.place({ ...shape(), ...request }, fill)).toThrow(UnsupportedExecutionError);
     // Even a caller advertising generic encoded support cannot qualify this graph.
     expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
       { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("unsupported");

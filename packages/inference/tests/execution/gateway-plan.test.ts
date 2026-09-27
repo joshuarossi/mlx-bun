@@ -9,6 +9,7 @@ import type { GenerateOptions } from "../../src/generation/index";
 import type { ResolvedExecution } from "../../src/contracts/portable/execution";
 import type { RuntimeModel } from "../../src/models/factory";
 import { NgramProvider } from "../../src/generation/speculative/sources/ngram-source";
+import { FillSession } from "../../src/generation/fill/session";
 import { DiffusionGemmaModel } from "../../src/models/diffusion-gemma/model";
 import { Glm52Model } from "../../src/models/glm52/model";
 import { MiniCPM5Model } from "../../src/models/minicpm5/model";
@@ -232,4 +233,43 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding only",
   expect(masked).toMatchObject({ mechanism: "continuous", method: "autoregressive", grammarJump: false });
   expect(masked.reasons).toContain("grammar-jump-incompatible-with-request");
   expect(jump.plan({ ...kv, hasGrammar: true }, immediate, { continuous: true, quantizedBatch: true, checkpoints: false }).grammarJump).toBe(true);
+});
+
+// A strict or echo fill session; placement reads only its plan.
+const fillOptions = (echo: boolean) => ({ fill: new FillSession({ rows: [], eos: [],
+  echo: echo ? { k: 8, maxSpan: 8, maxCandidates: 24, indexMax: 1024 } : null }, [2, 651]) });
+
+test.each(families)("%s places plain-KV fill on the shared fill binding", (_, model) => {
+  const binding = bindMlxGateway(model());
+  for (const echo of [false, true]) {
+    const options = fillOptions(echo);
+    for (const extra of [{}, { userSeed: true }, { hasRepetitionPenalty: true }, { hasLogitsExtras: true }]) {
+      const plan = binding.plan({ ...shape, ...extra }, options, { ...schedule, continuous: binding.cachesBatchable() });
+      expect({ extra, plan }).toMatchObject({ extra, plan: { method: "autoregressive", mechanism: "continuous", fill: true, checkpoint: false } });
+      expect(refusals(plan)).toEqual([]);
+      expect(JSON.parse(binding.methodRequest!(plan, options)!.key)[0]).toBe("fill");
+    }
+  }
+});
+
+test("Gemma2 softcap fill keeps encoded KV, drafts and adapters unsupported", () => {
+  const options = fillOptions(true);
+  const plain = bindMlxGateway(softcapUniversal());
+  const drafted = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
+  for (const [binding, request, expected] of [
+    [plain, { ...shape, kvQuant: true }, ["kv-scheme-batch-unsupported"]],
+    [plain, { ...shape, turboQuant: true }, ["turbo-kv-batch-unsupported"]],
+    [plain, { ...shape, hasAdapters: true }, ["continuous-unavailable"]],
+    [plain, { ...shape, hasDraft: true }, ["continuous-unavailable", "method-batch-unsupported"]],
+    [drafted, { ...shape, hasDraft: true }, ["continuous-unavailable", "method-batch-unsupported"]],
+  ] as const) {
+    const plan = binding.plan(request, options, { ...schedule, continuous: binding.cachesBatchable() });
+    expect({ request, plan }).toMatchObject({ request, plan: { mechanism: "unsupported", fill: false } });
+    expect(refusals(plan)).toEqual([...expected]);
+    expect(plan.reasons).toContain("fill-incompatible-with-request");
+  }
+  // Other families keep fill with adapters; only the softcap graph lacks evidence.
+  const universal = bindMlxGateway(qualifiedFamilies[0]![1]());
+  expect(universal.plan({ ...shape, hasAdapters: true }, options, schedule))
+    .toMatchObject({ mechanism: "continuous", fill: true });
 });
