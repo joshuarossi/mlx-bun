@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
 import { resolveKvScheme, type KvQuantOverride, type KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { parseTurboQuantScheme, type TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { LoadedModelContext } from "../engine/model-host";
 import type { CompletionEngine } from "../engine/completion";
@@ -94,13 +95,18 @@ function numeric(args: CommandArgs, name: string, input: { integer?: boolean; mi
 
 /** App CLI policy: raw generated text, greedy/full-precision defaults, no
  * model-author server sampling defaults or thinking/tool output filtering. */
-export function generateOptions(args: CommandArgs): { prompt: string; raw: boolean; options: GenerateOptions; kvQuant: KvQuantOverride } {
+export function generateOptions(args: CommandArgs): { prompt: string; raw: boolean; options: GenerateOptions;
+  kvQuant: KvQuantOverride; turboQuant?: TurboQuantScheme } {
   const prompt = option(args, "prompt") ?? args.positionals[1];
   if (!prompt) throw new Error('usage: mlx-bun generate [query] --prompt "…" [--raw] [--max-tokens N]');
   const kv = option(args, "kv-quant");
-  if (kv !== undefined && !["off", "config", "4", "8"].includes(kv)) throw new Error("--kv-quant must be off, config, 4, or 8");
+  // Main's TurboQuant spec, turbo (k8v3) or turbo:k<bits>v<bits>, is its own scheme beside affine KV.
+  const turboQuant = kv === undefined ? null : parseTurboQuantScheme(kv);
+  if (kv !== undefined && !turboQuant && !["off", "config", "4", "8"].includes(kv))
+    throw new Error("--kv-quant must be off, config, 4, 8, or turbo[:k<bits>v<bits>]");
   return { prompt, raw: args.values.raw === true,
-    kvQuant: kv === "4" || kv === "8" ? Number(kv) : kv as KvQuantOverride,
+    kvQuant: turboQuant || kv === undefined ? undefined : kv === "4" || kv === "8" ? Number(kv) : kv as KvQuantOverride,
+    ...(turboQuant ? { turboQuant } : {}),
     options: {
       maxTokens: numeric(args, "max-tokens", { integer: true, minimum: 1 }) ?? 256,
       temperature: numeric(args, "temperature", { minimum: 0 }) ?? numeric(args, "temp", { minimum: 0 }) ?? 0,
@@ -130,7 +136,7 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
   let failure: unknown, failed = false;
   try {
     signal?.throwIfAborted();
-    const scheme = resolveKvScheme({ override: generation?.kvQuant ??
+    const scheme = resolveKvScheme({ turboQuant: generation?.turboQuant, override: generation?.kvQuant ??
       (generation && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? "config" : "off"), config: context.kvConfig,
       ...(generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}),
     });

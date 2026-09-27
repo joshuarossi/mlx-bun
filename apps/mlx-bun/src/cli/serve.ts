@@ -1,4 +1,5 @@
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import { parseCommand, type CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -31,8 +32,11 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (thinking !== undefined && !["on", "off", "1", "0", "true", "false"].includes(thinking))
     throw new Error("--thinking expects on|off");
   const kv = value("kv-quant") ?? "off";
-  if (!["off", "config", "4", "8"].includes(kv)) throw new Error("--kv-quant expects off|config|4|8");
-  const cache: CacheServiceOptions = { kvQuant: kv === "4" || kv === "8" ? Number(kv) : kv as "off" | "config" };
+  // Main's TurboQuant spec, turbo (k8v3) or turbo:k<bits>v<bits>, is its own scheme beside affine KV.
+  const turboQuant = parseTurboQuantScheme(kv);
+  if (!turboQuant && !["off", "config", "4", "8"].includes(kv)) throw new Error("--kv-quant expects off|config|4|8|turbo[:k<bits>v<bits>]");
+  const cache: CacheServiceOptions = turboQuant ? { turboQuant }
+    : { kvQuant: kv === "4" || kv === "8" ? Number(kv) : kv as "off" | "config" };
   const promptCache = number("prompt-cache");
   if (promptCache !== undefined) cache.promptCacheBytes = promptCache * 2 ** 30;
   const ssd = value("ssd-cache");

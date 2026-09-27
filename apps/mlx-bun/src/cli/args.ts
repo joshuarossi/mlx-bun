@@ -57,7 +57,7 @@ const commands = {
     temp: { type: "string", description: "Alias for --temperature" },
     "top-p": { type: "string", description: "Default nucleus sampling [0..1]" },
     "top-k": { type: "string", description: "Default top-k sampling" },
-    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 [default: off]" },
+    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 | turbo[:k<bits>v<bits>] (turbo is k8v3) [default: off]" },
     "kv-budget": { type: "string", description: "Aggregate batch KV budget, decimal GB; unset means no budget" },
     "prompt-cache": { type: "string", description: "RAM prompt cache cap, GiB; 0 disables [default: 8 GB]" },
     "ssd-cache": { type: "string", description: "Optional durable prompt-cache directory" },
@@ -103,7 +103,7 @@ const commands = {
     "top-p": { type: "string", description: "Nucleus sampling" },
     "top-k": { type: "string", description: "Top-k sampling" },
     seed: { type: "string", description: "Sampler seed" },
-    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 [default: off]" },
+    "kv-quant": { type: "string", description: "KV quantization: off | config | 4 | 8 | turbo[:k<bits>v<bits>] (turbo is k8v3) [default: off]" },
   } },
   embed: { description: "Embed local text and print vectors", positional: "[query] [text]", options: {
     query: { type: "string", description: "Cached model query; defaults to the first downloaded embedding model" },

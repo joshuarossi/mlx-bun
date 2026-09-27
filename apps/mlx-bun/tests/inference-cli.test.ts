@@ -61,7 +61,7 @@ test("generate options preserve main's greedy recipe and explicit overrides", ()
 
 test("bad input is rejected before selecting or loading a model", async () => {
   for (const args of [[], ["--prompt", "x", "--max-tokens", "0"], ["--prompt", "x", "--seed", "1.5"],
-    ["--prompt", "x", "--temperature", "NaN"], ["--prompt", "x", "--kv-quant", "3"]]) {
+    ["--prompt", "x", "--temperature", "NaN"], ["--prompt", "x", "--kv-quant", "3"], ["--prompt", "x", "--kv-quant", "turbo:k3v3"]]) {
     const run = harness(); await expect(runInference("generate", parse(...args), run.dependencies)).rejects.toThrow();
     expect(run.selections).toEqual([]); expect(run.events).toEqual([]);
   }
@@ -100,6 +100,15 @@ test("the existing eval thinking and KV environment policy stays local to the on
     const explicit = harness(); await runInference("generate", parse("--prompt", "hi", "--kv-quant", "off"), explicit.dependencies);
     expect(explicit.schemes).toEqual([{}]);
   } finally { restore(); }
+});
+
+test("generate carries main's TurboQuant spec to the engine's KV scheme", async () => {
+  for (const [spec, turboQuant] of [["turbo", { kBits: 8, vBits: 3 }], ["turbo:k4v2", { kBits: 4, vBits: 2 }]] as const) {
+    const run = harness();
+    await runInference("generate", parse("--prompt", "hi", "--kv-quant", spec), run.dependencies);
+    expect(run.schemes).toEqual([{ turboQuant, quantizedKvStart: 0 }]);
+  }
+  expect(() => generateOptions(parse("--prompt", "x", "--kv-quant", "turbo:k8v7"))).toThrow("vBits must be one of 2,3,4,5,8 (got 7)");
 });
 
 for (const json of [false, true]) test(`embeddings accept stdin lines without a chat template and preserve output format (${json})`, async () => {
