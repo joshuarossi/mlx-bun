@@ -39,7 +39,10 @@ export async function runParityWorker(command: string[], directory: string, dead
   try {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error("Runtime parity deadline expired during input preparation; worker was not started");
-    worker = Bun.spawn(command, { stdin: "ignore", stdout, stderr });
+    // Opt-in controls belong to this test, not the emitter's numerical provenance.
+    const env = { ...process.env };
+    for (const key of KEYS) delete env[key];
+    worker = Bun.spawn(command, { env, stdin: "ignore", stdout, stderr });
     const code = await bounded(worker.exited, remaining, "Runtime parity worker");
     if (code !== 0) throw new Error(`Runtime parity worker exited ${code} (signal ${worker.signalCode ?? "none"})`);
   } catch (error) {
