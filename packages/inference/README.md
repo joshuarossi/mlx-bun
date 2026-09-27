@@ -243,12 +243,14 @@ restored the base. Actual paged rows remained checkpoint-ineligible. This covers
 one active row within the sliding window, not grouped rows, paged numerics,
 hard-kill durability, external-oracle parity or performance.
 
-With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, including a start of 0, every saved
-and restored checkpoint must hold TurboQuant's exact inventory: five encoded
-planes per full-attention cache (K indices, float16 K scales and zeros per
-32-wide group, packed uint8 V, float16 V scales) at the scheme's bits with the
-default fused decode, a plain ring per sliding cache, every KV layer at the
-checkpoint's offset, and no reuse floor from token 0. Paired B1 checks on Gemma4
+With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, every saved and restored checkpoint
+after conversion (immediately with a start of 0) must hold TurboQuant's exact
+inventory: five encoded planes per full-attention cache (K indices, float16 K
+scales and zeros per 32-wide group, packed uint8 V, float16 V scales) at the
+scheme's bits, the fused decode when `MLX_BUN_TURBOQUANT_FUSED_DECODE` is unset,
+a plain ring per sliding cache, every KV layer at the checkpoint's offset, and
+no reuse floor with a start of 0. Before a positive start converts, checkpoints
+are still plain. Paired B1 checks on Gemma4
 e4b OptiQ-4bit (snapshot `98d7dc6a`, MacBookPro18,2, MLX 0.32.2) with
 server-wide TurboQuant k8v3 from token 0 matched main `02d723a` through each
 side's continuous gateway at capacity 8 for 16 tokens, greedy and seeded
