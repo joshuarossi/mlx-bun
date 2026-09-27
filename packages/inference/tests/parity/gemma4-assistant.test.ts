@@ -249,7 +249,6 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
   const { loadTokenizer, ChatTemplate } = await import("@mlx-bun/inference/input");
   const { AssistantProvider } = await import("@mlx-bun/inference/generation/speculative");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
-  const { bindSpeculativeTargetModel } = await import("@mlx-bun/inference/generation/speculative/binding");
   const ops = await import("@mlx-bun/mlx/ops");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
   const config = await loadModelConfig(inputs!.target), dtype = storedFloatDtype(inputs!.target);
@@ -265,8 +264,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
     cleanup.push(() => { if ("dispose" in model) model.dispose(); });
     const replay = createModel(weights, config);
     cleanup.push(() => { if ("dispose" in replay) replay.dispose(); });
-    const replayBinding = bindSpeculativeTargetModel(replay);
-    const prefillTokens = prompt.length - Number(replayBinding.prefillTailSplit);
+    const prefillTokens = prompt.length - 1;
     const provider = await AssistantProvider.load(inputs!.draft);
     cleanup.push(() => provider.dispose());
     const options = { temperature: 0, maxTokens, prefillChunkSize: prompt.length };
@@ -336,11 +334,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
       assert.deepEqual(values, active ? [active.pending, ...active.proposals] : prompt.slice(processed.length, processed.length + values.length), "exact prompt/verify inputs");
       state(caches, processed.length);
       const hidden = originalForward(ids, caches);
-      let pin: { close(): void } | undefined;
       try {
-        // Match the bound verify policy only for verify blocks. Gemma4 currently
-        // has no pin operation; other target bindings may own one.
-        if (active) pin = replayBinding.pinVerify?.();
         using reference = replay.forwardHidden(ids, replayCaches);
         using actualLogits = model.logitsFromHidden(hidden), wantedLogits = replay.logitsFromHidden(reference);
         const logits = same(actualLogits, wantedLogits, [1, values.length, vocab], "full target logits");
@@ -354,7 +348,6 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
         }
         return hidden;
       } catch (error) { hidden.dispose(); throw error; }
-      finally { pin?.close(); }
     });
     cleanup.push(() => forward.mockRestore());
     const originalOpen = provider.grouped.open.bind(provider.grouped);
@@ -390,6 +383,7 @@ test.skipIf(!inputs)("Gemma4 assistant: shared generation accepts, rejects and c
     });
     cleanup.push(() => opened.mockRestore());
     const binding = bindMlxGateway(model, { provider, numDraftTokens: depth });
+    assert(binding.runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true), "this consumer requires default tail-split prefill");
     const plan = binding.plan({ hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false,
       kvQuant: false, turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true }, options,
     { continuous: true, quantizedBatch: false, checkpoints: false });
