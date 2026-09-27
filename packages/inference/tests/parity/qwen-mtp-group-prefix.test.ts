@@ -283,8 +283,11 @@ function checkStates(sub: A, prompts: number[][], sessions: string[], geometry: 
         const burst = [...proposals.slice(0, v), argmax[v]!];
         const prefix = e >= 1 && e <= burst.length && json(delivered) === json(burst.slice(0, e));
         if (!final) {
-          if (!(e === burst.length && a === v)) fail(`${at}: continued past a round it ${said}; the verified burst is ${json(burst)}`);
-        } else if (!prefix || !(failed ? a === 0 : cancelled ? a === 0 || a === Math.min(e, v) : a === Math.min(e, v)))
+          if (!(prefix && e === burst.length && a === v)) fail(`${at}: continued past a round it ${said}; the verified burst is ${json(burst)}`);
+        // Both trees check a request's abort before each callback: a consumer
+        // that fails retains none; a cancellation retains none only when a
+        // later token of the burst was attempted, and otherwise the normal count.
+        } else if (!prefix || !(failed ? a === 0 : cancelled ? (e < burst.length ? a === 0 : a === Math.min(e, v)) : a === Math.min(e, v)))
           fail(`${at}: its final round ${said}; the verified burst is ${json(burst)} (${failed ? "failed" : cancelled ? "cancelled" : "finished"})`);
       } else {
         // Sampled: accepted drafts lead the burst and the retained count bounds the deliveries; no retention-free truncation.
@@ -936,8 +939,12 @@ test("callbacks are accounted round by round; a consumer failure inside a burst 
   expect([lastTwo(g).accepted[0], r.tokens.filter((e: A) => e.row === 0).length, g.tokens[0].length]).toEqual([0, 3, 16]);
   expect(check(() => {}, FAIL)).toEqual([]);
   expect(check(() => {}, CANCEL)).toEqual([]);
-  const cancelledNone = fixture(CANCEL, [[[2], [1]], [[2, 2], [2, 2], [0, 1], [{ v: 2, deliver: 3, retain: 0 }, 2]], rep(4, [2])]);
-  expect(problems(fail => checkCase(CANCEL, cancelledNone.rec, undefined, P, V, GEOMETRY, fail))).toEqual([]);
+  // An abort inside a burst's second callback: the next publish throws, and none is retained.
+  const cutShort = fixture(CANCEL, [[[2], [1]], [[2, 2], [2, 2], [1, 1], [{ v: 2, deliver: 2, retain: 0 }, 2]], rep(4, [2])]);
+  expect(problems(fail => checkCase(CANCEL, cutShort.rec, undefined, P, V, GEOMETRY, fail))).toEqual([]);
+  // An abort in the burst's last callback publishes nothing more: the round keeps its drafts.
+  const wholeBurst = fixture(CANCEL, [[[2], [1]], [[2, 2], [2, 2], [0, 1], [{ v: 2, deliver: 3, retain: 0 }, 2]], rep(4, [2])]);
+  expect(problems(fail => checkCase(CANCEL, wholeBurst.rec, undefined, P, V, GEOMETRY, fail)).join("\n")).toMatch(/final round delivered .*\(cancelled\)/);
   const fails = (c: Case, mutate: (s: A) => void, pattern: RegExp) => expect(check(f => mutate(f.rec.generation), c).join("\n")).toMatch(pattern);
   fails(FAIL, s => { const x = roundAt(s, lastTwo(s)); x.project.argmax[0] = [x.draft.proposals[0][0], 5, 7]; }, /final round delivered .* the verified burst is .*\(failed\)/);
   fails(FAIL, s => { const t = roundAt(s, lastTwo(s)).tokens.filter((e: A) => e.row === 0).at(-1);
@@ -945,6 +952,10 @@ test("callbacks are accounted round by round; a consumer failure inside a burst 
   fails(FAIL, s => { lastTwo(s).accepted[0] = 2; }, /\(failed\)/);
   fails(CANCEL, s => { const x = roundAt(s, lastTwo(s)); x.project.argmax[0] = [x.draft.proposals[0][0], 5, 7]; }, /final round delivered .*\(cancelled\)/);
   fails(STOP, s => { roundAt(s, twoRow(s, "commit")[1]).project.argmax[1] = [5, 6, 7]; }, /continued past a round it delivered/);
+  // A wrong interior (draft) token, replaced in the callback and the returned tokens: counts, callback equality and pending still agree.
+  fails(FAIL, s => { const c = twoRow(s, "commit")[0], t = roundAt(s, c).tokens.filter((e: A) => e.row === 0)[0];
+    expect(t.index < s.tokens[0].length && c.accepted[0] >= 1).toBe(true);
+    t.token = 94; s.tokens[0][t.index - 1] = 94; }, /continued past a round it delivered \[94,.*the verified burst is/);
   fails(STOP, s => { const t = roundAt(s, twoRow(s, "commit")[0]).tokens.filter((e: A) => e.row === 1).at(-1);
     s.events.splice(s.events.indexOf(t) + 1, 0, { ...t, token: 98 }); }, /continued past a round it delivered/);
   fails(STOP, s => { const c = twoRow(s, "commit")[0], t = roundAt(s, c).tokens.find((e: A) => e.row === 1);
