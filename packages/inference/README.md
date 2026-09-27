@@ -136,10 +136,15 @@ against a matched stop control, queued base-context isolation and reuse after
 drain. Mounting must change full logits, and unmounting must restore the base.
 Full-attention universal graphs accept ordinary adapter requests with uniform
 or per-layer delayed affine KV and adapter-aware continuation; delayed drafts
-and fill, sliding descriptors and softcap encoded KV remain excluded. Real
-Qwen2.5 paired main/refactor qualification of this adapter composition is pending;
-placement tests alone do not establish numerical preservation.
-
+and fill, sliding descriptors and softcap encoded KV remain excluded. Paired B1
+Qwen2.5-0.5B acceptance matched main for uniform KV4/KV8 and partial mixed KV,
+greedy/seeded sampling, and fresh-process continuation before and after conversion:
+full logits, every valid cache plane, adapter identity and unmount restoration.
+Only the first cold decode/resume token may have signed versus unsigned int32
+metadata; its raw bytes, value and computed state must match exactly. Separate
+candidate B2/B4 tests passed joins, cancellation, queued adapter/base isolation
+and reuse after drain. These checks do not cover cross-version checkpoint files,
+hard-kill durability, an external oracle or performance.
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
 `MLX_BUN_TEST_PADDED_PREFILL_MODEL` and `MLX_BUN_TEST_PADDED_PREFILL_REFERENCE`.
@@ -196,8 +201,7 @@ proposing row verifies beside an empty, right-padded peer and rounds where no ro
 proposes, swaps the padded peer's content without changing the target's forwards,
 proposals, tokens or logits (greedy and seeded), cancels a ragged third row against
 a same-count stop control, and checks main's grammar gate. Encoded
-KV, other draft providers, adapter-free drafts with fill, and
-paging retain typed unsupported placement.
+KV, other draft providers, and paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 A plain-KV adapter request with a configured TwoModel or Ngram draft uses
@@ -207,6 +211,17 @@ acceptance against main passed with a synthetic nonzero adapter on Gemma2-2B:
 full logits and valid KV match with either draft configured, with or without
 fill and logprobs; draft and fill stay unused, and physical unmount restores
 the base computation. This does not qualify multi-row adapter/draft requests.
+
+A plain-KV request without adapters keeps two-model or n-gram speculation when
+fill is supplied, but ignores the fill session (strict, verify or echo), as main
+did. Logprobs instead select ordinary decoding and ignore both draft and fill.
+Paired B1 greedy acceptance on Gemma2-2B matched main and each fill-off control:
+full target/draft logits, valid KV, proposals, continuing commits, output and
+logprobs; genuine drafting ran when selected, and every fill hook stayed unused.
+Main omits its terminal speculative commit; the candidate's terminal state was
+checked against its verified prefix, without a main-terminal parity claim.
+This does not qualify B>1, external-oracle parity or performance, or enable
+speculative fill.
 
 The [Trellis specialization test](tests/parity/trellis-shared-m.test.ts) takes
 `MLX_BUN_TEST_TRELLIS_MODEL=/cached/packed-qwen`. It preserves main's variant

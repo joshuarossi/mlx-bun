@@ -383,24 +383,73 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   const logprobs = binding.plan({ ...draft, wantsLogprobs: true }, {}, scheduling);
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
-  // Adapter-free drafts with fill, and encoded KV, media or paging stay refused.
+  // Encoded KV, media and paging stay refused, including when fill is supplied.
   for (const [request, options, expected] of [
-    [draft, fillOptions(false), ["continuous-unavailable"]],
-    [draft, fillOptions(true), ["continuous-unavailable"]],
     [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["kv-scheme-batch-unsupported"]],
     [{ ...draft, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, ["turbo-kv-batch-unsupported"]],
     [{ ...draft, hasVision: true }, {}, ["media-batch-unsupported"]],
     [draft, { pagedKv: {} }, ["paged-kv-batch-unsupported"]],
   ] as const) {
-    const plan = binding.plan(request, options as GenerateOptions, scheduling);
-    expect({ request, mechanism: plan.mechanism }).toEqual({ request, mechanism: "unsupported" });
-    for (const reason of expected) expect({ request, reasons: plan.reasons }).toMatchObject({ request, reasons: expect.arrayContaining([reason]) });
+    for (const supplied of [options, { ...options, ...fillOptions(true) }]) {
+      const plan = binding.plan(request, supplied as GenerateOptions, scheduling);
+      expect({ request, mechanism: plan.mechanism }).toEqual({ request, mechanism: "unsupported" });
+      for (const reason of expected) expect({ request, reasons: plan.reasons }).toMatchObject({ request, reasons: expect.arrayContaining([reason]) });
+    }
   }
   // Plain softcap requests without a draft keep their placement; grammar proposals stay off this graph.
   expect(binding.plan(shape, {}, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
   const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }),
     () => bindMlxGateway(softcapUniversal(), { provider: provider(), numDraftTokens: 3 }));
   expect(jump.plan({ ...shape, hasGrammar: true }, {}, schedule)).toMatchObject({ method: "autoregressive", grammarJump: false });
+});
+
+test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] as const)(
+  "Gemma2 softcap ignores fill with the %s draft, as main's serial verifier did", (_, provider) => {
+  const binding = bindMlxGateway(softcapUniversal(), { provider: provider(), numDraftTokens: 3 });
+  const scheduling = { ...schedule, continuous: binding.cachesBatchable() };
+  const strict = new FillSession({ rows: [{ trigger: [651], emit: [42, 43], kind: "scaffold" }], eos: [], echo: null }, [2, 651]);
+  let verifyCalls = 0;
+  const verify = new FillSession({ rows: [], eos: [], echo: null }, [2, 651], { sources: [{
+    name: "verify", windowNeeded: 1,
+    propose: () => { verifyCalls++; return { ids: [42, 43], policy: "verify", origin: "echo" }; },
+  }] });
+  for (const fill of [strict, verify, fillOptions(true).fill]) for (const wantsLogprobs of [false, true]) {
+    const request = { ...shape, hasDraft: true, wantsLogprobs };
+    const options: GenerateOptions = { fill, maxTokens: 16, temperature: 0,
+      ...(wantsLogprobs ? { logprobs: true, topLogprobs: 3 } : {}) };
+    const plan = binding.plan(request, options, scheduling);
+    expect(plan).toMatchObject({ method: wantsLogprobs ? "autoregressive" : "speculative",
+      mechanism: "continuous", fill: false, checkpoint: false });
+    expect(refusals(plan)).toEqual([]);
+    expect(plan.reasons).toContain("fill-incompatible-with-request");
+    const method = binding.methodRequest!(plan, options);
+    if (wantsLogprobs) {
+      expect(plan.reasons).toContain("draft-incompatible-with-request");
+      expect(method).toBeUndefined();
+    } else {
+      const { fill: ignored, ...numericalOptions } = options;
+      expect(method!.data).toEqual({ ...numericalOptions, fill: undefined });
+      expect(method!.key).toBe(binding.methodRequest!(binding.plan(request, numericalOptions, scheduling), numericalOptions)!.key);
+      expect(options.fill).toBe(ignored); // stripping does not mutate the caller's session
+    }
+  }
+  expect(verifyCalls).toBe(0);
+});
+
+test("softcap drafts ignore echo even if their provider advertises external tokens; other graphs retain echo", () => {
+  const provider = new NgramProvider();
+  Object.defineProperty(provider.grouped, "supportsExternalTokens", { value: true });
+  const options = fillOptions(true), request = { ...shape, hasDraft: true };
+  const softcap = bindMlxGateway(softcapUniversal(), { provider, numDraftTokens: 3 });
+  const plan = softcap.plan(request, options, schedule);
+  expect(plan).toMatchObject({ method: "speculative", mechanism: "continuous", fill: false });
+  expect((softcap.methodRequest!(plan, options)!.data as GenerateOptions).fill).toBeUndefined();
+  for (const [, model] of qualifiedFamilies) {
+    const binding = bindMlxGateway(model(), { provider, numDraftTokens: 3 });
+    const other = binding.plan(request, options, schedule);
+    expect(other).toMatchObject({ method: "speculative", mechanism: "continuous", fill: true });
+    expect((binding.methodRequest!(other, options)!.data as GenerateOptions).fill).toBe(options.fill);
+  }
 });
 
 test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] as const)(
@@ -457,15 +506,13 @@ test("Gemma2 softcap keeps other grouped draft providers unsupported", () => {
   expect(qualified.plan({ ...shape, hasDraft: true }, {}, schedule)).toMatchObject({ method: "speculative", mechanism: "continuous" });
 });
 
-test("Gemma2 softcap fill runs with adapters and keeps encoded KV and adapter-free drafts unsupported", () => {
+test("Gemma2 softcap fill runs with adapters and keeps encoded KV and unbound drafts unsupported", () => {
   const options = fillOptions(true);
   const plain = bindMlxGateway(softcapUniversal());
-  const drafted = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
   for (const [binding, request, expected] of [
     [plain, { ...shape, kvQuant: true }, ["kv-scheme-batch-unsupported"]],
     [plain, { ...shape, turboQuant: true }, ["turbo-kv-batch-unsupported"]],
     [plain, { ...shape, hasDraft: true }, ["continuous-unavailable", "method-batch-unsupported"]],
-    [drafted, { ...shape, hasDraft: true }, ["continuous-unavailable"]],
   ] as const) {
     const plan = binding.plan(request, options, { ...schedule, continuous: binding.cachesBatchable() });
     expect({ request, plan }).toMatchObject({ request, plan: { mechanism: "unsupported", fill: false } });
