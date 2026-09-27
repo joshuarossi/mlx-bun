@@ -156,16 +156,34 @@ such as an attention operation requiring a particular cache representation, belo
 in the owning component's contract and binding; the scheduler consumes that binding.
 Prefer the smallest existing interface that expresses the requirement.
 
-At graph construction or startup, resolve static model, artifact, layer, and
-option facts into concrete bound operations. Execute those specialized
-implementations without repeatedly interpreting descriptors or rediscovering
-invariant capabilities in the hot path. Dynamic request, token, and cancellation
-decisions remain runtime concerns. Prefer reusable concrete pieces; a universal
-fallback is allowed, but no universal model abstraction or new code-generation
-or compiler framework is required. This construction-time specialization is
-separate from the layers' MLX compilation policy described above. Apply this
-principle as migrated paths are refined; it is not a claim that every current
-path already follows it.
+For every newly supported model, the target is to compile its description into
+a concrete implementation. Here, compilation means resolving known facts during
+graph construction or startup; it is distinct from the layers' MLX compilation
+policy and can use ordinary functions and explicit graph construction. Resolve
+model, artifact, layer, and selected option facts into specific kernels, layers,
+state layouts, and bound operations. The specialized Gemma implementations
+demonstrate the intended pattern for model support generally. Adding support means assembling
+the graph from reusable components and implementing any missing operation in its
+owning layer.
+
+Known data flow is part of that construction: which operations produce and consume
+a tensor, its layout, and its ownership and lifetime obligations. Use these facts
+to determine which intermediate state must be materialized, copied, or retained.
+A specialized implementation may avoid that work when it can establish that every
+bound consumer's contract, including the state required by a selected generation
+method, checkpoint, or exposed output, is still met.
+These are properties of the chosen graph and bindings, not guesses about how a
+model is usually used; changing those properties requires a corresponding binding
+or implementation.
+
+Execution calls the resulting operations without repeatedly interpreting model
+descriptors or rediscovering invariant capabilities in the hot path. Current
+sequence lengths, cache contents, batch membership, request choices, and
+cancellation remain dynamic. A universal fallback is allowed; no universal model
+abstraction, code-generation system, or compiler framework is required. This is
+the target for refining migrated paths, not a claim that every current path already
+follows it; changes still require the
+[numerical and performance evidence](CONTRIBUTING.md#numerical-and-performance-evidence).
 
 Main is the baseline for working capabilities, not a requirement to reproduce
 every restriction, silently ignored option, or bug. Preserve what works while
