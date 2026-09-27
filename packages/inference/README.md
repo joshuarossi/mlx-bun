@@ -130,6 +130,21 @@ and cache-namespace isolation without bundled fixtures. The existing KV matrix
 uses `MLX_BUN_TEST_CONTINUATION_KV=bf16|4|8|per-layer|turbo`,
 `MLX_BUN_TEST_CONTINUATION_KV_START=0` (or `prompt+N`), and
 `MLX_BUN_TEST_CONTINUATION_INTERRUPT=6` (6–15).
+The test uses the actual capability planner. With an adapter and positive affine
+start it also checks grouped admission, an event-driven late join, cancellation
+against a matched stop control, queued base-context isolation and reuse after
+drain. Mounting must change full logits, and unmounting must restore the base.
+Full-attention universal graphs accept ordinary adapter requests with uniform
+or per-layer delayed affine KV and adapter-aware continuation; delayed drafts
+and fill, sliding descriptors and softcap encoded KV remain excluded. Paired B1
+Qwen2.5-0.5B acceptance matched main for uniform KV4/KV8 and partial mixed KV,
+greedy/seeded sampling, and fresh-process continuation before and after conversion:
+full logits, every valid cache plane, adapter identity and unmount restoration.
+Only the first cold decode/resume token may have signed versus unsigned int32
+metadata; its raw bytes, value and computed state must match exactly. Separate
+candidate B2/B4 tests passed joins, cancellation, queued adapter/base isolation
+and reuse after drain. These checks do not cover cross-version checkpoint files,
+hard-kill durability, an external oracle or performance.
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
 `MLX_BUN_TEST_PADDED_PREFILL_MODEL` and `MLX_BUN_TEST_PADDED_PREFILL_REFERENCE`.

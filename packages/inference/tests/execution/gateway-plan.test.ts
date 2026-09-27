@@ -298,15 +298,35 @@ test("plain universal KV batches delayed affine KV for ordinary continuous decod
     // Grammar and logprobs ride shared sampling, without checkpoints as for every family.
     for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }])
       expect(binding.plan({ ...kv, ...request }, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
-    // Drafts, fill and adapters over delayed affine KV are refused explicitly.
-    const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }],
-      [{ ...kv, hasAdapters: true }, { ...delayed, adapters: ["upper"] }]];
+    // Adapters compose with the ordinary row and its continuation, as on main.
+    const adapted = { ...kv, hasAdapters: true };
+    const options = { ...delayed, adapters: ["upper"] };
+    const plan = binding.plan(adapted, options, scheduling);
+    expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true,
+      fill: false, grammarJump: false, compiledDecode: false });
+    expect(binding.methodRequest!(plan, options)).toBeUndefined();
+    for (const extra of [{ hasGrammar: true }, { wantsLogprobs: true }])
+      expect(binding.plan({ ...adapted, ...extra }, options, scheduling))
+        .toMatchObject({ mechanism: "continuous", checkpoint: false });
+    for (const [request, supplied] of [[{ ...adapted, hasDraft: true }, options],
+      [adapted, { ...options, ...(fill as object) }]] as const)
+      expect(binding.plan(request, supplied, scheduling).mechanism).toBe("unsupported");
+    // Drafts and fill over delayed affine KV are refused explicitly.
+    const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }]];
     for (const [request, options] of refusals) {
       const refused = binding.plan(request, options, scheduling);
       expect(refused.mechanism).toBe("unsupported");
       expect(refused.reasons).toContain("continuous-unavailable");
     }
   }
+  const previous = model.loraState.active;
+  const selected = ["upper"];
+  const context = binding.bindAdapterContext!(selected, "upper");
+  selected.push("caller-change");
+  const leave = context.enter();
+  expect(model.loraState.active).toEqual(["upper"]);
+  leave();
+  expect(model.loraState.active).toBe(previous);
   // Immediate quantization and plain KV keep their existing placement, adapters included.
   const immediate = { kvBits: 4, quantizedKvStart: 0 };
   expect(binding.plan(kv, immediate, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: true });
