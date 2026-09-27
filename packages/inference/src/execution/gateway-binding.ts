@@ -87,9 +87,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // MiniCPM5's and plain universal delayed affine KV are qualified for ordinary
   // continuous decoding only. A draft or fill request over it is refused, as
   // for softcap models; grammar jump falls back to ordinary masking, until those
-  // compositions have their own evidence. MiniCPM5's generation checkpoints are
-  // qualified over it; universal ones skip it. Universal adapter requests over
-  // it are refused too.
+  // compositions have their own evidence. Its generation checkpoints are
+  // qualified for both. Universal adapter requests over it are refused.
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
     (model instanceof MiniCPM5Model || universalPlainKv) && delayedAffine(options);
   const cachesBatchable = () => {
@@ -181,7 +180,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
           !(plainSoftcap && ((request.hasDraft && (!softcapTwoModel || request.hasAdapters || !!options.fill)) ||
             (options.fill && request.hasAdapters))),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
-        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model) && !!continuationServices?.checkpointPersistence &&
+        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
