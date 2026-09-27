@@ -80,7 +80,7 @@ test.skipIf(!inputs)("local model matches the supplied external runtime report",
     // Parse caller inputs before starting the native worker. Keep comparison semantics unchanged.
     const suppliedPlan = parsePlan(await Bun.file(inputs!.planPath).json());
     const reference = await Bun.file(inputs!.referencePath).json();
-    await runParityWorker([process.execPath, resolve(import.meta.dir, "../../scripts/runtime-oracle.ts"), "emit", "--plan", inputs!.planPath, "--report", output],
+    await runParityWorker([process.execPath, "--no-env-file", resolve(import.meta.dir, "../../scripts/runtime-oracle.ts"), "emit", "--plan", inputs!.planPath, "--report", output],
       directory, deadline);
     compareReports(await Bun.file(output).json(), reference, suppliedPlan, inputs!.allowLegacy);
     passed = true;
