@@ -333,6 +333,9 @@ export class GenerationGateway implements CompletionEngine {
         .filter((resource) => resource != null));
     }
 
+    // Autoregressive decode time starts at the first token. Denoising computes
+    // every published token inside its decode span, as main's serial method did.
+    const decodedTokens = placement.execution?.method === "denoising" ? st.generatedTokens : st.generatedTokens - 1;
     return {
       promptTokens: st.promptTokens,
       cachedTokens: st.cachedTokens,
@@ -341,7 +344,7 @@ export class GenerationGateway implements CompletionEngine {
       prefillMs: st.prefillMs,
       decodeMs: st.decodeMs,
       prefillTps: st.prefillMs > 0 ? ((st.promptTokens - st.cachedTokens) / st.prefillMs) * 1000 : 0,
-      decodeTps: st.decodeMs > 0 && st.generatedTokens > 1 ? ((st.generatedTokens - 1) / st.decodeMs) * 1000 : 0,
+      decodeTps: st.decodeMs > 0 && decodedTokens > 0 ? (decodedTokens / st.decodeMs) * 1000 : 0,
       cacheTokens: [],
       ...(st.spec ? { spec: st.spec } : {}),
       ...(st.fill ? { fill: st.fill } : {}),

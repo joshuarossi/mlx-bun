@@ -51,6 +51,27 @@ for (const capacity of [1, 4]) test(`capacity ${capacity} uses the same continuo
   await gateway.close(); expect(f.closed).toBe(true);
 });
 
+test("decode throughput counts every denoised token and keeps the autoregressive first-token exclusion", async () => {
+  for (const [method, generatedTokens, decodeMs, decodeTps] of [
+    ["denoising", 1, 50, 20], ["denoising", 5, 250, 20],
+    ["autoregressive", 1, 50, 0], ["autoregressive", 5, 200, 20],
+  ] as const) {
+    const submitted: Parameters<MlxBatchGroup["submit"]>[0][] = [];
+    const f = fake({ plan: () => ({ ...execution, method }),
+      submit: async request => { submitted.push(request); return { ...result, generatedTokens, decodeMs }; } });
+    if (method === "denoising")
+      f.binding.methodRequest = () => ({ key: "denoising", data: {}, open: () => { throw new Error("CPU fake never opens a method"); } });
+    const gateway = new GenerationGateway(f.binding, 1), s = shape();
+    try {
+      const stats = await gateway.run([1], { maxTokens: 8 }, () => {}, undefined, s, gateway.place(s));
+      expect(stats).toMatchObject({ generatedTokens, decodeMs });
+      expect(stats.decodeTps).toBeCloseTo(decodeTps, 9);
+      // Denoising rows ride their grouped method; AR rows carry a sampler.
+      expect(submitted[0]!.method !== undefined).toBe(method === "denoising");
+    } finally { await gateway.close(); }
+  }
+});
+
 test("unsupported methods report typed exclusion reasons without unrelated compilation diagnostics", () => {
   const f = fake({ plan: () => ({ ...execution, method: "denoising", mechanism: "unsupported",
     reasons: ["method-batch-unsupported", "compiled-decode-unavailable-for-request"] }) });

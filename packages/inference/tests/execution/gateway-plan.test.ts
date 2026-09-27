@@ -1,9 +1,11 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { bindMlxGateway, type MlxGatewayBinding } from "../../src/execution/gateway-binding";
 import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 import { Gemma4Model } from "../../src/models/gemma4/model";
 import { UniversalDenseModel } from "../../src/models/universal/dense";
 import { KVCache } from "../../src/state/kv";
+import { KvScheme } from "../../src/state/kv-scheme";
+import type { GenerateOptions } from "../../src/generation/index";
 import type { ResolvedExecution } from "../../src/contracts/portable/execution";
 import type { RuntimeModel } from "../../src/models/factory";
 import { NgramProvider } from "../../src/generation/speculative/sources/ngram-source";
@@ -130,12 +132,54 @@ test.each(families)("%s places grammar with a bound grouped draft exactly as the
   } else expect(plan).toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: false });
 });
 
-test("denoising refuses grammar by method, exactly as it refuses the same request without grammar", () => {
-  const binding = bindMlxGateway(standIn(DiffusionGemmaModel.prototype, "diffusion_gemma"));
-  const plan = place(binding, grammar);
-  expect(plan).toEqual(place(binding, shape));
-  expect(plan).toMatchObject({ method: "denoising", mechanism: "unsupported" });
-  expect(refusals(plan)).toEqual(["method-batch-unsupported"]);
+describe("DiffusionGemma interleaved denoising binding", () => {
+  const diffusion = () => standIn(DiffusionGemmaModel.prototype, "diffusion_gemma") as DiffusionGemmaModel;
+  const planWith = (binding: MlxGatewayBinding, request: typeof shape, options: GenerateOptions = {}) =>
+    binding.plan(request, options, { ...schedule, continuous: binding.cachesBatchable() });
+
+  test("plain, seeded and adapted requests place continuously without AR-only reuse", () => {
+    const binding = bindMlxGateway(diffusion());
+    for (const extra of [{}, { userSeed: true }, { hasAdapters: true }])
+      expect(place(binding, { ...shape, ...extra })).toMatchObject({ method: "denoising", mechanism: "continuous",
+        promptCache: false, checkpoint: false, fill: false, compiledDecode: false, grammarJump: false });
+    expect(binding.methodRequest!(place(binding, shape), {})).toMatchObject({ key: JSON.stringify(["denoising", "legacy-diffusion-gemma"]) });
+  });
+
+  test.each([
+    [{ hasGrammar: true }, {}, "grammar-batch-unsupported"],
+    [{ hasDraft: true }, {}, "draft-method-unsupported"],
+    [{ wantsLogprobs: true }, {}, "logprobs-method-unsupported"],
+    [{ hasRepetitionPenalty: true }, {}, "repetition-penalty-method-unsupported"],
+    [{ hasLogitsExtras: true }, {}, "logits-extras-method-unsupported"],
+    [{}, { fill: { plan: {} } }, "fill-method-unsupported"],
+    [{}, { pagedKv: {} }, "paged-kv-batch-unsupported"],
+    [{ kvQuant: true }, { kvBits: 4 }, "kv-scheme-batch-unsupported"],
+    [{ turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, "turbo-kv-batch-unsupported"],
+  ] as const)("an unsupported denoising shape is refused before execution: %#", (extra, options, reason) => {
+    for (const binding of [bindMlxGateway(diffusion()), bindMlxGateway(diffusion(), { provider: new NgramProvider(), numDraftTokens: 3 }),
+      withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(diffusion()))]) {
+      const plan = planWith(binding, { ...shape, ...extra }, options as GenerateOptions);
+      expect(plan).toMatchObject({ method: "denoising", mechanism: "unsupported", fill: false, grammarJump: false });
+      expect(refusals(plan)).toEqual([reason]);
+    }
+  });
+
+  test("adapters are row state: the group context is neutral and encoded KV never binds", () => {
+    const model = diffusion();
+    const binding = bindMlxGateway(model);
+    const context = binding.bindAdapterContext!(["upper"], "adapters:[\"upper\"]");
+    expect(context.key).toBe(binding.bindAdapterContext!(["lower"], "adapters:[\"lower\"]").key);
+    const leave = context.enter();
+    expect(model.loraState.active).toEqual([]);
+    leave();
+    for (const kind of ["bf16", "affine-uniform", "affine-config", "turbo"] as const)
+      expect(binding.kvBatchable(new KvScheme(kind, {}))).toBe(false);
+    // Token methods never bind to the denoising graph, even when configured.
+    const drafted = bindMlxGateway(model, { provider: new NgramProvider(), numDraftTokens: 3 });
+    const denoise = place(drafted, shape);
+    for (const execution of [{ ...denoise, method: "speculative" }, { ...denoise, method: "autoregressive", fill: true }])
+      expect(drafted.methodRequest!(execution, { fill: { plan: {} } } as unknown as GenerateOptions)).toBeUndefined();
+  });
 });
 
 function minicpm5(layers = 4): MiniCPM5Model {

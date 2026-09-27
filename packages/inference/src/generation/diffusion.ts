@@ -5,9 +5,10 @@
 // (self-conditioning). Ported verbatim from
 // optiq/vlm/_mlxvlm/generate/diffusion.py (stream_diffusion_generate).
 //
-// RNG parity: canvas init + per-step re-noise call ops.randint with the GLOBAL
-// mlx key (ops.randomSeed). Calling them in the same order as the reference
-// reproduces its draws bit-for-bit → token-for-token parity on a fixed seed.
+// RNG parity: canvas init + per-step re-noise draw from a request-local copy of
+// MLX's global key sequence (DenoisingKeys). Drawing in the reference's order
+// reproduces its draws bit-for-bit → token-for-token parity on a fixed seed,
+// and interleaved requests never consume each other's draws.
 //
 // Implements the public-API default sampler (confidence-threshold) AND the
 // model-default (entropy-bound). temperature 0 (greedy) is the default and the
@@ -41,7 +42,10 @@ export interface DiffusionGenOptions {
   stabilityThreshold?: number;
   confidenceThreshold?: number;
   eosTokenIds?: number[]; // default [1, 106] (the tokenizer stopping set; NOT 50)
-  seed?: bigint; // global RNG seed (default 0)
+  seed?: bigint; // request-local key sequence seed (default 0)
+  /** Dequantized embedding table for self-conditioning. Borrowed: the caller
+   *  keeps ownership. Absent → the run dequantizes and owns its own copy. */
+  embedWeight?: MlxArray;
   /** Image-text-to-text: when set, `promptIds` are the SPLICED ids (with the
    *  <|image|> run) and the encoder prefills with the merged vision features +
    *  bidirectional overlay instead of the plain text path. Channel-first
@@ -188,6 +192,78 @@ function entropyTransferMask(entropy: MlxArray, bound: number): MlxArray {
   return out;
 }
 
+/** Request-local copy of MLX 0.32.2's global key sequence (random.cpp
+ *  KeySequence): seed(s) installs key(s); each unkeyed draw splits the current
+ *  key, keeps the first half and draws with the second. Equal seeds therefore
+ *  give byte-identical draws to random.seed + unkeyed randint, without reading
+ *  or reseeding the process-wide key. */
+export class DenoisingKeys {
+  #key: MlxArray;
+
+  constructor(seed: bigint) {
+    this.#key = ops.randomKey(seed);
+  }
+
+  /** Uniform int32 ids in [0, high), advancing this sequence by one draw. */
+  randint(high: number, shape: number[]): MlxArray {
+    const split = ops.randomSplitNum(this.#key, 2);
+    let retained: MlxArray | null = null;
+    let draw: MlxArray | null = null;
+    try {
+      using first = split.slice([0, 0], [1, 2]);
+      using second = split.slice([1, 0], [2, 2]);
+      retained = ops.reshape(first, [2]);
+      draw = ops.reshape(second, [2]);
+      const out = ops.randint(0, high, shape, I32, draw);
+      this.#key.dispose();
+      this.#key = retained;
+      retained = null;
+      return out;
+    } finally {
+      split.dispose();
+      retained?.dispose();
+      draw?.dispose();
+    }
+  }
+
+  dispose(): void {
+    this.#key.dispose();
+  }
+}
+
+/** One request's bounded denoising units. The first advance prefills the
+ *  prompt and draws the first canvas; each later advance runs one denoising
+ *  step (a finished block also emits it and prepares the next). Only the
+ *  final result leaves the run; close() releases a run that has not finished. */
+export interface DenoisingRun {
+  advance(): DiffusionGenResult | undefined;
+  close(): void;
+}
+
+export function openDenoisingRun<State>(
+  graph: DenoisingGraph<MlxArray, State>, promptIds: number[], opts: DiffusionGenOptions,
+): DenoisingRun {
+  const steps = denoisingSteps(graph, promptIds, opts);
+  let finished = false;
+  return {
+    advance() {
+      if (finished) throw new Error("denoising run already finished");
+      let step: IteratorResult<void, DiffusionGenResult | undefined>;
+      try { step = steps.next(); }
+      catch (error) { finished = true; throw error; }
+      if (!step.done) return undefined;
+      finished = true;
+      if (!step.value) throw new Error("denoising ended without a result");
+      return step.value;
+    },
+    close() {
+      if (finished) return;
+      finished = true;
+      steps.return(undefined);
+    },
+  };
+}
+
 /** Compatibility entry. Both sync and asynchronous callers drain one algorithm. */
 export function diffusionGenerate(model: DiffusionGemmaModel, promptIds: number[], opts: DiffusionGenOptions): DiffusionGenResult {
   return denoiseSync(bindLegacyDenoisingModel(model).graph, promptIds, opts);
@@ -250,10 +326,10 @@ function* denoisingSteps<State>(
 
   if (temperature > 0) throw new Error("diffusion temperature>0 (categorical sampling) not wired yet");
 
-  ops.randomSeed(opts.seed ?? 0n);
-
+  let keys: DenoisingKeys | null = null;
   let stateOwner: ResourceOwner<State> | undefined;
   let dequantWeight: MlxArray | null = null;
+  let ownedWeight: MlxArray | null = null;
   let failure: { error: unknown } | undefined;
 
   const emitted: number[] = [];
@@ -265,9 +341,10 @@ function* denoisingSteps<State>(
   let isFirstBlock = true;
 
   try {
+    keys = new DenoisingKeys(opts.seed ?? 0n);
     const cache = graph.prefill(promptIds, opts.visionPixels);
     stateOwner = ownResource(cache, (state) => graph.closeState(state));
-    dequantWeight = graph.dequantEmbedWeight();
+    dequantWeight = opts.embedWeight ?? (ownedWeight = graph.dequantEmbedWeight());
     while (generated < maxNewTokens) {
       const remaining = maxNewTokens - generated;
       const canvasLength = fullCanvas
@@ -291,7 +368,7 @@ function* denoisingSteps<State>(
       const history: MlxArray[] = [];
       let stepsThisCanvas = 0;
       try {
-        currentCanvas = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: init
+        currentCanvas = keys.randint(vocab, [1, canvasLength]); // RNG: init
         draftReveal = ops.zeros([1, canvasLength], Dtype.bool);
         draftCanvas = ops.reshape(currentCanvas, [1, canvasLength]); // alias copy
         argmaxCanvas = ops.reshape(currentCanvas, [1, canvasLength]);
@@ -339,7 +416,7 @@ function* denoisingSteps<State>(
               probs.dispose();
               // accepted/current update (entropy variant)
               const accepted = ops.where(acceptance, denoiser, currentCanvas);
-              const noise = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: re-noise
+              const noise = keys.randint(vocab, [1, canvasLength]); // RNG: re-noise
               const newCurrent = ops.where(acceptance, accepted, noise);
               noise.dispose();
               currentCanvas.dispose();
@@ -358,7 +435,7 @@ function* denoisingSteps<State>(
               confidence.dispose();
               const accepted = ops.where(acceptance, denoiser, draftCanvas);
               const revealOrAccept = ops.logicalOr(draftReveal, acceptance);
-              const noise = ops.randint(0, vocab, [1, canvasLength], I32); // RNG: re-noise
+              const noise = keys.randint(vocab, [1, canvasLength]); // RNG: re-noise
               const newCurrent = ops.where(revealOrAccept, accepted, noise);
               noise.dispose();
               currentCanvas.dispose();
@@ -453,7 +530,7 @@ function* denoisingSteps<State>(
     failure = { error };
     throw error;
   } finally {
-    const cleanup = () => disposeResources([dequantWeight,
+    const cleanup = () => disposeResources([ownedWeight, keys,
       ...(stateOwner ? [{ dispose: () => stateOwner!.close() }] : [])]
       .filter((resource): resource is DisposableResource => resource !== null));
     if (failure) cleanupFailure(failure.error, cleanup);

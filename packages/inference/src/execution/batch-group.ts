@@ -1439,8 +1439,9 @@ export class MlxBatchExecutionGroup {
 
   #finish(row: Row, reason: "stop" | "length"): void {
     row.req.continuation?.complete();
-    const now = performance.now();
-    const first = row.firstTokenAt || now;
+    const span = row.decodeSpan;
+    const now = span?.end ?? performance.now();
+    const first = span?.start ?? (row.firstTokenAt || now);
     row.resolve({
       ...(row.spec ? { spec: row.spec } : {}),
       ...(row.fill ? { fill: row.fill } : {}),
@@ -1449,7 +1450,7 @@ export class MlxBatchExecutionGroup {
       cachedTokens: row.cachedTokens,
       finishReason: reason,
       prefillMs: row.admittedAt ? first - row.admittedAt : 0,
-      decodeMs: row.firstTokenAt ? now - row.firstTokenAt : 0,
+      decodeMs: span || row.firstTokenAt ? now - first : 0,
     });
   }
 

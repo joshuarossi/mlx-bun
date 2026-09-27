@@ -453,6 +453,22 @@ It opens no network listener. `createAutoregressiveMethod`,
 when a consumer needs sessions. `MlxBatchExecutionGroup` owns batched rows;
 `ExecutionCoordinator` and `driveExecutionGroup` coordinate its work.
 
+DiffusionGemma requests share that group through `execution/denoising-group`.
+This is interleaved execution, not stacked canvases: each row keeps its own
+encoder state, canvas, feedback and MLX key sequence, and the group advances one
+row by one bounded unit per iteration in round-robin order. The first unit is the
+whole prompt prefill and first canvas draw; each later unit is one denoising step.
+A row publishes only its finished result, and its decode time ends when that result
+is computed. Rows borrow one dequantized embedding table, which the group releases
+after the last row's run closes. Each unit runs with only its row's adapters
+active. Grammar, draft, logprobs, logits processors, fill, encoded and paged KV
+requests are refused with typed plan reasons. `DenoisingKeys` reproduces MLX's
+global key sequence per request, so denoising never reads or reseeds the process
+key. The [denoising tests](tests/generation/denoising-binding.test.ts) take
+`MLX_BUN_DIFFUSION_MODEL=/cached/diffusiongemma` for the real-weight check and
+optionally `MLX_BUN_DIFFUSION_REFERENCE`, comma-separated trajectories in main's
+`goldens/diffusion/gen*.json` format.
+
 `execution/fit` estimates whether a model fits a machine at a context length:
 resident weights (bytes the caller supplies, such as a registry's), KV bytes from
 `state/kv-scheme`, and the prefill transient, against RAM × `WIRED_FRACTION` or an
