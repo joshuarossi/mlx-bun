@@ -68,6 +68,53 @@ test("engine construction failure releases its transferred model context", async
   expect(released).toBe(1);
 });
 
+test.each([["batchable", true, 2], ["without a batched input", false, 1]] as const)(
+  "%s media preparation retains its capacity through cancellation and releases", async (_, batchable, capacity) => {
+    const host = ownModelContext(context(), []);
+    const supplied = { gateway: { runtime: runtimeConfig(),
+      ...(batchable ? { mediaInput() { throw new Error("admission must not prepare native input"); } } : {}),
+    } } as ModelBinding;
+    const engine = await createAppEngine(host, { capacity: 2, binding: supplied });
+    const leases: Array<{ dispose(): void }> = [];
+    const waiting: Array<{ abort: AbortController; done: Promise<void> }> = [];
+    const request = () => {
+      const abort = new AbortController();
+      const state: { lease?: { dispose(): void }; error?: unknown; settled: boolean } = { settled: false };
+      const done = engine.preparation.reserve!("media", abort.signal).then(lease => {
+        leases.push(lease); state.lease = lease; state.settled = true;
+      }, error => { state.error = error; state.settled = true; });
+      waiting.push({ abort, done });
+      return { state, abort, done };
+    };
+    const turn = () => new Promise<void>(resolve => setImmediate(resolve));
+    try {
+      const held = Array.from({ length: capacity }, request);
+      await turn();
+      // All supported slots are granted before any preparation is released.
+      expect(held.every(row => row.state.lease !== undefined)).toBe(true);
+      const cancelled = request();
+      await turn(); expect(cancelled.state.settled).toBe(false);
+      const reason = new Error("waiting media request cancelled");
+      cancelled.abort.abort(reason); await cancelled.done;
+      expect(cancelled.state.error).toBe(reason);
+      // Cancelling overflow must not release a slot owned by an active request.
+      const replacement = request();
+      await turn(); expect(replacement.state.settled).toBe(false);
+      held[0]!.state.lease!.dispose(); await replacement.done;
+      expect(replacement.state.lease).toBeDefined();
+      // Each lease releases once; a duplicate release cannot exceed capacity.
+      const overflow = request(); held[0]!.state.lease!.dispose();
+      await turn(); expect(overflow.state.settled).toBe(false);
+      replacement.state.lease!.dispose(); await overflow.done;
+      expect(overflow.state.lease).toBeDefined();
+    } finally {
+      for (const row of waiting) row.abort.abort(new Error("test cleanup"));
+      await Promise.all(waiting.map(row => row.done));
+      for (const lease of leases) lease.dispose();
+      await engine.close();
+    }
+  });
+
 
 test("injected model loading resolves its profile without importing native model constructors", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mlx-app-provider-"));
