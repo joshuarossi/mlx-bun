@@ -73,14 +73,23 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // methods (speculation, grammar proposals, fill) never bind to this graph.
   const denoising = model instanceof DiffusionGemmaModel ? bindDenoisingGroupRequests(bindLegacyDenoisingModel(model)) : undefined;
   const tokenMethods = !plainSoftcap && !denoising;
+  // A universal descriptor without softcap, mask array or sliding layer type:
+  // makeCache gives every layer a plain KVCache, the layout delayed affine
+  // conversion supports. The scheme's per-layer cache guard still decides.
+  const universalPlainKv = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap === null &&
+    !model.args.maskArray && !model.args.layerTypes?.includes("sliding_attention");
   // Delayed affine KV (plain rows convert once they pass quantizedKvStart) batches row by row for these families.
-  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model || model instanceof MiniCPM5Model };
-  // MiniCPM5's delayed affine KV is qualified for ordinary continuous decoding
-  // only. A draft or fill request over it is refused, as for softcap models;
-  // grammar jump falls back to ordinary masking and generation checkpoints
-  // skip it, until those compositions have their own evidence.
-  const delayedAffineOrdinaryOnly = (options: GenerateOptions) => model instanceof MiniCPM5Model && !options.turboQuant &&
+  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model ||
+    model instanceof MiniCPM5Model || universalPlainKv };
+  const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
+  // MiniCPM5's and plain universal delayed affine KV are qualified for ordinary
+  // continuous decoding only. A draft or fill request over it is refused, as
+  // for softcap models; grammar jump falls back to ordinary masking and
+  // generation checkpoints skip it, until those compositions have their own
+  // evidence. Universal adapter requests over it are refused too.
+  const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
+    (model instanceof MiniCPM5Model || universalPlainKv) && delayedAffine(options);
   const cachesBatchable = () => {
     if (denoising) return true; // denoising rows keep private encoder state
     if (model instanceof UniversalDenseModel)
@@ -161,7 +170,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill)) &&
+        continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill ||
+          (universalPlainKv && request.hasAdapters))) &&
           !(plainSoftcap && (request.hasDraft || (options.fill && request.hasAdapters))),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: !ordinaryOnly && !!continuationServices?.checkpointPersistence &&
