@@ -29,16 +29,25 @@ export function resolveExecution(
     (!request.kvQuant || capabilities.speculativeKvQuant === true) &&
     (!request.turboQuant || capabilities.speculativeTurboQuant === true) && !features.pagedKv);
   const method = speculative ? "speculative" : capabilities.method;
+  // Token-level request features act on sampled tokens. A method that does not
+  // sample tokens refuses them instead of silently discarding them.
+  const tokenMethod = capabilities.method === "autoregressive";
   const continuousExclusions = [sharedRequestExclusions[0],
     [!(capabilities.groupedMethods ?? ["autoregressive"]).includes(method), "method-batch-unsupported"],
+    [request.hasDraft && !tokenMethod, "draft-method-unsupported"],
+    [request.wantsLogprobs && !tokenMethod, "logprobs-method-unsupported"],
+    [request.hasRepetitionPenalty && !tokenMethod, "repetition-penalty-method-unsupported"],
+    [request.hasLogitsExtras && !tokenMethod, "logits-extras-method-unsupported"],
+    [features.fill && !tokenMethod, "fill-method-unsupported"],
     ...sharedRequestExclusions.slice(1),
   ] as const;
   for (const [excluded, reason] of continuousExclusions) if (excluded) reasons.push(reason);
   const mechanism = reasons.length ? "unsupported" : "continuous";
-  if (request.hasDraft && !speculative) reasons.push("draft-incompatible-with-request");
+  if (request.hasDraft && !speculative && tokenMethod) reasons.push("draft-incompatible-with-request");
   const pagedKv = features.pagedKv && !request.hasVision && !request.hasAdapters;
   if (features.pagedKv && !pagedKv) reasons.push("paged-kv-bypassed-for-media-or-adapters");
-  const promptCache = method !== "speculative" && (!request.hasVision ||
+  // Prefix reuse restores autoregressive token caches only.
+  const promptCache = method === "autoregressive" && (!request.hasVision ||
     (mechanism === "continuous" && request.hasPreparedPrefixIdentity === true && capabilities.mediaPrefixCache === true));
   const sharedFill = mechanism === "continuous" && capabilities.sharedFill === true && !pagedKv;
   const speculativeEcho = method === "speculative" && mechanism === "continuous" &&
@@ -46,7 +55,7 @@ export function resolveExecution(
   const fill = features.fill && !request.hasVision && !request.hasGrammar && !request.wantsLogprobs &&
     (speculativeEcho || (method === "autoregressive" && sharedFill && !request.hasDraft));
   // Cache-format eligibility belongs to the method's append binding.
-  if (features.fill && !fill) reasons.push("fill-incompatible-with-request");
+  if (features.fill && !fill && tokenMethod) reasons.push("fill-incompatible-with-request");
   const checkpoint = capabilities.checkpoints && method === "autoregressive" && !request.hasVision &&
     capabilities.sharedCheckpoints === true && promptCache && !pagedKv && !request.hasGrammar &&
     !features.fill && !request.wantsLogprobs;

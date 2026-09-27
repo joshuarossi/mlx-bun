@@ -26,6 +26,8 @@ import { constraintDraftProvider } from "../generation/speculative/sources/ngram
 import { targetRowLayoutFactory } from "../state/target-layout";
 import { bindSpeculativeGroupRequests } from "./speculative-group";
 import { bindFillGroupRequests } from "./fill-group";
+import { bindDenoisingGroupRequests } from "./denoising-group";
+import { bindLegacyDenoisingModel } from "../generation/bindings/denoising";
 import type { GenerateOptions } from "../generation/index";
 import type { ExecutionRequirements, ResolvedExecution } from "../contracts/portable/execution";
 import { resolveExecution } from "./plan";
@@ -65,6 +67,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // grammar-constrained and adapter requests. Encoded attention and grouped
   // methods (speculative, fill) need their own numerical evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
+  // Denoising rows interleave through their own grouped method. Token-level
+  // methods (speculation, grammar proposals, fill) never bind to this graph.
+  const denoising = model instanceof DiffusionGemmaModel ? bindDenoisingGroupRequests(bindLegacyDenoisingModel(model)) : undefined;
+  const tokenMethods = !plainSoftcap && !denoising;
   // Delayed affine KV (plain rows convert once they pass quantizedKvStart) batches row by row for these families.
   const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model || model instanceof MiniCPM5Model };
   // MiniCPM5's delayed affine KV is qualified for ordinary continuous decoding
@@ -74,6 +80,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) => model instanceof MiniCPM5Model && !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   const cachesBatchable = () => {
+    if (denoising) return true; // denoising rows keep private encoder state
     if (model instanceof UniversalDenseModel)
       return (!model.args.maskArray || model.args.modelType === "gemma2") &&
         !model.args.layerTypes?.includes("sliding_attention");
@@ -89,14 +96,14 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     try { return caches.every(cache => targetRowLayoutFactory(cache) !== undefined); }
     finally { disposeResources(caches); }
   };
-  const speculative = !plainSoftcap && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
+  const speculative = tokenMethods && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
-  const grammarProvider = !plainSoftcap && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
+  const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
     Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
   const adapterState = "loraState" in model ? model.loraState : undefined;
-  const fillRequests = !plainSoftcap && supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
+  const fillRequests = tokenMethods && supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
     bindEmbeddingsInput((ids, caches, start) => start > 0 ? model.forwardHidden(ids, caches)
       : model.forwardEmbeddings(input.embeddings,
@@ -130,11 +137,15 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const namespace = (execution.grammarJump ? grammarProvider : draft?.provider)?.grouped?.checkpointNamespace?.();
       return namespace === undefined ? null : speculativePrefixNamespace(namespace, adapters, captureSpeculativeOptions(options));
     },
-    methodRequest: (execution, options) => execution?.method === "speculative"
+    methodRequest: (execution, options) => execution?.method === "denoising" ? denoising?.(options)
+      : execution?.method === "speculative"
       ? (execution.grammarJump ? grammarProposals : speculative)?.(
         options.fill && !execution.fill ? { ...options, fill: undefined } : options)
       : execution?.fill ? fillRequests?.(options) : undefined,
     ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
+      // Denoising applies each row's adapters around that row's own units, so
+      // its rows share one neutral group context whatever their adapters.
+      if (denoising) return { key: "", enter: () => () => {} };
       const selected = [...adapters];
       return { key, enter() {
         const previous = adapterState.active;
@@ -149,27 +160,28 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       return resolveExecution(request, {
         ...scheduling,
         continuous: scheduling.continuous && !((plainSoftcap || ordinaryOnly) && (request.hasDraft || options.fill)),
-        quantizedBatch: !plainSoftcap && scheduling.quantizedBatch,
+        quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: !ordinaryOnly && !plainSoftcap && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         mediaBatch: !!mediaInput,
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
-        groupedMethods: sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
+        groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         sharedFill: !!fillRequests && !!options.fill,
         sharedSpeculativeEcho: !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         speculativeLogprobs: scheduling.continuous && !!sharedMethod,
         sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
-        turboQuantBatch: !plainSoftcap && scheduling.quantizedBatch,
+        turboQuantBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
-        // The batch group coordinates per-row grammar for every family; masks
-        // come from the shared sampler, so no model qualifies or declines them.
-        grammarBatch: true,
+        // The batch group coordinates per-row grammar for every token method;
+        // masks come from the shared sampler, so no model qualifies or declines
+        // them. Denoising samples canvases, which an AR token mask cannot apply to.
+        grammarBatch: !denoising,
         speculativeKvQuant: !ordinaryOnly && (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
           (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||
           (!options.kvConfig?.length && model instanceof Qwen35Model &&
@@ -184,7 +196,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     },
     cachesBatchable,
     kvBatchable(scheme) {
-      if (plainSoftcap && scheme.kind !== "bf16") return false;
+      if (denoising || (plainSoftcap && scheme.kind !== "bf16")) return false;
       const caches = model.makeCache();
       try {
         return scheme.batchable(model.config,

@@ -60,6 +60,12 @@ export function disposeUnstartedRequest(options: GenerateOptions, vision?: Visio
     vision?.multimodalMask, options.visionPixels].filter((resource) => resource != null));
 }
 
+/** After reservation, run() releases the request's media and pixels once on
+ * every path; a request that fails before submission releases only its grammar. */
+function disposeReservedUnstarted(options: GenerateOptions): void {
+  options.grammar?.dispose();
+}
+
 /** One app execution lane: lone and concurrent requests use the same library
  * scheduler. Exclusive leases protect mutations and managed jobs. */
 export class GenerationGateway implements CompletionEngine {
@@ -241,12 +247,16 @@ export class GenerationGateway implements CompletionEngine {
           try { releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId); }
           finally { closePrefetch?.(); }
         }
-      } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options)); }
+      } catch (error) { cleanupFailure(error, () => disposeReservedUnstarted(options)); }
       return await this.#run(promptIds, options, onToken, vision, shape, placement, signal, trace);
     } finally {
+      // The request transferred its native inputs to this run; this is their
+      // one release after reservation. A denoising row borrows its pixels for
+      // its first unit and closes its run before the submission settles, so
+      // they are released here, as main's serial run did.
       disposeResources([{ dispose: () => releasePrefix?.() }, reservation,
-        ...(vision
-          ? [vision.embeddings, vision.imageMask, vision.multimodalMask].filter(value => value != null) : [])]);
+        ...[vision?.embeddings, vision?.imageMask, vision?.multimodalMask, options.visionPixels]
+          .filter(value => value != null)]);
     }
   }
 
@@ -260,7 +270,7 @@ export class GenerationGateway implements CompletionEngine {
     signal?: AbortSignal,
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
-    const disposeUnstarted = () => disposeUnstartedRequest(options);
+    const disposeUnstarted = () => disposeReservedUnstarted(options);
     if (placement.shape !== shape) {
       disposeUnstarted();
       throw new Error("generation placement does not belong to this request shape");
@@ -333,6 +343,9 @@ export class GenerationGateway implements CompletionEngine {
         .filter((resource) => resource != null));
     }
 
+    // Autoregressive decode time starts at the first token. Denoising computes
+    // every published token inside its decode span, as main's serial method did.
+    const decodedTokens = placement.execution?.method === "denoising" ? st.generatedTokens : st.generatedTokens - 1;
     return {
       promptTokens: st.promptTokens,
       cachedTokens: st.cachedTokens,
@@ -341,7 +354,7 @@ export class GenerationGateway implements CompletionEngine {
       prefillMs: st.prefillMs,
       decodeMs: st.decodeMs,
       prefillTps: st.prefillMs > 0 ? ((st.promptTokens - st.cachedTokens) / st.prefillMs) * 1000 : 0,
-      decodeTps: st.decodeMs > 0 && st.generatedTokens > 1 ? ((st.generatedTokens - 1) / st.decodeMs) * 1000 : 0,
+      decodeTps: st.decodeMs > 0 && decodedTokens > 0 ? (decodedTokens / st.decodeMs) * 1000 : 0,
       cacheTokens: [],
       ...(st.spec ? { spec: st.spec } : {}),
       ...(st.fill ? { fill: st.fill } : {}),

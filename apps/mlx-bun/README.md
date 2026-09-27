@@ -358,8 +358,12 @@ loading and lifecycle without native MLX. The gateway and session tests beside
 it cover cancellation, output delivery and the same scheduler path at capacity
 one and greater. These are CPU checks, not real-weight numerical verification.
 The first engine slice reports unsupported shared-execution capabilities rather
-than running a hidden serial path. The library's denoising method still needs
-shared scheduler support before the app can serve diffusion models.
+than running a hidden serial path. Diffusion models are served through the same
+scheduler by the library's interleaved denoising method. An image request's pixels
+ride its options, and the gateway releases them exactly once, whether the row
+settles or fails before submission. Requests the method cannot apply (grammar,
+draft, logprobs, logits processors, fill, encoded or paged KV) receive the typed
+capability error.
 
 `engine/cache-services` composes the library prompt cache and persistence. Its
 default is 8 GB of RAM with plain KV; SSD storage requires an explicit directory.

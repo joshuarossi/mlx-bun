@@ -3,7 +3,7 @@ import { GenerationGateway } from "../../src/engine/generation-gateway";
 import type { RequestShape, Vision } from "../../src/engine/completion";
 import { UnsupportedExecutionError } from "../../src/engine/completion";
 import { runtimeConfig } from "@mlx-bun/inference/runtime/config";
-import type { MlxGatewayBinding, MlxBatchGroup } from "@mlx-bun/inference/execution";
+import type { MlxGatewayBinding, MlxBatchGroup, RowPromptCache } from "@mlx-bun/inference/execution";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { ResolvedExecution } from "@mlx-bun/inference/contracts/portable";
 
@@ -49,6 +49,76 @@ for (const capacity of [1, 4]) test(`capacity ${capacity} uses the same continuo
   expect(tokens).toEqual([7]); expect(f.created).toBe(1); expect(f.capacity).toBe(capacity);
   expect(f.samplingDisposed).toBe(1); expect(gateway.submittedRows).toBe(1);
   await gateway.close(); expect(f.closed).toBe(true);
+});
+
+test("denoising image pixels stay borrowed through the row and are released once it settles", async () => {
+  // Outcome of the fake row: resolve, reject, or never submitted (cancelled before start).
+  for (const outcome of ["resolve", "reject", "unstarted"] as const) {
+    let disposed = 0;
+    const pixels = { dispose() { disposed++; } } as unknown as NonNullable<GenerateOptions["visionPixels"]>;
+    let borrowed: unknown;
+    const f = fake({ plan: () => ({ ...execution, method: "denoising", promptCache: false }),
+      submit: async request => {
+        // The row borrows the request's pixels; nothing releases them while it runs.
+        borrowed = (request.method!.data as GenerateOptions).visionPixels;
+        expect(disposed).toBe(0);
+        if (outcome === "reject") throw new DOMException("client left", "AbortError");
+        return result;
+      } });
+    f.binding.methodRequest = (_execution, options) => ({ key: "denoising", data: options,
+      open: () => { throw new Error("CPU fake never opens a method"); } });
+    const gateway = new GenerationGateway(f.binding, 1), s = shape(), abort = new AbortController();
+    if (outcome === "unstarted") abort.abort(new DOMException("client left", "AbortError"));
+    try {
+      const run = gateway.run([1], { maxTokens: 8, visionPixels: pixels }, () => {}, undefined, s, gateway.place(s), abort.signal);
+      if (outcome === "resolve") await run;
+      else await expect(run).rejects.toHaveProperty("name", "AbortError");
+      expect({ outcome, borrowed: borrowed === pixels, disposed })
+        .toEqual({ outcome, borrowed: outcome !== "unstarted", disposed: 1 });
+    } finally { await gateway.close(); }
+  }
+});
+
+// Each path holds a reservation, then fails before the row reaches the group.
+for (const [path, message] of [["prefetch failure", "prefetch failed"], ["wrong placement", "does not belong"],
+  ["abort after reservation", "client left"]] as const) test(`denoising image pixels and grammar release once after ${path}`, async () => {
+  let disposed = 0, submitted = 0;
+  const pixels = { dispose() { disposed++; } } as unknown as NonNullable<GenerateOptions["visionPixels"]>;
+  const controller = grammar(), abort = new AbortController();
+  const f = fake({ plan: () => ({ ...execution, method: "denoising", promptCache: false }),
+    submit: async () => { submitted++; return result; } });
+  const gateway = new GenerationGateway(f.binding, 1, { promptCache: { async prefetch() {
+    if (path === "prefetch failure") throw new Error("prefetch failed");
+    if (path === "abort after reservation") abort.abort(new DOMException("client left", "AbortError"));
+    return () => {};
+  } } as unknown as RowPromptCache });
+  const s = shape(), placement = gateway.place(path === "wrong placement" ? shape() : s);
+  try {
+    await expect(gateway.run([1], { grammar: controller.value, visionPixels: pixels }, () => {}, undefined, s, placement, abort.signal))
+      .rejects.toThrow(message);
+    expect({ pixels: disposed, grammar: controller.disposed, submitted }).toEqual({ pixels: 1, grammar: 1, submitted: 0 });
+  } finally { await gateway.close(); }
+});
+
+test("decode throughput counts every denoised token and keeps the autoregressive first-token exclusion", async () => {
+  for (const [method, generatedTokens, decodeMs, decodeTps] of [
+    ["denoising", 1, 50, 20], ["denoising", 5, 250, 20],
+    ["autoregressive", 1, 50, 0], ["autoregressive", 5, 200, 20],
+  ] as const) {
+    const submitted: Parameters<MlxBatchGroup["submit"]>[0][] = [];
+    const f = fake({ plan: () => ({ ...execution, method }),
+      submit: async request => { submitted.push(request); return { ...result, generatedTokens, decodeMs }; } });
+    if (method === "denoising")
+      f.binding.methodRequest = () => ({ key: "denoising", data: {}, open: () => { throw new Error("CPU fake never opens a method"); } });
+    const gateway = new GenerationGateway(f.binding, 1), s = shape();
+    try {
+      const stats = await gateway.run([1], { maxTokens: 8 }, () => {}, undefined, s, gateway.place(s));
+      expect(stats).toMatchObject({ generatedTokens, decodeMs });
+      expect(stats.decodeTps).toBeCloseTo(decodeTps, 9);
+      // Denoising rows ride their grouped method; AR rows carry a sampler.
+      expect(submitted[0]!.method !== undefined).toBe(method === "denoising");
+    } finally { await gateway.close(); }
+  }
 });
 
 test("unsupported methods report typed exclusion reasons without unrelated compilation diagnostics", () => {

@@ -10,12 +10,12 @@
 import { runtimeConfig } from "../runtime/config";
 import { type MlxDenoisingBinding } from "./bindings/denoising";
 import { adapterScoped,modelNeedsWiredLimit,usageScoped,wiredScoped } from "./scopes";
-import { denoiseAsync } from "./diffusion";
+import { denoiseAsync, type DiffusionGenOptions } from "./diffusion";
 import { Generation } from "./result";
 import { GenerateOptions,GenerateStats,GeneratedToken } from "./types";
 
-/** Denoising bindings use their own state and feedback graph. Callers hold
- * the native runtime's exclusive generation lease, including its global RNG. */
+/** Denoising bindings use their own state and feedback graph. Each request
+ * draws from its own key sequence; callers still serialize model access. */
 export function generateDenoising<State>(
   binding: MlxDenoisingBinding<State>, promptTokens: number[], options: GenerateOptions = {},
 ): Generation {
@@ -27,6 +27,24 @@ export function generateDenoising<State>(
   const runtime = binding.runtime ?? runtimeConfig();
   return new Generation(modelNeedsWiredLimit(binding.memory, undefined,
     runtime.value("MLX_BUN_FORCE_WIRE") === "1") ? wiredScoped(inner) : inner, runtime);
+}
+
+/** The served denoising request: greedy confidence-threshold, a fresh canvas
+ *  seed unless the caller pins one, the checkpoint's stopping set {1, 106}
+ *  united with any caller EOS, and 256 tokens unless the caller sets a limit. */
+export function denoisingRequestOptions(options: GenerateOptions): DiffusionGenOptions {
+  const seed =
+    options.seed !== undefined
+      ? BigInt(options.seed)
+      : BigInt(Math.floor(Math.random() * 0x7fffffff));
+  return {
+    maxTokens: options.maxTokens ?? 256,
+    sampler: "confidence-threshold",
+    temperature: 0,
+    eosTokenIds: [...new Set([1, 106, ...(options.eosTokenIds ?? [])])],
+    seed,
+    visionPixels: options.visionPixels,
+  };
 }
 
 /** Non-autoregressive diffusion generation, adapted to the AR Generation
@@ -41,22 +59,7 @@ async function* generateDiffusionInner<State>(
 ): AsyncGenerator<GeneratedToken, GenerateStats> {
   options.signal?.throwIfAborted();
   const t0 = performance.now();
-  const maxTokens = options.maxTokens ?? 256;
-  // A fresh random canvas seed per request unless the caller pins one.
-  const seed =
-    options.seed !== undefined
-      ? BigInt(options.seed)
-      : BigInt(Math.floor(Math.random() * 0x7fffffff));
-  // The shipped checkpoint's tokenizer stops on {1, 106}; union any caller eos.
-  const eos = [...new Set([1, 106, ...(options.eosTokenIds ?? [])])];
-  const result = await denoiseAsync(binding.graph, promptTokens, {
-    maxTokens,
-    sampler: "confidence-threshold",
-    temperature: 0,
-    eosTokenIds: eos,
-    seed,
-    visionPixels: options.visionPixels,
-  }, options.signal);
+  const result = await denoiseAsync(binding.graph, promptTokens, denoisingRequestOptions(options), options.signal);
   const decodeMs = performance.now() - t0;
   let index = 0;
   let failure: { error: unknown } | undefined;

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { resolveExecution } from "../../src/execution/plan";
 import type { ExecutionCapabilities, ExecutionRequirements } from "../../src/contracts/portable/execution";
 
@@ -248,6 +248,47 @@ test("a provider consuming external tokens composes echo with shared speculation
     expect(resolveExecution(shape, { ...supported, ...disabled }, features).fill).toBe(false);
   for (const extra of [{ hasVision: true }, { hasGrammar: true }, { wantsLogprobs: true }])
     expect(resolveExecution({ ...shape, ...extra }, supported, features).fill).toBe(false);
+});
+
+describe("interleaved denoising placement", () => {
+  const denoising: ExecutionCapabilities = { method: "denoising", continuous: true, quantizedBatch: false,
+    grammarBatch: false, checkpoints: true, adapterBatch: true, sharedCheckpoints: true,
+    groupedMethods: ["denoising"] };
+  const features = { pagedKv: false, fill: false, compiledDecode: true, grammarJump: false };
+
+  test("plain, seeded and adapted requests run continuously with AR-only reuse disabled", () => {
+    for (const extra of [{}, { userSeed: true }, { hasAdapters: true }, { userSeed: true, hasAdapters: true }])
+      expect(resolveExecution({ ...request, ...extra }, denoising, features)).toEqual({
+        method: "denoising", mechanism: "continuous", pagedKv: false, promptCache: false, checkpoint: false,
+        fill: false, compiledDecode: false, grammarJump: false, reasons: ["compiled-decode-unavailable-for-request"] });
+  });
+
+  test.each([
+    [{ hasDraft: true }, {}, "draft-method-unsupported"],
+    [{ hasGrammar: true }, {}, "grammar-batch-unsupported"],
+    [{ wantsLogprobs: true }, {}, "logprobs-method-unsupported"],
+    [{ hasRepetitionPenalty: true }, {}, "repetition-penalty-method-unsupported"],
+    [{ hasLogitsExtras: true }, {}, "logits-extras-method-unsupported"],
+    [{}, { fill: true }, "fill-method-unsupported"],
+    [{ kvQuant: true }, {}, "kv-scheme-batch-unsupported"],
+    [{ turboQuant: true }, {}, "turbo-kv-batch-unsupported"],
+    [{}, { pagedKv: true }, "paged-kv-batch-unsupported"],
+    [{ hasVision: true }, {}, "media-batch-unsupported"],
+  ] as const)("a token-level or AR-state request is refused, never discarded: %#", (shape, feature, reason) => {
+    const plan = resolveExecution({ ...request, ...shape }, denoising, { ...features, ...feature });
+    expect(plan).toMatchObject({ method: "denoising", mechanism: "unsupported", promptCache: false,
+      checkpoint: false, fill: false, grammarJump: false });
+    expect(plan.reasons.filter(entry => entry.endsWith("-unsupported"))).toEqual([reason]);
+    expect(plan.reasons).not.toContain("draft-incompatible-with-request");
+    expect(plan.reasons).not.toContain("fill-incompatible-with-request");
+  });
+
+  test("grammar jump cannot select speculation for a denoising request", () => {
+    const plan = resolveExecution({ ...request, hasGrammar: true }, { ...denoising, sharedGrammarProposals: true,
+      groupedMethods: ["denoising", "speculative"] }, { ...features, grammarJump: true });
+    expect(plan).toMatchObject({ method: "denoising", mechanism: "unsupported", grammarJump: false });
+    expect(plan.reasons).toContain("grammar-batch-unsupported");
+  });
 });
 
 test("accepted plans keep their selected features", () => {

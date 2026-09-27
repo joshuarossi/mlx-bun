@@ -166,6 +166,10 @@ export interface Row {
   /** performance.now() marks for BatchStats timing (0 = not reached). */
   admittedAt: number;
   firstTokenAt: number;
+  /** A method that computes its whole result before publishing reports that
+   *  work span; finish() then reports it as decode time, excluding admission
+   *  wait and output delivery. Denoising sets it. */
+  decodeSpan?: { start: number; end: number };
   closeTokenZero?: () => void;
   cacheNamespace?: string;
   /** Generated tokens whose KV actually entered the cache (fed as a step
