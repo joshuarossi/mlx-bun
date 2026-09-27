@@ -253,10 +253,13 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
       expect(gateway.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous",
         execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false, grammarJump: false } });
     expect(binding.bindAdapterContext).toBeFunction();
-    for (const request of [{ hasDraft: true }, { hasDraft: true, wantsLogprobs: true }, { hasVision: true },
-      { kvQuant: true }, { turboQuant: true }, { hasGrammar: true, kvQuant: true }, { hasAdapters: true, hasDraft: true },
-      { hasGrammar: true, hasVision: true }])
+    // A draft no provider can serve is refused; logprobs and adapter requests
+    // ignore a configured draft on this graph as on every other, as main did.
+    for (const request of [{ hasDraft: true }, { hasVision: true },
+      { kvQuant: true }, { turboQuant: true }, { hasGrammar: true, kvQuant: true }, { hasGrammar: true, hasVision: true }])
       expect(() => gateway.place({ ...shape(), ...request })).toThrow(UnsupportedExecutionError);
+    for (const request of [{ hasDraft: true, wantsLogprobs: true }, { hasAdapters: true, hasDraft: true }])
+      expect(gateway.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous", execution: { method: "autoregressive" } });
     expect(() => gateway.place({ ...shape(), hasAdapters: true }, { pagedKv: {} })).toThrow(UnsupportedExecutionError);
     expect(() => gateway.place(shape(), { pagedKv: {} })).toThrow(UnsupportedExecutionError);
     const fill = { fill: { plan: { echo: null } } } as GenerateOptions;
@@ -266,8 +269,8 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
       execution: { method: "autoregressive", compiledDecode: false, fill: true, checkpoint: false } });
     for (const request of [{ kvQuant: true }, { turboQuant: true }, { hasDraft: true }])
       expect(() => gateway.place({ ...shape(), ...request }, fill)).toThrow(UnsupportedExecutionError);
-    // A served n-gram draft speculates on the shared scheduler; as in main, a
-    // logprobs request ignores it. Drafts with adapters or fill stay refused.
+    // A served n-gram draft speculates on the shared scheduler; as in main,
+    // logprobs and adapter requests ignore it, and a drafted request ignores fill.
     const { NgramProvider } = await import("@mlx-bun/inference/generation/speculative");
     const drafted = bindMlxGateway(model, { provider: new NgramProvider(), numDraftTokens: 10 });
     drafted.createBatchGroup = binding.createBatchGroup;
@@ -279,8 +282,10 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
         execution: { method: "speculative", grammarJump: false } });
       expect(speculating.place({ ...shape(), hasDraft: true, wantsLogprobs: true })).toMatchObject({ mechanism: "continuous",
         execution: { method: "autoregressive" } });
-      expect(() => speculating.place({ ...shape(), hasDraft: true, hasAdapters: true })).toThrow(UnsupportedExecutionError);
-      expect(() => speculating.place({ ...shape(), hasDraft: true }, fill)).toThrow(UnsupportedExecutionError);
+      expect(speculating.place({ ...shape(), hasDraft: true, hasAdapters: true })).toMatchObject({ mechanism: "continuous",
+        execution: { method: "autoregressive" } });
+      expect(speculating.place({ ...shape(), hasDraft: true }, fill)).toMatchObject({ mechanism: "continuous",
+        execution: { method: "speculative", fill: false } });
     } finally { await speculating.close(); }
     // Even a caller advertising generic encoded support cannot qualify this graph.
     expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },

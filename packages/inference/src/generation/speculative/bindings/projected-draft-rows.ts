@@ -13,7 +13,6 @@ export interface ProjectedDraftMethod {
   namespace: string;
   schema: string;
   layers: number;
-  tapLayers: readonly number[];
   project(hidden: MlxArray, positions: number | MlxArray): { k: MlxArray; v: MlxArray }[];
   draft(context: ReturnType<MlxProjectedContextRows["readAttention"]>, pending: readonly number[], positions: number | MlxArray, depth: number): number[][];
 }
@@ -23,9 +22,9 @@ class ProjectedDraftRows implements DraftPrefillGroup, DraftRowGroup {
   readonly prefillMode = "tail-split" as const;
   readonly tapLayers: readonly number[];
   readonly context: MlxProjectedContextRows;
-  constructor(readonly method: ProjectedDraftMethod,
+  constructor(readonly method: ProjectedDraftMethod, tapLayers: readonly number[],
     checkpoints: readonly (DraftRowCheckpoint | null)[]) {
-    this.tapLayers = method.tapLayers;
+    this.tapLayers = tapLayers;
     this.context = new MlxProjectedContextRows(method.layers, { project: method.project });
     try { this.append(checkpoints); } catch (error) { this.dispose(); throw error; }
   }
@@ -67,9 +66,13 @@ class ProjectedDraftRows implements DraftPrefillGroup, DraftRowGroup {
   dispose(): void { this.context.dispose(); }
 }
 
-export function projectedDraftGroups(namespace: string, bind: (target: TargetView) => ProjectedDraftMethod): GroupedDraftProvider {
+/** Projected rows tap the target: the provider declares the one immutable
+ * layer list its rows consume, so bindings check it before any row opens. */
+export function projectedDraftGroups(namespace: string, tapLayers: readonly number[],
+  bind: (target: TargetView) => ProjectedDraftMethod): GroupedDraftProvider {
+  const taps = Object.freeze([...tapLayers]);
   const open = ({ target, checkpoints }: {
     target: TargetView; checkpoints: readonly (DraftRowCheckpoint | null)[];
-  }) => new ProjectedDraftRows(bind(target), checkpoints);
-  return { checkpointNamespace: () => namespace, open, openPrefill: open };
+  }) => new ProjectedDraftRows(bind(target), taps, checkpoints);
+  return { checkpointNamespace: () => namespace, targetTapLayers: () => taps, open, openPrefill: open };
 }

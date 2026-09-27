@@ -47,9 +47,13 @@ type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 
 const DRAFT_PREFILL_CHUNK = 2048;
 
+/** MTP drafts from the target's last hidden layer, before its final norm. */
+const mtpTapLayers = (target: QwenMtpTarget): readonly number[] => Object.freeze([target.layerCount - 1]);
+
 export class QwenMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
     supportsExternalTokens: true,
+    targetTapLayers: view => mtpTapLayers(this.#target(view)),
     artifactDir: undefined as string | undefined,
     checkpointNamespace: () => this.#checkpointNamespace,
     open: options => this.#openRows(options.target, options.sampling, options.checkpoints),
@@ -134,7 +138,7 @@ export class QwenMtpProvider implements DraftProvider {
     try { append(checkpoints); }
     catch (error) { return cleanupFailure(error, () => rows.dispose()); }
     return {
-      namespace: this.#checkpointNamespace, prefillMode: "full", tapLayers: [target.layerCount - 1],
+      namespace: this.#checkpointNamespace, prefillMode: "full", tapLayers: mtpTapLayers(target),
       get rowCount() { return rows.rowCount; },
       append, prepareAppend, prefill: (tokens, context) => rows.prefill(tokens, context!), materialize: rows.materialize.bind(rows),
       filterRows: rows.filterRows.bind(rows),
@@ -186,7 +190,7 @@ export class QwenMtpSource implements DraftSource {
     this.#target = target;
     this.#module = module;
     this.#sampler = sampler;
-    this.tapLayers = [target.layerCount - 1];
+    this.tapLayers = [...mtpTapLayers(target)];
     this.checkpoint = {
       namespace,
       restore: (tokens, attachment) => {

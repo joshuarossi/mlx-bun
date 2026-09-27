@@ -221,6 +221,11 @@ export interface GroupedDraftProvider {
   /** Draft state remains valid when target forwards run under a mounted
    * adapter context. Unqualified learned draft graphs leave this absent. */
   readonly supportsTargetAdapters?: boolean;
+  /** Target hidden layers every row of this provider taps for this target, in
+   * capture order. A provider whose rows tap must implement it; rows opened for
+   * the target tap exactly this list. The binding resolves it once and admits the
+   * provider only when the target forward can capture these layers. Absent: no taps. */
+  targetTapLayers?(target: TargetView): readonly number[];
   openPrefill(options: { target: TargetView;
     checkpoints: readonly (DraftRowCheckpoint | null)[] }): DraftPrefillGroup;
   open(options: { target: TargetView; sampling: DraftRowSampling; constraints?: DraftRowConstraints;

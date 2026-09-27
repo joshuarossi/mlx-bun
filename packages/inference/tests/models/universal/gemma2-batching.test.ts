@@ -8,6 +8,7 @@ import type { UniversalDenseModel } from "../../../src/models/universal/dense";
 import type { ModelConfig } from "../../../src/artifacts/config";
 import type { Weights } from "../../../src/artifacts/weights";
 import type { Cache, Mask } from "../../../src/contracts/mlx/cache";
+import type { DraftProvider } from "../../../src/generation/speculative/source";
 import type { GenerateOptions } from "../../../src/generation/index";
 
 // Native numerical tests are explicit: CPU-only planning/CI never initializes
@@ -919,6 +920,80 @@ test.skipIf(!native || !artifact)("cached Gemma2 n-gram speculation mixes empty 
       expect(rejected).toBeGreaterThan(0);
       expect(group.activeRows + group.pendingRows).toBe(0);
     } finally { await group.close(); }
+  } finally { weights.dispose(); }
+}, 900_000);
+
+
+test.skipIf(!native || !artifact)("a structurally equivalent delegating provider reproduces direct n-gram speculation through joins, cancellation and drain", async () => {
+  const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
+  const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
+  const { NgramProvider } = await import("../../../src/generation/speculative");
+  const { loadTokenizer } = await import("../../../src/input");
+  const weights = await Weights.open(artifact!);
+  try {
+    const model = createModel(weights, await loadModelConfig(artifact!)) as UniversalDenseModel;
+    const tokenizer = await loadTokenizer(artifact!);
+    const eos = model.config.eosTokenIds;
+    const prompt = (text: string) => [2, ...tokenizer.encode(`<start_of_turn>user\n${text}<end_of_turn>\n<start_of_turn>model\n`, false)];
+    const prompts = [prompt("Copy this list exactly: red apples, green pears, warm bread, a blue kite, seven paper boats, an old clock."),
+      prompt("Write a long, winding story about a lighthouse keeper who discovers an old map hidden inside a wall."),
+      prompt("Explain step by step how bread dough rises overnight in a bakery.")];
+    // Every target forward's geometry and every projection's exact bytes.
+    const forwards: string[] = [], logits: string[] = [];
+    const forwardHidden = model.forwardHidden.bind(model), logitsFromHidden = model.logitsFromHidden.bind(model);
+    model.forwardHidden = (...args: Parameters<typeof forwardHidden>) => { forwards.push(args[0].shape.join("x")); return forwardHidden(...args); };
+    model.logitsFromHidden = (...args: Parameters<typeof logitsFromHidden>) => {
+      const out = logitsFromHidden(...args);
+      using flat = ops.contiguous(out);
+      logits.push(createHash("sha256").update(flat.rawBytes()).digest("hex"));
+      return out;
+    };
+    /** The n-gram provider's operations behind a plain object: no class identity, same contracts. */
+    const delegating = (): DraftProvider => {
+      const inner = new NgramProvider(), grouped = inner.grouped;
+      return { id: "ngram-delegate", weightsBytes: 0, open: options => inner.open(options), dispose: () => inner.dispose(),
+        grouped: { checkpointNamespace: () => grouped.checkpointNamespace!(), supportsTargetAdapters: grouped.supportsTargetAdapters,
+          open: options => grouped.open(options), openPrefill: options => grouped.openPrefill(options) } };
+    };
+    const runtime = createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" });
+    const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
+      turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true };
+    const options = { maxTokens: 24, temperature: 0 };
+    // Row 0 alone, row 1 joins at its first token, row 2 joins at row 1's first
+    // token and is cancelled at its third; the group drains, then row 0 reruns alone.
+    const run = async (provider: DraftProvider) => {
+      const binding = bindMlxGateway(model, { provider, numDraftTokens: 10 });
+      const plan = binding.plan(shape, options, { continuous: binding.cachesBatchable(), quantizedBatch: false, checkpoints: false });
+      expect(plan).toMatchObject({ method: "speculative", mechanism: "continuous" });
+      const group = binding.createBatchGroup({ maxBatch: 4, prefillChunkSize: 512, runtime });
+      forwards.length = 0; logits.length = 0;
+      const rows = prompts.map(() => ({ tokens: [] as number[], error: null as string | null, spec: undefined as unknown }));
+      try {
+        const abort = new AbortController(), started: Promise<void>[] = [];
+        const submit = (index: number) => {
+          started.push(group.submit({ promptIds: prompts[index]!, maxTokens: options.maxTokens, eosTokenIds: eos,
+            method: binding.methodRequest!(plan, options)!, signal: index === 2 ? abort.signal : undefined,
+            onToken(token) {
+              const row = rows[index]!; row.tokens.push(token);
+              if (row.tokens.length === 1 && index < 2) submit(index + 1);
+              if (index === 2 && row.tokens.length === 3) abort.abort(new DOMException("client left", "AbortError"));
+            } }).then(stats => { rows[index]!.spec = stats.spec; }, error => { rows[index]!.error = (error as Error).name; }));
+        };
+        submit(0);
+        for (let seen = -1; seen !== started.length;) { seen = started.length; await Promise.all([...started]); }
+        const drained = group.activeRows + group.pendingRows, solo: number[] = [];
+        await group.submit({ promptIds: prompts[0]!, maxTokens: options.maxTokens, eosTokenIds: eos,
+          method: binding.methodRequest!(plan, options)!, onToken: token => { solo.push(token); } });
+        return { rows, drained, solo, forwards: [...forwards], logits: [...logits] };
+      } finally { await group.close(); }
+    };
+    const direct = await run(new NgramProvider()), delegated = await run(delegating());
+    expect(direct.rows.map(row => row.error)).toEqual([null, null, "AbortError"]);
+    expect(direct.rows[2]!.tokens).toHaveLength(3);
+    expect(direct.drained).toBe(0);
+    expect(direct.solo).toHaveLength(direct.rows[0]!.tokens.length);
+    expect(Math.max(...direct.forwards.map(forward => Number(forward.split("x")[0])))).toBe(3);
+    expect(delegated).toEqual(direct);
   } finally { weights.dispose(); }
 }, 900_000);
 

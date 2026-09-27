@@ -32,6 +32,7 @@ function fixture(drafts: "accepted" | "rejected" | "none", fallback = false) {
       return fallback ? { ...transaction, canBegin: () => false } : transaction;
     },
     async forward(ids, caches) { return { hidden: await graph.forwardHidden(ids, caches), ctxML: null }; },
+    supportsTapLayers: layers => !layers.length,
     projectLogits: hidden => graph.projectLogits(hidden, { type: "all" }),
     openDraft() {
       return { weightsBytes: 0, prefill() {}, commit() {}, dispose() { disposed++; },
