@@ -27,8 +27,12 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 ## Optimize after the full draft
 
 - [ ] Run paired same-machine performance comparisons against main using the
-  same artifacts and configuration. Exit: decode, prefill, complete-request time,
-  and memory evidence is recorded; regressions are resolved or explicitly reviewed.
+  full benchmark suite, the same artifacts, inputs, configuration and execution
+  shapes after the candidate is assembled. Run the full applicable parity suites
+  as well; focused PR checks do not replace final qualification. Exit: decode,
+  prefill, complete-request time and memory match main in paired measurements;
+  regressions are traced and fixed, with affected parity and benchmarks rerun.
+  Reusable verification code stays in Git; generated results stay outside it.
 
 ## Improvements identified during migration
 
