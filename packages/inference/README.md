@@ -143,6 +143,18 @@ adapter identity and unmount restoration. Separate candidate B2/B4 tests without
 a configured draft passed joins, cancellation, queued adapter/base isolation
 and reuse after drain.
 
+Gemma4 adapter rows also take ordinary generation checkpoints when the server's
+paging option is enabled: the resolved row uses plain KV, so checkpoint identity
+and continuation are the same with paging enabled or disabled. Paired B1 checks
+on Gemma4 e2b OptiQ-4bit (snapshot `b0162532`, MacBookPro18,2, MLX 0.32.2)
+matched main `02d723a` at capacity 1 against continuous capacity 8 for 16 tokens,
+greedy and seeded sampling, and fresh-process restoration across both settings.
+Full logits and all 15 donor KV states matched; all 35 layer outputs and the
+final norm matched by hash. The nonzero adapter changed logits and unmounting
+restored the base. Actual paged rows remained checkpoint-ineligible. This covers
+one active row within the sliding window, not grouped rows, paged numerics,
+hard-kill durability, external-oracle parity or performance.
+
 MiniCPM5 and these universal graphs also ignore a configured draft and supplied
 fill for adapter requests, as main did; requested logprobs remain available.
 Without fill/logprobs/grammar, ordinary checkpoints remain eligible. The fallback
