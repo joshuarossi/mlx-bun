@@ -8,7 +8,8 @@ needs a separate installation or release boundary.
 ## Foundational decisions
 
 - One repository and Git history; Bun workspaces, without Turbo. YAGNI and KISS
-  guide additions. The empty-tree rebuild admits only files Josh approves.
+  guide additions. Josh approves new documentation files; implementation and test
+  files needed for the approved refactor do not require individual approval.
 - Libraries publish under `@mlx-bun/`; the runnable app keeps `mlx-bun`.
 - Libraries use MIT. Licensing for future apps remains a separate decision.
 - Ship required native binaries inside package artifacts, outside Git. Support
@@ -148,6 +149,18 @@ A new implementation must preserve the contract's tensor shapes, ownership,
 state transitions, cancellation, and disposal semantics. Specialized numerical
 paths remain explicit and reusable.
 
+Composition follows the operations and invariants each component provides.
+Compatible graph, cache, sampling, and generation implementations should compose
+without a separate model-family allowlist for every combination. Real constraints,
+such as an attention operation requiring a particular cache representation, belong
+in the owning component's contract and binding; the scheduler consumes that binding.
+Prefer the smallest existing interface that expresses the requirement.
+
+Main is the baseline for working capabilities, not a requirement to reproduce
+every restriction, silently ignored option, or bug. Preserve what works while
+removing accidental coupling. Make intentional behavior corrections explicit and
+test them; never report an option as implemented when its operation is unavailable.
+
 ## Refactor verification
 
 Preserving implementation means preserving numerical results and behavior for
@@ -183,7 +196,7 @@ Documentation changes follow a code change, decision, measurement, or misleading
 guide. Update it with that change. Open work lives only in PLAN; delete completed
 blocks. No STATUS file, parallel issue backlog for this refactor, or scheduled
 documentation passes. Mechanical rules get gates and pointers; policy rules,
-including approval before adding files, remain binding without a gate. A future
+including approval before adding documentation files, remain binding without a gate. A future
 agent entry file should stay short: navigation and those policy rules.
 
 Separate decision records are for consequential tradeoffs or costly
