@@ -48,6 +48,16 @@ than dismissing them as framework differences. Paired reports live outside this
 repository, for example as a published dataset; quote results as text in
 documentation with their provenance, following the architecture's [documentation rules](ARCHITECTURE.md#documentation).
 
+The assembled refactor candidate must run the full applicable parity suites and
+the full paired benchmark suite against main before final acceptance. Focused PR
+checks do not replace this qualification. Match machine, artifacts, inputs,
+settings and execution shapes, including single-request and batched workloads.
+Retain the same numerical rigor and require performance to match main; investigate
+measured regressions, fix their causes, and rerun affected parity and benchmarks.
+A cleaner architecture is not grounds for accepting degraded performance.
+Reusable verification code and scripts belong in Git; generated captures,
+checkpoints and benchmark output remain external operational artifacts.
+
 ## Commits and review
 
 Use focused commits with `<type>: <description>` titles, such as `fix:`, `test:`,
