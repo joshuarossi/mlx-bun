@@ -1,5 +1,5 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
 // The composer's non-thread surface: attachments (files + images), the
@@ -75,7 +75,8 @@ export class ComposerState {
   // back to the built-in constants below until a ready frame arrives.
   genDefaults: ReadyGenDefaults = { temperature: null, topP: null, topK: null };
 
-  // Per-message sampling scope (plan §9 Phase 3, beat matrix Axis 4): "session"
+  // Per-message sampling scope (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+  // beat-matrix Axis 4): "session"
   // (default) behaves exactly as today — overrides persist until changed.
   // "next_turn" is a one-shot: the NEXT change the user makes is sent with
   // `scope:"next_turn"` and the server reverts to the prior session-level
@@ -85,7 +86,8 @@ export class ComposerState {
   samplingScope: "session" | "next_turn" = "session";
   oneShotArmed = false;
 
-  // Per-chat custom system prompt (plan §9 Phase 2 item, beat matrix Axis 4),
+  // Per-chat custom system prompt (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+  // beat-matrix Axis 4),
   // layered onto the built-in surface prompt server-side (see
   // apps/mlx-bun/src/chat/policy.ts's injectSystemPrompt and
   // apps/mlx-bun/src/chat/pi-backend.ts's installSystemPromptHook). null/"" = none set.
@@ -151,7 +153,8 @@ export interface BuiltMessage {
   citations: Citation[];
 }
 
-/** Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5 — optiq
+/** Chat-with-files RAG v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+ *  beat-matrix Axis 5 — optiq
  *  Lab's dependency-free BM25 bar). Size-aware retrieval over attached text
  *  files, decided per send:
  *   - total attached text <= INLINE_THRESHOLD_CHARS: inline every file
@@ -222,8 +225,8 @@ export function renderAdapterOptionsHtml(list: AdapterInfo[]): string {
 // — LoRA adapter selector. Pi-native: app.html lists + mounts adapters, then
 //   tells pi-web which one is active; the before_provider_request hook injects
 //   it into every provider request. Default "" = none (base model). Still a
-//   single-select <select> this phase (the full three-state routing table is
-//   Phase 2) — the presentation upgrade here is showing every adapter found
+//   single-select <select> (the full three-state routing table lives in
+//   adapters-panel.ts) — the presentation upgrade here is showing every adapter found
 //   on disk (not just ones that fit the served model) with incompatible
 //   entries grayed via the `compatible` flag /v1/adapters/available now
 //   returns, each with a title explaining why it's unusable right now. —
@@ -251,7 +254,7 @@ export async function onSelectAdapter(sel: HTMLSelectElement, send: (obj: unknow
   }
   send({ type: "set_adapter", id });
   // Adapter-namespaced KV means a swap can never reuse the outgoing
-  // adapter's cache — make that concrete instead of implicit (plan §5.2).
+  // adapter's cache — make that concrete instead of implicit.
   toast("adapter mounted — new turns start a fresh KV segment", "ok");
 }
 
@@ -461,15 +464,17 @@ export function initSampling(state: ComposerState, send: (obj: unknown) => boole
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   System prompt (plan §9 Phase 2, beat matrix Axis 4) + presets v1
+   System prompt + presets v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 4)
    ──────────────────────────────────────────────────────────────────── */
 
 const SYS_PROMPT_MAX = 4000;
 
 /**
  * One saved preset bundle: a name, the system-prompt text, and a sampling
- * snapshot. Shaped so Phase 5's persona/bundle concept (system prompt +
- * adapter selection + tool allowlist + memory scope, plan §5.7/§6) is an
+ * snapshot. Shaped so the persona-bundle stretch item (system prompt +
+ * adapter selection + tool allowlist + memory scope;
+ * `02d723a:docs/design/web-chat-redesign.md` §5) is an
  * ADDITIVE extension of this same object — new optional fields, no
  * migration of the fields already here. Saved to localStorage, never sent
  * to the server (presets are a client-only convenience over the existing
@@ -479,7 +484,7 @@ export interface Preset {
   name: string;
   systemPrompt: string | null;
   sampling: SamplingOverrides;
-  // Phase 5 additive fields (not read/written by v1, documented here so the
+  // Persona-bundle fields (not read/written by v1, documented here so the
   // shape doesn't need revisiting): adapterId?: string | null;
   // toolAllowlist?: string[]; memoryScope?: "off" | "read" | "read+write".
 }
@@ -696,7 +701,7 @@ export function renderContext(m: ContextFrame): void {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Unified "#" retrieval mention (plan §5.2/§9 Phase 2): typing "#" opens a
+   Unified "#" retrieval mention: typing "#" opens a
    picker over BOTH currently-attached files and vault articles (via
    /api/memory/search) as one retrieval gesture — Open WebUI's `#`-mention
    pattern, extended so "attach a file" and "search my memory" are the same

@@ -589,7 +589,7 @@ async function sftLoop(
     if (model instanceof Gemma4Model)
       throw new Error(
         "MLX_BUN_TRAIN_ATTN=flash is disabled for Gemma models: e4b SIGTRAPs on this " +
-          "path at seq >= 2048 (docs/reference/training.md) and it has not been " +
+          "path at seq >= 2048 and it has not been " +
           "re-validated at that scale since the kernel fixes. Unset MLX_BUN_TRAIN_ATTN " +
           "(ops.sdpa, the default, is exact and ~30x faster) or train MiniCPM5.",
       );

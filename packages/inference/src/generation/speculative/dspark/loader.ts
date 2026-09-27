@@ -6,7 +6,7 @@
 //   variant absent             — a v1 single-vector checkpoint
 //                                (packages/inference/src/models/speculative/dspark.ts,
 //                                superseded research baseline) — refused for
-//                                serving with a pointer at the v2 trainer.
+//                                serving.
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +19,6 @@ export function loadDsparkDrafter(dir: string): DflashDrafter {
   if (meta.variant === "dspark" || meta.variant === "dflash") return DflashDrafter.load(dir);
   throw new Error(
     `${dir} is a v1 single-vector DSpark checkpoint (variant=${meta.variant ?? "none"}) — ` +
-      `superseded, not serveable; retrain with scripts/dspark.ts train`,
+      `superseded, not serveable; retrain it as a v2 (KV-injection) checkpoint`,
   );
 }

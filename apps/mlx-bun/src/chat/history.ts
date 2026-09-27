@@ -86,7 +86,7 @@ export function toPiImages(images?: ImageAttachment[]): ImageContent[] | undefin
 // under that same parent — i.e. a sibling of the original message, in the
 // SAME session file. This is exactly "regenerate" (re-send the identical
 // content) and "edit-and-resend" (re-send edited content) without any
-// file-level fork/session spam (plan §5.2's explicit constraint).
+// file-level fork/session spam.
 //
 // navigateTree's own editorText is TEXT-ONLY (pi's editor-reopen use case
 // doesn't carry images). We extract the full original `content` ourselves
@@ -120,8 +120,8 @@ function extractUserContent(content: unknown): { text: string; images: ImageCont
 
 /** Find the LAST user-message entry in a session's entries (in append order).
  *  Used by both `regenerate` (re-send it as-is) and as the sibling group's
- *  anchor for `edit_resend` (always edits the last user message — plan §5.2
- *  scopes this to the last message, not any earlier one). Pure. */
+ *  anchor for `edit_resend` (always edits the last user message, not any
+ *  earlier one). Pure. */
 export function findLastUserMessageEntry(entries: readonly SessionEntry[]): UserMessageEntryInfo | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i];

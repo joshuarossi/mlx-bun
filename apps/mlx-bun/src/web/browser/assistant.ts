@@ -1,7 +1,8 @@
 import type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../chat/protocol";
 export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../chat/protocol";
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §6.6 "the app-aware assistant", §9 Phase 3, beat matrix Axis 12).
+// split (the app-aware assistant; `02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 12).
 // Built into apps/mlx-bun/dist/web/app.js by scripts/build-web.ts.
 //
 // Three pieces, mirroring the proven PortfolioManager reference
@@ -17,7 +18,7 @@ export type { UiSnapshotElement, UiSnapshot, WizardStep } from "../../chat/proto
 //     exactly PortfolioManager's resolution order (ref from the last
 //     snapshot -> live selector -> label fuzzy-match -> catalog target).
 //  3. showSpotlight()/dismissSpotlight() — the hand-rolled, NEVER-HIJACK
-//     overlay (§6.6 hard constraint, verbatim): traps no focus, blocks no
+//     overlay (a hard constraint): traps no focus, blocks no
 //     clicks (pointer-events: none on the whole overlay — the highlighted
 //     control stays clickable THROUGH it), auto-dismisses ~3s, and ANY user
 //     input (keydown/mousedown/wheel) dismisses it instantly. transform/
@@ -328,7 +329,7 @@ export function resolveSpotlightTarget(
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   3. THE OVERLAY — never-hijack, verbatim from §6.6
+   3. THE OVERLAY — never-hijack
    ──────────────────────────────────────────────────────────────────── */
 
 const AUTO_DISMISS_MS = 3000;
@@ -363,7 +364,7 @@ export function dismissSpotlight(): void {
  *  caller (chat.ts's ui_spotlight handler) can toast a quiet failure
  *  instead of showing a ring around nothing.
  *
- *  NEVER-HIJACK, verbatim from §6.6: this overlay traps no focus (never
+ *  NEVER-HIJACK: this overlay traps no focus (never
  *  added to shell.ts's trapFocus/closeTopOverlay set), blocks no clicks
  *  (pointer-events:none in CSS — the highlighted control stays clickable
  *  through it), auto-dismisses after ~3s, and ANY user input — keydown,

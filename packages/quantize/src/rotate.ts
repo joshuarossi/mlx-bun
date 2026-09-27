@@ -47,7 +47,7 @@ function assertPow2(n: number, what: string): void {
   if (n < 2 || (n & (n - 1)) !== 0)
     throw new Error(
       `rotation fold: ${what}=${n} is not a power of two — the Kronecker ` +
-      `Hadamard path is not implemented (docs/design/turboquant.md)`,
+      `Hadamard path is not implemented`,
     );
 }
 

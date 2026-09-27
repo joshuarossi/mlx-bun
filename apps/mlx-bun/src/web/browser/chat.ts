@@ -1,5 +1,5 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
 // The chat controller: WS wiring, thread render, streaming, tool cards,
@@ -10,7 +10,7 @@
 // from the original single-IIFE app.html: the split's whole point is
 // typed, checkable seams between these concerns).
 //
-// Typed WS contract (plan §9 Phase 2 item 2): ClientMessage/ServerMessage
+// Typed WS contract: ClientMessage/ServerMessage
 // and the history/session shapes are imported TYPE-ONLY from ../../chat/protocol
 // so this module (and the whole bundle) contains zero server code — the
 // bundler errors on bun:ffi if a value import ever sneaks in here, which is
@@ -44,8 +44,8 @@ import { buildAppContext, resolveSpotlightTarget, showSpotlight, type UiSnapshot
 import { isRouteId } from "./ui-catalog";
 
 /* ────────────────────────────────────────────────────────────────────
-   Chat-with-files RAG v1 — Sources panel (plan §9 Phase 3, beat matrix
-   Axis 5). Pure HTML builder so apps/mlx-bun/tests/web/browser.test.ts can exercise the
+   Chat-with-files RAG v1 — Sources panel (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 5). Pure HTML builder so apps/mlx-bun/tests/web/browser.test.ts can exercise the
    esc() discipline directly, same reasoning as renderAdapterOptionsHtml
    etc. in composer.ts.
    ──────────────────────────────────────────────────────────────────── */
@@ -107,7 +107,7 @@ function diffView(args: unknown): string {
    ──────────────────────────────────────────────────────────────────── */
 
 // Two distinct card kinds share one map (curAssistant.tools): the generic
-// "wrench" tool card and the memory provenance chip (plan §5.4.2 — the
+// "wrench" tool card and the memory provenance chip (the
 // single highest-leverage rendering change: a citation, not a shell
 // command). Dispatch on `.kind` at each lifecycle point (toolCard/
 // toolUpdate/toolEnd) rather than keeping two parallel maps, since a card's
@@ -147,7 +147,8 @@ interface AssistantMsgState {
   blockState: BlockState;
   scheduleText: () => void;
   scheduleThinking: () => void;
-  // Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5): the
+  // Chat-with-files RAG v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+  // beat-matrix Axis 5): the
   // citation list retrieved for the prompt that started THIS turn, if any
   // (composer.ts's buildMessageText only returns a non-empty list when
   // retrieval mode fired). Empty for the common case — no Sources panel,
@@ -159,7 +160,7 @@ export function createChatController() {
   let ws: WebSocket | null = null, connected = false, reconnectTimer: ReturnType<typeof setTimeout> | undefined, manualClose = false;
   let curAssistant: AssistantMsgState | null = null;
   let turnActive = false;
-  // App-aware assistant (plan §6.6): the last uiSnapshot pushed to the
+  // App-aware assistant: the last uiSnapshot pushed to the
   // server, kept client-side too so spotlight_ui's ref resolution
   // (resolveSpotlightTarget) doesn't need a round-trip — the browser
   // already has the freshest snapshot it just sent.
@@ -204,7 +205,8 @@ export function createChatController() {
     return false;
   }
 
-  /* ── App-aware assistant (plan §6.6, §9 Phase 3, beat matrix Axis 12) ──
+  /* ── App-aware assistant (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+     beat-matrix Axis 12) ──
      "See": push a structured context frame on every route change and every
      wizard-step change. Never on a timer — only these two triggers, so the
      server's ambient one-liner always reflects a real, user-caused state
@@ -254,7 +256,7 @@ export function createChatController() {
     else if (s === "error") line.textContent = "connection error — retrying";
   }
 
-  /* — message actions: copy / regenerate / edit-and-resend (plan §5.2) —
+  /* — message actions: copy / regenerate / edit-and-resend —
    *  Only the LAST assistant message gets "regenerate" and only the LAST
    *  user message gets "edit" + the sibling `< i/n >` toggle. Both "last"
    *  pointers are tracked module-side and re-derived whenever a `history`
@@ -440,8 +442,8 @@ export function createChatController() {
     updateTps();
   }
 
-  /* tool card lifecycle — dispatches to the memory provenance chip (plan
-   *  §5.4.2) for memory_ and reference_ tool calls, the generic wrench card
+  /* tool card lifecycle — dispatches to the memory provenance chip
+   *  for memory_ and reference_ tool calls, the generic wrench card
    *  for everything else. Both kinds live in the same a.tools map (see
    *  ToolCardState above). */
   function toolCard(callId: string, tool: string, args: unknown): ToolCardState {
@@ -504,7 +506,7 @@ export function createChatController() {
     if (!ok) t.wrap.classList.add("open");
   }
 
-  /* approval dialog (plan §5.4/§6.5: editable arguments + durable "always
+  /* approval dialog (editable arguments + durable "always
    *  allow this tool", on top of the existing running/ok/fail visual
    *  language). The diff view (edit/write) stays as a read-only visual aid
    *  ABOVE the editable textarea — losing the diff would make large
@@ -576,7 +578,8 @@ export function createChatController() {
     stick(true);
   }
 
-  /** Chat-with-files RAG v1 (plan §9 Phase 3, beat matrix Axis 5): append a
+  /** Chat-with-files RAG v1 (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   *  beat-matrix Axis 5): append a
    *  collapsed "Sources · K" panel under the bubble and linkify any [n]
    *  markers the model actually used in its reply. Only ever called with a
    *  non-empty citation list (finishStreaming guards this) — an ordinary
@@ -634,7 +637,7 @@ export function createChatController() {
   }
 
   /** Demote the previously-"last" assistant message: only ONE message ever
-   *  shows Regenerate (plan §5.2 scopes it to the last assistant turn). */
+   *  shows Regenerate (the last assistant turn). */
   function clearRegenerateAffordance(): void {
     if (!lastAssistantMsgEl) return;
     const row = lastAssistantMsgEl.querySelector(".msg-actions");
@@ -666,7 +669,7 @@ export function createChatController() {
     renderQueue({});
   }
 
-  // Perf strip (plan §5.2/§6.4): tok/s + TTFT update live during streaming;
+  // Perf strip: tok/s + TTFT update live during streaming;
   // context-fill is driven separately by the `context` frame (renderContext).
   // Computed from data the composer already has.
   function updateTps(): void {
@@ -694,7 +697,7 @@ export function createChatController() {
   }
 
   /** Render a finished assistant turn from replayed history (no streaming).
-   *  `opts.isLast` attaches the Regenerate action (plan §5.2: last turn only). */
+   *  `opts.isLast` attaches the Regenerate action (last turn only). */
   function renderAssistantStatic(item: HistoryItem, opts: { isLast?: boolean }): void {
     const m = el("div", "msg assistant", thread());
     el("div", "who", m).textContent = "local agent";
@@ -772,14 +775,14 @@ export function createChatController() {
         refreshSamplingRecs(composer);
         if (composer.thinkingCapable) send({ type: "set_thinking", enabled: composer.thinkingOn });
         composerRefreshAdapters();
-        // Restore this browser's codingTools preference (plan §5.4/§6.5).
+        // Restore this browser's codingTools preference.
         // Sent every `ready` (including reconnects): a fresh WS session
         // always starts codingToolsRequested=false server-side, so a
         // previously-on browser must re-assert it, and the coding_tools
         // frame that follows will report whether it's active yet or only
         // pending for the next new/opened chat.
         send({ type: "set_coding_tools", enabled: storedCodingToolsPreference() });
-        // App-aware assistant (plan §6.6): a fresh WS session starts with no
+        // App-aware assistant: a fresh WS session starts with no
         // stored context server-side (currentAppContext is null until the
         // first push) — every `ready` (initial connect AND reconnect) must
         // re-push so get_current_app_context / the ambient line are never
@@ -803,7 +806,7 @@ export function createChatController() {
         break;
       case "context": renderContext(m as ContextFrame); break;
       // Sibling group for the last user message (edit-and-resend's `< i/n >`
-      // toggle, plan §5.2) — see renderSiblingToggle/switchSiblingDir.
+      // toggle) — see renderSiblingToggle/switchSiblingDir.
       case "siblings":
         siblingInfo = { entryId: m.entryId || null, index: m.index, count: m.count, siblingIds: m.siblingIds || [] };
         lastUserEntryId = siblingInfo.entryId;
@@ -818,7 +821,7 @@ export function createChatController() {
       case "tool_end": toolEnd(m.callId, m.ok, m.result); break;
       // clearOneShotArmed: a one-shot next_turn sampling override (if any
       // was armed) has now been consumed by the server for exactly this
-      // turn — clear the local indicator in lockstep (plan §9 Phase 3 item 2).
+      // turn — clear the local indicator in lockstep.
       case "turn_end": finalizeMeta(); clearOneShotArmed(composer); endTurn(); break;
       case "queue_update": renderQueue(m); break;
       // A prompt/regenerate/edit_resend that fails before the server ever
@@ -829,7 +832,7 @@ export function createChatController() {
       // apps/mlx-bun/src/chat/pi-backend.ts), so the two stay in lockstep instead of the UI's "armed"
       // pill lingering after the override it referred to is already gone.
       case "error": showAgentError(m.message || "agent error"); toast(m.message || "agent error", "err"); clearOneShotArmed(composer); if (turnActive) endTurn(); break;
-      // App-aware assistant (plan §6.6): navigate_app / spotlight_ui tool
+      // App-aware assistant: navigate_app / spotlight_ui tool
       // calls arrive as these two frames. Navigation always routes through
       // location.hash (the SAME mechanism a nav-tab click uses — shell.ts's
       // hashchange listener does the actual section toggle), so it's
@@ -874,8 +877,9 @@ export function createChatController() {
     // entryId-mismatch check, same as a fresh page load's history replay.
     addUserMsg(text, composer.attachments as unknown as { kind: string; data?: string; mimeType?: string; name: string }[], { isLast: true });
     box.value = ""; box.style.height = "auto";
-    // buildMessageText returns { text, citations } (RAG v1, plan §9 Phase 3
-    // Axis 5): .text is the WS-outgoing prompt string (with the numbered
+    // buildMessageText returns { text, citations } (RAG v1,
+    // `02d723a:docs/design/web-chat-redesign.md` Appendix A, beat-matrix Axis 5):
+    // .text is the WS-outgoing prompt string (with the numbered
     // context block injected when retrieval mode fired); .citations stash
     // into pendingCitations so startAssistant() can attach them to the
     // AssistantMsgState this prompt's reply streams into once turn_start
@@ -893,7 +897,7 @@ export function createChatController() {
   const atBottom = () => scroll().scrollHeight - scroll().scrollTop - scroll().clientHeight < 90;
   function stick(force?: boolean): void { if (force || atBottom()) scroll().scrollTop = scroll().scrollHeight; }
 
-  /** Cmd/Ctrl+Shift+C (plan §7): reuses the exact per-message Copy button
+  /** Cmd/Ctrl+Shift+C: reuses the exact per-message Copy button
    *  (addMsgActions) on the last assistant message rather than duplicating
    *  its clipboard logic — a synthetic click keeps the "Copied" flash
    *  feedback consistent with the mouse path. */
@@ -903,7 +907,7 @@ export function createChatController() {
     if (btn) btn.click();
   }
 
-  /** Cross-controller call from shell.ts's settings toggle (plan §5.4/§6.5)
+  /** Cross-controller call from shell.ts's settings toggle
    *  — shell.ts owns the checkbox + localStorage mirror but no WebSocket, so
    *  it calls this via controllers.chat.setCodingTools, same pattern as
    *  newChat/copyLastResponse below. */
@@ -937,7 +941,7 @@ export function createChatController() {
       if (adapterSel) adapterSel.onchange = () => {
         // Keep the routing table's notion of "selected for this chat" in
         // sync with the quick <select> — one source of truth for what's
-        // selected, read by both surfaces (plan §5.6: "keep them consistent").
+        // selected, read by both surfaces.
         adaptersPanel.selectedSpec = adapterSel.value || null;
         adaptersPanel.stackPicks.clear();
         onSelectAdapter(adapterSel, send as (obj: unknown) => boolean);
@@ -966,7 +970,7 @@ export function createChatController() {
       });
       box.addEventListener("input", () => { box.style.height = "auto"; box.style.height = Math.min(box.scrollHeight, 200) + "px"; });
       // Delegated (not per-chip) so the personalized chips memory-panel.ts
-      // inserts on top of these four static ones (plan §5.1) work with zero
+      // inserts on top of these four static ones work with zero
       // extra wiring — #chat-hello-chips is stable even though its contents
       // change (static chips today, +2 personalized ones once the first
       // /api/memory/status + /v1/adapters/available round trip resolves).
@@ -1011,11 +1015,11 @@ export function createChatController() {
           btn.textContent = "Copied"; setTimeout(() => { btn.textContent = "Copy"; }, 1200);
         }).catch(() => {});
       });
-      // Canvas v1 (plan §9 Phase 3): Preview|Source toggle for html/svg
+      // Canvas v1: Preview|Source toggle for html/svg
       // fences, delegated the same way as the copy button above.
       wireCanvasToggle(thread());
 
-      // App-aware assistant (plan §6.6): registered at document/window level
+      // App-aware assistant: registered at document/window level
       // (not scoped to the chat route being active) since chat.ts owns the
       // one WebSocket for the whole app and must push context on every
       // route, regardless of which route the user navigates TO or FROM.
@@ -1046,12 +1050,12 @@ export function createChatController() {
     // immediately when a training job finishes, instead of waiting for the
     // user to navigate back to Chat (which would also refresh it via enter()).
     refreshAdapters: composerRefreshAdapters,
-    // Exposed for the global keyboard-shortcut sweep (plan §7): Cmd/Ctrl+Shift+O
+    // Exposed for the global keyboard-shortcut sweep: Cmd/Ctrl+Shift+O
     // and Cmd/Ctrl+Shift+C, bound at document level so they work regardless
     // of which control has focus while on the chat route.
     newChat,
     copyLastResponse,
-    // Exposed for shell.ts's settings modal (plan §5.4/§6.5) — it owns the
+    // Exposed for shell.ts's settings modal — it owns the
     // checkbox/list DOM and localStorage, but has no WebSocket of its own.
     setCodingTools,
     forgetToolApproval,

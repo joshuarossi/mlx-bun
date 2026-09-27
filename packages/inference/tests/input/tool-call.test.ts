@@ -182,7 +182,8 @@ describe("parseGeneratedToolCalls", () => {
   });
 });
 
-// ---- Self-healing repair layer (Axis 7 beat row) ----------------------
+// ---- Self-healing repair layer ----------------------------------------
+// (`02d723a:docs/design/web-chat-redesign.md` Appendix A, beat-matrix Axis 7)
 //
 // Format-aware malformed-call repair, attempted ONLY when strict parsing
 // fails. Every recovered call is tagged {repaired:true, repairs:[...]} —

@@ -1,16 +1,17 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
 // Recent-chats sidebar (list/search/fork/delete), the last-user-message
-// sibling `< i/n >` toggle (edit-and-resend branching, plan §5.2), and the
+// sibling `< i/n >` toggle (edit-and-resend branching), and the
 // per-message action row (copy/regenerate/edit). Extracted from the
 // original monolithic controllers.chat closure in app.html — behavior
 // identical, but state that used to be closed-over local variables is now
 // passed explicitly (SidebarState/SiblingState) so this module has no
 // hidden coupling to chat.ts beyond what's passed in.
 //
-// Phase 3 additions (plan §9 Phase 3, beat-matrix Axis 10/11): full-text
+// Later additions (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+// beat-matrix Axis 10/11): full-text
 // "in messages" search fallback below the title filter (GET
 // /api/sessions/search, backed by apps/mlx-bun/src/chat/session-search.ts), an export
 // action per session row (Markdown/JSON, via GET /api/sessions/export —
@@ -28,7 +29,7 @@ import { api } from "./api";
 const SESSIONS_STYLE_ID = "mlxbun-sessions-style";
 
 /** Injected once (shell.ts's injectStyles is idempotent per id): the small
- *  set of new classes this module's Phase 3 additions need
+ *  set of new classes this module's later additions need
  *  (full-text-search fallback rows + the export micro-menu) that have no
  *  home in app.html's own <style> block, since this module doesn't touch
  *  that file. References the existing :root design tokens so it matches
@@ -151,8 +152,8 @@ function cssEscape(s: string): string {
  *  trip). Re-applied after every re-render since #chat-sessions is
  *  rebuilt wholesale on each `sessions` frame. When the title filter yields
  *  few/no hits, debounced-fetches a full-text "in messages" fallback
- *  section (plan §5.7/§9 Phase 3, beat-matrix Axis 10/11's full-text BEAT)
- *  below the title-filtered rows. */
+ *  section (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+ *  beat-matrix Axis 10/11's full-text BEAT) below the title-filtered rows. */
 export function applySessSearch(state: SidebarState): void {
   const input = $("chat-sess-search") as HTMLInputElement | null;
   const q = input ? input.value.trim().toLowerCase() : "";
@@ -174,7 +175,8 @@ export function applySessSearch(state: SidebarState): void {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Full-text "in messages" fallback (beat-matrix Axis 10/11): when the
+   Full-text "in messages" fallback (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 10/11): when the
    title filter yields few/no hits, debounce a GET /api/sessions/search
    and render title+snippet rows below the sidebar's own list. Clicking a
    row opens that session via the existing sidebar click flow (the row is
@@ -344,8 +346,9 @@ export function switchSiblingTarget(siblingInfo: SiblingInfo, delta: number): st
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Export (plan §5.7/§9 Phase 3, beat-matrix Axis 10 "Chat export" +
-   Axis 11 "Conversation export/import"): Markdown or raw JSON, built from
+   Export (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 10 "Chat export" + Axis 11 "Portable JSON export / import"):
+   Markdown or raw JSON, built from
    GET /api/sessions/export?path= (server-validated under sessionDir) — used
    uniformly for the open session and any other session in the sidebar,
    so this module needs no reference into chat.ts's in-memory thread state.

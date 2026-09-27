@@ -1,5 +1,5 @@
 // GENERATED-ADJACENT source module — part of the apps/mlx-bun/src/web/browser/*
-// split (plan §7/§9 Phase 2). Built into apps/mlx-bun/dist/web/app.js by
+// split. Built into apps/mlx-bun/dist/web/app.js by
 // scripts/build-web.ts.
 //
 // App shell: DOM helpers, toast, HF settings modal, focus trap, theme,
@@ -183,7 +183,7 @@ export async function pushToHub(panel: HTMLElement, opts: PushToHubOpts): Promis
 }
 
 /* wire the nav gear + modal once at boot. The modal now also hosts the
- *  Agent tools section (plan §5.4/§6.5/§9 Phase 2) — see the block below;
+ *  Agent tools section — see the block below;
  *  kept in this same init function since it's one modal, one open/close
  *  lifecycle, one focus trap. */
 export function initHfSettings(): void {
@@ -192,7 +192,7 @@ export function initHfSettings(): void {
   $("hf-save").onclick = saveHfToken;
   $("hf-overlay").addEventListener("click", (e) => { if (e.target === $("hf-overlay")) closeHfSettings(); });
   $("hf-token-input").addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") saveHfToken(); });
-  // Escape is handled globally by closeTopOverlay (plan §7 item 5 — one
+  // Escape is handled globally by closeTopOverlay (one
   // Escape mechanism for every popover/overlay, not a bespoke one per modal).
   hfOverlayTrap = trapFocus($("hf-overlay"), () => $("hf-overlay").classList.contains("open"));
   refreshHfGear();
@@ -200,7 +200,7 @@ export function initHfSettings(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   AGENT TOOLS SETTINGS (plan §5.4/§6.5/§9 Phase 2) — the codingTools
+   AGENT TOOLS SETTINGS — the codingTools
    opt-in toggle + the durable "always allow" list. State of record for
    BOTH is server-side (the toggle's enforcement, and the tool-approvals
    config file); this module only reflects what the server last reported
@@ -287,7 +287,7 @@ function initCodingToolsToggle(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   POPOVER / OVERLAY A11Y SWEEP (plan §7 item 5)
+   POPOVER / OVERLAY A11Y SWEEP
    A single reusable focus-trap: Tab/Shift+Tab cycle within the container
    while `isOpen()` is true, and focus returns to whatever triggered the
    overlay when it closes. Applied uniformly to the HF modal, the
@@ -322,7 +322,7 @@ export function trapFocus(container: HTMLElement, isOpen: () => boolean): FocusT
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   THEME (plan §7): auto/dark/light, persisted, honors prefers-color-scheme
+   THEME: auto/dark/light, persisted, honors prefers-color-scheme
    when the choice is "auto" (the default). Ambient bloom/shimmer already
    respect prefers-reduced-motion via CSS above — this only handles color.
    ════════════════════════════════════════════════════════════════════ */
@@ -354,7 +354,7 @@ export function initTheme(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   KEYBOARD SHORTCUT SHEET (Cmd/Ctrl+/) + global bindings (plan §7)
+   KEYBOARD SHORTCUT SHEET (Cmd/Ctrl+/) + global bindings
    ════════════════════════════════════════════════════════════════════ */
 let skTrap: FocusTrap;
 
@@ -386,7 +386,7 @@ export function initShortcutSheet(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   MOBILE DRAWER (plan §5.7/§7/§9 Phase 1 item 1) — chat sidebar becomes a
+   MOBILE DRAWER — chat sidebar becomes a
    slide-over on narrow viewports instead of vanishing outright. Chat-route
    only: the hamburger button is CSS-hidden >=760px and JS-hidden off /chat
    (router() below), so open/close are only ever reachable when relevant.
@@ -427,8 +427,8 @@ export function setSamplingPopoverClose(fn: (() => void) | null): void { samplin
 export let memPanelClose: (() => void) | null = null;
 export function setMemPanelClose(fn: (() => void) | null): void { memPanelClose = fn; }
 
-/** Same pattern, for the adapter routing table overlay (adapters-panel.ts,
- *  plan §5.6/§9 Phase 2) — same circular-import reason as memPanelClose. */
+/** Same pattern, for the adapter routing table overlay (adapters-panel.ts)
+ *  — same circular-import reason as memPanelClose. */
 export let adaptersPanelClose: (() => void) | null = null;
 export function setAdaptersPanelClose(fn: (() => void) | null): void { adaptersPanelClose = fn; }
 
@@ -436,7 +436,7 @@ export function setAdaptersPanelClose(fn: (() => void) | null): void { adaptersP
 export let modelPopClose: (() => void) | null = null;
 export function setModelPopClose(fn: (() => void) | null): void { modelPopClose = fn; }
 
-/** Same pattern, for the Model Hub panel (hub.ts, plan §9 Phase 3) —
+/** Same pattern, for the Model Hub panel (hub.ts) —
  *  opened from the model picker's "Browse models…" action. */
 export let hubPanelClose: (() => void) | null = null;
 export function setHubPanelClose(fn: (() => void) | null): void { hubPanelClose = fn; }
@@ -451,12 +451,13 @@ export let openHubFromModelPicker: (() => void) | null = null;
 export function setOpenHubFromModelPicker(fn: (() => void) | null): void { openHubFromModelPicker = fn; }
 
 /** Same pattern, for the system-prompt popover (composer.ts's
- *  initSystemPrompt() — presets v1, plan §9 Phase 2). */
+ *  initSystemPrompt() — presets v1). */
 export let sysPromptPopoverClose: (() => void) | null = null;
 export function setSysPromptPopoverClose(fn: (() => void) | null): void { sysPromptPopoverClose = fn; }
 
-/** Same pattern, for the command palette (palette.ts, plan §9 Phase 3,
- *  beat-matrix Axis 10 "Command palette" row). Its own module builds 100%
+/** Same pattern, for the command palette (palette.ts, `02d723a:docs/design/web-chat-redesign.md`
+ *  Appendix A, beat-matrix Axis 10 "Command palette" row). Its own module
+ *  builds 100%
  *  of its DOM via createElement (no app.html markup to look up), so
  *  isPaletteOpen()/openPalette() are registered functions rather than
  *  `$(id)`-based lookups like the overlays above. */
@@ -493,7 +494,8 @@ function closeTopOverlay(): boolean {
 export function initGlobalKeydown(): void {
   document.addEventListener("keydown", (e) => {
     const mod = e.metaKey || e.ctrlKey;
-    // Cmd/Ctrl+K — command palette (beat-matrix Axis 10). Checked before
+    // Cmd/Ctrl+K — command palette (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+    // beat-matrix Axis 10). Checked before
     // Cmd/Ctrl+/ below since they're different keys but both live here;
     // order doesn't matter functionally, kept first as the newer addition.
     if (mod && (e.key === "k" || e.key === "K")) {
@@ -542,7 +544,7 @@ export function initGlobalKeydown(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   DEVELOPER TOGGLE (plan §8/§9 Phase 2) — Chat is the product; Quantize /
+   DEVELOPER TOGGLE — Chat is the product; Quantize /
    Fine-tune / Build Dataset / Status / Curves / Routes are developer tools
    that collapse behind one nav switch. Persisted; default OFF for a fresh
    browser, but default ON (once) when ANY pre-existing mlxbun.* localStorage
@@ -602,7 +604,7 @@ export function setDeveloperMode(on: boolean): void {
 
 /** Called by the router when a deep link (or brand-new hash) lands on a
  *  dev-only route while developer mode is off — capability must never be
- *  unreachable just because the toggle defaulted off (plan §8). Flips the
+ *  unreachable just because the toggle defaulted off. Flips the
  *  preference on (persisted, not a one-time peek) so the tab row itself
  *  stops looking broken/mismatched with what's showing. */
 function ensureDeveloperModeFor(route: Route): void {
@@ -717,7 +719,8 @@ export function initRouter(): void {
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   PWA SERVICE WORKER REGISTRATION (plan §9 Phase 3, beat-matrix Axis 10)
+   PWA SERVICE WORKER REGISTRATION (`02d723a:docs/design/web-chat-redesign.md` Appendix A,
+   beat-matrix Axis 10)
    Shell-only cache-first worker (apps/mlx-bun/src/web/public/sw.js) — installability + instant
    shell paint, explicitly NOT offline chat (the app is useless without the
    local model server running, see sw.js's own header comment). Guarded so
