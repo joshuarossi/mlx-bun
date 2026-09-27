@@ -168,7 +168,10 @@ compares them exactly with direct generation. Plain-KV fill uses the shared fill
 binding: with `MLX_BUN_GEMMA2_MODEL`, the batching test replays main's serial fill
 (one-position assert appends, one verify forward per echo span, trim on rejection)
 and requires B1 logits bit for bit, then B2/B3/B4 tokens through joins and
-cancellation, observing each capacity as the batch's high water. Plain-KV
+cancellation, observing each capacity as the batch's high water. Fill also runs
+inside a request's adapter context; the constrained test's grouped case checks
+four-row adapter groups, partition from base rows, an event-driven join and a
+replacement, a cancellation against a same-count stop control, and no leak. Plain-KV
 generation continuation uses the shared continuation binding once persistence is
 configured; the opt-in [Gemma2 continuation test](../../apps/mlx-bun/tests/engine/gemma2-continuation.test.ts)
 runs it through the app's serving composition: interval snapshots, a durable
@@ -178,8 +181,8 @@ with a second loaded instance as the draft; the batching test's opt-in two-model
 case checks B1 determinism, main's gate that greedy grammar with speculation
 equals greedy grammar alone, a ragged joined group (its measured target batch),
 cancellation, and a follow-on request that reproduces the fresh B1 run. Encoded
-KV, other draft providers, drafts with adapters or fill, fill with adapters and
-paging retain typed unsupported placement.
+KV, other draft providers, drafts with adapters or fill, and paging retain typed
+unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 
