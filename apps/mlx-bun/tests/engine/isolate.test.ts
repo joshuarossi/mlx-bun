@@ -76,16 +76,20 @@ test.skipIf(!native || !modelDir)("--isolate serves a real model through the wor
 }, 15 * 60_000);
 
 // `--isolate` synthesis: this process keeps the pipeline, vault and SSE, and
-// every stage call runs on the default worker's memory task model (e4b, with
-// MLX_BUN_APP_TEST_MEMORY_ADAPTER linked read only as its chunk adapter),
-// loaded in that worker by its first call: never on the served model
+// every stage call runs on the default worker's memory task model (e4b; with
+// MLX_BUN_APP_TEST_MEMORY_ADAPTER its chunk adapter is linked read only and
+// mounted), loaded in that worker by its first call: never on the served model
 // (MLX_BUN_APP_TEST_MODEL, not e4b) and never in this process. Needs e4b in the
 // Hugging Face cache (HF_HUB_CACHE; found, never downloaded) and a temporary
 // HOME (the registry, memory database and adapter link live there). Residency
 // is each process's phys_footprint (macOS `footprint`, which counts the Metal
-// allocations).
+// allocations). Claim limits: the vault holds articles only, so the calls
+// exercise the wikify sweep on the base task model, not chunk-adapter
+// activation (tests/engine/memory-native.test.ts covers the adapter); the
+// cancellation aborts a call the worker has admitted (in_flight counts it
+// before parsing and the lease), not necessarily one in native decoding.
 const adapter = process.env.MLX_BUN_APP_TEST_MEMORY_ADAPTER;
-test.skipIf(!native || !modelDir)("--isolate synthesis runs on the default worker's memory task model, not on the served model or in this process; a run cancelled mid-call leaves the worker idle and serving; close stops the worker", async () => {
+test.skipIf(!native || !modelDir)("--isolate synthesis runs on the default worker's memory task model, not on the served model or in this process; a run cancelled while its call is admitted in the worker leaves the worker idle and serving; close stops the worker", async () => {
   const { readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } = await import("node:fs");
   const { homedir } = await import("node:os");
   if (![realpathSync(tmpdir()), "/private/tmp"].some(dir => realpathSync(homedir()).startsWith(`${dir}/`))) throw new Error("run with a temporary HOME");
@@ -139,8 +143,9 @@ test.skipIf(!native || !modelDir)("--isolate synthesis runs on the default worke
     const afterServed = await lookups();
     expect(afterServed).toBeGreaterThan(before);
     const [workerBefore, parentBefore] = [await footprint(worker), await footprint(process.pid)];
-    // Cancellation: the run is cancelled while its first call is in the worker (the task model loading or running);
-    // the worker finishes the load, aborts and joins the call, and goes idle.
+    // Cancellation: the run is cancelled once the worker has admitted its first call (in_flight counts it before
+    // parsing and the lease, so the call may not have reached native decoding); the worker aborts and joins
+    // the call and goes idle.
     const cancel = new AbortController();
     const cancelled = fetch(`${base}/v1/memory/synthesize`, { signal: cancel.signal }).then(response => response.text()).catch((error: Error) => error.name);
     await until(async () => (await health()).in_flight > 0, "the first memory call in the worker", 60_000);
