@@ -1,5 +1,7 @@
 /** Request facts only. Native resources remain with the preparation owner. */
 export interface ExecutionRequirements {
+  /** Prepared autoregressive media (embeddings for a media input binding).
+   * Denoising image pixels are that method's own prefill input, not media. */
   readonly hasVision: boolean;
   readonly hasPreparedPrefixIdentity?: boolean;
   readonly hasAdapters: boolean;
