@@ -77,8 +77,18 @@ export function rotatingSourcePosition(row: RotatingKVCache | RotatingQuantizedK
   return state;
 }
 
-/** Take ownership of solo rows and align them once at membership changes. */
+/** Take ownership of solo rows and align them once at membership changes.
+ * Several rows need one ring geometry, so each is laid out in temporal order
+ * behind its left padding. A single row already has one: it keeps its own
+ * physical columns, ring phase and offset, so the adopted row attends over its
+ * keys in the order the solo cache does and later writes land where the solo
+ * cache's would (a solo wrapped ring is not in temporal order). */
 export function alignRotatingRows(rows: Cache[]): AlignedRotatingCache[] {
+  if (rows.length === 1) {
+    const adopted = adoptRotatingRow(rows[0]!);
+    rows[0]!.dispose();
+    return [adopted];
+  }
   const width = Math.max(0, ...rows.map(row => Math.min(row.offset, (row as RotatingKVCache).maxSize)));
   const prototype = rows.find(row => row.state().length > 0) as RotatingKVCache | RotatingQuantizedKVCache | undefined;
   const emptyPlane = (field: "keys" | "values"): MlxArray | null => {
@@ -127,6 +137,30 @@ export function alignRotatingRows(rows: Cache[]): AlignedRotatingCache[] {
   } catch (error) { for (const row of result) row.dispose(); throw error; }
   for (const row of rows) row.dispose();
   return result;
+}
+
+/** One solo row in its own ring geometry: owned views of its physical
+ * planes with the position its source reports (rotatingSourcePosition). */
+function adoptRotatingRow(source: Cache): AlignedRotatingCache {
+  if (!(source instanceof RotatingKVCache || source instanceof RotatingQuantizedKVCache))
+    throw new Error(`rotating layout cannot adopt ${source.signature()}`);
+  const position = rotatingSourcePosition(source).snapshot();
+  let inner: Ring;
+  if (source instanceof RotatingKVCache) {
+    const own = (plane: MlxArray | null) => plane ? plainRowStorage.slice(plane, 0, 1, 0, plane.shape[2]!) : null;
+    const keys = own(source.keys);
+    let values: MlxArray | null;
+    try { values = own(source.values); } catch (error) { keys?.dispose(); throw error; }
+    inner = BatchedRotatingCache.adoptPhysical(keys, values, position);
+  } else {
+    const own = (plane: ops.QuantizedTensor | null) => plane ? quantizedRowStorage.slice(plane, 0, 1, 0, plane.packed.shape[2]!) : null;
+    const keys = own(source.keys);
+    let values: ops.QuantizedTensor | null;
+    try { values = own(source.values); } catch (error) { if (keys) quantizedRowStorage.dispose(keys); throw error; }
+    inner = BatchedRotatingQuantCache.adoptPhysical(keys, values, source.groupSize, source.bits, position);
+  }
+  const row = new AlignedRotatingCache(inner); row.minimumReusableOffset = source.minimumReusableOffset ?? 0;
+  return row;
 }
 
 /** Position state has no codec or attention arithmetic. */
