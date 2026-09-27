@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { bindMlxGateway } from "../../src/execution/gateway-binding";
 import { Gemma4Model } from "../../src/models/gemma4/model";
+import { UniversalDenseModel } from "../../src/models/universal/dense";
+import { FillSession } from "../../src/generation/fill";
+import type { GenerateOptions } from "../../src/generation";
 import { Qwen35Model } from "../../src/models/qwen/qwen3_5";
 import { KVCache } from "../../src/state/kv";
 import type { ContinuationServices } from "../../src/execution/continuation";
@@ -45,3 +48,40 @@ test(`ordinary shared continuation binds ${name} through its loaded backend`, ()
   }
 });
 }
+
+test("Gemma2 softcap plans shared continuation for plain KV only, keeping every other exclusion", () => {
+  const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
+    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
+    config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] },
+  }) as UniversalDenseModel;
+  const binding = bindMlxGateway(model), unconfigured = bindMlxGateway(model);
+  const schedule = { continuous: true, quantizedBatch: true, checkpoints: true };
+  expect(binding.plan(shape, {}, schedule)).toMatchObject({ mechanism: "continuous", checkpoint: false });
+  binding.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as ContinuationServices);
+  // Greedy, seeded and history-dependent sampling, and adapter requests, which Gemma2 already batches.
+  const planned: [typeof shape, GenerateOptions][] = [[shape, {}],
+    [{ ...shape, userSeed: true, hasRepetitionPenalty: true }, { seed: 42, repetitionPenalty: 1.1, repetitionContextSize: 32 }],
+    [{ ...shape, hasAdapters: true }, { adapters: ["upper"] }]];
+  for (const [request, options] of planned) {
+    expect(binding.plan(request, options, schedule)).toMatchObject({ method: "autoregressive", mechanism: "continuous",
+      promptCache: true, checkpoint: true, fill: false, pagedKv: false });
+    expect(unconfigured.plan(request, options, schedule).checkpoint).toBe(false);
+  }
+  // Grammar, fill, drafts, media, logprobs, encoded KV and paging keep their
+  // placement and bind no continuation: placed requests carry no checkpoint,
+  // and the rest stay unsupported for this graph.
+  const fill = { fill: new FillSession({ rows: [], eos: [], echo: null }, [2, 651]) };
+  for (const [request, options, mechanism] of [[{ ...shape, hasGrammar: true }, {}, "continuous"], [shape, fill, "continuous"],
+    [{ ...shape, wantsLogprobs: true }, {}, "continuous"], [{ ...shape, hasDraft: true }, {}, "unsupported"],
+    [{ ...shape, hasVision: true }, {}, "unsupported"], [{ ...shape, kvQuant: true }, { kvBits: 4 }, "unsupported"],
+    [{ ...shape, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, "unsupported"],
+    [shape, { pagedKv: {} }, "unsupported"]] as const) {
+    const plan = binding.plan(request, options, schedule), baseline = unconfigured.plan(request, options, schedule);
+    const { checkpoint: _planned, ...placement } = plan, { checkpoint: _baseline, ...unchanged } = baseline;
+    expect({ request, placement }).toEqual({ request, placement: unchanged });
+    expect({ request, mechanism: plan.mechanism, checkpoint: plan.mechanism === "continuous" && plan.checkpoint })
+      .toEqual({ request, mechanism, checkpoint: false });
+    expect(binding.continuationRequest!(plan, options, [2, 651], () => {})).toBeUndefined();
+  }
+});

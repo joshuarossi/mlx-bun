@@ -168,7 +168,12 @@ compares them exactly with direct generation. Plain-KV fill uses the shared fill
 binding: with `MLX_BUN_GEMMA2_MODEL`, the batching test replays main's serial fill
 (one-position assert appends, one verify forward per echo span, trim on rejection)
 and requires B1 logits bit for bit, then B2/B3/B4 tokens through joins and
-cancellation, observing each capacity as the batch's high water. Encoded KV, speculative methods, fill with adapters and paging
+cancellation, observing each capacity as the batch's high water. Plain-KV
+generation continuation uses the shared continuation binding once persistence is
+configured; the opt-in [Gemma2 continuation test](../../apps/mlx-bun/tests/engine/gemma2-continuation.test.ts)
+runs it through the app's serving composition: interval snapshots, a durable
+record surviving cancellation, its restore after a fresh engine, and cleanup on
+completion. Encoded KV, speculative methods, fill with adapters and paging
 retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).

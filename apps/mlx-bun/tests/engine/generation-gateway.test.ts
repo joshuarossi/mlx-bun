@@ -272,3 +272,34 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
     expect(created).toBe(false);
   } finally { await gateway.close(); }
 });
+
+test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 places shared generation checkpoints only with configured continuation persistence", async () => {
+  const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
+  const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
+  const { KVCache } = await import("@mlx-bun/inference/state");
+  const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
+    args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
+    config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] },
+  });
+  const binding = bindMlxGateway(model);
+  binding.createBatchGroup = () => { throw new Error("unexpected execution"); };
+  // serve enables gateway checkpoints only with an SSD store and --generation-checkpoint.
+  const gateways = [new GenerationGateway(binding, 4, { checkpoints: true }), new GenerationGateway(binding, 4)];
+  const [enabled, disabled] = gateways;
+  try {
+    expect(enabled!.place(shape()).execution).toMatchObject({ mechanism: "continuous", checkpoint: false });
+    binding.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as never);
+    for (const request of [{}, { userSeed: true, hasRepetitionPenalty: true }])
+      expect(enabled!.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous",
+        execution: { method: "autoregressive", promptCache: true, checkpoint: true, fill: false, pagedKv: false } });
+    expect(disabled!.place(shape()).execution.checkpoint).toBe(false);
+    const fill = { fill: { plan: { echo: null } } } as GenerateOptions;
+    for (const [request, options] of [[{ hasGrammar: true }, {}], [{ wantsLogprobs: true }, {}], [{}, fill]] as const)
+      expect(enabled!.place({ ...shape(), ...request }, options)).toMatchObject({ mechanism: "continuous",
+        execution: { checkpoint: false } });
+    for (const request of [{ hasDraft: true }, { hasVision: true }, { kvQuant: true }, { turboQuant: true }])
+      expect(() => enabled!.place({ ...shape(), ...request })).toThrow(UnsupportedExecutionError);
+    expect(() => enabled!.place(shape(), { pagedKv: {} })).toThrow(UnsupportedExecutionError);
+  } finally { for (const gateway of gateways) await gateway.close(); }
+});
