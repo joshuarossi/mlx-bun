@@ -67,6 +67,26 @@ This covers that path only, not other models, batching, quantized KV,
 snapshot restore, long contexts, or speed. Raw outputs and the reference
 remain external; Python is not a project dependency.
 
+On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
+checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections
+made independently of `temporalView`, main `02d723a`, and pinned optiq 0.2.7.
+Gemma4 e2b and a custom graph over unchanged Llama-3.2-3B weights (alternating
+sliding layers, window 8; not a published model) matched main's B1 logits byte for
+byte in 13 cases. In 14 late-join and initial two-row cases, at both tail-split
+settings, every projection, token and valid state equaled the same batching code
+reading rows through the independent selection, and merged rows equaled their own
+B1 state; before the correction, late joins without a tail split and initial
+two-row batches merged the oldest window. Gemma4 e4b donor attention (plain and
+affine) and the deterministic assistant-drafter chain
+(`gemma-4-E4B-it-assistant-bf16` `844e008e`) equaled their independent references
+byte for byte through prefill, a verify block, a rollback and a decode; below the
+window the chain equaled main's. For DiffusionGemma 26B-A4B with a 1,500-token
+prompt, the decoder-selected encoder K/V of all 30 layers and the full first-pass
+logits equaled the pinned optiq reference byte for byte, and the opt-in real-weight
+test passed with measured main references. This covers these paths only, not
+stochastic speculative verification, other models, performance or full-candidate
+qualification. Raw evidence remains external.
+
 
 ### Repeatable runtime comparison
 
@@ -75,7 +95,9 @@ explains the plan schema and `emit`/`compare` commands. It hashes complete logit
 live cache planes and one-token continuation; `compare` is CPU-only. Supply local
 weights and external reference reports. No Python environment or reference data
 is installed by this repository. The opt-in test uses `MLX_BUN_PARITY_PLAN` and
-`MLX_BUN_PARITY_REFERENCE`; absent either, it skips. Legacy reports require explicit
+`MLX_BUN_PARITY_REFERENCE`; it skips only when none of its settings (those two,
+`MLX_BUN_PARITY_TIMEOUT_MS`, `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG`) is set, and a
+partial or blank opt-in fails. Legacy reports require explicit
 `--allow-unrecorded-config` (test: `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG=1`), after
 verifying their environment separately. New reports record runtime overrides,
 source/harness/native hashes, machine and plan; `--hash-weights` adds weight hashes.
@@ -438,6 +460,10 @@ streamed expert kernels are independently available through `kernels/glm52`.
 TurboQuant, recurrent, and GLM compressed caches, plus row batching, scoped KV
 maintenance, cloning, and persistence. The caller creates and owns the state.
 `@mlx-bun/inference/contracts` holds the shared cache and ownership interfaces.
+A rotating cache's `temporalView()` is its live window: the newest
+`min(offset, maxSize)` positions in chronological order, including right after a
+multi-token write leaves the ring oversized. Serial, batched, speculative and
+aligned rotating layouts select the same window.
 
 - `state/`: storage layout, positions, row membership, precision transitions,
   snapshots, and persistence. `persistence.worker.js` performs CPU disk I/O.

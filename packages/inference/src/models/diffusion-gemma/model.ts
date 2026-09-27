@@ -49,9 +49,11 @@ interface SdpaMask {
 }
 const NO_MASK: SdpaMask = { mode: "", arr: null };
 
-/** KVCache / RotatingKVCache both expose temporalView() (chronological K/V
- *  sliced to offset); the base Cache interface does not declare it. The decoder
- *  only ever uses those two concrete caches. */
+/** KVCache / RotatingKVCache both expose temporalView(): the chronological
+ *  live window (every position for KVCache, the newest min(offset, maxSize) for
+ *  RotatingKVCache). The decoder needs the newest encoder positions: on sliding
+ *  layers it keeps the last sliding_window - 1 of them. The base Cache interface
+ *  does not declare it; the decoder only ever uses those two concrete caches. */
 type TemporalCache = Cache & { temporalView(): [MlxArray, MlxArray] };
 
 /** geglu(gate, x) = gelu_approx(gate) * x  (reference language.py:geglu). */
@@ -380,7 +382,7 @@ class DiffAttention {
     let maskArrOwned = false;
 
     if (decoder) {
-      // Read the encoder K/V (chronological, sliced to offset) from the cache
+      // Read the encoder K/V (the chronological live window) from the cache
       // and concatenate the canvas K/V. No cache update on the canvas pass.
       if (cache) {
         let [encK, encV] = (cache as TemporalCache).temporalView();
