@@ -3,8 +3,10 @@
 // through the public gateway binding (depth 2, plain KV, EOS disabled). Two
 // requests with unequal prompts (32 and 25 tokens, rendered here from their
 // text) run together; request 0 retires by an `onToken` stop at its 14th
-// token, an abort or a consumer failure at its 10th, and request 1 runs to its
-// 24-token budget, greedy, plus a seeded (temperature 0.7, seed 42) stop case.
+// token, an abort or a consumer failure at its 16th, and request 1 runs to its
+// 24-token budget, greedy. A seeded (temperature 0.7, seed 42) stop case stops
+// request 0 at its 80th token and runs request 1 to 128: seeded, request 1
+// accepted every proposal through its planets list, so both stay in B2 past it.
 // Every target forward, projection, draft round and commit is observed, with
 // each row's committed target state (extracted through its layout, attributed
 // to its request through joins and filters) at entry and after every commit.
@@ -44,16 +46,18 @@ const OPT_IN = ["MLX_BUN_TEST_MTP_TARGET", "MLX_BUN_TEST_MTP_DRAFT"] as const;
 const PHASE = Bun.env.MLX_BUN_TEST_MTP_PHASE ?? "parent", CHILD_DIR = Bun.env.MLX_BUN_TEST_MTP_DIR;
 if (PHASE !== "parent" && PHASE !== "child") throw new Error("MLX_BUN_TEST_MTP_PHASE must be parent or child");
 if (PHASE === "child" && !CHILD_DIR) throw new Error("the child phase needs MLX_BUN_TEST_MTP_DIR");
-const DEPTH = 2, BUDGET = 24, CONTINUATION = 12, SUFFIX = [11, 12, 13];
+const DEPTH = 2, CONTINUATION = 12, SUFFIX = [11, 12, 13];
+/** The fresh-process phase's own deadline, inside the parent test's timeout. */
+const CHILD_DEADLINE_MS = 600_000;
 const PROMPTS = ["Write a bash one-liner that counts lines in all .ts files, then explain it briefly.",
   "List the planets of the solar system in order from the Sun."];
 const GREEDY = { temperature: 0 }, SEEDED = { temperature: 0.7, seed: 42 };
-/** Request 0 retires at `at` by its action; request 1 runs to the budget. */
+/** Request 0 retires at `at` by its action; request 1 runs to `budget`. */
 const CASES = [
-  { name: "g-stop", sampling: GREEDY, action: "stop", at: 14, continued: true },
-  { name: "g-cancel", sampling: GREEDY, action: "cancel", at: 10, continued: false },
-  { name: "g-fail", sampling: GREEDY, action: "fail", at: 10, continued: false },
-  { name: "s-stop", sampling: SEEDED, action: "stop", at: 14, continued: true },
+  { name: "g-stop", sampling: GREEDY, action: "stop", at: 14, budget: 24, continued: true },
+  { name: "g-cancel", sampling: GREEDY, action: "cancel", at: 16, budget: 24, continued: false },
+  { name: "g-fail", sampling: GREEDY, action: "fail", at: 16, budget: 24, continued: false },
+  { name: "s-stop", sampling: SEEDED, action: "stop", at: 80, budget: 128, continued: true },
 ] as const;
 type Case = typeof CASES[number];
 const json = (value: unknown) => JSON.stringify(value);
@@ -166,43 +170,70 @@ function attributePut(tokens: readonly number[], sessionId: unknown, sessions: r
 }
 const commitPairs = (events: A[]) => events.flatMap((e: A, i: number) =>
   e.event === "commit" && events[i + 1]?.event === "state" && events[i + 1].at === "commit" && Array.isArray(events[i + 1].rows) ? [{ commit: e, state: events[i + 1], index: i }] : []);
-/** Committed target state per request, membership, and completeness against what the submission returned. */
+/** Committed target state, chronologically per request, and completeness against
+ * what the submission returned. Rows join through recorded join events (each
+ * request at its processed offset); the first armed round after a join is
+ * preceded by exactly one entry state for every member: a newly joined row at
+ * its join's processed offset, every existing row exactly equal to its preceding
+ * committed state. Each commit is followed by its committed state; each row's
+ * attention offset equals its draft processedTokens and advances from that
+ * request's own baseline by accepted + 1 while it continues (1..accepted + 1 in
+ * its final round). */
 function checkStates(sub: A, prompts: number[][], sessions: string[], geometry: Geometry, where: string, fail: Fail) {
   const events: A[] = sub?.events ?? [];
-  let members: number[] = [], entry: A = null, pending: A = null;
+  const lastCommit = new Map<number, number>();
+  events.forEach((e: A, i: number) => { if (e.event === "state" && e.at === "commit") for (const r of e.rows ?? []) lastCommit.set(r.request, i); });
+  let members: number[] = [], pending: { commit: A; index: number } | null = null, joining: { requests: number[]; processed: number[] } | null = null, entries = 0;
+  const baseline = new Map<number, number>(), lastRow = new Map<number, string>();
   events.forEach((e: A, i: number) => {
     if (e.event === "join") {
-      if (!Array.isArray(e.requests) || !e.requests.every((q: A) => q === 0 || q === 1)) return fail(`${where} event ${i}: join without an identified request`);
+      if (!Array.isArray(e.requests) || !e.requests.length || !e.requests.every((q: A) => q === 0 || q === 1) ||
+          e.processed?.length !== e.requests.length || !e.processed.every(Number.isSafeInteger)) return fail(`${where} event ${i}: join without an identified request`);
+      if (e.requests.some((q: number) => members.includes(q) || baseline.has(q))) fail(`${where} event ${i}: a request joined twice`);
       members = [...members, ...e.requests];
-      if (new Set(members).size !== members.length) fail(`${where} event ${i}: a request joined twice`);
+      joining = { requests: [...(joining?.requests ?? []), ...e.requests], processed: [...(joining?.processed ?? []), ...e.processed] };
     } else if (e.event === "filter") {
       members = (e.keep ?? []).map((r: number) => members[r]);
       if (json(e.members) !== json(members)) fail(`${where} event ${i}: filter membership`);
     } else if (e.event === "commit") {
       if (pending) fail(`${where} event ${i}: the previous commit has no committed state`);
+      if (joining) fail(`${where} event ${i}: a round before the joined rows' entry state`);
       if (e.accepted?.length !== members.length) fail(`${where} event ${i}: ${e.accepted?.length} rows committed, ${members.length} members`);
-      pending = i;
+      pending = { commit: e, index: i };
     } else if (e.event === "state") {
       if (e.error || json(e.members) !== json(members) || e.rows?.length !== members.length || e.rows.some((r: A, k: number) => r.request !== members[k]))
         return fail(`${where} event ${i}: ${e.at} state (${e.error ?? `${e.rows?.length} rows`}) for members ${json(members)}`);
-      if (e.at === "entry") { if (entry || pending !== null) fail(`${where} event ${i}: entry state not before the first round`); entry = e; }
-      else if (pending !== i - 1) fail(`${where} event ${i}: commit state not right after its commit`);
-      else pending = null;
+      if (e.at === "entry") {
+        entries++;
+        if (!joining || pending) return fail(`${where} event ${i}: an entry state without a pending join`);
+        for (const r of e.rows) {
+          const at = `${where} entry request ${r.request}`, o = rowOffset(r, geometry, at, fail), k = joining.requests.indexOf(r.request);
+          if (k >= 0) { if (o !== null && o !== joining.processed[k]) fail(`${at}: joined at offset ${o}, processed ${joining.processed[k]}`); if (o !== null) baseline.set(r.request, o); }
+          else if (json(r) !== lastRow.get(r.request)) fail(`${at}: an existing row's state changed at a join`);
+          lastRow.set(r.request, json(r));
+        }
+        joining = null;
+      } else {
+        if (!pending || pending.index !== i - 1) return fail(`${where} event ${i}: commit state not right after its commit`);
+        const { commit, index } = pending;
+        pending = null;
+        e.rows.forEach((r: A, k: number) => {
+          const at = `${where} commit ${index} request ${r.request}`, o = rowOffset(r, geometry, at, fail), before = baseline.get(r.request);
+          lastRow.set(r.request, json(r));
+          if (o === null) return;
+          if (o !== commit.drafts?.[k]?.processedTokens) fail(`${at}: target offset ${o}, draft processed ${commit.drafts?.[k]?.processedTokens}`);
+          const continues = (lastCommit.get(r.request) ?? -1) > i;
+          if (before === undefined) fail(`${at}: no baseline from a join`);
+          else if (continues ? o - before !== commit.accepted[k] + 1 : o - before < 1 || o - before > commit.accepted[k] + 1) fail(`${at}: advanced ${o - before} with accepted ${commit.accepted[k]}`);
+          baseline.set(r.request, o);
+        });
+      }
     }
   });
-  if (pending !== null) fail(`${where}: the last commit has no committed state`);
-  if (!entry) return fail(`${where}: no entry state`);
-  const pairs = commitPairs(events), last = new Map<number, number>();
-  for (const r of entry.rows) { const o = rowOffset(r, geometry, `${where} entry request ${r.request}`, fail); if (o !== null) last.set(r.request, o); }
-  pairs.forEach(({ commit, state, index }, j) => state.rows.forEach((r: A, k: number) => {
-    const at = `${where} commit ${index} request ${r.request}`, o = rowOffset(r, geometry, at, fail), before = last.get(r.request);
-    if (o === null) return;
-    if (o !== commit.drafts?.[k]?.processedTokens) fail(`${at}: target offset ${o}, draft processed ${commit.drafts?.[k]?.processedTokens}`);
-    const continues = pairs.slice(j + 1).some(p => p.state.rows.some((x: A) => x.request === r.request));
-    if (before === undefined) fail(`${at}: no earlier committed state`);
-    else if (continues ? o - before !== commit.accepted[k] + 1 : o - before < 1 || o - before > commit.accepted[k] + 1) fail(`${at}: advanced ${o - before} with accepted ${commit.accepted[k]}`);
-    last.set(r.request, o);
-  }));
+  if (pending) fail(`${where}: the last commit has no committed state`);
+  if (joining) fail(`${where}: joined rows never entered a round`);
+  if (!entries) fail(`${where}: no entry state`);
+  const pairs = commitPairs(events);
   prompts.forEach((prompt, q) => {
     const tokens: number[] = sub?.tokens?.[q] ?? [], callbacks = events.filter((e: A) => e.event === "token" && e.row === q);
     if (json(callbacks.map((e: A) => e.token)) !== json(tokens) || callbacks.some((e: A, i: number) => e.index !== i + 1))
@@ -262,11 +293,11 @@ function checkCase(c: Case, rec: A, restore: A | undefined, prompts: number[][],
   if (!states.some((e: A) => json([...(e.members ?? [])].sort()) === "[0,1]") || json(states.at(-1)?.members) !== "[1]") fail(`${at}: membership is not both requests, then request 1 alone`);
   const [t0, t1] = g?.tokens ?? [], o = (g?.outcomes ?? []).map((x: A) => x.compared);
   if (!(c.action === "cancel" ? t0?.length >= c.at && t0?.length <= c.at + DEPTH : t0?.length === c.at)) fail(`${at}: request 0 emitted ${t0?.length} tokens`);
-  if (t1?.length !== BUDGET) fail(`${at}: request 1 emitted ${t1?.length} tokens`);
+  if (t1?.length !== c.budget) fail(`${at}: request 1 emitted ${t1?.length} tokens`);
   const want0 = c.action === "stop" ? { status: "fulfilled", finishReason: "stop", generatedTokens: c.at }
     : { status: "rejected", reason: c.action === "cancel" ? "cancelled consumer" : "failed consumer" };
   for (const [k, v] of Object.entries(want0)) if (o[0]?.[k] !== v) fail(`${at}: request 0 ${k} ${o[0]?.[k]}`);
-  if (o[1]?.status !== "fulfilled" || o[1]?.finishReason !== "length" || o[1]?.generatedTokens !== BUDGET) fail(`${at}: request 1 outcome`);
+  if (o[1]?.status !== "fulfilled" || o[1]?.finishReason !== "length" || o[1]?.generatedTokens !== c.budget) fail(`${at}: request 1 outcome`);
   const generated = puts(g, "generated");
   if (json(generated.map((p: A) => p.row).sort()) !== json(c.action === "stop" ? [0, 1] : [1])) fail(`${at}: generated puts for requests ${json(generated.map((p: A) => p.row))}`);
   if (!puts(g, "prompt").length) fail(`${at}: no prompt checkpoints`);
@@ -510,7 +541,8 @@ async function record(inputs: { target: string; draft: string }, directory: stri
       : { compared: { status: "fulfilled", promptTokens: settled.value.promptTokens, generatedTokens: settled.value.generatedTokens,
         cachedTokens: settled.value.cachedTokens, finishReason: settled.value.finishReason,
         spec: settled.value.spec ? Object.fromEntries(SPEC.map(k => [k, settled.value.spec[k] ?? null])) : null }, diagnostic: settled.value };
-    const submit = async (cache: A, requests: { promptIds: number[]; method: A; name: string; maxTokens: number; signal?: AbortSignal; onToken?: (count: number) => boolean | void }[]) => {
+    const submit = async (cache: A, requests: { promptIds: number[]; method: A; name: string; maxTokens: number; snapshotAt?: number;
+      signal?: AbortSignal; onToken?: (count: number) => boolean | void }[]) => {
       const events: A[] = [], tokens: number[][] = requests.map(() => []);
       log = events;
       context = { lengths: requests.map(r => r.promptIds.length), prompts: requests.map(r => [...r.promptIds]), sessions: requests.map((r, q) => `${r.name}-${q}`),
@@ -520,13 +552,14 @@ async function record(inputs: { target: string; draft: string }, directory: stri
       try {
         settled = await Promise.allSettled(requests.map((request, q) => group.submit({ method: request.method, promptIds: request.promptIds,
           cacheNamespace: `${request.name}-${q}`, cacheSessionId: `${request.name}-${q}`, maxTokens: request.maxTokens,
-          eosTokenIds: [], ...(request.signal ? { signal: request.signal } : {}),
+          eosTokenIds: [], ...(request.snapshotAt !== undefined ? { snapshotAt: request.snapshotAt } : {}), ...(request.signal ? { signal: request.signal } : {}),
           onToken(token: number) { tokens[q]!.push(token); note({ event: "token", row: q, token, index: tokens[q]!.length, activeRows: group.activeRows }); return request.onToken?.(tokens[q]!.length); } })));
       } finally { await group.close(); log = null; context = null; }
       return { events, tokens, outcomes: settled.map(outcome) };
     };
+    // As main's generated-prefix test and the external lane: no new prompt snapshot on continuation.
     const continuation = (c: Case, outputs: number[][]) => prompts.map((prompt, q) => ({ name: c.name, promptIds: [...prompt, ...outputs[q]!, ...SUFFIX],
-      method: methodFor(c.sampling, CONTINUATION), maxTokens: CONTINUATION }));
+      method: methodFor(c.sampling, CONTINUATION), maxTokens: CONTINUATION, snapshotAt: 1 }));
     const take = (cache: A, put: A) => {
       const hit = cache.take([...put.ids, 31], put.namespace);
       if (!hit) return null;
@@ -540,7 +573,7 @@ async function record(inputs: { target: string; draft: string }, directory: stri
         const rec: A = { case: c, prompts };
         let primary = false;
         try {
-          rec.generation = await submit(cache, prompts.map((promptIds, q) => ({ name: c.name, promptIds, method: methodFor(c.sampling, BUDGET), maxTokens: BUDGET,
+          rec.generation = await submit(cache, prompts.map((promptIds, q) => ({ name: c.name, promptIds, method: methodFor(c.sampling, c.budget), maxTokens: c.budget,
             ...(q === 0 && c.action === "cancel" ? { signal: aborted.signal } : {}),
             onToken: q !== 0 ? undefined : (count: number) => {
               if (count !== c.at) return;
@@ -600,6 +633,35 @@ async function record(inputs: { target: string; draft: string }, directory: stri
   return { records, prompts, geometry, vocab: config.text.vocabSize as number };
 }
 
+/** Run a child process with a deadline; stdout and stderr drain while it runs.
+ * A child still running at the deadline, or when waiting fails, is sent TERM and,
+ * after `graceMs` (or if TERM or the grace wait fails), KILL, then joined. Complete
+ * outputs are always collected; a failure while waiting, stopping or collecting is
+ * rethrown (the first one) with the status and both outputs attached. */
+async function runBounded(command: string[], env: Record<string, string | undefined>, timeoutMs: number, graceMs = 10_000) {
+  const child = Bun.spawn(command, { env, stdout: "pipe", stderr: "pipe" });
+  const outputs = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+  const within = (ms: number) => new Promise<boolean>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    child.exited.then(() => { clearTimeout(timer); resolve(true); }, error => { clearTimeout(timer); reject(error); });
+  });
+  let failure: unknown, timedOut = false;
+  try { timedOut = !(await within(timeoutMs)); } catch (error) { failure = error; }
+  if (child.exitCode === null && child.signalCode === null) {
+    // Independent steps: a failed TERM or grace wait still falls through to KILL and the join.
+    let stopped = false;
+    try { child.kill("SIGTERM"); stopped = await within(graceMs); } catch (error) { failure ??= error; }
+    if (!stopped) try { child.kill("SIGKILL"); } catch (error) { failure ??= error; }
+    try { await child.exited; } catch (error) { failure ??= error; }
+  }
+  let stdout = "", stderr = "";
+  try { [stdout, stderr] = await outputs; } catch (error) { failure ??= error; }
+  const result = { exitCode: child.exitCode, signalCode: child.signalCode, timedOut, stdout, stderr };
+  if (failure !== undefined) throw Object.assign(new Error(`child process failed: ${String(failure)} (${json({ ...result, stdout: undefined, stderr: undefined })})\n` +
+    `--- child stdout ---\n${stdout}\n--- child stderr ---\n${stderr}`), { cause: failure, result });
+  return result;
+}
+
 const inputs = optIn(Bun.env);
 
 test.skipIf(!inputs || PHASE !== "parent")("Qwen MTP B2: retirement, committed row state and generated prefixes from RAM and a fresh process", async () => {
@@ -608,10 +670,15 @@ test.skipIf(!inputs || PHASE !== "parent")("Qwen MTP B2: retirement, committed r
     const { records, prompts, geometry, vocab } = await record(inputs!, directory, "parent");
     writeFileSync(join(directory, "expected.json"), json(Object.fromEntries(CASES.filter(c => c.continued).map(c => [c.name, { snapshots: records[c.name].snapshots }]))));
     // The parent has released its model and weights; the child loads its own.
-    const child = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path, "--test-name-pattern", "fresh-process SSD continuation"], {
-      env: { ...Bun.env, MLX_BUN_TEST_MTP_PHASE: "child", MLX_BUN_TEST_MTP_DIR: directory }, stdout: "pipe", stderr: "pipe" });
+    const child = await runBounded([process.execPath, "--no-env-file", "test", import.meta.path, "--test-name-pattern", "fresh-process SSD continuation"],
+      { ...Bun.env, MLX_BUN_TEST_MTP_PHASE: "child", MLX_BUN_TEST_MTP_DIR: directory }, CHILD_DEADLINE_MS);
     const restoreFile = join(directory, "restore.json");
-    assert(child.exitCode === 0 && existsSync(restoreFile), `fresh-process phase failed (${child.exitCode}): ${child.stderr.toString().slice(-2000)}`);
+    const ok = child.exitCode === 0 && !child.timedOut && existsSync(restoreFile);
+    assert(ok, `fresh-process phase failed (exit ${child.exitCode}, signal ${child.signalCode}, timed out ${child.timedOut})\n` +
+      `--- child stdout ---\n${child.stdout}\n--- child stderr ---\n${child.stderr}`);
+    // The child's own test report, once, so a supervisor can require its named test to pass.
+    process.stdout.write(`--- fresh-process child stdout ---\n${child.stdout}\n--- end fresh-process child stdout ---\n`);
+    process.stderr.write(`--- fresh-process child stderr ---\n${child.stderr}\n--- end fresh-process child stderr ---\n`);
     const restored = JSON.parse(readFileSync(restoreFile, "utf8"));
     const found = problems(fail => { for (const c of CASES) checkCase(c, records[c.name], c.continued ? restored[c.name] ?? null : undefined, prompts, vocab, geometry, fail); });
     expect(found).toEqual([]);
@@ -627,7 +694,7 @@ test.skipIf(!inputs || PHASE !== "parent")("Qwen MTP B2: retirement, committed r
 test.skipIf(!inputs || PHASE !== "child")("Qwen MTP B2 fresh-process SSD continuation (child phase)", async () => {
   const { records } = await record(inputs!, CHILD_DIR!, "child");
   writeFileSync(join(CHILD_DIR!, "restore.json"), json(records));
-}, 900_000);
+}, CHILD_DEADLINE_MS - 60_000);
 
 // ---- CPU-only validation (synthetic records; no native libraries) ------------------------
 const V = 248320;
@@ -637,55 +704,80 @@ const GEOMETRY = geometryFor({ num_hidden_layers: 8, num_key_value_heads: 4, hea
 const P = [Array.from({ length: 32 }, (_, i) => 1000 + i), Array.from({ length: 25 }, (_, i) => 2000 + i)];
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
 const fake = (key: string, shape: number[], dtype = "bfloat16") => ({ shape, dtype, sha256: sha256(key) });
-function synthetic(key: string, prompts: number[][], twoRow: number[][], oneRow: number[][], publish: boolean[], name = "g-stop") {
-  const offsets = prompts.map(p => p.length), tokens: number[][] = [[], []], events: A[] = [];
-  let members = [0, 1], last: A = null;
+/** A submission as observed on real weights: request 0 prefills, joins and runs
+ * `pre` rounds alone; request 1 then joins, and its entry state repeats request
+ * 0's last committed row (with no `pre` rounds, both joins precede one entry). */
+function synthetic(key: string, prompts: number[][], pre: number[][], twoRow: number[][], oneRow: number[][], publish: boolean[], name = "g-stop") {
+  const offsets = prompts.map(p => p.length), tokens: number[][] = [[], []], events: A[] = [], lastRows = new Map<number, A>();
+  let members: number[] = [], last: A = null, entryDue = false, round = 0;
   const layers = (tag: string, offset: number) => GEOMETRY.layers.map((kind, i) => kind === "kv"
     ? { signature: "kv:plain", offset, arrays: ["k", "v"].map(p => fake(`${tag}:${i}:${p}:${offset}`, [1, 4, offset, 256])) }
     : { signature: "ssm", offset, arrays: [fake(`${tag}:${i}:c:${offset}`, GEOMETRY.conv.shape), fake(`${tag}:${i}:r:${offset}`, GEOMETRY.recurrent.shape, "float32")] });
   const emit = (q: number) => { tokens[q]!.push(10_000 * (q + 1) + tokens[q]!.length); events.push({ event: "token", row: q, token: tokens[q]!.at(-1), index: tokens[q]!.length, activeRows: members.length }); };
+  const prefill = (q: number) => {
+    if (key.startsWith("gen")) events.push({ event: "put", row: q, kind: "prompt", ids: prompts[q]!.slice(0, -1), sessionId: `${name}-${q}`, digest: {} });
+    emit(q);
+    events.push({ event: "join", requests: [q], processed: [offsets[q]] });
+    members.push(q); entryDue = true;
+  };
   const put = (q: number) => {
     const k = last.state.rows.findIndex((r: A) => r.request === q), row = last.state.rows[k], draft = last.commit.drafts[k];
     const ids = [...prompts[q]!, ...tokens[q]!].slice(0, offsets[q]);
     events.push({ event: "put", row: q, kind: "generated", ids, namespace: `ns-${q}`, sessionId: `${name}-${q}`, digest: { offsets: row.layers.map((l: A) => l.offset),
       attachments: [["qwen-mtp-v1", { draftOffset: ids.length - 1 }]], arrays: [...row.layers.flatMap((l: A) => l.arrays), ...draft.tensors] } });
   };
-  if (key.startsWith("gen")) for (const q of [0, 1]) events.push({ event: "put", row: q, kind: "prompt", ids: prompts[q]!.slice(0, -1), sessionId: `${name}-${q}`, digest: {} });
-  emit(0); emit(1);
-  events.push({ event: "join", requests: [0, 1], processed: [...offsets] });
-  [...twoRow.map(a => ({ a, two: true })), ...oneRow.map(a => ({ a, two: false }))].forEach(({ a, two }, i) => {
-    if (!two && members.length === 2) { if (publish[0]) put(0); members = [1]; events.push({ event: "filter", keep: [1], members: [1] }); }
-    const pending = members.map(q => tokens[q]!.at(-1)!), proposals = members.map((_, r) => [300 + i, 400 + r]);
+  const play = (a: number[]) => {
+    const i = round++, pending = members.map(q => tokens[q]!.at(-1)!), proposals = members.map((_, r) => [300 + i, 400 + r]);
     events.push({ event: "draft", pending, depth: 2, proposals });
-    if (i === 0) events.push({ event: "state", at: "entry", members: [...members], rows: members.map(q => ({ request: q, layers: layers(`${key}:e${q}`, offsets[q]!) })) });
+    if (entryDue) {
+      events.push({ event: "state", at: "entry", members: [...members], rows: members.map(q => lastRows.get(q) ? clone(lastRows.get(q)) : { request: q, layers: layers(`${key}:e${q}`, offsets[q]!) }) });
+      entryDue = false;
+    }
     events.push({ event: "forward", ids: pending.map((p, r) => [p, ...proposals[r]!]), verify: true, sameLayouts: true, hidden: fake(`${key}:h${i}`, [1]) });
     events.push({ event: "project", logits: { shape: [members.length, 3, V], sha256: sha256(`${key}:l${i}`), finite: true }, argmax: members.map(() => [1, 2, 3]) });
     members.forEach((q, k) => { for (let t = 0; t <= a[k]!; t++) emit(q); offsets[q]! += a[k]! + 1; });
     const commit = { event: "commit", accepted: [...a], drafts: members.map(q => ({ processedTokens: offsets[q], schema: "qwen-mtp-v1",
       metadata: { draftOffset: offsets[q]! - 1 }, tensors: [fake(`${key}:d${i}:${q}`, [1, 1, 5120])] })) };
     const state = { event: "state", at: "commit", members: [...members], rows: members.map(q => ({ request: q, layers: layers(`${key}:c${i}:${q}`, offsets[q]!) })) };
-    events.push(commit, state); last = { commit, state };
-  });
-  if (members.length === 2) { if (publish[0]) put(0); if (publish[1]) put(1); } else if (publish[1]) put(1);
+    events.push(commit, state);
+    for (const r of state.rows) lastRows.set(r.request, r);
+    last = { commit, state };
+  };
+  prefill(0);
+  for (const a of pre) play(a);
+  prefill(1);
+  for (const a of twoRow) play(a);
+  if (oneRow.length) { if (publish[0]) put(0); members = [1]; events.push({ event: "filter", keep: [1], members: [1] }); for (const a of oneRow) play(a); if (publish[1]) put(1); }
+  else { if (publish[0]) put(0); if (publish[1]) put(1); }
   return { events, tokens };
 }
 const done = (reason: string, n: number, cached = 0) => ({ compared: { status: "fulfilled", generatedTokens: n, cachedTokens: cached, finishReason: reason, spec: {} } });
-function fixture(c: Case, twoRow = [[2, 1], [0, 2], [2, 0], [1, 2], [2, 2], [0, 2]], oneRow = [[2], [2], [1]]) {
-  const g: A = synthetic(`gen-${c.name}`, P, twoRow, oneRow, [true, true]);
+const rep = (n: number, a: number[]) => Array.from({ length: n }, () => [...a]);
+/** Request 0 alone for two rounds, then to `at` (its last round truncated) and request 1 to `budget`;
+ * seeded: run 1's rounds, then request 1 accepting through its list, rejecting once, and two more two-row rounds. */
+const ROUNDS: Record<string, number[][][]> = {
+  "g-stop": [[[2], [1]], [[2, 2], [2, 2], [0, 1], [0, 2]], rep(4, [2])],
+  "s-stop": [[[2], [1]], [[2, 2], [2, 2], [0, 2], [1, 2], ...rep(19, [2, 2]), [2, 0], [2, 2], [1, 2]], rep(17, [2])],
+};
+function fixture(c: Case, [pre, twoRow, oneRow] = ROUNDS[c.name]!) {
+  const g: A = synthetic(`gen-${c.name}`, P, pre!, twoRow!, oneRow!, [true, true], c.name);
   g.outcomes = [done("stop", g.tokens[0].length), done("length", g.tokens[1].length)];
   const rec: A = { prompts: P, generation: g, flush: { durable: true, pendingBytes: 0 } };
   const snap = (q: number) => g.events.find((e: A) => e.kind === "generated" && e.row === q);
   const takes = [0, 1].map(q => ({ tokens: snap(q).ids.length, digest: clone(snap(q).digest) }));
-  const cont = () => { const s: A = synthetic(`cont-${c.name}`, P.map((p, q) => [...p, ...g.tokens[q], ...SUFFIX]), [[2, 2], [2, 1], [2, 2], [1, 2]], [], [true, true]);
+  const cont = () => { const s: A = synthetic(`cont-${c.name}`, P.map((p, q) => [...p, ...g.tokens[q], ...SUFFIX]), [], [[2, 2], [2, 1], [2, 2], [1, 2]], [], [true, true], c.name);
     s.outcomes = [0, 1].map(q => done("length", CONTINUATION, snap(q).ids.length)); return s; };
   rec.ram = [0, 1].map(() => ({ takeBefore: clone(takes), ...cont(), takeAfter: clone(takes) }));
   rec.continuationFlush = { durable: true, pendingBytes: 0 };
   return { rec, restore: { ssdUnchanged: true, scanned: 2, take: clone(takes), ...cont() } };
 }
-const STOP = CASES[0];
+const STOP = CASES[0], SEEDED_STOP = CASES[3];
 // Records are plain data, as the lane writes them: no shared references between a put and its state.
-const check = (mutate: (f: A) => void = () => {}) => { const f = clone(fixture(STOP)); mutate(f); return problems(fail => checkCase(STOP, f.rec, f.restore, P, V, GEOMETRY, fail)); };
+const check = (mutate: (f: A) => void = () => {}, c: Case = STOP) => { const f = clone(fixture(c)); mutate(f); return problems(fail => checkCase(c, f.rec, f.restore, P, V, GEOMETRY, fail)); };
 const ev = (sub: A, kind: string) => sub.events.filter((e: A) => e.event === kind);
+const twoRow = (sub: A, kind: string) => ev(sub, kind).filter((e: A) => (kind === "state" ? e.at === "commit" && e.rows?.length :
+  kind === "commit" ? e.accepted?.length : e.verify && e.ids?.length) === 2);
+const entries = (sub: A) => ev(sub, "state").filter((e: A) => e.at === "entry");
 
 test("opt-in is all or nothing (CPU only)", () => {
   expect(optIn({})).toBeNull();
@@ -696,6 +788,10 @@ test("opt-in is all or nothing (CPU only)", () => {
 test("a complete, consistent B2 record passes the within-tree checks (CPU only)", () => {
   expect(check()).toEqual([]);
   expect(fixture(STOP).rec.generation.tokens.map((t: number[]) => t.length)).toEqual([14, 24]);
+  expect(entries(fixture(STOP).rec.generation)).toHaveLength(2);
+  expect(check(() => {}, SEEDED_STOP)).toEqual([]);
+  expect(fixture(SEEDED_STOP).rec.generation.tokens.map((t: number[]) => t.length)).toEqual([80, 128]);
+  expect(check(f => { f.rec.generation.tokens[1].pop(); }, SEEDED_STOP).join("\n")).toMatch(/request 1 emitted 127/);
 });
 
 test("missing or inconsistent observations fail (CPU only)", () => {
@@ -705,16 +801,16 @@ test("missing or inconsistent observations fail (CPU only)", () => {
     f.rec.generation.events = [...e.slice(0, d), ...e.slice(d).filter((z: A, j: number) => !["draft", "forward", "project", "commit", "state"].includes(z.event) || d + j > c + 1)]; },
   /beyond its rounds|terminal|published/);
   fails(f => { for (const s of ev(f.rec.generation, "state")) for (const r of s.rows) r.layers = r.layers.filter((l: A) => l.signature !== "ssm"); }, /layers, expected 8/);
-  fails(f => { ev(f.rec.generation, "state")[2].rows[0].layers[3].arrays.pop(); }, /malformed layer/);
-  fails(f => { ev(f.rec.generation, "state")[1].rows[0].layers[0].arrays[1].dtype = "bfloat16"; }, /layer 0/);
-  fails(f => { const s = f.rec.generation; s.events.splice(s.events.indexOf(ev(s, "state")[2]), 1); }, /committed state/);
-  fails(f => { ev(f.rec.generation, "state")[2].error = "no verify forward in this round"; }, /no verify forward/);
-  fails(f => { delete ev(f.rec.generation, "forward")[1].verify; }, /armed round/);
-  fails(f => { ev(f.rec.generation, "forward")[1].ids[0][1] = 5; }, /verify forwards/);
+  fails(f => { twoRow(f.rec.generation, "state")[1].rows[0].layers[3].arrays.pop(); }, /malformed layer/);
+  fails(f => { twoRow(f.rec.generation, "state")[0].rows[1].layers[0].arrays[1].dtype = "bfloat16"; }, /layer 0/);
+  fails(f => { const s = f.rec.generation; s.events.splice(s.events.indexOf(twoRow(s, "state")[1]), 1); }, /committed state/);
+  fails(f => { twoRow(f.rec.generation, "state")[1].error = "no verify forward in this round"; }, /no verify forward/);
+  fails(f => { delete twoRow(f.rec.generation, "forward")[1].verify; }, /armed round/);
+  fails(f => { twoRow(f.rec.generation, "forward")[1].ids[1][1] = 5; }, /verify forwards/);
   fails(f => { ev(f.rec.generation, "project")[0].logits.finite = false; }, /projection/);
-  fails(f => { for (const e of f.rec.generation.events) { if (e.event === "filter") { e.keep = [0]; e.members = [0]; } if (e.event === "state" && e.members.length === 1) { e.members = [0]; e.rows[0].request = 0; } } },
+  fails(f => { for (const e of f.rec.generation.events) { if (e.event === "filter") { e.keep = [0]; e.members = [0]; } if (e.event === "state" && e.at === "commit" && e.members.length === 1 && e.rows[0].request === 1) { e.members = [0]; e.rows[0].request = 0; } } },
     /membership|advanced|request 0/);
-  fails(f => { ev(f.rec.generation, "commit")[2].drafts[0].processedTokens += 1; }, /draft processed/);
+  fails(f => { twoRow(f.rec.generation, "commit")[1].drafts[0].processedTokens += 1; }, /draft processed/);
   fails(f => { f.rec.generation.events.find((e: A) => e.kind === "generated" && e.row === 0).digest.arrays[3].sha256 = sha256("x"); }, /published planes/);
   fails(f => { f.rec.generation.events.push({ ...clone(f.rec.generation.events.find((e: A) => e.kind === "generated" && e.row === 1)) }); }, /generated puts/);
   fails(f => { f.rec.generation.outcomes[0].compared.finishReason = "length"; }, /request 0 finishReason/);
@@ -724,6 +820,21 @@ test("missing or inconsistent observations fail (CPU only)", () => {
   fails(f => { ev(f.restore, "project")[2].logits.sha256 = sha256("x"); }, /SSD continuation differs/);
   fails(f => { delete f.rec.flush; }, /drain/);
   fails(f => { f.rec.error = "boom"; }, /error boom/);
+});
+
+test("rows join chronologically: an entry per join, existing rows unchanged, new rows at their processed offset (CPU only)", () => {
+  const fails = (mutate: (f: A) => void, pattern: RegExp) => expect(check(mutate).join("\n")).toMatch(pattern);
+  const g = (f: A) => f.rec.generation;
+  fails(f => { const s = g(f), st = ev(s, "state").filter((e: A) => e.at === "commit")[3]; s.events.splice(s.events.indexOf(st) + 1, 0, { ...clone(st), at: "entry" }); },
+    /entry state without a pending join/);
+  fails(f => { const s = g(f), late = entries(s)[1]; s.events.splice(s.events.indexOf(late) + 1, 0, clone(late)); }, /entry state without a pending join/);
+  fails(f => { entries(g(f))[1].rows[0].layers[5].arrays[1].sha256 = sha256("changed"); }, /existing row's state changed/);
+  fails(f => { ev(g(f), "join")[1].processed = [26]; }, /joined at offset 25, processed 26/);
+  fails(f => { const s = g(f); s.events.splice(s.events.indexOf(entries(s)[1]), 1); }, /round before the joined rows' entry/);
+  fails(f => { const s = g(f), st = twoRow(s, "state")[1], c = s.events[s.events.indexOf(st) - 1], k = st.rows.findIndex((r: A) => r.request === 0);
+    const o = st.rows[k].layers[3].offset - 4;
+    for (const l of st.rows[k].layers) { l.offset = o; for (const a of l.arrays) if (a.shape.length === 4 && l.signature !== "ssm") a.shape[2] = o; }
+    c.drafts[k].processedTokens = o; c.drafts[k].metadata.draftOffset = o - 1; }, /advanced -/);
 });
 
 test("checkpoints are attributed by their session, and their tokens validated separately (CPU only)", () => {
@@ -743,8 +854,27 @@ test("checkpoints are attributed by their session, and their tokens validated se
 });
 
 test("a run without rejections while both rows are active is not qualified (CPU only)", () => {
-  const f = fixture(STOP, [[2, 1], [2, 2], [2, 0], [2, 2], [0, 2]], [[2], [2], [2], [1]]);
-  expect(problems(fail => checkCase(STOP, f.rec, f.restore, P, V, GEOMETRY, fail)).join("\n")).toMatch(/not qualified: row 0/);
+  // Request 0's only rejection is before request 1 joined; request 1 rejects in the final two-row round only.
+  const f = fixture(STOP, [[[2], [1]], [[2, 2], [2, 1], [1, 2]], rep(5, [2])]);
+  expect(problems(fail => checkCase(STOP, f.rec, f.restore, P, V, GEOMETRY, fail))).toEqual([expect.stringMatching(/not qualified: row 0/)]);
+  // Run 1's seeded shape at the longer window: request 1 accepts every proposal while both rows are active.
+  const s = fixture(SEEDED_STOP, [[[2], [1]], [[2, 2], [2, 2], [0, 2], [1, 2], ...rep(21, [2, 2]), [1, 2]], [...rep(16, [2]), [0]]]);
+  expect(problems(fail => checkCase(SEEDED_STOP, s.rec, s.restore, P, V, GEOMETRY, fail))).toEqual([expect.stringMatching(/not qualified: row 1/)]);
+});
+
+test("the fresh-process runner returns complete outputs and stops and joins a child past its deadline (CPU only)", async () => {
+  const done = await runBounded(["/bin/sh", "-c", "echo out; echo err 1>&2; exit 3"], {}, 10_000);
+  expect(done).toMatchObject({ exitCode: 3, signalCode: null, timedOut: false, stdout: "out\n", stderr: "err\n" });
+  const long = await runBounded(["/bin/sh", "-c", "i=0; while [ $i -lt 2000 ]; do echo line $i; i=$((i+1)); done"], {}, 10_000);
+  expect(long.stdout.split("\n").filter(Boolean)).toHaveLength(2000);
+  let started = Date.now();
+  const late = await runBounded(["/bin/sh", "-c", "echo started; exec sleep 30"], {}, 300, 5_000);
+  expect(late).toMatchObject({ timedOut: true, signalCode: "SIGTERM", stdout: "started\n" });
+  expect(Date.now() - started).toBeLessThan(5_000);
+  started = Date.now();
+  const stubborn = await runBounded(["/bin/sh", "-c", "trap '' TERM; echo started; while :; do sleep 0.05; done"], {}, 300, 200);
+  expect(stubborn).toMatchObject({ timedOut: true, signalCode: "SIGKILL", stdout: "started\n" });
+  expect(Date.now() - started).toBeLessThan(5_000);
 });
 
 test("timings are not compared; whitelisted counters are (CPU only)", () => {
