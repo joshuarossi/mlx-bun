@@ -20,7 +20,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const { ContinuationPersistence } = await import("@mlx-bun/inference/execution");
   const { SsdCacheStore } = await import("@mlx-bun/inference/state");
   const ops = await import("@mlx-bun/mlx/ops");
-  const { leaseCacheState, minimumReusableOffset } = await import("@mlx-bun/inference/state");
+  const { leaseCacheState, minimumReusableOffset, PromptCache, cloneKvCaches } = await import("@mlx-bun/inference/state");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
   const weights = await Weights.open(target!), model = createModel(weights, await loadModelConfig(target!));
   if (!("loraState" in model) || !model.loraState) { weights.dispose(); throw new Error("continuation test requires adapter state"); }
@@ -28,13 +28,22 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   if (adapter) await manager.mount("upper", adapter);
   const adapterNamespace = adapter ? manager.cacheNamespace(["upper"]) : "";
   const directory = mkdtempSync(join(tmpdir(), "ordinary-continuation-"));
-  const execution = { method: "autoregressive", mechanism: "continuous", pagedKv: false,
-    promptCache: true, checkpoint: true, fill: false, compiledDecode: false, grammarJump: false, reasons: [] } as const;
   const prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
   const kv = await continuationKv(prompt.length);
   const widths: number[] = [];
   const forward = model.forwardHidden.bind(model);
+  const probe = (active: string[]) => {
+    const previous = model.loraState!.active, caches = model.makeCache();
+    model.loraState!.active = active;
+    try { using logits = model.forward(prompt, caches); using exact = ops.contiguous(logits); return Buffer.from(exact.rawBytes()); }
+    finally { model.loraState!.active = previous; for (const cache of caches) cache.dispose(); }
+  };
+  const baseLogits = adapter ? probe([]) : undefined;
   try {
+    if (adapter) {
+      expect(manager.list()).toHaveLength(1);
+      expect(probe(["upper"])).not.toEqual(baseLogits!);
+    }
     for (const batch of [1, 4]) {
       const settings = (name: string) => ({ dir: join(directory, `${batch}-${name}`), maxBytes: 1024 ** 3,
         modelId: target!, configFingerprint: `ordinary-continuation-v1:${kv.scheme.cacheKey}`, tokenizerHash: "fixture", verify: true });
@@ -55,10 +64,20 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
         const persistence = new ContinuationPersistence(store, { maxBytes: 1024 ** 3,
           runStep: async step => { await idleGate; return step(); } });
         const outputs: number[][] = Array.from({ length: batch }, () => []);
+        const prefix = new PromptCache(1024 ** 2, null, null, cloneKvCaches);
+        binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 4,
+          checkpointPersistence: persistence, identity: "same-B-fixture", cloneState: cloneKvCaches,
+          adapterNamespace: ids => manager.cacheNamespace(ids) });
+        const options = { ...kv.options, ...(useAdapter ? { adapters: ["upper"] } : {}), maxTokens: 16,
+          temperature: 0.7, seedWasExplicit: true, repetitionPenalty: 1.1, repetitionContextSize: 32 };
+        const execution = binding.plan({ hasVision: false, hasAdapters: useAdapter, hasRepetitionPenalty: true,
+          userSeed: true, kvQuant: kv.scheme.kind !== "bf16" && kv.scheme.kind !== "turbo", turboQuant: kv.scheme.kind === "turbo",
+          hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
+        { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: true });
+        expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
         const requests = outputs.map((tokens, row) => createOrdinaryContinuationRequest({
           store, persistence, restore: entry => store.restore(entry, model), interval: 4, prompt,
-          options: { ...kv.options, ...(useAdapter ? { adapters: ["upper"] } : {}), maxTokens: 16, temperature: 0.7, seed: 42 + row, seedWasExplicit: true,
-            repetitionPenalty: 1.1, repetitionContextSize: 32 }, execution, identity: "same-B-fixture",
+          options: { ...options, seed: 42 + row }, execution, identity: "same-B-fixture",
           onToken(token) {
             tokens.push(token);
             if (interrupt && tokens.length === kv.interruptAt) {
@@ -100,7 +119,7 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           return { outputs, captured };
         } finally {
           await group.close(); contextGraph.mockRestore(); idle(); await persistence.flush();
-          requests.forEach(request => request.dispose()); clearCache();
+          requests.forEach(request => request.dispose()); prefix.clear(); clearCache();
           expect(model.loraState!.active).toEqual([]);
         }
       };
@@ -129,8 +148,148 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       expect(restarted.stats.restores).toBe(batch);
       expect(new SsdCacheStore(settings("restart")).scan()).toBe(0);
     }
-  } finally { if (adapter) manager.unmount("upper"); weights.dispose(); clearCache(); rmSync(directory, { recursive: true, force: true }); }
+    if (adapter) {
+      expect(manager.unmount("upper")).toBeGreaterThan(0);
+      expect(manager.list()).toEqual([]);
+      expect(probe(["upper"])).toEqual(baseLogits!);
+    }
+  } finally { if (adapter && manager.list().length) manager.unmount("upper"); weights.dispose(); clearCache(); rmSync(directory, { recursive: true, force: true }); }
 }, 300_000);
+
+// Uses the same artifact/adapter opt-ins as continuation; a positive start is
+// required so this cannot pass by exercising only already-encoded caches.
+test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START ||
+  Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START === "0")(
+  "delayed affine adapter groups join, cancel, isolate queued base rows and reuse after drain", async () => {
+  const { Weights, loadModelConfig } = await import("@mlx-bun/inference/artifacts");
+  const { createModel } = await import("@mlx-bun/inference/models");
+  const { AdapterManager } = await import("@mlx-bun/inference/adapters");
+  const { bindMlxGateway, createRowSampling } = await import("@mlx-bun/inference/execution");
+  const { makeStepSampler } = await import("@mlx-bun/inference/sampling");
+  const { leaseCacheState } = await import("@mlx-bun/inference/state");
+  const ops = await import("@mlx-bun/mlx/ops");
+  const weights = await Weights.open(target!), model = createModel(weights, await loadModelConfig(target!));
+  const manager = new AdapterManager(model), prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
+  const kv = await continuationKv(prompt.length);
+  if (!["4", "8", "per-layer"].includes(kv.mode) || kv.start <= 0 || kv.start >= prompt.length + 16)
+    throw new Error("adapter lifecycle requires delayed affine conversion inside the generated sequence");
+  const binding = bindMlxGateway(model);
+  const hash = (array: import("@mlx-bun/mlx/array").MlxArray) => {
+    using exact = ops.contiguous(array);
+    return [array.shape, array.dtype, new Bun.CryptoHasher("sha256").update(exact.rawBytes()).digest("hex")];
+  };
+  try {
+    await manager.mount("upper", adapter!);
+    const scenario = async (batch: number, cancel: boolean, baseOnly = false) => {
+      let held = true, leased = false, joined = false, queuedBase = false;
+      const group = binding.createBatchGroup({ maxBatch: batch, kvScheme: kv.scheme, admissionHeld: () => held,
+        lock: { async acquire() { leased = true; return () => { leased = false; }; } } });
+      const drained = async () => {
+        const deadline = Date.now() + 10_000;
+        while (group.activeRows || group.pendingRows || leased) {
+          if (Date.now() > deadline) throw new Error("adapter group did not release its execution lease");
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
+      };
+      const calls: unknown[] = [], widths: number[] = [], active: string[] = [], outputs: number[][] = [];
+      const jobs: Promise<{ status: string; error?: unknown }>[] = [], samplers: { dispose(): void }[] = [];
+      const aborts: AbortController[] = [];
+      const forward = model.forwardHidden.bind(model), project = model.logitsFromHidden.bind(model);
+      const context = () => model.loraState!.active.join(",");
+      const hidden = spyOn(model, "forwardHidden").mockImplementation((ids, caches) => {
+        const value = forward(ids, caches);
+        try {
+          const planes = caches.map(cache => {
+            const lease = leaseCacheState(cache);
+            try { return [cache.offset, ...lease.borrow().map(hash)]; } finally { lease.close(); }
+          });
+          calls.push(["forward", context(), hash(ids), planes]); widths.push(ids.shape[0]!); active.push(context());
+        } catch (error) { value.dispose(); throw error; }
+        return value;
+      });
+      const logits = spyOn(model, "logitsFromHidden").mockImplementation(value => {
+        const result = project(value);
+        try { calls.push(["logits", context(), hash(result)]); } catch (error) { result.dispose(); throw error; }
+        return result;
+      });
+      const enqueue = (row: number, adapted: boolean) => {
+        const tokens: number[] = []; outputs[row] = tokens;
+        const abort = new AbortController(); aborts.push(abort);
+        const ids = row === batch - 1 && adapted ? [...prompt, 42, 43] : prompt;
+        const options = { ...kv.options, maxTokens: row === 1 && !cancel ? 4 : 16, temperature: 0,
+          ...(adapted ? { adapters: ["upper"] } : {}) };
+        const execution = binding.plan({ hasVision: false, hasAdapters: adapted, hasRepetitionPenalty: false,
+          userSeed: false, kvQuant: true, turboQuant: false, hasLogitsExtras: false,
+          hasGrammar: false, wantsLogprobs: false, hasDraft: false }, options,
+        { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(kv.scheme), checkpoints: false });
+        expect(execution).toMatchObject({ mechanism: "continuous", method: "autoregressive", fill: false });
+        const sampling = createRowSampling(makeStepSampler(options, { tokenRepresentation: "device",
+          grammarWait: "external", historyUpdate: "after-sample", initialHistory: ids }), token => {
+          tokens.push(token);
+          if (adapted && row === 0 && tokens.length === 2 && !joined) {
+            joined = true; enqueue(batch - 1, true);
+            // Queue the incompatible context only after the joiner; it must
+            // wait until every adapter row (including the join) retires.
+            queuedBase = true; enqueue(batch, false);
+          }
+          if (adapted && cancel && row === 1 && tokens.length === 3) abort.abort(new Error("boundary cancellation"));
+        });
+        samplers.push(sampling);
+        jobs[row] = group.submit({ promptIds: ids, ...sampling, maxTokens: options.maxTokens, eosTokenIds: [],
+          context: adapted ? binding.bindAdapterContext!(["upper"], "upper") : undefined,
+          cacheNamespace: adapted ? manager.cacheNamespace(["upper"]) : "", signal: abort.signal,
+          onAdmitted() { expect(context()).toBe(adapted ? "upper" : ""); }, compiledDecode: false,
+        }).then(() => ({ status: "fulfilled" }), error => ({ status: "rejected", error }));
+      };
+      const timer = setTimeout(() => { for (const abort of aborts) abort.abort(new Error("adapter lifecycle deadline")); }, 120_000);
+      try {
+        if (baseOnly) enqueue(batch, false);
+        else for (let row = 0; row < batch - 1; row++) enqueue(row, true);
+        held = false; group.kick();
+        // The first row creates the late join and base promises before settling.
+        if (!baseOnly) { await jobs[0]; expect(joined && queuedBase).toBe(true); }
+        const results = await Promise.all(jobs.filter(Boolean));
+        if (!baseOnly) {
+          expect(Math.max(...widths)).toBe(batch);
+          expect(new Set(active)).toEqual(new Set(["upper", ""]));
+          const baseAt = active.indexOf("");
+          expect(baseAt).toBeGreaterThan(0);
+          expect(active.slice(baseAt).every(value => value === "")).toBe(true);
+          if (cancel) {
+            expect(results[1]).toMatchObject({ status: "rejected", error: { message: "boundary cancellation" } });
+            expect(outputs[1]).toHaveLength(3);
+          }
+        }
+        for (const [index, result] of results.entries()) if (!cancel || index !== 1) expect(result.status).toBe("fulfilled");
+        await drained();
+        expect(group.activeRows + group.pendingRows).toBe(0);
+        const beforeReuse = calls.length, baseTokens = outputs[batch]!.slice();
+        // Reuse the very same scheduler after complete drain.
+        enqueue(batch + 1, false); expect(await jobs[batch + 1]).toEqual({ status: "fulfilled" }); await drained();
+        expect(outputs[batch + 1]).toEqual(baseTokens);
+        const baseCalls = calls.slice(0, beforeReuse).filter(call => (call as unknown[])[1] === "");
+        expect(calls.slice(beforeReuse)).toEqual(baseCalls);
+        return { calls: calls.slice(0, beforeReuse), outputs, widths, active };
+      } finally {
+        clearTimeout(timer); for (const abort of aborts) abort.abort(new Error("test cleanup"));
+        await group.close(); await Promise.all(jobs.filter(Boolean));
+        hidden.mockRestore(); logits.mockRestore(); samplers.forEach(sampler => sampler.dispose());
+        expect(model.loraState!.active).toEqual([]);
+      }
+    };
+    for (const batch of [2, 4]) {
+      const cancelled = await scenario(batch, true), stopped = await scenario(batch, false);
+      // One pending step is already dispatched at callback cancellation, so
+      // a four-token length stop has the same physical forwards as abort at 3.
+      expect(cancelled.calls).toEqual(stopped.calls);
+      for (let row = 0; row < cancelled.outputs.length; row++)
+        if (row !== 1) expect(cancelled.outputs[row]).toEqual(stopped.outputs[row]);
+      expect(cancelled.outputs[1]).toEqual(stopped.outputs[1]!.slice(0, 3));
+      const base = await scenario(batch, false, true);
+      expect(cancelled.calls.filter(call => (call as unknown[])[1] === "")).toEqual(base.calls);
+    }
+  } finally { if (manager.list().length) manager.unmount("upper"); weights.dispose(); }
+}, 900_000);
 
 /** Explicit parity matrix; defaults retain the original bf16 fixture. */
 async function continuationKv(promptLength: number) {

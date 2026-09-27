@@ -89,7 +89,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // continuous decoding only. A draft or fill request over it is refused, as
   // for softcap models; grammar jump falls back to ordinary masking, until those
   // compositions have their own evidence. Its generation checkpoints are
-  // qualified for both. Universal adapter requests over it are refused.
+  // qualified for both. Plain universal adapters use the same row context.
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
     (model instanceof MiniCPM5Model || universalPlainKv) && delayedAffine(options);
   const cachesBatchable = () => {
@@ -177,8 +177,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill ||
-          (universalPlainKv && request.hasAdapters))) &&
+        continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill)) &&
           !(plainSoftcap && request.hasDraft && (!softcapDraft || request.hasAdapters || !!options.fill)),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&

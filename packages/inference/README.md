@@ -130,6 +130,16 @@ and cache-namespace isolation without bundled fixtures. The existing KV matrix
 uses `MLX_BUN_TEST_CONTINUATION_KV=bf16|4|8|per-layer|turbo`,
 `MLX_BUN_TEST_CONTINUATION_KV_START=0` (or `prompt+N`), and
 `MLX_BUN_TEST_CONTINUATION_INTERRUPT=6` (6–15).
+The test uses the actual capability planner. With an adapter and positive affine
+start it also checks grouped admission, an event-driven late join, cancellation
+against a matched stop control, queued base-context isolation and reuse after
+drain. Mounting must change full logits, and unmounting must restore the base.
+Full-attention universal graphs accept ordinary adapter requests with uniform
+or per-layer delayed affine KV and adapter-aware continuation; delayed drafts
+and fill, sliding descriptors and softcap encoded KV remain excluded. Real
+Qwen2.5 paired main/refactor qualification of this adapter composition is pending;
+placement tests alone do not establish numerical preservation.
+
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
 `MLX_BUN_TEST_PADDED_PREFILL_MODEL` and `MLX_BUN_TEST_PADDED_PREFILL_REFERENCE`.
