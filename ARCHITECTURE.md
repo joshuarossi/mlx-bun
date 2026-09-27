@@ -45,6 +45,30 @@ Interfaces describe required capabilities and ownership, not a selected model
 or service. A caller may provide a different implementation satisfying the
 same contract. Concrete model loading remains available as a convenience.
 
+### Construct the implementation before executing it
+
+The model description is an input to constructing an implementation. Resolve
+known architecture, weight layout, quantization, layer roles, and configured
+capabilities when loading and binding the graph. Compose the selected layers
+and kernels into that implementation so execution does not repeatedly interpret
+the descriptor or rediscover what a particular layer does. Adding model support
+should reuse these components where they fit and give specialized code an
+explicit owner. A universal fallback can remain available.
+
+Here, "compile" means resolving those facts into a concrete implementation;
+it does not require generated source or MLX graph compilation. Layers own MLX
+compilation choices, whose performance must be measured. State can be omitted
+or kept unmaterialized only when its uses and lifetime establish that this is
+correct, with numerical and lifecycle evidence.
+
+Sampling, caches, scheduling, and speculative methods compose through their
+contracts. Bind required operations and reject genuinely missing capabilities
+at the composition boundary rather than maintaining model/flag combination
+allowlists. For example, a missing draft head is a missing component. Dynamic
+request data, batch membership, cancellation, and state transitions still need
+runtime handling. This is the target design and a review criterion for remaining
+migration work, not a claim that every existing path already satisfies it.
+
 ## Ownership and dependency direction
 
 Inside `packages/inference/src/`:
