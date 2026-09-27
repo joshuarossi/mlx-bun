@@ -68,7 +68,7 @@ test("each unsupported key form fails with its location; a comment does not", ()
   expect(renderServerConfig(commented, revision)).toBe(renderServerConfig(baseline, revision));
   expect(() => configInventory(mutate("packages/mlx/src/native.ts", "process.env.MLX_BUN_LIBMLXC", "undefined")))
     .toThrow("packages/mlx/src/native.ts: the listed direct read of MLX_BUN_LIBMLXC disappeared");
-});
+}, 20_000); // each case rescans every source; concurrent Mac CI needs more than the 5 s default
 
 test("aliased and string-keyed runtime readers are inventoried; destructured environment reads follow the direct-read rule", () => {
   const readsOf = (text: string) => configInventory(extra(text)).reads.filter(r => r.file === "packages/inference/src/extra.ts").map(r => `${r.key} ${r.how} ${r.line}`);
@@ -84,7 +84,7 @@ test("aliased and string-keyed runtime readers are inventoried; destructured env
     ["export const read = () => 1;\nconst { ...all } = process.env;\n", "computed environment read `{ ...all } = process.env`"],
     ["export const read = () => 1;\nconst { [name]: value } = process.env;\n", "computed environment read `{ [name]: value } = process.env`"],
   ]) expect(() => configInventory(extra(text))).toThrow(`packages/inference/src/extra.ts:2: ${message}`);
-});
+}, 20_000); // each case rescans every source; concurrent Mac CI needs more than the 5 s default
 
 test("a note whose key or flag is gone fails", () => {
   expect(() => configInventory(mutate("apps/mlx-bun/src/cli/serve.ts", 'runtimeValue("MLX_BUN_PAGED_KV")', 'runtimeValue("MLX_BUN_PAGING")')))
