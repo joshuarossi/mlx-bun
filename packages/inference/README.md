@@ -53,11 +53,19 @@ The external environment used Python 3.13.5, MLX/MLX-Metal 0.32.2 and mlx-lm
 `02d723a:scripts/regen/minicpm5.ts`; model-file and per-step reference hashes
 were checked. The reference manifest SHA-256 is
 `e20d64193328d5dfe1c4b9681651730b35b2eeb2f5152b0ae3d8fb50b05dfd5f`.
-The external Bun harness used public root, model, and scoring imports, forwarding
-the prompt once and each selected token thereafter with the same live cache.
-This result covers that path only, not other models, batching, quantized KV,
-snapshot restore, long contexts, or speed. Raw outputs and the comparison
-harness remain external; Python is not a project dependency.
+The [MiniCPM5 parity test](tests/parity/minicpm5-parity.test.ts) is that harness:
+public root, model, and scoring imports, forwarding the prompt once and each
+selected token thereafter with the same live cache (plain KV from the model).
+It requires byte-identical finite logits and the greedy token at all 100 steps.
+Opt in with all of `MLX_BUN_TEST_MINICPM5_MODEL`, `MLX_BUN_TEST_MINICPM5_REFERENCE`
+(the directory holding `minicpm5-parity.json` and the 100 step blobs) and
+`MLX_BUN_TEST_MINICPM5_REFERENCE_SHA256`; absent all three it skips, any other
+combination fails. Before native libraries load it verifies the manifest hash, the
+pinned model files and shards by content (relocated copies pass) and every blob;
+the runtime must match the reference's MLX version and GPU architecture.
+This covers that path only, not other models, batching, quantized KV,
+snapshot restore, long contexts, or speed. Raw outputs and the reference
+remain external; Python is not a project dependency.
 
 
 ### Repeatable runtime comparison
