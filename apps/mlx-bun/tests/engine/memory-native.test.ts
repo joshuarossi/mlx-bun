@@ -128,3 +128,65 @@ describe.skipIf(!native)("memory task model on the continuous gateway", () => {
     await expect(memory.client.complete(requests.route)).rejects.toThrow("closed");
   });
 });
+
+// `serve`'s own synthesis: the real direct composition serving a small model
+// (MLX_BUN_APP_TEST_MODEL, not e4b) runs GET /v1/memory/synthesize over SSE on
+// the memory task model loaded in the server process by that run, never on the
+// served model. Needs a temporary HOME (the registry and the adapter link live
+// there); with MLX_BUN_APP_TEST_MEMORY_ADAPTER the adapter is linked read only.
+const servedModel = process.env.MLX_BUN_APP_TEST_MODEL;
+test.skipIf(!native || !servedModel)("serve's own synthesis runs on the task model it loads, not on the served model", async () => {
+  const { mkdirSync, mkdtempSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } = await import("node:fs");
+  const { homedir, tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  if (![realpathSync(tmpdir()), "/private/tmp"].some(dir => realpathSync(homedir()).startsWith(`${dir}/`))) throw new Error("run with a temporary HOME");
+  if (adapter) {
+    mkdirSync(join(homedir(), ".cache/mlx-bun/adapters"), { recursive: true });
+    symlinkSync(adapter, join(homedir(), ".cache/mlx-bun/adapters/memory-chunk"));
+  }
+  const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
+  const { scanSnapshot } = await import("@mlx-bun/hub/registry");
+  const { locateTaskModel } = await import("../../src/cli/memory-engine");
+  const { MEMORY_TASK_MODEL } = await import("../../src/memory/model");
+  const model = await scanSnapshot(servedModel!, "test-model");
+  if (!model) throw new Error("MLX_BUN_APP_TEST_MODEL has no loadable checkpoint");
+  const { activeMemory } = await import("@mlx-bun/mlx/ffi");
+  const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
+  const taskBytes = readdirSync(snapshot).filter(name => name.endsWith(".safetensors")).reduce((sum, name) => sum + statSync(realpathSync(join(snapshot, name))).size, 0);
+  const root = mkdtempSync(join(tmpdir(), "mlx-serve-synthesis-"));
+  const vault = join(root, "vault");
+  mkdirSync(join(vault, "articles"), { recursive: true });
+  writeFileSync(join(vault, "articles", "Alpha.md"), "# Alpha\n\nAlpha is a test article about lenses. See [[Beta]].\n");
+  writeFileSync(join(vault, "articles", "Beta.md"), "# Beta\n\nBeta links to [[Alpha]].\n");
+  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault, skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const app = await startModelServer(model, options);
+  try {
+    const base = `http://127.0.0.1:${app.port}`;
+    const lookups = async () => { const { prompt_cache } = await (await fetch(`${base}/stats`)).json() as { prompt_cache: { hits: number; misses: number } };
+      return prompt_cache.hits + prompt_cache.misses; };
+    // The counter sees a served completion...
+    const before = await lookups();
+    const served = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: model.repoId, max_tokens: 4, temperature: 0, messages: [{ role: "user", content: "Say hi." }] }) });
+    expect(served.status).toBe(200);
+    const afterServed = await lookups();
+    expect(afterServed).toBeGreaterThan(before);
+    const resident = activeMemory();
+    // ...and none during synthesis, which loads the task model into this process and keeps it.
+    const text = await (await fetch(`${base}/v1/memory/synthesize`)).text();
+    expect(text).toContain('"type":"summary"');
+    expect(text.trim().endsWith("data: [DONE]")).toBe(true);
+    expect(text).not.toContain('"type":"error"');
+    // The wikify sweep reached the model and was not skipped by a model error.
+    expect(text).toContain("wikify");
+    expect(text).not.toContain("skipped (error");
+    expect(await lookups()).toBe(afterServed);
+    expect(activeMemory() - resident).toBeGreaterThan(0.8 * taskBytes);
+  } finally {
+    await app.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 600_000);

@@ -186,6 +186,55 @@ test("a failed row cancels its siblings, starts no new rows, and every started r
   } finally { await memory.close(); }
 });
 
+test("a signal-bound view ends its in-flight completions and batch rows, and refuses work once aborted", async () => {
+  batchWidth(3);
+  const started: number[] = [], aborted: number[] = [];
+  const h = harness({ run: async call => {
+    const row = Number(String.fromCharCode(...call.promptIds.slice(-4, -2)));
+    started.push(row);
+    await new Promise<void>((_resolve, reject) => {
+      if (call.signal!.aborted) { aborted.push(row); return reject(call.signal!.reason); }
+      call.signal!.addEventListener("abort", () => { aborted.push(row); reject(call.signal!.reason); }, { once: true });
+    });
+  } });
+  const memory = createInProcessMemoryClient(h.deps);
+  try {
+    const single = new AbortController();
+    const one = memory.clientFor(single.signal).complete(request("route", "00"));
+    await Bun.sleep(5);
+    single.abort(new Error("run cancelled"));
+    await expect(one).rejects.toThrow("run cancelled");
+    expect(aborted).toEqual([0]);
+    // A batch under the run's signal: every started row ends, no further row starts, and the batch rejects after all settle.
+    const run = new AbortController();
+    const batch = memory.clientFor(run.signal).completeBatch(Array.from({ length: 9 }, (_, index) => request("entity", String(10 + index))));
+    await Bun.sleep(5);
+    run.abort(new Error("run cancelled"));
+    await expect(batch).rejects.toThrow("run cancelled");
+    expect(started.slice(1).toSorted()).toEqual([10, 11, 12]);
+    expect(aborted.slice(1).toSorted()).toEqual([10, 11, 12]);
+    // Once aborted, the view starts nothing; the shared client is unaffected.
+    await expect(memory.clientFor(run.signal).complete(request("route", "20"))).rejects.toThrow("run cancelled");
+    expect(started).not.toContain(20);
+    expect(memory.clientFor(run.signal)).not.toBe(memory.client);
+  } finally { await memory.close(); }
+});
+
+test("pre-cancelled work never locates or loads the task model; the shared initialization stays usable", async () => {
+  const h = harness();
+  const memory = createInProcessMemoryClient(h.deps);
+  try {
+    const cancelled = AbortSignal.abort(new Error("run cancelled"));
+    await expect(memory.clientFor(cancelled).complete(request("route", "a"))).rejects.toThrow("run cancelled");
+    await expect(memory.clientFor(cancelled).completeBatch([request("entity", "a"), request("entity", "b")])).rejects.toThrow("run cancelled");
+    expect(h.events).toEqual([]);
+    // Live callers still share one load.
+    expect(await Promise.all([memory.client.complete(request("route", "b")), memory.clientFor(new AbortController().signal).complete(request("route", "c"))]))
+      .toEqual(["|>", "|>"]);
+    expect(h.events.filter(event => event.startsWith("load"))).toHaveLength(1);
+  } finally { await memory.close(); }
+});
+
 test("the task model resolves from the Hugging Face cache and is never downloaded", async () => {
   const hub = mkdtempSync(join(tmpdir(), "mlx-memory-hub-"));
   try {

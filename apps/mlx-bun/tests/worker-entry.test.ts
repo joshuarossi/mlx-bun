@@ -478,7 +478,7 @@ test("a Whisper checkpoint in the app form hands the socket hooks to the transcr
   } finally { run.cleanup(); }
 });
 
-test("the app form composes the real app over the socket with private storage: persistent routes, synthesis and dataset loopback to the same socket, streaming, and client aborts", async () => {
+test("the app form composes the real app over the socket with private storage: persistent routes, synthesis on the memory task model, dataset loopback to the same socket, streaming, and client aborts", async () => {
   const script = `
     import { mock } from "bun:test";
     import { strict as assert } from "node:assert";
@@ -532,7 +532,12 @@ test("the app form composes the real app over the socket with private storage: p
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request => new URL(request.url).pathname === "/" ? new Response("web") : null }));
-    // Synthesis's pipeline stand-in: one stage call through the real loopback client.
+    // The app form is the direct composition: synthesis runs on the memory task model, not over loopback.
+    mock.module(app + "src/cli/memory-engine.ts", () => ({ createInProcessMemoryClient: () => {
+      const client = { complete: async request => "task model reply to " + request.input.user, completeBatch: async () => [] };
+      return { client, clientFor: () => client, async close() { events.push("task model close"); } };
+    } }));
+    // Synthesis's pipeline stand-in: one stage call through the run's client.
     mock.module(app + "src/memory/pipeline.ts", () => ({ async runSynthesis(options, onEvent) {
       onEvent({ type: "log", message: await options.client.complete({ stage: "extract", input: { user: "synthesis probe" }, maxTokens: 4 }) });
       return { implemented: true, stages: ["extract"], note: "probe" };
@@ -574,12 +579,11 @@ test("the app form composes the real app over the socket with private storage: p
     assert.deepEqual(await json("/api/settings/tool-approvals"), { ok: true, alwaysAllow: [] });
     const status = await json("/api/memory/status");
     assert.deepEqual([status.enabled, status.root], [false, memoryPaths.vault]);
-    // Memory synthesis's loopback client reaches this host through the socket.
+    // Memory synthesis runs on the task model; nothing reaches the served model's routes.
     const synthesis = await (await run.get("/v1/memory/synthesize")).text();
-    assert.match(synthesis, /"message":"loopback reply"/);
+    assert.match(synthesis, /"message":"task model reply to synthesis probe"/);
     assert.match(synthesis, /\\[DONE\\]/);
-    assert.deepEqual(seen.map(entry => [entry.host, entry.authorization, entry.prompt, entry.stream]),
-      [["127.0.0.1:1", "Bearer sk-mlx-bun-local", "synthesis probe", false]]);
+    assert.deepEqual(seen, []);
     // So does a dataset job's chat client (the job runs in this process).
     const submitted = await json("/api/dataset/submit", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ template_id: "style_transfer", inputs: { reference_samples: "Plain words.", raw_text: "dataset probe" } }) });
@@ -587,9 +591,9 @@ test("the app form composes the real app over the socket with private storage: p
     let job;
     await until(async () => { job = (await json("/api/jobs/" + submitted.job_id)).job; return job.status === "done" || job.status === "failed"; }, "the dataset job");
     assert.equal(job.status, "done", job.error);
-    assert.equal(seen.length, 2);
-    assert.deepEqual([seen[1].host, seen[1].authorization, seen[1].stream], ["127.0.0.1:1", "Bearer sk-mlx-bun-local", false]);
-    assert.match(seen[1].prompt, /dataset probe/);
+    assert.equal(seen.length, 1);
+    assert.deepEqual([seen[0].host, seen[0].authorization, seen[0].stream], ["127.0.0.1:1", "Bearer sk-mlx-bun-local", false]);
+    assert.match(seen[0].prompt, /dataset probe/);
     assert.ok(existsSync(join(submitted.output_dir, "train.jsonl")));
     // Streaming passes through; a client abort mid-stream reaches the route.
     const streamed = await run.get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ stream: true, messages: [{ role: "user", content: "hi" }] }) });
@@ -604,7 +608,8 @@ test("the app form composes the real app over the socket with private storage: p
     // The parent leaves: one close, the engine released, the socket gone.
     run.end();
     assert.equal(await run.exited, 0);
-    assert.deepEqual(events.filter(event => event.endsWith("close")), ["engine close", "model close"]);
+    // The task model closes with the persistent state, before the engine drains.
+    assert.deepEqual(events.filter(event => event.endsWith("close")), ["task model close", "engine close", "model close"]);
     assert.ok(!existsSync(socketPath));
     // A Whisper checkpoint composes the real transcription-only host on the socket.
     const whisperSocket = process.env.WORKER_SOCKET_2;

@@ -176,7 +176,8 @@ the worker is down, 200 with only the parent's part and an `unavailable`
 message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
 `/admin/drain` stay unix-socket-only and keep answering 501 on TCP.
 `GET /v1/memory/synthesize` is served by this process's memory owner; its
-loopback completion client reaches the model through the proxy like any client.
+loopback completion client reaches the default worker's served model through
+the proxy like any client, not main's memory task model (a tracked gap).
 
 **Crashes.** An unexpected worker exit is respawned with main's budget: at most
 three restarts in a rolling 60-second window, and a worker that died within
@@ -625,20 +626,30 @@ deterministic `crosslink.ts` pass and the `wikify.ts` editorial sweep. `events.t
 holds the shared event contract so no stage imports the orchestrator.
 
 The engine is reached only through `model.ts`'s `MemoryCompletionClient` seam.
-The memory domain defines the interface; composition injects the one
-implementation, `server/memory-completion-client.ts`, which posts each stage
+The memory domain defines the interface; composition injects one of two
+implementations. `cli/memory-engine.ts` is main's memory task model (Gemma-4
+e4b and its `memory-chunk` adapter), loaded in-process by the first completion
+over the app engine's continuous gateway: the `memory` verb and its nightly job
+use it, and so does `serve`'s own synthesis, which keeps it resident until
+shutdown, as main did. Under `serve` each task-model completion (or batch, once
+all its rows join) holds the served engine's execution lease, taken before the
+weights load, so memory work never overlaps a managed job; chat waits while a
+memory stage call runs (main's in-server client ran beside chat under its own
+locks). `server/memory-completion-client.ts` posts each stage
 call to a serving mlx-bun's own `/v1/chat/completions` (raw greedy sampling,
 neutral logit processors and the model template's thinking defaults, the
 stage's system/user turns, `adapter: "memory-chunk"` for the chunk stage when
-`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise) so
-synthesis rides the continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
+`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise): `memory
+--host`/`--port` use it, and so does the `--isolate` parent, which loads no
+model. Either way synthesis rides the continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
 (default 1) bounds the calls in flight per batched stage. Nothing in the memory
 domain loads a model, and no serial lane exists. Each run receives its client
 and vault root explicitly; Meta policy reads use that same vault. A failed batch
 stops admission, cancels siblings, and joins them before returning its error.
 `server/memory-synthesis.ts` owns active server runs: request/body cancellation
-aborts the run, and server shutdown cancels and joins all synthesis before engine
-drain. Completed stage writes are resumable; cancellation does not roll them back.
+aborts the run and its in-flight completions (or its wait for the lease), and
+server shutdown cancels and joins all synthesis alongside managed jobs and
+downloads, then closes the task model, before engine drain. Completed stage writes are resumable; cancellation does not roll them back.
 
 `GET /v1/memory/synthesize[?dry=1]` streams the run as SSE (`stage`/`log`/`done`
 events, a `summary`, then `[DONE]`; a failure ends with an `error` event); it is

@@ -23,6 +23,9 @@ import { createDatasetRoutes } from "../server/dataset-routes";
 import { createFinetuneRoutes } from "../server/finetune-routes";
 import { createHubRoutes } from "../server/hub-routes";
 import { createJobRoutes } from "../server/job-routes";
+import type { InProcessMemoryClient } from "./memory-engine";
+import type { MemoryCompletionClient } from "../memory/model";
+import { createLoopbackMemoryClient } from "../server/memory-completion-client";
 import { createMemoryRoutes } from "../server/memory-routes";
 import { createMemorySynthesis } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
@@ -38,6 +41,12 @@ export interface AppStateOptions {
   port: number;
   memoryPaths?: { vault: string; skills: string };
   chatPaths?: PiBackendPaths;
+  /** Memory synthesis's model: main's memory task model (Gemma-4 e4b with its
+   * chunk adapter), created by the first run and kept until close. The direct
+   * composition supplies it. Without it (the --isolate parent, which loads no
+   * model) runs use the attached host's served model over loopback, a recorded
+   * preservation gap rather than the final behavior. */
+  memoryTaskModel?: () => InProcessMemoryClient;
 }
 
 /** What a live model host lends the persistent services while it serves. */
@@ -113,10 +122,25 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const loopback = ((url: string | URL | Request, init?: RequestInit) =>
     fetch(url, host?.unix ? { ...init, unix: host.unix } as RequestInit : init)) as typeof fetch;
   const datasetRunner = createDatasetRunner({ loopback });
-  // Memory synthesis reaches the model only through the attached host's own
-  // /v1/chat/completions; the owner cancels and joins its runs before jobs and
-  // downloads close, ahead of any engine drain.
-  const synthesis = createMemorySynthesis({ root: memoryPaths.vault, apiUrl: () => `http://127.0.0.1:${host?.port ?? options.port}`, http: { fetch: loopback } });
+  // Memory synthesis runs on the task model, created on first use (its weights
+  // load with the first completion) and kept until close, as in main. Each of
+  // its completions or batches runs under the attached host's execution lease,
+  // taken before the weights load and released once every started row joined,
+  // so memory work never overlaps a managed job. Without a task model (the
+  // --isolate parent) runs use the attached host's served model over loopback,
+  // which must not take that lease. Close cancels and joins the runs, then
+  // closes the task model, all ahead of any engine drain.
+  let taskModel: InProcessMemoryClient | undefined;
+  const leased = (client: MemoryCompletionClient, signal: AbortSignal): MemoryCompletionClient => {
+    const hold = async <T>(work: () => Promise<T>) => {
+      const lease = await requireHost().acquireExecutionLease(signal);
+      try { return await work(); } finally { lease.dispose(); }
+    };
+    return { complete: request => hold(() => client.complete(request)), completeBatch: requests => hold(() => client.completeBatch(requests)) };
+  };
+  const synthesis = createMemorySynthesis({ root: memoryPaths.vault,
+    client: signal => options.memoryTaskModel ? leased((taskModel ??= options.memoryTaskModel()).clientFor(signal), signal)
+      : createLoopbackMemoryClient(() => `http://127.0.0.1:${host?.port ?? options.port}`, { fetch: loopback, signal }) });
   const routes: AppState["routes"] = {
     hub: createHubRoutes({ downloads }),
     sessions: createSessionRoutes(sessionDir),
@@ -142,8 +166,11 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     },
     close: () => closing ??= (async () => {
       const errors: unknown[] = [];
+      // Synthesis rows, managed children and transfers are cancelled and joined
+      // before the task model's weights are released; no lease is taken here.
       for (const result of await Promise.allSettled([synthesis.close(), jobs.close(), downloads.close()]))
         if (result.status === "rejected") errors.push(result.reason);
+      try { await taskModel?.close(); } catch (error) { errors.push(error); }
       if (errors.length === 1) throw errors[0];
       if (errors.length) throw new AggregateError(errors, "background shutdown failed");
     })(),

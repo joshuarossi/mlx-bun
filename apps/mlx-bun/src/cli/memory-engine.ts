@@ -68,14 +68,18 @@ export const defaultMemoryEngineDependencies: MemoryEngineDependencies = {
 
 interface MemoryRuntime { engine: MemoryEngine; scheme: KvScheme; chunkAdapter: boolean }
 
+/** The task model's client, and a view of it whose every completion ends when a signal aborts. */
+export interface InProcessMemoryClient {
+  client: MemoryCompletionClient;
+  clientFor(signal: AbortSignal): MemoryCompletionClient;
+  close(): Promise<void>;
+}
+
 /** A lazily loaded memory client. The first completion loads the task model
  *  once (every caller shares that one initialization); a failed load stays
  *  failed for this client, as in main. `close()` is safe before, during and
  *  after initialization, including after it failed. */
-export function createInProcessMemoryClient(deps: MemoryEngineDependencies = defaultMemoryEngineDependencies): {
-  client: MemoryCompletionClient;
-  close(): Promise<void>;
-} {
+export function createInProcessMemoryClient(deps: MemoryEngineDependencies = defaultMemoryEngineDependencies): InProcessMemoryClient {
   let closed = false, init: Promise<MemoryRuntime> | undefined, closing: Promise<void> | undefined;
   const closedError = () => new Error("memory: the task model client is closed");
   const start = async (): Promise<MemoryRuntime> => {
@@ -119,30 +123,38 @@ export function createInProcessMemoryClient(deps: MemoryEngineDependencies = def
     } finally { plan.dispose(); }
   };
 
-  const client: MemoryCompletionClient = {
-    async complete(request) { return run(await runtime(), request); },
+  const clientFor = (outer?: AbortSignal): MemoryCompletionClient => ({
+    async complete(request) {
+      // Cancelled work never starts the shared load; a load another caller started continues.
+      outer?.throwIfAborted();
+      const rt = await runtime();
+      outer?.throwIfAborted();
+      return run(rt, request, outer);
+    },
     async completeBatch(requests) {
       if (!requests.length) return [];
+      outer?.throwIfAborted();
       const rt = await runtime();
+      outer?.throwIfAborted();
       const first = requests[0]!;
       // Main's rule: a mixed-stage or mixed-budget batch runs its rows one after another.
       if (memoryBatchSize() <= 1 || requests.length === 1 ||
         !requests.every(request => request.stage === first.stage && request.maxTokens === first.maxTokens)) {
         const results: string[] = [];
-        for (const request of requests) results.push(await run(rt, request));
+        for (const request of requests) results.push(await run(rt, request, outer));
         return results;
       }
       // Bounded producers, as main's scheduler and the loopback client: at most
       // the batch width of rows in flight, results in input order. One row's
       // failure cancels its siblings and stops new rows; every started row
       // settles before the batch rejects.
-      const abort = new AbortController();
+      const abort = new AbortController(), signal = outer ? AbortSignal.any([outer, abort.signal]) : abort.signal;
       const results = new Array<string>(requests.length);
       let next = 0, failure: { error: unknown } | undefined;
       const producer = async () => {
         while (!failure && next < requests.length) {
           const index = next++;
-          try { results[index] = await run(rt, requests[index]!, abort.signal); }
+          try { results[index] = await run(rt, requests[index]!, signal); }
           catch (error) { failure ??= { error }; abort.abort(error); }
         }
       };
@@ -150,9 +162,10 @@ export function createInProcessMemoryClient(deps: MemoryEngineDependencies = def
       if (failure) throw failure.error;
       return results;
     },
-  };
+  });
   return {
-    client,
+    client: clientFor(),
+    clientFor,
     close() {
       closed = true;
       return closing ??= (async () => {
