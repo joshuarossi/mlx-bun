@@ -140,27 +140,35 @@ export function alignRotatingRows(rows: Cache[]): AlignedRotatingCache[] {
 }
 
 /** One solo row in its own ring geometry: owned views of its physical
- * planes with the position its source reports (rotatingSourcePosition). */
+ * planes with the position its source reports (rotatingSourcePosition). Every
+ * view taken is released if any later step fails; the source stays with the
+ * caller either way. */
 function adoptRotatingRow(source: Cache): AlignedRotatingCache {
   if (!(source instanceof RotatingKVCache || source instanceof RotatingQuantizedKVCache))
     throw new Error(`rotating layout cannot adopt ${source.signature()}`);
   const position = rotatingSourcePosition(source).snapshot();
-  let inner: Ring;
-  if (source instanceof RotatingKVCache) {
-    const own = (plane: MlxArray | null) => plane ? plainRowStorage.slice(plane, 0, 1, 0, plane.shape[2]!) : null;
-    const keys = own(source.keys);
-    let values: MlxArray | null;
-    try { values = own(source.values); } catch (error) { keys?.dispose(); throw error; }
-    inner = BatchedRotatingCache.adoptPhysical(keys, values, position);
-  } else {
-    const own = (plane: ops.QuantizedTensor | null) => plane ? quantizedRowStorage.slice(plane, 0, 1, 0, plane.packed.shape[2]!) : null;
-    const keys = own(source.keys);
-    let values: ops.QuantizedTensor | null;
-    try { values = own(source.values); } catch (error) { if (keys) quantizedRowStorage.dispose(keys); throw error; }
-    inner = BatchedRotatingQuantCache.adoptPhysical(keys, values, source.groupSize, source.bits, position);
+  const views: MlxArray[] = [];
+  const view = (array: MlxArray): MlxArray => {
+    const owned = plainRowStorage.slice(array, 0, 1, 0, array.shape[2]!);
+    views.push(owned);
+    return owned;
+  };
+  try {
+    let inner: Ring;
+    if (source instanceof RotatingKVCache) {
+      inner = BatchedRotatingCache.adoptPhysical(source.keys ? view(source.keys) : null, source.values ? view(source.values) : null, position);
+    } else {
+      const triple = (plane: ops.QuantizedTensor | null): ops.QuantizedTensor | null =>
+        plane ? { packed: view(plane.packed), scales: view(plane.scales), biases: view(plane.biases) } : null;
+      const keys = triple(source.keys), values = triple(source.values);
+      inner = BatchedRotatingQuantCache.adoptPhysical(keys, values, source.groupSize, source.bits, position);
+    }
+    const row = new AlignedRotatingCache(inner); row.minimumReusableOffset = source.minimumReusableOffset ?? 0;
+    return row;
+  } catch (error) {
+    for (const owned of views) owned.dispose();
+    throw error;
   }
-  const row = new AlignedRotatingCache(inner); row.minimumReusableOffset = source.minimumReusableOffset ?? 0;
-  return row;
 }
 
 /** Position state has no codec or attention arithmetic. */

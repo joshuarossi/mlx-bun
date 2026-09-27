@@ -18,6 +18,7 @@ import { RotatingQuantizedKVCache } from "../../src/state/rotating-quantized-kv"
 import { createKvMaintenance } from "../../src/state/kv-maintenance";
 import { captureKvAttention } from "../../src/state/kv-attention-view";
 import { disposeTriple } from "../../src/state/quantized-tensor";
+import { alignRotatingRows } from "../../src/state/rotating-kv-layout";
 import type { Cache } from "../../src/contracts/mlx/cache";
 
 const W = 8;
@@ -92,4 +93,36 @@ test(`${dtypeName} ${g.name} KV${bits} ${label}: the adopted wrapper equals the 
       try { expect(logical(extracted), `step ${t} state`).toEqual(logical(solo[0]!)); } finally { extracted.dispose(); }
     }
   } finally { for (const cache of [...solo, ...adopted]) cache.dispose(); }
+});
+
+// Adoption takes views of every physical plane array; whichever view fails,
+// the views already taken are released and the caller's source row is intact.
+for (const quantized of [false, true]) test(`${quantized ? "quantized" : "plain"} single-row adoption releases its views when one fails and leaves the source intact`, () => {
+  const tensor = (n: number, seed: number) => { using key = ops.randomKey(BigInt(seed)); return ops.randomNormal([1, 2, n, 64], Dtype.float16, 0, 1, key); };
+  const failures = quantized ? 6 : 2;
+  for (let failing = 0; failing < failures; failing++) {
+    let rows: Cache[] = [new RotatingKVCache(W)];
+    for (const [n, seed] of [[11, 1], [1, 3]] as const) { using k = tensor(n, seed), v = tensor(n, seed + 1); write(rows[0]!, k, v); }
+    if (quantized) createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 1 })(rows);
+    const source = rows[0]!, before = logical(source);
+    const ring = source as unknown as { keys: unknown; values: unknown };
+    const arrays = (quantized ? [ring.keys, ring.values].flatMap(t => { const q = t as { packed: MlxArray; scales: MlxArray; biases: MlxArray };
+      return [q.packed, q.scales, q.biases]; }) : [ring.keys, ring.values]) as MlxArray[];
+    expect(arrays).toHaveLength(failures);
+    const taken: MlxArray[] = [];
+    arrays.forEach((array, index) => {
+      if (index > failing) return;
+      const slice = array.slice.bind(array);
+      (array as unknown as { slice: unknown }).slice = index === failing
+        ? () => { throw new Error("injected view failure"); }
+        : (...args: Parameters<MlxArray["slice"]>) => { const view = slice(...args); taken.push(view); return view; };
+    });
+    try {
+      expect(() => alignRotatingRows(rows), `failure at array ${failing}`).toThrow("injected view failure");
+    } finally { for (const array of arrays) delete (array as unknown as { slice?: unknown }).slice; }
+    expect(taken).toHaveLength(failing);
+    for (const view of taken) expect(() => view.handle, `view before array ${failing}`).toThrow("used after dispose");
+    expect(logical(source), `source after failure at array ${failing}`).toEqual(before);
+    source.dispose(); rows = [];
+  }
 });
