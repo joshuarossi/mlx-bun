@@ -383,9 +383,8 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   const logprobs = binding.plan({ ...draft, wantsLogprobs: true }, {}, scheduling);
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
-  // Drafts with adapters or fill, and encoded KV, media or paging stay refused.
+  // Adapter-free drafts with fill, and encoded KV, media or paging stay refused.
   for (const [request, options, expected] of [
-    [{ ...draft, hasAdapters: true }, { adapters: ["upper"] }, ["continuous-unavailable"]],
     [draft, fillOptions(false), ["continuous-unavailable"]],
     [draft, fillOptions(true), ["continuous-unavailable"]],
     [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["kv-scheme-batch-unsupported"]],
@@ -404,6 +403,43 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   expect(jump.plan({ ...shape, hasGrammar: true }, {}, schedule)).toMatchObject({ method: "autoregressive", grammarJump: false });
 });
 
+test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] as const)(
+  "Gemma2 softcap adapters ignore the %s draft and fill, preserving ordinary decoding", (_, provider) => {
+  const model = softcapUniversal();
+  const binding = bindMlxGateway(model, { provider: provider(), numDraftTokens: 3 });
+  const scheduling = { ...schedule, continuous: binding.cachesBatchable(), checkpoints: true };
+  binding.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as never);
+  const request = { ...shape, hasDraft: true, hasAdapters: true };
+  for (const fill of [undefined, fillOptions(false).fill, fillOptions(true).fill]) {
+    for (const extra of [{}, { wantsLogprobs: true }, { userSeed: true }, { hasGrammar: true }]) {
+      const options: GenerateOptions = { adapters: ["upper"], fill, ...(extra.userSeed ? { seed: 42 } : {}) };
+      const plan = binding.plan({ ...request, ...extra }, options, scheduling);
+      expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false,
+        checkpoint: false, promptCache: true, grammarJump: false });
+      expect(refusals(plan)).toEqual([]);
+      expect(plan.reasons).toContain("draft-incompatible-with-request");
+      if (fill) expect(plan.reasons).toContain("fill-incompatible-with-request");
+      // Dispatch must consume neither provider nor fill, even if both were supplied.
+      expect(binding.methodRequest!(plan, options)).toBeUndefined();
+    }
+  }
+  const previous = model.loraState.active;
+  const leave = binding.bindAdapterContext!(["upper"], "upper").enter();
+  expect(model.loraState.active).toEqual(["upper"]);
+  leave();
+  expect(model.loraState.active).toBe(previous);
+  for (const [extra, options, reason] of [
+    [{ kvQuant: true }, { kvBits: 4 }, "kv-scheme-batch-unsupported"],
+    [{ turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, "turbo-kv-batch-unsupported"],
+    [{ hasVision: true }, {}, "media-batch-unsupported"],
+    [{}, { pagedKv: {} }, "paged-kv-batch-unsupported"],
+  ] as const) {
+    const plan = binding.plan({ ...request, ...extra }, { ...options, adapters: ["upper"] } as GenerateOptions, scheduling);
+    expect(plan.mechanism).toBe("unsupported");
+    expect(plan.reasons).toContain(reason);
+  }
+});
+
 test("Gemma2 softcap keeps other grouped draft providers unsupported", () => {
   const unexpected = () => { throw new Error("placement opened draft rows"); };
   const other = { id: "other", weightsBytes: 0, grouped: { checkpointNamespace: () => "other", open: unexpected, openPrefill: unexpected } };
@@ -411,12 +447,17 @@ test("Gemma2 softcap keeps other grouped draft providers unsupported", () => {
   const plan = binding.plan({ ...shape, hasDraft: true }, {}, { ...schedule, continuous: binding.cachesBatchable() });
   expect(plan).toMatchObject({ method: "speculative", mechanism: "unsupported" });
   expect(refusals(plan)).toEqual(["continuous-unavailable", "method-batch-unsupported"]);
+  const adapted = binding.plan({ ...shape, hasDraft: true, hasAdapters: true },
+    { adapters: ["upper"], ...fillOptions(true) }, schedule);
+  expect(adapted).toMatchObject({ method: "autoregressive", mechanism: "unsupported", fill: false });
+  expect(refusals(adapted)).toEqual(["continuous-unavailable"]);
+  expect(binding.methodRequest!(adapted, fillOptions(true))).toBeUndefined();
   // The same provider places on a qualified family.
   const qualified = bindMlxGateway(qualifiedFamilies[0]![1](), { provider: other as never, numDraftTokens: 3 });
   expect(qualified.plan({ ...shape, hasDraft: true }, {}, schedule)).toMatchObject({ method: "speculative", mechanism: "continuous" });
 });
 
-test("Gemma2 softcap fill runs with adapters and keeps encoded KV and non-two-model drafts unsupported", () => {
+test("Gemma2 softcap fill runs with adapters and keeps encoded KV and adapter-free drafts unsupported", () => {
   const options = fillOptions(true);
   const plain = bindMlxGateway(softcapUniversal());
   const drafted = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
