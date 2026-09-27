@@ -196,3 +196,26 @@ test("plain storage declares plain reads; encoded storage does not", () => {
     finally { layout.dispose(); }
   } finally { for (const cache of [...plain, ...encoded]) cache.dispose(); }
 });
+
+test("a custom maintenance's converts runs on its own receiver, bound once with the capability", () => {
+  for (const rotating of [false, true]) {
+    const convert = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 4 });
+    // A custom owner whose converting and answering read one immutable policy through `this`.
+    const maintain: KvMaintenance = Object.assign((rows: Cache[]) => convert(rows), {
+      at: 4,
+      converts(this: { at: number }, cache: Cache, _index: number) { return cache.offset >= this.at && cache.offset !== 0; },
+    });
+    for (const [lengths, expected] of [[[2, 3], [true, true]], [[2, 6], [true, false]]] as const) {
+      const group = delayed(rotating, 100, maintain, [...lengths], 110);
+      try {
+        const capability = group.plainKvReads;
+        expect(capability).toBeDefined();
+        expect(group.plainKvReads).toBe(capability!);   // built once, not per access
+        expect(appendable(group, lengths.length)).toEqual([...expected]);
+        const offsets = [...group.rowOffsets];
+        expect(reads(group, lengths.length, 112)).toBe(expected.every(Boolean));
+        if (!expected.every(Boolean)) expect(group.rowOffsets).toEqual(offsets);
+      } finally { group.dispose(); }
+    }
+  }
+});

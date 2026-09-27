@@ -13,20 +13,18 @@ import { type Cache, type Mask, type KvAttentionState, type KvAttentionView, typ
  * cross the conversion boundary independently. Once all rows convert, their
  * packed planes use the existing batched attention implementation. */
 export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuantizedKVCache> implements KvAttentionState {
+  /** Plain reads per row, answered by this cache's own maintenance. */
+  readonly plainKvReads: PlainKvReads | undefined;
   constructor(readonly groupSize: number, readonly bits: number, readonly start: number,
     readonly maintain: KvMaintenance, row?: Cache) {
     super({ signature: `kv:delayed-quant:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof QuantizedKVCache,
       makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits) }, row);
+    this.plainKvReads = this.plainKvReadsOf(maintain);
   }
   get attentionState(): KvAttentionState { return this; }
   captureDonorAttention() {
     return this.packed?.captureDonorAttention() ?? captureFullKvDonorAttention(this.rows, this.leftPad, this.offset);
-  }
-  /** Plain reads per row, answered by this cache's own maintenance. */
-  get plainKvReads(): PlainKvReads | undefined {
-    const converts = this.maintain.converts;
-    return converts && { appendable: row => this.plainAfterNextAppend(row, converts) };
   }
   makeEmptyBatch(): DelayedQuantizedKVCache { return new DelayedQuantizedKVCache(this.groupSize, this.bits, this.start, this.maintain); }
   /** Plain keys and values at the model's B while every row is still plain,

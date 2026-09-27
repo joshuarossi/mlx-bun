@@ -10,6 +10,8 @@ import { captureKvAttention, combineKvDonorAttention } from "./kv-attention-view
 /** Precision changes preserve each row's physical columns. The model owns
  * queries and scale; the shared lifecycle owns membership and conversion. */
 export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvRows<RotatingAffineLayout> implements KvAttentionState, PaddedPrefillCache {
+  /** Plain reads per row, answered by this cache's own maintenance. */
+  readonly plainKvReads: PlainKvReads | undefined;
   constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number, readonly start: number,
     readonly maintain: KvMaintenance, row?: Cache, readonly speculative = false) {
     super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
@@ -18,6 +20,7 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
       packRows: (layout, rows) => layout.adoptAlignedRows(rows as readonly AlignedRotatingCache[]),
       extractRow: row => (row as AlignedRotatingCache).extract(speculative ? maxSize : undefined),
       rollbackRow: (row, before, keep, preserve) => (row as AlignedRotatingCache).rollback(before, keep, preserve) }, row, new RotatingKvPositions(maxSize));
+    this.plainKvReads = this.plainKvReadsOf(maintain);
   }
   get attentionState(): KvAttentionState { return this; }
   captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {
@@ -57,11 +60,6 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
   }
   get maxTokens(): number { return this.maxSize; }
   projectedBytes(tokens: number): number { return this.bytesPerToken() * Math.min(tokens, this.maxSize); }
-  /** Plain reads per row, answered by this cache's own maintenance. */
-  get plainKvReads(): PlainKvReads | undefined {
-    const converts = this.maintain.converts;
-    return converts && { appendable: row => this.plainAfterNextAppend(row, converts) };
-  }
   makeEmptyBatch(): DelayedRotatingQuantizedKVCache {
     return new DelayedRotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.start, this.maintain, undefined, this.speculative);
   }
