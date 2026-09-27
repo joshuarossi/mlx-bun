@@ -276,8 +276,7 @@ export class RotatingKVCache implements Cache {
     return [newKeys, newValues];
   }
 
-  /** Chronological (K, V) view, valid length min(offset, maxSize)
-   *  (port of optiq kv_view._read_cache_temporal). */
+  /** The live window as donor rows (see temporalView). */
   captureDonorRows(): KvDonorRows {
     const [keys, values] = this.temporalView();
     const B = keys.shape[0]!, width = keys.shape[2]!;
@@ -285,14 +284,21 @@ export class RotatingKVCache implements Cache {
       starts: Array(B).fill(0), ends: Array(B).fill(width) };
   }
 
+  /** The live window in chronological order: the newest min(offset, maxSize)
+   *  positions. A multi-token write leaves the buffer oversized in temporal
+   *  order (#updateConcat keeps maxSize - 1 history rows plus the whole
+   *  block), so the window is the tail of that order, never its head. optiq's
+   *  kv_view._read_cache_temporal takes the head, which is the oldest rows in
+   *  that state; the batched layouts and rotatingSourcePosition already take
+   *  the tail. */
   temporalView(): [MlxArray, MlxArray] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     const tk = this.#temporalOrder(this.keys);
     const tv = this.#temporalOrder(this.values);
     const valid = Math.min(this.offset, this.maxSize);
     const cut = (a: MlxArray): MlxArray => {
-      const [B, H, , D] = a.shape as [number, number, number, number];
-      const s = a.slice([0, 0, 0, 0], [B, H, valid, D]);
+      const [B, H, S, D] = a.shape as [number, number, number, number];
+      const s = a.slice([0, 0, Math.max(0, S - valid), 0], [B, H, S, D]);
       a.dispose();
       return s;
     };

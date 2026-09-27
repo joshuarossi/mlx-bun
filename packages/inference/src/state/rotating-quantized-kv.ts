@@ -274,8 +274,7 @@ export class RotatingQuantizedKVCache implements Cache {
     this.ringIdx = idx;
   }
 
-  /** Chronological (K, V) triples cut to the valid window — the quantized
-   *  twin of RotatingKVCache.temporalView (batched merge reads). Caller owns the returned views. */
+  /** The live window as donor attention (see temporalView). Caller owns the returned views. */
   captureDonorAttention(): KvDonorAttention {
     const [keys, values] = this.temporalView();
     const B = keys.packed.shape[0]!, width = keys.packed.shape[2]!;
@@ -286,13 +285,16 @@ export class RotatingQuantizedKVCache implements Cache {
     };
   }
 
+  /** The live window in chronological order: the newest min(offset, maxSize)
+   *  positions, the quantized twin of RotatingKVCache.temporalView (the tail
+   *  of an oversized multi-token block, never its head). */
   temporalView(): [ops.QuantizedTensor, ops.QuantizedTensor] {
     if (!this.keys || !this.values) throw new Error("cache is empty");
     const valid = Math.min(this.offset, this.maxSize);
     const cutValid = (t: ops.QuantizedTensor): ops.QuantizedTensor =>
       mapTriple(t, (a) => {
-        const [B, H, , D] = a.shape as [number, number, number, number];
-        return a.slice([0, 0, 0, 0], [B, H, valid, D]);
+        const [B, H, S, D] = a.shape as [number, number, number, number];
+        return a.slice([0, 0, Math.max(0, S - valid), 0], [B, H, S, D]);
       });
     const tk = this.#temporalOrder(this.keys);
     const tv = this.#temporalOrder(this.values);
