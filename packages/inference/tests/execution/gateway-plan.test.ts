@@ -272,7 +272,7 @@ function universal(args: Record<string, unknown> = {}, layers = 4): UniversalDen
   });
 }
 
-test("plain universal KV batches delayed affine KV for ordinary continuous decoding only", () => {
+test("plain universal KV batches delayed affine KV for ordinary continuous decoding and its generation checkpoints", () => {
   const model = universal();
   expect(model.makeCache().every(cache => cache instanceof KVCache && !(cache instanceof RotatingKVCache))).toBe(true);
   const binding = bindMlxGateway(model, { provider: { grouped: {} } as never, numDraftTokens: 4 });
@@ -294,9 +294,13 @@ test("plain universal KV batches delayed affine KV for ordinary continuous decod
   const kv = { ...shape, kvQuant: true }, scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
   const fill = { fill: { plan: { echo: false } } } as never;
   for (const delayed of [{ kvBits: 4, quantizedKvStart: 8 }, { kvBits: 8 }, { kvConfig: config, quantizedKvStart: 8 }] as const) {
-    expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: false });
-    // Grammar and logprobs ride shared sampling; seeded and penalized sampling are ordinary.
-    for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }, { userSeed: true, hasRepetitionPenalty: true }])
+    // Main checkpointed this generation through its serial executor.
+    expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+    expect(binding.plan({ ...kv, userSeed: true, hasRepetitionPenalty: true }, { ...delayed, seed: 3, repetitionPenalty: 1.1 }, scheduling))
+      .toMatchObject({ mechanism: "continuous", checkpoint: true });
+    expect(bindMlxGateway(universal()).plan(kv, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
+    // Grammar and logprobs ride shared sampling, without checkpoints as for every family.
+    for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }])
       expect(binding.plan({ ...kv, ...request }, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
     // Drafts, fill and adapters over delayed affine KV are refused explicitly.
     const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }],
