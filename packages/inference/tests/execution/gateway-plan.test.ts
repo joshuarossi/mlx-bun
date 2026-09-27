@@ -396,14 +396,13 @@ test("Gemma2 softcap keeps other grouped draft providers unsupported", () => {
   expect(qualified.plan({ ...shape, hasDraft: true }, {}, schedule)).toMatchObject({ method: "speculative", mechanism: "continuous" });
 });
 
-test("Gemma2 softcap fill keeps encoded KV, drafts and adapters unsupported", () => {
+test("Gemma2 softcap fill runs with adapters and keeps encoded KV and non-two-model drafts unsupported", () => {
   const options = fillOptions(true);
   const plain = bindMlxGateway(softcapUniversal());
   const drafted = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
   for (const [binding, request, expected] of [
     [plain, { ...shape, kvQuant: true }, ["kv-scheme-batch-unsupported"]],
     [plain, { ...shape, turboQuant: true }, ["turbo-kv-batch-unsupported"]],
-    [plain, { ...shape, hasAdapters: true }, ["continuous-unavailable"]],
     [plain, { ...shape, hasDraft: true }, ["continuous-unavailable", "method-batch-unsupported"]],
     [drafted, { ...shape, hasDraft: true }, ["continuous-unavailable"]],
   ] as const) {
@@ -412,8 +411,11 @@ test("Gemma2 softcap fill keeps encoded KV, drafts and adapters unsupported", ()
     expect(refusals(plan)).toEqual([...expected]);
     expect(plan.reasons).toContain("fill-incompatible-with-request");
   }
-  // Other families keep fill with adapters; only the softcap graph lacks evidence.
-  const universal = bindMlxGateway(qualifiedFamilies[0]![1]());
-  expect(universal.plan({ ...shape, hasAdapters: true }, options, schedule))
-    .toMatchObject({ mechanism: "continuous", fill: true });
+  // Fill with adapters is placed on the shared fill binding, as for every family;
+  // the request's adapter context encloses the fill group.
+  for (const binding of [plain, bindMlxGateway(qualifiedFamilies[0]![1]())]) {
+    const plan = binding.plan({ ...shape, hasAdapters: true }, { ...options, adapters: ["upper"] }, { ...schedule, continuous: binding.cachesBatchable() });
+    expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: true, checkpoint: false });
+    expect(refusals(plan)).toEqual([]);
+  }
 });

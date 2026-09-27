@@ -67,8 +67,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // Manual softcap attention is qualified for plain-KV requests, including
   // grammar-constrained and adapter requests, for plain-KV fill through the
   // shared fill binding, for shared generation continuation checkpoints, and
-  // for two-model and n-gram drafts (below). Encoded attention, other drafts,
-  // drafts with adapters or fill, and fill with adapters need their own evidence.
+  // for two-model and n-gram drafts (below); plain-KV fill runs inside the request's adapter
+  // context like any other row. Encoded attention, other drafts, and drafts
+  // with adapters or fill need their own evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
@@ -178,8 +179,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         ...scheduling,
         continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill ||
           (universalPlainKv && request.hasAdapters))) &&
-          !(plainSoftcap && ((request.hasDraft && (!softcapDraft || request.hasAdapters || !!options.fill)) ||
-            (options.fill && request.hasAdapters))),
+          !(plainSoftcap && request.hasDraft && (!softcapDraft || request.hasAdapters || !!options.fill)),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&

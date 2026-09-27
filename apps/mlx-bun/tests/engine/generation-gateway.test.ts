@@ -262,7 +262,9 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
     const fill = { fill: { plan: { echo: null } } } as GenerateOptions;
     expect(gateway.place(shape(), fill)).toMatchObject({ mechanism: "continuous",
       execution: { method: "autoregressive", compiledDecode: false, fill: true, checkpoint: false } });
-    for (const request of [{ hasAdapters: true }, { kvQuant: true }, { turboQuant: true }, { hasDraft: true }])
+    expect(gateway.place({ ...shape(), hasAdapters: true }, { ...fill, adapters: ["upper"] })).toMatchObject({ mechanism: "continuous",
+      execution: { method: "autoregressive", compiledDecode: false, fill: true, checkpoint: false } });
+    for (const request of [{ kvQuant: true }, { turboQuant: true }, { hasDraft: true }])
       expect(() => gateway.place({ ...shape(), ...request }, fill)).toThrow(UnsupportedExecutionError);
     // A served n-gram draft speculates on the shared scheduler; as in main, a
     // logprobs request ignores it. Drafts with adapters or fill stay refused.
