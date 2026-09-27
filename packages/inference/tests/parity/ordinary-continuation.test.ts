@@ -112,8 +112,51 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
      * the custom window graph is sliding and full KV layers throughout, so it
      * also pins the exact floor, every offset, and each layer's planes:
      * six encoded (K then V packed/scales/biases) once converted, two plain
-     * before and for layers a per-layer scheme leaves unconverted. */
+     * before and for layers a per-layer scheme leaves unconverted. TurboQuant
+     * checkpoints, including those from token 0, also pass checkTurbo. */
+    /** TurboQuant's exact inventory once converted: each full-attention
+     * cache holds the five encoded planes (K indices, float16 K scales and
+     * zeros per 32-wide group, packed uint8 V, float16 V scales) at the
+     * scheme's bits, each sliding cache stays a plain ring, and every KV
+     * layer is at the checkpoint's offset. From token 0 there is no reuse
+     * floor. Recurrent layers keep their own state and are not KV. */
+    const checkTurbo = (caches: readonly Cache[], tokens: number) => {
+      const { kBits, vBits } = kv.options.turboQuant!;
+      // One effective type per cache for both the check and the count: a
+      // config without layer types is full attention throughout.
+      const types = caches.map((_, layer) => config.text.layerTypes[layer] ?? "full_attention");
+      if (kv.start === 0) expect(minimumReusableOffset(caches)).toBe(0);
+      let encoded = 0;
+      caches.forEach((cache, layer) => {
+        const type = types[layer]!;
+        if (type === "linear_attention") return;
+        expect(cache.offset).toBe(tokens);
+        const lease = leaseCacheState(cache);
+        try {
+          const planes = lease.borrow();
+          if (type === "sliding_attention") {
+            expect((cache as { maxSize?: number }).maxSize).toBe(config.text.slidingWindow);
+            expect(planes).toHaveLength(2);
+            expect(planes[1]!.dtypeName).toBe(planes[0]!.dtypeName);
+            expect(["bfloat16", "float16", "float32"]).toContain(planes[0]!.dtypeName);
+            expect(planes[0]!.shape[2]!).toBeGreaterThanOrEqual(Math.min(tokens, config.text.slidingWindow));
+            return;
+          }
+          const turbo = cache as Cache & { headDim: number | null; fusedDecode?: boolean };
+          expect(turbo.signature()).toBe(`kv:turboquant:${kBits}:${vBits}`);
+          if (Bun.env.MLX_BUN_TURBOQUANT_FUSED_DECODE === undefined) expect(turbo.fusedDecode).toBe(true);
+          const dim = turbo.headDim!, groups = dim / 32;
+          expect(planes.map(plane => plane.dtypeName)).toEqual([kBits === 8 ? "int8" : "uint8", "float16", "float16", "uint8", "float16"]);
+          expect(planes.map(plane => plane.shape[3])).toEqual([kBits === 8 ? dim : dim * kBits / 8, groups, groups, dim * vBits / 8, groups]);
+          for (const plane of planes) expect([plane.shape[0], plane.shape[1], plane.shape[2]]).toEqual([1, planes[0]!.shape[1], tokens]);
+          encoded++;
+        } finally { lease.close(); }
+      });
+      expect(encoded).toBeGreaterThan(0);
+      expect(encoded).toBe(types.filter(type => type === "full_attention").length);
+    };
     const checkSaved = (caches: readonly Cache[], tokens: number) => {
+      if (kv.mode === "turbo" && (kv.start <= prompt.length || tokens > kv.start)) checkTurbo(caches, tokens);
       if (kv.mode === "bf16" || kv.start === 0) return;
       const converted = kv.start <= prompt.length || tokens > kv.start;
       const minimum = minimumReusableOffset(caches);
