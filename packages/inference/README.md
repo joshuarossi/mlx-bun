@@ -191,14 +191,22 @@ Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 A plain-KV adapter request with a configured TwoModel or Ngram draft uses
 ordinary continuous decoding and ignores both draft and fill, as main did.
-This is an ordinary fallback, not adapter speculation support; real-weight
-acceptance for this composition remains pending.
+This is an ordinary fallback, not adapter speculation support. Paired B1 greedy
+acceptance against main passed with a synthetic nonzero adapter on Gemma2-2B:
+full logits and valid KV match with either draft configured, with or without
+fill and logprobs; draft and fill stay unused, and physical unmount restores
+the base computation. This does not qualify multi-row adapter/draft requests.
+
 A plain-KV request without adapters keeps two-model or n-gram speculation when
-fill is supplied, but ignores the fill session (strict, verify or echo), as main's
-serial verifier did. Requesting logprobs instead selects ordinary decoding and
-ignores both draft and fill. Real-weight acceptance remains pending: genuine
-drafting and zero fill calls, with output, full logits and KV matching main and
-the same draft-only request. This does not enable speculative fill.
+fill is supplied, but ignores the fill session (strict, verify or echo), as main
+did. Logprobs instead select ordinary decoding and ignore both draft and fill.
+Paired B1 greedy acceptance on Gemma2-2B matched main and each fill-off control:
+full target/draft logits, valid KV, proposals, continuing commits, output and
+logprobs; genuine drafting ran when selected, and every fill hook stayed unused.
+Main omits its terminal speculative commit; the candidate's terminal state was
+checked against its verified prefix, without a main-terminal parity claim.
+This does not qualify B>1, external-oracle parity or performance, or enable
+speculative fill.
 
 The [Trellis specialization test](tests/parity/trellis-shared-m.test.ts) takes
 `MLX_BUN_TEST_TRELLIS_MODEL=/cached/packed-qwen`. It preserves main's variant
