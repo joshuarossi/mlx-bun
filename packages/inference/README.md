@@ -167,8 +167,8 @@ requests; the opt-in [constrained Gemma2 test](../../apps/mlx-bun/tests/engine/g
 compares them exactly with direct generation. Plain-KV fill uses the shared fill
 binding: with `MLX_BUN_GEMMA2_MODEL`, the batching test replays main's serial fill
 (one-position assert appends, one verify forward per echo span, trim on rejection)
-and requires B1 logits bit for bit, then B2/B4 tokens through joins and
-cancellation. Encoded KV, speculative methods, fill with adapters and paging
+and requires B1 logits bit for bit, then B2/B3/B4 tokens through joins and
+cancellation, observing each capacity as the batch's high water. Encoded KV, speculative methods, fill with adapters and paging
 retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
