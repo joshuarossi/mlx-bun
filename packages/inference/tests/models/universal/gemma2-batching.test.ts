@@ -262,7 +262,9 @@ function mixedFixture(types: string[], explicitMask: boolean) {
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
     intermediate_size: 64, vocab_size: 96, rms_norm_eps: 1e-6,
     query_pre_attn_scalar: 16, attn_logit_softcapping: 50, final_logit_softcapping: 30 };
-  const config = { modelType: "gemma2", raw, quantization: null } as unknown as ModelConfig;
+  // The text facts gateway policy reads (layer types, window); the graph itself takes explicit args.
+  const config = { modelType: "gemma2", raw, quantization: null,
+    text: { numHiddenLayers: types.length, layerTypes: [...types], slidingWindow: W } } as unknown as ModelConfig;
   const arrays = new Map<string, MlxArray>();
   const add = (name: string, shape: number[]) => {
     using values = MlxArray.fromFloat32(Float32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
