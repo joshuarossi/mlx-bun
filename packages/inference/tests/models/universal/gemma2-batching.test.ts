@@ -81,6 +81,12 @@ const { Dtype, MLX_VERSION } = await import("@mlx-bun/mlx/ffi");
 const { UniversalDenseModel } = await import("../../../src/models/universal/dense");
 const { BatchedKVCache } = await import("../../../src/state/batched-kv");
 const { createCausalMask } = await import("../../../src/kernels/attention/masks");
+const { genericArgsFor } = await import("../../../src/models/universal/archs");
+const { KVCache } = await import("../../../src/state/kv");
+const { RotatingKVCache } = await import("../../../src/state/rotating-kv");
+const { BatchedRotatingCache } = await import("../../../src/state/batched-rotating");
+const { rotatingSourcePosition } = await import("../../../src/state/rotating-kv-layout");
+const { plainRowStorage, temporalStorageView } = await import("../../../src/state/batched-row-storage");
 function fixture() {
   const raw = { model_type: "gemma2", hidden_size: 32, num_hidden_layers: 1,
     num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
@@ -241,6 +247,326 @@ describe.skipIf(!native)("Gemma2 manual attention native masks", () => {
       using a = model.forward([25], [actual]), b = model.forward([25], [reference]);
       expect(a.rawBytes()).toEqual(b.rawBytes());
     } finally { actual.dispose(); reference.dispose(); solos.forEach(dispose); f.dispose(); }
+  });
+});
+
+// ---- Universal masks on mixed full/sliding graphs, and forward ownership ----
+// Synthetic Gemma2-block graphs (manual softcap attention needs explicit
+// masks) whose descriptor alternates full and sliding layers, in both orders.
+// No published model has this shape; it is library composition.
+const W = 4, F = "full_attention", S = "sliding_attention";
+function mixedFixture(types: string[], explicitMask: boolean) {
+  const raw = { model_type: "gemma2", hidden_size: 32, num_hidden_layers: types.length,
+    num_attention_heads: 8, num_key_value_heads: 4, head_dim: 4,
+    intermediate_size: 64, vocab_size: 96, rms_norm_eps: 1e-6,
+    query_pre_attn_scalar: 16, attn_logit_softcapping: 50, final_logit_softcapping: 30 };
+  const config = { modelType: "gemma2", raw, quantization: null } as unknown as ModelConfig;
+  const arrays = new Map<string, MlxArray>();
+  const add = (name: string, shape: number[]) => {
+    using values = MlxArray.fromFloat32(Float32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
+      (_, index) => Math.sin(index * 0.61 + name.length * 1.7) * 0.08), shape);
+    arrays.set(name, values.astype(Dtype.bfloat16));
+  };
+  add("model.embed_tokens.weight", [96, 32]); add("model.norm.weight", [32]);
+  for (let layer = 0; layer < types.length; layer++) for (const [name, shape] of Object.entries({
+    "self_attn.q_proj": [32, 32], "self_attn.k_proj": [16, 32], "self_attn.v_proj": [16, 32],
+    "self_attn.o_proj": [32, 32], "mlp.gate_proj": [64, 32], "mlp.up_proj": [64, 32], "mlp.down_proj": [32, 64],
+    "input_layernorm": [32], "post_attention_layernorm": [32], "pre_feedforward_layernorm": [32], "post_feedforward_layernorm": [32],
+  })) add(`model.layers.${layer}.${name}.weight`, shape);
+  const weights = { shards: { files: new Map() }, tensorNames: [...arrays.keys()],
+    has: (name: string) => arrays.has(name), tensor: (name: string) => arrays.get(name)! } as unknown as Weights;
+  // Explicit masks with manual softcap attention, or ordinary masks with fused attention.
+  const args = { ...genericArgsFor(config)!, layerTypes: [...types], slidingWindow: W, maskArray: explicitMask,
+    ...(explicitMask ? {} : { attnLogitSoftcap: null }) };
+  const models: UniversalDenseModel[] = [];
+  return {
+    make<M extends UniversalDenseModel>(Model: new (w: Weights, c: ModelConfig, a: typeof args) => M = UniversalDenseModel as never): M {
+      const model = new Model(weights, config, args); models.push(model); return model;
+    },
+    dispose() {
+      const owned = new Set<MlxArray>(arrays.values()), seen = new Set<object>();
+      const visit = (value: unknown) => {
+        if (!value || typeof value !== "object" || seen.has(value)) return;
+        seen.add(value);
+        if (value instanceof MlxArray) { owned.add(value); return; }
+        for (const child of Object.values(value)) visit(child);
+      };
+      models.forEach(visit); for (const value of owned) value.dispose();
+    },
+  };
+}
+
+/** Each layer's mask from absolute positions alone: full layers see every
+ * earlier key; sliding layers see the ring's newest window (mlx-lm
+ * create_causal_mask(N, min(W - 1, offset), W)); single tokens need none. */
+class PositionMaskModel extends UniversalDenseModel {
+  protected override forwardLayers(hidden: MlxArray, caches: Cache[]): MlxArray {
+    const length = hidden.shape[1]!, masks: MlxArray[] = [];
+    let current = hidden;
+    try {
+      for (const [index, layer] of this.layers.entries()) {
+        const sliding = this.args.layerTypes![index] === S, offset = caches[index]!.offset;
+        const arr = length === 1 ? null
+          : sliding ? createCausalMask(length, Math.min(W - 1, offset), W) : createCausalMask(length, offset, null);
+        if (arr) masks.push(arr);
+        const next = layer.forward(current, arr ? { mode: "array", arr } : { mode: "", arr: null }, caches[index]!);
+        current.dispose(); current = next;
+      }
+      return this.finalNorm.forward(current);
+    } finally { current.dispose(); for (const mask of masks) mask.dispose(); }
+  }
+}
+
+/** The selection this change replaces, verbatim: with explicit masks every
+ * layer took cache 0's full mask; otherwise one mask per group. */
+class PreviousSelectionModel extends UniversalDenseModel {
+  protected override forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
+    const a = this.args;
+    const L = h0.shape[1]!;
+    let faMask: Mask;
+    let swaMask: Mask | null = null;
+    if (a.maskArray) {
+      faMask = cache[0]!.makeMask(L, null);
+      if (faMask.mode === "causal")
+        faMask = { mode: "array", arr: createCausalMask(L, cache[0]!.offset, null) };
+    } else if (a.layerTypes && a.layerTypes.includes("sliding_attention")) {
+      const faIdx = a.layerTypes.indexOf("full_attention");
+      const swaIdx = a.layerTypes.indexOf("sliding_attention");
+      faMask = cache[faIdx === -1 ? 0 : faIdx]!.makeMask(L, null);
+      swaMask = cache[swaIdx]!.makeMask(L, a.slidingWindow);
+    } else {
+      faMask = cache[0]!.makeMask(L, null);
+    }
+    let cur = h0;
+    for (let i = 0; i < this.layers.length; i++) {
+      const mask = a.layerTypes?.[i] === "sliding_attention" && swaMask ? swaMask : faMask;
+      const next = this.layers[i]!.forward(cur, mask, cache[i]!);
+      cur.dispose();
+      cur = next;
+    }
+    faMask.arr?.dispose();
+    swaMask?.arr?.dispose();
+    const out = this.finalNorm.forward(cur);
+    cur.dispose();
+    return out;
+  }
+}
+
+// Offsets 0→3 (W-1) →4 (W) →5 (W+1) →8 (a chunk past the window) →9 →11 →12.
+const CHUNKS = [[2, 4, 7], [8], [3], [6, 5, 9], [10], [11, 12], [13]];
+const ORDERS: [string, string[]][] = [["full first", [F, S, F, S]], ["sliding first", [S, F, S, F]]];
+
+describe.skipIf(!native)("Universal mixed full/sliding masks", () => {
+  for (const [order, types] of ORDERS) {
+    test(`explicit masks, ${order}: each group masks through its own cache at W-1, W, W+1 and across chunks`, () => {
+      const f = mixedFixture(types, true), actual = f.make(), reference = f.make(PositionMaskModel), previous = f.make(PreviousSelectionModel);
+      const caches = [actual.makeCache(), reference.makeCache(), previous.makeCache()];
+      let previousFailed = false;
+      try {
+        expect(caches[0]!.map(cache => cache instanceof RotatingKVCache)).toEqual(types.map(type => type === S));
+        for (const tokens of CHUNKS) {
+          using a = actual.forward(tokens, caches[0]!), b = reference.forward(tokens, caches[1]!);
+          expect(a.shape).toEqual([1, tokens.length, 96]);
+          expect(a.rawBytes()).toEqual(b.rawBytes());
+          // The replaced selection gives sliding layers a full-width mask; past the window it cannot run.
+          if (!previousFailed) {
+            try { using c = previous.forward(tokens, caches[2]!); c.eval(); if (c.rawBytes().join() !== a.rawBytes().join()) previousFailed = true; }
+            catch { previousFailed = true; }
+          }
+        }
+        expect(caches[0]![types.indexOf(S)]!.offset).toBe(12);
+        expect(previousFailed).toBe(true);
+      } finally { caches.forEach(dispose); f.dispose(); }
+    });
+
+    test(`ordinary masks, ${order}: the recipe reproduces the previous per-group selection exactly`, () => {
+      const f = mixedFixture(types, false), actual = f.make(), previous = f.make(PreviousSelectionModel);
+      const caches = [actual.makeCache(), previous.makeCache()];
+      try {
+        for (const tokens of CHUNKS) {
+          using a = actual.forward(tokens, caches[0]!), b = previous.forward(tokens, caches[1]!);
+          expect(a.rawBytes()).toEqual(b.rawBytes());
+        }
+      } finally { caches.forEach(dispose); f.dispose(); }
+    });
+
+    for (const lengths of [[W + 2, 2], [W - 1, W + 1]]) test(`explicit masks, ${order}: B2 rows of lengths ${lengths} ignore poisoned padding in both groups`, () => {
+      const f = mixedFixture(types, true), model = f.make();
+      const solos = lengths.map((length, row) => {
+        const cache = model.makeCache();
+        using logits = model.forward(Array.from({ length }, (_, index) => 2 + index + row * 7), cache);
+        logits.eval(); return cache;
+      });
+      /** B2 caches from the solo rows; `poison` fills every padding column with large values. */
+      const batch = (poison: boolean): Cache[] => types.map((type, layer) => {
+        let cache: Cache & { keys: MlxArray | null; values: MlxArray | null; leftPad: readonly number[] };
+        if (type === S) {
+          const planes = solos.map(solo => {
+            const row = solo[layer] as InstanceType<typeof RotatingKVCache>, state = rotatingSourcePosition(row);
+            const range = { from: Math.max(0, state.activeLength - Math.min(row.offset, W)), to: state.activeLength };
+            return { keys: temporalStorageView(plainRowStorage, row.keys!, state, range),
+              values: temporalStorageView(plainRowStorage, row.values!, state, range) };
+          });
+          try { cache = BatchedRotatingCache.merge(planes, solos.map(solo => solo[layer]!.offset), W) as never; }
+          finally { for (const plane of planes) { plane.keys.dispose(); plane.values.dispose(); } }
+        } else {
+          cache = new BatchedKVCache() as never;
+          (cache as unknown as InstanceType<typeof BatchedKVCache>).mergeRows(solos.map(solo => solo[layer]!));
+        }
+        if (poison) for (const name of ["keys", "values"] as const) for (let row = 0; row < lengths.length; row++) {
+          const pad = cache.leftPad[row]!; if (!pad) continue;
+          const plane = cache[name]!;
+          using floats = MlxArray.fromFloat32(new Float32Array(plane.shape[1]! * pad * plane.shape[3]!).fill(100),
+            [1, plane.shape[1]!, pad, plane.shape[3]!]);
+          using filled = floats.astype(plane.dtype);
+          cache[name] = ops.sliceUpdate(plane, filled, [row, 0, 0, 0], [row + 1, plane.shape[1]!, pad, plane.shape[3]!]);
+          plane.dispose();
+        }
+        return cache;
+      });
+      const [clean, poisoned] = [batch(false), batch(true)];
+      try {
+        expect(poisoned.some(cache => (cache as unknown as { leftPad: number[] }).leftPad.some(pad => pad > 0))).toBe(true);
+        for (const length of [2, 1, 3]) {
+          using ids = ops.fromInt32(Array.from({ length: 2 * length }, (_, index) => 20 + index), [2, length]);
+          using a = model.forward(ids, clean), b = model.forward(ids, poisoned);
+          expect(a.shape).toEqual([2, length, 96]);
+          expect(a.rawBytes()).toEqual(b.rawBytes());
+        }
+      } finally { dispose(clean); dispose(poisoned); solos.forEach(dispose); f.dispose(); }
+    });
+  }
+});
+
+describe.skipIf(!native)("Universal construction binding", () => {
+  for (const [order, types] of ORDERS) test(`${order}: descriptor edits after construction change neither caches nor masks`, () => {
+    // Separate fixtures build identical weights; only `edited` sees the edit.
+    const f = mixedFixture(types, true), g = mixedFixture(types, true), edited = f.make(), fresh = g.make();
+    const layout = (caches: Cache[]) => caches.map(cache => cache instanceof RotatingKVCache ? cache.maxSize : "full");
+    const before = edited.makeCache(), expected = layout(before);
+    dispose(before);
+    edited.args.layerTypes!.reverse(); edited.args.slidingWindow = 64;
+    expect(fresh.args.slidingWindow).toBe(W);
+    const caches = [edited.makeCache(), fresh.makeCache()];
+    try {
+      expect(layout(caches[0]!)).toEqual(expected);
+      expect(expected).toEqual(types.map(type => type === S ? W : "full"));
+      for (const tokens of CHUNKS) {
+        using a = edited.forward(tokens, caches[0]!), b = fresh.forward(tokens, caches[1]!);
+        expect(a.rawBytes()).toEqual(b.rawBytes());
+      }
+    } finally { caches.forEach(dispose); f.dispose(); g.dispose(); }
+  });
+});
+
+describe.skipIf(!native)("Universal forward ownership", () => {
+  /** Count dispose calls per array while `run` executes. */
+  const counting = <T>(run: (count: (array: MlxArray) => number) => T): T => {
+    const calls = new Map<MlxArray, number>(), original = MlxArray.prototype.dispose;
+    MlxArray.prototype.dispose = function (this: MlxArray) { calls.set(this, (calls.get(this) ?? 0) + 1); return original.call(this); };
+    try { return run(array => calls.get(array) ?? 0); } finally { MlxArray.prototype.dispose = original; }
+  };
+  /** Record the hidden states and masks the layers see, optionally failing layer `failAt`. */
+  const instrument = (model: UniversalDenseModel, failAt = -1) => {
+    const hidden: MlxArray[] = [], masks = new Set<MlxArray>();
+    // The forward owns its input (the scaled embedding) and every layer output.
+    const forwardLayers = (model as unknown as { forwardLayers(h: MlxArray, c: Cache[]): MlxArray }).forwardLayers.bind(model);
+    Object.assign(model, { forwardLayers: (h: MlxArray, c: Cache[]) => { hidden.push(h); return forwardLayers(h, c); } });
+    model.layers.forEach((layer, index) => {
+      const forward = layer.forward.bind(layer);
+      layer.forward = ((x: MlxArray, mask: Mask, cache: Cache) => {
+        if (mask.arr) masks.add(mask.arr);
+        if (index === failAt) throw new Error(`layer ${index} failed`);
+        const out = forward(x, mask, cache); hidden.push(out); return out;
+      }) as never;
+    });
+    return { hidden, masks };
+  };
+  const tokens = () => ops.fromInt32([2, 4, 7], [1, 3]);
+
+  test("a successful forward releases every intermediate and mask exactly once and returns an owned result", () => {
+    const f = mixedFixture([S, F, S, F], true), model = f.make(), caches = model.makeCache();
+    try {
+      counting(count => {
+        const seen = instrument(model);
+        using ids = tokens();
+        const out = model.forwardHidden(ids, caches);
+        try {
+          expect(seen.masks.size).toBe(2);
+          for (const array of [...seen.hidden, ...seen.masks]) expect(count(array)).toBe(1);
+          expect(count(out)).toBe(0);
+        } finally { out.dispose(); }
+      });
+    } finally { dispose(caches); f.dispose(); }
+  });
+
+  test("a failing layer releases the owned hidden state and both masks once and keeps its error", () => {
+    const f = mixedFixture([S, F, S, F], true), model = f.make(), caches = model.makeCache();
+    try {
+      counting(count => {
+        const seen = instrument(model, 2);
+        using ids = tokens();
+        expect(() => model.forwardHidden(ids, caches)).toThrow("layer 2 failed");
+        expect(seen.hidden.length).toBe(3); // the input and two layer outputs
+        expect(seen.masks.size).toBe(2);
+        for (const array of [...seen.hidden, ...seen.masks]) expect(count(array)).toBe(1);
+      });
+    } finally { dispose(caches); f.dispose(); }
+  });
+
+  test("a failing second mask releases the input and the first mask", () => {
+    // Sliding first: the full group's mask (cache 1) is built before the sliding group's (cache 0).
+    const f = mixedFixture([S, F, S, F], true), model = f.make(), caches = model.makeCache();
+    try {
+      counting(count => {
+        const seen = instrument(model);
+        let first: MlxArray | null = null;
+        caches[1]!.makeMask = (length: number) => ({ mode: "array", arr: first = createCausalMask(length, 0, null) });
+        caches[0]!.makeMask = () => { throw new Error("sliding mask failed"); };
+        using ids = tokens();
+        expect(() => model.forwardHidden(ids, caches)).toThrow("sliding mask failed");
+        expect(first).not.toBeNull();
+        expect([count(seen.hidden[0]!), count(first!)]).toEqual([1, 1]);
+      });
+    } finally { dispose(caches); f.dispose(); }
+  });
+
+  test("throwing destructors never release an array twice and never leak the survivor", () => {
+    const f = mixedFixture([S, F, S, F], true), model = f.make();
+    // A mask destructor fails after every layer ran: the last hidden state is still released.
+    let caches = model.makeCache();
+    try {
+      counting(count => {
+        const seen = instrument(model);
+        let failing: MlxArray | null = null;
+        caches[1]!.makeMask = (length: number) => {
+          const arr = failing = createCausalMask(length, 0, null), release = arr.dispose.bind(arr);
+          arr.dispose = () => { release(); throw new Error("mask release failed"); };
+          return { mode: "array", arr };
+        };
+        using ids = tokens();
+        expect(() => model.forwardHidden(ids, caches)).toThrow("mask release failed");
+        for (const array of [...seen.hidden, ...[...seen.masks].filter(mask => mask !== failing)]) expect(count(array)).toBe(1);
+      });
+    } finally { dispose(caches); }
+    // The last hidden state's destructor fails after the final norm: the result is released.
+    caches = model.makeCache();
+    try {
+      counting(count => {
+        const layers = model.layers, last = layers[layers.length - 1]!, forward = last.forward.bind(last);
+        let normalized: MlxArray | null = null;
+        last.forward = ((x: MlxArray, mask: Mask, cache: Cache) => {
+          const out = forward(x, mask, cache), release = out.dispose.bind(out);
+          out.dispose = () => { release(); throw new Error("hidden release failed"); };
+          return out;
+        }) as never;
+        const norm = model.finalNorm.forward.bind(model.finalNorm);
+        model.finalNorm.forward = ((x: MlxArray) => normalized = norm(x)) as never;
+        using ids = tokens();
+        expect(() => model.forwardHidden(ids, caches)).toThrow("hidden release failed");
+        expect(count(normalized!)).toBe(1);
+      });
+    } finally { dispose(caches); f.dispose(); }
   });
 });
 

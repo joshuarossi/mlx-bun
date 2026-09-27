@@ -3,8 +3,10 @@ import { bindMlxGateway, type MlxGatewayBinding } from "../../src/execution/gate
 import { createRuntimeConfig, withRuntimeConfig } from "../../src/runtime/config";
 import { Gemma4Model } from "../../src/models/gemma4/model";
 import { UniversalDenseModel } from "../../src/models/universal/dense";
+import { universalCacheWindows, type UniversalArgs } from "../../src/models/universal/archs";
 import { KVCache } from "../../src/state/kv";
 import { RotatingKVCache } from "../../src/state/rotating-kv";
+import { SSMCache } from "../../src/state/ssm";
 import { KvScheme } from "../../src/state/kv-scheme";
 import type { GenerateOptions } from "../../src/generation/index";
 import type { ResolvedExecution } from "../../src/contracts/portable/execution";
@@ -267,12 +269,14 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and it
   expect(jump.plan({ ...kv, hasGrammar: true }, immediate, { continuous: true, quantizedBatch: true, checkpoints: false }).grammarJump).toBe(true);
 });
 
-/** A universal descriptor over the model's own makeCache: caches follow the descriptor. */
+/** A universal descriptor with the graph's own cache layout: caches follow the descriptor. */
 function universal(args: Record<string, unknown> = {}, layers = 4): UniversalDenseModel {
   const descriptor = { modelType: "qwen2", maskArray: false, attnLogitSoftcap: null, layerTypes: null, slidingWindow: null,
     numHiddenLayers: layers, ...args };
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: descriptor,
+    makeCache: () => universalCacheWindows(descriptor as unknown as UniversalArgs)
+      .map(window => window ? new RotatingKVCache(window) : new KVCache()),
     config: { modelType: descriptor.modelType, text: { enableMoeBlock: false, numHiddenLayers: layers,
       layerTypes: (descriptor.layerTypes as string[] | null) ?? Array(layers).fill("full_attention") }, eosTokenIds: [] },
     loraState: { active: [] },
@@ -661,3 +665,67 @@ test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
       }
     }
   });
+
+const LAYERS = ["full_attention", "sliding_attention", "full_attention", "sliding_attention"];
+
+test("universal graphs batch and bind drafts through the operations their caches provide", () => {
+  const graphs: [string, UniversalDenseModel][] = [
+    ["plain", universal()],
+    ["sliding, full first", universal({ modelType: "llama", layerTypes: LAYERS, slidingWindow: 16 })],
+    ["sliding, sliding first", universal({ modelType: "llama", layerTypes: [...LAYERS].reverse(), slidingWindow: 16 })],
+    ["explicit mask, mixed", universal({ modelType: "llama", maskArray: true, layerTypes: LAYERS, slidingWindow: 16 })],
+    ["gemma2", universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 })],
+  ];
+  for (const [name, model] of graphs) {
+    const binding = bindMlxGateway(model, { provider: new NgramProvider(), numDraftTokens: 4 });
+    expect({ name, batchable: binding.cachesBatchable(), plan: place(binding, shape).mechanism,
+      drafted: place(binding, { ...shape, hasDraft: true }).method })
+      .toEqual({ name, batchable: true, plan: "continuous", drafted: "speculative" });
+  }
+});
+
+test("storage is probed once per binding, released on every path and never touched again", () => {
+  let made = 0;
+  const released: string[] = [];
+  /** A probe cache that records its release and fails on any later use. */
+  const track = <T extends object>(name: string, cache: T): T => {
+    let disposed = false;
+    return new Proxy(cache, { get(target, key, receiver) {
+      if (key === "dispose") return () => { disposed = true; released.push(name); (target as { dispose(): void }).dispose(); };
+      if (disposed) throw new Error(`${name} used after release (${String(key)})`);
+      return Reflect.get(target, key, receiver);
+    } });
+  };
+  const model = universal({ modelType: "llama", layerTypes: LAYERS, slidingWindow: 16 });
+  const makeCache = model.makeCache.bind(model);
+  model.makeCache = () => { made++; return makeCache().map((cache, layer) => track(`layer ${layer}`, cache)); };
+  const binding = bindMlxGateway(model, { provider: new NgramProvider(), numDraftTokens: 4 });
+  expect({ made, released: released.length }).toEqual({ made: 1, released: 4 });
+  // Planning reads the bound facts; request schemes and options stay dynamic.
+  for (let round = 0; round < 3; round++) {
+    expect(binding.cachesBatchable()).toBe(true);
+    expect(binding.kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
+    expect(binding.kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
+    for (const request of [shape, { ...shape, hasDraft: true }, { ...shape, kvQuant: true }]) place(binding, request);
+  }
+  expect({ made, released: released.length }).toEqual({ made: 1, released: 4 });
+
+  // A probe predicate that throws still releases every probe cache.
+  released.length = 0;
+  const failing = universal();
+  failing.makeCache = () => [track("kept", new KVCache()), new Proxy({}, { get(_target, key) {
+    if (key === "dispose") return () => { released.push("failed"); };
+    throw new Error("probe failed");
+  } }) as never];
+  expect(() => bindMlxGateway(failing)).toThrow("probe failed");
+  expect(released.sort()).toEqual(["failed", "kept"]);
+});
+
+test("each binding keeps the SSM batching policy it was built with", () => {
+  const model = standIn(Qwen35Model.prototype, "qwen3_5", { makeCache: () => [new SSMCache(), new KVCache()] });
+  const off = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_BATCH_SSM: "0" }), () => bindMlxGateway(model));
+  const on = withRuntimeConfig(createRuntimeConfig({}), () => bindMlxGateway(model));
+  expect([off.cachesBatchable(), on.cachesBatchable()]).toEqual([false, true]);
+  expect(withRuntimeConfig(createRuntimeConfig({}), () => off.cachesBatchable())).toBe(false);
+  expect(withRuntimeConfig(createRuntimeConfig({ MLX_BUN_BATCH_SSM: "0" }), () => on.cachesBatchable())).toBe(true);
+});

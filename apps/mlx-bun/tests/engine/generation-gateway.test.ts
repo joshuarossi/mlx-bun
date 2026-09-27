@@ -290,8 +290,6 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
     // Even a caller advertising generic encoded support cannot qualify this graph.
     expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
       { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("unsupported");
-    model.args.layerTypes = ["sliding_attention"];
-    expect(binding.cachesBatchable()).toBe(false);
     expect(created).toBe(false);
   } finally { await gateway.close(); }
 });
