@@ -234,8 +234,8 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and it
     // Grammar and logprobs stay continuous without checkpoints, as for every family.
     for (const request of [{ hasGrammar: true }, { wantsLogprobs: true }])
       expect(binding.plan({ ...kv, ...request }, delayed, scheduling)).toMatchObject({ mechanism: "continuous", checkpoint: false });
-    // A draft or fill over delayed affine KV is refused explicitly, never silently dropped.
-    for (const [request, options] of [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }]] as const) {
+    // Genuine delayed speculation stays refused; supplied fill follows main's ordinary fallback.
+    for (const [request, options] of [[{ ...kv, hasDraft: true }, delayed]] as const) {
       const refused = binding.plan(request, options, scheduling);
       expect(refused.mechanism).toBe("unsupported");
       expect(refused.reasons).toContain("continuous-unavailable");
@@ -310,9 +310,10 @@ test("plain universal KV batches delayed affine KV for ordinary continuous decod
         .toMatchObject({ mechanism: "continuous", checkpoint: false });
     expect(binding.plan({ ...adapted, hasDraft: true }, options, scheduling))
       .toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true, fill: false });
-    expect(binding.plan(adapted, { ...options, ...(fill as object) }, scheduling).mechanism).toBe("unsupported");
-    // Drafts and fill over delayed affine KV are refused explicitly.
-    const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }]];
+    expect(binding.plan(adapted, { ...options, ...(fill as object) }, scheduling))
+      .toMatchObject({ mechanism: "continuous", method: "autoregressive", fill: false, checkpoint: false });
+    // Genuine delayed speculation remains refused.
+    const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed]];
     for (const [request, options] of refusals) {
       const refused = binding.plan(request, options, scheduling);
       expect(refused.mechanism).toBe("unsupported");
@@ -562,8 +563,7 @@ test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
             expect(options.fill).toBe(fill);
           }
         }
-        const refused: [typeof shape, GenerateOptions][] = [[{ ...shape, kvQuant: true, hasDraft: true }, kv],
-          [{ ...shape, kvQuant: true, hasAdapters: true }, { ...kv, adapters: ["upper"], ...fillOptions(false) }]];
+        const refused: [typeof shape, GenerateOptions][] = [[{ ...shape, kvQuant: true, hasDraft: true }, kv]];
         for (const [request, options] of refused)
           expect(binding.plan(request, options, scheduling).mechanism).toBe("unsupported");
         expect(binding.plan({ ...shape, kvQuant: true, hasAdapters: true, hasDraft: true },
@@ -573,4 +573,33 @@ test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
       }
     }
     expect(opened).toBe(0);
+  });
+
+
+test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
+  "%s delayed affine requests ignore supplied fill without binding a fill method", (_, model) => {
+    const binding = bindMlxGateway(model());
+    binding.configureContinuation!({ checkpointPersistence: {} } as never);
+    for (const kv of [{ kvBits: 4, quantizedKvStart: 8 }, { kvBits: 8 },
+      { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }, { layerIdx: 2, bits: 8, groupSize: 64 }], quantizedKvStart: 8 }]) {
+      const scheme = new KvScheme("kvBits" in kv ? "affine-uniform" : "affine-config", kv);
+      const scheduling = { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(scheme), checkpoints: true };
+      for (const echo of [false, true]) for (const extra of [{}, { hasAdapters: true }, { wantsLogprobs: true }, { userSeed: true }]) {
+        const { fill } = fillOptions(echo);
+        const stats = { ...fill.stats };
+        const options = Object.freeze({ ...kv, fill, ...(extra.hasAdapters ? { adapters: ["upper"] } : {}),
+          ...(extra.userSeed ? { seed: 3 } : {}) });
+        const request = { ...shape, ...extra, kvQuant: true };
+        const plan = binding.plan(request, options, scheduling);
+        expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false,
+          checkpoint: false, grammarJump: false });
+        expect(plan.reasons).toContain("fill-incompatible-with-request");
+        expect(binding.methodRequest!(plan, options)).toBeUndefined();
+        expect(options.fill).toBe(fill);
+        expect(fill.stats).toEqual(stats);
+        expect(binding.plan(request, options, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
+        expect(binding.plan(request, { ...options, pagedKv: {} } as GenerateOptions, scheduling).mechanism).toBe("unsupported");
+        expect(binding.plan({ ...request, hasVision: true }, options, scheduling).mechanism).toBe("unsupported");
+      }
+    }
   });

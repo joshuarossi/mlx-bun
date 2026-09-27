@@ -159,9 +159,14 @@ uninterrupted output after graceful cancellation and fresh-process restoration.
 This does not qualify every combination or multi-row configured-draft requests.
 
 Only the first cold decode/resume token may have signed versus unsigned int32
-metadata; its raw bytes, value and computed state must match exactly. Actual
-delayed speculation, fill without the fallback, sliding descriptors and softcap
-encoded KV remain excluded. These checks do not cover cross-version checkpoint
+metadata; its raw bytes, value and computed state must match exactly. Supplied
+fill also falls back to ordinary decoding without adapters or a configured draft:
+main ignored it on these graphs because no affine append binding exists. A
+main-only B1 baseline on MiniCPM5-1B and Qwen2.5-0.5B passed supplied strict/echo
+fill against no-fill controls with delayed KV4, zero fill use, identical full
+logits and valid cache planes. Candidate numerical qualification is pending.
+Requests that supply fill remain ineligible for generation checkpoints. Actual
+delayed speculation, sliding descriptors and softcap encoded KV remain excluded. These checks do not cover cross-version checkpoint
 files, hard-kill durability, an external oracle or performance.
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes

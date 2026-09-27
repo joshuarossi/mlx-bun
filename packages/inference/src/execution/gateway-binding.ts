@@ -87,8 +87,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   // MiniCPM5's and plain universal delayed affine KV are qualified for ordinary
-  // continuous decoding only. Adapter requests ignore a configured draft and
-  // fill, as main did; actual delayed speculation and fill remain refused.
+  // continuous decoding only. Supplied fill stays unused, as on main when the
+  // graph lacks an affine append binding. Adapters also ignore configured drafts;
+  // actual delayed speculation remains refused.
   // Grammar jump falls back to ordinary masking. Generation checkpoints are
   // qualified for both. Plain universal adapters use the same row context.
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
@@ -181,7 +182,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredAdapterDraft && (request.hasDraft || options.fill)) &&
+        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredAdapterDraft && request.hasDraft) &&
           !(plainSoftcap && request.hasDraft && !softcapDraft),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
@@ -192,7 +193,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
-        sharedFill: !!fillRequests && !!options.fill,
+        sharedFill: !ordinaryOnly && !!fillRequests && !!options.fill,
         // Main's softcap serial verifier ignored fill, including echo proposals.
         sharedSpeculativeEcho: !plainSoftcap && !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         // As main's serial path did, logprobs keep a softcap request ordinary.
