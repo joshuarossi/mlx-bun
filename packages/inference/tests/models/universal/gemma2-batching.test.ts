@@ -1397,7 +1397,7 @@ test.skipIf(!native || !artifact)("a structurally equivalent delegating provider
 // may finish there), then only that row is rejected, before any shared append.
 describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   const types = [F, S, F, S];
-  type End = { stopAfter?: number; cancelAfter?: number };
+  type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
   const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number } = {}) => {
     const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
@@ -1406,7 +1406,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     const kvScheme = start === null ? undefined : resolveKvScheme({ override: 4, quantizedKvStart: start });
     let held = false;
     const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
-      runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1", MLX_BUN_COMPILED_DECODE: "0" }),
+      // Compiled decode stays at its default: these graphs bind none (below).
+      runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1" }),
       ...(kvScheme ? { kvScheme } : {}) });
     const submit = (prompt: number[], maxTokens: number, end: End = {}, grammar?: import("../../../src/sampling").GrammarController) => {
       const tokens: number[] = [], abort = new AbortController();
@@ -1417,7 +1418,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
         return tokens.length === end.stopAfter ? false : undefined;
       });
-      return group.submit({ promptIds: prompt, maxTokens, eosTokenIds: [], signal: abort.signal, compiledDecode: false,
+      return group.submit({ promptIds: prompt, maxTokens, eosTokenIds: end.eos ?? [], signal: abort.signal,
         sample: sampling.sample, plainGreedy: sampling.plainGreedy, onToken: sampling.onToken, ...(grammar ? { grammar } : {}) })
         .then(stats => stats.finishReason as string, (error: Error) => error.name)
         .then(outcome => ({ tokens, outcome }))
@@ -1437,15 +1438,22 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: true,
     turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
 
-  test("admission: affine KV binds as ordinary continuous decoding without compiled replay; TurboQuant does not", async () => {
+  test("admission: affine KV binds as ordinary continuous decoding; the graph binds no compiled replay; TurboQuant does not bind", async () => {
+    const { legacyCompiledDecodeAvailable } = await import("../../../src/generation/bindings/autoregressive");
     const env = await setup(64);
     try {
       expect(env.model.encodedKvAttention).toBe(false);
+      // Compiled B1 replay is bound only for non-MoE Gemma4 graphs; the group
+      // builds its replay from the same predicate, so no plain-read step replays.
+      expect(legacyCompiledDecodeAvailable(env.model)).toBe(false);
       expect(env.binding.kvBatchable(env.kvScheme!)).toBe(true);
       expect(env.binding.kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))).toBe(false);
       const plan = env.binding.plan(shape, { maxTokens: 4, ...env.kvScheme!.generationOptions },
         { continuous: true, quantizedBatch: env.binding.kvBatchable(env.kvScheme!), checkpoints: false });
       expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, compiledDecode: false });
+      // Requested (the flag is on) and refused by the capability, not disabled.
+      expect(env.binding.runtime.flag("MLX_BUN_COMPILED_DECODE", true)).toBe(true);
+      expect(plan.reasons).toContain("compiled-decode-unavailable-for-request");
     } finally { await env.close(); }
   });
 
@@ -1479,6 +1487,28 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       // The same group drains and serves again.
       expect(await delayed.submit(B, 5)).toEqual(soloB);
     } finally { await plain.close(); await delayed.close(); }
+  });
+
+  test("EOS as the last plain token ends the row as a stop, unpublished, not a rejection", async () => {
+    const plain = await setup(null);
+    try {
+      const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+      // The EOS is the first token from the third on that is new to A's output;
+      // B ([5,8], 5 tokens) then stays below the transition.
+      const at = soloA.tokens.findIndex((token, index) => index >= 2 && !soloA.tokens.slice(0, index).includes(token));
+      expect(at, `A's output ${soloA.tokens}`).toBeGreaterThanOrEqual(2);
+      const eos = [soloA.tokens[at]!];
+      const control = await plain.submit(A, 8, { eos });
+      expect(control).toEqual({ tokens: soloA.tokens.slice(0, at), outcome: "stop" });
+      const delayed = await setup(A.length + at);   // the EOS is A's last plain token
+      try {
+        const [a, b] = await delayed.together([A, 8, { eos }], [B, 5]);
+        expect(a).toEqual(control);
+        expect(b).toEqual(soloB);
+        // Without the EOS the same row reads past it and is rejected there.
+        expect(await delayed.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, at + 1), outcome: "PlainKvReadError" });
+      } finally { await delayed.close(); }
+    } finally { await plain.close(); }
   });
 
   test("a stop, a cancellation or the budget on the last plain token finishes normally", async () => {
@@ -1528,7 +1558,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         checkpointPersistence: persistence, identity: "plain-kv", cloneState: cloneKvCaches, adapterNamespace: () => "" });
       let held = true;
       const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64, kvScheme: scheme, admissionHeld: () => held,
-        runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" }) });
+        runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }) });
       const options = { ...scheme.generationOptions, maxTokens: 8, temperature: 0 };
       const execution = binding.plan(shape, options, { continuous: true, quantizedBatch: binding.kvBatchable(scheme), checkpoints: true });
       expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
@@ -1551,9 +1581,9 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const siblingSampling = sibling ? createRowSampling(makeStepSampler({ temperature: 0 }, { tokenRepresentation: "device",
         grammarWait: "external", historyUpdate: "after-sample", initialHistory: B }), token => { siblingTokens.push(token); }) : undefined;
       try {
-        const a = group.submit({ ...request, promptIds: A, cacheNamespace: "a", signal: abort.signal, compiledDecode: false,
+        const a = group.submit({ ...request, promptIds: A, cacheNamespace: "a", signal: abort.signal,
           maxTokens: 8, eosTokenIds: [] }).then(stats => stats.finishReason as string, (error: Error) => error.name);
-        const b = siblingSampling ? group.submit({ promptIds: B, maxTokens: 5, eosTokenIds: [], compiledDecode: false,
+        const b = siblingSampling ? group.submit({ promptIds: B, maxTokens: 5, eosTokenIds: [],
           sample: siblingSampling.sample, plainGreedy: siblingSampling.plainGreedy, onToken: siblingSampling.onToken })
           .then(stats => stats.finishReason as string, (error: Error) => error.name) : undefined;
         held = false; group.kick();
