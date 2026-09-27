@@ -342,7 +342,7 @@ test.skipIf(!native || !artifact || !referencePath)("real Gemma2 ragged B2/B4 lo
 }, 600_000);
 
 
-test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's serial fill at B1 and keeps every row through B2/B4 joins and cancellation", async () => {
+test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's serial fill at B1 and keeps every row through B2/B3/B4 joins and cancellation", async () => {
   const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
   const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
   const { FillSession } = await import("../../../src/generation/fill");
@@ -355,7 +355,8 @@ test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's seria
     const eos = model.config.eosTokenIds, maxTokens = 32;
     const prompts = ["Write three short sentences about the ocean at night.",
       "Summarize in three sentences why tide pools interest biologists.",
-      "Explain step by step how bread dough rises overnight in a bakery."]
+      "Explain step by step how bread dough rises overnight in a bakery.",
+      "List four facts about the Moon, one per line, with no introduction and no closing remark."]
       .map(text => [2, ...tokenizer.encode(`<start_of_turn>user\n${text}<end_of_turn>\n<start_of_turn>model\n`, false)]);
     const hashRows = (logits: MlxArray) => {
       const [rows, positions, vocab] = logits.shape as [number, number, number];
@@ -448,7 +449,11 @@ test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's seria
     const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
       turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
     const logitsFromHidden = model.logitsFromHidden;
-    for (const [capacity, order, cancelled] of [[1, [0], -1], [1, [1], -1], [1, [2], -1], [2, [0, 1], -1], [4, [2, 0, 1], 0]] as const) {
+    // Each row joins after the previous row's first token. The B4 case cancels
+    // its third row, which is live when the fourth joins, so four rows share
+    // the batch; the observed high water must equal the capacity.
+    for (const [capacity, order, cancelled] of [[1, [0], -1], [1, [1], -1], [1, [2], -1], [1, [3], -1], [2, [0, 1], -1],
+      [3, [2, 0, 1], 0], [4, [2, 0, 1, 3], 1]] as const) {
       const logits: string[] = [];
       // The fill group binds the projection when it opens, after this hook.
       model.logitsFromHidden = function (this: UniversalDenseModel, hidden: MlxArray) {
@@ -479,7 +484,7 @@ test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's seria
         let settled: { index: number; stats?: { finishReason: string }; error?: unknown }[] = [];
         for (let seen = 0; seen !== pending.length;) { seen = pending.length; settled = await Promise.all(pending) as typeof settled; }
         expect(settled).toHaveLength(order.length);
-        expect(highWater).toBe(capacity === 4 ? 3 : capacity);
+        expect(highWater).toBe(capacity);
         for (const { index, stats, error } of settled) {
           const want = expected[index]!, tokens = emitted.get(index)!;
           if (index === cancelled) {
