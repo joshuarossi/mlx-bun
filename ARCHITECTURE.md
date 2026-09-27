@@ -157,20 +157,21 @@ in the owning component's contract and binding; the scheduler consumes that bind
 Prefer the smallest existing interface that expresses the requirement.
 
 For every newly supported model, the target is to compile its description into
-a concrete implementation. At graph construction or startup, resolve the model,
-artifact, layer, and selected option facts into specific kernels, layers, state
-layouts, and bound operations. The specialized Gemma implementations demonstrate
-the intended pattern for model support generally. Adding support means assembling
+a concrete implementation. Here, compilation means resolving known facts during
+graph construction or startup; it is distinct from the layers' MLX compilation
+policy and can use ordinary functions and explicit graph construction. Resolve
+model, artifact, layer, and selected option facts into specific kernels, layers,
+state layouts, and bound operations. The specialized Gemma implementations
+demonstrate the intended pattern for model support generally. Adding support means assembling
 the graph from reusable components and implementing any missing operation in its
-owning layer. The assembled graph and its constituent kernels remain directly
-usable by library callers.
+owning layer.
 
 Known data flow is part of that construction: which operations produce and consume
 a tensor, its layout, and its ownership and lifetime obligations. Use these facts
 to determine which intermediate state must be materialized, copied, or retained.
 A specialized implementation may avoid that work when it can establish that every
-bound consumer's contract is still met. State needed by a selected generation
-method, checkpoint, or exposed output must remain available through that contract.
+bound consumer's contract, including the state required by a selected generation
+method, checkpoint, or exposed output, is still met.
 These are properties of the chosen graph and bindings, not guesses about how a
 model is usually used; changing those properties requires a corresponding binding
 or implementation.
@@ -178,12 +179,11 @@ or implementation.
 Execution calls the resulting operations without repeatedly interpreting model
 descriptors or rediscovering invariant capabilities in the hot path. Current
 sequence lengths, cache contents, batch membership, request choices, and
-cancellation remain dynamic. This construction-time specialization is separate
-from the layers' MLX compilation policy described above: it can use ordinary
-functions and explicit graph construction, without introducing a code-generation
-or compiler framework. A universal fallback remains available. This is the target
-for refining migrated paths, not a claim that every current path already follows
-it; changes still require the [numerical and performance evidence](CONTRIBUTING.md#numerical-and-performance-evidence).
+cancellation remain dynamic. A universal fallback is allowed; no universal model
+abstraction, code-generation system, or compiler framework is required. This is
+the target for refining migrated paths, not a claim that every current path already
+follows it; changes still require the
+[numerical and performance evidence](CONTRIBUTING.md#numerical-and-performance-evidence).
 
 Main is the baseline for working capabilities, not a requirement to reproduce
 every restriction, silently ignored option, or bug. Preserve what works while
