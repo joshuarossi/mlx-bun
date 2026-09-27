@@ -10,6 +10,7 @@ import type { GenerateOptions } from "../../src/generation/index";
 import type { ResolvedExecution } from "../../src/contracts/portable/execution";
 import type { RuntimeModel } from "../../src/models/factory";
 import { NgramProvider } from "../../src/generation/speculative/sources/ngram-source";
+import { TwoModelProvider } from "../../src/generation/speculative/sources/two-model";
 import { FillSession } from "../../src/generation/fill/session";
 import { DiffusionGemmaModel } from "../../src/models/diffusion-gemma/model";
 import { Glm52Model } from "../../src/models/glm52/model";
@@ -335,6 +336,54 @@ test.each(families)("%s places plain-KV fill on the shared fill binding", (_, mo
       expect(JSON.parse(binding.methodRequest!(plan, options)!.key)[0]).toBe("fill");
     }
   }
+});
+
+/** A two-model provider for placement only: its grouped rows must never open here. */
+function twoModelDraft(): TwoModelProvider {
+  const unexpected = () => { throw new Error("placement opened draft rows"); };
+  return Object.assign(Object.create(TwoModelProvider.prototype), { id: "gemma2-draft", weightsBytes: 0,
+    grouped: { checkpointNamespace: () => "gemma2-draft", open: unexpected, openPrefill: unexpected } }) as TwoModelProvider;
+}
+
+test("Gemma2 softcap speculates only with the two-model provider over plain KV", () => {
+  const binding = bindMlxGateway(softcapUniversal(), { provider: twoModelDraft(), numDraftTokens: 3 });
+  const scheduling = { ...schedule, continuous: binding.cachesBatchable(), checkpoints: true };
+  binding.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as never);
+  const draft = { ...shape, hasDraft: true };
+  // Grammar is shared sampling: the target's mask rides the verifier's accept walk, as in main.
+  for (const [request, options] of [[draft, {}], [{ ...draft, userSeed: true, hasRepetitionPenalty: true }, { seed: 3, repetitionPenalty: 1.1 }],
+    [draft, { logitBias: { 5: -100 } }], [{ ...draft, hasGrammar: true }, {}]] as const) {
+    const plan = binding.plan(request, options as GenerateOptions, scheduling);
+    expect({ request, plan }).toMatchObject({ request, plan: { method: "speculative", mechanism: "continuous", fill: false, checkpoint: false } });
+    expect(refusals(plan)).toEqual([]);
+    expect(JSON.parse(binding.methodRequest!(plan, options as GenerateOptions)!.key).slice(0, 2)).toEqual(["speculative", "gemma2-draft"]);
+  }
+  // As main's serial path did, a logprobs request ignores its draft and decodes ordinarily.
+  const logprobs = binding.plan({ ...draft, wantsLogprobs: true }, {}, scheduling);
+  expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+  expect(logprobs.reasons).toContain("draft-incompatible-with-request");
+  // Drafts with adapters or fill, and encoded KV, media or paging stay refused.
+  for (const [request, options, expected] of [
+    [{ ...draft, hasAdapters: true }, { adapters: ["upper"] }, ["continuous-unavailable"]],
+    [draft, fillOptions(false), ["continuous-unavailable"]],
+    [draft, fillOptions(true), ["continuous-unavailable"]],
+    [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["kv-scheme-batch-unsupported"]],
+    [{ ...draft, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, ["turbo-kv-batch-unsupported"]],
+    [{ ...draft, hasVision: true }, {}, ["media-batch-unsupported"]],
+    [draft, { pagedKv: {} }, ["paged-kv-batch-unsupported"]],
+  ] as const) {
+    const plan = binding.plan(request, options as GenerateOptions, scheduling);
+    expect({ request, mechanism: plan.mechanism }).toEqual({ request, mechanism: "unsupported" });
+    for (const reason of expected) expect({ request, reasons: plan.reasons }).toMatchObject({ request, reasons: expect.arrayContaining([reason]) });
+  }
+  // Plain softcap requests without a draft keep their placement; grammar proposals stay off this graph.
+  expect(binding.plan(shape, {}, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+  const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }),
+    () => bindMlxGateway(softcapUniversal(), { provider: twoModelDraft(), numDraftTokens: 3 }));
+  expect(jump.plan({ ...shape, hasGrammar: true }, {}, schedule)).toMatchObject({ method: "autoregressive", grammarJump: false });
+  // Another provider stays unsupported on this graph.
+  const ngram = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
+  expect(ngram.plan(draft, {}, schedule).mechanism).toBe("unsupported");
 });
 
 test("Gemma2 softcap fill keeps encoded KV, drafts and adapters unsupported", () => {

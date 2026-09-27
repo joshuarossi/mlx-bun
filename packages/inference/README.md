@@ -173,8 +173,13 @@ generation continuation uses the shared continuation binding once persistence is
 configured; the opt-in [Gemma2 continuation test](../../apps/mlx-bun/tests/engine/gemma2-continuation.test.ts)
 runs it through the app's serving composition: interval snapshots, a durable
 record surviving cancellation, its restore after a fresh engine, and cleanup on
-completion. Encoded KV, speculative methods, fill with adapters and paging
-retain typed unsupported placement.
+completion. Plain-KV two-model speculation uses the shared speculative group
+with a second loaded instance as the draft; the batching test's opt-in two-model
+case checks B1 determinism, main's gate that greedy grammar with speculation
+equals greedy grammar alone, a ragged joined group (its measured target batch),
+cancellation, and a follow-on request that reproduces the fresh B1 run. Encoded
+KV, other draft providers, drafts with adapters or fill, fill with adapters and
+paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 

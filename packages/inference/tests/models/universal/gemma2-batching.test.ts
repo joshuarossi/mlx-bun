@@ -507,4 +507,129 @@ test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's seria
   } finally { weights.dispose(); }
 }, 600_000);
 
+
+test.skipIf(!native || !artifact)("cached Gemma2 two-model speculation keeps B1 deterministic and serves ragged joins, cancellation and a clean follow-on", async () => {
+  const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
+  const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
+  const { TwoModelProvider } = await import("../../../src/generation/speculative");
+  const { loadTokenizer } = await import("../../../src/input");
+  const { compileGrammarRequest, makeStepSampler } = await import("../../../src/sampling");
+  const { createRowSampling } = await import("../../../src/execution");
+  // The target and the draft are two independently loaded instances of the artifact.
+  const weights = await Weights.open(artifact!);
+  let draft: Awaited<ReturnType<typeof TwoModelProvider.load>> | undefined;
+  try {
+    draft = await TwoModelProvider.load(artifact!);
+    const model = createModel(weights, await loadModelConfig(artifact!)) as UniversalDenseModel;
+    expect(draft!.model).not.toBe(model);
+    const tokenizer = await loadTokenizer(artifact!);
+    const eos = model.config.eosTokenIds;
+    const prompt = (text: string) => [2, ...tokenizer.encode(`<start_of_turn>user\n${text}<end_of_turn>\n<start_of_turn>model\n`, false)];
+    const prompts = [prompt("Write three short sentences about the ocean at night."),
+      prompt("Summarize in three sentences why tide pools interest biologists, with one example species."),
+      prompt("List four facts about the Moon, one per line.")];
+    // Target forward geometry, measured (the draft instance is separate).
+    const widths: number[] = [];
+    const forwardHidden = model.forwardHidden.bind(model);
+    model.forwardHidden = (ids: MlxArray, caches: Cache[]) => { widths.push(ids.shape[0]!); return forwardHidden(ids, caches); };
+    const binding = bindMlxGateway(model, { provider: draft!, numDraftTokens: 3 });
+    const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
+      turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true };
+    const options = { maxTokens: 32, temperature: 0 };
+    const plan = binding.plan(shape, options, { continuous: binding.cachesBatchable(), quantizedBatch: false, checkpoints: false });
+    expect(plan).toMatchObject({ method: "speculative", mechanism: "continuous" });
+    const runtime = createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" });
+    const group = binding.createBatchGroup({ maxBatch: 4, prefillChunkSize: 512, runtime });
+    const submit = (index: number, hooks: { signal?: AbortSignal; onToken?: (tokens: number[]) => void } = {}) => {
+      const tokens: number[] = [];
+      const done = group.submit({ promptIds: prompts[index]!, maxTokens: options.maxTokens, eosTokenIds: eos,
+        method: binding.methodRequest!(plan, options)!, signal: hooks.signal,
+        onToken(token) { tokens.push(token); hooks.onToken?.(tokens); } })
+        .then(stats => ({ tokens, stats, error: undefined as unknown }), error => ({ tokens, stats: undefined, error }));
+      return done;
+    };
+    try {
+      // B1: one request alone, twice; the second must reproduce the first.
+      const solo = await submit(0), again = await submit(0);
+      expect(solo.error).toBeUndefined();
+      expect(again.error).toBeUndefined();
+      expect(again.tokens).toEqual(solo.tokens);
+      const soloWidths = new Set(widths); widths.length = 0;
+      expect([...soloWidths]).toEqual([1]);
+      // Ragged join: row 1 (a longer prompt) joins after row 0's first token;
+      // row 2 joins after row 1's first token and is cancelled after 6 tokens.
+      const abort = new AbortController();
+      const joined1 = Promise.withResolvers<ReturnType<typeof submit>>(), joined2 = Promise.withResolvers<ReturnType<typeof submit>>();
+      const first = submit(0, { onToken: tokens => { if (tokens.length === 1) joined1.resolve(submit(1, { onToken: next => {
+        if (next.length === 1) joined2.resolve(submit(2, { signal: abort.signal,
+          onToken: third => { if (third.length === 6) abort.abort(new DOMException("client left", "AbortError")); } }));
+      } })); } });
+      const [survivor, row1, row2] = await Promise.all([first, joined1.promise.then(row => row), joined2.promise.then(row => row)]);
+      expect(survivor.error).toBeUndefined(); expect(row1.error).toBeUndefined();
+      expect(survivor.stats!.generatedTokens).toBe(survivor.tokens.length);
+      expect(row1.stats!.generatedTokens).toBe(row1.tokens.length);
+      expect(row2.error).toBeInstanceOf(DOMException);
+      expect((row2.error as DOMException).name).toBe("AbortError");
+      expect(row2.tokens.length).toBeGreaterThanOrEqual(6);
+      // The pair really shared target forwards; the width is measured, not assumed.
+      const shared = Math.max(...widths);
+      expect(shared).toBeGreaterThanOrEqual(2);
+      console.info("Gemma2 two-model ragged group", { maxTargetBatch: shared,
+        survivorEqualsSolo: JSON.stringify(survivor.tokens) === JSON.stringify(solo.tokens) });
+      // A clean follow-on: alone again, it reproduces the fresh B1 run exactly.
+      widths.length = 0;
+      const followOn = await submit(0);
+      expect(followOn.error).toBeUndefined();
+      expect(followOn.tokens).toEqual(solo.tokens);
+      expect([...new Set(widths)]).toEqual([1]);
+      // Main's gate: greedy grammar with speculation equals greedy grammar alone.
+      // Drafts run free; the target's mask rides the verifier's accept walk, so
+      // grammar-invalid drafts are genuinely rejected.
+      let rejected = 0;
+      for (const [body, valid, terminates] of [
+        [{ guided_choice: ["Paris", "Lisbon", "Kyoto"] }, /^(Paris|Lisbon|Kyoto)$/, true],
+        [{ guided_grammar: 'root ::= ("yes" | "no") ", " [a-z] [a-z] [a-z]*' }, /^(yes|no), [a-z]{2,}$/, false],
+      ] as const) {
+        const constrained = async (speculate: boolean) => {
+          const compiled = await compileGrammarRequest(body as never, tokenizer, model.config.text.vocabSize);
+          const grammar = compiled?.controller;
+          if (!grammar) throw new Error(`grammar did not compile: ${compiled?.degradeHint}`);
+          const tokens: number[] = [];
+          try {
+            const request = { ...options, maxTokens: 16, grammar };
+            const grammarShape = { ...shape, hasGrammar: true, hasDraft: speculate };
+            const placed = binding.plan(grammarShape, request, { continuous: true, quantizedBatch: false, checkpoints: false });
+            expect(placed).toMatchObject({ method: speculate ? "speculative" : "autoregressive", mechanism: "continuous" });
+            const ordinary = speculate ? undefined : createRowSampling(makeStepSampler(request, { tokenRepresentation: "device",
+              grammarWait: "external", historyUpdate: "after-sample", initialHistory: prompts[2]! }), token => { tokens.push(token); });
+            try {
+              const stats = await group.submit({ promptIds: prompts[2]!, maxTokens: 16, eosTokenIds: eos, grammar,
+                ...(speculate ? { method: binding.methodRequest!(placed, request)!, onToken: (token: number) => { tokens.push(token); } }
+                  : { sample: ordinary!.sample, plainGreedy: ordinary!.plainGreedy, onToken: ordinary!.onToken }) });
+              return { tokens, finish: stats.finishReason, terminated: grammar.isTerminated, spec: stats.spec };
+            } finally { ordinary?.dispose(); }
+          } finally { grammar.dispose(); }
+        };
+        const alone = await constrained(false), speculated = await constrained(true);
+        const { spec, ...output } = speculated, { spec: ordinary, ...plain } = alone;
+        expect(ordinary).toBeUndefined();
+        expect(output).toEqual(plain);
+        expect(valid.test(tokenizer.decode(alone.tokens, true))).toBe(true);
+        if (terminates) expect({ finish: alone.finish, terminated: alone.terminated }).toEqual({ finish: "stop", terminated: true });
+        else {
+          // The longer grammar really speculated: drafted tokens over verify rounds.
+          expect(spec!.drafted).toBeGreaterThan(0);
+          expect(spec!.rounds ?? spec!.targetCalls).toBeGreaterThan(0);
+        }
+        rejected += spec!.rejected ?? spec!.drafted - spec!.accepted;
+        console.info("Gemma2 grammar speculation", { grammar: Object.keys(body)[0], tokens: alone.tokens.length,
+          text: tokenizer.decode(alone.tokens, true), spec });
+      }
+      // Across the constrained corpus at least one proposal was rejected.
+      expect(rejected).toBeGreaterThan(0);
+      expect(group.activeRows + group.pendingRows).toBe(0);
+    } finally { await group.close(); }
+  } finally { draft?.dispose(); weights.dispose(); }
+}, 900_000);
+
 }
