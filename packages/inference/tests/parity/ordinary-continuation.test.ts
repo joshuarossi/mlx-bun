@@ -1,7 +1,16 @@
 // Opt in with MLX_BUN_TEST_CONTINUATION_MODEL=/cached/checkpoint. No downloads.
 // Optional MLX_BUN_TEST_CONTINUATION_ADAPTER=/cached/adapter enables isolation checks.
+// Optional MLX_BUN_TEST_CONTINUATION_WINDOW=<n> builds a custom graph over a
+// Llama-family artifact's unchanged weights: alternating sliding (window n) and
+// full layers, one descriptor for the parsed config and the graph arguments.
+// It is not a published model.
+// Optional MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS=1 also restores interrupted
+// checkpoints in a fresh process: the parent writes them to a directory it owns,
+// releases its weights, runs this test once as a bounded child
+// (MLX_BUN_TEST_CONTINUATION_PHASE=child, which only restores and never spawns),
+// joins it, and then removes the directory.
 import { expect, test, spyOn } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
@@ -9,6 +18,36 @@ const target = Bun.env.MLX_BUN_TEST_CONTINUATION_MODEL;
 const adapter = Bun.env.MLX_BUN_TEST_CONTINUATION_ADAPTER;
 if (target && !existsSync(`${target}/config.json`)) throw new Error(`unavailable model: ${target}`);
 if (adapter && !existsSync(`${adapter}/adapters.safetensors`)) throw new Error(`unavailable adapter: ${adapter}`);
+const windowSetting = Bun.env.MLX_BUN_TEST_CONTINUATION_WINDOW;
+const freshProcess = Bun.env.MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS === "1";
+const phase = Bun.env.MLX_BUN_TEST_CONTINUATION_PHASE ?? "parent";
+const childDirectory = Bun.env.MLX_BUN_TEST_CONTINUATION_DIR;
+if (windowSetting !== undefined && !/^[1-9]\d*$/.test(windowSetting.trim()))
+  throw new Error("MLX_BUN_TEST_CONTINUATION_WINDOW must be a positive integer");
+if (phase !== "parent" && phase !== "child") throw new Error(`unknown continuation phase: ${phase}`);
+if ((phase === "child") !== !!childDirectory) throw new Error("the child phase and its directory come together");
+if (phase === "child" && freshProcess) throw new Error("a child never spawns another restore");
+
+/** The artifact's config, or the custom window descriptor applied to both the
+ * parsed config and the raw arguments the graph is built from. */
+async function continuationConfig() {
+  const { loadModelConfig } = await import("@mlx-bun/inference/artifacts");
+  const config = await loadModelConfig(target!);
+  if (windowSetting === undefined) return config;
+  if (!["llama", "mistral"].includes(config.modelType)) throw new Error(`a custom window needs a Llama-family artifact, not ${config.modelType}`);
+  const window = Number(windowSetting);
+  const types = Array.from({ length: config.text.numHiddenLayers }, (_, i) => i % 2 === 0 ? "sliding_attention" : "full_attention");
+  const raw = (config.raw.text_config ?? config.raw) as Record<string, unknown>;
+  raw.layer_types = [...types]; raw.sliding_window = window;
+  config.text.layerTypes = [...types]; config.text.slidingWindow = window;
+  return config;
+}
+/** The graph must carry the custom descriptor it was built from. */
+function checkDescriptor(model: { args?: { layerTypes?: string[] | null; slidingWindow?: number | null } }, config: { text: { layerTypes: string[]; slidingWindow: number } }) {
+  if (windowSetting === undefined) return;
+  expect({ layerTypes: model.args?.layerTypes, slidingWindow: model.args?.slidingWindow })
+    .toEqual({ layerTypes: config.text.layerTypes, slidingWindow: config.text.slidingWindow });
+}
 
 test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history from interrupted SSD checkpoints", async () => {
   const { AdapterManager } = await import("@mlx-bun/inference/adapters");
@@ -22,11 +61,15 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
   const ops = await import("@mlx-bun/mlx/ops");
   const { leaseCacheState, minimumReusableOffset, PromptCache, cloneKvCaches } = await import("@mlx-bun/inference/state");
   const { clearCache } = await import("@mlx-bun/mlx/ffi");
-  const directory = mkdtempSync(join(tmpdir(), "ordinary-continuation-"));
+  const directory = phase === "child" ? childDirectory! : mkdtempSync(join(tmpdir(), "ordinary-continuation-"));
   const weights = await Weights.open(target!);
+  let released = false;
   let manager: InstanceType<typeof AdapterManager> | undefined;
+  const expectedFresh: Record<number, { outputs: number[][]; captured: Record<string, string> }> = {};
   try {
-    const model = createModel(weights, await loadModelConfig(target!));
+    const config = await continuationConfig();
+    const model = createModel(weights, config);
+    checkDescriptor(model as never, config);
     if (!("loraState" in model) || !model.loraState) throw new Error("continuation test requires adapter state");
     manager = new AdapterManager(model);
     const adapters = manager;
@@ -132,6 +175,19 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
           expect(model.loraState!.active).toEqual([]);
         }
       };
+      if (phase === "child") {
+        // Fresh process: only restore the parent's interrupted checkpoints and
+        // continue exactly as the parent's uninterrupted control did.
+        const expected = JSON.parse(readFileSync(join(directory, "fresh-expected.json"), "utf8"))[batch];
+        const store = new SsdCacheStore(settings("fresh"));
+        expect(store.scan()).toBe(batch);
+        const replayed = await run(store, false);
+        expect(replayed.outputs).toEqual(expected.outputs);
+        for (const [key, hash] of replayed.captured) expect(hash).toBe(expected.captured[key]);
+        expect(store.stats.restores).toBe(batch);
+        expect(new SsdCacheStore(settings("fresh")).scan()).toBe(0);
+        continue;
+      }
       widths.length = 0;
       const control = await run(new SsdCacheStore(settings("control")), false);
       expect(widths).toContain(batch);
@@ -156,17 +212,44 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
       for (const [key, hash] of replayed.captured) expect(hash).toBe(control.captured.get(key)!);
       expect(restarted.stats.restores).toBe(batch);
       expect(new SsdCacheStore(settings("restart")).scan()).toBe(0);
+      if (freshProcess) {
+        // Interrupted checkpoints for the fresh-process restore, left on disk.
+        const fresh = await run(new SsdCacheStore(settings("fresh")), true);
+        expect(fresh.outputs.map(tokens => tokens.length)).toEqual(Array(batch).fill(kv.interruptAt));
+        expectedFresh[batch] = { outputs: control.outputs, captured: Object.fromEntries(control.captured) };
+      }
     }
+    if (phase === "child") return;
     if (adapter) {
       expect(manager.unmount("upper")).toBeGreaterThan(0);
       expect(manager.list()).toEqual([]);
       expect(probe(["upper"])).toEqual(baseLogits!);
     }
+    if (freshProcess) {
+      writeFileSync(join(directory, "fresh-expected.json"), JSON.stringify(expectedFresh));
+      // Release this process's model before the child loads its own: no
+      // overlapping GPU work and no parent weights held during the restore.
+      if (adapter && manager.list().length) manager.unmount("upper");
+      (model as { dispose?: () => void }).dispose?.();
+      weights.dispose(); clearCache(); released = true;
+      const child = Bun.spawnSync([process.execPath, "--no-env-file", "test", import.meta.path, "--test-name-pattern", "^ordinary B1/B4 restore"], {
+        env: { ...process.env, MLX_BUN_TEST_CONTINUATION_PHASE: "child", MLX_BUN_TEST_CONTINUATION_DIR: directory,
+          MLX_BUN_TEST_CONTINUATION_FRESH_PROCESS: "0" },
+        stdout: "pipe", stderr: "pipe", timeout: 240_000, killSignal: "SIGKILL" });
+      const output = child.stdout.toString() + child.stderr.toString();
+      expect({ exitCode: child.exitCode, output: output.includes("(pass) ordinary B1/B4 restore") && /\b1 pass\b/.test(output) && /\b0 fail\b/.test(output) })
+        .toEqual({ exitCode: 0, output: true });
+    }
   } finally {
     try { if (adapter && manager?.list().length) manager.unmount("upper"); }
-    finally { weights.dispose(); clearCache(); rmSync(directory, { recursive: true, force: true }); }
+    finally {
+      if (!released) weights.dispose();
+      clearCache();
+      // The parent owns the directory; the child never removes it.
+      if (phase === "parent") rmSync(directory, { recursive: true, force: true });
+    }
   }
-}, 300_000);
+}, freshProcess ? 600_000 : 300_000);
 
 // Uses the same artifact/adapter opt-ins as continuation; a positive start is
 // required so this cannot pass by exercising only already-encoded caches.
@@ -183,7 +266,9 @@ test.skipIf(!target || !adapter || !Bun.env.MLX_BUN_TEST_CONTINUATION_KV_START |
   const weights = await Weights.open(target!);
   let manager: InstanceType<typeof AdapterManager> | undefined;
   try {
-    const model = createModel(weights, await loadModelConfig(target!));
+    const config = await continuationConfig();
+    const model = createModel(weights, config);
+    checkDescriptor(model as never, config);
     manager = new AdapterManager(model);
     const adapters = manager, prompt = [2, 105, 2364, 107, 1567, 506, 2390, 107];
     const kv = await continuationKv(prompt.length);
