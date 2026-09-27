@@ -1,4 +1,6 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as ops from "@mlx-bun/mlx/ops";
+import { appendGrammarSpan } from "../../src/generation/grammar-step";
 import { generateAutoregressive } from "../../src/generation/index";
 import type { MlxAutoregressiveBinding } from "../../src/generation/bindings/autoregressive";
 import { bindMlxGraph } from "../../src/models/graph";
@@ -439,4 +441,97 @@ test("decoder cleanup failure retains the execution error and still frees caches
   expect((outcome as AggregateError).cause).toBe(execution);
   expect((outcome as AggregateError).errors).toEqual([execution, cleanup]);
   expect(seen.disposals).toBe(1);
+});
+
+
+function committedGrammar(terminal: boolean) {
+  const accepted: number[] = [];
+  let jumped = false, terminated = false, disposals = 0;
+  const grammar = {
+    get isTerminated() { return terminated; },
+    ready: async () => {},
+    accept(token: number) { accepted.push(token); },
+    applyMask(scores: MlxArray) { return scores; },
+    jumpForward(budget: number) {
+      if (jumped) return null;
+      jumped = true;
+      const ids = [3, 4].slice(0, budget);
+      accepted.push(...ids); terminated = terminal && ids.length === 2;
+      return ids;
+    },
+    dispose() { disposals++; },
+  } as unknown as import("../../src/sampling/grammar").GrammarController;
+  return { grammar, accepted, get disposals() { return disposals; } };
+}
+
+for (const mode of ["terminal", "continue", "budget-one", "budget-span", "stop-in-span"] as const) {
+  test(`direct grammar retains committed-span ordering: ${mode}`, async () => {
+    const f = fixture(), g = committedGrammar(mode === "terminal");
+    const forwards: number[][] = [], projections: number[][] = [], emitted: number[] = [];
+    const original = f.binding.graph;
+    const generation = generateAutoregressive({ ...f.binding, graph: { ...original,
+      forwardHidden(ids, caches) { forwards.push(ids.toIntTokens()); return original.forwardHidden(ids, caches); },
+      projectLogits(hidden, selection) { projections.push([...hidden.shape]); return original.projectLogits(hidden, selection); },
+    } }, [0, 1], { temperature: 0, maxTokens: mode === "budget-one" ? 1 : mode === "budget-span" ? 3 : 5,
+      prefillChunkSize: 1, grammar: g.grammar, decodePolicy: { compiledDecode: false, grammarJump: true } });
+    for await (const { token } of generation) {
+      if (!emitted.length && mode !== "budget-one") expect(forwards.at(-1)).toEqual([2, 3, 4]);
+      emitted.push(token);
+      if (mode === "stop-in-span" && emitted.length === 2) break;
+    }
+    expect(g.disposals).toBe(1);
+    expect(f.seen.disposals).toBe(1);
+    expect(projections.every(shape => shape[1] === 1)).toBe(true);
+    if (mode === "budget-one") {
+      expect(emitted).toEqual([2]); expect(g.accepted).toEqual([]);
+      expect(forwards).toEqual([[0], [1]]); expect(projections).toHaveLength(1);
+      expect(generation.stats!.cacheTokens).toEqual([0, 1]);
+    } else if (mode === "continue") {
+      expect(emitted).toEqual([2, 3, 4, 5, 6]);
+      expect(forwards).toEqual([[0], [1], [2, 3, 4], [5]]);
+      expect(projections).toHaveLength(3);
+    } else {
+      expect(emitted).toEqual(mode === "terminal" || mode === "budget-span" ? [2, 3, 4] : [2, 3]);
+      expect(generation.stats!.cacheTokens).toEqual([0, 1, 2, 3, 4]);
+      expect(projections).toHaveLength(mode === "stop-in-span" ? 2 : 1);
+    }
+  });
+}
+
+
+test("grammar append retains the original failure when temporary cleanup also fails", async () => {
+  const primary = new Error("graph failed"), cleanup = new Error("input cleanup failed");
+  const original = ops.fromInt32;
+  let released = 0;
+  const mock = spyOn(ops, "fromInt32").mockImplementation((...args) => {
+    const array = original(...args), dispose = array.dispose.bind(array);
+    array.dispose = () => { array.dispose = dispose; released++; dispose(); throw cleanup; };
+    return array;
+  });
+  try {
+    const graph = { forwardHidden() { throw primary; } } as unknown as MlxAutoregressiveBinding["graph"];
+    const error = await appendGrammarSpan(graph, [], [2, 3, 4], () => { throw new Error("failed forward committed"); })
+      .then(() => null, error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors).toEqual([primary, cleanup]);
+    expect(released).toBe(1);
+  } finally { mock.mockRestore(); }
+});
+
+test("grammar append transfers sampled-token ownership before logits cleanup can throw", async () => {
+  const cleanup = new Error("logits cleanup failed");
+  let sampled: MlxArray | undefined, released = 0;
+  const selected = { dispose() { released++; } } as unknown as MlxArray;
+  const hidden = { shape: [1, 3, 1], slice: () => selected, dispose() { released++; } } as unknown as MlxArray;
+  const logits = { dispose() { released++; throw cleanup; } } as unknown as MlxArray;
+  const graph = { forwardHidden: () => hidden, projectLogits: () => logits } as unknown as MlxAutoregressiveBinding["graph"];
+  const committed: number[] = [];
+  try {
+    await expect(appendGrammarSpan(graph, [], [2, 3, 4], ids => committed.push(...ids), () => {
+      sampled = ops.fromInt32([5], [1]);
+    })).rejects.toBe(cleanup);
+    expect(committed).toEqual([2, 3, 4]);
+    expect(sampled!.toIntTokens()).toEqual([5]);
+    expect(released).toBe(3);
+  } finally { sampled?.dispose(); }
 });
