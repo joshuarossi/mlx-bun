@@ -121,19 +121,16 @@ without one.
   signed bundle. The native-blocked version check and mocked commands do not
   establish this acceptance.
 - [ ] Reproduce the remaining notices of code embedded in prebundled dependencies.
-  Reproduced, pinned by sha256 in scripts/bundle-notices.ts together with the
-  embedding files: the license texts of 57 of the 58 package versions in Jiti
-  2.7.0's Rspack prebundle (a rebuild of `fd3bb289` matched both files byte for
-  byte) and of the TypeScript metadata plugin Jiti copies (Leonardo Ascione);
-  picojson's header in XGrammar's WASM build; and secure-json-parse's and bourne's
-  BSD-3 texts for `json-bigint@1.0.0`'s `lib/parse.js`. Still missing:
-  `babel-plugin-parameter-decorator@1.0.16` in Jiti declares MIT, but neither its
-  package nor its repository's latest revision has a license text; Jiti's
-  `import-meta-env` (MIT, "Copyright (c) 2021 Ernest") and `import-meta-paths`
-  (MIT, javiertury) plugins and the metadata plugin's code adapted from the
-  TypeScript compiler (Apache-2.0, TypeScript `2932421`) are credited only in
-  Jiti's source; and the Emscripten runtime linked into XGrammar's WASM is
-  unidentified, because upstream built with the SDK's `latest` release.
+  `babel-plugin-parameter-decorator@1.0.16` in Jiti's prebundle has no license text
+  upstream: only its manifest's `"license": "MIT"` and `"author": "Warner"`, its npm
+  `gitHead` is not in its repository, and no commit there adds a license file, so a
+  full text must come from its author. The toolchain that built XGrammar's WASM is
+  unknown (no producers section; a local build): the inference notice reproduces
+  Emscripten 3.1.56's texts because the runtime glue is a release-era match for 3.1.56,
+  inferred from two fingerprints (WebAssembly-check absence and `Module["ready"]`
+  presence), not exact provenance. Whether the stripped WASM links LLVM compiler-rt is
+  also unknown; if it does, its notice needs that Emscripten's
+  `system/lib/compiler-rt/LICENSE.TXT`.
 - [ ] Make partial signing retryable without weakening bundle integrity checks
   before the first real signed release. This is an operational improvement:
   today a partial signing failure safely requires rebuilding a fresh preparation.
