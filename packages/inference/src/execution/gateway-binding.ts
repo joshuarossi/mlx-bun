@@ -22,7 +22,7 @@ import { legacyCompiledDecodeAvailable } from "../generation/bindings/autoregres
 import { MlxBatchExecutionGroup } from "./batch-group";
 import { type MlxBatchExecutionGroupOptions, type MlxGroupMethodRequest } from "./batch-types";
 import type { DraftProvider } from "../generation/speculative/source";
-import { constraintDraftProvider } from "../generation/speculative/sources/ngram-source";
+import { constraintDraftProvider, NgramProvider } from "../generation/speculative/sources/ngram-source";
 import { TwoModelProvider } from "../generation/speculative/sources/two-model";
 import { targetRowLayoutFactory } from "../state/target-layout";
 import { bindSpeculativeGroupRequests } from "./speculative-group";
@@ -67,8 +67,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // Manual softcap attention is qualified for plain-KV requests, including
   // grammar-constrained and adapter requests, for plain-KV fill through the
   // shared fill binding, for shared generation continuation checkpoints, and
-  // for two-model drafts (below). Encoded attention, other drafts, drafts with
-  // adapters or fill, and fill with adapters need their own evidence.
+  // for two-model and n-gram drafts (below). Encoded attention, other drafts,
+  // drafts with adapters or fill, and fill with adapters need their own evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
@@ -108,11 +108,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     try { return caches.every(cache => targetRowLayoutFactory(cache) !== undefined); }
     finally { disposeResources(caches); }
   };
-  // Softcap attention is qualified for the existing two-model provider's grouped
-  // speculation over plain KV (main served it serially); other providers and
-  // grammar proposals stay off this graph.
-  const softcapTwoModel = plainSoftcap && draft?.provider instanceof TwoModelProvider;
-  const speculative = (tokenMethods || softcapTwoModel) && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
+  // Softcap attention is qualified for the existing two-model and n-gram
+  // providers' grouped speculation over plain KV (main served both serially);
+  // other providers and grammar proposals stay off this graph.
+  const softcapDraft = plainSoftcap &&
+    (draft?.provider instanceof TwoModelProvider || draft?.provider instanceof NgramProvider);
+  const speculative = (tokenMethods || softcapDraft) && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
@@ -177,7 +178,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         ...scheduling,
         continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill ||
           (universalPlainKv && request.hasAdapters))) &&
-          !(plainSoftcap && ((request.hasDraft && (!softcapTwoModel || request.hasAdapters || !!options.fill)) ||
+          !(plainSoftcap && ((request.hasDraft && (!softcapDraft || request.hasAdapters || !!options.fill)) ||
             (options.fill && request.hasAdapters))),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
@@ -191,7 +192,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         sharedFill: !!fillRequests && !!options.fill,
         sharedSpeculativeEcho: !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         // As main's serial path did, logprobs keep a softcap request ordinary.
-        speculativeLogprobs: scheduling.continuous && !!sharedMethod && !softcapTwoModel,
+        speculativeLogprobs: scheduling.continuous && !!sharedMethod && !softcapDraft,
         sharedSpeculativeAdapters: scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
         turboQuantBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
