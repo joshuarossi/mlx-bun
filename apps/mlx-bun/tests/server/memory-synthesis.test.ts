@@ -1,17 +1,24 @@
 import { expect, test } from "bun:test";
 import { createMemorySynthesis } from "../../src/server/memory-synthesis";
 import { createMemoryRoutes } from "../../src/server/memory-routes";
+import type { MemoryCompletionClient } from "../../src/memory/model";
+
+const unused: MemoryCompletionClient = {
+  complete: async () => { throw new Error("unexpected completion"); },
+  completeBatch: async () => { throw new Error("unexpected completion"); },
+};
 
 test("shutdown cancels all run clients, stops admission, and joins pipeline cleanup", async () => {
   const ready = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
   let started = 0, cancelled = 0, cleaned = 0, closed = false;
-  const owner = createMemorySynthesis({ root: "/unused-test-vault", apiUrl: () => "http://test",
-    http: { fetch: (async (_url, init) => {
+  // Each run's client holds its completion until that run's signal aborts.
+  const owner = createMemorySynthesis({ root: "/unused-test-vault",
+    client: signal => ({ ...unused, complete: () => {
       if (++started === 2) ready.resolve();
-      return new Promise<Response>((_resolve, reject) => {
-        init!.signal!.addEventListener("abort", () => { cancelled++; reject(init!.signal!.reason); }, { once: true });
+      return new Promise<string>((_resolve, reject) => {
+        signal.addEventListener("abort", () => { cancelled++; reject(signal.reason); }, { once: true });
       });
-    }) as typeof fetch },
+    } }),
     run: async (options = {}) => {
       expect(options.root).toBe("/unused-test-vault");
       try {
@@ -39,7 +46,7 @@ test("aborting one synthesis Request cancels only its run and emits no success",
   const ready = Promise.withResolvers<void>();
   let starts = 0;
   const signals: AbortSignal[] = [];
-  const owner = createMemorySynthesis({ root: "/unused-test-vault", apiUrl: () => "http://test",
+  const owner = createMemorySynthesis({ root: "/unused-test-vault", client: () => unused,
     run: async (options = {}) => {
       signals.push(options.signal!);
       if (++starts === 2) ready.resolve();
@@ -69,7 +76,7 @@ test("aborting one synthesis Request cancels only its run and emits no success",
 test("cancelling the synthesis response body aborts the run and waits for its cleanup", async () => {
   const ready = Promise.withResolvers<void>(), cleanup = Promise.withResolvers<void>();
   let signal: AbortSignal | undefined, joined = false;
-  const owner = createMemorySynthesis({ root: "/unused-test-vault", apiUrl: () => "http://test",
+  const owner = createMemorySynthesis({ root: "/unused-test-vault", client: () => unused,
     run: async (options = {}) => {
       signal = options.signal;
       ready.resolve();

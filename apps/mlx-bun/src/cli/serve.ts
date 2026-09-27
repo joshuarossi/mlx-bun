@@ -174,8 +174,9 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
     if (hooks.unix) throw new Error("--isolate is not supported in a worker app launch");
     return (await import("./serve-isolated")).startIsolatedServer(model, options);
   }
-  const { startModelHost } = await import("./serve-host");
-  const state = await createAppState(options, options.storagePaths ?? {});
+  const [{ startModelHost }, { createInProcessMemoryClient }] = await Promise.all([import("./serve-host"), import("./memory-engine")]);
+  // Memory synthesis gets main's own task model, loaded by the first run (the isolated parent has none).
+  const state = await createAppState({ ...options, memoryTaskModel: () => createInProcessMemoryClient() }, options.storagePaths ?? {});
   let host: RunningModelHost | RunningWorkerHost;
   try {
     host = await startModelHost(hooks.link ? observeLink(state, hooks.link) : state, model, options, {

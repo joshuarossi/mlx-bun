@@ -284,3 +284,191 @@ test("jobs and downloads reach the serving host only through the attached link",
   const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub` });
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
 });
+
+test("memory synthesis runs on one lazily created task model, bound to each run's signal, and closes it after the runs join", async () => {
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { mkdirSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const app = ${JSON.stringify(app)};
+    const events = [];
+    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
+    mock.module(app + "src/jobs/host.ts", () => ({ createJobHost() { return { signal: new AbortController().signal,
+      ensureStore() { throw new Error("unused"); }, submit() {}, submitTask() {}, async close() { events.push("jobs close"); } }; } }));
+    const { createAppState } = await import(app + "src/cli/serve-state.ts");
+    // A vault with articles: the wikify sweep reaches for the model.
+    const vault = join(process.env.HOME, "vault");
+    mkdirSync(join(vault, "articles"), { recursive: true });
+    writeFileSync(join(vault, "articles", "Alpha.md"), "# Alpha\\n\\nAlpha is a test article about lenses. See [[Beta]].\\n");
+    writeFileSync(join(vault, "articles", "Beta.md"), "# Beta\\n\\nBeta links to [[Alpha]].\\n");
+    let created = 0, reached = 0;
+    const signals = [], twoReached = Promise.withResolvers();
+    // Each completion is held until its run's signal aborts.
+    const held = signal => () => { if (++reached === 2) twoReached.resolve(); events.push("completion");
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => { events.push("aborted"); reject(signal.reason); }, { once: true })); };
+    const memoryTaskModel = () => { created++; return { client: undefined,
+      clientFor(signal) { signals.push(signal); return { complete: held(signal), completeBatch: held(signal) }; },
+      async close() { events.push("task model close"); } }; };
+    const state = await createAppState({ port: 0, memoryPaths: { vault, skills: join(process.env.HOME, "skills") },
+      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {});
+    assert.equal(created, 0, "composing the state creates no task model");
+    // Each task-model call holds the attached host's execution lease, as managed jobs do.
+    state.attach({ port: 1, invalidateLibrary() {}, async acquireExecutionLease(signal) { signal.throwIfAborted(); events.push("lease");
+      return { dispose() { events.push("release"); } }; } });
+    const first = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const second = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const bodies = Promise.all([first.text(), second.text()]);
+    await twoReached.promise;
+    assert.equal(created, 1, "concurrent runs share one resident task model");
+    assert.equal(signals.length, 2);
+    assert.notEqual(signals[0], signals[1], "each run binds its own signal");
+    await state.close();
+    assert.ok(signals.every(signal => signal.aborted));
+    // Every completion ran under a lease taken before it; runs stop, release and join before the task model closes.
+    const model = events.indexOf("task model close");
+    assert.deepEqual(events.slice(0, model).filter(event => event !== "jobs close").slice(0, 4), ["lease", "completion", "lease", "completion"]);
+    assert.deepEqual(events.slice(4, model).filter(event => event !== "jobs close").toSorted(), ["aborted", "aborted", "release", "release"]);
+    assert.equal(events.filter(event => event === "task model close").length, 1);
+    for (const body of await bodies) assert.ok(!body.includes("[DONE]"));
+    await state.close();
+    assert.equal(events.filter(event => event === "task model close").length, 1, "close is idempotent");
+  `;
+  const home = (await import("node:fs")).mkdtempSync(resolve((await import("node:os")).tmpdir(), "mlx-synthesis-state-"));
+  try {
+    const result = await runChild(script, { HOME: home, MLX_BUN_WIKI: resolve(home, "vault") });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  } finally { (await import("node:fs")).rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a synthesis run waiting on the execution lease is cancelled cleanly, and close during an active managed job joins it before the task model closes", async () => {
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { mkdirSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const app = ${JSON.stringify(app)};
+    const events = [];
+    let jobOptions, jobLease;
+    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
+    mock.module(app + "src/jobs/host.ts", () => ({ createJobHost(options) { jobOptions = options; return { signal: new AbortController().signal,
+      ensureStore() { throw new Error("unused"); }, submit() {}, submitTask() {},
+      async close() { events.push("jobs close"); jobLease?.dispose(); } }; } }));
+    const { createAppState } = await import(app + "src/cli/serve-state.ts");
+    const vault = join(process.env.HOME, "vault");
+    mkdirSync(join(vault, "articles"), { recursive: true });
+    writeFileSync(join(vault, "articles", "Alpha.md"), "# Alpha\\n\\nAlpha is a test article about lenses. See [[Beta]].\\n");
+    writeFileSync(join(vault, "articles", "Beta.md"), "# Beta\\n\\nBeta links to [[Alpha]].\\n");
+    const memoryTaskModel = () => { const client = { async complete() { events.push("completion"); return ""; }, async completeBatch() { events.push("completion"); return []; } };
+      return { client, clientFor: () => client, async close() { events.push("task model close"); } }; };
+    const state = await createAppState({ port: 0, memoryPaths: { vault, skills: join(process.env.HOME, "skills") },
+      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {});
+    // The host's execution lease is exclusive; a waiter leaves the queue when its signal aborts.
+    let holder = false;
+    const queue = [];
+    state.attach({ port: 1, invalidateLibrary() {}, acquireExecutionLease(signal) {
+      return new Promise((resolve, reject) => {
+        const grant = () => { holder = true; resolve({ dispose() { holder = false; queue.shift()?.(); } }); };
+        if (!holder) return grant();
+        queue.push(grant);
+        events.push("waiting");
+        signal.addEventListener("abort", () => { queue.splice(queue.indexOf(grant), 1); events.push("wait cancelled"); reject(signal.reason); }, { once: true });
+      });
+    } });
+    // An active managed job holds the lease.
+    jobLease = await jobOptions.acquire(new AbortController().signal);
+    const waitFor = async what => { for (let i = 0; i < 500 && !events.includes(what); i++) await Bun.sleep(10); assert.ok(events.includes(what), what); };
+    // A run waiting for the lease is cancelled by its request: no completion starts.
+    const request = new AbortController();
+    const first = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize", { signal: request.signal }));
+    const firstBody = first.text().catch(() => "");
+    await waitFor("waiting");
+    request.abort(new Error("client left"));
+    await waitFor("wait cancelled");
+    assert.ok(!(await firstBody).includes("[DONE]"));
+    // Close while the job still holds the lease and another run waits: runs and the job are joined, then the task model closes.
+    events.length = 0;
+    const second = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const secondBody = second.text();
+    await waitFor("waiting");
+    await state.close();
+    assert.ok(!(await secondBody).includes("[DONE]"));
+    assert.ok(!events.includes("completion"), "no completion ran while the job held the lease");
+    const model = events.indexOf("task model close");
+    assert.ok(model > events.indexOf("wait cancelled") && model > events.indexOf("jobs close"), JSON.stringify(events));
+    assert.equal(events.at(-1), "task model close");
+  `;
+  const home = (await import("node:fs")).mkdtempSync(resolve((await import("node:os")).tmpdir(), "mlx-synthesis-lease-"));
+  try {
+    const result = await runChild(script, { HOME: home, MLX_BUN_WIKI: resolve(home, "vault") });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  } finally { (await import("node:fs")).rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a memory call holding the execution lease delays a managed job until it settles, and close waits for the job's asynchronous join before closing the task model", async () => {
+  const script = `
+    import { mock } from "bun:test";
+    import { strict as assert } from "node:assert";
+    import { mkdirSync, writeFileSync } from "node:fs";
+    import { join } from "node:path";
+    const app = ${JSON.stringify(app)};
+    const events = [];
+    let jobOptions;
+    const jobJoin = Promise.withResolvers();
+    mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
+    mock.module(app + "src/jobs/host.ts", () => ({ createJobHost(options) { jobOptions = options; return { signal: new AbortController().signal,
+      ensureStore() { throw new Error("unused"); }, submit() {}, submitTask() {},
+      async close() { events.push("jobs closing"); await jobJoin.promise; events.push("jobs joined"); } }; } }));
+    const { createAppState } = await import(app + "src/cli/serve-state.ts");
+    const vault = join(process.env.HOME, "vault");
+    mkdirSync(join(vault, "articles"), { recursive: true });
+    writeFileSync(join(vault, "articles", "Alpha.md"), "# Alpha\\n\\nAlpha is a test article about lenses. See [[Beta]].\\n");
+    writeFileSync(join(vault, "articles", "Beta.md"), "# Beta\\n\\nBeta links to [[Alpha]].\\n");
+    // The memory call is held until released; it then settles like a batch whose rows all joined.
+    const memoryCall = Promise.withResolvers();
+    const call = async () => { events.push("memory call"); await memoryCall.promise; events.push("memory call settled"); return ""; };
+    const memoryTaskModel = () => { const client = { complete: call, completeBatch: async () => { await call(); return []; } };
+      return { client, clientFor: () => client, async close() { events.push("task model close"); } }; };
+    const state = await createAppState({ port: 0, memoryPaths: { vault, skills: join(process.env.HOME, "skills") },
+      chatPaths: { sessionDir: join(process.env.HOME, "sessions") }, memoryTaskModel }, {});
+    let holder = false;
+    const queue = [];
+    state.attach({ port: 1, invalidateLibrary() {}, acquireExecutionLease(signal) {
+      return new Promise((resolve, reject) => {
+        const grant = () => { holder = true; resolve({ dispose() { events.push("lease released"); holder = false; queue.shift()?.(); } }); };
+        if (!holder) return grant();
+        queue.push(grant);
+        signal.addEventListener("abort", () => { queue.splice(queue.indexOf(grant), 1); reject(signal.reason); }, { once: true });
+      });
+    } });
+    const waitFor = async what => { for (let i = 0; i < 500 && !events.includes(what); i++) await Bun.sleep(10); assert.ok(events.includes(what), what); };
+    // A memory call holds the lease: a managed job's lease waits until that call settles.
+    const run = await state.routes.memory.handle(new Request("http://app/v1/memory/synthesize"));
+    const body = run.text();
+    await waitFor("memory call");
+    const job = jobOptions.acquire(new AbortController().signal).then(lease => { events.push("job lease"); return lease; });
+    await Bun.sleep(50);
+    assert.ok(!events.includes("job lease"), "the job waits while the memory call holds the lease");
+    memoryCall.resolve();
+    const jobLease = await job;
+    assert.deepEqual(events.slice(events.indexOf("memory call settled")), ["memory call settled", "lease released", "job lease"]);
+    jobLease.dispose();
+    await body;
+    // Close waits for the job's asynchronous join before the task model closes, and closes it once.
+    events.length = 0;
+    const closing = state.close();
+    await waitFor("jobs closing");
+    await Bun.sleep(50);
+    assert.ok(!events.includes("task model close"), "the task model outlives the job's join");
+    jobJoin.resolve();
+    await closing;
+    assert.deepEqual(events.slice(events.indexOf("jobs joined")), ["jobs joined", "task model close"]);
+    await state.close();
+    assert.equal(events.filter(event => event === "task model close").length, 1);
+  `;
+  const home = (await import("node:fs")).mkdtempSync(resolve((await import("node:os")).tmpdir(), "mlx-synthesis-contention-"));
+  try {
+    const result = await runChild(script, { HOME: home, MLX_BUN_WIKI: resolve(home, "vault") });
+    expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
+  } finally { (await import("node:fs")).rmSync(home, { recursive: true, force: true }); }
+});

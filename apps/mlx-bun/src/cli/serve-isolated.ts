@@ -88,6 +88,8 @@ function exactModel(id: string, createRegistry: () => Pick<Registry, "listCanoni
  * the listener once that worker serves, so startup fails the way the direct
  * composition does when the model cannot load. */
 export async function startIsolatedServer(model: ModelRecord, options: ServeOptions, hooks: IsolatedServeHooks = {}): Promise<RunningApp> {
+  // No memory task model here: the parent loads no model, so synthesis uses the
+  // default worker's served model over loopback (a recorded follow-up).
   const state = await createAppState(options, options.storagePaths ?? {});
   // Sockets live in a private directory (0700) this process removes, one per worker.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));

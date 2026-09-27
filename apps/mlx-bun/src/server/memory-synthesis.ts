@@ -1,13 +1,14 @@
 import { runSynthesis, type SynthesisOptions, type SynthesisSummary } from "../memory/pipeline";
 import type { SynthesisEvent } from "../memory/events";
-import { createLoopbackMemoryClient, type MemoryClientHttp } from "./memory-completion-client";
+import type { MemoryCompletionClient } from "../memory/model";
 
 /** Owns synthesis runs until their pipeline and pending completions settle.
- * Close stops admission, cancels all runs, and joins them before engine drain. */
+ * Close stops admission, cancels all runs, and joins them; the composition
+ * closes the completion source only after that. */
 export function createMemorySynthesis(options: {
   root: string;
-  apiUrl: () => string;
-  http?: MemoryClientHttp;
+  /** One run's completions; the signal ends them when the run is cancelled. */
+  client(signal: AbortSignal): MemoryCompletionClient | Promise<MemoryCompletionClient>;
   run?: typeof runSynthesis;
 }) {
   const shutdown = new AbortController();
@@ -16,10 +17,10 @@ export function createMemorySynthesis(options: {
   return {
     async run(input: Pick<SynthesisOptions, "dryRun" | "signal">, onEvent: (event: SynthesisEvent) => void) {
       shutdown.signal.throwIfAborted();
-      const signal = AbortSignal.any([shutdown.signal, ...[input.signal, options.http?.signal].filter((s): s is AbortSignal => !!s)]);
+      const signal = AbortSignal.any([shutdown.signal, ...(input.signal ? [input.signal] : [])]);
       signal.throwIfAborted();
-      const client = createLoopbackMemoryClient(options.apiUrl, { ...options.http, signal });
-      const work = Promise.resolve().then(() => {
+      const work = Promise.resolve().then(async () => {
+        const client = await options.client(signal);
         signal.throwIfAborted();
         return (options.run ?? runSynthesis)({ ...input, root: options.root, client, signal }, onEvent);
       });
