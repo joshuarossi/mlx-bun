@@ -654,6 +654,140 @@ test.skipIf(!diffusionModel)("real DiffusionGemma rows reproduce solo runs and m
           expect(paired.outcomes).toEqual(["done", "done"]);
           expect(paired.outputs[0]).toEqual(reference.tokens);
           expect(paired.outputs[1]).toEqual(denoiseSync(binding.graph, text.prompt, text.options).tokens);
+
+          // Cancel an actual image decoder after the text survivor has advanced,
+          // then reuse this same scheduler. Direct group callers own their pixels.
+          expect(direct.steps).toBeGreaterThan(1);
+          expect(reference.tokens.length).toBeGreaterThan(0);
+          expect(paired.outputs[1]!.length).toBeGreaterThan(0);
+          const pixelOwner = ops.reshape(image.pixels, image.pixels.shape);
+          let pixelReleases = 0;
+          const originalPixelDispose = pixelOwner.dispose;
+          pixelOwner.dispose = function () { pixelReleases++; return originalPixelDispose.call(this); };
+          const cancel = new AbortController();
+          const states = new Map<unknown, { row: number; closes: number; steps: number }>();
+          const tables: { value: MlxArray; releases: number; restore(): void }[] = [];
+          const requests = [
+            { prompt: [...text.prompt], options: text.options },
+            { prompt: [...ids], options: { ...options, visionPixels: pixelOwner } },
+            { prompt: [...ids], options: { ...options, visionPixels: pixelOwner } },
+            { prompt: [...text.prompt], options: text.options },
+          ];
+          const outputs = requests.map(() => [] as number[]);
+          const outcomes: Promise<unknown>[] = [];
+          let cancelledAt = 0, activeAtCancel = 0, survivorStepsAtCancel = 0;
+          const observed: typeof binding.graph = { ...binding.graph,
+            prefill(prompt, pixels) {
+              const row = requests.findIndex(request => request.prompt === prompt);
+              expect(row).toBeGreaterThanOrEqual(0);
+              expect(pixels).toBe(row === 1 || row === 2 ? pixelOwner : undefined);
+              const state = binding.graph.prefill(prompt, pixels);
+              states.set(state, { row, closes: 0, steps: 0 });
+              return state;
+            },
+            decoderLogits(canvas, state, feedback) {
+              const record = states.get(state)!;
+              record.steps++;
+              const logits = binding.graph.decoderLogits(canvas, state, feedback);
+              if (record.row === 1 && record.steps === 1) {
+                // Abort only after real image work, while a real survivor shares
+                // this group. No timeout or published-token proxy for admission.
+                cancelledAt++;
+                activeAtCancel = sameGroup!.activeRows;
+                survivorStepsAtCancel = [...states.values()].find(state => state.row === 0)?.steps ?? 0;
+                cancel.abort(new DOMException("image client left", "AbortError"));
+              }
+              return logits;
+            },
+            closeState(state) {
+              states.get(state)!.closes++;
+              binding.graph.closeState(state);
+            },
+            dequantEmbedWeight() {
+              const value = binding.graph.dequantEmbedWeight();
+              const original = value.dispose;
+              const record = { value, releases: 0, restore: () => { value.dispose = original; } };
+              value.dispose = function () { record.releases++; return original.call(this); };
+              tables.push(record);
+              return value;
+            },
+          };
+          const policies = new WeakMap<object, DiffusionGenOptions>();
+          const imageMethod = bindDenoisingGroupRequests({ ...binding, graph: observed }, data => {
+            const policy = policies.get(data);
+            if (!policy) throw new Error("missing image cancellation policy");
+            return policy;
+          });
+          let sameGroup: MlxBatchExecutionGroup | undefined;
+          const settle = async (pending: Promise<unknown>[], milliseconds = 120_000) => {
+            let deadline: ReturnType<typeof setTimeout> | undefined;
+            try { return await Promise.race([Promise.all(pending), new Promise<never>((_, reject) => {
+              deadline = setTimeout(() => reject(new Error("image cancellation did not settle")), milliseconds);
+            })]); } finally { clearTimeout(deadline); }
+          };
+          const drained = async () => {
+            const deadline = performance.now() + 10_000;
+            do {
+              await new Promise<void>(resolve => setImmediate(resolve));
+              if (!sameGroup!.activeRows && !sameGroup!.pendingRows) return;
+            } while (performance.now() < deadline);
+            throw new Error("image cancellation group did not drain");
+          };
+          let scenarioError: unknown;
+          try {
+            sameGroup = new MlxBatchExecutionGroup(model, { maxBatch: 2 });
+            const submit = (row: number) => {
+              const request = imageMethod({});
+              policies.set(request.data as object, requests[row]!.options);
+              outcomes[row] = sameGroup!.submit({ promptIds: requests[row]!.prompt, maxTokens: 512,
+                eosTokenIds: [], method: request, signal: row === 1 ? cancel.signal : undefined,
+                onToken(token) { outputs[row]!.push(token); } }).then(() => "done", error => error);
+            };
+            submit(0); submit(1);
+            const first = await settle(outcomes);
+            expect(first[0]).toBe("done"); expectAborted(first[1]);
+            expect(cancelledAt).toBe(1); expect(activeAtCancel).toBe(2);
+            expect(survivorStepsAtCancel).toBeGreaterThan(0);
+            expect(outputs[1]).toEqual([]);
+            expect(outputs[0]).toEqual(paired.outputs[1]);
+            expect([...states.values()].find(state => state.row === 0)!.steps).toBeGreaterThan(0);
+            expect([...states.values()].find(state => state.row === 1)!.steps).toBe(1);
+            await drained();
+            expect(states.size).toBe(2);
+            expect([...states.values()].map(state => state.closes)).toEqual([1, 1]);
+            expect(tables.map(table => table.releases)).toEqual([1]);
+            expect(pixelReleases).toBe(0);
+            submit(2); submit(3);
+            expect(await settle(outcomes.slice(2))).toEqual(["done", "done"]);
+            await drained();
+            expect(outputs[2]).toEqual(reference.tokens);
+            expect(outputs[3]).toEqual(paired.outputs[1]);
+            expect(states.size).toBe(4);
+            expect([...states.values()].map(state => state.closes)).toEqual([1, 1, 1, 1]);
+            expect(tables.map(table => table.releases)).toEqual([1, 1]);
+            expect(pixelReleases).toBe(0);
+          } catch (error) { scenarioError = error; }
+          finally {
+            // Join before releasing any borrowed storage. The enclosing test and
+            // external native driver bound a stuck close; a timeout must never
+            // free tensors while the scheduler may still read them.
+            cancel.abort(new DOMException("test cleanup", "AbortError"));
+            const errors: unknown[] = scenarioError === undefined ? [] : [scenarioError];
+            try { await sameGroup?.close(); } catch (error) { errors.push(error); }
+            try { await settle(outcomes); } catch (error) { errors.push(error); }
+            for (const [state, record] of states) if (record.closes === 0) {
+              try { binding.graph.closeState(state as Parameters<typeof binding.graph.closeState>[0]); }
+              catch (error) { errors.push(error); }
+            }
+            for (const table of tables) {
+              if (table.releases === 0) try { table.value.dispose(); } catch (error) { errors.push(error); }
+              try { table.restore(); } catch (error) { errors.push(error); }
+            }
+            try { if (pixelReleases === 0) pixelOwner.dispose(); } catch (error) { errors.push(error); }
+            try { pixelOwner.dispose = originalPixelDispose; } catch (error) { errors.push(error); }
+            if (errors.length) throw new AggregateError(errors, "image cancellation cleanup failed");
+          }
+          expect(pixelReleases).toBe(1);
         }
       } finally { image?.pixels.dispose(); }
     }

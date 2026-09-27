@@ -541,7 +541,13 @@ global key sequence per request, so denoising never reads or reseeds the process
 key. The [denoising tests](tests/generation/denoising-binding.test.ts) take
 `MLX_BUN_DIFFUSION_MODEL=/cached/diffusiongemma` for the real-weight check and
 optionally `MLX_BUN_DIFFUSION_REFERENCE`, comma-separated trajectories in main's
-`goldens/diffusion/gen*.json` or `goldens/diffusion/vision.json` format.
+`goldens/diffusion/gen*.json` or `goldens/diffusion/vision.json` format. An image
+reference must have nonempty output and require more than one denoising step, so
+its cancellation check interrupts unfinished image work. With the measured main
+image reference, the real-weight check passed image cancellation beside a live
+text survivor and image/text reuse on the same group, preserving survivor and
+recovery tokens and checking state/table disposal calls and caller-owned pixels.
+This does not establish allocator leak freedom or HTTP cancellation.
 
 `execution/fit` estimates whether a model fits a machine at a context length:
 resident weights (bytes the caller supplies, such as a registry's), KV bytes from
