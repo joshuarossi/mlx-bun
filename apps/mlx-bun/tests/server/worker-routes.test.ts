@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ChatBackendFactory } from "../../src/chat/backend";
+import type { MemoryCompletionClient, MemoryCompletionRequest } from "../../src/memory/model";
 import { startServer } from "../../src/server/start";
 import { createWorkerRoutes } from "../../src/server/worker-routes";
 
@@ -159,6 +160,9 @@ test("lease failures answer 503, a caller that left answers 499, and the ordinar
       const response = await fetch(new URL(path, app.server.url), { method: "POST" });
       expect([response.status, (await response.json()).error.type]).toEqual([501, "not_implemented"]);
     }
+    // The memory route exists only on a worker's socket: over TCP it is an unknown path.
+    const memory = await fetch(new URL("/admin/memory/complete", app.server.url), { method: "POST", body: "{}" });
+    expect([memory.status, (await memory.json()).error.message]).toEqual([404, "Not found"]);
     expect(await (await fetch(new URL("/health", app.server.url))).json()).toEqual({ status: "ok" });
   } finally { await app.close(); }
 });
@@ -215,4 +219,174 @@ test("a drain whose request signal is already aborted returns at once while work
   finish();
   expect(await (await inflight)!.text()).toBe("done");
   await admin.close();
+});
+
+/** The execution lease with its grants and releases in `events`. */
+const logged = (gate: ReturnType<typeof exclusiveLease>, events: string[]) => async (signal: AbortSignal) => {
+  const lease = await gate.acquire(signal);
+  events.push("lease");
+  return { dispose() { events.push("release"); lease.dispose(); } };
+};
+
+/** A memory task model whose first call loads it, recording the lease count
+ * then; rows answer `out <user>`, `fail` rejects, and `hold…` rows wait for
+ * release() or the call's signal, then join `joinMs` later. A batch settles
+ * only after every row has, as the in-process task model does. */
+function taskModel(gate: { readonly held: number }, events: string[], joinMs = 0) {
+  let loaded = false;
+  const waiting = new Set<() => void>();
+  const signals: AbortSignal[] = [], snapshots: string[] = [];
+  const row = async (request: MemoryCompletionRequest, signal: AbortSignal) => {
+    const user = request.input.user;
+    events.push(`row ${user} held=${gate.held}`);
+    if (user.startsWith("hold")) await new Promise<void>((resolve, reject) => {
+      const done = () => { waiting.delete(done); resolve(); };
+      waiting.add(done);
+      signal.addEventListener("abort", () => {
+        waiting.delete(done);
+        void Bun.sleep(joinMs).then(() => { events.push(`joined ${user}`); reject(signal.reason); });
+      }, { once: true });
+    });
+    if (user === "fail") throw new Error("row failed");
+    return `out ${request.stage} ${user}`;
+  };
+  const load = async () => { if (!loaded) { loaded = true; events.push(`load held=${gate.held}`); } };
+  return {
+    signals, snapshots,
+    get waiting() { return waiting.size; },
+    release() { for (const done of [...waiting]) done(); },
+    clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient {
+      signals.push(signal); snapshots.push(snapshot);
+      return {
+        async complete(request) { await load(); return row(request, signal); },
+        async completeBatch(requests) {
+          await load();
+          const settled = await Promise.allSettled(requests.map(request => row(request, signal)));
+          const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+          if (failed) throw failed.reason;
+          return settled.map(result => (result as PromiseFulfilledResult<string>).value);
+        },
+      };
+    },
+  };
+}
+const call = (kind: "complete" | "completeBatch", users: string[], stage = "entity") =>
+  ({ call: kind, snapshot: "/hub/task/snapshots/selected", requests: users.map(user => ({ stage, input: { user }, maxTokens: 8 })) });
+
+test("the private memory route runs one call or batch on the task model under the execution lease, taken before the lazy load and released after the rows, and answers the ordered raw outputs", async () => {
+  const socket = socketDir(), gate = exclusiveLease(), events: string[] = [];
+  const task = taskModel(gate, events);
+  const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: logged(gate, events), memoryTaskModel: task });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const post = (body: unknown, init: RequestInit = {}) => fetch("http://worker/admin/memory/complete", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body), ...init, unix: socket.unix } as RequestInit);
+  try {
+    const batch = await post(call("completeBatch", ["a", "b", "c"]));
+    expect([batch.status, await batch.json()]).toEqual([200, { outputs: ["out entity a", "out entity b", "out entity c"] }]);
+    expect(events).toEqual(["lease", "load held=1", "row a held=1", "row b held=1", "row c held=1", "release"]);
+    events.length = 0;
+    const single = await post({ call: "complete", snapshot: "/hub/task/snapshots/other", requests: [{ stage: "route", input: { system: "yes or no", user: "x" }, maxTokens: 4 }] });
+    expect(await single.json()).toEqual({ outputs: ["out route x"] });
+    expect(events).toEqual(["lease", "row x held=1", "release"]);
+    expect(task.signals.every(signal => !signal.aborted)).toBe(true);
+    // Each call hands the task model the snapshot the parent selected for it.
+    expect(task.snapshots).toEqual(["/hub/task/snapshots/selected", "/hub/task/snapshots/other"]);
+    // A failed row fails the call with the task model's message; the lease is released.
+    events.length = 0;
+    const failed = await post(call("completeBatch", ["ok", "fail"]));
+    expect([failed.status, await failed.json()]).toEqual([500, { error: { message: "row failed", type: "memory_failed" } }]);
+    expect([events.at(-1), gate.held]).toEqual(["release", 0]);
+    // Malformed calls never reach the lease or the task model; the route takes POST only.
+    events.length = 0;
+    const snapshot = "/hub/task/snapshots/selected";
+    for (const bad of ["not json", {}, { call: "stream", snapshot, requests: [] }, { call: "complete", snapshot, requests: [] }, call("complete", ["a", "b"]),
+      { call: "complete", requests: call("complete", ["a"]).requests }, { ...call("complete", ["a"]), snapshot: "" },
+      { call: "completeBatch", snapshot, requests: [{ stage: "entity", input: { user: "a" } }] }, { call: "completeBatch", snapshot, requests: [{ stage: "", input: { user: "a" }, maxTokens: 1 }] },
+      { call: "completeBatch", snapshot, requests: [{ stage: "entity", input: { user: "a", system: 1 }, maxTokens: 1 }] }]) {
+      const response = await post(bad);
+      expect([response.status, (await response.json()).error.type]).toEqual([400, "invalid_request_error"]);
+    }
+    const wrong = await fetch("http://worker/admin/memory/complete", { unix: socket.unix } as RequestInit);
+    expect([wrong.status, wrong.headers.get("allow")]).toEqual([405, "POST"]);
+    expect(events).toEqual([]);
+  } finally { await app.close(); }
+  socket.remove();
+  // A worker without a task model or without an execution lease (the app form, the transcription-only app) answers 501.
+  for (const options of [{ acquireExecutionLease: logged(exclusiveLease(), []) }, { memoryTaskModel: taskModel(gate, []) }]) {
+    const response = await createWorkerRoutes({ modelId: "m", ...options }).wrap(model())
+      .handle(new Request("http://worker/admin/memory/complete", { method: "POST", body: JSON.stringify(call("complete", ["a"])) }));
+    expect([response!.status, await response!.json()]).toEqual([501, { error: { message: "this worker has no memory task model", type: "not_implemented", path: "/admin/memory/complete" } }]);
+  }
+});
+
+test("a parent disconnect aborts every row and joins them before the lease is released; draining refuses new calls; close aborts and joins the calls in flight", async () => {
+  const socket = socketDir(), gate = exclusiveLease(), events: string[] = [];
+  const task = taskModel(gate, events, 20);
+  const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: logged(gate, events), memoryTaskModel: task });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const post = (body: unknown, init: RequestInit = {}) => fetch("http://worker/admin/memory/complete", { method: "POST", body: JSON.stringify(body), ...init, unix: socket.unix } as RequestInit);
+  const health = async () => await (await fetch("http://worker/health", { unix: socket.unix } as RequestInit)).json() as { in_flight: number; leases: number };
+  try {
+    const parent = new AbortController();
+    const pending = post(call("completeBatch", ["hold 1", "hold 2", "hold 3"]), { signal: parent.signal }).catch((error: Error) => error.name);
+    await until(() => task.waiting === 3, "three rows in flight");
+    expect((await health()).in_flight).toBe(1);
+    parent.abort();
+    expect(await pending).toBe("AbortError");
+    await until(() => events.includes("release"), "the lease release");
+    expect(events.slice(events.indexOf("row hold 3 held=1") + 1).map(event => event.replace(/ \d$/, ""))).toEqual(["joined hold", "joined hold", "joined hold", "release"]);
+    expect([gate.held, (await health()).in_flight]).toEqual([0, 0]);
+    // Draining: the gate stays shut for memory calls too.
+    expect(await (await fetch("http://worker/admin/drain", { method: "POST", unix: socket.unix } as RequestInit)).json()).toMatchObject({ drained: true, state: "draining" });
+    const refused = await post(call("complete", ["late"]));
+    expect([refused.status, (await refused.json()).error.type]).toEqual([503, "draining"]);
+  } finally { await app.close(); }
+  socket.remove();
+  // Close: the call in flight is aborted, its rows join, then close resolves; later calls answer 503.
+  const closing: string[] = [];
+  const held = taskModel(gate, closing, 20);
+  const owner = createWorkerRoutes({ modelId: "m", acquireExecutionLease: logged(gate, closing), memoryTaskModel: held });
+  const group = owner.wrap(model());
+  const inflight = group.handle(new Request("http://worker/admin/memory/complete", { method: "POST", body: JSON.stringify(call("completeBatch", ["hold a", "hold b"])) }));
+  await until(() => held.waiting === 2, "two rows in flight");
+  await owner.close();
+  closing.push("closed");
+  expect(closing.slice(-4).map(event => event.replace(/ [ab]$/, ""))).toEqual(["joined hold", "joined hold", "release", "closed"]);
+  const response = (await inflight)!;
+  expect([response.status, (await response.json()).error.type]).toEqual([503, "unavailable"]);
+  const late = await group.handle(new Request("http://worker/admin/memory/complete", { method: "POST", body: JSON.stringify(call("complete", ["a"])) }));
+  expect(late!.status).toBe(503);
+});
+
+test("a managed job holding the worker's execution lease delays a memory call, lazy load included, and a running memory call delays a job's lease", async () => {
+  const socket = socketDir(), gate = exclusiveLease(), events: string[] = [];
+  const task = taskModel(gate, events);
+  const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: logged(gate, events), memoryTaskModel: task });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
+  const post = (body: unknown) => get("/admin/memory/complete", { method: "POST", body: JSON.stringify(body) });
+  try {
+    const job = new AbortController();
+    const leased = await get("/admin/lease", { method: "POST", signal: job.signal });
+    await leased.body!.getReader().read();
+    const waiting = post(call("completeBatch", ["a", "b"]));
+    await Bun.sleep(50);
+    expect(events).toEqual(["lease"]);
+    job.abort();
+    expect(await (await waiting).json()).toEqual({ outputs: ["out entity a", "out entity b"] });
+    expect(events).toEqual(["lease", "release", "lease", "load held=1", "row a held=1", "row b held=1", "release"]);
+    // The other way round: a job's lease waits for the memory call's rows.
+    const running = post(call("completeBatch", ["hold x"]));
+    await until(() => task.waiting === 1, "the memory row");
+    await expect(get("/admin/lease", { method: "POST", signal: AbortSignal.timeout(100) })).rejects.toThrow();
+    const second = new AbortController();
+    const queued = get("/admin/lease", { method: "POST", signal: second.signal });
+    await Bun.sleep(20);
+    task.release();
+    expect(await (await running).json()).toEqual({ outputs: ["out entity hold x"] });
+    await (await queued).body!.getReader().read();
+    expect(events.slice(-2)).toEqual(["release", "lease"]);
+    second.abort();
+    await until(() => gate.held === 0, "the job's release");
+  } finally { await app.close(); }
+  socket.remove();
 });

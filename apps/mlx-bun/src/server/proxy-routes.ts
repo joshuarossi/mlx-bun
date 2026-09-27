@@ -18,8 +18,9 @@ const HOP_BY_HOP = new Set([
   "te", "trailer", "transfer-encoding", "upgrade",
 ]);
 /** Answered by the parent's listener alone (501 from the migration list, or
- * the worker's private socket surface), never forwarded. */
-const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/v1/memory/synthesize"]);
+ * the worker's private socket surface, which only the parent itself calls),
+ * never forwarded. */
+const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/admin/memory/complete", "/v1/memory/synthesize"]);
 /** Generation endpoints whose JSON body carries the routing `model` field (main's list). */
 export const MODEL_ROUTED = new Set(["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings"]);
 

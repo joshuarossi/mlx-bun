@@ -7,15 +7,12 @@
 // with the model's EOS and no stop strings, full-precision KV, and the raw
 // decoded text main returned.
 
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { DEFAULT_HUB, pickCanonicalRevision, scanSnapshot, type ModelRecord } from "@mlx-bun/hub/registry";
 import { resolveKvScheme, type KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import type { LoadedModelContext } from "../engine/model-host";
 import type { CompletionEngine } from "../engine/completion";
 import type { GenerationGateway } from "../engine/generation-gateway";
 import {
-  MEMORY_TASK_MODEL, adapterDirFor, memoryBatchSize, memoryPromptIds,
+  MEMORY_TASK_MODEL, adapterDirFor, locateTaskModel, memoryBatchSize, memoryPromptIds,
   type MemoryCompletionClient, type MemoryCompletionRequest,
 } from "../memory/model";
 import { planRequest, RequestOwnership } from "../server/request-plan";
@@ -39,19 +36,6 @@ export interface MemoryEngineDependencies {
   adapterDir(stage: string): string | undefined;
 }
 
-/** Main's resolution: a cached snapshot of the task model carrying config.json
- *  (the canonical revision when several are cached), or main's fetch hint. */
-export async function locateTaskModel(repoId: string, hub = DEFAULT_HUB): Promise<string> {
-  const snapshots = join(hub, `models--${repoId.replace("/", "--")}`, "snapshots");
-  const candidates = existsSync(snapshots)
-    ? readdirSync(snapshots).map(name => join(snapshots, name)).filter(dir => existsSync(join(dir, "config.json"))) : [];
-  const records = (await Promise.all(candidates.map(dir => scanSnapshot(dir, repoId))))
-    .filter((record): record is ModelRecord => record !== null);
-  if (!records.length)
-    throw new Error(`memory: Gemma-4-e4b is not downloaded (looked under ${snapshots}). Fetch it first: HF_HUB_DISABLE_XET=1 hf download ${repoId}`);
-  return pickCanonicalRevision(records).path;
-}
-
 /** The shipped wiring: the cached task model, the app engine, main's adapter directory. */
 export const defaultMemoryEngineDependencies: MemoryEngineDependencies = {
   locate: repoId => locateTaskModel(repoId),
@@ -71,7 +55,10 @@ interface MemoryRuntime { engine: MemoryEngine; scheme: KvScheme; chunkAdapter: 
 /** The task model's client, and a view of it whose every completion ends when a signal aborts. */
 export interface InProcessMemoryClient {
   client: MemoryCompletionClient;
-  clientFor(signal: AbortSignal): MemoryCompletionClient;
+  /** `snapshot`: the task model directory the caller selected. A view's call
+   * that starts the load loads exactly it instead of locating one; once
+   * loaded, the task model stays what it is. */
+  clientFor(signal: AbortSignal, snapshot?: string): MemoryCompletionClient;
   close(): Promise<void>;
 }
 
@@ -82,8 +69,8 @@ export interface InProcessMemoryClient {
 export function createInProcessMemoryClient(deps: MemoryEngineDependencies = defaultMemoryEngineDependencies): InProcessMemoryClient {
   let closed = false, init: Promise<MemoryRuntime> | undefined, closing: Promise<void> | undefined;
   const closedError = () => new Error("memory: the task model client is closed");
-  const start = async (): Promise<MemoryRuntime> => {
-    const path = await deps.locate(MEMORY_TASK_MODEL);
+  const start = async (snapshot?: string): Promise<MemoryRuntime> => {
+    const path = snapshot ?? await deps.locate(MEMORY_TASK_MODEL);
     if (closed) throw closedError();
     const context = await deps.load(path, MEMORY_TASK_MODEL);
     if (closed) { context.dispose(); throw closedError(); }
@@ -98,7 +85,7 @@ export function createInProcessMemoryClient(deps: MemoryEngineDependencies = def
       return { engine, scheme, chunkAdapter: dir !== undefined };
     } catch (error) { await engine.close(); throw error; }
   };
-  const runtime = () => closed ? Promise.reject(closedError()) : (init ??= start());
+  const runtime = (snapshot?: string) => closed ? Promise.reject(closedError()) : (init ??= start(snapshot));
 
   const run = async (rt: MemoryRuntime, request: MemoryCompletionRequest, signal?: AbortSignal): Promise<string> => {
     const { context, completion } = rt.engine;
@@ -123,18 +110,18 @@ export function createInProcessMemoryClient(deps: MemoryEngineDependencies = def
     } finally { plan.dispose(); }
   };
 
-  const clientFor = (outer?: AbortSignal): MemoryCompletionClient => ({
+  const clientFor = (outer?: AbortSignal, snapshot?: string): MemoryCompletionClient => ({
     async complete(request) {
       // Cancelled work never starts the shared load; a load another caller started continues.
       outer?.throwIfAborted();
-      const rt = await runtime();
+      const rt = await runtime(snapshot);
       outer?.throwIfAborted();
       return run(rt, request, outer);
     },
     async completeBatch(requests) {
       if (!requests.length) return [];
       outer?.throwIfAborted();
-      const rt = await runtime();
+      const rt = await runtime(snapshot);
       outer?.throwIfAborted();
       const first = requests[0]!;
       // Main's rule: a mixed-stage or mixed-budget batch runs its rows one after another.

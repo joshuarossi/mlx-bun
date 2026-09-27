@@ -69,6 +69,11 @@ const preamble = `
   mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
   mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));
   mock.module(app + "src/chat/session-files.ts", () => ({ defaultSessionDir: () => "/unused/sessions" }));
+  // The memory task model the admin surface runs the parent's synthesis calls on; each call records the gateway's lease count.
+  mock.module(app + "src/cli/memory-engine.ts", () => ({ createInProcessMemoryClient: () => ({ client: undefined,
+    clientFor: (signal, snapshot) => ({ async complete(request) { events.push("task " + request.input.user + " held=" + gateway.held); return "task " + request.input.user; },
+      async completeBatch(requests) { events.push("task batch " + snapshot + " held=" + gateway.held); return requests.map(request => "task " + request.input.user); } }),
+    async close() { events.push("task model close"); } }) }));
   const { runWorkerEntry, createWorkerState, parseWorkerLaunch } = await import(app + "src/cli/worker-entry.ts");
   const { encodeLaunch, WORKER_MESSAGE_PREFIX, WORKER_PROTOCOL_VERSION: version } = await import(app + "src/jobs/worker-process.ts");
   const socketPath = process.env.WORKER_SOCKET;
@@ -107,6 +112,12 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal((await (await get("/health")).json()).leases, 1);
     holder.abort();
     await until(() => gateway.held === 0, "the lease release");
+    // The parent's synthesis calls run on the worker's task model under the same execution lease.
+    events.length = 0;
+    const memory = await get("/admin/memory/complete", { method: "POST", body: JSON.stringify({ call: "completeBatch", snapshot: "/hub/task/selected",
+      requests: ["a", "b"].map(user => ({ stage: "entity", input: { user }, maxTokens: 8 })) }) });
+    assert.deepEqual(await memory.json(), { outputs: ["task a", "task b"] });
+    assert.deepEqual(events, ["lease", "task batch /hub/task/selected held=1", "release"], "the parent's selected snapshot reaches the task model");
     // Drain waits for an admitted request, then reports; admission stays shut.
     const inflight = get("/v1/chat/completions", { method: "POST", body: "{}" });
     await until(() => false || true, "");
@@ -116,11 +127,11 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal((await get("/v1/models")).status, 503);
     assert.equal((await (await get("/health")).json()).state, "draining");
     assert.deepEqual(events.filter(event => event === "lease" || event === "release"), ["lease", "release", "lease", "release"]);
-    // The parent leaves: stdin ends, the host closes in the app's order, the socket is gone, the exit code is clean.
+    // The parent leaves: stdin ends, the host closes in the app's order (the task model before the engine), the socket is gone, the exit code is clean.
     events.length = 0;
     end();
     assert.equal(await running, 0);
-    assert.deepEqual(events, ["timer stop", "engine close", "cache close", "model close"]);
+    assert.deepEqual(events, ["timer stop", "task model close", "engine close", "cache close", "model close"]);
     assert.ok(!existsSync(socketPath), "the socket file is removed on close");
     assert.deepEqual(errors, []);
     assert.equal(written.length, 1);
@@ -161,7 +172,7 @@ test("a signal closes the worker once, a repeated signal waits on that close, an
     events.length = 0;
     signals.emit("SIGTERM"); signals.emit("SIGINT"); signals.emit("SIGTERM");
     assert.equal(await running, 0);
-    assert.deepEqual(events, ["timer stop", "engine close", "cache close", "model close"]);
+    assert.deepEqual(events, ["timer stop", "task model close", "engine close", "cache close", "model close"]);
     assert.deepEqual([signals.listenerCount("SIGTERM"), signals.listenerCount("SIGINT")], [0, 0]);
     assert.ok(!existsSync(socketPath));
     // Startup failure: exit 1, the error on stderr, nothing bound, no ready line.
@@ -169,9 +180,11 @@ test("a signal closes the worker once, a repeated signal waits on that close, an
     let push2;
     const stdin2 = new ReadableStream({ start(controller) { push2 = text => controller.enqueue(new TextEncoder().encode(text)); } });
     push2(encodeLaunch(launch) + "\\n");
+    events.length = 0;
     const failed = await runWorkerEntry({ stdin: stdin2, write: line => written.push(line), signals });
     assert.equal(failed, 1);
     assert.deepEqual(errors, ["worker startup failed: load failed"]);
+    assert.deepEqual(events, ["task model close"], "a failed start closes the unused task model");
     assert.equal(written.length, 1);
     assert.ok(!existsSync(socketPath));
     // A launch record that never arrives, or is not one, exits 2 before any composition.

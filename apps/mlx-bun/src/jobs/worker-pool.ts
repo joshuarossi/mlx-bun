@@ -8,7 +8,9 @@
 // and naming it again respawns it. Anything else — empty, an alias, a fuzzy
 // or unknown id — rides the default worker, mlx-lm's ignored-field semantics.
 // Managed jobs wait for an active load/eviction, then lease every resident
-// worker. Cold starts wait until those leases have been released.
+// worker. Cold starts wait until those leases have been released. Hub GC keeps
+// every resident, loading, or draining worker's snapshot, and the auxiliary
+// ones (the memory task model) retained on it, until that worker has closed.
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { EngineUnavailableError, type WorkerSupervisor, type WorkerSupervisorState } from "./worker-supervisor";
@@ -58,8 +60,16 @@ export interface WorkerPool {
    * use; anything else the default worker, respawned when it was evicted. The
    * signal abandons the wait, not the load. */
   workerFor(modelField: string | null | undefined, signal?: AbortSignal): Promise<WorkerSupervisor>;
-  /** Snapshot paths GC must keep: every resident, queued/loading, or draining model. */
+  /** Snapshot paths GC must keep: every resident, queued/loading, or draining
+   * model, and the auxiliary snapshots retained on those workers. */
   servedPaths(): string[];
+  /** Keep snapshots a worker reads besides its own model (the default worker's
+   * memory task model, resident there once a call reached it) in servedPaths
+   * for that worker's lifetime: while it is resident, loading, or draining,
+   * released only once its close has finished. The reader gains no pool
+   * identity: nothing is spawned, routed, leased, or evicted for it. False
+   * when the worker is no longer the pool's. */
+  retain(engine: WorkerSupervisor, paths: readonly string[]): boolean;
   /** A finished download or job: refresh every serving worker's library and forget resolution misses. */
   invalidateLibrary(): void;
   /** Wait for active loads and draining evictions, then lease every resident
@@ -70,7 +80,8 @@ export interface WorkerPool {
   close(): Promise<void>;
 }
 
-interface Entry { id: string; model: ModelRecord; engine: WorkerSupervisor; socketPath: string }
+/** `retained`: auxiliary snapshots this worker may read, kept until the entry leaves the pool. */
+interface Entry { id: string; model: ModelRecord; engine: WorkerSupervisor; socketPath: string; retained: Set<string> }
 interface Holder { disposed: boolean; leases: Map<Entry, Promise<DisposableResource>>; cover(entry: Entry): Promise<void> }
 
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -149,7 +160,7 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
         activeStart = finished.promise;
         const socketPath = options.socketFor(spawned++);
         if (!initial) notice(`loading ${id} on a new worker (socket ${socketPath})`);
-        entry = { id, model, engine: options.supervise(model, socketPath), socketPath };
+        entry = { id, model, engine: options.supervise(model, socketPath), socketPath, retained: new Set() };
         loadingEntries.set(id, entry);
         await entry.engine.ready;
         if (closed) throw new EngineUnavailableError("closed", null);
@@ -266,7 +277,13 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
     const entries = [...resident.values(), ...loadingEntries.values()];
     resident.clear();
     lru = [];
-    await Promise.allSettled([...entries.map(entry => entry.engine.close()), ...evicting, ...loading.values(), ...(activeStart ? [activeStart] : [])]);
+    // A closing worker is no longer routable, but its snapshots (and those
+    // retained on it) stay in servedPaths until its close has settled.
+    const stops = entries.map(entry => {
+      draining.add(entry);
+      return entry.engine.close().finally(() => { draining.delete(entry); });
+    });
+    await Promise.allSettled([...stops, ...evicting, ...loading.values(), ...(activeStart ? [activeStart] : [])]);
     // A start still queued behind the slot rejects itself on its turn.
     while (loading.size) await Promise.allSettled([...loading.values()]);
   })();
@@ -281,7 +298,14 @@ export function createWorkerPool(options: WorkerPoolOptions): WorkerPool {
       return resident.get(defaultId)?.engine ?? loadingEntries.get(defaultId)?.engine ?? (recent === undefined ? undefined : resident.get(recent)!.engine);
     },
     workerFor,
-    servedPaths: () => [...new Set([...resident.values(), ...draining].map(entry => entry.model.path).concat([...loadingModels.values()].map(({ model }) => model.path)))],
+    servedPaths: () => [...new Set([...resident.values(), ...loadingEntries.values(), ...draining].flatMap(entry => [entry.model.path, ...entry.retained])
+      .concat([...loadingModels.values()].map(({ model }) => model.path)))],
+    retain(engine, paths) {
+      const entry = [...resident.values(), ...loadingEntries.values(), ...draining].find(candidate => candidate.engine === engine);
+      if (!entry) return false;
+      for (const path of paths) entry.retained.add(path);
+      return true;
+    },
     invalidateLibrary, acquireExecutionLease, report, close,
   };
 }

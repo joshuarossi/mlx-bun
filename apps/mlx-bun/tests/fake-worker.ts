@@ -13,6 +13,14 @@
 // FAKE_WORKER_VERSION=<v> plays a worker of that package version: a launch record
 // with another one is refused as the real entry refuses it (exit 2, the reason on stderr).
 // FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing.
+// `POST /admin/memory/complete` plays the memory task model: each row answers
+// `task <stage>: <user>` in order; a row whose user text contains `hold` waits
+// for `/fake/memory/release` or the parent's disconnect, and `crash` exits 137
+// under the call (events: memory, memory aborted, memory answered). The first
+// call that answers "loads" the snapshot it carries (`task_snapshot` in
+// `/fake/seen`), after any hold, like a lazy load behind the execution lease.
+// FAKE_WORKER_MEMORY_JOIN_MS delays an aborted call's settling, like rows
+// joining; SIGTERM waits for those joins, as the real worker's close does.
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -39,6 +47,8 @@ if (process.env.FAKE_WORKER_LOAD_MS) await Bun.sleep(Number(process.env.FAKE_WOR
 interface Seen { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown; raw?: string }
 const seen: Seen[] = [];
 const leases = new Set<object>();
+const heldMemory = new Set<() => void>(), memoryJoins = new Set<Promise<void>>();
+let taskSnapshot: string | undefined;
 let draining = false, inFlight = 0, responseCount = 0;
 const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
   id: "chatcmpl-fake", object: "chat.completion.chunk", created: 1, model: modelId, choices: [{ index: 0, delta, finish_reason: finish }],
@@ -89,7 +99,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     event("drain");
     return Response.json({ drained: true, state: "draining", model: modelId, in_flight: inFlight, leases: leases.size, waited_ms: 0, timed_out: false });
   }
-  if (path === "/fake/seen") return Response.json({ pid: process.pid, model: modelId, seen });
+  if (path === "/fake/seen") return Response.json({ pid: process.pid, model: modelId, seen, task_snapshot: taskSnapshot ?? null });
   if (path === "/fake/crash") { crash(Number(url.searchParams.get("code") ?? "137")); return Response.json({ crashing: true }); }
   // Until the marker file lists `times` pids (default 1), a worker appends its pid and exits without
   // answering (a transport failure for the caller); later requests are answered.
@@ -101,7 +111,32 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   }
   if (path === "/fake/headers") return new Response("hop", { headers: { "x-kept": "yes", connection: "x-private-hop", "x-private-hop": "1",
     "keep-alive": "timeout=5", "proxy-authenticate": "Basic", trailer: "x-trailer", upgrade: "h2c" } });
+  if (path === "/fake/memory/release") { const count = heldMemory.size; for (const release of [...heldMemory]) release(); return Response.json({ released: count }); }
   if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
+  if (path === "/admin/memory/complete" && request.method === "POST") {
+    entry.raw = await request.text();
+    const body = JSON.parse(entry.raw) as { call: string; snapshot: string; requests: { stage: string; input: { user: string }; maxTokens: number }[] };
+    entry.body = body;
+    event("memory");
+    const users = body.requests.map(row => row.input.user);
+    if (users.some(user => user.includes("crash"))) { crash(137); return new Promise<Response>(() => {}); }
+    inFlight++;
+    if (users.some(user => user.includes("hold"))) await new Promise<void>(resolve => {
+      const release = () => { heldMemory.delete(release); resolve(); };
+      heldMemory.add(release);
+      request.signal.addEventListener("abort", () => {
+        entry.aborted = true;
+        const join = Bun.sleep(Number(process.env.FAKE_WORKER_MEMORY_JOIN_MS ?? "0")).then(() => { event("memory aborted"); release(); });
+        memoryJoins.add(join);
+        void join.finally(() => memoryJoins.delete(join));
+      }, { once: true });
+    });
+    inFlight--;
+    if (request.signal.aborted) return new Response(null, { status: 499 });
+    taskSnapshot ??= body.snapshot;
+    event("memory answered");
+    return Response.json({ outputs: body.requests.map(row => `task ${row.stage}: ${row.input.user}`) });
+  }
   if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: modelId, object: "model", created: 1, owned_by: "mlx-bun",
     context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: 0.6, top_p: 0.9, top_k: null },
     capabilities: { chat_completions: true, transcription: false } }] });
@@ -146,6 +181,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
 } } as unknown as Parameters<typeof Bun.serve>[0]);
 
 const stop = async () => {
+  await Promise.allSettled([...memoryJoins]);
   console.error("stopping"); event("stop");
   if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
   void server.stop(true); process.exit(0);

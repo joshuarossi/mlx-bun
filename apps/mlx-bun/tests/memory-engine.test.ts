@@ -10,8 +10,8 @@ import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import type { KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { LoadedModelContext } from "../src/engine/model-host";
-import { CHUNK_ADAPTER, createInProcessMemoryClient, locateTaskModel, type MemoryEngine, type MemoryEngineDependencies } from "../src/cli/memory-engine";
-import { MEMORY_TASK_MODEL, memoryPromptIds, type MemoryCompletionRequest } from "../src/memory/model";
+import { CHUNK_ADAPTER, createInProcessMemoryClient, type MemoryEngine, type MemoryEngineDependencies } from "../src/cli/memory-engine";
+import { MEMORY_TASK_MODEL, locateTaskModel, memoryPromptIds, type MemoryCompletionRequest } from "../src/memory/model";
 
 let restoreRuntime: (() => void) | undefined;
 afterEach(() => { restoreRuntime?.(); restoreRuntime = undefined; });
@@ -232,6 +232,22 @@ test("pre-cancelled work never locates or loads the task model; the shared initi
     expect(await Promise.all([memory.client.complete(request("route", "b")), memory.clientFor(new AbortController().signal).complete(request("route", "c"))]))
       .toEqual(["|>", "|>"]);
     expect(h.events.filter(event => event.startsWith("load"))).toHaveLength(1);
+  } finally { await memory.close(); }
+});
+
+test("a view carrying a selected snapshot loads exactly that directory, never a second resolution, and a loaded task model stays what it is", async () => {
+  const h = harness({ locate: async () => "/cache/located" });
+  const memory = createInProcessMemoryClient(h.deps);
+  try {
+    const cancelled = AbortSignal.abort(new Error("run cancelled"));
+    await expect(memory.clientFor(cancelled, "/cache/never").complete(request("route", "a"))).rejects.toThrow("run cancelled");
+    expect(h.events).toEqual([]);
+    expect(await memory.clientFor(new AbortController().signal, "/cache/selected").completeBatch([request("entity", "a"), request("entity", "b")])).toEqual(["|>", "|>"]);
+    expect(h.events).toEqual([`load /cache/selected ${MEMORY_TASK_MODEL}`, "engine"]);
+    // Later selections, and the shared client, reuse the loaded task model.
+    await memory.clientFor(new AbortController().signal, "/cache/newer").complete(request("route", "c"));
+    await memory.client.complete(request("route", "d"));
+    expect(h.events.filter(event => event.startsWith("load") || event.startsWith("locate"))).toEqual([`load /cache/selected ${MEMORY_TASK_MODEL}`]);
   } finally { await memory.close(); }
 });
 

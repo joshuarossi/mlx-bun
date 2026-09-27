@@ -5,7 +5,8 @@
 // carrying the app's package version (a record with another one exits 2):
 // - model (`--isolate`): only the model-scoped host (serve-host.ts) over the
 //   parent's Unix socket, with the persistent services stubbed because the
-//   parent owns them;
+//   parent owns them, plus the memory task model the parent's synthesis calls
+//   through the admin surface (only the default worker is ever asked);
 // - app: the whole app, composed by `runServe` from serve arguments exactly as
 //   the CLI composes it, listening on the parent's socket instead of TCP.
 import type { ModelRecord } from "@mlx-bun/hub/registry";
@@ -122,16 +123,24 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   const parentLeft = () => (async () => { while ((await readLine()) !== null) { /* nothing else is expected on stdin */ } })().catch(() => {});
   if (launch.kind === "app") return runAppWorker(launch, args!, ports, parentLeft());
   const link: { current?: ModelHostLink } = {};
+  // Main's memory task model, loaded by the first call and kept until this
+  // worker stops: the admin surface runs each call under the host's execution
+  // lease, and shutdown joins those calls, then closes the task model, both
+  // ahead of the host's engine.
+  const memory = (await import("./memory-engine")).createInProcessMemoryClient();
   const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid,
     acquireExecutionLease(signal) {
       if (!link.current) return Promise.reject(new Error("no model host is attached"));
       return link.current.acquireExecutionLease(signal);
-    } });
+    }, memoryTaskModel: memory });
   let host: Awaited<ReturnType<typeof startModelHost>>;
   try {
     host = await startModelHost(createWorkerState(launch.options, link), launch.model, launch.options,
-      { unix: launch.socketPath, routes: model => admin.wrap(model), beforeDrain: () => admin.close() });
+      { unix: launch.socketPath, routes: model => admin.wrap(model),
+        beforeDrain: async () => { try { await admin.close(); } finally { await memory.close(); } } });
   } catch (error) {
+    // Nothing was served, so the task model never loaded; closing only refuses later calls.
+    await memory.close();
     console.error(`worker startup failed: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }

@@ -5,8 +5,10 @@
 // Unix socket. Workers are spawned through the executable captured at startup
 // with a model this process resolved and the options it parsed, one per exact
 // `/v1/models` id under the pool's cap (`--model-pool`, jobs/worker-pool.ts);
-// each respawns within a budget after a crash while the app stays up. Nothing
-// here imports the engine or a native module.
+// each respawns within a budget after a crash while the app stays up. Memory
+// synthesis keeps its pipeline, vault and SSE here and runs each stage call on
+// the default model worker's memory task model. Nothing here imports the
+// engine or a native module.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +19,10 @@ import { createPiBackend } from "../chat/pi-backend";
 import { PI_LOCAL_MODEL_ID } from "../chat/provider";
 import { createWorkerPool, type WorkerPool } from "../jobs/worker-pool";
 import { WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
-import { superviseWorker, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
+import { EngineUnavailableError, superviseWorker, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
+import { locateTaskModel, MEMORY_TASK_MODEL } from "../memory/model";
 import { createManagementRoutes } from "../server/management-routes";
+import { createWorkerMemoryClient } from "../server/memory-completion-client";
 import { createProxyRoutes } from "../server/proxy-routes";
 import { createResponsesClient } from "../server/responses-client";
 import { startServer } from "../server/start";
@@ -88,14 +92,26 @@ function exactModel(id: string, createRegistry: () => Pick<Registry, "listCanoni
  * the listener once that worker serves, so startup fails the way the direct
  * composition does when the model cannot load. */
 export async function startIsolatedServer(model: ModelRecord, options: ServeOptions, hooks: IsolatedServeHooks = {}): Promise<RunningApp> {
-  // No memory task model here: the parent loads no model, so synthesis uses the
-  // default worker's served model over loopback (a recorded follow-up).
-  const state = await createAppState(options, options.storagePaths ?? {});
+  let pool: WorkerPool | undefined;
+  const requirePool = () => { if (!pool) throw new EngineUnavailableError("starting", null); return pool; };
+  // The parent loads no model: each synthesis stage call or batch runs on the
+  // default model worker's memory task model over its private route. That
+  // worker takes its own execution lease; a pool lease here would wait on it.
+  // Each call selects the task model snapshot once, here (the worker never
+  // scans the cache): the call carries it, a call that loads the task model
+  // loads exactly it, and it is retained on that worker before the call is
+  // sent, for the worker's lifetime (the task model stays resident there),
+  // through cancellations, until the worker has closed.
+  const state = await createAppState({ ...options, memoryCompletions: signal => createWorkerMemoryClient(async signal => {
+    const workers = requirePool(), worker = await workers.workerFor(undefined, signal);
+    const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
+    workers.retain(worker, [snapshot]);
+    return { worker, snapshot };
+  }, signal) }, options.storagePaths ?? {});
   // Sockets live in a private directory (0700) this process removes, one per worker.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));
   const removeSocketDir = () => rmSync(socketDir, { recursive: true, force: true });
   const notice = hooks.notice ?? (line => console.log(`[isolate] ${line}`));
-  let pool: WorkerPool | undefined;
   const closeEngine = async () => { try { await pool?.close(); } finally { removeSocketDir(); } };
   let detachLink = () => {};
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
@@ -128,7 +144,8 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ pool: workers, responses, downloads: () => state.downloads.snapshot(), modelId, startedAt: Date.now() });
     // Tool-approval settings and hub GC are CPU work over the parent's own
-    // files; GC protects resident, queued/loading, and still-draining snapshots.
+    // files; GC protects resident, queued/loading, and still-draining
+    // snapshots, with the task model's retained on the workers it reached.
     const management = createManagementRoutes({ invalidateLibrary: proxy.invalidateLibrary,
       toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: () => workers.servedPaths() });
     const persistent = state.routes;

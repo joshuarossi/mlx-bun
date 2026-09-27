@@ -307,6 +307,51 @@ test("GC retains an evicting snapshot until drain ends, and job cancellation doe
   } finally { a.stop(); await pool.close(); }
 });
 
+test("an auxiliary snapshot retained on a worker stays out of GC for that worker's lifetime: idle, then draining after eviction, until its close has finished; a respawn starts with none", async () => {
+  const { pool, workers } = controlledPool(1);
+  const a = workers.get("org/a")!;
+  try {
+    a.load(); await pool.ready; await turn();
+    expect(pool.retain(a.engine, ["/models/task/first"])).toBe(true);
+    expect(pool.retain(a.engine, ["/models/task/first", "/models/task/second"])).toBe(true);
+    expect(pool.servedPaths().sort()).toEqual(["/models/org/a", "/models/task/first", "/models/task/second"]);
+    // Nothing else changes: no worker, lease, or routing for the reader.
+    expect([pool.report().resident.map(worker => worker.id), pool.report().loading, a.leases]).toEqual([["org/a"], [], 0]);
+    a.holdClose();
+    const loading = pool.workerFor("org/b"); workers.get("org/b")!.load(); await loading;
+    expect(a.closeStarted).toBe(true);
+    expect(pool.servedPaths().sort()).toEqual(["/models/org/a", "/models/org/b", "/models/task/first", "/models/task/second"]);
+    a.stop(); await turn();
+    expect(pool.servedPaths()).toEqual(["/models/org/b"]);
+    // A worker that left the pool retains nothing; the default's respawn is a new worker with nothing retained.
+    expect(pool.retain(a.engine, ["/models/task/third"])).toBe(false);
+    const back = pool.workerFor(undefined); workers.get("org/a")!.load(); await back;
+    await turn();
+    expect(workers.get("org/a")).not.toBe(a);
+    expect(pool.servedPaths()).toEqual(["/models/org/a"]);
+  } finally { a.stop(); await pool.close(); }
+});
+
+test("closing the pool keeps each closing worker's snapshot and the ones retained on it out of GC until that worker's close has settled", async () => {
+  const { pool, workers } = controlledPool(2);
+  const a = workers.get("org/a")!;
+  try {
+    a.load(); await pool.ready; await turn();
+    const loading = pool.workerFor("org/b"); workers.get("org/b")!.load(); await loading;
+    const b = workers.get("org/b")!;
+    pool.retain(a.engine, ["/models/task/selected"]);
+    a.holdClose(); b.holdClose();
+    const closing = pool.close();
+    await turn();
+    expect([a.closeStarted, b.closeStarted, pool.report().resident]).toEqual([true, true, []]);
+    expect(pool.servedPaths().sort()).toEqual(["/models/org/a", "/models/org/b", "/models/task/selected"]);
+    b.stop(); await turn();
+    expect(pool.servedPaths().sort()).toEqual(["/models/org/a", "/models/task/selected"]);
+    a.stop(); await closing;
+    expect(pool.servedPaths()).toEqual([]);
+  } finally { a.stop(); workers.get("org/b")?.stop(); await pool.close(); }
+});
+
 test("failed pool lease admission releases the other workers and unblocks cold starts", async () => {
   const { pool, workers } = controlledPool(3);
   try {

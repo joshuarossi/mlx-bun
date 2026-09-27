@@ -95,11 +95,14 @@ launch forms, and no flag selects either:
   `drainTimeoutMs` and `graceMs` (the supervisor's defaults, 10 s and 3 s,
   serve the model form).
 
-`server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`, and
-`POST /admin/drain` ahead of the routes on the socket only (a TCP listener keeps
-answering 501 there). In the app form its `/health` replaces discovery's, and
-the transcription-only app, which has no execution lease, answers
-`/admin/lease` with 501.
+`server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`,
+`POST /admin/drain`, and `POST /admin/memory/complete` ahead of the routes on
+the socket only (a TCP listener keeps answering 501 for lease and drain, and
+404 for the memory route). In the app form its `/health` replaces discovery's,
+and the transcription-only app, which has no execution lease, answers
+`/admin/lease` with 501. The memory route (see
+[Memory synthesis](#memory-synthesis)) is the model form's: the app form's
+synthesis runs in the app itself, so there it answers 501.
 
 Both launch forms and the ready line carry the app's package version (the one
 `--version` prints). A worker exits 2 with `worker protocol version mismatch`
@@ -109,8 +112,9 @@ with the same package version are not told apart. The parent rejects a ready
 line that does not echo its version, and a worker's exit 2 (a refused launch
 record) puts the worker's last stderr line into the rejection.
 
-In the app form, memory synthesis and dataset jobs reach the model through the
-attached host's own `/v1/chat/completions` over its socket (the loopback URL's
+In the app form, memory synthesis runs on the app's own task model, as in
+`serve`, and dataset jobs reach the model through the attached host's own
+`/v1/chat/completions` over its socket (the loopback URL's
 `127.0.0.1:<--port>` is a placeholder), so they call the same app. Pi web chat
 does not: its SDK takes a base URL rather than a fetch, so it targets TCP
 `127.0.0.1:<--port>`, as in the model form and main. An embedding host that
@@ -156,8 +160,10 @@ enforced context window from the worker's `/v1/models` and `/stats` once, after
 that first ready line.
 
 **Application state.** The web app, Pi chat, the Responses history, jobs,
-downloads, sessions, memory, tool-approval settings, and hub GC (which still
-protects every resident or loading snapshot) live here and survive worker restarts. Pi runs in
+downloads, sessions, memory (the vault and the synthesis pipeline; its task
+model is the default worker's), tool-approval settings, and hub GC (which still
+protects every resident or loading snapshot, and the task model snapshot
+selected for a worker) live here and survive worker restarts. Pi runs in
 this process and reaches the model over loopback HTTP through the proxy, so web
 chat works under isolation (main answered 501 on `/ws/chat`).
 
@@ -182,9 +188,10 @@ body with this process's `response_store` and an `engine` report on top; while
 the worker is down, 200 with only the parent's part and an `unavailable`
 message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
 `/admin/drain` stay unix-socket-only and keep answering 501 on TCP.
-`GET /v1/memory/synthesize` is served by this process's memory owner; its
-loopback completion client reaches the default worker's served model through
-the proxy like any client, not main's memory task model (a tracked gap).
+`GET /v1/memory/synthesize` is served by this process's memory owner; each
+stage call or batch runs on the default model worker's memory task model over
+that worker's private `POST /admin/memory/complete` (never forwarded from TCP,
+see [Memory synthesis](#memory-synthesis)).
 
 **Crashes.** An unexpected worker exit is respawned with main's budget: at most
 three restarts in a rolling 60-second window, and a worker that died within
@@ -207,10 +214,11 @@ fake worker over a real socket; the opt-in
 [isolation test](tests/engine/isolate.test.ts) kills a real worker and checks the
 respawned completion.
 
-**Shutdown.** Jobs and downloads stop while the worker is alive, chat sessions
+**Shutdown.** Synthesis runs, jobs, and downloads stop while the worker is alive, chat sessions
 and HTTP responses drain, then the worker is drained (`POST /admin/drain`),
 sent SIGTERM, SIGKILL after 3 seconds, joined, and the socket directory removed;
-a respawn in progress is joined too.
+a respawn in progress is joined too. The worker's own close aborts and joins its
+memory calls, then closes its task model, before its engine.
 
 **Deviations from main.** Main bound the listener before the engine loaded and
 made every request wait on readiness, including across restarts, retrying
@@ -272,7 +280,10 @@ evictions before leasing the resident workers; cold starts wait until all job
 leases release, so model loading never overlaps a job's GPU use. Cancellation
 and shutdown abort admission waits. A finished download or job refreshes every
 serving worker's library and forgets resolution misses. Hub GC refuses to prune
-the snapshot of any resident, queued/loading, or still-draining model.
+the snapshot of any resident, queued/loading, draining, or closing model, or the
+memory task model snapshot selected for a worker's memory calls, which the pool
+retains on that worker until its close has settled (the task model is not a
+pool worker: it gets no id, lease, or cap slot).
 
 **Reporting.** `GET /engine` gains `pool: { cap, default, resident: [{ id, pid,
 state, restarts, socket }], loading: [ids] }` (residents least recently used
@@ -759,8 +770,8 @@ deterministic `crosslink.ts` pass and the `wikify.ts` editorial sweep. `events.t
 holds the shared event contract so no stage imports the orchestrator.
 
 The engine is reached only through `model.ts`'s `MemoryCompletionClient` seam.
-The memory domain defines the interface; composition injects one of two
-implementations. `cli/memory-engine.ts` is main's memory task model (Gemma-4
+The memory domain defines the interface; composition injects an
+implementation. `cli/memory-engine.ts` is main's memory task model (Gemma-4
 e4b and its `memory-chunk` adapter), loaded in-process by the first completion
 over the app engine's continuous gateway: the `memory` verb and its nightly job
 use it, and so does `serve`'s own synthesis, which keeps it resident until
@@ -768,13 +779,32 @@ shutdown, as main did. Under `serve` each task-model completion (or batch, once
 all its rows join) holds the served engine's execution lease, taken before the
 weights load, so memory work never overlaps a managed job; chat waits while a
 memory stage call runs (main's in-server client ran beside chat under its own
-locks). `server/memory-completion-client.ts` posts each stage
-call to a serving mlx-bun's own `/v1/chat/completions` (raw greedy sampling,
-neutral logit processors and the model template's thinking defaults, the
-stage's system/user turns, `adapter: "memory-chunk"` for the chunk stage when
-`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise): `memory
---host`/`--port` use it, and so does the `--isolate` parent, which loads no
-model. Either way synthesis rides the continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
+locks). `server/memory-completion-client.ts` holds the HTTP clients. Its
+loopback client posts each stage call to a serving mlx-bun's own
+`/v1/chat/completions` (raw greedy sampling, neutral logit processors and the
+model template's thinking defaults, the stage's system/user turns,
+`adapter: "memory-chunk"` for the chunk stage when
+`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise):
+`memory --host`/`--port` use it.
+
+Under `serve --isolate` the parent, which loads no model, keeps the pipeline,
+vault, and SSE; the default model worker owns the task model (the same
+in-process client, loaded by its first call and kept until that worker stops,
+as main's default child did). The parent's worker client (also in
+`server/memory-completion-client.ts`) sends each `complete` or
+`completeBatch` as one `POST /admin/memory/complete` over the default worker's
+socket (`{ call, snapshot, requests: [{ stage, input, maxTokens }] }`, answered
+`{ outputs }` in input order). The worker runs the call under its own execution
+lease, taken before the lazy load and released after every row joined, so it
+waits for a managed job's lease and a job waits for it; the parent takes no
+pool lease for it. The parent selects the task model snapshot once per call
+(`locateTaskModel`), the call carries it, and the call that loads the task model
+loads exactly that directory; the pool retains the selected snapshot on that
+worker, out of hub GC, until the worker has closed. A cancelled run, a client
+disconnect, or the parent's shutdown aborts the request, and the worker aborts
+and joins every row. A call is never retried: a worker that stops mid-call fails
+that call with an error, and eviction or a restart drops the task model with
+its worker. Every path rides a continuous-batching scheduler. `MLX_BUN_MEMORY_BATCH`
 (default 1) bounds the calls in flight per batched stage. Nothing in the memory
 domain loads a model, and no serial lane exists. Each run receives its client
 and vault root explicitly; Meta policy reads use that same vault. A failed batch
