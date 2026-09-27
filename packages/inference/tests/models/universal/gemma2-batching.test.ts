@@ -341,4 +341,170 @@ test.skipIf(!native || !artifact || !referencePath)("real Gemma2 ragged B2/B4 lo
   } finally { weights.dispose(); }
 }, 600_000);
 
+
+test.skipIf(!native || !artifact)("cached Gemma2 plain fill matches main's serial fill at B1 and keeps every row through B2/B3/B4 joins and cancellation", async () => {
+  const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
+  const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
+  const { FillSession } = await import("../../../src/generation/fill");
+  const { loadTokenizer } = await import("../../../src/input");
+  type Session = InstanceType<typeof FillSession>;
+  const weights = await Weights.open(artifact!);
+  try {
+    const model = createModel(weights, await loadModelConfig(artifact!)) as UniversalDenseModel;
+    const tokenizer = await loadTokenizer(artifact!);
+    const eos = model.config.eosTokenIds, maxTokens = 32;
+    const prompts = ["Write three short sentences about the ocean at night.",
+      "Summarize in three sentences why tide pools interest biologists.",
+      "Explain step by step how bread dough rises overnight in a bakery.",
+      "List four facts about the Moon, one per line, with no introduction and no closing remark."]
+      .map(text => [2, ...tokenizer.encode(`<start_of_turn>user\n${text}<end_of_turn>\n<start_of_turn>model\n`, false)]);
+    const hashRows = (logits: MlxArray) => {
+      const [rows, positions, vocab] = logits.shape as [number, number, number];
+      return Array.from({ length: rows * positions }, (_, i) => {
+        using row = logits.slice([Math.floor(i / positions), i % positions, 0], [Math.floor(i / positions) + 1, i % positions + 1, vocab]);
+        using flat = ops.contiguous(row);
+        return createHash("sha256").update(flat.rawBytes()).digest("hex");
+      });
+    };
+    const argmaxAt = (logits: MlxArray, position: number) => {
+      using row = logits.slice([0, position, 0], [1, position + 1, logits.shape[2]!]);
+      using best = ops.argmaxAxis(row, -1);
+      return best.toIntTokens()[0]!;
+    };
+    // Main 02d723a's serial fill, operation for operation at B=1: tail-split
+    // prefill, one-position assert appends (Gemma2 declares no multi-position
+    // append), one forward per verify span, and a trim after a rejection.
+    const serial = (prompt: number[], fill: Session | null) => {
+      const caches = model.makeCache(), logits: string[] = [], tokens: number[] = [];
+      const forward = (ids: number[]) => { using input = ops.fromInt32(ids, [1, ids.length]); return model.forwardHidden(input, caches); };
+      const project = (hidden: MlxArray) => { const out = model.logitsFromHidden(hidden); logits.push(...hashRows(out)); return out; };
+      try {
+        { using head = forward(prompt.slice(0, -1)); head.eval(); }
+        let pending: number | null, generated = 0, finish = "length";
+        { using hidden = forward([prompt.at(-1)!]); using out = project(hidden); pending = argmaxAt(out, 0); }
+        while (pending !== null) {
+          const current: number = pending;
+          let next: number | null = null;
+          if (generated + 1 < maxTokens) { using hidden = forward([current]); using out = project(hidden); next = argmaxAt(out, 0); }
+          generated++;
+          if (eos.includes(current)) { finish = "stop"; break; }
+          tokens.push(current);
+          const proposal: ReturnType<Session["push"]> | undefined = fill?.push(current, next !== null ? maxTokens - generated : 0);
+          if (proposal && next !== null) {
+            if (proposal.policy === "assert") {
+              let last: MlxArray | null = null;
+              for (const id of proposal.ids) { last?.dispose(); last = forward([id]); }
+              using hidden = last!;
+              fill!.commit(proposal, proposal.ids.length);
+              tokens.push(...proposal.ids); generated += proposal.ids.length;
+              if (generated < maxTokens) { using out = project(hidden); next = argmaxAt(out, 0); } else next = null;
+            } else if (next === proposal.ids[0]) {
+              using hidden = forward(proposal.ids);
+              using out = project(hidden);
+              let accepted: number = proposal.ids.length;
+              for (let j = 0; j + 1 < proposal.ids.length; j++) if (argmaxAt(out, j) !== proposal.ids[j + 1]) { accepted = j + 1; break; }
+              for (const cache of caches) cache.trim(proposal.ids.length - accepted);
+              fill!.commit(proposal, accepted);
+              tokens.push(...proposal.ids.slice(0, accepted)); generated += accepted;
+              next = generated < maxTokens ? argmaxAt(out, accepted - 1) : null;
+            } else fill!.commit(proposal, 0);
+          }
+          pending = next;
+        }
+        return { tokens, logits, finish };
+      } finally { dispose(caches); }
+    };
+    // Verify spans come from each prompt's plain greedy run: accepted, rolled
+    // back after two positions, and rejected before any forward. A verify
+    // span's bonus token comes from a multi-position forward, so the assert
+    // row's trigger pair (seen once) is chosen from the verify-only run.
+    const fixed = tokenizer.encode(" (a fixed scaffold span)", false).slice(0, 5);
+    const wrong = (token: number) => [2000, 2001].find(id => id !== token)!;
+    type Plan = { rows: { trigger: number[]; emit: number[]; kind: "scaffold" }[]; scripted: Map<number, number[]> };
+    const session = (index: number, plan: Plan) => new FillSession({ rows: plan.rows, echo: null, eos }, prompts[index]!, {
+      maxSpan: 8, appendChunkSize: 0, sources: [{ name: "scripted-echo", propose: view => {
+        const ids = plan.scripted.get(view.length - prompts[index]!.length);
+        return ids ? { ids: [...ids], policy: "verify" as const, origin: "echo" as const } : null;
+      } }] });
+    const plans = prompts.map((prompt, index): Plan => {
+      const g = serial(prompt, null).tokens;
+      if (g.length < 20) throw new Error(`prompt ${index} ended after ${g.length} tokens`);
+      const scripted = new Map([[2, g.slice(2, 6)], [7, [g[7]!, g[8]!, wrong(g[9]!), g[10]!]], [11, [wrong(g[11]!), g[12]!]]]);
+      const h = serial(prompt, session(index, { rows: [], scripted })).tokens, history = [prompt.at(-1)!, ...h];
+      // The pair (h[t-1], h[t]) is history[t..t+1]; it must not end any earlier position.
+      const t = h.findIndex((_, t) => t >= 16 && !history.slice(0, t).some((token, i) => token === h[t - 1] && history[i + 1] === h[t]));
+      if (t < 0 || t + 6 >= maxTokens) throw new Error(`prompt ${index} has no usable trigger`);
+      return { rows: [{ trigger: [h[t - 1]!, h[t]!], emit: fixed, kind: "scaffold" }], scripted };
+    });
+    const expected = prompts.map((prompt, index) => {
+      const fill = session(index, plans[index]!), run = serial(prompt, fill);
+      expect(fill.stats.strict).toBeGreaterThan(0);
+      expect(fill.stats.verifyAccepted).toBeGreaterThan(0);
+      expect(fill.stats.verifyRejected).toBeGreaterThan(2);
+      return { ...run, stats: fill.stats };
+    });
+
+    const binding = bindMlxGateway(model);
+    const runtime = createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" });
+    const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
+      turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
+    const logitsFromHidden = model.logitsFromHidden;
+    // Each row joins after the previous row's first token. The B4 case cancels
+    // its third row, which is live when the fourth joins, so four rows share
+    // the batch; the observed high water must equal the capacity.
+    for (const [capacity, order, cancelled] of [[1, [0], -1], [1, [1], -1], [1, [2], -1], [1, [3], -1], [2, [0, 1], -1],
+      [3, [2, 0, 1], 0], [4, [2, 0, 1, 3], 1]] as const) {
+      const logits: string[] = [];
+      // The fill group binds the projection when it opens, after this hook.
+      model.logitsFromHidden = function (this: UniversalDenseModel, hidden: MlxArray) {
+        const out = logitsFromHidden.call(this, hidden);
+        if (capacity === 1) logits.push(...hashRows(out));
+        return out;
+      };
+      const group = binding.createBatchGroup({ maxBatch: capacity, prefillChunkSize: 512, runtime });
+      const emitted = new Map<number, number[]>(), sessions = new Map<number, Session>(), pending: Promise<unknown>[] = [];
+      const abort = new AbortController();
+      let highWater = 0;
+      const submit = (position: number) => {
+        const index = order[position]!, fill = session(index, plans[index]!), options = { maxTokens, temperature: 0, fill };
+        const plan = binding.plan(shape, options, { continuous: binding.cachesBatchable(), quantizedBatch: false, checkpoints: false });
+        expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: true });
+        emitted.set(index, []); sessions.set(index, fill);
+        pending.push(group.submit({ promptIds: prompts[index]!, maxTokens, eosTokenIds: eos, method: binding.methodRequest!(plan, options)!,
+          signal: index === cancelled ? abort.signal : undefined,
+          onToken(token) {
+            highWater = Math.max(highWater, group.activeRows);
+            const tokens = emitted.get(index)!; tokens.push(token);
+            if (tokens.length === 1 && position + 1 < order.length) submit(position + 1);
+            if (index === cancelled && tokens.length === 12) abort.abort(new Error("Gemma2 fill client left"));
+          } }).then(stats => ({ index, stats }), error => ({ index, error })));
+      };
+      try {
+        submit(0);
+        let settled: { index: number; stats?: { finishReason: string }; error?: unknown }[] = [];
+        for (let seen = 0; seen !== pending.length;) { seen = pending.length; settled = await Promise.all(pending) as typeof settled; }
+        expect(settled).toHaveLength(order.length);
+        expect(highWater).toBe(capacity);
+        for (const { index, stats, error } of settled) {
+          const want = expected[index]!, tokens = emitted.get(index)!;
+          if (index === cancelled) {
+            expect(error).toHaveProperty("message", "Gemma2 fill client left");
+            expect(tokens).toEqual(want.tokens.slice(0, 12));
+            continue;
+          }
+          expect(error).toBeUndefined();
+          expect(tokens).toEqual(want.tokens);
+          expect(stats!.finishReason).toBe(want.finish);
+          const { strict, echo, injected, verifyAccepted, verifyRejected, spanLens } = sessions.get(index)!.stats;
+          expect({ strict, echo, injected, verifyAccepted, verifyRejected, spanLens }).toEqual({ strict: want.stats.strict,
+            echo: want.stats.echo, injected: want.stats.injected, verifyAccepted: want.stats.verifyAccepted,
+            verifyRejected: want.stats.verifyRejected, spanLens: want.stats.spanLens });
+          // B1 is the preserved lane: every logits row is main's, bit for bit.
+          if (capacity === 1) expect(logits).toEqual(want.logits);
+        }
+      } finally { model.logitsFromHidden = logitsFromHidden; await group.close(); }
+    }
+  } finally { weights.dispose(); }
+}, 600_000);
+
 }

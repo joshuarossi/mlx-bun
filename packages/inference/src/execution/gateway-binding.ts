@@ -64,8 +64,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
   // Manual softcap attention is qualified for plain-KV requests, including
-  // grammar-constrained and adapter requests. Encoded attention and grouped
-  // methods (speculative, fill) need their own numerical evidence.
+  // grammar-constrained and adapter requests, and for plain-KV fill through
+  // the shared fill binding. Encoded attention, speculative drafts and fill
+  // with adapters need their own numerical evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
@@ -103,7 +104,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
     Math.max(1, Math.trunc(runtime.number("MLX_BUN_GRAMMAR_DRAFT_TOKENS", 3)))) : undefined;
   const adapterState = "loraState" in model ? model.loraState : undefined;
-  const fillRequests = tokenMethods && supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
+  const fillRequests = !denoising && supportsTargetRows() ? bindFillGroupRequests(model) : undefined;
   const mediaInput = model instanceof Gemma4Model ? (input: Vision) =>
     bindEmbeddingsInput((ids, caches, start) => start > 0 ? model.forwardHidden(ids, caches)
       : model.forwardEmbeddings(input.embeddings,
@@ -159,7 +160,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !((plainSoftcap || ordinaryOnly) && (request.hasDraft || options.fill)),
+        continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill)) &&
+          !(plainSoftcap && (request.hasDraft || (options.fill && request.hasAdapters))),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: !ordinaryOnly && !plainSoftcap && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
