@@ -85,7 +85,7 @@ export interface KvDonorAttention extends KvAttentionView {
  * plain keys and values. Storage that can answer declares it. A cache without
  * it is not certified for a composed plain read (it may still serve
  * `updateAndFetch` directly). */
-export interface PlainKvReads {
+export interface DenseKvReads {
   /** Pure: whether `row` can take its next append and still be read plain —
    * its storage is plain now, and the maintenance that append schedules
    * (deferred during prefill) converts nothing. */
@@ -109,8 +109,8 @@ export interface KvMaintenance {
 }
 
 export interface Cache {
-  /** Plain reads, when this storage can answer for them (see PlainKvReads). */
-  readonly plainKvReads?: PlainKvReads;
+  /** Dense reads, when this storage can answer for them (see DenseKvReads). */
+  readonly denseKvReads?: DenseKvReads;
   /** Maximum committed positions before this state changes precision. */
   maxAppendTokens?(): number;
   captureDonorRows?(): KvDonorRows;

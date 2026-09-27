@@ -41,7 +41,7 @@ const delayed = (rotating: boolean, start: number, maintain: KvMaintenance, leng
   try { group.mergeRows(rows); } finally { for (const row of rows) row.dispose(); }
   return group;
 };
-const appendable = (cache: Cache, rows: number) => Array.from({ length: rows }, (_, row) => cache.plainKvReads!.appendable(row));
+const appendable = (cache: Cache, rows: number) => Array.from({ length: rows }, (_, row) => cache.denseKvReads!.appendable(row));
 /** Attempt the actual plain read; true when it appended. */
 const reads = (cache: Cache, rows: number, seed: number) => {
   using k = tensor(rows, 1, seed), v = tensor(rows, 1, seed + 1);
@@ -94,7 +94,7 @@ test("per-layer policy: configured layers answer through their own maintenance, 
     maintain.preparePrefill!(caches);
     expect(caches[0]).toBeInstanceOf(DelayedQuantizedKVCache);
     expect(caches[1]).toBeInstanceOf(RotatingKVCache);
-    expect(caches.map(cache => cache.plainKvReads!.appendable(0))).toEqual([false, true, true]);
+    expect(caches.map(cache => cache.denseKvReads!.appendable(0))).toEqual([false, true, true]);
   } finally { for (const cache of caches) cache.dispose(); }
 });
 
@@ -162,7 +162,7 @@ test("arbitrary maintenance: a callback that cannot answer never certifies, what
     } finally { stays.dispose(); }
     // The same no-op as a bare callback cannot answer: no capability.
     const bare = delayed(rotating, 2, () => {}, [6, 7], 92);
-    try { expect(bare.plainKvReads).toBeUndefined(); expect(reads(bare, 2, 93)).toBe(true); } finally { bare.dispose(); }
+    try { expect(bare.denseKvReads).toBeUndefined(); expect(reads(bare, 2, 93)).toBe(true); } finally { bare.dispose(); }
     // Early conversion by a custom callback (below its declared start), and
     // conversion only on the second call: neither can be certified, and the
     // plain read appends to no row once it converts.
@@ -171,7 +171,7 @@ test("arbitrary maintenance: a callback that cannot answer never certifies, what
     for (const maintain of [(rows: Cache[]) => eager(rows), (rows: Cache[]) => { if (++calls >= 2) eager(rows); }]) {
       const group = delayed(rotating, 100, maintain, [2, 3], 94);
       try {
-        expect(group.plainKvReads).toBeUndefined();
+        expect(group.denseKvReads).toBeUndefined();
         const offsets = [...group.rowOffsets];
         const first = reads(group, 2, 95);
         if (first) offsets.forEach((_, row) => offsets[row]! += 1);
@@ -188,11 +188,11 @@ test("plain storage declares plain reads; encoded storage does not", () => {
     new RotatingAffineLayout(W, 64, 4), new TurboQuantKVCache(8, 3),
     new DelayedTurboQuantKVCache(8, 3, 0, createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))];
   try {
-    for (const cache of plain) expect(cache.plainKvReads?.appendable(0), cache.constructor.name).toBe(true);
-    for (const cache of encoded) expect(cache.plainKvReads, cache.constructor.name).toBeUndefined();
+    for (const cache of plain) expect(cache.denseKvReads?.appendable(0), cache.constructor.name).toBe(true);
+    for (const cache of encoded) expect(cache.denseKvReads, cache.constructor.name).toBeUndefined();
     // The prefill cohort's rotating layout never converts, and says so.
     const layout = prefillCacheLayout(new RotatingKVCache(W));
-    try { expect(layout).toBeInstanceOf(DelayedRotatingQuantizedKVCache); expect(layout.plainKvReads).toBeDefined(); }
+    try { expect(layout).toBeInstanceOf(DelayedRotatingQuantizedKVCache); expect(layout.denseKvReads).toBeDefined(); }
     finally { layout.dispose(); }
   } finally { for (const cache of [...plain, ...encoded]) cache.dispose(); }
 });
@@ -208,9 +208,9 @@ test("a custom maintenance's converts runs on its own receiver, bound once with 
     for (const [lengths, expected] of [[[2, 3], [true, true]], [[2, 6], [true, false]]] as const) {
       const group = delayed(rotating, 100, maintain, [...lengths], 110);
       try {
-        const capability = group.plainKvReads;
+        const capability = group.denseKvReads;
         expect(capability).toBeDefined();
-        expect(group.plainKvReads).toBe(capability!);   // built once, not per access
+        expect(group.denseKvReads).toBe(capability!);   // built once, not per access
         expect(appendable(group, lengths.length)).toEqual([...expected]);
         const offsets = [...group.rowOffsets];
         expect(reads(group, lengths.length, 112)).toBe(expected.every(Boolean));

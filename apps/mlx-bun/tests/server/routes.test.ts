@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import type { ModelContext } from "../../src/engine/model-host";
 import type { CompletionEngine } from "../../src/engine/completion";
 import { UnsupportedExecutionError } from "../../src/engine/completion";
-import { PlainKvReadError } from "@mlx-bun/inference/state/plain-kv-reads";
+import { DenseKvReadError } from "@mlx-bun/inference/state/dense-kv-reads";
 import { createCompletionRoutes } from "../../src/server/routes";
 import { errorResponse } from "../../src/server/http";
 import { startServer } from "../../src/server/start";
@@ -140,7 +140,7 @@ for (const stream of [false, true]) test(`unsupported execution returns JSON 501
 // 501 without a 500 log, before or after tokens; a stream that already opened
 // ends with the protocol error after the tokens it sent.
 for (const tokens of [0, 2]) test(`a plain-KV transition after ${tokens} tokens returns JSON 501 without 500 logging`, async () => {
-  const failure = new PlainKvReadError();
+  const failure = new DenseKvReadError();
   const run = harness(async (...args) => { for (let t = 1; t <= tokens; t++) await args[2](t); throw failure; });
   const logs = spyOn(console, "error").mockImplementation(() => {});
   try {
@@ -152,7 +152,7 @@ for (const tokens of [0, 2]) test(`a plain-KV transition after ${tokens} tokens 
 });
 
 for (const tokens of [0, 2]) test(`a streamed plain-KV transition after ${tokens} tokens ends with the protocol error`, async () => {
-  const failure = new PlainKvReadError();
+  const failure = new DenseKvReadError();
   const run = harness(async (...args) => { for (let t = 1; t <= tokens; t++) await args[2](t); throw failure; });
   const logs = spyOn(console, "error").mockImplementation(() => {});
   try {

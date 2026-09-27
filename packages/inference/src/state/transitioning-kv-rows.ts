@@ -1,6 +1,6 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { BatchableCache, Cache, KvMaintenance, Mask, PlainKvReads } from "../contracts/mlx/cache";
+import type { BatchableCache, Cache, KvMaintenance, Mask, DenseKvReads } from "../contracts/mlx/cache";
 import { KvTensorRows } from "./kv-tensor-rows";
 import { leaseCacheStates } from "./leases";
 import { minimumReusableOffset } from "./views";
@@ -99,7 +99,7 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
   protected syncPositions(preserve = false): void { this.positions.sync(this.rows, preserve); }
   /** Plain reads answered by `maintain`'s own conversion test, bound to that
    * maintenance once; undefined when it cannot answer. */
-  protected plainKvReadsOf(maintain: KvMaintenance): PlainKvReads | undefined {
+  protected denseKvReadsOf(maintain: KvMaintenance): DenseKvReads | undefined {
     if (!maintain.converts) return undefined;
     const converts = maintain.converts.bind(maintain);
     return { appendable: row => this.plainAfterNextAppend(row, converts) };

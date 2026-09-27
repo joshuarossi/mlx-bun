@@ -274,10 +274,10 @@ Requests that supply fill remain ineligible for generation checkpoints. Actual
 delayed speculation and softcap encoded KV remain excluded. A graph whose
 attention reads plain KV (a softcap graph such as Gemma2) instead admits affine
 KV for ordinary continuous decoding, with checkpoints, while each row's storage
-certifies that its next append still reads plain (`Cache.plainKvReads`, answered
+certifies that its next append still reads plain (`Cache.denseKvReads`, answered
 by the storage's own maintenance). At a row's actual transition its pending
 token publishes first, and the row may finish there; otherwise that row alone is
-rejected with `PlainKvReadError` before any shared append (HTTP 501
+rejected with `DenseKvReadError` before any shared append (HTTP 501
 `unsupported_kv_transition`, or the stream's error event once it has opened).
 Main's serial path threw at that forward instead. Universal graphs
 with sliding layers take the same ordinary delayed path when their bound

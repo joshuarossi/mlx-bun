@@ -21,7 +21,7 @@ interface PrefillHost {
   promptCache?: RowPromptCache;
   stateCodecs?: CacheCodecProvider;
   maintain?: KvMaintenance;
-  plainKvReads?: readonly number[];
+  denseKvReads?: readonly number[];
   forward(ids: MlxArray, caches: Cache[]): Promise<MlxArray>;
   /** Target projection preserves the forward batch geometry before sampling. */
   project(hidden: MlxArray, caches: Cache[], completed: readonly PrefillState[]): MlxArray;
@@ -39,7 +39,7 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
   get supportsMixedWork(): boolean { return !this.rows.some(row => row.req.promptInput); }
   constructor(readonly host: PrefillHost) {
     super({
-      stateCodecs: host.stateCodecs, maintain: host.maintain, plainKvReads: host.plainKvReads,
+      stateCodecs: host.stateCodecs, maintain: host.maintain, denseKvReads: host.denseKvReads,
       open(row) {
         let owned: { caches: Cache[]; retain?: () => void } | undefined;
         let closeCache: (() => void) | undefined;

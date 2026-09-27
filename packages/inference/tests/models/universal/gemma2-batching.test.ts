@@ -1500,7 +1500,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const [left, peer] = await control.together([A, 3], [B, 5]);
       expect(left).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "length" });
       const [a, b] = await delayed.together([A, 8], [B, 5]);
-      expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
+      expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
       expect(b).toEqual(peer);
       expect(dl).toEqual(pl);   // every projection of both rows, before and after A leaves
       // The same group drains and serves again.
@@ -1530,7 +1530,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         expect(b).toEqual(peer);
         expect(dl).toEqual(pl);
         // Without the EOS the same row reads past it and is rejected there.
-        expect(await delayed.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, at + 1), outcome: "PlainKvReadError" });
+        expect(await delayed.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, at + 1), outcome: "DenseKvReadError" });
       } finally { await control.close(); await delayed.close(); }
     } finally { await plain.close(); }
   });
@@ -1573,7 +1573,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     try {
       const soloShort = await plain.submit(short, 3);
       const [l, s] = await delayed.together([long, 4], [short, 3]);
-      expect(l).toEqual({ tokens: [], outcome: "PlainKvReadError" });
+      expect(l).toEqual({ tokens: [], outcome: "DenseKvReadError" });
       expect(s).toEqual(soloShort);
     } finally { await plain.close(); await delayed.close(); }
   });
@@ -1643,7 +1643,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     try {
       const control = await run("control", scheme);
       expect({ tokens: control.tokens, outcome: control.outcome, scanned: control.scanned, restored: control.restored })
-        .toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "PlainKvReadError", scanned: 0, restored: [] });
+        .toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "DenseKvReadError", scanned: 0, restored: [] });
       expect([...control.captured.keys()]).toEqual([2, 4]);
       const interrupted = await run("restart", scheme, 3);
       expect({ outcome: interrupted.outcome, scanned: interrupted.scanned, restored: interrupted.restored })
@@ -1654,7 +1654,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const resumed = await run("restart", scheme);
       expect(resumed.scanned).toBe(1);   // the interrupted row's record at 2, and only it
       expect(resumed.restored).toEqual([A.length + 2]);
-      expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
+      expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "DenseKvReadError" });
       expect(resumed.captured.get(4)).toBe(control.captured.get(4)!);
       // Beside a sibling the resumed row decodes at B2, where one layer-3 value
       // element rounds differently from B1 (a valid-state difference plain KV shares),
@@ -1664,7 +1664,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const plainResumed = await run("plain-restart", null, undefined, true);
       const beside = await run("restart-sibling", scheme, undefined, true);
       expect([beside.scanned, beside.restored, plainResumed.scanned, plainResumed.restored]).toEqual([1, [A.length + 2], 1, [A.length + 2]]);
-      expect({ tokens: beside.tokens, outcome: beside.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
+      expect({ tokens: beside.tokens, outcome: beside.outcome }).toEqual({ tokens: control.tokens, outcome: "DenseKvReadError" });
       expect(beside.captured.get(4)).toBe(plainResumed.captured.get(4)!);
       expect(beside.sibling).toEqual(plainResumed.sibling);
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -1680,7 +1680,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const grammar = { accept(token: number) { accepted.push(token); }, get isTerminated() { return false; },
         ready: () => Promise.resolve() } as unknown as import("../../../src/sampling").GrammarController;
       const result = await delayed.submit(A, 8, {}, grammar);
-      expect(result).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
+      expect(result).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
       expect(accepted).toEqual(result.tokens);
     } finally { await plain.close(); await delayed.close(); }
   });
@@ -1690,7 +1690,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     const prompt = [2, 4, 7, 9, 3, 11, 13, 17];
     try {
       // Tail split: the drain chunk converts the row; its tail forward is refused.
-      expect(await split.submit(prompt, 4)).toEqual({ tokens: [], outcome: "PlainKvReadError" });
+      expect(await split.submit(prompt, 4)).toEqual({ tokens: [], outcome: "DenseKvReadError" });
       // One final chunk from offset 0 reads plain; a one-token budget ends before any later append.
       const first = await plain.submit(prompt, 1);
       expect(await single.submit(prompt, 1)).toEqual(first);
