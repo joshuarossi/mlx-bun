@@ -46,6 +46,12 @@ let warnedTurboRotating = false;
  *    24 GB Mac). Numerics untouched: same quantize math, only the eval
  *    ordering is forced (`02d723a:tests/parity/kv-quant.test.ts`,
  *    `02d723a:tests/parity/rotating-kvq.test.ts`). */
+/** Where affine KV conversion starts: the explicit `quantizedKvStart`, else
+ * immediately for a per-layer config and after 5000 tokens for uniform bits. */
+export function affineQuantizedKvStart(options: { quantizedKvStart?: number; kvConfig?: readonly unknown[] }): number {
+  return options.quantizedKvStart ?? (options.kvConfig?.length ? 0 : 5000);
+}
+
 export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvConfig">> & {
   readonly kvConfig?: readonly Readonly<KvQuantSpec>[];
 }): KvMaintenance {
@@ -77,7 +83,7 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     return maintain;
   }
   if (!kvBits && !kvConfig?.length) return unchanged;
-  const start = options.quantizedKvStart ?? (kvConfig?.length ? 0 : 5000);
+  const start = affineQuantizedKvStart(options);
   const groupSize = options.kvGroupSize ?? 64;
   // Resolve layer policy once when composing execution, never per token.
   const byLayer = kvConfig?.length
