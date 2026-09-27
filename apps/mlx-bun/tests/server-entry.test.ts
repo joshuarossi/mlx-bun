@@ -21,8 +21,10 @@ async function runChild(script: string) {
   const home = join(scratch, "home");
   try {
     const child = Bun.spawn([process.execPath, "--no-env-file", "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
+      // Bun's own runtime transpiler cache would otherwise land under HOME
+      // (Library/Caches/bun); disable it so the HOME assertions see only the app.
       env: { ...process.env, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", HF_TOKEN: "", HOME: home,
-        HF_HUB_CACHE: join(scratch, "hub"), SCRATCH: scratch } });
+        HF_HUB_CACHE: join(scratch, "hub"), SCRATCH: scratch, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } });
     const deadline = setTimeout(() => child.kill("SIGKILL"), 18_000);
     try {
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
