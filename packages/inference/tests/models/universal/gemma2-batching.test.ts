@@ -134,6 +134,52 @@ class LegacyMaskModel extends UniversalDenseModel {
 }
 const dispose = (caches: Cache[]) => { for (const cache of caches) cache.dispose(); };
 
+test.skipIf(!native)("a fill group's last row leaving with a pipelined token drains the same scheduler for reuse", async () => {
+  const { bindMlxGateway, createRuntimeConfig } = await import("../../../src/execution");
+  const { FillSession } = await import("../../../src/generation/fill");
+  const { activeMemory } = await import("@mlx-bun/mlx/ffi");
+  const f = fixture(), model = f.make();
+  const binding = bindMlxGateway(model);
+  const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
+    turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
+  // One scheduler for every request: a poisoned drain would surface on reuse.
+  const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64,
+    runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" }) });
+  const prompt = [2, 4, 7, 9, 3];
+  // A consumer stop or a cancellation ends the last row in an ordinary step
+  // whose next token is already pipelined: the group filters to no rows while
+  // a token is pending.
+  const run = async (end?: { stopAfter?: number; cancelAfter?: number }) => {
+    const options = { maxTokens: 8, temperature: 0, fill: new FillSession({ rows: [], eos: [], echo: null }, prompt) };
+    const plan = binding.plan(shape, options, { continuous: binding.cachesBatchable(), quantizedBatch: false, checkpoints: false });
+    expect(plan).toMatchObject({ mechanism: "continuous", fill: true });
+    const tokens: number[] = [], abort = new AbortController();
+    const outcome = await group.submit({ promptIds: prompt, maxTokens: 8, eosTokenIds: [], method: binding.methodRequest!(plan, options)!,
+      signal: abort.signal, onToken(token) {
+        tokens.push(token);
+        if (tokens.length === end?.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
+        return tokens.length === end?.stopAfter ? false : undefined;
+      } }).then(stats => stats.finishReason, (error: Error) => error.name);
+    expect(group.activeRows + group.pendingRows).toBe(0);
+    return { tokens, outcome };
+  };
+  try {
+    const full = await run();
+    expect(full.tokens).toHaveLength(8);
+    expect(full.outcome).toBe("length");
+    const memory: number[] = [activeMemory()];
+    for (let cycle = 0; cycle < 3; cycle++) {
+      expect(await run({ stopAfter: 3 })).toEqual({ tokens: full.tokens.slice(0, 3), outcome: "stop" });
+      // The abort lands inside the third token's delivery; nothing follows it.
+      expect(await run({ cancelAfter: 3 })).toEqual({ tokens: full.tokens.slice(0, 3), outcome: "AbortError" });
+      expect(await run()).toEqual(full);
+      memory.push(activeMemory());
+    }
+    // Released with its row: no growth across stop, cancel and full cycles.
+    expect(memory.every(bytes => bytes === memory[0])).toBe(true);
+  } finally { await group.close(); f.dispose(); }
+});
+
 describe.skipIf(!native)("Gemma2 manual attention native masks", () => {
   test("ordinary B1 prefill, continuation chunks and decode preserve main's complete logits", () => {
     const f = fixture(), actual = f.make(), legacy = f.make(true);

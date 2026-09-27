@@ -478,8 +478,9 @@ class FillGroup implements MlxGroupedMethod {
   }
   filterRows(keep: readonly number[], _discard: boolean): void {
     if (this.#pending) {
-      using indices = ops.fromInt32([...keep], [keep.length]);
-      const next = keep.length ? ops.takeAxis(this.#pending, indices, 0) : null;
+      // The last row can leave while a token is pipelined: no rows, no index array.
+      let next: MlxArray | null = null;
+      if (keep.length) { using indices = ops.fromInt32([...keep], [keep.length]); next = ops.takeAxis(this.#pending, indices, 0); }
       this.#pending.dispose(); this.#pending = next;
     }
     this.#known = keep.map(index => this.#known[index]!); this.#real = keep.map(index => this.#real[index]!);
