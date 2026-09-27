@@ -478,8 +478,10 @@ without `initializeMlx`. It loads without native MLX and starts nothing on
 import. It re-exports the client above with its contract types,
 `createInferenceEngine` and `CancellationSource` with main's generation
 contract types from `@mlx-bun/inference`, and adds `openIsolatedHost`. Main's
-`initializeMlx` and the native root (`.`) compatibility API are not provided;
-they are tracked separately. The root's selection helpers are
+`initializeMlx` and its native bootstrap were removed deliberately: the native
+runtime ships inside the packages and loads on first use, so there is no
+acquisition step to call and no root (`.`) namespace to return. Import each
+member from its owner instead (the migration table below). The root's selection helpers are
 `mlx-bun/selection` (below), and main's in-process server is
 [`mlx-bun/server`](#server-entry-mlx-bunserver).
 
