@@ -6,7 +6,8 @@ import { FillSession } from "../../src/generation/fill";
 import type { GenerateOptions } from "../../src/generation";
 import { Qwen35Model } from "../../src/models/qwen/qwen3_5";
 import { KVCache } from "../../src/state/kv";
-import type { ContinuationServices } from "../../src/execution/continuation";
+import type { ContinuationServices, ContinuationStore } from "../../src/execution/continuation";
+import { ContinuationPersistence } from "../../src/execution/continuation-persistence";
 
 const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false,
   kvQuant: false, turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
@@ -83,5 +84,74 @@ test("Gemma2 softcap plans shared continuation for plain KV only, keeping every 
     expect({ request, mechanism: plan.mechanism, checkpoint: plan.mechanism === "continuous" && plan.checkpoint })
       .toEqual({ request, mechanism, checkpoint: false });
     expect(binding.continuationRequest!(plan, options, [2, 651], () => {})).toBeUndefined();
+  }
+});
+
+test("Gemma4 adapter requests bypass server-wide paging and checkpoint exactly as unpaged adapter requests", () => {
+  const model = Object.assign(Object.create(Gemma4Model.prototype), {
+    config: { modelType: "gemma4", text: { enableMoeBlock: false }, eosTokenIds: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] },
+  }) as Gemma4Model;
+  const lookups: unknown[][] = [];
+  const store = { findGenerationCheckpoint: (...args: unknown[]) => { lookups.push(args); return null; } } as unknown as ContinuationStore;
+  const binding = bindMlxGateway(model);
+  binding.configureContinuation!({ checkpoints: store, checkpointPersistence: new ContinuationPersistence(store, { maxBytes: 1024 }),
+    checkpointEveryTokens: 4, identity: "fixture" } as unknown as ContinuationServices);
+  const schedule = { continuous: true, quantizedBatch: true, checkpoints: true };
+  const paging = { pagedKv: {} }, adapters = { adapters: ["upper"] }, adapterShape = { ...shape, hasAdapters: true };
+  const prompt = [2, 651, 9];
+  // Main's serial executor scoped the flag per request: the adapter row runs on
+  // plain caches, so its placement, namespaces, state and continuation key are
+  // those of the same request without paging.
+  const on = binding.plan(adapterShape, { ...adapters, ...paging }, schedule), off = binding.plan(adapterShape, adapters, schedule);
+  expect(on).toMatchObject({ method: "autoregressive", mechanism: "continuous", pagedKv: false, promptCache: true, checkpoint: true });
+  const bypass = "paged-kv-bypassed-for-media-or-adapters";
+  const { reasons: bypassed, ...placedOn } = on, { reasons: plain, ...placedOff } = off;
+  expect(placedOn).toEqual(placedOff);
+  expect(bypassed).toContain(bypass);
+  expect(bypassed.filter(reason => reason !== bypass)).toEqual([...plain]);
+  expect(binding.prefixNamespace!(on, { ...adapters, ...paging }, "upper@a")).toBe("upper@a");
+  expect(binding.prefixNamespace!(off, adapters, "upper@a")).toBe("upper@a");
+  expect(binding.statePolicy!(on, { ...adapters, ...paging }, 64)).toBeUndefined();
+  expect(binding.statePolicy!(off, adapters, 64)).toBeUndefined();
+  const requests = [binding.continuationRequest!(on, { ...adapters, ...paging }, prompt, () => {})!,
+    binding.continuationRequest!(off, adapters, prompt, () => {})!];
+  try {
+    for (const request of requests) expect(request.continuation.restore("upper@a")).toBeNull();
+    expect(lookups).toHaveLength(2);
+    expect(lookups[0]).toEqual(lookups[1]);
+    expect(lookups[0]![2]).toBe("upper@a");
+  } finally { for (const request of requests) request.dispose(); }
+  // Actual paging and the other exclusions are unchanged: a paged row keeps its
+  // paged state and namespace without a checkpoint; media, grammar, fill and
+  // logprobs rows bypass paging and still take none; a paging request on a
+  // graph without paged batching stays unsupported.
+  const paged = binding.plan(shape, paging, schedule);
+  expect(paged).toMatchObject({ mechanism: "continuous", pagedKv: true, checkpoint: false });
+  expect(binding.statePolicy!(paged, paging, 64)).toBeDefined();
+  expect(JSON.parse(binding.prefixNamespace!(paged, paging, "")!)[0]).toBe("paged-v1");
+  expect(binding.continuationRequest!(paged, paging, prompt, () => {})).toBeUndefined();
+  const fill = { fill: new FillSession({ rows: [], eos: [], echo: null }, prompt) };
+  for (const [request, options] of [[{ ...adapterShape, hasVision: true }, adapters], [{ ...shape, hasVision: true }, {}],
+    [{ ...adapterShape, hasGrammar: true }, adapters], [adapterShape, { ...adapters, ...fill }],
+    [{ ...adapterShape, wantsLogprobs: true }, adapters]] as const) {
+    const plan = binding.plan(request, { ...options, ...paging }, schedule), unpaged = binding.plan(request, options, schedule);
+    expect({ request, plan }).toMatchObject({ request, plan: { mechanism: "continuous", pagedKv: false, checkpoint: false } });
+    const { reasons: withPaging, ...placed } = plan, { reasons: without, ...baseline } = unpaged;
+    expect({ request, placed }).toEqual({ request, placed: baseline });
+    expect(withPaging).toContain(bypass);
+    expect(withPaging.filter(reason => reason !== bypass)).toEqual([...without]);
+    expect(binding.continuationRequest!(plan, { ...options, ...paging }, prompt, () => {})).toBeUndefined();
+  }
+  const qwen = bindMlxGateway(Object.assign(Object.create(Qwen35Model.prototype), {
+    config: { modelType: "qwen3_5", text: { enableMoeBlock: false }, eosTokenIds: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] },
+  }) as Qwen35Model);
+  qwen.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as ContinuationServices);
+  for (const request of [shape, adapterShape]) {
+    const plan = qwen.plan(request, { ...adapters, ...paging }, schedule);
+    expect(plan.mechanism).toBe("unsupported");
+    expect(plan.reasons).toContain("paged-kv-batch-unsupported");
+    expect(qwen.continuationRequest!(plan, { ...adapters, ...paging }, prompt, () => {})).toBeUndefined();
   }
 });
