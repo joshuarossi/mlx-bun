@@ -180,9 +180,14 @@ completion. Plain-KV two-model speculation uses the shared speculative group
 with a second loaded instance as the draft; the batching test's opt-in two-model
 case checks B1 determinism, main's gate that greedy grammar with speculation
 equals greedy grammar alone, a ragged joined group (its measured target batch),
-cancellation, and a follow-on request that reproduces the fresh B1 run. Encoded
-KV, other draft providers, drafts with adapters or fill, and paging retain typed
-unsupported placement.
+cancellation, and a follow-on request that reproduces the fresh B1 run. N-gram
+lookup drafting uses the same group; its opt-in case observes rounds where a
+proposing row verifies beside an empty, right-padded peer and rounds where no row
+proposes, swaps the padded peer's content without changing the target's forwards,
+proposals, tokens or logits (greedy and seeded), cancels a ragged third row against
+a same-count stop control, and checks main's grammar gate. Encoded
+KV, other draft providers, drafts with adapters or fill, and
+paging retain typed unsupported placement.
 Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 

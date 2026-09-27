@@ -8,6 +8,7 @@ import type { UniversalDenseModel } from "../../../src/models/universal/dense";
 import type { ModelConfig } from "../../../src/artifacts/config";
 import type { Weights } from "../../../src/artifacts/weights";
 import type { Cache, Mask } from "../../../src/contracts/mlx/cache";
+import type { GenerateOptions } from "../../../src/generation/index";
 
 // Native numerical tests are explicit: CPU-only planning/CI never initializes
 // model tensors. All synthetic weights exist in memory, not tracked fixtures.
@@ -679,6 +680,246 @@ test.skipIf(!native || !artifact)("cached Gemma2 two-model speculation keeps B1 
       expect(group.activeRows + group.pendingRows).toBe(0);
     } finally { await group.close(); }
   } finally { draft?.dispose(); weights.dispose(); }
+}, 900_000);
+
+
+test.skipIf(!native || !artifact)("cached Gemma2 n-gram speculation mixes empty and nonempty proposals, isolates a padded peer, and serves ragged joins, cancellation, grammar and seeded rows", async () => {
+  const { Weights, loadModelConfig, createModel } = await import("../../../src/index");
+  const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
+  const { NgramProvider } = await import("../../../src/generation/speculative");
+  const { loadTokenizer } = await import("../../../src/input");
+  const { compileGrammarRequest, makeStepSampler } = await import("../../../src/sampling");
+  const weights = await Weights.open(artifact!);
+  try {
+    const model = createModel(weights, await loadModelConfig(artifact!)) as UniversalDenseModel;
+    const tokenizer = await loadTokenizer(artifact!);
+    const eos = model.config.eosTokenIds;
+    const turn = (user: number[]) => [2, ...tokenizer.encode("<start_of_turn>user\n", false), ...user,
+      ...tokenizer.encode("<end_of_turn>\n<start_of_turn>model\n", false)];
+    const prompt = (text: string) => turn(tokenizer.encode(text, false));
+    // Swapped peers have one length: the first 16 user tokens of different text.
+    const peer = (text: string) => {
+      const ids = tokenizer.encode(text, false);
+      if (ids.length < 16) throw new Error(`peer text is shorter than 16 tokens: ${text}`);
+      return turn(ids.slice(0, 16));
+    };
+    const copy = prompt("Copy this list exactly, keeping every comma: red apples, green pears, warm bread, a blue kite, " +
+      "seven paper boats, an old clock, a quiet train, fresh snow, two owls, a tall pine, a stone bridge.");
+    const story = peer("Write a long, winding story about a lighthouse keeper who discovers an old map hidden inside a wall.");
+    const glass = peer("Describe in rich detail how glassblowers in Venice shaped molten sand into delicate vases and bowls.");
+    const bread = prompt("Explain step by step how bread dough rises overnight in a bakery.");
+    const moon = prompt("List four facts about the Moon, one per line.");
+    // Measured, not assumed: every target forward's rows x positions, each
+    // round's proposal length per row, and (while capturing) a hash of row 0's
+    // logits at every projected position. The gateway binds these methods, so
+    // the hooks go in first.
+    const forwards: string[] = [], rounds: number[][] = [], rowZero: string[] = [];
+    let capture = false;
+    const forwardHidden = model.forwardHidden.bind(model), logitsFromHidden = model.logitsFromHidden.bind(model);
+    model.forwardHidden = (...args: Parameters<typeof forwardHidden>) => {
+      forwards.push(`${args[0].shape[0]}x${args[0].shape[1]}`);
+      return forwardHidden(...args);
+    };
+    model.logitsFromHidden = (...args: Parameters<typeof logitsFromHidden>) => {
+      const out = logitsFromHidden(...args);
+      if (capture) {
+        using row = out.slice([0, 0, 0], [1, out.shape[1]!, out.shape[2]!]);
+        using flat = ops.contiguous(row);
+        rowZero.push(createHash("sha256").update(flat.rawBytes()).digest("hex"));
+      }
+      return out;
+    };
+    const recorded = (policy?: { max: number; min: number }) => {
+      const provider = new NgramProvider(policy), open = provider.grouped.open.bind(provider.grouped);
+      Object.assign(provider.grouped, { open: (options: Parameters<typeof open>[0]) => {
+        const rows = open(options), draft = rows.draft.bind(rows);
+        rows.draft = (pending, depth, steps) => {
+          const proposals = draft(pending, depth, steps);
+          if (proposals instanceof Promise) throw new Error("n-gram lookup proposes synchronously");
+          rounds.push(proposals.map(ids => ids.length));
+          return proposals;
+        };
+        return rows;
+      } });
+      return provider;
+    };
+    // Lookup policies are served knobs: the default (3..1), and a 4-gram policy
+    // under which novel-text peers propose nothing. Ten draft tokens is the
+    // served n-gram default.
+    const lookup = bindMlxGateway(model, { provider: recorded(), numDraftTokens: 10 });
+    const strict = bindMlxGateway(model, { provider: recorded({ max: 4, min: 4 }), numDraftTokens: 10 });
+    const runtime = createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" });
+    const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
+      turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true };
+    const greedy: GenerateOptions = { maxTokens: 32, temperature: 0 };
+    const seeded: GenerateOptions = { maxTokens: 32, temperature: 0.7, seed: 7 };
+    type Row = { prompt: number[]; options?: GenerateOptions; joinOnFirst?: number; cancelAt?: number; stopAt?: number };
+    // One group per scenario. A row may join at another row's first token and
+    // may be cancelled or stopped at an emitted count. Each row's mark records
+    // what had been measured when it emitted its last token.
+    const scenario = async (binding: typeof lookup, spec: Row[]) => {
+      forwards.length = 0; rounds.length = 0; rowZero.length = 0;
+      const group = binding.createBatchGroup({ maxBatch: 4, prefillChunkSize: 512, runtime });
+      const outcomes = spec.map(() => ({ tokens: [] as number[], error: undefined as unknown,
+        stats: undefined as Awaited<ReturnType<typeof group.submit>> | undefined, mark: { forwards: 0, rounds: 0, projections: 0 } }));
+      const started: Promise<void>[] = [];
+      const start = (index: number) => {
+        const row = spec[index]!, outcome = outcomes[index]!, options = row.options ?? greedy, abort = new AbortController();
+        const plan = binding.plan({ ...shape, userSeed: options.seed !== undefined }, options,
+          { continuous: binding.cachesBatchable(), quantizedBatch: false, checkpoints: false });
+        expect(plan).toMatchObject({ method: "speculative", mechanism: "continuous" });
+        started.push(group.submit({ promptIds: row.prompt, maxTokens: options.maxTokens!, eosTokenIds: eos, signal: abort.signal,
+          method: binding.methodRequest!(plan, options)!,
+          onToken(token) {
+            outcome.tokens.push(token);
+            outcome.mark = { forwards: forwards.length, rounds: rounds.length, projections: rowZero.length };
+            if (outcome.tokens.length === 1) spec.forEach((other, joiner) => { if (other.joinOnFirst === index) start(joiner); });
+            if (row.cancelAt === outcome.tokens.length) abort.abort(new DOMException("client left", "AbortError"));
+            return row.stopAt === outcome.tokens.length ? false : undefined;
+          } }).then(stats => { outcome.stats = stats; }, error => { outcome.error = error; }));
+      };
+      spec.forEach((row, index) => { if (row.joinOnFirst === undefined) start(index); });
+      try {
+        for (let seen = -1; seen !== started.length;) { seen = started.length; await Promise.all([...started]); }
+        return { outcomes, forwards: [...forwards], rounds: rounds.map(round => [...round]), rowZero: [...rowZero],
+          leftover: group.activeRows + group.pendingRows };
+      } finally { await group.close(); }
+    };
+    const width = (run: Awaited<ReturnType<typeof scenario>>) => Math.max(...run.forwards.map(forward => Number(forward.split("x")[0])));
+    // Every row settled with statistics and output; an unstarted join would not.
+    const succeeded = (run: Awaited<ReturnType<typeof scenario>>) => {
+      for (const outcome of run.outcomes) {
+        expect(outcome.error).toBeUndefined();
+        expect(outcome.stats).toBeDefined();
+        expect(outcome.tokens.length).toBeGreaterThan(0);
+      }
+      expect(run.leftover).toBe(0);
+    };
+
+    // B1: alone, greedy and seeded, twice each; the repeat reproduces the first.
+    const solo: Record<string, number[]> = {};
+    for (const [label, options] of [["greedy", greedy], ["seeded", seeded]] as const) {
+      const first = await scenario(lookup, [{ prompt: copy, options }]), again = await scenario(lookup, [{ prompt: copy, options }]);
+      for (const run of [first, again]) { succeeded(run); expect(width(run)).toBe(1); }
+      expect(again.outcomes[0]!.tokens).toEqual(first.outcomes[0]!.tokens);
+      expect(first.outcomes[0]!.stats!.spec!.drafted).toBeGreaterThan(0);
+      solo[label] = first.outcomes[0]!.tokens;
+    }
+
+    // A padded peer: the copying target proposes spans while a novel-text peer
+    // (joined at the target's first token) proposes nothing and is padded.
+    // Swapping the peer's content leaves the target's geometry, proposals,
+    // tokens and every logits row it was projected in unchanged.
+    capture = true;
+    const peers: Record<string, number[]> = {};
+    for (const [label, options, peerOptions] of [["greedy", greedy, greedy], ["seeded", seeded, { ...seeded, seed: 9 }]] as const) {
+      const base = await scenario(strict, [{ prompt: copy, options }, { prompt: story, options: peerOptions, joinOnFirst: 0 }]);
+      const swap = await scenario(strict, [{ prompt: copy, options }, { prompt: glass, options: peerOptions, joinOnFirst: 0 }]);
+      for (const run of [base, swap]) { succeeded(run); expect(width(run)).toBe(2); }
+      const target = base.outcomes[0]!.mark;
+      expect(swap.outcomes[0]!.mark).toEqual(target);
+      expect(swap.forwards.slice(0, target.forwards)).toEqual(base.forwards.slice(0, target.forwards));
+      expect(swap.rounds.slice(0, target.rounds)).toEqual(base.rounds.slice(0, target.rounds));
+      expect(swap.outcomes[0]!.tokens).toEqual(base.outcomes[0]!.tokens);
+      expect(swap.rowZero.slice(0, target.projections)).toEqual(base.rowZero.slice(0, target.projections));
+      expect(swap.outcomes[1]!.tokens).not.toEqual(base.outcomes[1]!.tokens);
+      peers[label] = base.outcomes[1]!.tokens;
+      const shared = base.rounds.slice(0, target.rounds).filter(round => round.length === 2);
+      const padded = shared.filter(([target, peer]) => target! > 0 && peer === 0).length;
+      const empty = shared.filter(round => round.every(length => length === 0)).length;
+      console.info("Gemma2 n-gram padded peer", { label, sharedRounds: shared.length, padded, empty,
+        forwards: [...new Set(base.forwards.slice(0, target.forwards))] });
+      // Mixed lengths including empty, and all-empty rounds, both at two rows.
+      expect(padded).toBeGreaterThan(0);
+      expect(empty).toBeGreaterThan(0);
+      expect(base.forwards.slice(0, target.forwards)).toContain("2x1");
+    }
+    // Seeded sampling is live: the same peer, joined at the same point, samples
+    // a different continuation than greedy decoding.
+    expect(peers.seeded).not.toEqual(peers.greedy);
+    capture = false;
+
+    // Ragged joins: the peer joins at the target's first token and a third row
+    // at the peer's first token; the third is cancelled at its third token. A
+    // control stops it at that count: survivors, every forward and every
+    // round's proposals match, the group drains, and B1 afterwards is unchanged.
+    const three = (last: Partial<Row>): Row[] => [{ prompt: copy }, { prompt: story, joinOnFirst: 0 }, { prompt: bread, joinOnFirst: 1, ...last }];
+    const cancelled = await scenario(lookup, three({ cancelAt: 3 })), stopped = await scenario(lookup, three({ stopAt: 3 }));
+    succeeded(stopped);
+    expect(cancelled.leftover).toBe(0);
+    expect(cancelled.outcomes[2]!.error).toBeInstanceOf(DOMException);
+    expect((cancelled.outcomes[2]!.error as DOMException).name).toBe("AbortError");
+    // Publication checks the signal first: nothing is emitted after the abort.
+    expect(stopped.outcomes[2]!.tokens).toHaveLength(3);
+    expect(cancelled.outcomes[2]!.tokens).toEqual(stopped.outcomes[2]!.tokens);
+    for (const survivor of [0, 1]) {
+      expect(cancelled.outcomes[survivor]!.error).toBeUndefined();
+      expect(cancelled.outcomes[survivor]!.tokens).toEqual(stopped.outcomes[survivor]!.tokens);
+    }
+    expect(width(cancelled)).toBe(3);
+    expect(cancelled.forwards).toEqual(stopped.forwards);
+    expect(cancelled.rounds).toEqual(stopped.rounds);
+    console.info("Gemma2 n-gram ragged join", { rounds: cancelled.rounds.length,
+      mixed: cancelled.rounds.filter(round => round.some(length => length === 0) && round.some(length => length > 0)).length });
+    const followOn = await scenario(lookup, [{ prompt: copy }]);
+    succeeded(followOn);
+    expect(width(followOn)).toBe(1);
+    expect(followOn.outcomes[0]!.tokens).toEqual(solo.greedy!);
+
+    // Main's gate: greedy grammar with speculation equals greedy grammar alone.
+    // Lookup drafts run free; the target's mask rides the verifier's accept
+    // walk, so grammar-invalid drafts are rejected, and the grammar changes
+    // what the same speculative request emits without it.
+    const group = lookup.createBatchGroup({ maxBatch: 4, prefillChunkSize: 512, runtime });
+    try {
+      let rejected = 0;
+      const unconstrained: number[] = [];
+      await group.submit({ promptIds: moon, maxTokens: 16, eosTokenIds: eos, onToken: token => { unconstrained.push(token); },
+        method: lookup.methodRequest!(lookup.plan(shape, { maxTokens: 16, temperature: 0 },
+          { continuous: true, quantizedBatch: false, checkpoints: false }), { maxTokens: 16, temperature: 0 })! });
+      for (const [body, valid, terminates] of [
+        [{ guided_choice: ["Paris", "Lisbon", "Kyoto"] }, /^(Paris|Lisbon|Kyoto)$/, true],
+        [{ guided_grammar: 'root ::= ("yes" | "no") ", " [a-z] [a-z] [a-z]*' }, /^(yes|no), [a-z]{2,}$/, false],
+      ] as const) {
+        const constrained = async (speculate: boolean) => {
+          const compiled = await compileGrammarRequest(body as never, tokenizer, model.config.text.vocabSize);
+          const grammar = compiled?.controller;
+          if (!grammar) throw new Error(`grammar did not compile: ${compiled?.degradeHint}`);
+          const tokens: number[] = [];
+          try {
+            const request = { maxTokens: 16, temperature: 0, grammar };
+            const placed = lookup.plan({ ...shape, hasGrammar: true, hasDraft: speculate }, request,
+              { continuous: true, quantizedBatch: false, checkpoints: false });
+            expect(placed).toMatchObject({ method: speculate ? "speculative" : "autoregressive", mechanism: "continuous" });
+            const ordinary = speculate ? undefined : createRowSampling(makeStepSampler(request, { tokenRepresentation: "device",
+              grammarWait: "external", historyUpdate: "after-sample", initialHistory: moon }), token => { tokens.push(token); });
+            try {
+              const stats = await group.submit({ promptIds: moon, maxTokens: 16, eosTokenIds: eos, grammar,
+                ...(speculate ? { method: lookup.methodRequest!(placed, request)!, onToken: (token: number) => { tokens.push(token); } }
+                  : { sample: ordinary!.sample, plainGreedy: ordinary!.plainGreedy, onToken: ordinary!.onToken }) });
+              return { tokens, finish: stats.finishReason, terminated: grammar.isTerminated, spec: stats.spec };
+            } finally { ordinary?.dispose(); }
+          } finally { grammar.dispose(); }
+        };
+        const alone = await constrained(false), speculated = await constrained(true);
+        const { spec, ...output } = speculated, { spec: ordinary, ...plain } = alone;
+        expect(ordinary).toBeUndefined();
+        expect(output).toEqual(plain);
+        expect(valid.test(tokenizer.decode(alone.tokens, true))).toBe(true);
+        expect(speculated.tokens).not.toEqual(unconstrained.slice(0, speculated.tokens.length));
+        if (terminates) expect({ finish: alone.finish, terminated: alone.terminated }).toEqual({ finish: "stop", terminated: true });
+        else {
+          expect(spec!.drafted).toBeGreaterThan(0);
+          expect(spec!.rounds ?? spec!.targetCalls).toBeGreaterThan(0);
+        }
+        rejected += spec!.rejected ?? spec!.drafted - spec!.accepted;
+        console.info("Gemma2 n-gram grammar speculation", { grammar: Object.keys(body)[0], tokens: alone.tokens.length,
+          text: tokenizer.decode(alone.tokens, true), spec });
+      }
+      expect(rejected).toBeGreaterThan(0);
+      expect(group.activeRows + group.pendingRows).toBe(0);
+    } finally { await group.close(); }
+  } finally { weights.dispose(); }
 }, 900_000);
 
 }

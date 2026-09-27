@@ -230,7 +230,7 @@ test("exclusive mutations share the scheduler lock and release aborted waiters",
 
 // Importing the real graph/binding loads MLX, even though placement creates no
 // tensors. Keep this qualification check out of the native-blocked CPU suite.
-test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, grammar, adapter and plain fill requests and rejects unqualified shared compositions before execution", async () => {
+test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, grammar, adapter, plain fill and n-gram draft requests and rejects unqualified shared compositions before execution", async () => {
   const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
@@ -266,6 +266,22 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
       execution: { method: "autoregressive", compiledDecode: false, fill: true, checkpoint: false } });
     for (const request of [{ kvQuant: true }, { turboQuant: true }, { hasDraft: true }])
       expect(() => gateway.place({ ...shape(), ...request }, fill)).toThrow(UnsupportedExecutionError);
+    // A served n-gram draft speculates on the shared scheduler; as in main, a
+    // logprobs request ignores it. Drafts with adapters or fill stay refused.
+    const { NgramProvider } = await import("@mlx-bun/inference/generation/speculative");
+    const drafted = bindMlxGateway(model, { provider: new NgramProvider(), numDraftTokens: 10 });
+    drafted.createBatchGroup = binding.createBatchGroup;
+    const speculating = new GenerationGateway(drafted, 4);
+    try {
+      expect(speculating.place({ ...shape(), hasDraft: true })).toMatchObject({ mechanism: "continuous",
+        execution: { method: "speculative", fill: false, checkpoint: false } });
+      expect(speculating.place({ ...shape(), hasDraft: true, hasGrammar: true })).toMatchObject({ mechanism: "continuous",
+        execution: { method: "speculative", grammarJump: false } });
+      expect(speculating.place({ ...shape(), hasDraft: true, wantsLogprobs: true })).toMatchObject({ mechanism: "continuous",
+        execution: { method: "autoregressive" } });
+      expect(() => speculating.place({ ...shape(), hasDraft: true, hasAdapters: true })).toThrow(UnsupportedExecutionError);
+      expect(() => speculating.place({ ...shape(), hasDraft: true }, fill)).toThrow(UnsupportedExecutionError);
+    } finally { await speculating.close(); }
     // Even a caller advertising generic encoded support cannot qualify this graph.
     expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
       { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("unsupported");
