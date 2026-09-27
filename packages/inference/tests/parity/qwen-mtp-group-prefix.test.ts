@@ -18,7 +18,8 @@
 //   accepted + 1 while the request continues;
 // - B2 then request 1 alone; per row, while B2, accepted and rejected proposals
 //   and a later two-row round after a rejection;
-// - callbacks equal the returned tokens and are accounted for by the rounds;
+// - callbacks equal the returned tokens and are accounted for round by round
+//   (a consumer failure inside a verified burst retains none of its drafts);
 //   retirement outcomes are exact;
 // - a stopped or finished request publishes one generated checkpoint equal to
 //   its terminal committed target and draft state; a cancelled or failed one
@@ -179,7 +180,7 @@ const commitPairs = (events: A[]) => events.flatMap((e: A, i: number) =>
  * attention offset equals its draft processedTokens and advances from that
  * request's own baseline by accepted + 1 while it continues (1..accepted + 1 in
  * its final round). */
-function checkStates(sub: A, prompts: number[][], sessions: string[], geometry: Geometry, where: string, fail: Fail) {
+function checkStates(sub: A, prompts: number[][], sessions: string[], geometry: Geometry, greedy: boolean, where: string, fail: Fail) {
   const events: A[] = sub?.events ?? [];
   const lastCommit = new Map<number, number>();
   events.forEach((e: A, i: number) => { if (e.event === "state" && e.at === "commit") for (const r of e.rows ?? []) lastCommit.set(r.request, i); });
@@ -240,10 +241,58 @@ function checkStates(sub: A, prompts: number[][], sessions: string[], geometry: 
       fail(`${where}: request ${q} callbacks ${callbacks.length} do not match its ${tokens.length} returned tokens`);
     const outcome = sub?.outcomes?.[q]?.compared;
     if (outcome?.status === "fulfilled" && outcome.generatedTokens !== tokens.length) fail(`${where}: request ${q} generatedTokens ${outcome.generatedTokens}`);
-    const mine = pairs.flatMap(p => { const k = p.state.rows.findIndex((r: A) => r.request === q); return k < 0 ? [] : [p.commit.accepted[k] as number]; });
+    const mine = pairs.flatMap(p => { const k = p.state.rows.findIndex((r: A) => r.request === q); return k < 0 ? [] : [{ ...p, k, accepted: p.commit.accepted[k] as number }]; });
     if (!mine.length) return fail(`${where}: request ${q} has no committed rounds`);
-    const before = 1 + mine.slice(0, -1).reduce((n, a) => n + a + 1, 0);
-    if (tokens.length < before + 1 || tokens.length > before + mine.at(-1)! + 1) fail(`${where}: request ${q} emitted ${tokens.length} tokens beyond its rounds`);
+    // Each callback belongs to the round it was delivered in (after the round's
+    // draft, before its commit) or to none; a round's verify projection is the
+    // last one before its draft. The recorded accepted count is what the round
+    // retained: a consumer that fails (or is cancelled) inside a burst retains
+    // no drafts, after the burst's tokens up to the failing one were delivered.
+    const outside: A[] = [], rounds = new Map<number, { draft: A; project: A | null; tokens: A[] }>();
+    let open: { draft: A; project: A | null; tokens: A[] } | null = null, project: A | null = null;
+    events.forEach((e: A, i: number) => {
+      if (e.event === "project") project = e;
+      else if (e.event === "draft") { if (open) fail(`${where} event ${i}: a round began inside another`); open = { draft: e, project, tokens: [] }; }
+      else if (e.event === "token" && e.row === q) (open ? open.tokens : outside).push(e);
+      else if (e.event === "commit") {
+        if (!open) return fail(`${where} event ${i}: a commit without its round's draft`);
+        rounds.set(i, open); open = null; project = null;
+      }
+    });
+    if (open) fail(`${where}: a round never committed`);
+    if (outside.length !== 1 || outside[0]?.index !== 1) fail(`${where}: request ${q} delivered ${outside.length} tokens outside rounds; only its prefill token may be`);
+    const member = new Set(mine.map(p => p.index));
+    for (const [index, round] of rounds) if (round.tokens.length && !member.has(index))
+      fail(`${where} event ${index}: request ${q} delivered ${round.tokens.length} tokens in a round it is not a member of`);
+    const failed = outcome?.status === "rejected" && outcome.reason === "failed consumer";
+    const cancelled = outcome?.status === "rejected" && outcome.reason === "cancelled consumer";
+    let last = outside[0]?.token;
+    mine.forEach((p, n) => {
+      const round = rounds.get(p.index)!, final = n === mine.length - 1, a = p.accepted;
+      const delivered: number[] = round.tokens.map((e: A) => e.token), e = delivered.length;
+      const proposals: number[] = round.draft?.proposals?.[p.k] ?? [];
+      const at = `${where} event ${p.index}: request ${q}`, said = `delivered ${json(delivered)} with accepted ${a} of ${json(proposals)}`;
+      if (round.draft?.pending?.[p.k] !== last) fail(`${at}: pending ${round.draft?.pending?.[p.k]} is not its last delivered token ${last}`);
+      if (e) last = delivered.at(-1);
+      if (greedy) {
+        // The verified burst: leading drafts equal to the verify argmax, then its correction (or bonus) token.
+        const argmax: number[] | undefined = round.project?.argmax?.[p.k];
+        if (!Array.isArray(argmax) || argmax.length !== proposals.length + 1) return fail(`${at}: no verify argmax for its row`);
+        let v = 0;
+        while (v < proposals.length && proposals[v] === argmax[v]) v++;
+        const burst = [...proposals.slice(0, v), argmax[v]!];
+        const prefix = e >= 1 && e <= burst.length && json(delivered) === json(burst.slice(0, e));
+        if (!final) {
+          if (!(e === burst.length && a === v)) fail(`${at}: continued past a round it ${said}; the verified burst is ${json(burst)}`);
+        } else if (!prefix || !(failed ? a === 0 : cancelled ? a === 0 || a === Math.min(e, v) : a === Math.min(e, v)))
+          fail(`${at}: its final round ${said}; the verified burst is ${json(burst)} (${failed ? "failed" : cancelled ? "cancelled" : "finished"})`);
+      } else {
+        // Sampled: accepted drafts lead the burst and the retained count bounds the deliveries; no retention-free truncation.
+        const drafted = (count: number) => json(delivered.slice(0, count)) === json(proposals.slice(0, count));
+        if (!final ? !(e === a + 1 && drafted(a)) : !(e >= 1 && (e === a || e === a + 1) && drafted(Math.min(e, a))))
+          fail(`${at}: ${final ? "its final round" : "a round it continued past"} ${said}`);
+      }
+    });
   });
   events.forEach((p: A, i: number) => {
     if (p.event !== "put") return;
@@ -287,7 +336,7 @@ function checkCase(c: Case, rec: A, restore: A | undefined, prompts: number[][],
   const g = rec.generation;
   checkRounds(g, vocab, `${at} generation`, fail);
   const sessions = [0, 1].map(q => `${c.name}-${q}`);
-  checkStates(g, prompts, sessions, geometry, `${at} generation`, fail);
+  checkStates(g, prompts, sessions, geometry, c.sampling.temperature === 0, `${at} generation`, fail);
   const commits = (g?.events ?? []).filter((e: A) => e.event === "commit"), states = (g?.events ?? []).filter((e: A) => e.event === "state" && e.at === "commit");
   if (!commits.some((e: A) => e.accepted.length === 2) || !(g?.events ?? []).some((e: A) => e.event === "token" && e.activeRows === 2)) fail(`${at}: B2 was never active`);
   if (!states.some((e: A) => json([...(e.members ?? [])].sort()) === "[0,1]") || json(states.at(-1)?.members) !== "[1]") fail(`${at}: membership is not both requests, then request 1 alone`);
@@ -315,7 +364,7 @@ function checkCase(c: Case, rec: A, restore: A | undefined, prompts: number[][],
   const continuationPrompts = prompts.map((prompt, q) => [...prompt, ...(g.tokens?.[q] ?? []), ...SUFFIX]);
   const checkContinuation = (sub: A, where: string) => {
     checkRounds(sub, vocab, where, fail);
-    checkStates(sub, continuationPrompts, sessions, geometry, where, fail);
+    checkStates(sub, continuationPrompts, sessions, geometry, c.sampling.temperature === 0, where, fail);
     if (json(puts(sub, "generated").map((p: A) => p.row).sort()) !== "[0,1]") fail(`${where}: generated puts`);
     if (sub?.outcomes?.length !== 2) fail(`${where}: rows`);
     (sub?.outcomes ?? []).forEach((x: A, q: number) => {
@@ -704,16 +753,22 @@ const GEOMETRY = geometryFor({ num_hidden_layers: 8, num_key_value_heads: 4, hea
 const P = [Array.from({ length: 32 }, (_, i) => 1000 + i), Array.from({ length: 25 }, (_, i) => 2000 + i)];
 const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x));
 const fake = (key: string, shape: number[], dtype = "bfloat16") => ({ shape, dtype, sha256: sha256(key) });
+/** A round's entry for one member: `a` (a verified burst of a accepted drafts
+ * plus its correction, all delivered and retained) or an explicit truncation:
+ * `v` verified drafts, `deliver` burst tokens delivered, `retain` drafts kept. */
+type Member = number | { v: number; deliver: number; retain: number };
 /** A submission as observed on real weights: request 0 prefills, joins and runs
  * `pre` rounds alone; request 1 then joins, and its entry state repeats request
- * 0's last committed row (with no `pre` rounds, both joins precede one entry). */
-function synthetic(key: string, prompts: number[][], pre: number[][], twoRow: number[][], oneRow: number[][], publish: boolean[], name = "g-stop") {
+ * 0's last committed row (with no `pre` rounds, both joins precede one entry).
+ * Each round is its verify forward and projection, its draft, the deliveries
+ * (a prefix of the verified burst), then its commit of the retained drafts. */
+function synthetic(key: string, prompts: number[][], pre: Member[][], twoRow: Member[][], oneRow: Member[][], publish: boolean[], name = "g-stop") {
   const offsets = prompts.map(p => p.length), tokens: number[][] = [[], []], events: A[] = [], lastRows = new Map<number, A>();
   let members: number[] = [], last: A = null, entryDue = false, round = 0;
   const layers = (tag: string, offset: number) => GEOMETRY.layers.map((kind, i) => kind === "kv"
     ? { signature: "kv:plain", offset, arrays: ["k", "v"].map(p => fake(`${tag}:${i}:${p}:${offset}`, [1, 4, offset, 256])) }
     : { signature: "ssm", offset, arrays: [fake(`${tag}:${i}:c:${offset}`, GEOMETRY.conv.shape), fake(`${tag}:${i}:r:${offset}`, GEOMETRY.recurrent.shape, "float32")] });
-  const emit = (q: number) => { tokens[q]!.push(10_000 * (q + 1) + tokens[q]!.length); events.push({ event: "token", row: q, token: tokens[q]!.at(-1), index: tokens[q]!.length, activeRows: members.length }); };
+  const emit = (q: number, token = 10_000 * (q + 1) + tokens[q]!.length) => { tokens[q]!.push(token); events.push({ event: "token", row: q, token, index: tokens[q]!.length, activeRows: members.length }); };
   const prefill = (q: number) => {
     if (key.startsWith("gen")) events.push({ event: "put", row: q, kind: "prompt", ids: prompts[q]!.slice(0, -1), sessionId: `${name}-${q}`, digest: {} });
     emit(q);
@@ -726,17 +781,19 @@ function synthetic(key: string, prompts: number[][], pre: number[][], twoRow: nu
     events.push({ event: "put", row: q, kind: "generated", ids, namespace: `ns-${q}`, sessionId: `${name}-${q}`, digest: { offsets: row.layers.map((l: A) => l.offset),
       attachments: [["qwen-mtp-v1", { draftOffset: ids.length - 1 }]], arrays: [...row.layers.flatMap((l: A) => l.arrays), ...draft.tensors] } });
   };
-  const play = (a: number[]) => {
+  const play = (entries: Member[]) => {
     const i = round++, pending = members.map(q => tokens[q]!.at(-1)!), proposals = members.map((_, r) => [300 + i, 400 + r]);
-    events.push({ event: "draft", pending, depth: 2, proposals });
+    const m = entries.map(x => typeof x === "number" ? { v: x, deliver: x + 1, retain: x } : x);
+    const bursts = members.map((q, k) => [...proposals[k]!.slice(0, m[k]!.v), 10_000 * (q + 1) + 1_000 + i]);
     if (entryDue) {
       events.push({ event: "state", at: "entry", members: [...members], rows: members.map(q => lastRows.get(q) ? clone(lastRows.get(q)) : { request: q, layers: layers(`${key}:e${q}`, offsets[q]!) }) });
       entryDue = false;
     }
     events.push({ event: "forward", ids: pending.map((p, r) => [p, ...proposals[r]!]), verify: true, sameLayouts: true, hidden: fake(`${key}:h${i}`, [1]) });
-    events.push({ event: "project", logits: { shape: [members.length, 3, V], sha256: sha256(`${key}:l${i}`), finite: true }, argmax: members.map(() => [1, 2, 3]) });
-    members.forEach((q, k) => { for (let t = 0; t <= a[k]!; t++) emit(q); offsets[q]! += a[k]! + 1; });
-    const commit = { event: "commit", accepted: [...a], drafts: members.map(q => ({ processedTokens: offsets[q], schema: "qwen-mtp-v1",
+    events.push({ event: "project", logits: { shape: [members.length, 3, V], sha256: sha256(`${key}:l${i}`), finite: true }, argmax: bursts.map(b => [...b, 7, 7].slice(0, 3)) });
+    events.push({ event: "draft", pending, depth: 2, proposals });
+    members.forEach((q, k) => { for (const token of bursts[k]!.slice(0, m[k]!.deliver)) emit(q, token); offsets[q]! += m[k]!.retain + 1; });
+    const commit = { event: "commit", accepted: m.map(x => x.retain), drafts: members.map(q => ({ processedTokens: offsets[q], schema: "qwen-mtp-v1",
       metadata: { draftOffset: offsets[q]! - 1 }, tensors: [fake(`${key}:d${i}:${q}`, [1, 1, 5120])] })) };
     const state = { event: "state", at: "commit", members: [...members], rows: members.map(q => ({ request: q, layers: layers(`${key}:c${i}:${q}`, offsets[q]!) })) };
     events.push(commit, state);
@@ -752,17 +809,22 @@ function synthetic(key: string, prompts: number[][], pre: number[][], twoRow: nu
   return { events, tokens };
 }
 const done = (reason: string, n: number, cached = 0) => ({ compared: { status: "fulfilled", generatedTokens: n, cachedTokens: cached, finishReason: reason, spec: {} } });
-const rep = (n: number, a: number[]) => Array.from({ length: n }, () => [...a]);
+const rep = (n: number, a: Member[]) => Array.from({ length: n }, () => [...a]);
 /** Request 0 alone for two rounds, then to `at` (its last round truncated) and request 1 to `budget`;
- * seeded: run 1's rounds, then request 1 accepting through its list, rejecting once, and two more two-row rounds. */
-const ROUNDS: Record<string, number[][][]> = {
+ * seeded: run 1's rounds, then request 1 accepting through its list, rejecting once, and two more two-row rounds.
+ * Failed at 16 as on real weights: the consumer throws on its burst's third token, and none is retained. */
+const ROUNDS: Record<string, Member[][][]> = {
   "g-stop": [[[2], [1]], [[2, 2], [2, 2], [0, 1], [0, 2]], rep(4, [2])],
+  "g-cancel": [[[2], [1]], [[2, 2], [2, 2], [0, 1], [2, 2]], rep(4, [2])],
+  "g-fail": [[[2], [1]], [[2, 2], [2, 2], [0, 1], [{ v: 2, deliver: 3, retain: 0 }, 2]], rep(4, [2])],
   "s-stop": [[[2], [1]], [[2, 2], [2, 2], [0, 2], [1, 2], ...rep(19, [2, 2]), [2, 0], [2, 2], [1, 2]], rep(17, [2])],
 };
 function fixture(c: Case, [pre, twoRow, oneRow] = ROUNDS[c.name]!) {
-  const g: A = synthetic(`gen-${c.name}`, P, pre!, twoRow!, oneRow!, [true, true], c.name);
-  g.outcomes = [done("stop", g.tokens[0].length), done("length", g.tokens[1].length)];
+  const g: A = synthetic(`gen-${c.name}`, P, pre!, twoRow!, oneRow!, [c.action === "stop", true], c.name);
+  g.outcomes = [c.action === "stop" ? done("stop", g.tokens[0].length)
+    : { compared: { status: "rejected", reason: c.action === "cancel" ? "cancelled consumer" : "failed consumer" } }, done("length", g.tokens[1].length)];
   const rec: A = { prompts: P, generation: g, flush: { durable: true, pendingBytes: 0 } };
+  if (!c.continued) return { rec, restore: undefined };
   const snap = (q: number) => g.events.find((e: A) => e.kind === "generated" && e.row === q);
   const takes = [0, 1].map(q => ({ tokens: snap(q).ids.length, digest: clone(snap(q).digest) }));
   const cont = () => { const s: A = synthetic(`cont-${c.name}`, P.map((p, q) => [...p, ...g.tokens[q], ...SUFFIX]), [], [[2, 2], [2, 1], [2, 2], [1, 2]], [], [true, true], c.name);
@@ -799,7 +861,7 @@ test("missing or inconsistent observations fail (CPU only)", () => {
   fails(f => { const s = f.rec.generation; s.events = s.events.filter((e: A) => !(e.event === "token" && e.activeRows === 1)); }, /callbacks/);
   fails(f => { const e = f.rec.generation.events, c = e.map((z: A) => z.event).lastIndexOf("commit"), d = e.map((z: A) => z.event).lastIndexOf("draft");
     f.rec.generation.events = [...e.slice(0, d), ...e.slice(d).filter((z: A, j: number) => !["draft", "forward", "project", "commit", "state"].includes(z.event) || d + j > c + 1)]; },
-  /beyond its rounds|terminal|published/);
+  /outside rounds|terminal|published/);
   fails(f => { for (const s of ev(f.rec.generation, "state")) for (const r of s.rows) r.layers = r.layers.filter((l: A) => l.signature !== "ssm"); }, /layers, expected 8/);
   fails(f => { twoRow(f.rec.generation, "state")[1].rows[0].layers[3].arrays.pop(); }, /malformed layer/);
   fails(f => { twoRow(f.rec.generation, "state")[0].rows[1].layers[0].arrays[1].dtype = "bfloat16"; }, /layer 0/);
@@ -860,6 +922,38 @@ test("a run without rejections while both rows are active is not qualified (CPU 
   // Run 1's seeded shape at the longer window: request 1 accepts every proposal while both rows are active.
   const s = fixture(SEEDED_STOP, [[[2], [1]], [[2, 2], [2, 2], [0, 2], [1, 2], ...rep(21, [2, 2]), [1, 2]], [...rep(16, [2]), [0]]]);
   expect(problems(fail => checkCase(SEEDED_STOP, s.rec, s.restore, P, V, GEOMETRY, fail))).toEqual([expect.stringMatching(/not qualified: row 1/)]);
+});
+
+test("callbacks are accounted round by round; a consumer failure inside a burst retains none, and extra deliveries fail (CPU only)", () => {
+  const FAIL = CASES[2], CANCEL = CASES[1];
+  const roundAt = (s: A, commit: A) => {
+    const i = s.events.indexOf(commit), back = (kind: string) => { let j = i; while (s.events[j].event !== kind) j--; return s.events[j]; };
+    return { project: back("project"), draft: back("draft"), tokens: s.events.slice(s.events.indexOf(back("draft")), i).filter((e: A) => e.event === "token") };
+  };
+  const lastTwo = (s: A) => twoRow(s, "commit").at(-1);
+  // Run 3's g-fail: the consumer threw on the third token of a fully verified burst; the round retained no drafts.
+  const g = fixture(FAIL).rec.generation, r = roundAt(g, lastTwo(g));
+  expect([lastTwo(g).accepted[0], r.tokens.filter((e: A) => e.row === 0).length, g.tokens[0].length]).toEqual([0, 3, 16]);
+  expect(check(() => {}, FAIL)).toEqual([]);
+  expect(check(() => {}, CANCEL)).toEqual([]);
+  const cancelledNone = fixture(CANCEL, [[[2], [1]], [[2, 2], [2, 2], [0, 1], [{ v: 2, deliver: 3, retain: 0 }, 2]], rep(4, [2])]);
+  expect(problems(fail => checkCase(CANCEL, cancelledNone.rec, undefined, P, V, GEOMETRY, fail))).toEqual([]);
+  const fails = (c: Case, mutate: (s: A) => void, pattern: RegExp) => expect(check(f => mutate(f.rec.generation), c).join("\n")).toMatch(pattern);
+  fails(FAIL, s => { const x = roundAt(s, lastTwo(s)); x.project.argmax[0] = [x.draft.proposals[0][0], 5, 7]; }, /final round delivered .* the verified burst is .*\(failed\)/);
+  fails(FAIL, s => { const t = roundAt(s, lastTwo(s)).tokens.filter((e: A) => e.row === 0).at(-1);
+    s.events.splice(s.events.indexOf(t) + 1, 0, { ...t, token: 99, index: t.index + 1 }); s.tokens[0].push(99); }, /final round delivered .*\(failed\)/);
+  fails(FAIL, s => { lastTwo(s).accepted[0] = 2; }, /\(failed\)/);
+  fails(CANCEL, s => { const x = roundAt(s, lastTwo(s)); x.project.argmax[0] = [x.draft.proposals[0][0], 5, 7]; }, /final round delivered .*\(cancelled\)/);
+  fails(STOP, s => { roundAt(s, twoRow(s, "commit")[1]).project.argmax[1] = [5, 6, 7]; }, /continued past a round it delivered/);
+  fails(STOP, s => { const t = roundAt(s, twoRow(s, "commit")[0]).tokens.filter((e: A) => e.row === 1).at(-1);
+    s.events.splice(s.events.indexOf(t) + 1, 0, { ...t, token: 98 }); }, /continued past a round it delivered/);
+  fails(STOP, s => { const c = twoRow(s, "commit")[0], t = roundAt(s, c).tokens.find((e: A) => e.row === 1);
+    s.events.splice(s.events.indexOf(c) + 2, 0, { ...t, token: 97 }); }, /tokens outside rounds/);
+  fails(STOP, s => { const c = ev(s, "commit").at(-1), t = roundAt(s, c).tokens[0];
+    s.events.splice(s.events.indexOf(t) + 1, 0, { ...t, row: 0, token: 96 }); }, /not a member of/);
+  fails(STOP, s => { roundAt(s, twoRow(s, "commit")[2]).draft.pending[1] = 95; }, /pending 95 is not its last delivered token/);
+  fails(SEEDED_STOP, s => { s.outcomes[0] = { compared: { status: "rejected", reason: "failed consumer" } }; lastTwo(s).accepted[0] = 0; },
+    /request 0: its final round delivered/);
 });
 
 test("the fresh-process runner returns complete outputs and stops and joins a child past its deadline (CPU only)", async () => {
