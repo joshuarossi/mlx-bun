@@ -676,6 +676,20 @@ the list once for the bound target, rows opened for it must tap exactly that lis
 and placement refuses the provider when the target forward cannot capture those
 layers. The post-final-norm sentinel (index = layer count) is the forward output.
 
+The [Qwen MTP group-prefix test](tests/parity/qwen-mtp-group-prefix.test.ts) takes
+`MLX_BUN_TEST_MTP_TARGET` and `MLX_BUN_TEST_MTP_DRAFT` (both or neither) and runs
+the Trellis target with its folded MTP draft through the gateway binding at B2,
+depth 2, plain KV and EOS disabled: two unequal prompts, the first retiring by a
+stop, an abort or a consumer failure, greedy and seeded. It observes every verify
+round and each row's committed target state, attributed to its request through
+joins and filters, and checks within this tree the exact committed inventory,
+accepted and rejected proposals while both rows are active, retirement outcomes,
+and that a stopped or finished request publishes one generated checkpoint equal
+to its terminal committed state while a cancelled or failed one publishes none.
+Both requests then continue from those checkpoints, twice from RAM and once in a
+fresh process from the flushed SSD store, with identical records. Main parity is
+external evidence; B>2, KV quantization, HTTP and performance are not covered.
+
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,
 and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.
 
