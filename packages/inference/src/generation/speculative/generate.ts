@@ -124,10 +124,10 @@ export function specGenerate(
     return s;
   };
 
-  // The donors' live windows. optiq's kv_view._read_cache_temporal reads the
-  // buffer head, which after a multi-token verify block is the oldest rows, so
-  // long-context drafts here are not optiq-identical; emitted tokens are the
-  // target's either way.
+  // The donors' live windows (the newest positions). optiq's
+  // kv_view._read_cache_temporal reads the buffer head, which after a
+  // multi-token verify block is the oldest rows, so long-context donor reads
+  // here deliberately differ from optiq's.
   const readDonors = () => ({
     sliding: (caches[donors.sliding] as never as { temporalView(): [MlxArray, MlxArray] }).temporalView(),
     full: (caches[donors.full] as never as { temporalView(): [MlxArray, MlxArray] }).temporalView(),

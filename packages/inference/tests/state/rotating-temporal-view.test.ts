@@ -41,14 +41,17 @@ const CASES: Record<string, number[]> = {
   "mixed": [3, 1, 12, 1, 1, 20, 1],
 };
 
-/** Positions [from, to) as [1, H, n, D]; values carry the position, head and
- * lane, so a missing, stale or misordered row cannot compare equal. */
-function block(from: number, to: number, sign: 1 | -1): MlxArray {
-  const n = to - from, data = new Float32Array(H * n * D);
+/** Rows tagged per position as [1, H, n, D]; values carry the tag, head and
+ * lane, so a missing, stale or misordered row cannot compare equal. A position
+ * rewritten after a trim or rollback carries a new generation in its tag. */
+function blockOf(tags: readonly number[], sign: 1 | -1): MlxArray {
+  const n = tags.length, data = new Float32Array(H * n * D);
   for (let h = 0; h < H; h++) for (let i = 0; i < n; i++) for (let d = 0; d < D; d++)
-    data[(h * n + i) * D + d] = sign * (from + i + h * 0.25 + d / 128);
+    data[(h * n + i) * D + d] = sign * (tags[i]! + h * 0.25 + d / 128);
   return MlxArray.fromFloat32(data, [1, H, n, D]);
 }
+const range = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => from + i);
+const block = (from: number, to: number, sign: 1 | -1) => blockOf(range(from, to), sign);
 /** One position per row, as a batched decode step writes it. */
 function rowsAt(positions: number[], sign: 1 | -1): MlxArray {
   const rows = positions.map(p => block(p, p + 1, sign));
@@ -60,21 +63,28 @@ const tripleSha = (t: ops.QuantizedTensor) => [sha(t.packed), sha(t.scales), sha
 
 /** The live window after `offset` positions, from the history alone. */
 function windowOf(offset: number): [number, number] { return [offset - Math.min(offset, W), offset]; }
-function expectPlain(label: string, [keys, values]: [MlxArray, MlxArray], offset: number) {
-  const [from, to] = windowOf(offset);
-  using k = block(from, to, 1);
-  using v = block(from, to, -1);
+function expectPlain(label: string, view: [MlxArray, MlxArray], offset: number) {
+  expectPlainTags(label, view, range(0, offset));
+}
+/** The live window of an explicit history: its newest min(length, W) tags. */
+function expectPlainTags(label: string, [keys, values]: [MlxArray, MlxArray], history: readonly number[]) {
+  const live = history.slice(history.length - Math.min(history.length, W));
+  using k = blockOf(live, 1);
+  using v = blockOf(live, -1);
   expect({ label, shape: keys.shape, keys: floats(keys), values: floats(values) })
     .toEqual({ label, shape: k.shape, keys: floats(k), values: floats(v) });
 }
-function expectQuantized(label: string, [keys, values]: [ops.QuantizedTensor, ops.QuantizedTensor], offset: number) {
-  const [from, to] = windowOf(offset);
-  using k = block(from, to, 1);
-  using v = block(from, to, -1);
+function expectQuantized(label: string, view: [ops.QuantizedTensor, ops.QuantizedTensor], offset: number) {
+  expectQuantizedTags(label, view, range(0, offset));
+}
+function expectQuantizedTags(label: string, [keys, values]: [ops.QuantizedTensor, ops.QuantizedTensor], history: readonly number[]) {
+  const live = history.slice(history.length - Math.min(history.length, W));
+  using k = blockOf(live, 1);
+  using v = blockOf(live, -1);
   const qk = ops.quantize(k, GROUP, BITS), qv = ops.quantize(v, GROUP, BITS);
   try {
     expect({ label, width: keys.packed.shape[2], keys: tripleSha(keys), values: tripleSha(values) })
-      .toEqual({ label, width: to - from, keys: tripleSha(qk), values: tripleSha(qv) });
+      .toEqual({ label, width: live.length, keys: tripleSha(qk), values: tripleSha(qv) });
   } finally { disposeTriple(qk); disposeTriple(qv); }
 }
 const plainView = (cache: RotatingKVCache, label: string, offset: number) => {
@@ -87,10 +97,42 @@ const quantizedView = (cache: RotatingQuantizedKVCache, label: string, offset: n
 };
 
 function write(cache: RotatingKVCache | RotatingQuantizedKVCache, from: number, n: number) {
-  using k = block(from, from + n, 1);
-  using v = block(from, from + n, -1);
+  writeTags(cache, range(from, from + n));
+}
+function writeTags(cache: RotatingKVCache | RotatingQuantizedKVCache, tags: readonly number[]) {
+  using k = blockOf(tags, 1);
+  using v = blockOf(tags, -1);
   if (cache instanceof RotatingKVCache) for (const a of cache.updateAndFetch(k, v)) a.dispose();
   else for (const t of cache.updateAndFetchQuantized(k, v)) disposeTriple(t);
+}
+/** Check a cache's view against an explicit history, for either storage. */
+function viewTags(cache: RotatingKVCache | RotatingQuantizedKVCache, label: string, history: readonly number[]) {
+  if (cache instanceof RotatingKVCache) {
+    const view = cache.temporalView();
+    try { expectPlainTags(label, view, history); } finally { for (const a of view) a.dispose(); }
+  } else {
+    const view = cache.temporalView();
+    try { expectQuantizedTags(label, view, history); } finally { disposeTriple(view[0]); disposeTriple(view[1]); }
+  }
+}
+const STORAGE = {
+  plain: () => new RotatingKVCache(W),
+  quantized: () => new RotatingQuantizedKVCache(W, GROUP, BITS),
+} as const;
+/** A writer that tags every newly written position with its generation. */
+function history(cache: RotatingKVCache | RotatingQuantizedKVCache) {
+  const tags: number[] = [];
+  let generation = 0;
+  return {
+    tags,
+    write(n: number) {
+      const next = Array.from({ length: n }, (_, i) => tags.length + i + 1000 * generation);
+      writeTags(cache, next);
+      tags.push(...next);
+    },
+    /** Drop the newest n positions; rewrites get a new generation. */
+    drop(n: number) { tags.length -= n; generation++; },
+  };
 }
 /** Drive a fresh cache through a case, checking after every write. */
 function drive<C extends RotatingKVCache | RotatingQuantizedKVCache>(make: () => C, writes: number[],
@@ -246,5 +288,70 @@ test("an extracted row that kept an oversized block still exposes its newest win
     plainView(extracted, `${label}: extracted`, offset);
     for (const n of [1, 5, 1]) { write(extracted, offset, n); offset += n; plainView(extracted, `${label}: +${n}`, offset); }
     extracted.dispose();
+  }
+});
+
+test("a pre-wrap trim, then view and append, exposes the rewritten window (plain and quantized)", () => {
+  for (const [storage, make] of Object.entries(STORAGE)) {
+    for (const [prefill, trimmed, appends] of [[[6], 2, [1, 3, 4]], [[7], 3, [1, 1, 6]], [[3, 1, 1], 1, [5, 1]],
+      [[2, 2, 2], 4, [9]]] as const) {
+      const label = `${storage}: ${prefill.join("+")} trim ${trimmed}`;
+      const cache = make(), h = history(cache);
+      for (const n of prefill) h.write(n);
+      expect({ label, trimmable: cache.isTrimmable() }).toEqual({ label, trimmable: true });
+      cache.trim(trimmed);
+      h.drop(trimmed);
+      viewTags(cache, `${label}: after trim`, h.tags);
+      for (const n of appends) { h.write(n); viewTags(cache, `${label}: +${n}`, h.tags); }
+      cache.dispose();
+    }
+  }
+});
+
+test("a rollback after an oversized concat, then view and append, exposes the kept window (plain and quantized)", () => {
+  // The verify-block rollback: a multi-token write, then trim(k, bypass).
+  for (const [storage, make] of Object.entries(STORAGE)) {
+    for (const [before, verify, rejected, appends] of [[[6], 4, 2, [1, 3]], [[12], 3, 2, [1, 4, 1]],
+      [[5, ...ones(5)], 4, 3, [1, 2]], [[7], 5, 5, [1, 9]], [[20], 4, 1, [1]]] as const) {
+      const label = `${storage}: ${before.length > 2 ? `${before[0]}+${before.length - 1}x1` : before.join("+")} verify ${verify} reject ${rejected}`;
+      const cache = make(), h = history(cache);
+      for (const n of before) h.write(n);
+      h.write(verify);
+      viewTags(cache, `${label}: verify block`, h.tags);
+      cache.trim(rejected, true);
+      h.drop(rejected);
+      viewTags(cache, `${label}: after rollback`, h.tags);
+      for (const n of appends) { h.write(n); viewTags(cache, `${label}: +${n}`, h.tags); }
+      cache.dispose();
+    }
+  }
+});
+
+test("clone and SSD restore keep the window and accept further writes; the source is unchanged (plain and quantized)", () => {
+  for (const [storage, make] of Object.entries(STORAGE)) {
+    for (const [name, writes] of Object.entries(CASES)) {
+      const label = `${storage}: ${name}`;
+      const source = make(), h = history(source);
+      for (const n of writes) h.write(n);
+      const snapshot = [...h.tags];
+      const [clone] = cloneKvCaches([source]) as [RotatingKVCache | RotatingQuantizedKVCache];
+      const path = join(scratch, `${storage}-${name.replaceAll(" ", "-")}-continue.safetensors`);
+      saveKvCache(path, snapshot.map((_, i) => i), [source], { modelId: "synthetic" });
+      const loaded = loadKvCache(path, { makeCache: () => [make()] }, { modelId: "synthetic", verify: true });
+      const restored = loaded.caches[0] as RotatingKVCache | RotatingQuantizedKVCache;
+      for (const [copy, kind] of [[clone, "clone"], [restored, "SSD restore"]] as const) {
+        const tags = [...snapshot];
+        viewTags(copy, `${label}: ${kind}`, tags);
+        for (const n of [1, 4, 1, 9]) {
+          const next = Array.from({ length: n }, (_, i) => tags.length + i + 5000);
+          writeTags(copy, next);
+          tags.push(...next);
+          viewTags(copy, `${label}: ${kind} +${n}`, tags);
+        }
+        copy.dispose();
+      }
+      viewTags(source, `${label}: source after copies advanced`, snapshot);
+      source.dispose();
+    }
   }
 });
