@@ -157,6 +157,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
+        // The batch group coordinates per-row grammar for every family; masks
+        // come from the shared sampler, so no model qualifies or declines them.
         grammarBatch: true,
         speculativeKvQuant: (!(model instanceof Qwen35Model) || runtime.flag("MLX_BUN_QWEN_SPEC_KV4", true)) && (
           (scheduling.continuous && !!sharedMethod && (options.kvBits === 4 || options.kvBits === 8 || !!options.kvConfig?.length)) ||

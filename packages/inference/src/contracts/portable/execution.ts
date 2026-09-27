@@ -17,6 +17,10 @@ export interface ExecutionCapabilities {
   readonly method: "autoregressive" | "denoising";
   readonly continuous: boolean;
   readonly quantizedBatch: boolean;
+  /** Executor coordination, not a model capability: the shared group drives
+   * each row's own grammar state (wait for its mask, advance it with the
+   * emitted token, stop the row when it terminates). The shared sampler masks
+   * any model's logits; grammar jump and speculation are qualified separately. */
   readonly grammarBatch: boolean;
   readonly adapterBatch?: boolean;
   /** Prepared media can enter the ordinary shared execution group. */

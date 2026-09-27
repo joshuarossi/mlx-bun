@@ -45,6 +45,18 @@ test("an explicit seed composes with ordinary logprobs and grammar in continuous
   expect(plan.reasons).toEqual([]);
 });
 
+test("with grammar coordination and no optional features, grammar never changes placement", () => {
+  const variants: Partial<ExecutionCapabilities>[] = [{}, { continuous: false }, { quantizedBatch: false },
+    { mediaBatch: true }, { adapterBatch: true }, { turboQuantBatch: true }, { method: "denoising" },
+    { groupedMethods: ["autoregressive", "speculative"], speculativeLogprobs: true }];
+  for (const variant of variants) for (const extra of [{}, { hasVision: true }, { hasAdapters: true },
+    { kvQuant: true }, { turboQuant: true }, { wantsLogprobs: true }, { userSeed: true }, { hasDraft: true }]) {
+    const supported = { ...capabilities, ...variant };
+    expect({ variant, extra, plan: resolveExecution({ ...request, ...extra, hasGrammar: true }, supported) })
+      .toEqual({ variant, extra, plan: resolveExecution({ ...request, ...extra }, supported) });
+  }
+});
+
 test.each(["hasVision", "hasAdapters", "wantsLogprobs", "kvQuant", "turboQuant"] as const)(
   "%s uses AR and retains an explicit draft fallback reason", (key) => {
     const plan = resolveExecution({ ...request, hasDraft: true, [key]: true }, capabilities);
