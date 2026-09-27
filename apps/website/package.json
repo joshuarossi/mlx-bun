@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "generate": "bun scripts/generate-reference.ts && bun scripts/generate-server-api.ts && bun scripts/generate-library-api.ts",
+    "generate": "bun scripts/generate-reference.ts && bun scripts/generate-server-api.ts && bun scripts/generate-server-config.ts && bun scripts/generate-library-api.ts",
     "dev": "bun run generate && bun --bun astro dev",
     "build": "bun run generate && bun --bun astro build && bun scripts/check-build.ts",
     "typecheck": "bun --bun astro sync && tsc --noEmit",

@@ -37,5 +37,14 @@ The HTTP inventory is generated the same way from the route handlers in
 server mode's routes, status, and source links, never committed. Generation
 fails on a routing predicate or composition shape it does not recognize; the
 reviewed exceptions are `NON_ROUTE_SITES` in its generator. Its source links
-follow the library API's revision rule. The configuration inventory remains
-follow-up work.
+follow the library API's revision rule.
+
+The configuration inventory is generated the same way from `parseServeOptions`
+and every `MLX_BUN_*` read under `apps/mlx-bun/src` and `packages/*/src`:
+literal serve defaults, ranges, and accepted values; the keys `serve` writes
+from its flags; and each runtime key's read form and per-site fallback, grouped
+by owning package, never committed. Tests and scripts are not scanned.
+Generation fails on a non-literal runtime key, a computed environment read, a
+direct `MLX_BUN_*` environment read outside `DIRECT_ENV_READS`, a help
+`[default: X]` that differs from the parser's literal, or a note in `NOTES`
+whose key or flag is gone.
