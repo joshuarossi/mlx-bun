@@ -1,15 +1,17 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import xgrammar from '@mlc-ai/web-xgrammar';
 import { MlxArray } from '@mlx-bun/mlx/array';
 import { Dtype } from '@mlx-bun/mlx/ffi';
 import * as ops from '@mlx-bun/mlx/ops';
-import { compileGrammarRequest, type GrammarRequest } from '@mlx-bun/inference/sampling/grammar';
+import { compileGrammarRequest, type GrammarController, type GrammarRequest } from '@mlx-bun/inference/sampling/grammar';
 import {
   disposeStepExtras, makeStepSampler, type DeviceStepSampler, type DeviceStepSamplerConfig, type StepSamplerOptions,
 } from '@mlx-bun/inference/sampling';
 import { loadTokenizer, type LoadedTokenizer } from '@mlx-bun/inference/input';
+import { configureRuntime } from '@mlx-bun/inference/runtime/config';
 
 test('a caller-loaded tokenizer drives independent grammar masks', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mlx-grammar-'));
@@ -154,8 +156,8 @@ describe('XGrammar through the shared row sampler', () => {
 
   test('padded logits past the tokenizer vocabulary are never drawn and allowed ids keep their positions', async () => {
     // Padding starts at a word boundary: one full padded bitmask word, then a
-    // partial one. Padding inside the matcher's last word would follow XGrammar's
-    // bits for that word, which this test does not cover.
+    // partial one. Padding that starts inside the matcher's last word is covered
+    // by 'grammar masks reject ids the matcher does not know' below.
     const padding = 40;
     const width = vocab.length + padding;
     const controller = await compile({ guidedGrammar: 'root ::= ("yes" | "no") "maybe"' }, width);
@@ -215,4 +217,207 @@ describe('XGrammar through the shared row sampler', () => {
       expect(Array.from(next.toFloat32()).flatMap((value, id) => value === -Infinity ? [] : [id])).toEqual([NO]);
     } finally { for (const row of rows) { row.sampler.dispose(); row.grammar.dispose(); } }
   });
+});
+
+// XGrammar decides only the ids its TokenizerInfo was built with: the
+// tokenizer's model.vocab. When that count is not a multiple of 32 it can set
+// the unused high bits of its final bitmask word, and the logits can be wider
+// still (config padding, added tokens). Every ready mask must keep XGrammar's
+// verdict below that count and reject every other id, on both mask paths.
+// Opt in to the real-tokenizer case with MLX_BUN_TEST_GRAMMAR_TOKENIZER=/cached/checkpoint
+// (tokenizer.json + config.json; e.g. MiniCPM5: 130072 ids, vocab_size 130560). No downloads.
+const realCheckpoint = Bun.env.MLX_BUN_TEST_GRAMMAR_TOKENIZER;
+if (realCheckpoint && !existsSync(join(realCheckpoint, 'tokenizer.json')))
+  throw new Error(`unavailable tokenizer: ${realCheckpoint}`);
+
+describe('grammar masks reject ids the matcher does not know', () => {
+  const [YES, NO] = [1, 2];
+  const paths = ['eager', 'metal'] as const;
+  const dtypes = [Dtype.float32, Dtype.bfloat16];
+  let dir = '';
+  // XGrammar's raw bitmasks, in fill order: the verdicts each controller receives.
+  const fills = spyOn(xgrammar.GrammarMatcher.prototype, 'getNextTokenBitmask');
+  /** The raw bitmask of the one fill `action` causes. */
+  const fillOf = async (action: () => Promise<void>): Promise<Int32Array> => {
+    const before = fills.mock.calls.length;
+    await action();
+    expect(fills.mock.calls.length).toBe(before + 1);
+    return fills.mock.results.at(-1)!.value as Promise<Int32Array>;
+  };
+  const tokenizerOf = async (name: string, vocab: string[]) => {
+    const path = join(dir, name);
+    mkdirSync(path);
+    writeFileSync(join(path, 'tokenizer.json'), JSON.stringify({
+      version: '1.0', added_tokens: [], normalizer: null,
+      // Split lets a jump-forward string ("yesno") retokenize into vocabulary ids.
+      pre_tokenizer: { type: 'Split', pattern: { Regex: 'yes|no|maybe' }, behavior: 'Isolated', invert: false },
+      post_processor: null, decoder: null,
+      model: { type: 'WordLevel', vocab: Object.fromEntries(vocab.map((token, id) => [token, id])), unk_token: '[UNK]' },
+    }));
+    writeFileSync(join(path, 'tokenizer_config.json'), JSON.stringify({ unk_token: '[UNK]' }));
+    return loadTokenizer(path);
+  };
+  // Four ids fill part of one bitmask word: ids 4-31 share it.
+  const four = ['[UNK]', 'yes', 'no', 'maybe'];
+  // One full word, then ids 32-35 of a partial word; maybe is the last known id.
+  const wide = ['[UNK]', 'yes', 'no', ...Array.from({ length: 32 }, (_, i) => `a${i}`), 'maybe'];
+  let fourTokenizer: LoadedTokenizer;
+  let wideTokenizer: LoadedTokenizer;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'mlx-grammar-vocab-'));
+    fourTokenizer = await tokenizerOf('four', four);
+    wideTokenizer = await tokenizerOf('wide', wide);
+  });
+  afterAll(() => {
+    fills.mockRestore();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // The controller reads MLX_BUN_TOKEN_MASK when it is built; compile one at a time.
+  const compileOn = async (path: typeof paths[number], request: GrammarRequest, tok: LoadedTokenizer, logits: number) => {
+    const restore = configureRuntime({ MLX_BUN_TOKEN_MASK: path === 'metal' ? 'metal' : undefined });
+    try {
+      const result = await compileGrammarRequest(request, tok, logits);
+      expect(result?.controller).toBeTruthy();
+      return result!.controller!;
+    } finally { restore(); }
+  };
+  const bit = (bits: Int32Array, id: number) => ((bits[id >>> 5] ?? 0) >>> (id & 31)) & 1;
+  const range = (start: number, end: number) => Array.from({ length: end - start }, (_, i) => start + i);
+  /** Ids XGrammar marks valid although they lie past the ids it knows. */
+  const strayBits = (bits: Int32Array, known: number) => range(known, bits.length * 32).filter(id => bit(bits, id));
+  const logitsRows = (rows: number, row: Float32Array, dtype: Dtype) => {
+    const data = new Float32Array(rows * row.length);
+    for (let r = 0; r < rows; r++) data.set(row, r * row.length);
+    const logits = MlxArray.fromFloat32(data, [rows, row.length]);
+    if (dtype === Dtype.float32) return logits;
+    try { return logits.astype(dtype); } finally { logits.dispose(); }
+  };
+  /** Differences from the expected mask: XGrammar's verdict below `known`, -inf from `known` on. */
+  const maskErrors = (masked: MlxArray, row: Float32Array, raw: Int32Array, known: number): string[] => {
+    const out = masked.toFloat32(), errors: string[] = [];
+    for (let i = 0; i < out.length && errors.length < 8; i++) {
+      const id = i % row.length;
+      const want = id < known && bit(raw, id) ? row[id]! : -Infinity;
+      if (!Object.is(out[i], want)) errors.push(`row ${Math.floor(i / row.length)} id ${id}: ${out[i]} != ${want}`);
+    }
+    return errors;
+  };
+  const draw = (grammar: GrammarController, options: StepSamplerOptions, logits: MlxArray, steps: number) => {
+    const sampler = makeStepSampler({ ...options, grammar }, {
+      tokenRepresentation: 'device', grammarWait: 'external', historyUpdate: 'after-sample', initialHistory: [],
+    });
+    try {
+      return range(0, steps).map(step => {
+        const { token, extras } = sampler.sample(logits, step);
+        try { return ops.itemUint32(token); } finally { token.dispose(); disposeStepExtras(extras); }
+      });
+    } finally { sampler.dispose(); }
+  };
+
+  test('guided_choice over a 4-id tokenizer rejects ids 4-39 of 40 logits', async () => {
+    const width = 40;
+    // Every id past the tokenizer leads, and [UNK] and maybe outrank the choices.
+    const row = Float32Array.from({ length: width }, (_, id) => id < four.length ? [20, 1, 0.5, 30][id]! : 100);
+    for (const path of paths) {
+      let controller: GrammarController | undefined;
+      try {
+        const raw = await fillOf(async () => {
+          controller = await compileOn(path, { guidedChoice: ['yes', 'no'] }, fourTokenizer, width);
+        });
+        // XGrammar marks ids 4-31 valid in its only word.
+        expect(strayBits(raw, four.length)).toEqual(range(four.length, 32));
+        for (const dtype of dtypes) {
+          using batch = logitsRows(3, row, dtype);
+          using masked = controller!.applyMask(batch);
+          expect(masked.shape).toEqual([3, width]);
+          expect(maskErrors(masked, row, raw, four.length)).toEqual([]);
+          using single = logitsRows(1, row, dtype);
+          expect(draw(controller!, { temperature: 0 }, single, 4)).toEqual([YES, YES, YES, YES]);
+          const sampled = new Set(draw(controller!, { temperature: 1, seed: 7 }, single, 32));
+          expect([...sampled].every(id => id === YES || id === NO)).toBe(true);
+        }
+      } finally { controller?.dispose(); }
+    }
+  });
+
+  test('forked and jump-resumed grammar states keep their own verdicts in one batch', async () => {
+    // Ids 36-63 share the matcher's last word; ids 64-71 lie past it.
+    const width = 72, known = wide.length, MAYBE = known - 1, fillers = range(3, MAYBE);
+    const twoStep = 'root ::= ("yes" | "no") ("a" [0-9]+)* "maybe"';
+    const jump = 'root ::= "yes" "no" ("a" [0-9]+)* "maybe"';
+    // Every unknown id leads, and [UNK] outranks every allowed id.
+    const row = Float32Array.from({ length: width }, (_, id) => id === 0 ? 50 : id < known ? id / 4 : 100);
+    for (const path of paths) {
+      const controllers: GrammarController[] = [];
+      const raws: Int32Array[] = [];
+      try {
+        for (const request of [{ guidedGrammar: twoStep }, { guidedGrammar: twoStep }, { guidedGrammar: jump }])
+          raws.push(await fillOf(async () => { controllers.push(await compileOn(path, request, wideTokenizer, width)); }));
+        const [ahead, , resumed] = controllers as [GrammarController, GrammarController, GrammarController];
+        const expectRows = async (want: number[][]) => {
+          await Promise.all(controllers.map(controller => controller.ready()));
+          for (const dtype of dtypes) {
+            using batch = logitsRows(controllers.length, row, dtype);
+            controllers.forEach((controller, b) => {
+              using logits = batch.slice([b, 0], [b + 1, width]);
+              using masked = controller.applyMask(logits);
+              expect(maskErrors(masked, row, raws[b]!, known)).toEqual([]);
+              expect(Array.from(masked.toFloat32()).flatMap((value, id) => value === -Infinity ? [] : [id])).toEqual(want[b]!);
+              expect(draw(controller, { temperature: 0 }, logits, 1)).toEqual([want[b]!.at(-1)!]);
+            });
+          }
+        };
+        await expectRows([[YES, NO], [YES, NO], [YES]]);
+        // Fork one grammar: only the first request advances.
+        raws[0] = await fillOf(async () => { ahead.accept(YES); await ahead.ready(); });
+        // Resume masked decoding after a forced span.
+        raws[2] = await fillOf(async () => { expect(resumed.jumpForward(8)).toEqual([YES, NO]); await resumed.ready(); });
+        // Both advanced states set every stray bit of the last word.
+        expect(raws.map(raw => strayBits(raw, known).length)).toEqual([28, 0, 28]);
+        await expectRows([[...fillers, MAYBE], [YES, NO], [...fillers, MAYBE]]);
+      } finally { for (const controller of controllers) controller.dispose(); }
+    }
+  });
+
+  test.skipIf(!realCheckpoint)('a real tokenizer whose vocabulary is not a multiple of 32 rejects its unknown ids', async () => {
+    const json = JSON.parse(readFileSync(join(realCheckpoint!, 'tokenizer.json'), 'utf8'));
+    const config = JSON.parse(readFileSync(join(realCheckpoint!, 'config.json'), 'utf8'));
+    const known = Object.keys(json.model.vocab).length;
+    const logitWidth: number = config.vocab_size ?? config.text_config?.vocab_size;
+    expect(known % 32).not.toBe(0);
+    expect(logitWidth).toBeGreaterThan(known);
+    const real = await loadTokenizer(realCheckpoint!);
+    const [hello] = real.encode('Hello', false);
+    // Known ids share one logit, so greedy picks the lowest valid id; every other id leads.
+    const row = Float32Array.from({ length: logitWidth }, (_, id) => id < known ? 0 : 100);
+    // A line stays open until its newline; bare free text terminates after one token.
+    const line = 'root ::= [^\\n]+ "\\n"';
+    for (const path of paths) {
+      const controllers: GrammarController[] = [];
+      const raws: Int32Array[] = [];
+      try {
+        for (const request of [{ guidedGrammar: line }, { guidedGrammar: line }, { guidedGrammar: 'root ::= [^\\n]*' }])
+          raws.push(await fillOf(async () => { controllers.push(await compileOn(path, request, real, logitWidth)); }));
+        // Fork one line grammar: the first request is a token ahead of the second.
+        for (const b of [0, 0, 1])
+          raws[b] = await fillOf(async () => { controllers[b]!.accept(hello!); await controllers[b]!.ready(); });
+        // Some state must set the final word's stray bits, or this tokenizer
+        // cannot exercise the fix (MiniCPM5: added tokens 130072-130079).
+        expect(raws.some(raw => strayBits(raw, known).length > 0)).toBe(true);
+        for (const dtype of dtypes) {
+          using batch = logitsRows(controllers.length, row, dtype);
+          controllers.forEach((controller, b) => {
+            using logits = batch.slice([b, 0], [b + 1, logitWidth]);
+            using masked = controller.applyMask(logits);
+            expect(maskErrors(masked, row, raws[b]!, known)).toEqual([]);
+            const [token] = draw(controller, { temperature: 0 }, logits, 1);
+            expect(token).toBeLessThan(known);
+            expect(bit(raws[b]!, token!)).toBe(1);
+          });
+        }
+      } finally { for (const controller of controllers) controller.dispose(); }
+    }
+  }, 120_000);
 });

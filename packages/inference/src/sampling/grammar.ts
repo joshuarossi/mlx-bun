@@ -182,12 +182,27 @@ function getTokenizerInfo(
   return pair;
 }
 
-/** Vocab size the matcher masks against (config.vocab_size, may exceed the
- *  tokenizer vocab due to padding). Falls back to the tokenizer length. */
-function effectiveVocabSize(tokenizer: LoadedTokenizer, configVocabSize?: number): number {
-  // The matcher is built against TokenizerInfo's vocab; mask logits at the
-  // model's logit width (config vocab_size, >= tokenizer vocab when padded).
+/** The model's logit width: config.vocab_size, which may exceed the ids the
+ *  matcher knows (embedding padding, added tokens outside model.vocab).
+ *  Falls back to the tokenizer length. */
+function logitWidth(tokenizer: LoadedTokenizer, configVocabSize?: number): number {
   return configVocabSize ?? tokenizer.vocabSize ?? 0;
+}
+
+/** Keep XGrammar's verdict for every id its matcher knows and reject every
+ *  other id. The matcher's bitmask has ceil(known / 32) words, and XGrammar can
+ *  set the unused high bits of the final word when `known` is not a multiple
+ *  of 32: a 4-id vocabulary with guided_choice yes/no allows ids 4-31, and
+ *  MiniCPM5's 130072 model.vocab ids allow added tokens 130072-130079. Ids
+ *  past the matcher also include config padding and added tokens it was not
+ *  built with. The result spans the logit width with those bits clear; both
+ *  mask paths also reject ids past the words they are given. */
+function grammarOwnedBits(bits: Int32Array, known: number, logits: number): Int32Array {
+  const owned = new Int32Array(Math.ceil(logits / 32));
+  const whole = known >>> 5, tail = known & 31;
+  owned.set(bits.subarray(0, Math.min(whole, owned.length)));
+  if (tail !== 0 && whole < owned.length) owned[whole] = (bits[whole] ?? 0) & ~(-1 << tail);
+  return owned;
 }
 
 /** Stateful grammar masker. Driven explicitly by generate()'s decode loop
@@ -198,12 +213,13 @@ export class GrammarController {
   private readonly compiled: XCompiledGrammar;
   private readonly compiler: XGrammarCompiler;
   private readonly ownsCompiler: boolean;
-  private readonly vocabSize: number;
+  /** `matcher`: ids XGrammar's TokenizerInfo was built with, the only ids the
+   *  grammar decides. `logits`: the model's logit width. */
+  private readonly vocab: { readonly matcher: number; readonly logits: number };
   /** Raw-encode hook for jump-forward (encode WITHOUT special tokens); null
    *  disables jumpForward(). */
   private readonly encodeRaw: ((text: string) => number[]) | null;
-  /** Bitmask width in int32s = ceil(V / 32). */
-  private readonly maskWidth: number;
+  /** Grammar-owned bits (grammarOwnedBits), read by both mask paths. */
   private readyMask: Int32Array;
   private pending: Promise<void> | null;
   private terminated = false;
@@ -217,28 +233,35 @@ export class GrammarController {
     compiled: XCompiledGrammar,
     compiler: XGrammarCompiler,
     ownsCompiler: boolean,
-    vocabSize: number,
+    vocab: { readonly matcher: number; readonly logits: number },
     encodeRaw?: (text: string) => number[],
   ) {
     this.matcher = matcher;
     this.compiled = compiled;
     this.compiler = compiler;
     this.ownsCompiler = ownsCompiler;
-    this.vocabSize = vocabSize;
+    this.vocab = vocab;
     this.encodeRaw = encodeRaw ?? null;
-    this.maskWidth = Math.ceil(vocabSize / 32);
-    this.readyMask = new Int32Array(this.maskWidth).fill(-1);
+    const all = new Int32Array(Math.ceil(vocab.matcher / 32)).fill(-1);
+    this.readyMask = grammarOwnedBits(all, vocab.matcher, vocab.logits);
     this.pending = null;
+  }
+
+  /** Normalize each XGrammar mask once, before either mask path reads it. */
+  private setReadyMask(bits: Int32Array): void {
+    this.readyMask = grammarOwnedBits(bits, this.vocab.matcher, this.vocab.logits);
   }
 
   /** Precompute the step-0 mask. Must be awaited before the first applyMask(). */
   async prime(): Promise<void> {
-    this.readyMask = await wasmQueue(() => this.matcher.getNextTokenBitmask());
+    this.setReadyMask(await wasmQueue(() => this.matcher.getNextTokenBitmask()));
   }
 
   /** Apply the ready bitmask to logits [1, V]. Invalid token ids → -inf.
    *  Sync — the mask is already materialized. Returns a NEW array (caller
-   *  disposes the input). Mirrors oMLX's apply_token_bitmask_mlx. */
+   *  disposes the input). Mirrors oMLX's apply_token_bitmask_mlx. Both paths
+   *  read the grammar-owned readyMask, so ids the matcher does not know are
+   *  never valid. */
   applyMask(logits: MlxArray): MlxArray {
     if (this.metalMask) return applyTokenBitmask(logits, this.readyMask);
     // Build a -inf/0 additive float mask on device from the int32 bitmask.
@@ -250,10 +273,10 @@ export class GrammarController {
     for (let id = 0; id < V; id++) {
       const word = id >>> 5;
       const bit = id & 31;
-      // F3: V is the model's logit width (config.vocab_size, may exceed the
-      // tokenizer vocab via padding); the matcher's mask has the TOKENIZER's
-      // width. Padded ids beyond the mask are never valid — mask them
-      // explicitly rather than relying on undefined>>>bit coercing to 0.
+      // F3: readyMask already clears ids the matcher does not know, up to
+      // the configured logit width. Logits wider than that are never valid
+      // either; mask them explicitly rather than relying on undefined>>>bit
+      // coercing to 0.
       const w = word < this.readyMask.length ? this.readyMask[word]! : 0;
       const valid = (w >>> bit) & 1;
       maskArr[id] = valid ? 0 : -Infinity;
@@ -294,10 +317,10 @@ export class GrammarController {
   private fireFill(): Promise<void> {
     return wasmQueue(() =>
       this.disposed
-        ? Promise.resolve(this.readyMask)
+        ? Promise.resolve(null)
         : this.matcher.getNextTokenBitmask(),
     ).then((m) => {
-      this.readyMask = m;
+      if (m) this.setReadyMask(m);
     });
   }
 
@@ -493,9 +516,12 @@ export async function compileGrammarRequest(
   const matcher = await wasmQueue(() =>
     xgrammar.GrammarMatcher.createGrammarMatcher(compiled!, undefined, true),
   );
-  const vocabSize = effectiveVocabSize(tokenizer, configVocabSize) || info.getVocabSize();
+  // The matcher decides only the ids its TokenizerInfo was built with
+  // (model.vocab); the logits can be wider.
+  const known = info.getVocabSize();
   const controller = new GrammarController(
-    matcher, compiled, compiler, false, vocabSize,
+    matcher, compiled, compiler, false,
+    { matcher: known, logits: logitWidth(tokenizer, configVocabSize) || known },
     // Raw encode (no BOS/specials) for jump-forward retokenization.
     (s) => tokenizer.encode(s, false),
   );
