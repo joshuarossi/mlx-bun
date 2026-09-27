@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
 import { resolveKvScheme, type KvQuantOverride, type KvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { createRuntimeConfig, runtimeConfig, runtimeValue, withRuntimeConfig } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme, type TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { LoadedModelContext } from "../engine/model-host";
@@ -131,53 +131,61 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
   signal?.throwIfAborted();
   const model = await deps.resolve(command, args.positionals[0] ?? option(args, "query") ?? "");
   signal?.throwIfAborted();
-  const context = await deps.load(model, generation?.options.maxTokens);
-  let close: (() => void | Promise<void>) | undefined = () => context.dispose();
-  let failure: unknown, failed = false;
-  try {
-    signal?.throwIfAborted();
-    const scheme = resolveKvScheme({ turboQuant: generation?.turboQuant, override: generation?.kvQuant ??
-      (generation && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? "config" : "off"), config: context.kvConfig,
-      ...(generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}),
-    });
-    close = undefined; // engine construction owns failure cleanup from here
-    const engine = await deps.engine(context, scheme);
-    close = () => engine.close();
-    signal?.throwIfAborted();
-    if (generation) {
-      const ids = !generation.raw && context.template
-        ? textPrompt(context.template, context.tokenizer, [{ role: "user", content: generation.prompt }],
-          { addGenerationPrompt: true, enableThinking: runtimeValue("MLX_BUN_EVAL_THINK") === "1" }, false).ids
-        : context.tokenizer.encode(generation.prompt, true);
-      const plan = planRequest({ promptIds: ids, options: { ...generation.options, ...scheme.generationOptions, stopSequences: [] },
-        requestedMaxTokens: generation.options.maxTokens!, contextLimit: context.glmMemoryPlan?.contextTokens ?? null,
-        stream: false, wantLogprobs: false, topLogprobs: 0, adapterIds: [], hasVision: false,
-        userSeed: generation.options.seed !== undefined, hasGrammar: false, hasDraft: false, ownership: new RequestOwnership() });
-      if (!plan.ok) { plan.dispose(); throw new Error(plan.error.message); }
-      const tokens: number[] = [];
-      try {
-        const placement = engine.completion.place(plan.shape, plan.options);
-        plan.transferOwnership();
-        await engine.completion.run(plan.promptIds, plan.options, token => { tokens.push(token); }, undefined,
-          plan.shape, placement, signal);
-        signal?.throwIfAborted();
-        const text = context.tokenizer.decode(tokens, true);
-        deps.write(text.endsWith("\n") ? text : text + "\n");
-      } finally { plan.dispose(); }
-    } else {
-      const embed = engine.binding.embed?.bind(engine.binding);
-      if (!embed) throw new Error(`"${model.repoId}" is not an embedding model (need plain Qwen3, e.g. Qwen3-Embedding).`);
-      const results = await engine.gateway.runExclusive(async () => embed(texts, option(args, "instruct")), undefined, signal);
+  // Main's decode route for generate: explicit --kv-quant config runs the fused
+  // quantized attention; every other choice (default, off, 4, 8, turbo) runs
+  // unfused. The policy is scoped to this command's load, bind, run and cleanup.
+  const scoped = (run: () => Promise<void>) => !generation ? run()
+    : withRuntimeConfig(createRuntimeConfig({ ...runtimeConfig().values,
+      MLX_BUN_NO_FUSED_SDPA: generation.kvQuant === "config" ? "0" : "1" }), run);
+  return scoped(async () => {
+    const context = await deps.load(model, generation?.options.maxTokens);
+    let close: (() => void | Promise<void>) | undefined = () => context.dispose();
+    let failure: unknown, failed = false;
+    try {
       signal?.throwIfAborted();
-      if (args.values.json === true) {
-        const total = results.reduce((sum, result) => sum + result.tokens, 0);
-        deps.write(JSON.stringify({ object: "list", data: results.map((result, index) => ({ object: "embedding", index,
-          embedding: Array.from(result.vector) })), model: model.repoId, usage: { prompt_tokens: total, total_tokens: total } }) + "\n");
-      } else for (const result of results) deps.write(JSON.stringify(Array.from(result.vector)) + "\n");
+      const scheme = resolveKvScheme({ turboQuant: generation?.turboQuant, override: generation?.kvQuant ??
+        (generation && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? "config" : "off"), config: context.kvConfig,
+        ...(generation?.kvQuant === undefined && runtimeValue("MLX_BUN_EVAL_KV_QUANT") === "1" ? { quantizedKvStart: 0 } : {}),
+      });
+      close = undefined; // engine construction owns failure cleanup from here
+      const engine = await deps.engine(context, scheme);
+      close = () => engine.close();
+      signal?.throwIfAborted();
+      if (generation) {
+        const ids = !generation.raw && context.template
+          ? textPrompt(context.template, context.tokenizer, [{ role: "user", content: generation.prompt }],
+            { addGenerationPrompt: true, enableThinking: runtimeValue("MLX_BUN_EVAL_THINK") === "1" }, false).ids
+          : context.tokenizer.encode(generation.prompt, true);
+        const plan = planRequest({ promptIds: ids, options: { ...generation.options, ...scheme.generationOptions, stopSequences: [] },
+          requestedMaxTokens: generation.options.maxTokens!, contextLimit: context.glmMemoryPlan?.contextTokens ?? null,
+          stream: false, wantLogprobs: false, topLogprobs: 0, adapterIds: [], hasVision: false,
+          userSeed: generation.options.seed !== undefined, hasGrammar: false, hasDraft: false, ownership: new RequestOwnership() });
+        if (!plan.ok) { plan.dispose(); throw new Error(plan.error.message); }
+        const tokens: number[] = [];
+        try {
+          const placement = engine.completion.place(plan.shape, plan.options);
+          plan.transferOwnership();
+          await engine.completion.run(plan.promptIds, plan.options, token => { tokens.push(token); }, undefined,
+            plan.shape, placement, signal);
+          signal?.throwIfAborted();
+          const text = context.tokenizer.decode(tokens, true);
+          deps.write(text.endsWith("\n") ? text : text + "\n");
+        } finally { plan.dispose(); }
+      } else {
+        const embed = engine.binding.embed?.bind(engine.binding);
+        if (!embed) throw new Error(`"${model.repoId}" is not an embedding model (need plain Qwen3, e.g. Qwen3-Embedding).`);
+        const results = await engine.gateway.runExclusive(async () => embed(texts, option(args, "instruct")), undefined, signal);
+        signal?.throwIfAborted();
+        if (args.values.json === true) {
+          const total = results.reduce((sum, result) => sum + result.tokens, 0);
+          deps.write(JSON.stringify({ object: "list", data: results.map((result, index) => ({ object: "embedding", index,
+            embedding: Array.from(result.vector) })), model: model.repoId, usage: { prompt_tokens: total, total_tokens: total } }) + "\n");
+        } else for (const result of results) deps.write(JSON.stringify(Array.from(result.vector)) + "\n");
+      }
+    } catch (error) { failed = true; failure = error; throw error; }
+    finally {
+      try { await close?.(); }
+      catch (error) { if (failed) throw new AggregateError([failure, error], "inference and cleanup failed"); throw error; }
     }
-  } catch (error) { failed = true; failure = error; throw error; }
-  finally {
-    try { await close?.(); }
-    catch (error) { if (failed) throw new AggregateError([failure, error], "inference and cleanup failed"); throw error; }
-  }
+  });
 }
