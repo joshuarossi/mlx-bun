@@ -106,3 +106,136 @@ for (const bits of [4, 8]) test(`captured KV${bits} attention survives multiple 
     for (const row of source) row.dispose();
   }
 });
+
+// ---- plain reads while every row is still plain ----------------------------------------
+// A softcap graph reads plain keys and values. Before conversion the delayed
+// full wrapper answers with the same assembly its plain attention view uses:
+// each row's own cache, placed behind its left padding.
+const plainRows = (lengths: number[], seed: number) => lengths.map((length, index) => {
+  const row = new KVCache();
+  using k = tensor(1, 1, length, seed + 2 * index), v = tensor(1, 1, length, seed + 2 * index + 1);
+  for (const a of row.updateAndFetch(k, v)) a.dispose();
+  return row;
+});
+const zeros = (a: MlxArray) => { using z = ops.zeros(a.shape as number[], a.dtype); return digest(z); };
+const maskDigest = (a: MlxArray) => { using bytes = a.astype(Dtype.uint8); return digest(bytes); };
+
+test("plain reads before conversion equal each row's plain cache at B1 and at B2 with unequal offsets", () => {
+  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 64 });
+  for (const lengths of [[5], [2, 6]]) {
+    const source = plainRows(lengths, 10), control = cloneKvCaches(source);
+    const group = new DelayedQuantizedKVCache(64, 4, 64, maintain); group.mergeRows(source);
+    const twin = new DelayedQuantizedKVCache(64, 4, 64, maintain); twin.mergeRows(source);
+    const B = lengths.length;
+    try {
+      for (const [step, n] of [3, 1, 1, 2].entries()) {
+        const offsets = [...group.rowOffsets], pads = [...group.leftPad];
+        using q = tensor(B, 2, n, 100 + step), k = tensor(B, 1, n, 200 + step), v = tensor(B, 1, n, 300 + step);
+        const mask = group.makeMask(n, null), twinMask = twin.makeMask(n, null);
+        try {
+          const [keys, values] = group.updateAndFetch(k, v);
+          try {
+            expect(keys.shape).toEqual([B, 1, Math.max(...offsets.map((o, r) => pads[r]! + o)) + n, 64]);
+            for (let row = 0; row < B; row++) {
+              const at = (a: MlxArray, from: number, to: number) => a.slice([row, 0, from, 0], [row + 1, a.shape[1]!, to, a.shape[3]!]);
+              using kr = k.slice([row, 0, 0, 0], [row + 1, 1, n, 64]), vr = v.slice([row, 0, 0, 0], [row + 1, 1, n, 64]);
+              const [ck, cv] = control[row]!.updateAndFetch(kr, vr);
+              try {
+                using gk = at(keys, pads[row]!, pads[row]! + offsets[row]! + n), gv = at(values, pads[row]!, pads[row]! + offsets[row]! + n);
+                expect([digest(gk), digest(gv)], `step ${step} row ${row}`).toEqual([digest(ck), digest(cv)]);
+                if (pads[row]) { using pad = at(keys, 0, pads[row]!); expect(digest(pad)).toBe(zeros(pad)); }
+              } finally { ck.dispose(); cv.dispose(); }
+            }
+            // The same keys, values and mask as the plain attention view.
+            expect(twinMask.mode).toBe(mask.mode);
+            if (mask.arr) expect(maskDigest(twinMask.arr!)).toBe(maskDigest(mask.arr));
+            using out = ops.sdpa(q, keys, values, 0.125, mask.mode, mask.arr);
+            const view = twin.appendAndFetch(k, v);
+            try { using expected = view.attend(q, 0.125, twinMask); expect(digest(out)).toBe(digest(expected)); } finally { view.dispose(); }
+          } finally { keys.dispose(); values.dispose(); }
+        } finally { mask.arr?.dispose(); twinMask.arr?.dispose(); }
+        expect(group.rowOffsets).toEqual(offsets.map(o => o + n));
+      }
+    } finally { group.dispose(); twin.dispose(); for (const c of [...source, ...control]) c.dispose(); }
+  }
+});
+
+test("plain reads are owned by the caller and outlive later appends", () => {
+  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 64 });
+  const source = plainRows([2, 6], 30), control = cloneKvCaches(source);
+  const group = new DelayedQuantizedKVCache(64, 4, 64, maintain); group.mergeRows(source);
+  try {
+    using k1 = tensor(2, 1, 1, 31), v1 = tensor(2, 1, 1, 32), k2 = tensor(2, 1, 1, 33), v2 = tensor(2, 1, 1, 34);
+    const [held, heldValues] = group.updateAndFetch(k1, v1);
+    const before = [digest(held), digest(heldValues)];
+    for (const a of group.updateAndFetch(k2, v2)) a.dispose();   // disposing a read leaves the cache intact
+    expect([digest(held), digest(heldValues)]).toEqual(before);     // an earlier read keeps its contents
+    held.dispose(); heldValues.dispose();
+    for (let row = 0; row < 2; row++) {
+      for (const [k, v] of [[k1, v1], [k2, v2]] as const) {
+        using kr = k.slice([row, 0, 0, 0], [row + 1, 1, 1, 64]), vr = v.slice([row, 0, 0, 0], [row + 1, 1, 1, 64]);
+        for (const a of control[row]!.updateAndFetch(kr, vr)) a.dispose();
+      }
+      const state = group.extractRow(row);
+      try { expect(hashes(state)).toEqual(hashes(control[row]!)); } finally { state.dispose(); }
+    }
+  } finally { group.dispose(); for (const c of [...source, ...control]) c.dispose(); }
+});
+
+test("a plain read appends to no row once any row is converted, before or by the scheduled maintenance", () => {
+  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 5 });
+  const snapshot = (group: DelayedQuantizedKVCache) => ({ offsets: [...group.rowOffsets], pads: [...group.leftPad],
+    rows: group.rowOffsets.map((_, row) => { const s = group.extractRow(row); try { return [s.constructor.name, ...hashes(s)]; } finally { s.dispose(); } }) });
+  using k = tensor(2, 1, 1, 50), v = tensor(2, 1, 1, 51);
+  // Mixed and fully converted rows refuse with no change at all.
+  for (const lengths of [[2, 6], [6, 7]]) {
+    const source = plainRows(lengths, 40); maintain(source);
+    const group = new DelayedQuantizedKVCache(64, 4, 5, maintain); group.mergeRows(source);
+    try {
+      const before = snapshot(group);
+      expect(() => group.updateAndFetch(k, v)).toThrow("mixed precision rows use their attention state");
+      expect(snapshot(group)).toEqual(before);
+    } finally { group.dispose(); for (const c of source) c.dispose(); }
+  }
+  // Scheduled maintenance converts the second row at its offset; the first,
+  // still plain, is not advanced.
+  const source = plainRows([2, 4], 60), control = cloneKvCaches(source);
+  const group = new DelayedQuantizedKVCache(64, 4, 5, maintain); group.mergeRows(source);
+  try {
+    for (const a of group.updateAndFetch(k, v)) a.dispose();
+    expect(group.rowOffsets).toEqual([3, 5]);
+    expect(() => group.updateAndFetch(k, v)).toThrow("mixed precision rows use their attention state");
+    expect(group.rowOffsets).toEqual([3, 5]);
+    using k0 = k.slice([0, 0, 0, 0], [1, 1, 1, 64]), v0 = v.slice([0, 0, 0, 0], [1, 1, 1, 64]);
+    for (const a of control[0]!.updateAndFetch(k0, v0)) a.dispose();
+    const first = group.extractRow(0), second = group.extractRow(1);
+    try {
+      expect([first.constructor.name, ...hashes(first)]).toEqual([control[0]!.constructor.name, ...hashes(control[0]!)]);
+      expect(second).toBeInstanceOf(QuantizedKVCache);
+    } finally { first.dispose(); second.dispose(); }
+  } finally { group.dispose(); for (const c of [...source, ...control]) c.dispose(); }
+});
+
+test("prefill defers conversion: a plain read past the offset appends while prefilling, and the next one after it refuses", () => {
+  const maintain = createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 5 });
+  const source = plainRows([6, 3], 70), control = cloneKvCaches(source);
+  const group = new DelayedQuantizedKVCache(64, 4, 5, maintain); group.mergeRows(source);
+  try {
+    using k = tensor(2, 1, 2, 71), v = tensor(2, 1, 2, 72);
+    group.beginPrefill();
+    const [keys, values] = group.updateAndFetch(k, v);
+    try {
+      for (let row = 0; row < 2; row++) {
+        using kr = k.slice([row, 0, 0, 0], [row + 1, 1, 2, 64]), vr = v.slice([row, 0, 0, 0], [row + 1, 1, 2, 64]);
+        const [ck] = control[row]!.updateAndFetch(kr, vr);
+        const pad = group.leftPad[row]!;
+        using gk = keys.slice([row, 0, pad, 0], [row + 1, 1, pad + control[row]!.offset, 64]);
+        try { expect(digest(gk)).toBe(digest(ck)); } finally { ck.dispose(); }
+      }
+    } finally { keys.dispose(); values.dispose(); group.endPrefill(); }
+    expect(group.rowOffsets).toEqual([8, 5]);
+    using k1 = tensor(2, 1, 1, 73), v1 = tensor(2, 1, 1, 74);
+    expect(() => group.updateAndFetch(k1, v1)).toThrow("mixed precision rows use their attention state");
+    expect(group.rowOffsets).toEqual([8, 5]);
+  } finally { group.dispose(); for (const c of [...source, ...control]) c.dispose(); }
+});

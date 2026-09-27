@@ -24,13 +24,24 @@ export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuan
     return this.packed?.captureDonorAttention() ?? captureFullKvDonorAttention(this.rows, this.leftPad, this.offset);
   }
   makeEmptyBatch(): DelayedQuantizedKVCache { return new DelayedQuantizedKVCache(this.groupSize, this.bits, this.start, this.maintain); }
-  updateAndFetch(): [MlxArray, MlxArray] { throw new Error("mixed precision rows use their attention state"); }
+  /** Plain keys and values at the model's B while every row is still plain,
+   * assembled as the plain attention view does; the caller owns them. Once a
+   * row is converted, or the scheduled maintenance converts one, reading plain
+   * is an error raised before any row appends. */
+  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    this.advancePlain();
+    return this.#appendPlain(k, v);
+  }
+  #appendPlain(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    const [keys, values] = appendFullKvRows(this.rows, this.leftPad, this.offset + k.shape[2]!, k, v);
+    try { this.syncPositions(true); } catch (error) { keys.dispose(); values.dispose(); throw error; }
+    return [keys, values];
+  }
   appendAndFetch(k: MlxArray, v: MlxArray): KvAttentionView {
     this.advance();
     if (this.packed) return captureKvAttention(this.packed, k, v);
     if (this.rows.every(row => !row.quantizedAttention)) {
-      const [keys, values] = appendFullKvRows(this.rows, this.leftPad, this.offset + k.shape[2]!, k, v);
-      try { this.syncPositions(true); } catch (error) { keys.dispose(); values.dispose(); throw error; }
+      const [keys, values] = this.#appendPlain(k, v);
       return { attend: (q, scale, mask) => ops.sdpa(q, keys, values, scale, mask.mode, mask.arr),
         dispose() { keys.dispose(); values.dispose(); } };
     }
