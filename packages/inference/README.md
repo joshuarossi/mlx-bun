@@ -465,13 +465,15 @@ whole prompt prefill and first canvas draw; each later unit is one denoising ste
 A row publishes only its finished result, and its decode time ends when that result
 is computed. Rows borrow one dequantized embedding table, which the group releases
 after the last row's run closes. Each unit runs with only its row's adapters
-active. Grammar, draft, logprobs, logits processors, fill, encoded and paged KV
-requests are refused with typed plan reasons. `DenoisingKeys` reproduces MLX's
+active. An image request passes its pixels as the row's prefill input: only the
+first unit reads them (the vision encoder runs there), and the request owner
+releases them after the row settles. Grammar, draft, logprobs, logits processors,
+fill, encoded and paged KV requests are refused with typed plan reasons. `DenoisingKeys` reproduces MLX's
 global key sequence per request, so denoising never reads or reseeds the process
 key. The [denoising tests](tests/generation/denoising-binding.test.ts) take
 `MLX_BUN_DIFFUSION_MODEL=/cached/diffusiongemma` for the real-weight check and
 optionally `MLX_BUN_DIFFUSION_REFERENCE`, comma-separated trajectories in main's
-`goldens/diffusion/gen*.json` format.
+`goldens/diffusion/gen*.json` or `goldens/diffusion/vision.json` format.
 
 `execution/fit` estimates whether a model fits a machine at a context length:
 resident weights (bytes the caller supplies, such as a registry's), KV bytes from

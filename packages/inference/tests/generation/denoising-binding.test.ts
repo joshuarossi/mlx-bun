@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { dirname, isAbsolute, join } from "node:path";
 import { DenoisingKeys, denoiseAsync, denoiseSync, type DiffusionGenOptions } from "../../src/generation/diffusion";
 import { denoisingRequestOptions, generateDenoising } from "../../src/generation/denoising";
 import { bindLegacyDenoisingModel, type MlxDenoisingBinding } from "../../src/generation/bindings/denoising";
@@ -122,10 +123,17 @@ describe("interleaved shared denoising", () => {
       descriptor: { id: "interleaved-canvas", artifact: "fixture", backend: "mlx",
         graphAbi: "mlx-denoising-v1", stateAbi: "position-only-v1" },
       vocabSize: 4, canvasLength: 2, embedScale: 1,
-      prefill(ids) {
+      prefill(ids, pixels) {
         const prompt = ids.join(",");
-        events.push(`prefill:${prompt}:${adapters.active.join("+")}`);
-        return { offset: ids.length, prompt, steps: 0 };
+        let offset = ids.length;
+        if (pixels) {
+          // A stand-in vision encoder: its features exist only inside this unit.
+          const features = ops.mulScalar(pixels, 2);
+          try { offset += Math.round(features.toFloat32().reduce((sum, value) => sum + value, 0)); }
+          finally { features.dispose(); }
+        }
+        events.push(`prefill:${prompt}:${adapters.active.join("+")}${pixels ? ":image" : ""}`);
+        return { offset, prompt, steps: 0 };
       },
       extendPrefill(ids, state) { state.offset += ids.shape[1]!; },
       decoderLogits(canvas, state) {
@@ -444,6 +452,77 @@ describe("interleaved shared denoising", () => {
     } finally { await group.close(); }
   });
 
+  const image = (values: number[]) => MlxArray.fromFloat32(Float32Array.from(values), [1, 1, 2, 2]);
+
+  test("an image row reproduces denoiseSync with its pixels while interleaving with text rows", async () => {
+    const pixels = image([0.5, 1, 1.5, 2]);
+    try {
+      const f = interleaved();
+      const { group, submit } = scheduler(f);
+      const requests: [number[], GenerateOptions][] = [[[1], { seed: 3, maxTokens: 5, visionPixels: pixels }],
+        [[2, 3], { seed: 4, maxTokens: 4 }], [[4], { seed: 3, maxTokens: 5 }]];
+      try {
+        const rows = requests.map(([prompt, request]) => submit(prompt, request));
+        await Promise.all(rows.map(row => row.stats));
+        expect(rows[0]!.tokens).toEqual(denoiseSync(interleaved().graph, [1], denoisingRequestOptions(requests[0]![1])).tokens);
+        for (const [index, [prompt, request]] of requests.entries())
+          expect(rows[index]!.tokens).toEqual(await solo(prompt, request));
+        expect(rows[0]!.tokens).not.toEqual(await solo([1], { seed: 3, maxTokens: 5 }));
+        // Only the row's first unit read the image; the borrowed pixels are still the caller's.
+        expect(f.events.filter(event => event.endsWith(":image"))).toEqual(["prefill:1::image"]);
+        expect(() => pixels.handle).not.toThrow();
+        expect(steps(f.events, "2,3")[0]!).toBeLessThan(steps(f.events, "1").at(-1)!);
+      } finally { await group.close(); }
+    } finally { pixels.dispose(); }
+  });
+
+  test("the pixel owner may release them once the image row's first unit has run", async () => {
+    const pixels = image([2, 0.5, 1, 1.5]);
+    const expected = image([2, 0.5, 1, 1.5]);
+    try {
+      const f = interleaved({ onStep: (prompt, step) => { if (prompt === "1" && step === 1) pixels.dispose(); } });
+      const { group, submit } = scheduler(f);
+      try {
+        const row = submit([1], { seed: 6, maxTokens: 6, visionPixels: pixels });
+        const text = submit([5], { seed: 7, maxTokens: 4 });
+        await Promise.all([row.stats, text.stats]);
+        expect(() => pixels.handle).toThrow("used after dispose");
+        expect(row.tokens).toEqual(await solo([1], { seed: 6, maxTokens: 6, visionPixels: expected }));
+        expect(text.tokens).toEqual(await solo([5], { seed: 7, maxTokens: 4 }));
+      } finally { await group.close(); }
+    } finally { pixels.dispose(); expected.dispose(); }
+  });
+
+  test("cancelling an image row before or after its first unit releases its work and keeps survivors exact", async () => {
+    for (const when of ["before", "after"] as const) {
+      const run = async () => {
+        const pixels = image([1, 2, 3, 4]);
+        const abort = new AbortController();
+        const cancel = () => abort.abort(new DOMException("client left", "AbortError"));
+        const f = interleaved({ onStep: (prompt, step) => { if (when === "after" && prompt === "1" && step === 1) cancel(); } });
+        const { group, submit } = scheduler(f);
+        try {
+          const survivor = submit([2, 3], { seed: 2, maxTokens: 5 });
+          const cancelled = submit([1], { seed: 1, maxTokens: 6, visionPixels: pixels },
+            { signal: abort.signal, ...(when === "before" ? { onAdmitted: cancel } : {}) });
+          await expect(cancelled.stats).rejects.toHaveProperty("name", "AbortError");
+          await survivor.stats;
+          expect(survivor.tokens).toEqual(await solo([2, 3], { seed: 2, maxTokens: 5 }));
+          expect(cancelled.tokens).toEqual([]);
+          // Before its first unit the image was never read; after it, the run closed at the next boundary.
+          expect(f.events.includes("prefill:1::image")).toBe(when === "after");
+          expect(f.events.includes("close:1")).toBe(when === "after");
+          if (when === "after") expect(f.events.indexOf("close:1")).toBeGreaterThan(steps(f.events, "1").at(-1)!);
+          expect(() => pixels.handle).not.toThrow();
+          expect(f.events.at(-1)).toBe("table-released");
+        } finally { await group.close(); pixels.dispose(); }
+      };
+      await run(); const baseline = settle();
+      for (let i = 0; i < 3; i++) await run();
+      expect(settle()).toBeLessThanOrEqual(baseline);
+    }
+  });
+
   test("the DiffusionGemma gateway binding places and runs rows through the shared group", async () => {
     const f = interleaved();
     const model = Object.assign(Object.create(DiffusionGemmaModel.prototype), {
@@ -485,7 +564,9 @@ describe("interleaved shared denoising", () => {
 
 // Opt-in real-weight check. MLX_BUN_DIFFUSION_MODEL names a cached DiffusionGemma
 // snapshot; MLX_BUN_DIFFUSION_REFERENCE optionally lists comma-separated
-// trajectories in main's goldens/diffusion/gen*.json format.
+// trajectories in main's goldens/diffusion/gen*.json format, or image trajectories
+// in its goldens/diffusion/vision.json format (a relative `image` resolves from
+// the reference file's directory).
 const diffusionModel = process.env.MLX_BUN_DIFFUSION_MODEL;
 const diffusionReferences = process.env.MLX_BUN_DIFFUSION_REFERENCE?.split(",").filter(Boolean) ?? [];
 test.skipIf(!diffusionModel)("real DiffusionGemma rows reproduce solo runs and main's reference trajectories", async () => {
@@ -535,21 +616,38 @@ test.skipIf(!diffusionModel)("real DiffusionGemma rows reproduce solo runs and m
       expect(outcome).toBeInstanceOf(DOMException);
       expect((outcome as DOMException).name).toBe("AbortError");
     };
+    const fallbackPrompt = [2, 105, 2364, 107, 6974, 496, 678, 20517, 1003, 9947, 56125, 236761, 106, 107, 105, 4368, 107];
+    const served = (seed: number, maxTokens: number) => denoisingRequestOptions({ seed, maxTokens });
+    let textPrompt: number[] | undefined;
     for (const path of diffusionReferences) {
       const reference = await Bun.file(path).json();
-      const options: DiffusionGenOptions = { maxTokens: reference.max_tokens, maxDenoisingSteps: reference.max_denoising_steps,
-        sampler: reference.sampler, threshold: reference.threshold, entropyBound: reference.entropy_bound, temperature: 0,
-        tMin: reference.t_min, tMax: reference.t_max, eosTokenIds: reference.eos_token_id, seed: BigInt(reference.seed) };
-      const direct = denoiseSync(binding.graph, reference.prompt_ids, options);
-      expect({ tokens: direct.tokens, steps: direct.steps, finishReason: direct.finishReason })
-        .toEqual({ tokens: reference.tokens, steps: reference.total_steps, finishReason: reference.finish_reason });
-      const grouped = await run([{ prompt: reference.prompt_ids, options }]);
-      expect(grouped.outcomes).toEqual(["done"]);
-      expect(grouped.outputs[0]).toEqual(reference.tokens);
+      const image = reference.image === undefined ? undefined : await model.visionTower!.preprocess(new Uint8Array(
+        await Bun.file(isAbsolute(reference.image) ? reference.image : join(dirname(path), reference.image)).arrayBuffer()));
+      try {
+        const ids: number[] = reference.input_ids ?? reference.prompt_ids;
+        if (image) expect(image.softTokens).toBe(reference.soft_tokens);
+        else textPrompt ??= ids;
+        const options: DiffusionGenOptions = { maxTokens: reference.max_tokens, maxDenoisingSteps: reference.max_denoising_steps,
+          sampler: reference.sampler ?? "confidence-threshold", threshold: reference.threshold, entropyBound: reference.entropy_bound,
+          temperature: 0, tMin: reference.t_min, tMax: reference.t_max, eosTokenIds: reference.eos_token_id ?? [1, 106],
+          seed: BigInt(reference.seed), ...(image ? { visionPixels: image.pixels } : {}) };
+        const direct = denoiseSync(binding.graph, ids, options);
+        expect({ tokens: direct.tokens, steps: direct.steps, finishReason: direct.finishReason })
+          .toEqual({ tokens: reference.tokens, steps: reference.total_steps, finishReason: reference.finish_reason });
+        const grouped = await run([{ prompt: ids, options }]);
+        expect(grouped.outcomes).toEqual(["done"]);
+        expect(grouped.outputs[0]).toEqual(reference.tokens);
+        if (image) {
+          // The image row interleaves with a text row; each equals its solo run.
+          const text = { prompt: [...fallbackPrompt], options: served(9, 32) };
+          const paired = await run([{ prompt: [...ids], options }, text]);
+          expect(paired.outcomes).toEqual(["done", "done"]);
+          expect(paired.outputs[0]).toEqual(reference.tokens);
+          expect(paired.outputs[1]).toEqual(denoiseSync(binding.graph, text.prompt, text.options).tokens);
+        }
+      } finally { image?.pixels.dispose(); }
     }
-    const prompt = diffusionReferences.length ? (await Bun.file(diffusionReferences[0]!).json()).prompt_ids as number[]
-      : [2, 105, 2364, 107, 6974, 496, 678, 20517, 1003, 9947, 56125, 236761, 106, 107, 105, 4368, 107];
-    const served = (seed: number, maxTokens: number) => denoisingRequestOptions({ seed, maxTokens });
+    const prompt = textPrompt ?? fallbackPrompt;
     for (const count of [2, 4]) {
       // Distinct arrays identify each row's prefill; seeds select each row's options.
       // Step 1 always runs, so the cancellation and the late join always happen.

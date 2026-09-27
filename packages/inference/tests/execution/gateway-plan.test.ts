@@ -165,6 +165,20 @@ describe("DiffusionGemma interleaved denoising binding", () => {
     }
   });
 
+  test("an image request places continuously and its method borrows the request's pixels", () => {
+    const binding = bindMlxGateway(diffusion());
+    const pixels = { dispose() {} } as unknown as NonNullable<GenerateOptions["visionPixels"]>;
+    const options: GenerateOptions = { seed: 1, visionPixels: pixels };
+    // Denoising pixels are that method's prefill input, so hasVision stays false.
+    const plan = planWith(binding, { ...shape, userSeed: true }, options);
+    expect(plan).toMatchObject({ method: "denoising", mechanism: "continuous", promptCache: false, checkpoint: false });
+    expect((binding.methodRequest!(plan, options)!.data as GenerateOptions).visionPixels).toBe(pixels);
+    // Prepared autoregressive media still needs a media binding this graph lacks.
+    expect(refusals(planWith(binding, { ...shape, hasVision: true }))).toEqual(["media-batch-unsupported"]);
+    expect(place(bindMlxGateway(gemma4()), { ...shape, hasVision: true }))
+      .toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+  });
+
   test("adapters are row state: the group context is neutral and encoded KV never binds", () => {
     const model = diffusion();
     const binding = bindMlxGateway(model);

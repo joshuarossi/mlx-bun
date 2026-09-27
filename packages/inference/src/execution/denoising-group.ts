@@ -102,6 +102,8 @@ class DenoisingGroup<State> implements MlxGroupedMethod {
     disposeResources([...this.#requests.keys()].map(row => ({ dispose: () => this.#close(row) })));
   }
 
+  /** Image pixels stay borrowed from the request owner. Only the row's first
+   * unit reads them; the owner releases them after the row has settled. */
   #open(row: Row): void {
     const options = row.req.method!.data as GenerateOptions;
     const denoise = this.policy(options);
