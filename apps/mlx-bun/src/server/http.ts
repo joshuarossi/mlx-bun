@@ -1,5 +1,6 @@
 import { AdmissionRejected } from "@mlx-bun/inference/execution/admission";
 import { UnsupportedExecutionError } from "../engine/completion";
+import { PlainKvReadError } from "@mlx-bun/inference/state/plain-kv-reads";
 // The HTTP end of the pipeline: build + admit a request (errors → a JSON
 // error response in the surface's own shape), then run it and write the
 // result as JSON, or as protocol frames while events arrive. One writer for
@@ -30,6 +31,9 @@ export function errorResponse(e: unknown, context: string, format: ErrorFormatte
   if (signal?.aborted) return format(499, "request cancelled", { message: "request cancelled", type: "request_cancelled", code: "request_cancelled" });
   if (e instanceof UnsupportedExecutionError) return format(501, e.message, {
     message: e.message, type: "not_implemented", code: "unsupported_execution", reasons: e.reasons,
+  });
+  if (e instanceof PlainKvReadError) return format(501, e.message, {
+    message: e.message, type: "not_implemented", code: "unsupported_kv_transition",
   });
   if (e instanceof AdmissionRejected) return format(429, e.message, { message: e.message, type: "resource_admission", code: "queue_full" });
   if (e instanceof RequestError) return format(e.status, e.message, e.body);

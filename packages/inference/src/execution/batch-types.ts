@@ -228,6 +228,10 @@ export interface MlxBatchExecutionGroupOptions {
   kvScheme?: KvScheme;
   /** Model binding owns support for precision transitions. */
   kvBatchCapabilities?: { delayedAffine?: boolean };
+  /** The graph's attention reads plain keys and values (bound once by the
+   * binding): a row whose next append is not certified plain-readable is
+   * rejected before any shared append, after its pending output publishes. */
+  plainKvReads?: boolean;
   /** Prompt-cache hook: admission take()s the longest usable
    *  prefix into the joiner's solo caches (suffix-only prefill — the
    *  multi-turn chat TTFT path); rows that finish never-merged put() their

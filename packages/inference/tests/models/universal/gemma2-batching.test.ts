@@ -473,7 +473,8 @@ describe.skipIf(!native)("Universal attention bound at construction", () => {
       expect(edited.encodedKvAttention).toBe(false);
       edited.args.attnLogitSoftcap = null;
       expect(edited.encodedKvAttention).toBe(false);
-      expect([bindMlxGateway(edited).kvBatchable(immediate()), bindMlxGateway(edited).kvBatchable(delayed())]).toEqual([false, false]);
+      // Affine KV is admitted through certified plain reads; attention still reads plain.
+      expect([bindMlxGateway(edited).kvBatchable(immediate()), bindMlxGateway(edited).kvBatchable(delayed())]).toEqual([true, true]);
       for (const tokens of [[2, 4, 7], [8, 3], [6]]) {
         using a = edited.forward(tokens, caches[0]!), b = fresh.forward(tokens, caches[1]!);
         expect(a.rawBytes()).toEqual(b.rawBytes());
@@ -1391,4 +1392,220 @@ test.skipIf(!native || !artifact)("a structurally equivalent delegating provider
   } finally { weights.dispose(); }
 }, 900_000);
 
+// A graph that reads plain KV serves affine KV rows while their storage reads
+// plain. At a row's actual transition its pending output publishes first (it
+// may finish there), then only that row is rejected, before any shared append.
+describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
+  const types = [F, S, F, S];
+  type End = { stopAfter?: number; cancelAfter?: number };
+  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number } = {}) => {
+    const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
+    const { makeStepSampler } = await import("../../../src/sampling");
+    const f = mixedFixture(types, true), model = f.make();
+    const binding = bindMlxGateway(model);
+    const kvScheme = start === null ? undefined : resolveKvScheme({ override: 4, quantizedKvStart: start });
+    let held = false;
+    const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
+      runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1", MLX_BUN_COMPILED_DECODE: "0" }),
+      ...(kvScheme ? { kvScheme } : {}) });
+    const submit = (prompt: number[], maxTokens: number, end: End = {}, grammar?: import("../../../src/sampling").GrammarController) => {
+      const tokens: number[] = [], abort = new AbortController();
+      const request = { maxTokens, temperature: 0, ...(kvScheme?.generationOptions ?? {}) };
+      const sampling = createRowSampling(makeStepSampler(request, { tokenRepresentation: "device", grammarWait: "external", historyUpdate: "after-sample",
+        initialHistory: prompt }), token => {
+        tokens.push(token);
+        if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
+        return tokens.length === end.stopAfter ? false : undefined;
+      });
+      return group.submit({ promptIds: prompt, maxTokens, eosTokenIds: [], signal: abort.signal, compiledDecode: false,
+        sample: sampling.sample, plainGreedy: sampling.plainGreedy, onToken: sampling.onToken, ...(grammar ? { grammar } : {}) })
+        .then(stats => stats.finishReason as string, (error: Error) => error.name)
+        .then(outcome => ({ tokens, outcome }))
+        .finally(() => sampling.dispose());
+    };
+    /** Rows submitted together prefill together. */
+    const together = async (...requests: [number[], number, End?][]) => {
+      held = true;
+      const pending = requests.map(([prompt, maxTokens, end]) => submit(prompt, maxTokens, end));
+      held = false; group.kick();
+      return Promise.all(pending);
+    };
+    return { binding, model, kvScheme, group, submit, together,
+      async close() { try { await group.close(); expect(group.activeRows + group.pendingRows).toBe(0); } finally { f.dispose(); } } };
+  };
+  const A = [2, 4, 7, 9, 3], B = [5, 8];
+  const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: true,
+    turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
+
+  test("admission: affine KV binds as ordinary continuous decoding without compiled replay; TurboQuant does not", async () => {
+    const env = await setup(64);
+    try {
+      expect(env.model.encodedKvAttention).toBe(false);
+      expect(env.binding.kvBatchable(env.kvScheme!)).toBe(true);
+      expect(env.binding.kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))).toBe(false);
+      const plan = env.binding.plan(shape, { maxTokens: 4, ...env.kvScheme!.generationOptions },
+        { continuous: true, quantizedBatch: env.binding.kvBatchable(env.kvScheme!), checkpoints: false });
+      expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, compiledDecode: false });
+    } finally { await env.close(); }
+  });
+
+  test("below the transition, delayed affine rows equal plain rows at B1 and in a B2 co-prefill", async () => {
+    const plain = await setup(null), delayed = await setup(64);
+    try {
+      const digests = (env: typeof plain) => {
+        const seen: string[] = [], project = env.model.logitsFromHidden.bind(env.model);
+        env.model.logitsFromHidden = (hidden: MlxArray) => {
+          const logits = project(hidden);
+          seen.push(createHash("sha256").update(logits.rawBytes()).digest("hex")); return logits;
+        };
+        return seen;
+      };
+      const pl = digests(plain), dl = digests(delayed);
+      expect(await delayed.submit(A, 6)).toEqual(await plain.submit(A, 6));
+      expect(dl).toEqual(pl);
+      expect(await delayed.together([A, 6], [B, 5])).toEqual(await plain.together([A, 6], [B, 5]));
+      expect(dl.length).toBeGreaterThan(6);
+      expect(dl).toEqual(pl);   // every projection, B1 and the B2 co-prefill
+    } finally { await plain.close(); await delayed.close(); }
+  });
+
+  test("at a decode transition the row publishes its last plain token, then only it is rejected; the peer and the group continue", async () => {
+    const plain = await setup(null), delayed = await setup(7);   // A (5 tokens) may produce 7 - 5 + 1 = 3
+    try {
+      const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+      const [a, b] = await delayed.together([A, 8], [B, 5]);
+      expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
+      expect(b).toEqual(soloB);
+      // The same group drains and serves again.
+      expect(await delayed.submit(B, 5)).toEqual(soloB);
+    } finally { await plain.close(); await delayed.close(); }
+  });
+
+  test("a stop, a cancellation or the budget on the last plain token finishes normally", async () => {
+    const plain = await setup(null);
+    try {
+      const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+      for (const [maxTokens, end, outcome] of [[8, { stopAfter: 3 }, "stop"], [8, { cancelAfter: 3 }, "AbortError"], [3, {}, "length"]] as const) {
+        const delayed = await setup(7);
+        try {
+          const [a, b] = await delayed.together([A, maxTokens, end], [B, 5]);
+          expect(a, outcome).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome });
+          expect(b, outcome).toEqual(soloB);
+        } finally { await delayed.close(); }
+      }
+    } finally { await plain.close(); }
+  });
+
+  test("a row converted in a co-prefill is rejected before its next chunk with no output; its peer is unaffected", async () => {
+    const plain = await setup(null, { chunk: 4 }), delayed = await setup(5, { chunk: 4 });
+    const long = [2, 4, 7, 9, 3, 11, 13, 17, 19, 23, 29, 31], short = [5, 8, 3];   // short may produce 5 - 3 + 1 = 3
+    try {
+      const soloShort = await plain.submit(short, 3);
+      const [l, s] = await delayed.together([long, 4], [short, 3]);
+      expect(l).toEqual({ tokens: [], outcome: "PlainKvReadError" });
+      expect(s).toEqual(soloShort);
+    } finally { await plain.close(); await delayed.close(); }
+  });
+
+  test("a checkpoint before the transition restores exactly in a fresh group; the resumed row is rejected at its transition while a sibling completes", async () => {
+    const { bindMlxGateway, createRuntimeConfig, createOrdinaryContinuationRequest, ContinuationPersistence, createRowSampling } =
+      await import("../../../src/execution");
+    const { makeStepSampler } = await import("../../../src/sampling");
+    const { SsdCacheStore, PromptCache, cloneKvCaches, leaseCacheState } = await import("../../../src/state");
+    const plain = await setup(null);
+    const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+    await plain.close();
+    const directory = await mkdtemp(join(tmpdir(), "plain-kv-continuation-"));
+    const scheme = resolveKvScheme({ override: 4, quantizedKvStart: 9 });   // A (5 tokens) may produce 9 - 5 + 1 = 5
+    const run = async (name: string, interruptAt?: number, sibling = false) => {
+      // A fresh graph, binding and group per run: only the SSD directory is shared.
+      const f = mixedFixture(types, true), model = f.make(), binding = bindMlxGateway(model);
+      const store = new SsdCacheStore({ dir: join(directory, name), maxBytes: 1 << 30, modelId: "synthetic-gemma2",
+        configFingerprint: `plain-kv-continuation:${scheme.cacheKey}`, tokenizerHash: "fixture", verify: true });
+      const persistence = new ContinuationPersistence(store, { maxBytes: 1 << 30 });
+      const prefix = new PromptCache(1 << 20, null, null, cloneKvCaches);
+      binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 2,
+        checkpointPersistence: persistence, identity: "plain-kv", cloneState: cloneKvCaches, adapterNamespace: () => "" });
+      let held = true;
+      const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64, kvScheme: scheme, admissionHeld: () => held,
+        runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0" }) });
+      const options = { ...scheme.generationOptions, maxTokens: 8, temperature: 0 };
+      const execution = binding.plan(shape, options, { continuous: true, quantizedBatch: binding.kvBatchable(scheme), checkpoints: true });
+      expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+      const tokens: number[] = [], restored: number[] = [], captured = new Map<number, string>(), abort = new AbortController();
+      const request = createOrdinaryContinuationRequest({ store, persistence, interval: 2, prompt: A, options, execution, identity: "plain-kv",
+        restore: entry => { const loaded = store.restore(entry, model); if (loaded) restored.push(loaded.tokens.length); return loaded; },
+        onToken(token) { tokens.push(token); if (tokens.length === interruptAt) abort.abort(new DOMException("interrupted", "AbortError")); } });
+      const enqueue = request.continuation.captureOwned;
+      request.continuation.captureOwned = state => {
+        const digest = new Bun.CryptoHasher("sha256");
+        digest.update(JSON.stringify([state.pendingToken, state.cacheTokens]));
+        for (const cache of state.caches) {
+          const lease = leaseCacheState(cache);
+          try { for (const plane of lease.borrow()) { using exact = ops.contiguous(plane); digest.update(exact.rawBytes()); } } finally { lease.close(); }
+        }
+        captured.set(state.generatedTokens, digest.digest("hex"));
+        enqueue(state);
+      };
+      const siblingTokens: number[] = [];
+      const siblingSampling = sibling ? createRowSampling(makeStepSampler({ temperature: 0 }, { tokenRepresentation: "device",
+        grammarWait: "external", historyUpdate: "after-sample", initialHistory: B }), token => { siblingTokens.push(token); }) : undefined;
+      try {
+        const a = group.submit({ ...request, promptIds: A, cacheNamespace: "a", signal: abort.signal, compiledDecode: false,
+          maxTokens: 8, eosTokenIds: [] }).then(stats => stats.finishReason as string, (error: Error) => error.name);
+        const b = siblingSampling ? group.submit({ promptIds: B, maxTokens: 5, eosTokenIds: [], compiledDecode: false,
+          sample: siblingSampling.sample, plainGreedy: siblingSampling.plainGreedy, onToken: siblingSampling.onToken })
+          .then(stats => stats.finishReason as string, (error: Error) => error.name) : undefined;
+        held = false; group.kick();
+        const outcome = await a, siblingOutcome = await b;
+        return { tokens, outcome, restored, captured, sibling: b ? { tokens: siblingTokens, outcome: siblingOutcome } : undefined };
+      } finally {
+        try { await group.close(); } finally {
+          try { await persistence.flush(); } finally { request.dispose(); siblingSampling?.dispose(); prefix.clear(); f.dispose(); }
+        }
+      }
+    };
+    try {
+      const control = await run("control");
+      expect({ tokens: control.tokens, outcome: control.outcome }).toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "PlainKvReadError" });
+      expect([...control.captured.keys()]).toEqual([2, 4]);
+      const interrupted = await run("restart", 3);
+      expect(interrupted.outcome).toBe("AbortError");
+      expect(interrupted.captured.get(2)).toBe(control.captured.get(2)!);
+      const resumed = await run("restart", undefined, true);
+      expect(resumed.restored).toEqual([A.length + 2]);
+      expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
+      expect(resumed.captured.get(4)).toBe(control.captured.get(4)!);
+      expect(resumed.sibling).toEqual(soloB);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("a grammar row takes the read-before-build step, publishes its last plain token with its matcher advanced, then is rejected", async () => {
+    const plain = await setup(null), delayed = await setup(7);
+    try {
+      const soloA = await plain.submit(A, 8);
+      // A permissive controller: the group routes live grammar rows through
+      // its read-before-build step; masking belongs to the row's sampler.
+      const accepted: number[] = [];
+      const grammar = { accept(token: number) { accepted.push(token); }, get isTerminated() { return false; },
+        ready: () => Promise.resolve() } as unknown as import("../../../src/sampling").GrammarController;
+      const result = await delayed.submit(A, 8, {}, grammar);
+      expect(result).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
+      expect(accepted).toEqual(result.tokens);
+    } finally { await plain.close(); await delayed.close(); }
+  });
+
+  test("the first decode of a prompt past the transition is refused with no output; a single final chunk may still finish", async () => {
+    const plain = await setup(null, { tailSplit: false }), split = await setup(5), single = await setup(5, { tailSplit: false });
+    const prompt = [2, 4, 7, 9, 3, 11, 13, 17];
+    try {
+      // Tail split: the drain chunk converts the row; its tail forward is refused.
+      expect(await split.submit(prompt, 4)).toEqual({ tokens: [], outcome: "PlainKvReadError" });
+      // One final chunk from offset 0 reads plain; a one-token budget ends before any later append.
+      const first = await plain.submit(prompt, 1);
+      expect(await single.submit(prompt, 1)).toEqual(first);
+      expect(first.outcome).toBe("length");
+    } finally { await plain.close(); await split.close(); await single.close(); }
+  });
+});
 }

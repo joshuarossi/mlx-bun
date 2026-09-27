@@ -81,6 +81,7 @@
     "./artifacts/auxiliary-files": "./src/artifacts/auxiliary-files.ts",
     "./models/support": "./src/models/support.ts",
     "./state/kv-scheme": "./src/state/kv-scheme.ts",
+    "./state/plain-kv-reads": "./src/state/plain-kv-reads.ts",
     "./artifacts/glm52/memory": "./src/artifacts/glm52/memory.ts",
     "./runtime/trace": "./src/runtime/trace.ts",
     "./execution/engine": "./src/execution/engine.ts",

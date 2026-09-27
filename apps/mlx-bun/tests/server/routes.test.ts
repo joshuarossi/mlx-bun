@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import type { ModelContext } from "../../src/engine/model-host";
 import type { CompletionEngine } from "../../src/engine/completion";
 import { UnsupportedExecutionError } from "../../src/engine/completion";
+import { PlainKvReadError } from "@mlx-bun/inference/state/plain-kv-reads";
 import { createCompletionRoutes } from "../../src/server/routes";
 import { errorResponse } from "../../src/server/http";
 import { startServer } from "../../src/server/start";
@@ -131,6 +132,36 @@ for (const stream of [false, true]) test(`unsupported execution returns JSON 501
     expect(response.status).toBe(501); expect(response.headers.get("content-type")).toContain("application/json");
     expect(await response.json()).toEqual({ error: { message: failure.message, type: "not_implemented", code: "unsupported_execution", reasons: ["method-batch-unsupported"] } });
     expect(run.placements()).toBe(1); expect(run.seen).toHaveLength(0); expect(disposed).toBe(1);
+    expect(logs).not.toHaveBeenCalled();
+  } finally { logs.mockRestore(); }
+});
+
+// A row rejected at a KV precision transition its graph cannot read: a JSON
+// 501 without a 500 log, before or after tokens; a stream that already opened
+// ends with the protocol error after the tokens it sent.
+for (const tokens of [0, 2]) test(`a plain-KV transition after ${tokens} tokens returns JSON 501 without 500 logging`, async () => {
+  const failure = new PlainKvReadError();
+  const run = harness(async (...args) => { for (let t = 1; t <= tokens; t++) await args[2](t); throw failure; });
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = (await run.routes.handle(request("/v1/chat/completions", { messages: [{ role: "user", content: "hi" }] })))!;
+    expect(response.status).toBe(501);
+    expect(await response.json()).toEqual({ error: { message: failure.message, type: "not_implemented", code: "unsupported_kv_transition" } });
+    expect(logs).not.toHaveBeenCalled();
+  } finally { logs.mockRestore(); }
+});
+
+for (const tokens of [0, 2]) test(`a streamed plain-KV transition after ${tokens} tokens ends with the protocol error`, async () => {
+  const failure = new PlainKvReadError();
+  const run = harness(async (...args) => { for (let t = 1; t <= tokens; t++) await args[2](t); throw failure; });
+  const logs = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const response = (await run.routes.handle(request("/v1/chat/completions", { messages: [{ role: "user", content: "hi" }], stream: true })))!;
+    expect(response.status).toBe(200);
+    const wire = await response.text();
+    for (let t = 1; t <= tokens; t++) expect(wire).toContain(`t${t}`);
+    expect(wire).toContain(failure.message);
+    expect(wire.indexOf(failure.message)).toBeGreaterThan(tokens ? wire.lastIndexOf(`t${tokens}`) : -1);
     expect(logs).not.toHaveBeenCalled();
   } finally { logs.mockRestore(); }
 });

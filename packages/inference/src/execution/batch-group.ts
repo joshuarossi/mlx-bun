@@ -179,6 +179,8 @@ export class MlxBatchExecutionGroup {
   #contextKey: string | undefined;
   #releaseContext: (() => void) | undefined;
   readonly #kinds: ("full" | "rot" | "ssm" | "owned-batch")[];
+  /** Attention layers a plain-KV graph reads plain, bound once; null otherwise. */
+  readonly #plainKvLayers: readonly number[] | null;
   readonly #rotMaxSize: number[]; // per-layer sliding window (rot layers only)
   readonly #compressedProjectors: Array<(tokens: number) => number> | null;
   readonly #batchCacheMaxTokens: number | null;
@@ -227,6 +229,7 @@ export class MlxBatchExecutionGroup {
             ? "ssm"
             : "full",
     );
+    this.#plainKvLayers = opts.plainKvReads ? this.#kinds.flatMap((kind, layer) => kind === "ssm" ? [] : [layer]) : null;
     this.#compressedProjectors = proto.every(isBatchableCache)
       ? proto.map((cache) => (tokens: number) => cache.projectedBytes(tokens))
       : null;
@@ -535,6 +538,7 @@ export class MlxBatchExecutionGroup {
         const preparation = new MlxPrefillCohort({
           model: this.model, chunkSize: this.#prefillChunkSize, tailSplit: this.#prefillTailSplit,
           promptCache: this.#promptCache, stateCodecs: this.#stateCodecs, maintain: this.#maintainKv ?? undefined,
+          ...(this.#plainKvLayers ? { plainKvReads: this.#plainKvLayers } : {}),
           forward: (ids, caches) => this.#forwardHidden(ids, caches),
           project: (hidden, caches, completed) => this.#projectPrefill(hidden, caches, completed),
           complete: (state, logits) => this.#completePrefill(state, logits),
@@ -998,6 +1002,7 @@ export class MlxBatchExecutionGroup {
    *  step; filter drops the row (mlx-lm behaves identically). Length-finished
    *  rows are known in advance and are NOT sampled (placeholder slot). */
   async #step(forward?: MlxForwardWork): Promise<void> {
+    if (this.#plainKvLayers && await this.#rejectUnreadable()) return;
     if (this.#stepTrace) {
       const now = performance.now();
       if (STEP_T.lastEnd) STEP_T.gap += now - STEP_T.lastEnd;
@@ -1227,6 +1232,23 @@ export class MlxBatchExecutionGroup {
       } catch (error) { row.reject(error); failed.add(index); }
     }
     if (failed.size) this.#applyFilter(this.#running.flatMap((_, index) => failed.has(index) ? [] : [index]), true);
+  }
+
+  /** A graph reading plain KV: when a row's next append is not certified
+   * plain-readable, publish every pending token first (a row may finish on
+   * it), then reject the rows still not certified before any shared append.
+   * True when the batch changed; the next step then starts cold. */
+  async #rejectUnreadable(): Promise<boolean> {
+    const layers = this.#plainKvLayers!;
+    if (!this.#inners || !unreadableRows(this.#inners as Cache[], layers, this.#running.length).length) return false;
+    await this.#flushPipeline();
+    const unreadable = this.#inners ? unreadableRows(this.#inners as Cache[], layers, this.#running.length) : [];
+    if (!unreadable.length) return true;
+    const retiring = unreadable.map(row => this.#running[row]!);
+    this.#applyFilter(this.#running.flatMap((_, row) => unreadable.includes(row) ? [] : [row]), true);
+    // A consumer that cancelled while its last token published keeps its own reason.
+    for (const row of retiring) row.reject(row.req.signal?.aborted ? row.req.signal.reason : new PlainKvReadError());
+    return true;
   }
 
   /** Read out the pipeline register (if any): emit its tokens and evict
@@ -1649,4 +1671,5 @@ export class MlxBatchExecutionGroup {
 }
 
 import { BatchRequest,BatchStats,ExclusiveLock,MlxBatchExecutionGroupOptions,MlxGroupedMethod,MlxGroupPreparation,Row,RowPromptCache } from "./batch-types";
+import { PlainKvReadError, unreadableRows } from "../state/plain-kv-reads";
 export { type BatchRequest,type BatchRequestFields,type BatchStats,type ExclusiveLock,type MlxBatchExecutionGroupOptions,type MlxGroupedMethod,type MlxGroupMethodHost,type MlxGroupMethodRequest,type MlxGroupPreparation,type Row,type RowPromptCache,type RowSampler } from "./batch-types";
