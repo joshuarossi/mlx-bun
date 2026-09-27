@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
@@ -1403,7 +1403,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   // quantization needs a head dimension divisible by its group size (64).
   const HEAD_DIM = 64;
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
-  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number } = {}) => {
+  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean } = {}) => {
     const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     const f = mixedFixture(types, true, HEAD_DIM), model = f.make();
@@ -1412,7 +1412,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     let held = false;
     const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
       // Compiled decode stays at its default: these graphs bind none (below).
-      runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1" }),
+      runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1",
+        ...(options.pipeline === false ? { MLX_BUN_BATCH_NO_PIPELINE: "1" } : {}) }),
       ...(kvScheme ? { kvScheme } : {}) });
     const submit = (prompt: number[], maxTokens: number, end: End = {}, grammar?: import("../../../src/sampling").GrammarController) => {
       const tokens: number[] = [], abort = new AbortController();
@@ -1440,6 +1441,19 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       async close() { try { await group.close(); expect(group.activeRows + group.pendingRows).toBe(0); } finally { f.dispose(); } } };
   };
   const A = [2, 4, 7, 9, 3], B = [5, 8];
+  /** Every projection's complete logits, in order. */
+  const projections = (env: Awaited<ReturnType<typeof setup>>) => {
+    const seen: string[] = [], project = env.model.logitsFromHidden.bind(env.model);
+    env.model.logitsFromHidden = (hidden: MlxArray) => {
+      const logits = project(hidden);
+      seen.push(createHash("sha256").update(logits.rawBytes()).digest("hex")); return logits;
+    };
+    return seen;
+  };
+  // A peer's control shares its schedule, not only its prompt: batch shape
+  // changes bf16 rounding (one layer-3 projection element here), so B decoded
+  // beside A is compared with plain KV where A leaves after the same tokens,
+  // read before the next build (unpipelined), exactly as the boundary flush does.
   const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: true,
     turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
 
@@ -1465,15 +1479,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   test("below the transition, delayed affine rows equal plain rows at B1 and in a B2 co-prefill", async () => {
     const plain = await setup(null), delayed = await setup(64);
     try {
-      const digests = (env: typeof plain) => {
-        const seen: string[] = [], project = env.model.logitsFromHidden.bind(env.model);
-        env.model.logitsFromHidden = (hidden: MlxArray) => {
-          const logits = project(hidden);
-          seen.push(createHash("sha256").update(logits.rawBytes()).digest("hex")); return logits;
-        };
-        return seen;
-      };
-      const pl = digests(plain), dl = digests(delayed);
+      const pl = projections(plain), dl = projections(delayed);
       expect(await delayed.submit(A, 6)).toEqual(await plain.submit(A, 6));
       expect(dl).toEqual(pl);
       expect(await delayed.together([A, 6], [B, 5])).toEqual(await plain.together([A, 6], [B, 5]));
@@ -1483,50 +1489,64 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   });
 
   test("at a decode transition the row publishes its last plain token, then only it is rejected; the peer and the group continue", async () => {
-    const plain = await setup(null), delayed = await setup(7);   // A (5 tokens) may produce 7 - 5 + 1 = 3
+    const plain = await setup(null), control = await setup(null, { pipeline: false });
+    const delayed = await setup(7);   // A (5 tokens) may produce 7 - 5 + 1 = 3
     try {
       const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+      const pl = projections(control), dl = projections(delayed);
+      const [left, peer] = await control.together([A, 3], [B, 5]);
+      expect(left).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "length" });
       const [a, b] = await delayed.together([A, 8], [B, 5]);
       expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
-      expect(b).toEqual(soloB);
+      expect(b).toEqual(peer);
+      expect(dl).toEqual(pl);   // every projection of both rows, before and after A leaves
       // The same group drains and serves again.
       expect(await delayed.submit(B, 5)).toEqual(soloB);
-    } finally { await plain.close(); await delayed.close(); }
+    } finally { await plain.close(); await control.close(); await delayed.close(); }
   });
 
   test("EOS as the last plain token ends the row as a stop, unpublished, not a rejection", async () => {
     const plain = await setup(null);
     try {
-      const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+      const soloA = await plain.submit(A, 8);
       // The EOS is the first token from the third on that is new to A's output;
       // B ([5,8], 5 tokens) then stays below the transition.
       const at = soloA.tokens.findIndex((token, index) => index >= 2 && !soloA.tokens.slice(0, index).includes(token));
       expect(at, `A's output ${soloA.tokens}`).toBeGreaterThanOrEqual(2);
       const eos = [soloA.tokens[at]!];
-      const control = await plain.submit(A, 8, { eos });
-      expect(control).toEqual({ tokens: soloA.tokens.slice(0, at), outcome: "stop" });
+      const stopped = await plain.submit(A, 8, { eos });
+      expect(stopped).toEqual({ tokens: soloA.tokens.slice(0, at), outcome: "stop" });
+      const control = await setup(null, { pipeline: false });
       const delayed = await setup(A.length + at);   // the EOS is A's last plain token
       try {
+        const pl = projections(control), dl = projections(delayed);
+        const [left, peer] = await control.together([A, 8, { eos }], [B, 5]);
+        expect(left).toEqual(stopped);
         const [a, b] = await delayed.together([A, 8, { eos }], [B, 5]);
-        expect(a).toEqual(control);
-        expect(b).toEqual(soloB);
+        expect(a).toEqual(stopped);
+        expect(b).toEqual(peer);
+        expect(dl).toEqual(pl);
         // Without the EOS the same row reads past it and is rejected there.
         expect(await delayed.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, at + 1), outcome: "PlainKvReadError" });
-      } finally { await delayed.close(); }
+      } finally { await control.close(); await delayed.close(); }
     } finally { await plain.close(); }
   });
 
   test("a stop, a cancellation or the budget on the last plain token finishes normally", async () => {
     const plain = await setup(null);
     try {
-      const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+      const soloA = await plain.submit(A, 8);
       for (const [maxTokens, end, outcome] of [[8, { stopAfter: 3 }, "stop"], [8, { cancelAfter: 3 }, "AbortError"], [3, {}, "length"]] as const) {
-        const delayed = await setup(7);
+        const control = await setup(null, { pipeline: false }), delayed = await setup(7);
         try {
+          const pl = projections(control), dl = projections(delayed);
+          const [left, peer] = await control.together([A, maxTokens, end], [B, 5]);
           const [a, b] = await delayed.together([A, maxTokens, end], [B, 5]);
           expect(a, outcome).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome });
-          expect(b, outcome).toEqual(soloB);
-        } finally { await delayed.close(); }
+          expect(left, outcome).toEqual(a);
+          expect(b, outcome).toEqual(peer);
+          expect(dl, outcome).toEqual(pl);
+        } finally { await control.close(); await delayed.close(); }
       }
     } finally { await plain.close(); }
   });
@@ -1542,21 +1562,22 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     } finally { await plain.close(); await delayed.close(); }
   });
 
-  test("a checkpoint before the transition restores exactly in a fresh group; the resumed row is rejected at its transition while a sibling completes", async () => {
+  test("a checkpoint before the transition restores exactly in a fresh group: alone it repeats the control byte for byte; beside a sibling it equals plain KV resumed the same way", async () => {
     const { bindMlxGateway, createRuntimeConfig, createOrdinaryContinuationRequest, ContinuationPersistence, createRowSampling } =
       await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     const { SsdCacheStore, PromptCache, cloneKvCaches, leaseCacheState } = await import("../../../src/state");
     const plain = await setup(null);
-    const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
+    const soloA = await plain.submit(A, 8);
     await plain.close();
     const directory = await mkdtemp(join(tmpdir(), "plain-kv-continuation-"));
     const scheme = resolveKvScheme({ override: 4, quantizedKvStart: 9 });   // A (5 tokens) may produce 9 - 5 + 1 = 5
-    const run = async (name: string, interruptAt?: number, sibling = false) => {
+    /** One run of A with delayed affine KV (`kv`) or plain KV (null). */
+    const run = async (name: string, kv: typeof scheme | null, interruptAt?: number, sibling = false) => {
       // A fresh graph, binding and group per run: only the SSD directory is shared.
       const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), binding = bindMlxGateway(model);
       const store = new SsdCacheStore({ dir: join(directory, name), maxBytes: 1 << 30, modelId: "synthetic-gemma2",
-        configFingerprint: `plain-kv-continuation:${scheme.cacheKey}`, tokenizerHash: "fixture", verify: true });
+        configFingerprint: `plain-kv-continuation:${(kv ?? resolveKvScheme({})).cacheKey}`, tokenizerHash: "fixture", verify: true });
       // A fresh store indexes the durable records it finds, as a restarted server does.
       const scanned = store.scan();
       const persistence = new ContinuationPersistence(store, { maxBytes: 1 << 30 });
@@ -1564,10 +1585,11 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 2,
         checkpointPersistence: persistence, identity: "plain-kv", cloneState: cloneKvCaches, adapterNamespace: () => "" });
       let held = true;
-      const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64, kvScheme: scheme, admissionHeld: () => held,
+      const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64, ...(kv ? { kvScheme: kv } : {}), admissionHeld: () => held,
         runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }) });
-      const options = { ...scheme.generationOptions, maxTokens: 8, temperature: 0 };
-      const execution = binding.plan(shape, options, { continuous: true, quantizedBatch: binding.kvBatchable(scheme), checkpoints: true });
+      const options = { ...(kv?.generationOptions ?? {}), maxTokens: 8, temperature: 0 };
+      const execution = binding.plan({ ...shape, kvQuant: !!kv }, options,
+        { continuous: true, quantizedBatch: !!kv && binding.kvBatchable(kv), checkpoints: true });
       expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
       const tokens: number[] = [], restored: number[] = [], captured = new Map<number, string>(), abort = new AbortController();
       const request = createOrdinaryContinuationRequest({ store, persistence, interval: 2, prompt: A, options, execution, identity: "plain-kv",
@@ -1603,20 +1625,32 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       }
     };
     try {
-      const control = await run("control");
+      const control = await run("control", scheme);
       expect({ tokens: control.tokens, outcome: control.outcome, scanned: control.scanned, restored: control.restored })
         .toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "PlainKvReadError", scanned: 0, restored: [] });
       expect([...control.captured.keys()]).toEqual([2, 4]);
-      const interrupted = await run("restart", 3);
+      const interrupted = await run("restart", scheme, 3);
       expect({ outcome: interrupted.outcome, scanned: interrupted.scanned, restored: interrupted.restored })
         .toEqual({ outcome: "AbortError", scanned: 0, restored: [] });
       expect(interrupted.captured.get(2)).toBe(control.captured.get(2)!);
-      const resumed = await run("restart", undefined, true);
+      await cp(join(directory, "restart"), join(directory, "restart-sibling"), { recursive: true });
+      // Resumed alone, the row repeats the control's B1 steps: the same checkpoint bytes at 4.
+      const resumed = await run("restart", scheme);
       expect(resumed.scanned).toBe(1);   // the interrupted row's record at 2, and only it
       expect(resumed.restored).toEqual([A.length + 2]);
       expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
       expect(resumed.captured.get(4)).toBe(control.captured.get(4)!);
-      expect(resumed.sibling).toEqual(soloB);
+      // Beside a sibling the resumed row decodes at B2, where one layer-3 value
+      // element rounds differently from B1 (a valid-state difference plain KV shares),
+      // so its control is plain KV restored and resumed beside the same sibling.
+      const plainInterrupted = await run("plain-restart", null, 3);
+      expect({ outcome: plainInterrupted.outcome, scanned: plainInterrupted.scanned }).toEqual({ outcome: "AbortError", scanned: 0 });
+      const plainResumed = await run("plain-restart", null, undefined, true);
+      const beside = await run("restart-sibling", scheme, undefined, true);
+      expect([beside.scanned, beside.restored, plainResumed.scanned, plainResumed.restored]).toEqual([1, [A.length + 2], 1, [A.length + 2]]);
+      expect({ tokens: beside.tokens, outcome: beside.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
+      expect(beside.captured.get(4)).toBe(plainResumed.captured.get(4)!);
+      expect(beside.sibling).toEqual(plainResumed.sibling);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
