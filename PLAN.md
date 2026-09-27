@@ -118,16 +118,20 @@ without one.
   notarization, including loading the signed native libraries from a relocated
   signed bundle. The native-blocked version check and mocked commands do not
   establish this acceptance.
-- [ ] Reproduce the notices of third-party code embedded inside prebundled
-  dependencies, which metafile-derived coverage (scripts/bundle-notices.ts)
-  cannot see. Jiti 2.7.0's `dist/jiti.cjs` and `dist/babel.cjs` are an Rspack
-  prebundle (upstream `fd3bb289`); its module IDs are not a complete inventory
-  (concatenated `pathe` and `escape-string-regexp`, and code credited to
-  Leonardo Ascione, carry none). The build pins those files by sha256 until an
-  audit at that exact revision lands their notices. XGrammar's `lib/index.js`
-  likewise embeds a WASM build (picojson, Emscripten runtime) without notices,
-  and `json-bigint@1.0.0`'s `lib/parse.js` credits BSD-3 code from
-  secure-json-parse/bourne whose full license text is not installed.
+- [ ] Reproduce the remaining notices of code embedded in prebundled dependencies.
+  Reproduced, pinned by sha256 in scripts/bundle-notices.ts together with the
+  embedding files: the license texts of 57 of the 58 package versions in Jiti
+  2.7.0's Rspack prebundle (a rebuild of `fd3bb289` matched both files byte for
+  byte) and of the TypeScript metadata plugin Jiti copies (Leonardo Ascione);
+  picojson's header in XGrammar's WASM build; and secure-json-parse's and bourne's
+  BSD-3 texts for `json-bigint@1.0.0`'s `lib/parse.js`. Still missing:
+  `babel-plugin-parameter-decorator@1.0.16` in Jiti declares MIT, but neither its
+  package nor its repository's latest revision has a license text; Jiti's
+  `import-meta-env` (MIT, "Copyright (c) 2021 Ernest") and `import-meta-paths`
+  (MIT, javiertury) plugins and the metadata plugin's code adapted from the
+  TypeScript compiler (Apache-2.0, TypeScript `2932421`) are credited only in
+  Jiti's source; and the Emscripten runtime linked into XGrammar's WASM is
+  unidentified, because upstream built with the SDK's `latest` release.
 - [ ] Make partial signing retryable without weakening bundle integrity checks
   before the first real signed release. This is an operational improvement:
   today a partial signing failure safely requires rebuilding a fresh preparation.

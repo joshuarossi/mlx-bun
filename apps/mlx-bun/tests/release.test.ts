@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { gitBlobSha1 } from "@mlx-bun/hub/download";
 import { bundleNotices } from "../../../scripts/build-binary";
-import { packageNotices, retainedInputs, retainedPackages, REVIEWED, type Metafile } from "../../../scripts/bundle-notices";
+import { checkCurated, CURATED, noticeSection, packageNotices, retainedInputs, retainedPackages, REVIEWED, type Metafile } from "../../../scripts/bundle-notices";
 import { BUNDLE_FILES } from "../../../scripts/bundle-files";
 import { MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
 import { packageRelease, notarizeRelease, prepareRelease, publicationPlan, signRelease, type Run, type Verify } from "../../../scripts/prepare-release";
@@ -130,8 +130,12 @@ test("bundle notices carry the package notices, Photon's installed license and P
   const piDirectory = dirname(Bun.resolveSync("@earendil-works/pi-coding-agent/package.json", app));
   const photonDirectory = dirname(Bun.resolveSync("@silvia-odwyer/photon-node", dirname(Bun.resolveSync("@earendil-works/pi-coding-agent", app))));
   const photon = JSON.parse(await readFile(join(photonDirectory, "package.json"), "utf8"));
-  const [mlx, inference, photonNotice, appNotice, ...extra] = await bundleNotices([]);
+  const bundle = await bundleNotices([]);
+  const [mlx, inference, photonNotice, appNotice, ...extra] = bundle;
   expect(extra).toEqual([]);
+  // Every curated section reaches the bundle whole.
+  for (const [file, sections] of Object.entries(CURATED)) for (const heading of Object.keys(sections))
+    expect(bundle.join("\n\n---\n\n")).toContain(noticeSection(await readFile(join(root, file), "utf8"), heading));
   for (const [name, notice] of [["mlx", mlx], ["inference", inference]] as const)
     expect(notice).toBe(`# @mlx-bun/${name}\n\n${await readFile(join(root, "packages", name, "THIRD_PARTY_NOTICES.md"), "utf8")}`);
   const photonLicense = await readFile(join(photonDirectory, "LICENSE.md"), "utf8");
@@ -140,16 +144,19 @@ test("bundle notices carry the package notices, Photon's installed license and P
 
   // Pi's npm packages ship no license file; the app notice carries the upstream
   // LICENSE blob it names, byte for byte, for every installed Pi package version.
-  const notice = await readFile(join(app, "THIRD_PARTY_NOTICES.md"), "utf8");
+  const notice = await readFile(join(app, "THIRD_PARTY_NOTICES.md"), "utf8"), pi = noticeSection(notice, "## Pi");
   expect(appNotice).toBe(`# mlx-bun\n\n${notice}`);
   for (const name of ["pi-coding-agent", "pi-ai", "pi-agent-core", "pi-tui"]) {
     const { version } = JSON.parse(await readFile(join(dirname(Bun.resolveSync(`@earendil-works/${name}/package.json`, piDirectory)), "package.json"), "utf8"));
-    expect(notice).toContain(`\`@earendil-works/${name}@${version}\``);
+    expect(pi).toContain(`\`@earendil-works/${name}@${version}\``);
   }
-  const license = notice.slice(notice.indexOf("MIT License")).replace(/\n$/, "");
+  const license = pi.slice(pi.indexOf("MIT License")).replace(/\n+$/, "");
   expect(license).toStartWith("MIT License\n\nCopyright (c) 2025 Mario Zechner\n");
   expect(license).toContain("The above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.");
-  const blob = notice.match(/git blob `([0-9a-f]{40})`/)![1];
+  const blob = pi.match(/git blob `([0-9a-f]{40})`/)![1];
+  // The Jiti section groups the license texts of 57 of the 58 embedded package versions.
+  const jiti = noticeSection(notice, "## Jiti 2.7.0 prebundle");
+  expect(new Set(jiti.split("\n").filter(line => line.startsWith("### `")).flatMap(line => line.match(/`[^`]+@[^`]+`/g)!)).size).toBe(57);
   expect(gitBlobSha1(new TextEncoder().encode(license))).toBe(blob!);
 });
 
@@ -220,6 +227,41 @@ test("reviewed vendored license headers are copied verbatim only for retained fi
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("a missing or changed curated notice section fails the notice check", async () => {
+  const root = resolve(import.meta.dir, "../../..");
+  const notices: Record<string, string> = {};
+  for (const file of Object.keys(CURATED)) notices[file] = await readFile(join(root, file), "utf8");
+  checkCurated(notices);
+  for (const [file, sections] of Object.entries(CURATED)) for (const heading of Object.keys(sections)) {
+    const section = noticeSection(notices[file]!, heading);
+    expect(() => checkCurated({ ...notices, [file]: notices[file]!.replace(section, "") })).toThrow(`Missing notice section: ${heading}`);
+    const changed = section.replace(/(\S)(\s*)$/, (_, last: string, rest: string) => (last === "." ? "," : ".") + rest);
+    expect(() => checkCurated({ ...notices, [file]: notices[file]!.replace(section, () => changed) })).toThrow(`${file} "${heading}" (sha256 `);
+  }
+  const app = "apps/mlx-bun/THIRD_PARTY_NOTICES.md", semver = notices[app]!.indexOf("### `semver@6.3.1`");
+  const withoutSemver = notices[app]!.slice(0, semver) + notices[app]!.slice(notices[app]!.indexOf("### `std-env@", semver));
+  expect(() => checkCurated({ ...notices, [app]: withoutSemver })).toThrow(`"## Jiti 2.7.0 prebundle" (sha256 `);
+  expect(() => checkCurated({ [app]: notices[app]! })).toThrow("Missing notice file: packages/inference/THIRD_PARTY_NOTICES.md");
+});
+
+test("a changed byte in a pinned json-bigint or XGrammar file fails at the reviewed version", async () => {
+  const app = resolve(import.meta.dir, ".."), root = resolve(app, "../..");
+  const installed = (...chain: string[]) => chain.reduce((from, name) => Bun.resolveSync(name, dirname(from)), join(app, "package.json"));
+  const bigint = await readFile(join(dirname(installed("@earendil-works/pi-ai", "@google/genai", "google-auth-library", "gcp-metadata", "json-bigint")), "lib/parse.js"));
+  const xgrammar = await readFile(Bun.resolveSync("@mlc-ai/web-xgrammar", join(root, "packages/inference")));
+  for (const [name, version, file, bytes] of [["json-bigint", "1.0.0", "lib/parse.js", bigint], ["@mlc-ai/web-xgrammar", "0.1.27", "lib/index.js", xgrammar]] as const) {
+    const changed = Buffer.from(bytes), at = changed.length - 2;
+    changed[at] = changed[at]! ^ 1;
+    const tree = await packageTree({ [`node_modules/${name}/package.json`]: manifest(name, version), [`node_modules/${name}/${file}`]: "" });
+    try {
+      await writeFile(join(tree, "node_modules", name, file), changed);
+      const hash = createHash("sha256").update(changed).digest("hex");
+      await expect(packageNotices(await retainedPackages([join(tree, "node_modules", name, file)]), {}))
+        .rejects.toThrow(`${name}@${version} ${file} (sha256 ${hash}) is not a reviewed file`);
+    } finally { await rm(tree, { recursive: true, force: true }); }
+  }
+});
+
 test("Jiti's prebundle files must match the reviewed hashes at the reviewed version", async () => {
   const root = await packageTree({
     "node_modules/jiti/package.json": manifest("jiti", "2.7.0"), "node_modules/jiti/LICENSE": "jiti license\n",
@@ -230,7 +272,7 @@ test("Jiti's prebundle files must match the reviewed hashes at the reviewed vers
   try {
     const hash = createHash("sha256").update("changed").digest("hex");
     await expect(packageNotices(await retainedPackages([join(root, "node_modules/jiti/dist/jiti.cjs")]), {}))
-      .rejects.toThrow(`jiti@2.7.0 dist/jiti.cjs (sha256 ${hash}) is not a reviewed prebundle file`);
+      .rejects.toThrow(`jiti@2.7.0 dist/jiti.cjs (sha256 ${hash}) is not a reviewed file`);
     await expect(packageNotices(await retainedPackages([join(root, "node_modules/jiti/dist/extra.cjs")]), {}))
       .rejects.toThrow("jiti@2.7.0 dist/extra.cjs");
     await expect(packageNotices(await retainedPackages([join(root, "node_modules/newer/node_modules/jiti/dist/jiti.cjs")]), {}))
@@ -244,10 +286,14 @@ test("the reviewed headers, Jiti hashes and XGrammar fallback match the installe
   const packages = await retainedPackages([installed("@earendil-works/pi-coding-agent"),
     installed("@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"), installed("@earendil-works/pi-coding-agent", "jiti"),
     installed("@earendil-works/pi-ai", "@mistralai/mistralai"),
-    installed("@earendil-works/pi-ai", "@google/genai", "google-auth-library", "gcp-metadata", "json-bigint")]);
+    installed("@earendil-works/pi-ai", "@google/genai", "google-auth-library", "gcp-metadata", "json-bigint"),
+    Bun.resolveSync("@mlc-ai/web-xgrammar", join(root, "packages/inference"))]);
   expect(packages.map(({ name }) => name).sort()).toEqual(Object.keys(REVIEWED).sort());
   const appNotice = await readFile(join(app, "THIRD_PARTY_NOTICES.md"), "utf8");
-  const sections = await packageNotices(packages.map(found => ({ ...found, files: Object.keys(REVIEWED[found.name]!.headers ?? REVIEWED[found.name]!.sha256!) })), { "mlx-bun": appNotice });
+  const inference = await readFile(join(root, "packages/inference/THIRD_PARTY_NOTICES.md"), "utf8");
+  const sections = await packageNotices(packages.map(found => ({ ...found,
+    files: [...new Set([...Object.keys(REVIEWED[found.name]!.headers ?? {}), ...Object.keys(REVIEWED[found.name]!.sha256 ?? {})])] })),
+  { "@mlx-bun/inference": inference, "mlx-bun": appNotice });
   expect(sections.join("").match(/\(vendored; license header verbatim\)/g)).toHaveLength(5);
   for (const text of ["Copyright (c) Sindre Sorhus", "MIT License - Copyright (c) 2025 opentui", "Copyright (c) 2024 Jason Miller", "(c) BSD-3-Clause"])
     expect(sections.join("")).toContain(text);
@@ -255,14 +301,18 @@ test("the reviewed headers, Jiti hashes and XGrammar fallback match the installe
   // XGrammar's npm package ships no license file; the inference notice carries
   // the upstream LICENSE and NOTICE blobs it names for the installed version.
   const xgrammar = await retainedPackages([Bun.resolveSync("@mlc-ai/web-xgrammar", join(root, "packages/inference"))]);
-  const inference = await readFile(join(root, "packages/inference/THIRD_PARTY_NOTICES.md"), "utf8");
   expect(await packageNotices(xgrammar, { "@mlx-bun/inference": inference }))
     .toEqual([`# ${xgrammar[0]!.id}\n\nNo license file is installed; the upstream text is in the \`@mlx-bun/inference\` section.\n`]);
-  const section = inference.slice(inference.indexOf("## XGrammar"));
+  const whole = noticeSection(inference, "## XGrammar"), split = whole.indexOf("\n### picojson");
+  const [section, picojson] = [whole.slice(0, split), whole.slice(split)];
   const [license, notice] = [...section.matchAll(/```text\n([^`]*)```/g)].map(match => match[1]!);
   const blobs = [...section.matchAll(/git blob\s+`([0-9a-f]{40})`/g)].map(match => match[1]!);
   expect(license).toStartWith("                                 Apache License\n");
   expect([gitBlobSha1(new TextEncoder().encode(license)), gitBlobSha1(new TextEncoder().encode(notice!))]).toEqual(blobs);
+  // picojson's header is the recorded lines of the header file, byte for byte.
+  const header = picojson.match(/```text\n([^`]*)```/)![1]!;
+  expect(header).toStartWith("/*\n * Copyright 2009-2010 Cybozu Labs, Inc.\n");
+  expect(createHash("sha256").update(header).digest("hex")).toBe(picojson.match(/lines 1-27 \(sha256\s+`([0-9a-f]{64})`\)/)![1]!);
 });
 
 test("publication order rejects cycles, unpackaged ranges, missing packages and incompatible versions", () => {

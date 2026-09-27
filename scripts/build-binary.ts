@@ -5,7 +5,7 @@ import { NATIVE_DIR as MLX_DIR, NATIVE_FILES as MLX_FILES } from "../packages/ml
 import { NATIVE_DIR as INFERENCE_DIR, NATIVE_FILES as INFERENCE_FILES } from "../packages/inference/src/runtime/native";
 import { buildWeb, OUTFILE } from "../apps/mlx-bun/src/web/build";
 import { BUNDLE_FILES } from "./bundle-files";
-import { packageNotices, retainedInputs, retainedPackages } from "./bundle-notices";
+import { checkCurated, packageNotices, retainedInputs, retainedPackages } from "./bundle-notices";
 
 import { MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY } from "../apps/mlx-bun/src/engine/mic-capture";
 
@@ -62,7 +62,8 @@ async function installedManifest(directory: string): Promise<{ name: string; ver
  * app notices and Photon's installed license verbatim, then one section per
  * third-party package in `inputs` (the build's retained files). A package that
  * installs no license text needs its exact `name@version` named in one of the
- * package or app notices, as apps/mlx-bun/THIRD_PARTY_NOTICES.md does for Pi. */
+ * package or app notices, as apps/mlx-bun/THIRD_PARTY_NOTICES.md does for Pi.
+ * Throws unless those notices carry every CURATED section at its reviewed hash. */
 export async function bundleNotices(inputs: string[], base = root): Promise<string[]> {
   const photon = photonDirectory(base);
   const photonPackage = await installedManifest(photon);
@@ -70,6 +71,7 @@ export async function bundleNotices(inputs: string[], base = root): Promise<stri
   for (const name of ["mlx", "inference"])
     own[`@mlx-bun/${name}`] = await noticeText(join(base, "packages", name, "THIRD_PARTY_NOTICES.md"));
   const appNotice = await noticeText(join(base, "apps/mlx-bun/THIRD_PARTY_NOTICES.md"));
+  checkCurated({ "apps/mlx-bun/THIRD_PARTY_NOTICES.md": appNotice, "packages/inference/THIRD_PARTY_NOTICES.md": own["@mlx-bun/inference"]! });
   // Photon's section below already carries its installed license verbatim.
   const packages = (await retainedPackages(inputs)).filter(({ id }) => id !== `${photonPackage.name}@${photonPackage.version}`);
   return [

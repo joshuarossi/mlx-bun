@@ -978,10 +978,12 @@ packages are excluded. A section copies the installed LICENSE, LICENCE, NOTICE a
 COPYING files verbatim. Packages that install none (Pi, XGrammar) must be named at
 that exact `name@version` in the app or package notices, which carry the upstream
 text with its source revision; otherwise the build fails. Reviewed vendored license
-headers are copied from the installed files, and Jiti's prebundle files are pinned
-by sha256; another version of those packages fails the build until reviewed.
-Notices for code embedded in Jiti's prebundle and XGrammar's WASM build are not
-yet reproduced.
+headers are copied from the installed files. Curated sections of the app and
+inference notices carry the notices of code that Jiti's prebundle, XGrammar's WASM
+build and json-bigint's `lib/parse.js` embed; those packages' retained files are
+pinned by sha256, and each curated section by the sha256 of its text. Another
+version, a changed file, or a changed or missing section fails the build until
+reviewed. The notices still missing are listed under Release acceptance in PLAN.md.
 Move the whole directory together. Web assets and the memory skill
 are embedded; source checkouts retain their existing asset readers and browser
 build fallback. No terminal Pi assets are included.
