@@ -88,8 +88,12 @@ pinned `parity.json`, which must agree with the manifest); the tokenizer, config
 index and exactly its shards by content; and every blob. The runtime must match
 the reference's MLX version and GPU architecture. Main's retained capture
 (`02d723a:goldens/apple-m1-max/parity.json`) has no tokenizer, index, shard or
-producer-source pins, so it cannot qualify; qualification needs a new, fully
-pinned external capture. No qualifying run has been recorded yet.
+producer-source pins, so it cannot qualify. The reviewed run in
+[#202](https://github.com/joshuarossi/mlx-bun/pull/202) used a fresh, fully pinned
+capture from main `02d723a` and passed both consumer paths at `e7288425` on an
+Apple M1 Max (MLX 0.32.2, mlx-lm 0.31.3), with input pins unchanged. This qualifies
+the plain-KV scope above; the generated graph's unrolled `kv_config` path and
+performance remain separate checks.
 
 On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
 checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections
