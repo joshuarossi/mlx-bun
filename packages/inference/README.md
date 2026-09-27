@@ -67,6 +67,30 @@ This covers that path only, not other models, batching, quantized KV,
 snapshot restore, long contexts, or speed. Raw outputs and the reference
 remain external; Python is not a project dependency.
 
+The [Gemma4 parity test](tests/parity/gemma4-parity.test.ts) restores main's
+Gemma4 12B OptiQ-4bit oracle consumer on the same terms (batch one, plain KV
+from the model's `makeCache`, the artifact's `kv_config.json` not applied). Its
+reference is main's `scripts/regen/parity.ts` output: the prompt
+`The capital of France is`, 100 greedy IDs and the first four full-vocabulary
+float32 vectors. Through `createModel` it checks the 100-token greedy trajectory
+and those four vectors byte for byte; a separate 12-step control does the same
+through `new Gemma4Model`. Every step must be finite and select the reference
+token. This is not 100-step full-vector parity. For this artifact `createModel`
+selects the generated 12B graph, whose unrolled path serves only the quantized
+`kv_config` cache layout; under plain KV it runs its monolith fallback, and the
+test asserts the unrolled path never ran. Opt in with all of
+`MLX_BUN_TEST_GEMMA4_MODEL`, `MLX_BUN_TEST_GEMMA4_REFERENCE` (the directory
+holding `gemma4-parity.json`, the producer's unchanged `parity.json` and the four
+step blobs) and `MLX_BUN_TEST_GEMMA4_REFERENCE_SHA256`. Before native libraries
+load it verifies the manifest hash; the producer provenance (script hash, main
+revision, installed mlx, mlx-lm and mlx-optiq source hashes and versions, and the
+pinned `parity.json`, which must agree with the manifest); the tokenizer, config,
+index and exactly its shards by content; and every blob. The runtime must match
+the reference's MLX version and GPU architecture. Main's retained capture
+(`02d723a:goldens/apple-m1-max/parity.json`) has no tokenizer, index, shard or
+producer-source pins, so it cannot qualify; qualification needs a new, fully
+pinned external capture. No qualifying run has been recorded yet.
+
 On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
 checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections
 made independently of `temporalView`, main `02d723a`, and pinned optiq 0.2.7.
