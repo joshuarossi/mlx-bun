@@ -589,14 +589,22 @@ test.skipIf(!diffusionModel)("real DiffusionGemma rows reproduce solo runs and m
           if (rows.some(row => row.joinAfter === step) && index === 0) joinLate();
           return binding.graph.decoderLogits(canvas, state, feedback);
         } };
-      const method = bindDenoisingGroupRequests({ ...binding, graph }, options => rows.find(row => row.options.seed === BigInt(options.seed!))!.options);
+      // Each request's own method data selects its row's options, never its sampling seed.
+      const optionsOf = new WeakMap<object, DiffusionGenOptions>();
+      const method = bindDenoisingGroupRequests({ ...binding, graph }, data => {
+        const options = optionsOf.get(data);
+        if (!options) throw new Error("denoising request without a row");
+        return options;
+      });
       const group = new MlxBatchExecutionGroup(model, { maxBatch: 4 });
       const outputs = rows.map(() => [] as number[]);
       // One outcome per row, by row index: "done" or the rejection itself.
       const outcomes: Promise<unknown>[] = [];
       const submit = (index: number) => {
+        const request = method({});
+        optionsOf.set(request.data as object, rows[index]!.options);
         outcomes[index] = group.submit({ promptIds: rows[index]!.prompt, maxTokens: 512, eosTokenIds: [],
-          method: method({ seed: Number(rows[index]!.options.seed) }), signal: aborts[index]!.signal,
+          method: request, signal: aborts[index]!.signal,
           onToken: token => { outputs[index]!.push(token); } }).then(() => "done", (error: unknown) => error);
       };
       try {
@@ -639,7 +647,9 @@ test.skipIf(!diffusionModel)("real DiffusionGemma rows reproduce solo runs and m
         expect(grouped.outputs[0]).toEqual(reference.tokens);
         if (image) {
           // The image row interleaves with a text row; each equals its solo run.
-          const text = { prompt: [...fallbackPrompt], options: served(9, 32) };
+          // The text row deliberately shares the image row's seed: rows are
+          // told apart by request, so equal seeds cannot swap their options.
+          const text = { prompt: [...fallbackPrompt], options: served(Number(reference.seed), 32) };
           const paired = await run([{ prompt: [...ids], options }, text]);
           expect(paired.outcomes).toEqual(["done", "done"]);
           expect(paired.outputs[0]).toEqual(reference.tokens);
@@ -649,7 +659,7 @@ test.skipIf(!diffusionModel)("real DiffusionGemma rows reproduce solo runs and m
     }
     const prompt = textPrompt ?? fallbackPrompt;
     for (const count of [2, 4]) {
-      // Distinct arrays identify each row's prefill; seeds select each row's options.
+      // Distinct arrays identify each row's prefill; method data selects each row's options.
       // Step 1 always runs, so the cancellation and the late join always happen.
       const rows = [{ prompt: [...prompt], options: served(0, 64) }, { prompt: prompt.slice(0, -2), options: served(1, 32) },
         { prompt: [...prompt], options: served(2, 48), cancelAtStep: 1 },
