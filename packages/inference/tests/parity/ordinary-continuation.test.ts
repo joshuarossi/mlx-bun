@@ -105,12 +105,22 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
      * reuse floor. Prefill splits at the start and converts at that chunk
      * boundary; decode converts inside the next append once the committed
      * offset has reached the start, so a checkpoint of exactly `start` tokens
-     * taken after a decode step is still plain. Converted affine caches hold
-     * six encoded planes (K then V packed/scales/biases), unconverted two. */
+     * taken after a decode step is still plain. Other artifacts may carry
+     * recurrent or other non-KV state, so they check only the floor's bound;
+     * the custom window graph is sliding and full KV layers throughout, so it
+     * also pins the exact floor, every offset, and each layer's planes:
+     * six encoded (K then V packed/scales/biases) once converted, two plain
+     * before and for layers a per-layer scheme leaves unconverted. */
     const checkSaved = (caches: readonly Cache[], tokens: number) => {
       if (kv.mode === "bf16" || kv.start === 0) return;
       const converted = kv.start <= prompt.length ? tokens >= kv.start : tokens > kv.start;
-      expect(minimumReusableOffset(caches)).toBe(converted ? kv.start : 0);
+      const minimum = minimumReusableOffset(caches);
+      if (windowSetting === undefined) {
+        if (converted) expect(minimum).toBeGreaterThanOrEqual(kv.start);
+        else expect(minimum).toBe(0);
+        return;
+      }
+      expect(minimum).toBe(converted ? kv.start : 0);
       const layers = kv.options.kvConfig ? new Map(kv.options.kvConfig.map(entry => [entry.layerIdx, entry])) : null;
       caches.forEach((cache, layer) => {
         expect(cache.offset).toBe(tokens);
@@ -181,13 +191,20 @@ test.skipIf(!target)("ordinary B1/B4 restore pending tokens and sampler history 
             store, persistence, interval: 4, prompt,
             restore: entry => {
               const loaded = store.restore(entry, model);
-              if (loaded) {
-                checkSaved(loaded.caches, loaded.tokens.length); restored.push(loaded.tokens.length);
+              if (!loaded) return loaded;
+              try {
+                checkSaved(loaded.caches, loaded.tokens.length);
                 const planes = loaded.caches.map(cache => { const lease = leaseCacheState(cache); try { return lease.borrow().length; } finally { lease.close(); } });
                 console.log(`[continuation-restore] ${phase} B${batch} row ${row}: ${loaded.tokens.length} tokens, offsets ` +
                   `${[...new Set(loaded.caches.map(cache => cache.offset))]}, minimum ${minimumReusableOffset(loaded.caches)}, ` +
                   `planes ${[...new Set(planes)]} over ${loaded.caches.length} caches`);
+              } catch (error) {
+                // Ownership passes to the caller only on return.
+                for (const cache of loaded.caches) cache.dispose();
+                for (const attachment of loaded.attachments ?? []) for (const tensor of attachment.tensors) tensor.dispose();
+                throw error;
               }
+              restored.push(loaded.tokens.length);
               return loaded;
             },
             options: { ...options, seed: 42 + row }, execution, identity: "same-B-fixture",
