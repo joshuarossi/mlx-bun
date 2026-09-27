@@ -60,6 +60,12 @@ export function disposeUnstartedRequest(options: GenerateOptions, vision?: Visio
     vision?.multimodalMask, options.visionPixels].filter((resource) => resource != null));
 }
 
+/** After reservation, run() releases the request's media and pixels once on
+ * every path; a request that fails before submission releases only its grammar. */
+function disposeReservedUnstarted(options: GenerateOptions): void {
+  options.grammar?.dispose();
+}
+
 /** One app execution lane: lone and concurrent requests use the same library
  * scheduler. Exclusive leases protect mutations and managed jobs. */
 export class GenerationGateway implements CompletionEngine {
@@ -241,12 +247,16 @@ export class GenerationGateway implements CompletionEngine {
           try { releasePrefix = await this.opts.promptCache?.prefetch?.(promptIds, namespace, options.cacheSessionId); }
           finally { closePrefetch?.(); }
         }
-      } catch (error) { cleanupFailure(error, () => disposeUnstartedRequest(options)); }
+      } catch (error) { cleanupFailure(error, () => disposeReservedUnstarted(options)); }
       return await this.#run(promptIds, options, onToken, vision, shape, placement, signal, trace);
     } finally {
+      // The request transferred its native inputs to this run; this is their
+      // one release after reservation. A denoising row borrows its pixels for
+      // its first unit and closes its run before the submission settles, so
+      // they are released here, as main's serial run did.
       disposeResources([{ dispose: () => releasePrefix?.() }, reservation,
-        ...(vision
-          ? [vision.embeddings, vision.imageMask, vision.multimodalMask].filter(value => value != null) : [])]);
+        ...[vision?.embeddings, vision?.imageMask, vision?.multimodalMask, options.visionPixels]
+          .filter(value => value != null)]);
     }
   }
 
@@ -260,7 +270,7 @@ export class GenerationGateway implements CompletionEngine {
     signal?: AbortSignal,
     trace?: PromptResponseTrace,
   ): Promise<GenerateStats> {
-    const disposeUnstarted = () => disposeUnstartedRequest(options);
+    const disposeUnstarted = () => disposeReservedUnstarted(options);
     if (placement.shape !== shape) {
       disposeUnstarted();
       throw new Error("generation placement does not belong to this request shape");
