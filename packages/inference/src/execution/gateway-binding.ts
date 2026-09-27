@@ -64,9 +64,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
   // Manual softcap attention is qualified for plain-KV requests, including
-  // grammar-constrained and adapter requests, and for plain-KV fill through
-  // the shared fill binding. Encoded attention, speculative drafts and fill
-  // with adapters need their own numerical evidence.
+  // grammar-constrained and adapter requests, for plain-KV fill through the
+  // shared fill binding, and for shared generation continuation checkpoints.
+  // Encoded attention, speculative drafts and fill with adapters need their
+  // own numerical evidence.
   const plainSoftcap = model instanceof UniversalDenseModel && model.args.attnLogitSoftcap !== null;
   // Denoising rows interleave through their own grouped method. Token-level
   // methods (speculation, grammar proposals, fill) never bind to this graph.
@@ -163,7 +164,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill)) &&
           !(plainSoftcap && (request.hasDraft || (options.fill && request.hasAdapters))),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
-        sharedCheckpoints: !ordinaryOnly && !plainSoftcap && !!continuationServices?.checkpointPersistence &&
+        sharedCheckpoints: !ordinaryOnly && !!continuationServices?.checkpointPersistence &&
           !request.hasDraft && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
