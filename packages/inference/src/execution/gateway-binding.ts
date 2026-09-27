@@ -61,6 +61,21 @@ export interface MlxGatewayBinding {
   createBatchGroup(options: MlxBatchExecutionGroupOptions): MlxBatchGroup;
 }
 
+/** Which operations the graph's own caches provide: batch rows (plain and
+ * rotating KV, batchable layouts, SSM under the binding's policy), target
+ * transaction rows, and per-layer quantized conversion. */
+function probeStorage(model: RuntimeModel, ssm: boolean) {
+  const caches = model.makeCache();
+  try {
+    return Object.freeze({
+      batchable: caches.every(cache => cache instanceof KVCache || cache instanceof RotatingKVCache ||
+        isBatchableCache(cache) || (ssm && cache instanceof SSMCache)),
+      targetRows: caches.every(cache => targetRowLayoutFactory(cache) !== undefined),
+      convertible: Object.freeze(caches.map(cache => isPlainKvCache(cache) || isRotatingPlainCache(cache))),
+    });
+  } finally { disposeResources(caches); }
+}
+
 export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
@@ -93,23 +108,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // qualified for both. Plain universal adapters use the same row context.
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
     (model instanceof MiniCPM5Model || universalPlainKv) && delayedAffine(options);
-  const cachesBatchable = () => {
-    if (denoising) return true; // denoising rows keep private encoder state
-    if (model instanceof UniversalDenseModel)
-      return (!model.args.maskArray || model.args.modelType === "gemma2") &&
-        !model.args.layerTypes?.includes("sliding_attention");
-    const caches = model.makeCache();
-    try {
-      const ssm = runtime.value("MLX_BUN_BATCH_SSM") !== "0";
-      return caches.every((cache) => cache instanceof KVCache || cache instanceof RotatingKVCache ||
-        isBatchableCache(cache) || (ssm && cache instanceof SSMCache));
-    } finally { disposeResources(caches); }
-  };
-  const supportsTargetRows = () => {
-    const caches = model.makeCache();
-    try { return caches.every(cache => targetRowLayoutFactory(cache) !== undefined); }
-    finally { disposeResources(caches); }
-  };
+  // The graph's state operations, probed once when the binding is built and
+  // released on every path. Only these facts are retained; planning never
+  // allocates or touches a probe. Denoising rows keep private encoder state.
+  const storage = denoising ? null : probeStorage(model, runtime.value("MLX_BUN_BATCH_SSM") !== "0");
+  const cachesBatchable = () => storage?.batchable ?? true;
+  const supportsTargetRows = () => storage?.targetRows ?? false;
   // Grouped speculation needs batchable caches, row layouts for verification and
   // rollback, and a forward that captures any hidden layers the provider taps.
   // Any provider meeting those operations binds; one that cannot bind is refused
@@ -229,13 +233,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     },
     cachesBatchable,
     kvBatchable(scheme) {
-      if (denoising || (plainSoftcap && scheme.kind !== "bf16")) return false;
-      const caches = model.makeCache();
-      try {
-        return scheme.batchable(model.config,
-          (layer) => isPlainKvCache(caches[layer]) || isRotatingPlainCache(caches[layer]), caches.length,
-          kvBatchCapabilities);
-      } finally { disposeResources(caches); }
+      if (!storage || (plainSoftcap && scheme.kind !== "bf16")) return false;
+      return scheme.batchable(model.config, layer => storage.convertible[layer] === true,
+        storage.convertible.length, kvBatchCapabilities);
     },
     createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options, kvBatchCapabilities }),
   };

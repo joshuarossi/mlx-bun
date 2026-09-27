@@ -25,11 +25,12 @@ import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { RotatingKVCache } from "../../state/rotating-kv";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
-import { genericArgsFor, type UniversalArgs } from "./archs";
+import { genericArgsFor, universalCacheWindows, universalMaskRecipe, type UniversalArgs, type UniversalMaskRecipe } from "./archs";
 import { compiledSwiglu } from "../../layers/swiglu";
 import { initializeRope, NoRope, phi3SuRope, UniversalRope } from "../../layers/rope";
 import { loadEmbedding, loadLayerNorm, loadLinear, loadRmsNorm, type AnyEmbedding, type AnyLinear, type AnyNorm } from "../../layers/loading";
 import { WeightAudit } from "../../artifacts/weight-audit";
+import { cleanupFailure, disposeResources } from "../../runtime/resources";
 
 /** Rope for one attention module, per the descriptor (llama's
  *  initialize_rope, the plain-nn.RoPE archs, or phi3's Su/linear branch). */
@@ -448,6 +449,10 @@ export class UniversalDenseModel {
   readonly lmHead: AnyLinear | null;
   readonly sharedRope: UniversalRope;
   readonly ropes: UniversalRope[];
+  // Cache layout and mask groups come from the same descriptor facts, bound
+  // at construction; later edits to `args` cannot make them disagree.
+  readonly #masks: UniversalMaskRecipe;
+  readonly #cacheWindows: readonly (number | null)[];
 
   constructor(weights: Weights, config: ModelConfig, args?: UniversalArgs) {
     const a = args ?? genericArgsFor(config);
@@ -455,6 +460,8 @@ export class UniversalDenseModel {
       throw new Error(`UniversalDenseModel: no descriptor for model_type ${config.modelType}`);
     this.config = config;
     this.args = a;
+    this.#masks = universalMaskRecipe(a);
+    this.#cacheWindows = universalCacheWindows(a);
     this.weightsBytes = [...weights.shards.files.values()]
       .reduce((acc, f) => acc + f.mmap.size, 0);
 
@@ -507,11 +514,7 @@ export class UniversalDenseModel {
   }
 
   makeCache(): Cache[] {
-    const a = this.args;
-    return Array.from({ length: a.numHiddenLayers }, (_, i) => {
-      const sliding = a.layerTypes?.[i] === "sliding_attention" && a.slidingWindow;
-      return sliding ? new RotatingKVCache(a.slidingWindow!) : new KVCache();
-    });
+    return this.#cacheWindows.map(window => window ? new RotatingKVCache(window) : new KVCache());
   }
 
   forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray {
@@ -526,40 +529,44 @@ export class UniversalDenseModel {
   }
 
   protected forwardLayers(h0: MlxArray, cache: Cache[]): MlxArray {
-    const a = this.args;
+    const r = this.#masks;
     const L = h0.shape[1]!;
-
-    // Masks, mirroring the per-arch mlx-lm model __call__:
-    let faMask: Mask;
-    let swaMask: Mask | null = null;
-    if (a.maskArray) {
-      // gemma2: create_attention_mask(h, cache[0], return_array=True)
-      // Storage owns row validity. Materialize only the ordinary causal
-      // spelling required by manual softcap attention, preserving B1 math.
-      faMask = cache[0]!.makeMask(L, null);
-      if (faMask.mode === "causal")
-        faMask = { mode: "array", arr: createCausalMask(L, cache[0]!.offset, null) };
-    } else if (a.layerTypes && a.layerTypes.includes("sliding_attention")) {
-      // llama.py: fa mask from the first full layer, swa mask (windowed)
-      // from the first sliding layer.
-      const faIdx = a.layerTypes.indexOf("full_attention");
-      const swaIdx = a.layerTypes.indexOf("sliding_attention");
-      faMask = cache[faIdx === -1 ? 0 : faIdx]!.makeMask(L, null);
-      swaMask = cache[swaIdx]!.makeMask(L, a.slidingWindow);
-    } else {
-      faMask = cache[0]!.makeMask(L, null);
-    }
-
+    // This call owns h0 and each intermediate hidden state, and releases them
+    // and its masks on failure as on success; an execution failure stays the
+    // primary error. One mask per attention group, from that group's first
+    // cache, as the per-arch mlx-lm __call__ does.
     let cur = h0;
-    for (let i = 0; i < this.layers.length; i++) {
-      const mask = a.layerTypes?.[i] === "sliding_attention" && swaMask ? swaMask : faMask;
-      const next = this.layers[i]!.forward(cur, mask, cache[i]!);
-      cur.dispose();
-      cur = next;
+    const masks: MlxArray[] = []; // owned; drained before each release attempt
+    const own = (mask: Mask): Mask => { if (mask.arr) masks.push(mask.arr); return mask; };
+    try {
+      const faMask = own(this.#groupMask(cache[r.full]!, L, null));
+      const swaMask = r.sliding === null ? null : own(this.#groupMask(cache[r.sliding]!, L, r.window));
+      for (let i = 0; i < this.layers.length; i++) {
+        const next = this.layers[i]!.forward(cur, r.slidingLayers[i] ? swaMask! : faMask, cache[i]!);
+        const done = cur;
+        cur = next;
+        done.dispose();
+      }
+      disposeResources(masks.splice(0));
+    } catch (error) {
+      return cleanupFailure(error, () => disposeResources([...masks.splice(0), cur]));
     }
-    faMask.arr?.dispose();
-    swaMask?.arr?.dispose();
-    return disposing(cur, this.finalNorm.forward(cur));
+    let out: MlxArray;
+    try { out = this.finalNorm.forward(cur); }
+    catch (error) { return cleanupFailure(error, () => cur.dispose()); }
+    try { cur.dispose(); }
+    catch (error) { return cleanupFailure(error, () => out.dispose()); }
+    return out;
+  }
+
+  /** A group's mask from its own cache; storage owns row validity. Manual
+   * softcap attention (gemma2: create_attention_mask(..., return_array=True))
+   * needs the ordinary causal spelling materialized, preserving B1 math: a
+   * cache answers "causal" only while it holds exactly `offset` earlier keys. */
+  #groupMask(cache: Cache, L: number, window: number | null): Mask {
+    const mask = cache.makeMask(L, window);
+    return this.#masks.array && mask.mode === "causal"
+      ? { mode: "array", arr: createCausalMask(L, cache.offset, window) } : mask;
   }
 
   logitsFromHidden(h: MlxArray): MlxArray {

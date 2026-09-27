@@ -316,6 +316,39 @@ export const ARCHS: Record<string, (raw: Raw) => UniversalArgs> = {
   },
 };
 
+/** Which cache each attention group reads its mask from, bound once per
+ * graph (mlx-lm llama.py): full layers from the first full layer's cache
+ * (cache 0 without sliding layers), sliding layers from the first sliding
+ * layer's cache with the window. `array`: the graph's manual attention needs
+ * an explicit mask (gemma2's return_array), spelled from that group's cache. */
+export interface UniversalMaskRecipe {
+  readonly full: number;
+  readonly sliding: number | null;
+  readonly window: number | null;
+  readonly array: boolean;
+  readonly slidingLayers: readonly boolean[];
+}
+
+export function universalMaskRecipe(a: UniversalArgs): UniversalMaskRecipe {
+  const types = a.layerTypes;
+  const sliding = types?.includes("sliding_attention") ? types.indexOf("sliding_attention") : -1;
+  return Object.freeze({
+    full: sliding === -1 ? 0 : Math.max(0, types!.indexOf("full_attention")),
+    sliding: sliding === -1 ? null : sliding,
+    window: a.slidingWindow,
+    array: a.maskArray,
+    slidingLayers: Object.freeze(Array.from({ length: a.numHiddenLayers },
+      (_, i) => sliding !== -1 && types![i] === "sliding_attention")),
+  });
+}
+
+/** Each layer's cache, bound once per graph: a rotating window on a sliding
+ * layer that has a window, plain KV otherwise. */
+export function universalCacheWindows(a: UniversalArgs): readonly (number | null)[] {
+  return Object.freeze(Array.from({ length: a.numHiddenLayers },
+    (_, i) => a.layerTypes?.[i] === "sliding_attention" && a.slidingWindow ? a.slidingWindow : null));
+}
+
 /** The declared generic support surface (post-remap model_types). */
 export const GENERIC_MODEL_TYPES: ReadonlySet<string> = new Set(Object.keys(ARCHS));
 
