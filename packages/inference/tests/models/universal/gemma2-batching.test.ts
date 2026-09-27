@@ -959,8 +959,9 @@ test.skipIf(!native || !artifact)("a structurally equivalent delegating provider
     const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: false,
       turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true };
     const options = { maxTokens: 24, temperature: 0 };
-    // Row 0 alone, row 1 joins at its first token, row 2 joins at row 1's first
-    // token and is cancelled at its third; the group drains, then row 0 reruns alone.
+    // Row 0 first runs alone (the fresh B1 baseline). Then row 0 leads again,
+    // row 1 joins at its first token and row 2 at row 1's first token, cancelled
+    // at its third; the group drains, and row 0 reruns alone (the recovery).
     const run = async (provider: DraftProvider) => {
       const binding = bindMlxGateway(model, { provider, numDraftTokens: 10 });
       const plan = binding.plan(shape, options, { continuous: binding.cachesBatchable(), quantizedBatch: false, checkpoints: false });
@@ -968,7 +969,16 @@ test.skipIf(!native || !artifact)("a structurally equivalent delegating provider
       const group = binding.createBatchGroup({ maxBatch: 4, prefillChunkSize: 512, runtime });
       forwards.length = 0; logits.length = 0;
       const rows = prompts.map(() => ({ tokens: [] as number[], error: null as string | null, spec: undefined as unknown }));
+      const alone = async () => {
+        const tokens: number[] = [];
+        forwards.length = 0; logits.length = 0;
+        const stats = await group.submit({ promptIds: prompts[0]!, maxTokens: options.maxTokens, eosTokenIds: eos,
+          method: binding.methodRequest!(plan, options)!, onToken: token => { tokens.push(token); } });
+        return { tokens, spec: stats.spec, forwards: [...forwards], logits: [...logits] };
+      };
       try {
+        const reference = await alone();
+        forwards.length = 0; logits.length = 0;
         const abort = new AbortController(), started: Promise<void>[] = [];
         const submit = (index: number) => {
           started.push(group.submit({ promptIds: prompts[index]!, maxTokens: options.maxTokens, eosTokenIds: eos,
@@ -981,19 +991,34 @@ test.skipIf(!native || !artifact)("a structurally equivalent delegating provider
         };
         submit(0);
         for (let seen = -1; seen !== started.length;) { seen = started.length; await Promise.all([...started]); }
-        const drained = group.activeRows + group.pendingRows, solo: number[] = [];
-        await group.submit({ promptIds: prompts[0]!, maxTokens: options.maxTokens, eosTokenIds: eos,
-          method: binding.methodRequest!(plan, options)!, onToken: token => { solo.push(token); } });
-        return { rows, drained, solo, forwards: [...forwards], logits: [...logits] };
+        const drained = group.activeRows + group.pendingRows;
+        const grouped = { forwards: [...forwards], logits: [...logits] };
+        const recovery = await alone();
+        return { reference, rows, drained, recovery, ...grouped };
       } finally { await group.close(); }
     };
     const direct = await run(new NgramProvider()), delegated = await run(delegating());
+    // Speculation actually ran: proposals were drafted, and some accepted and some rejected.
+    const completed = [direct.reference.spec, direct.rows[0]!.spec, direct.rows[1]!.spec, direct.recovery.spec] as
+      ({ drafted: number; accepted: number; rejected?: number; rounds?: number } | undefined)[];
+    const total = (field: "drafted" | "accepted" | "rejected") => completed.reduce((sum, spec) =>
+      sum + (field === "rejected" ? spec?.rejected ?? (spec ? spec.drafted - spec.accepted : 0) : spec?.[field] ?? 0), 0);
+    const leadEqualsReference = JSON.stringify(direct.rows[0]!.tokens) === JSON.stringify(direct.reference.tokens);
+    console.info("Gemma2 delegating provider", { maxTargetBatch: Math.max(...direct.forwards.map(forward => Number(forward.split("x")[0]))),
+      drafted: total("drafted"), accepted: total("accepted"), rejected: total("rejected"), leadEqualsReference,
+      recoveryEqualsLead: JSON.stringify(direct.recovery.tokens) === JSON.stringify(direct.rows[0]!.tokens),
+      recoveryEqualsReference: JSON.stringify(direct.recovery.tokens) === JSON.stringify(direct.reference.tokens),
+      delegatedEqualsDirect: JSON.stringify(delegated) === JSON.stringify(direct) });
+    expect(delegated).toEqual(direct);
     expect(direct.rows.map(row => row.error)).toEqual([null, null, "AbortError"]);
     expect(direct.rows[2]!.tokens).toHaveLength(3);
     expect(direct.drained).toBe(0);
-    expect(direct.solo).toHaveLength(direct.rows[0]!.tokens.length);
     expect(Math.max(...direct.forwards.map(forward => Number(forward.split("x")[0])))).toBe(3);
-    expect(delegated).toEqual(direct);
+    expect(completed.every(spec => (spec?.rounds ?? spec?.drafted ?? 0) > 0)).toBe(true);
+    expect([total("drafted") > 0, total("accepted") > 0, total("rejected") > 0]).toEqual([true, true, true]);
+    // Recovery after the drain reproduces the fresh B1 run exactly: tokens, every
+    // forward and every logits row. The lead inside the ragged group is only recorded.
+    expect(direct.recovery).toEqual(direct.reference);
   } finally { weights.dispose(); }
 }, 900_000);
 
