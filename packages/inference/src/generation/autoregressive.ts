@@ -27,6 +27,7 @@ type MlxDecodeStep,type MlxTokenAppend
 } from "./bindings/autoregressive";
 import { runtimeConfig,type RuntimeConfig } from "../runtime/config";
 import { appendFillHidden } from "./fill-append";
+import { appendGrammarSpan } from "./grammar-step";
 import { adapterScoped,modelNeedsWiredLimit,usageScoped,wiredScoped } from "./scopes";
 import { evalCacheState,executeMlxPrefillStep } from "./prefill";
 import {
@@ -682,26 +683,15 @@ async function* generateInner(
         pushHistory(cur);
         stepSampler.commitNumbers(jumpEmit);
         const chunk = [grammarTok, ...jumpEmit];
-        const ids = ops.fromInt32(chunk, [1, chunk.length]);
-        const h = await graph.forwardHidden(ids, cache);
-        ids.dispose();
-        // Every chunk token's KV is in the cache regardless of what follows.
-        forwarded.push(...chunk);
         const willGen = stepIndex + 1 + jumpEmit.length;
-        if (willGen < maxTokens && !options.grammar!.isTerminated) {
-          const [, Lj, Hj] = h.shape as [number, number, number];
-          const hLast = h.slice([0, Lj - 1, 0], [1, Lj, Hj]);
-          h.dispose();
-          const logits = graph.projectLogits(hLast, { type: "all" });
-          hLast.dispose();
-          const sn = sampleStep(logits, willGen);
-          nextPending = sn.tok;
-          nextExtras = sn.extras;
-          logits.dispose();
-          ops.asyncEvalAll([nextPending, ...stepExtrasArrays(nextExtras)]);
-        } else {
-          h.dispose(); // burst ends the generation (max_tokens or grammar done)
-        }
+        await appendGrammarSpan(graph, cache, chunk,
+          ids => { forwarded.push(...ids); },
+          willGen < maxTokens && !options.grammar!.isTerminated ? logits => {
+            const sampled = sampleStep(logits, willGen);
+            nextPending = sampled.tok;
+            nextExtras = sampled.extras;
+          } : undefined);
+        if (nextPending) ops.asyncEvalAll([nextPending, ...stepExtrasArrays(nextExtras)]);
       } else if (stepIndex + 1 < maxTokens && !options.grammar?.isTerminated) {
         maintainKv(cache);
         pushHistory(cur);

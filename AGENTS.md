@@ -6,8 +6,9 @@ behavior or packaging. [PLAN](PLAN.md) holds open refactor work; history is Git.
 
 ## Policies
 
-- Josh approves new files and migration scope. Do not carry material over just
-  because it exists on main. YAGNI and KISS govern the rebuild.
+- Josh approves new documentation files and migration scope. Implementation and
+  test files needed for the approved refactor are authorized. Do not carry material
+  over just because it exists on main. YAGNI and KISS govern the rebuild.
 - During this refactor, main is reference-only. Create reviewable chunk PRs
   targeting `refactor/monorepo`; do not merge them without Josh's instruction.
 - Preserve numerical behavior during migration. Optimization is separate work;

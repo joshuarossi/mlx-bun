@@ -22,7 +22,10 @@ Examples must execute in tests; READMEs link or extract that source.
 Preserving an implementation means equal behavior for the same inputs and
 settings, including tensor ownership, disposal, state continuation, and
 cancellation. Matching source text or passing synthetic tests is insufficient
-for claims about real models.
+for claims about real models. This preserves working capabilities and component
+contracts; it does not require reproducing main's bugs or accidental composition
+restrictions. Follow the architecture's [composition rules](ARCHITECTURE.md#changing-or-replacing-a-piece)
+and explain and test intentional behavior corrections.
 
 - **L1:** compare logits with the pinned mlx-lm oracle, bit-exact where that
   path's contract requires it. Keep application policy separate from numerics.

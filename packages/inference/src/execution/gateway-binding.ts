@@ -26,6 +26,7 @@ import { constraintDraftProvider, NgramProvider } from "../generation/speculativ
 import { TwoModelProvider } from "../generation/speculative/sources/two-model";
 import { targetRowLayoutFactory } from "../state/target-layout";
 import { bindSpeculativeGroupRequests } from "./speculative-group";
+import { bindGrammarGroupRequests } from "./grammar-group";
 import { bindFillGroupRequests } from "./fill-group";
 import { bindDenoisingGroupRequests } from "./denoising-group";
 import { bindLegacyDenoisingModel } from "../generation/bindings/denoising";
@@ -87,9 +88,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   // MiniCPM5's and plain universal delayed affine KV are qualified for ordinary
-  // continuous decoding only. Supplied fill stays unused, as on main when the
-  // graph lacks an affine append binding. Adapters also ignore configured drafts;
-  // actual delayed speculation remains refused.
+  // continuous decoding only. Adapter requests ignore a configured draft and
+  // fill, as main did; actual delayed speculation and fill remain refused.
   // Grammar jump falls back to ordinary masking. Generation checkpoints are
   // qualified for both. Plain universal adapters use the same row context.
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
@@ -118,6 +118,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     (draft?.provider instanceof TwoModelProvider || draft?.provider instanceof NgramProvider);
   const speculative = (tokenMethods || softcapDraft) && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
+  const grammarSpans = plainSoftcap ? bindGrammarGroupRequests(model) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
@@ -164,6 +165,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       : execution?.method === "speculative"
       ? (execution.grammarJump ? grammarProposals : speculative)?.(
         options.fill && !execution.fill ? { ...options, fill: undefined } : options)
+      : execution?.grammarJump ? grammarSpans?.(options)
       : execution?.fill ? fillRequests?.(options) : undefined,
     ...(adapterState ? { bindAdapterContext(adapters: string[], key: string): ExecutionContext {
       // Denoising applies each row's adapters around that row's own units, so
@@ -198,6 +200,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
+        sharedGrammarJump: !!grammarSpans && !request.hasVision && !request.kvQuant &&
+          !request.turboQuant && !options.pagedKv,
         sharedFill: !ordinaryOnly && !!fillRequests && !!options.fill,
         // Main's softcap serial verifier ignored fill, including echo proposals.
         sharedSpeculativeEcho: !plainSoftcap && !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,

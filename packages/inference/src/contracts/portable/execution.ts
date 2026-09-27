@@ -43,6 +43,8 @@ export interface ExecutionCapabilities {
   readonly groupedMethods?: readonly string[];
   /** A shared method accepts request-owned grammar continuation proposals. */
   readonly sharedGrammarProposals?: boolean;
+  /** An AR method appends grammar-accepted spans without speculative verification. */
+  readonly sharedGrammarJump?: boolean;
   /** A grouped method can consume this request's strict known continuations. */
   readonly sharedFill?: boolean;
   /** A mounted provider can consume verified external continuations. */

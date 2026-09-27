@@ -53,7 +53,7 @@ const standIn = (prototype: object, modelType: string, extra: object = {}): Runt
 
 // Every autoregressive class the binding distinguishes. Stand-ins share plain
 // KV caches, so only class guards differ: Gemma2's plain softcap graph is the
-// one class that declines grammar jump and grouped speculation.
+// one class whose grammar jump commits forced spans instead of verifying proposals.
 const qualifiedFamilies: [string, () => RuntimeModel][] = [
   ["universal dense", () => standIn(UniversalDenseModel.prototype, "llama",
     { args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null } })],
@@ -114,13 +114,23 @@ test.each(qualifiedFamilies)("%s qualifies multi-token grammar jump when it is e
   expect(refusals(plan)).toEqual([]);
 });
 
-test("Gemma2 softcap declines only the grammar jump and keeps ordinary masked decoding", () => {
+test("Gemma2 softcap selects committed grammar spans without changing the ordinary lane", () => {
   const binding = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }),
     () => bindMlxGateway(softcapUniversal()));
   const plan = place(binding, grammar);
-  expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: false });
-  expect(plan.reasons).toContain("grammar-jump-incompatible-with-request");
+  expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true,
+    checkpoint: false, promptCache: true, fill: false });
+  expect(plan.reasons).not.toContain("grammar-jump-incompatible-with-request");
+  expect(binding.methodRequest!(plan, {})!.key).toBe("grammar-forced-span");
   expect(refusals(plan)).toEqual([]);
+  // This preexisting paging admission limitation is not changed by adding a
+  // grammar method. Actual paged Gemma2 remains unqualified, including the
+  // separately tracked adapter-bypass request shape.
+  expect(binding.plan({ ...grammar, hasAdapters: true }, { pagedKv: {} }, schedule))
+    .toMatchObject({ mechanism: "unsupported", pagedKv: false, grammarJump: false });
+  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, kvQuant: true },
+    { ...grammar, turboQuant: true }, { ...grammar, hasVision: true }])
+    expect(place(binding, request).grammarJump).toBe(false);
 });
 
 test.each(families)("%s places grammar with a bound grouped draft exactly as the draft alone", (_, model) => {
@@ -401,7 +411,11 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   expect(binding.plan(shape, {}, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
   const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }),
     () => bindMlxGateway(softcapUniversal(), { provider: provider(), numDraftTokens: 3 }));
-  expect(jump.plan({ ...shape, hasGrammar: true }, {}, schedule)).toMatchObject({ method: "autoregressive", grammarJump: false });
+  expect(jump.plan({ ...shape, hasGrammar: true }, {}, schedule)).toMatchObject({ method: "autoregressive", grammarJump: true });
+  expect(jump.plan({ ...shape, hasGrammar: true, hasAdapters: true, hasDraft: true }, {}, schedule))
+    .toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true });
+  expect(jump.plan({ ...shape, hasGrammar: true, hasDraft: true }, {}, schedule))
+    .toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: false });
 });
 
 test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()]] as const)(
