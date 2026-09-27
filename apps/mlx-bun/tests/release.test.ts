@@ -124,6 +124,17 @@ test("failed or bundle-mutating acceptance leaves no unsigned output and no prep
   } finally { await f.close(); }
 });
 
+/** The texts of a notice's ```text blocks; the `### ` subsection of a notice section; the
+ * git blobs a notice names; and a text's git blob. */
+const fenced = (text: string) => [...text.matchAll(/```text\n([\s\S]*?)```/g)].map(match => match[1]!);
+function subsection(section: string, heading: string): string {
+  const start = section.indexOf(`\n${heading}\n`), end = section.indexOf("\n### ", start + 1);
+  if (start < 0) throw new Error(`Missing notice subsection: ${heading}`);
+  return section.slice(start, end < 0 ? undefined : end + 1);
+}
+const namedBlobs = (text: string) => [...text.matchAll(/git blob\s+`([0-9a-f]{40})`/g)].map(match => match[1]!);
+const blobOf = (text: string) => gitBlobSha1(new TextEncoder().encode(text));
+
 test("bundle notices carry the package notices, Photon's installed license and Pi's upstream license verbatim", async () => {
   expect(verifyBundle).toBeFunction();
   const app = resolve(import.meta.dir, ".."), root = resolve(app, "../..");
@@ -158,6 +169,18 @@ test("bundle notices carry the package notices, Photon's installed license and P
   const jiti = noticeSection(notice, "## Jiti 2.7.0 prebundle");
   expect(new Set(jiti.split("\n").filter(line => line.startsWith("### `")).flatMap(line => line.match(/`[^`]+@[^`]+`/g)!)).size).toBe(57);
   expect(gitBlobSha1(new TextEncoder().encode(license))).toBe(blob!);
+  // The 58th has no license text; the section records its manifest's statement instead.
+  expect(jiti.replace(/\s+/g, " ")).toContain('its `package.json`, `"author": "Warner"` and `"license": "MIT"`');
+  // Code Jiti copies: the upstream license blobs named, byte for byte, except TypeScript's
+  // LICENSE.txt, shown with LF line endings and its one line-ending space removed.
+  for (const heading of ["### import-meta-env plugin code", "### import-meta-paths plugin code"]) {
+    const part = subsection(jiti, heading);
+    expect(fenced(part).map(blobOf)).toEqual(namedBlobs(part));
+  }
+  const typescript = subsection(jiti, "### TypeScript compiler code in the copied metadata plugin");
+  const [copyright, apache] = fenced(typescript);
+  expect(copyright).toContain("\nCopyright (c) Microsoft Corporation. All rights reserved.\n");
+  expect(blobOf(apache!.replace("licenses/\n", "licenses/ \n").replaceAll("\n", "\r\n"))).toBe(namedBlobs(typescript).at(-1)!);
 });
 
 async function packageTree(files: Record<string, string>) {
@@ -241,6 +264,13 @@ test("a missing or changed curated notice section fails the notice check", async
   const app = "apps/mlx-bun/THIRD_PARTY_NOTICES.md", semver = notices[app]!.indexOf("### `semver@6.3.1`");
   const withoutSemver = notices[app]!.slice(0, semver) + notices[app]!.slice(notices[app]!.indexOf("### `std-env@", semver));
   expect(() => checkCurated({ ...notices, [app]: withoutSemver })).toThrow(`"## Jiti 2.7.0 prebundle" (sha256 `);
+  // So is every reproduced text inside a section: one changed word of a copied plugin's
+  // license, or a dropped Emscripten runtime subsection.
+  expect(() => checkCurated({ ...notices, [app]: notices[app]!.replace("// javiertury\n", "// javier\n") }))
+    .toThrow(`"## Jiti 2.7.0 prebundle" (sha256 `);
+  const inference = "packages/inference/THIRD_PARTY_NOTICES.md", xgrammar = noticeSection(notices[inference]!, "## XGrammar");
+  const withoutEmscripten = notices[inference]!.replace(xgrammar, () => xgrammar.slice(0, xgrammar.indexOf("\n### Emscripten") + 1));
+  expect(() => checkCurated({ ...notices, [inference]: withoutEmscripten })).toThrow(`"## XGrammar" (sha256 `);
   expect(() => checkCurated({ [app]: notices[app]! })).toThrow("Missing notice file: packages/inference/THIRD_PARTY_NOTICES.md");
 });
 
@@ -304,7 +334,7 @@ test("the reviewed headers, Jiti hashes and XGrammar fallback match the installe
   expect(await packageNotices(xgrammar, { "@mlx-bun/inference": inference }))
     .toEqual([`# ${xgrammar[0]!.id}\n\nNo license file is installed; the upstream text is in the \`@mlx-bun/inference\` section.\n`]);
   const whole = noticeSection(inference, "## XGrammar"), split = whole.indexOf("\n### picojson");
-  const [section, picojson] = [whole.slice(0, split), whole.slice(split)];
+  const [section, picojson] = [whole.slice(0, split), subsection(whole, "### picojson in the XGrammar WASM")];
   const [license, notice] = [...section.matchAll(/```text\n([^`]*)```/g)].map(match => match[1]!);
   const blobs = [...section.matchAll(/git blob\s+`([0-9a-f]{40})`/g)].map(match => match[1]!);
   expect(license).toStartWith("                                 Apache License\n");
@@ -313,6 +343,23 @@ test("the reviewed headers, Jiti hashes and XGrammar fallback match the installe
   const header = picojson.match(/```text\n([^`]*)```/)![1]!;
   expect(header).toStartWith("/*\n * Copyright 2009-2010 Cybozu Labs, Inc.\n");
   expect(createHash("sha256").update(header).digest("hex")).toBe(picojson.match(/lines 1-27 \(sha256\s+`([0-9a-f]{64})`\)/)![1]!);
+  // The Emscripten 3.1.56 texts are the blobs named, byte for byte, except the one
+  // line-ending space removed from its LICENSE.
+  const emscripten = subsection(whole, "### Emscripten 3.1.56 runtime in the XGrammar WASM"), [em, ...libraries] = fenced(emscripten);
+  expect([blobOf(em!.replace("    written permission.\n", "    written permission. \n")), ...libraries.map(blobOf)]).toEqual(namedBlobs(emscripten));
+
+  // What the notices say of the pinned bytes: Jiti's babel.cjs keeps the copied plugins and
+  // the parameter decorator; XGrammar's runtime is Emscripten 3.1.56's (it sets Module.ready
+  // and has no WebAssembly check), and its WASM keeps musl, libc++ and libc++abi strings.
+  const babel = await readFile(join(packages.find(({ name }) => name === "jiti")!.directory, "dist/babel.cjs"), "utf8");
+  for (const text of ['name:"@import-meta-env/babel"', "require('url').pathToFileURL(__filename).toString()",
+    "function serializeTypeList(", "babel-plugin-parameter-decorator@1.0.16/"]) expect(babel).toContain(text);
+  const runtime = await readFile(join(xgrammar[0]!.directory, "lib/index.js"), "utf8");
+  expect(runtime).toContain('Module["ready"]=new Promise');
+  expect(runtime).not.toContain("no native wasm support");
+  const wasm = Buffer.from(runtime.match(/"data:application\/octet-stream;base64,([A-Za-z0-9+/=]+)"/)![1]!, "base64").toString("latin1");
+  for (const text of ["-+   0X0x", "(null)", "NSt3__28ios_baseE", "terminate_handler unexpectedly returned", "N10__cxxabiv117__class_type_infoE"])
+    expect(wasm).toContain(text);
 });
 
 test("publication order rejects cycles, unpackaged ranges, missing packages and incompatible versions", () => {
