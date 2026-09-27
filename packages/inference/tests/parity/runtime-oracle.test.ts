@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { compareReports, parsePlan } from "../../scripts/runtime-oracle";
+import { TEST_OVERHEAD_MS, parityInputs, runParityWorker } from "./runtime-oracle-process";
 
 const plan = parsePlan({ model: "/external/model", runtime: "0.32.2", contexts: [0, 4], lengths: [1, 2], prefixChunk: 2 });
 function report() {
@@ -69,21 +70,23 @@ describe("runtime report comparison (CPU only)", () => {
 });
 
 // References and weights are supplied externally. This test never starts Python.
-const planPath = process.env.MLX_BUN_PARITY_PLAN;
-const referencePath = process.env.MLX_BUN_PARITY_REFERENCE;
-test.skipIf(!planPath || !referencePath)("local model matches the supplied external runtime report", async () => {
+const inputs = parityInputs(process.env);
+test.skipIf(!inputs)("local model matches the supplied external runtime report", async () => {
+  const deadline = Date.now() + inputs!.timeoutMs;
   const directory = await mkdtemp(join(tmpdir(), "mlx-runtime-parity-"));
   const output = join(directory, "actual.json");
   let passed = false;
   try {
-    const worker = Bun.spawn([process.execPath, resolve(import.meta.dir, "../../scripts/runtime-oracle.ts"), "emit", "--plan", planPath!, "--report", output],
-      { stdout: "inherit", stderr: "inherit" });
-    expect(await worker.exited).toBe(0);
-    compareReports(await Bun.file(output).json(), await Bun.file(referencePath!).json(),
-      parsePlan(await Bun.file(planPath!).json()), process.env.MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG === "1");
+    // Parse caller inputs before starting the native worker. Keep comparison semantics unchanged.
+    const suppliedPlan = parsePlan(await Bun.file(inputs!.planPath).json());
+    const reference = await Bun.file(inputs!.referencePath).json();
+    await runParityWorker([process.execPath, resolve(import.meta.dir, "../../scripts/runtime-oracle.ts"), "emit", "--plan", inputs!.planPath, "--report", output],
+      directory, deadline);
+    compareReports(await Bun.file(output).json(), reference, suppliedPlan, inputs!.allowLegacy);
     passed = true;
   } finally {
     if (passed) await rm(directory, { recursive: true });
     else console.error(`Parity evidence retained at ${directory}`);
   }
-}, Number(process.env.MLX_BUN_PARITY_TIMEOUT_MS ?? 600_000));
+// The worker deadline owns termination; the outer test must allow its bounded join.
+}, (inputs?.timeoutMs ?? 600_000) + TEST_OVERHEAD_MS);
