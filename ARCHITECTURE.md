@@ -156,6 +156,17 @@ such as an attention operation requiring a particular cache representation, belo
 in the owning component's contract and binding; the scheduler consumes that binding.
 Prefer the smallest existing interface that expresses the requirement.
 
+At graph construction or startup, resolve static model, artifact, layer, and
+option facts into concrete bound operations. Execute those specialized
+implementations without repeatedly interpreting descriptors or rediscovering
+invariant capabilities in the hot path. Dynamic request, token, and cancellation
+decisions remain runtime concerns. Prefer reusable concrete pieces; a universal
+fallback is allowed, but no universal model abstraction or new code-generation
+or compiler framework is required. This construction-time specialization is
+separate from the layers' MLX compilation policy described above. Apply this
+principle as migrated paths are refined; it is not a claim that every current
+path already follows it.
+
 Main is the baseline for working capabilities, not a requirement to reproduce
 every restriction, silently ignored option, or bug. Preserve what works while
 removing accidental coupling. Make intentional behavior corrections explicit and
