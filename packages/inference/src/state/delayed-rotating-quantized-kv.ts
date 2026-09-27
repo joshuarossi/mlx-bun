@@ -1,7 +1,7 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding, type PlainKvReads, type KvMaintenance } from "../contracts/mlx/cache";
 import { SpeculativeTransitioningKvRows } from "./transitioning-kv-rows";
 import { AlignedRotatingCache, alignRotatingRows, RotatingAffineLayout, SpeculativeRotatingAffineLayout, RotatingKvPositions } from "./rotating-kv-layout";
 import { BatchedRotatingQuantCache } from "./batched-rotating-quant";
@@ -11,7 +11,7 @@ import { captureKvAttention, combineKvDonorAttention } from "./kv-attention-view
  * queries and scale; the shared lifecycle owns membership and conversion. */
 export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvRows<RotatingAffineLayout> implements KvAttentionState, PaddedPrefillCache {
   constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number, readonly start: number,
-    readonly maintain: (rows: Cache[]) => void, row?: Cache, readonly speculative = false) {
+    readonly maintain: KvMaintenance, row?: Cache, readonly speculative = false) {
     super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof AlignedRotatingCache && row.inner instanceof BatchedRotatingQuantCache,
       makeLayout: () => speculative ? new SpeculativeRotatingAffineLayout(maxSize, groupSize, bits) : new RotatingAffineLayout(maxSize, groupSize, bits), prepareRows: alignRotatingRows,
@@ -57,6 +57,11 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
   }
   get maxTokens(): number { return this.maxSize; }
   projectedBytes(tokens: number): number { return this.bytesPerToken() * Math.min(tokens, this.maxSize); }
+  /** Plain reads per row, answered by this cache's own maintenance. */
+  get plainKvReads(): PlainKvReads | undefined {
+    const converts = this.maintain.converts;
+    return converts && { appendable: row => this.plainAfterNextAppend(row, converts) };
+  }
   makeEmptyBatch(): DelayedRotatingQuantizedKVCache {
     return new DelayedRotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.start, this.maintain, undefined, this.speculative);
   }

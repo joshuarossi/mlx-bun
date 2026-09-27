@@ -3,6 +3,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import type { Cache,DecodeStepPlan,KvDonorRows,Mask } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
+import { plainKvStorage } from "./plain-kv-reads";
 
 
 /** Rotating (sliding-window) KV cache — port of mlx-lm RotatingKVCache
@@ -10,6 +11,7 @@ import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
  *  entries, so decode attends over at most the window. RoPE offsets use
  *  the true position; masks use the buffer-clamped offset. */
 export class RotatingKVCache implements Cache {
+  readonly plainKvReads = plainKvStorage;
   declare minimumReusableOffset?: number;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */

@@ -6,7 +6,7 @@ import { QuantizedKVCache } from "./quantized-kv";
 import { RotatingKVCache } from "./rotating-kv";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
 import { TurboQuantKVCache } from "./turboquant-kv";
-import { type Cache } from "../contracts/mlx/cache";
+import { type Cache, type KvMaintenance } from "../contracts/mlx/cache";
 import type { KvQuantSpec, TurboQuantScheme } from "../artifacts/config";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";
@@ -15,17 +15,10 @@ import { DelayedRotatingQuantizedKVCache } from "./delayed-rotating-quantized-kv
 import { DelayedQuantizedKVCache } from "./delayed-quantized-kv";
 import { DelayedTurboQuantKVCache } from "./delayed-turboquant-kv";
 
-export interface KvMaintenance {
-  (cache: Cache[]): void;
-  /** Limit committed work at a pending precision transition. */
-  maxAppendTokens?(cache: readonly Cache[]): number;
-  /** Bind state requiring row-local maintenance before shared decode. */
-  prepareBatch?(cache: Cache[]): void;
-  /** Bind all precision policies before a prefill cohort owns row boundaries. */
-  preparePrefill?(cache: Cache[]): void;
-}
+export type { KvMaintenance };
 
-const unchanged = (_cache: Cache[]): void => {};
+/** Maintenance that never converts: plain storage stays plain. */
+export const unchangedKv: KvMaintenance = Object.assign((_cache: Cache[]): void => {}, { converts: () => false });
 let warnedTurboRotating = false;
 
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
@@ -82,28 +75,29 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     if (start > 0) maintain.prepareBatch = maintain.preparePrefill;
     return maintain;
   }
-  if (!kvBits && !kvConfig?.length) return unchanged;
+  if (!kvBits && !kvConfig?.length) return unchangedKv;
   const start = affineQuantizedKvStart(options);
   const groupSize = options.kvGroupSize ?? 64;
   // Resolve layer policy once when composing execution, never per token.
   const byLayer = kvConfig?.length
     ? new Map(kvConfig.map((entry) => [entry.layerIdx, { ...entry }]))
     : null;
+  const conversionOf = (c: Cache) => c.affineConversion ?? (c instanceof KVCache || c instanceof RotatingKVCache ? c : undefined);
+  // One test for converting and for answering whether a row would convert.
+  // The populated-cache boundary is part of oracle parity: quantizing an empty
+  // cache would also quantize the first prefill.
+  const converts = (c: Cache, i: number): boolean => {
+    const conversion = conversionOf(c);
+    return !!conversion && conversion.offset >= start && conversion.offset !== 0 && (!byLayer || byLayer.has(i));
+  };
   const maintain: KvMaintenance = (cache) => {
     for (let i = 0; i < cache.length; i++) {
       const c = cache[i]!;
-      const conversion = c.affineConversion ?? (c instanceof KVCache || c instanceof RotatingKVCache ? c : undefined);
-      if (!conversion || conversion.offset < start || conversion.offset === 0) continue;
+      if (!converts(c, i)) continue;
+      const conversion = conversionOf(c)!;
       const conversionOffset = conversion.offset;
-      // The populated-cache boundary is part of oracle parity: quantizing an
-      // empty cache would also quantize the first prefill.
-      if (byLayer) {
-        const entry = byLayer.get(i);
-        if (!entry) continue;
-        cache[i] = conversion.toQuantized(entry.groupSize, entry.bits);
-      } else {
-        cache[i] = conversion.toQuantized(groupSize, kvBits!);
-      }
+      const entry = byLayer?.get(i);
+      cache[i] = entry ? conversion.toQuantized(entry.groupSize, entry.bits) : conversion.toQuantized(groupSize, kvBits!);
       if (start > 0) cache[i]!.minimumReusableOffset = conversionOffset;
       // Materialize one layer before converting the next to bound the live
       // bf16 source plus quantized destination to one conversion at a time.
@@ -111,6 +105,7 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
       clearCache();
     }
   };
+  maintain.converts = converts;
   if (start > 0) maintain.maxAppendTokens = (cache) => {
     let remaining = Number.POSITIVE_INFINITY;
     for (let layer = 0; layer < cache.length; layer++) {
