@@ -33,7 +33,8 @@ export async function createAppEngine(context: LoadedModelContext, options: {
     const binding = await modelServingBinding(context, options.binding);
     const gateway = createdGateway = new GenerationGateway(binding.gateway, options.capacity, options.gateway);
     const completion = createSessionCompletionEngine(gateway, disposeUnstartedRequest);
-    const preparation = createPreparationExecutor((work, signal) => gateway.runPreparation(work, signal), options.capacity);
+    const preparation = createPreparationExecutor((work, signal) => gateway.runPreparation(work, signal),
+      options.capacity, gateway.mediaBatchingEnabled ? options.capacity : 1);
     let closing: Promise<void> | undefined;
     return {
       context, binding, gateway, completion, preparation,
