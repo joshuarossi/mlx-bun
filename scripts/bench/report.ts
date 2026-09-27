@@ -223,8 +223,8 @@ type RequestMetric = { metric: string; unit: string; direction: Direction; phase
 const REQUEST_METRICS: RequestMetric[] = [
   { metric: "decode", unit: "tok/s", direction: "higher-is-better", phase: "decode", include: () => true, value: r => r.decodeTps },
   { metric: "short request wall", unit: "ms", direction: "lower-is-better", phase: "decode", include: () => true, value: r => r.wallMs },
-  { metric: "TTFT cold ~1k", unit: "ms", direction: "lower-is-better", phase: "ttft1k", include: (i, w) => i < w.ttftRuns, value: r => r.ttftMs },
-  { metric: "prefill ~1k", unit: "tok/s", direction: "higher-is-better", phase: "ttft1k", include: (i, w) => i < w.ttftRuns,
+  { metric: "TTFT cold (nominal 1k prompt)", unit: "ms", direction: "lower-is-better", phase: "ttft1k", include: (i, w) => i < w.ttftRuns, value: r => r.ttftMs },
+  { metric: "prefill (nominal 1k prompt)", unit: "tok/s", direction: "higher-is-better", phase: "ttft1k", include: (i, w) => i < w.ttftRuns,
     value: r => r.promptTokens * 1000 / r.ttftMs },
   { metric: "TTFT warm (repeat)", unit: "ms", direction: "lower-is-better", phase: "ttft1k", include: (i, w) => i === w.ttftRuns, value: r => r.ttftMs },
   { metric: "prefill @ctx", unit: "tok/s", direction: "higher-is-better", phase: "ctx", include: i => i === 0, value: r => r.promptTokens * 1000 / r.ttftMs },
@@ -284,6 +284,21 @@ export function comparePair(run: RunRecord, model: string, configuration: Config
 }
 
 const fmt = (n: number | null, digits = 1) => n === null ? "—" : n.toFixed(digits);
+/** Prompt tokens the servers actually counted on each arm's accepted requests. The
+ * workload's token counts are nominal: main's filler is sized by characters. */
+function promptTokenRows(run: RunRecord, a: CellRecord, b: CellRecord): string[] {
+  const w = run.plan.workload;
+  const nominal: Array<[string, string]> = [["decode", "short"], ["ttft1k", "1024"],
+    ...(w.withContext ? [["ctx", String(w.contextTokens)] as [string, string]] : []),
+    ["agg", w.aggregateContext ? String(w.aggregateContext) : "short"]];
+  const actual = (cell: CellRecord, phase: string) => {
+    const counts = [...new Set(finalRequests(run, cell, phase).flatMap(q => q.result ? [q.result.promptTokens] : []))];
+    return counts.length ? counts.join(", ") : "—";
+  };
+  return ["| prompt tokens | nominal target | baseline actual | candidate actual |", "|---|---|---|---|",
+    ...nominal.map(([phase, target]) => `| ${phase} | ${target} | ${actual(a, phase)} | ${actual(b, phase)} |`)];
+}
+
 export function markdown(run: RunRecord): string {
   const q = qualification(run), lines: string[] = [];
   lines.push(`# paired serve benchmark — ${run.startedAt.slice(0, 10)}`, "",
@@ -294,8 +309,10 @@ export function markdown(run: RunRecord): string {
       (ref.registerCommand ? ` (register: \`${ref.registerCommand.join(" ")}\`)` : "")),
     `pinned native library: ${run.plan.native.library}`,
     `workload seed ${run.plan.seed}; ${run.plan.workload.decodeRuns} decode samples of ${run.plan.workload.decodeTokens} tokens, ` +
-      `${run.plan.workload.ttftRuns} cold ~1k TTFT samples, context ${run.plan.workload.withContext ? run.plan.workload.contextTokens : "skipped"}, ` +
-      `${run.plan.workload.aggregateStreams} × ${run.plan.workload.aggregateTokens}-token concurrent streams.`, "",
+      `${run.plan.workload.ttftRuns} cold TTFT samples (nominal 1k-token prompt), ` +
+      `${run.plan.workload.withContext ? `nominal context target ${run.plan.workload.contextTokens}` : "context skipped"}, ` +
+      `${run.plan.workload.aggregateStreams} × ${run.plan.workload.aggregateTokens}-token concurrent streams.`,
+    `Prompt sizes are nominal targets for main's character-based filler; each pair lists the prompt tokens its servers actually counted.`, "",
     `## Qualification`, "",
     `- profile: **${q.profile}**${q.profile === "all" ? " (main's full matrix)" : " (scoped: not full qualification)"}`,
     `- complete: **${q.complete ? "yes" : "no"}**; full qualification: **${q.fullQualification ? "yes" : "no"}**`,
@@ -317,15 +334,16 @@ export function markdown(run: RunRecord): string {
           c.observation === "unpaired" ? "unpaired — no conclusion" : c.observation} |`);
     }
     for (const c of comparison) for (const reason of c.excluded) lines.push(`- ${c.metric}: excluded ${reason}`);
-    lines.push("");
+    lines.push("", ...promptTokenRows(run, cellFor(run, model, "baseline", configuration)!, cellFor(run, model, "candidate", configuration)!), "");
   }
   const references = run.cells.filter(cell => cell.kind === "reference" && cell.result);
   if (references.length) {
-    lines.push("## Reference servers (context, not the baseline)", "", "| cell | decode tok/s | TTFT cold ms | prefill ~1k tok/s | peak RSS MB |", "|---|---|---|---|---|");
+    lines.push("## Reference servers (context, not the baseline)", "",
+      "| cell | decode tok/s | TTFT cold ms | prefill (nominal 1k) tok/s | ctx prompt tokens | peak RSS MB |", "|---|---|---|---|---|---|");
     for (const cell of references) {
       const r = cell.result!;
       lines.push(`| ${cell.key} | ${fmt(r.decodeTps ? median(r.decodeTps) : null)} | ${fmt(r.ttft ? median(r.ttft.coldMs) : null, 0)} | ` +
-        `${fmt(r.ttft ? median(r.ttft.prefill1kTps) : null, 0)} | ${fmt(r.peakRssMB, 0)} |`);
+        `${fmt(r.ttft ? median(r.ttft.prefill1kTps) : null, 0)} | ${r.ctx?.promptTokens ?? "—"} | ${fmt(r.peakRssMB, 0)} |`);
     }
     lines.push("");
   }

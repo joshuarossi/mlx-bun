@@ -196,7 +196,13 @@ test("a complete scoped run: every phase on both trees, matched samples, unrevie
   const decode = comparePair(record, "fake", "default")!.find(metric => metric.metric === "decode")!;
   expect(decode.pairs).toHaveLength(5);
   expect(decode.observation).not.toBe("unpaired");
-  expect(readFileSync(join(out, "report.md"), "utf8")).toContain("performance acceptance: **unreviewed**");
+  const report = readFileSync(join(out, "report.md"), "utf8");
+  expect(report).toContain("performance acceptance: **unreviewed**");
+  // Context size is a nominal target; the report shows what each server actually counted.
+  const [baselineCell, candidateCell] = (["baseline", "candidate"] as const).map(tree => record.cells.find(cell => cell.tree === tree)!.result!);
+  expect(baselineCell!.ctx!.promptTokens).not.toBe(record.plan.workload.contextTokens);
+  expect(report).toContain(`nominal context target ${record.plan.workload.contextTokens}`);
+  expect(report).toContain(`| ctx | ${record.plan.workload.contextTokens} | ${baselineCell!.ctx!.promptTokens} | ${candidateCell!.ctx!.promptTokens} |`);
   // Sandboxed servers: nothing written into either tree.
   for (const tree of ["baseline", "candidate"] as const) expect(sourceSnapshot(record.plan.trees[tree].root).clean).toBe(true);
 }, 120_000);
