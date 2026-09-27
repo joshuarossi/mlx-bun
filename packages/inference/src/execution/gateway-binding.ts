@@ -87,9 +87,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   // MiniCPM5's and plain universal delayed affine KV are qualified for ordinary
-  // continuous decoding only. A draft or fill request over it is refused, as
-  // for softcap models; grammar jump falls back to ordinary masking, until those
-  // compositions have their own evidence. Its generation checkpoints are
+  // continuous decoding only. Adapter requests ignore a configured draft and
+  // fill, as main did; actual delayed speculation and fill remain refused.
+  // Grammar jump falls back to ordinary masking. Generation checkpoints are
   // qualified for both. Plain universal adapters use the same row context.
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
     (model instanceof MiniCPM5Model || universalPlainKv) && delayedAffine(options);
@@ -174,15 +174,18 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     } } : {}),
     plan(request, options, scheduling) {
       const ordinaryOnly = delayedAffineOrdinaryOnly(options);
+      // Main placed this request ordinarily: no draft provider is opened, so
+      // the fallback and its ordinary checkpoints do not depend on provider kind.
+      const ignoredAdapterDraft = ordinaryOnly && request.hasAdapters && request.hasDraft;
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(ordinaryOnly && (request.hasDraft || options.fill)) &&
+        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredAdapterDraft && (request.hasDraft || options.fill)) &&
           !(plainSoftcap && request.hasDraft && !softcapDraft),
         quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
         sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || universalPlainKv) && !!continuationServices?.checkpointPersistence &&
-          !request.hasDraft && !request.hasVision && !request.hasGrammar &&
+          (!request.hasDraft || ignoredAdapterDraft) && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill && !options.pagedKv,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         mediaBatch: !!mediaInput,

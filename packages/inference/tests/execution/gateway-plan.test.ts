@@ -308,9 +308,9 @@ test("plain universal KV batches delayed affine KV for ordinary continuous decod
     for (const extra of [{ hasGrammar: true }, { wantsLogprobs: true }])
       expect(binding.plan({ ...adapted, ...extra }, options, scheduling))
         .toMatchObject({ mechanism: "continuous", checkpoint: false });
-    for (const [request, supplied] of [[{ ...adapted, hasDraft: true }, options],
-      [adapted, { ...options, ...(fill as object) }]] as const)
-      expect(binding.plan(request, supplied, scheduling).mechanism).toBe("unsupported");
+    expect(binding.plan({ ...adapted, hasDraft: true }, options, scheduling))
+      .toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true, fill: false });
+    expect(binding.plan(adapted, { ...options, ...(fill as object) }, scheduling).mechanism).toBe("unsupported");
     // Drafts and fill over delayed affine KV are refused explicitly.
     const refusals: [typeof kv, GenerateOptions][] = [[{ ...kv, hasDraft: true }, delayed], [kv, { ...delayed, ...(fill as object) }]];
     for (const [request, options] of refusals) {
@@ -527,3 +527,50 @@ test("Gemma2 softcap fill runs with adapters and keeps encoded KV and unbound dr
     expect(refusals(plan)).toEqual([]);
   }
 });
+
+test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
+  "%s delayed affine adapter requests ignore every configured draft and fill, retaining ordinary checkpoints", (_, model) => {
+    let opened = 0;
+    const unexpected = () => { opened++; throw new Error("ignored draft provider was opened"); };
+    // Structural providers deliberately have no built-in class identity. Both
+    // grouped capabilities and the legacy-only provider stay unused.
+    const providers = [new NgramProvider(), twoModelDraft(),
+      { id: "custom-adapter-aware", weightsBytes: 0, open: unexpected,
+        grouped: { supportsTargetAdapters: true, supportsExternalTokens: true,
+          checkpointNamespace: unexpected, open: unexpected, openPrefill: unexpected } },
+      { id: "custom-base-only", weightsBytes: 0, open: unexpected,
+        grouped: { supportsTargetAdapters: false, checkpointNamespace: unexpected, open: unexpected, openPrefill: unexpected } },
+      { id: "custom-legacy-only", weightsBytes: 0, open: unexpected }];
+    for (const provider of providers) {
+      const binding = bindMlxGateway(model(), { provider: provider as never, numDraftTokens: 3 });
+      binding.configureContinuation!({ checkpointPersistence: {} } as never);
+      for (const kv of [{ kvBits: 4, quantizedKvStart: 8 }, { kvBits: 8, quantizedKvStart: 8 },
+        { kvConfig: [{ layerIdx: 0, bits: 4, groupSize: 64 }, { layerIdx: 2, bits: 8, groupSize: 64 }], quantizedKvStart: 8 }]) {
+        const scheme = new KvScheme("kvBits" in kv ? "affine-uniform" : "affine-config", kv);
+        const scheduling = { continuous: binding.cachesBatchable(), quantizedBatch: binding.kvBatchable(scheme), checkpoints: true };
+        for (const fill of [undefined, fillOptions(false).fill, fillOptions(true).fill]) {
+          for (const extra of [{}, { wantsLogprobs: true }, { hasGrammar: true }, { userSeed: true, hasRepetitionPenalty: true }]) {
+            const request = { ...shape, ...extra, kvQuant: true, hasAdapters: true, hasDraft: true };
+            const options = Object.freeze({ ...kv, adapters: ["upper"], ...(fill ? { fill } : {}) });
+            const plan = binding.plan(request, options, scheduling);
+            expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false,
+              checkpoint: !fill && !request.wantsLogprobs && !request.hasGrammar, grammarJump: false, compiledDecode: false });
+            expect(plan.reasons).toContain("draft-incompatible-with-request");
+            if (fill) expect(plan.reasons).toContain("fill-incompatible-with-request");
+            expect(binding.methodRequest!(plan, options)).toBeUndefined();
+            expect(binding.prefixNamespace!(plan, options, "adapter-namespace")).toBe("adapter-namespace");
+            expect(options.fill).toBe(fill);
+          }
+        }
+        const refused: [typeof shape, GenerateOptions][] = [[{ ...shape, kvQuant: true, hasDraft: true }, kv],
+          [{ ...shape, kvQuant: true, hasAdapters: true }, { ...kv, adapters: ["upper"], ...fillOptions(false) }]];
+        for (const [request, options] of refused)
+          expect(binding.plan(request, options, scheduling).mechanism).toBe("unsupported");
+        expect(binding.plan({ ...shape, kvQuant: true, hasAdapters: true, hasDraft: true },
+          { ...kv, adapters: ["upper"], pagedKv: {} } as GenerateOptions, scheduling).mechanism).toBe("unsupported");
+        expect(binding.plan({ ...shape, kvQuant: true, hasAdapters: true, hasDraft: true },
+          { ...kv, adapters: ["upper"] }, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
+      }
+    }
+    expect(opened).toBe(0);
+  });

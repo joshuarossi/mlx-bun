@@ -135,8 +135,12 @@ start it also checks grouped admission, an event-driven late join, cancellation
 against a matched stop control, queued base-context isolation and reuse after
 drain. Mounting must change full logits, and unmounting must restore the base.
 Full-attention universal graphs accept ordinary adapter requests with uniform
-or per-layer delayed affine KV and adapter-aware continuation; delayed drafts
-and fill, sliding descriptors and softcap encoded KV remain excluded. Paired B1
+or per-layer delayed affine KV and adapter-aware continuation. MiniCPM5 and these
+universal graphs ignore a configured draft and fill for adapter requests, as
+main did; without fill/logprobs/grammar, ordinary checkpoints remain eligible.
+This fallback does not open the provider, regardless of its kind; its real-model
+qualification is pending. Actual delayed speculation, fill without that fallback,
+sliding descriptors and softcap encoded KV remain excluded. Paired B1
 Qwen2.5-0.5B acceptance matched main for uniform KV4/KV8 and partial mixed KV,
 greedy/seeded sampling, and fresh-process continuation before and after conversion:
 full logits, every valid cache plane, adapter identity and unmount restoration.
