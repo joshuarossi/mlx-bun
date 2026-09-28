@@ -303,7 +303,8 @@ batch group each bind that declaration once against the graph's fresh caches;
 an absent or malformed declaration is refused rather than read as none. A row
 whose next append would not read plain in a declared layer is refused with
 `DenseKvReadError` before that append. A graph whose attention reads dense KV
-(a softcap graph such as Gemma2, reading keys and values as arrays) admits a KV
+(a softcap graph such as Gemma2, or Qwen3 and Qwen3-MoE, reading keys and values
+as arrays) admits a KV
 scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
 maintenance that owns it, probed when the binding or group is composed). Affine
@@ -345,7 +346,15 @@ remain outside Git.
 
 Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
-attention reads encoded KV. On those graphs and on MiniCPM5, delayed affine
+attention reads encoded KV. On Qwen3 and Qwen3-MoE, delayed affine requests
+with an explicit positive start take the same dense-read path as Gemma2: main
+served them serially until a row's transition. Ordinary decoding, generation
+checkpoints and committed grammar spans run while a row reads plain; a
+configured draft is refused (main's serial speculation failed on it) unless an
+adapter request ignores it, and supplied fill decodes ordinarily (main had no
+affine committed append on these graphs). Nothing is claimed for a start of 0
+or for attention after conversion; not yet qualified with real weights.
+On those encoded graphs and on MiniCPM5, delayed affine
 rows stay ordinary-only, as main served them serially, and their direct grammar
 jump commits spans through the same span method with no dense-read requirement,
 before and after conversion; not yet qualified with real weights. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
