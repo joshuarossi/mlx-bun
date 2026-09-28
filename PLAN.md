@@ -28,15 +28,37 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   Cover other model families and specialized training paths before claiming
   their numerical preservation; synthetic native tests do not close this item.
 
-## Optimize after the full draft
+## Three gates before replacing main
 
-- [ ] Run paired same-machine performance comparisons against main using the
-  full benchmark suite, the same artifacts, inputs, configuration and execution
-  shapes after the candidate is assembled. Run the full applicable parity suites
-  as well; focused PR checks do not replace final qualification. Exit: decode,
+Run these on the assembled candidate before saving main to a reference branch
+and merging `refactor/monorepo` into main. Inventory the existing benchmark and
+evaluation suites from main rather than substituting a smaller smoke suite.
+Pin both source revisions and retain reproducible commands and results outside
+Git; reusable verification code stays in Git. Focused PR checks do not close
+these gates. The full applicable numerical parity suites remain required too.
+
+- [ ] **Intelligence benchmarks.** Run the full existing evaluation suite,
+  including GSM8K and the other intelligence benchmarks main provides, against
+  both main and the candidate. Match model artifacts, dataset revisions and
+  splits, prompts/templates, scoring, sampling settings, seeds and limits.
+  Report per-benchmark scores and failed or skipped evaluations; investigate
+  and resolve regressions before accepting the gate. A smoke run or subset
+  does not establish full-suite acceptance.
+- [ ] **Head-to-head performance.** Run the usual full H2H suite on the same
+  quiet machine with the same artifacts, inputs, configuration and execution
+  shapes, including single-request and batched workloads. Exit: decode,
   prefill, complete-request time and memory match main in paired measurements;
   regressions are traced and fixed, with affected parity and benchmarks rerun.
-  Reusable verification code stays in Git; generated results stay outside it.
+- [ ] **Full capability gap analysis and acceptance.** Inventory what main
+  actually exposes and exercise its equivalent in the candidate: library APIs,
+  CLI verbs/options, HTTP protocols and streaming, web workflows, jobs,
+  supported model/cache/generation capabilities, isolation/pooling,
+  installation/build artifacts and existing user data. Trace every capability
+  to passing acceptance evidence or Josh's explicit decision to change or defer
+  it. A route's presence, synthetic test, skipped test or 501 placeholder is not
+  proof that the workflow works. Resolve unapproved gaps and rerun affected
+  flows; preserve working capabilities without reproducing main's bugs or
+  accidental composition restrictions.
 
 ## Improvements identified during migration
 
@@ -150,6 +172,12 @@ without one.
 
 ## Completion
 
+- [ ] Clear all three transition gates above and review their results with
+  Josh before transitioning. Preserve main's exact final commit in a pushed
+  reference branch (`pre-monorepo`), merge `refactor/monorepo` into main with
+  a merge commit preserving both histories, verify the merged result, then
+  remove the redundant refactor branch and worktrees. Main remains reference-only
+  until this transition; publishing is a separate authorization.
 - [ ] Josh could delete main without losing a capability it shipped.
   Exit: every row above is all-done or carries a recorded decision and is deleted;
   the verify items above close against pinned published goldens or are recorded
