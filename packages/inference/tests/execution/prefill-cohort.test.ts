@@ -40,7 +40,7 @@ function encoded(cache: Cache[]) {
 function fixture(options: KvSchemeOptions = {}, failId?: number) {
   const completed = new Map<number, ReturnType<typeof encoded>>();
   const snapshots = new Map<number, ReturnType<typeof encoded>>();
-  const rejected: unknown[] = [], shapes: number[][] = [], input: number[][][] = [];
+  const rejected: unknown[] = [], shapes: number[][] = [], input: number[][][] = [], kinds: string[][] = [];
   const model = { makeCache: () => [new KVCache()] } as unknown as RuntimeModel;
   const cohort = new MlxPrefillCohort({ model, chunkSize: 5, tailSplit: true,
     maintain: createKvMaintenance(options),
@@ -49,7 +49,7 @@ function fixture(options: KvSchemeOptions = {}, failId?: number) {
     } },
     async forward(ids, caches) {
       const [batch, count] = ids.shape as [number, number], tokens = [...ids.toIntTokens()];
-      shapes.push([...ids.shape]);
+      shapes.push([...ids.shape]); kinds.push(caches.map(cache => cache.constructor.name));
       input.push(Array.from({ length: batch }, (_, r) => tokens.slice(r * count, (r + 1) * count)));
       // A deterministic token-to-KV graph exposes omissions, repeats and row
       // mixing. Precision/positions use the actual native cache layouts.
@@ -67,7 +67,7 @@ function fixture(options: KvSchemeOptions = {}, failId?: number) {
     },
     reject(_row, error) { rejected.push(error); },
   });
-  return { cohort, completed, snapshots, rejected, shapes, input };
+  return { cohort, completed, snapshots, rejected, shapes, input, kinds };
 }
 async function drain(cohort: MlxPrefillCohort) {
   for (let step = 0; step < 100; step++) if (await cohort.advance()) return;
@@ -208,6 +208,44 @@ test("a restored late arrival releases its backing lease after admission and pre
     } finally { control.cohort.dispose(); }
     expect(releases).toBe(1);
   } finally { f.cohort.dispose(); }
+});
+
+test.each(schemes.filter(([name]) => name.endsWith("delayed")))(
+  "a restored prefix owing its last append's conversion converts before its suffix, alone or joining: %s", async (_name, scheme) => {
+  // A finished request stores its cache without maintaining its last append.
+  // The control stores the same prefix maintained, as mlx-lm leaves it.
+  const request = () => row(2, 13, 3), prefix = request().req.promptIds.slice(0, 6);
+  const run = async (maintained: boolean, joining: boolean) => {
+    const f = fixture(scheme), caches: Cache[] = [new KVCache()];
+    // The test owns the prefix until take() transfers it to the cohort.
+    let owned = true;
+    try {
+      { using ids = ops.fromInt32(prefix, [1, prefix.length]); (await f.cohort.host.forward(ids, caches)).dispose(); }
+      if (maintained) createKvMaintenance(scheme)(caches);
+      const stored = caches.map(cache => cache.constructor.name);
+      f.shapes.length = 0; f.kinds.length = 0;
+      f.cohort.host.promptCache!.take = tokens => {
+        if (tokens[0] !== 2000 || !owned) return null;
+        owned = false; return { tokens: prefix, caches };
+      };
+      if (joining) { f.cohort.admit(row(1, 18, 5)); expect(await f.cohort.advance()).toBe(false); }
+      f.cohort.admit(request()); await drain(f.cohort);
+      expect(f.rejected).toEqual([]);
+      return { stored, kinds: f.kinds, shapes: f.shapes, completed: f.completed };
+    } finally {
+      try { f.cohort.dispose(); }
+      finally { if (owned) dispose(caches); }
+    }
+  };
+  for (const joining of [false, true]) {
+    const control = await run(true, joining), owed = await run(false, joining);
+    expect(owed.stored).toEqual(["KVCache"]);
+    expect(control.stored).not.toEqual(["KVCache"]);
+    if (!joining) expect(owed.kinds[0]).toEqual(control.stored);
+    expect(owed.kinds).toEqual(control.kinds);
+    expect(owed.shapes).toEqual(control.shapes);
+    expect(owed.completed).toEqual(control.completed);
+  }
 });
 
 
