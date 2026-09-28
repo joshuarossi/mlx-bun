@@ -13,7 +13,7 @@ import { MlxStateRows } from "../state/rows";
 import type { P2RTracePhase, P2RTraceAttributes } from "../runtime/trace";
 import type { MlxForwardWork, MlxPreparationWork } from "../contracts/mlx/forward-work";
 import type { KvMaintenance } from "../state/kv-maintenance";
-import { PlainKvReadError, unreadableRows } from "../state/plain-kv-reads";
+import { DenseKvReadError, unreadableRows } from "../state/dense-kv-reads";
 
 // Shared work is recorded on every participating request. workId identifies
 // duplicates when constructing a process timeline; row spans are not additive.
@@ -62,7 +62,7 @@ export interface MlxPrefillRowsHost<State extends MlxPrefillState> {
   dispose?(): void;
   /** Layers the graph reads plain; a row whose next append is not certified
    * plain-readable there is rejected before the forward. */
-  plainKvReads?: readonly number[];
+  denseKvReads?: readonly number[];
 }
 
 /** One target preparation lifecycle at B1/B>1. Late joins retain each row's
@@ -154,14 +154,14 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     if (keep.length !== this.#states.length) this.#filter(keep);
     if (!this.#states.length) { this.dispose(); return true; }
     while (this.#states.length) {
-      if (this.operations.plainKvReads) {
+      if (this.operations.denseKvReads) {
         const unreadable = new Set(unreadableRows(this.#stateRows?.caches ?? this.#states[0]!.solo,
-          this.operations.plainKvReads, this.#states.length));
+          this.operations.denseKvReads, this.#states.length));
         if (unreadable.size) {
           const keep: number[] = [];
           for (const [index, state] of this.#states.entries()) {
             if (!unreadable.has(index)) { keep.push(index); continue; }
-            this.#release(state); this.operations.reject(state.row, new PlainKvReadError());
+            this.#release(state); this.operations.reject(state.row, new DenseKvReadError());
           }
           this.#filter(keep);
           if (!this.#states.length) { this.dispose(); return true; }

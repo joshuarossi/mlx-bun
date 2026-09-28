@@ -5,6 +5,7 @@ import { disposeResources } from "../runtime/resources";
 import { TurboQuantKVCache } from "./turboquant-kv";
 import { type BatchableCache, type Cache, type Mask, type RotatedValueAttentionState, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { TurboQuantCodec, turboQuantFusedDecode, disposeTurboQuant, type TurboQuantTensor } from "./turboquant-codec";
+import { decodedKvStorage } from "./dense-kv-reads";
 
 const fields = ["kIdx", "kScales", "kZeros", "vPacked", "vScales"] as const;
 function encoded(planes: readonly MlxArray[]): TurboQuantTensor {
@@ -14,6 +15,7 @@ function encoded(planes: readonly MlxArray[]): TurboQuantTensor {
 /** The existing TurboQuant codec over shared tensor-row storage. Row changes
  * copy encoded bytes without decoding, rotating or requantizing their values. */
 export class BatchedTurboQuantKVCache implements BatchableCache, PaddedPrefillCache {
+  readonly denseKvReads = decodedKvStorage;
   readonly #storage = new KvTensorRows();
   readonly #codec: TurboQuantCodec;
   #reuseOffsets: number[] = [];

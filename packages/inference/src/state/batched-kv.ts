@@ -6,14 +6,14 @@ import { KVCache } from "./kv";
 import { isPlainKvCache } from "./capabilities";
 import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { FullPrefillPadding } from "./full-prefill-padding";
-import { plainKvStorage } from "./plain-kv-reads";
+import { plainKvStorage } from "./dense-kv-reads";
 
 /** Full-attention storage with independently advancing row positions.
  * Speculative rollback changes coverage, without moving the retained KV.
  * Subsequent appends overwrite each row's rejected suffix in place when MLX
  * can donate the buffer. Queue membership is outside this layout. */
 export class BatchedKVCache implements BatchableCache, PaddedPrefillCache {
-  readonly plainKvReads = plainKvStorage;
+  readonly denseKvReads = plainKvStorage;
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
   rowOffsets: number[] = [];

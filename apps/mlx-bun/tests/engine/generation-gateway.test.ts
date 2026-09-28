@@ -248,12 +248,12 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
   try {
     expect(gateway.place(shape())).toMatchObject({ mechanism: "continuous",
       execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false } });
-    // Affine KV batches while the storage certifies plain reads; TurboQuant does not.
-    for (const [scheme, batchable] of [[resolveKvScheme({ override: 4, quantizedKvStart: 0 }), true],
-      [resolveKvScheme({ override: 8, quantizedKvStart: 64 }), true],
-      [resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] }), true],
-      [resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }), false]] as const)
-      expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(batchable);
+    // Affine and TurboQuant KV batch through the scheme's dense-read certification.
+    for (const scheme of [resolveKvScheme({ override: 4, quantizedKvStart: 0 }), resolveKvScheme({ override: 8, quantizedKvStart: 64 }),
+      resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] }),
+      resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }),
+      resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 64 }), resolveKvScheme({ override: "off" })])
+      expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(true);
     for (const request of [{ hasGrammar: true }, { hasAdapters: true }, { hasGrammar: true, hasAdapters: true }])
       expect(gateway.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous",
         execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false, grammarJump: false } });
@@ -292,12 +292,14 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
       expect(speculating.place({ ...shape(), hasDraft: true }, fill)).toMatchObject({ mechanism: "continuous",
         execution: { method: "speculative", fill: false } });
     } finally { await speculating.close(); }
-    // Affine KV is placed ordinarily through certified plain reads; even a caller
-    // advertising generic encoded support cannot qualify TurboQuant on this graph.
-    expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
-      { continuous: true, quantizedBatch: true, checkpoints: true })).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
-    expect(binding.plan({ ...shape(), turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } },
-      { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("unsupported");
+    // Once the gateway certifies the scheme, affine and TurboQuant KV place
+    // ordinarily; a scheme it did not certify stays refused.
+    for (const [request, options] of [[{ kvQuant: true }, { kvBits: 4 }], [{ turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }]] as const) {
+      expect(binding.plan({ ...shape(), ...request }, options, { continuous: true, quantizedBatch: true, checkpoints: true }))
+        .toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+      expect(binding.plan({ ...shape(), ...request }, options, { continuous: true, quantizedBatch: false, checkpoints: true }).mechanism)
+        .toBe("unsupported");
+    }
     expect(created).toBe(false);
   } finally { await gateway.close(); }
 });

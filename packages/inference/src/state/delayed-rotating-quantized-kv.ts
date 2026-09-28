@@ -1,7 +1,7 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding, type PlainKvReads, type KvMaintenance } from "../contracts/mlx/cache";
+import { type Cache, type KvAttentionState, type KvAttentionView, type PaddedPrefillCache, type PrefillPadding, type DenseKvReads, type KvMaintenance } from "../contracts/mlx/cache";
 import { SpeculativeTransitioningKvRows } from "./transitioning-kv-rows";
 import { AlignedRotatingCache, alignRotatingRows, RotatingAffineLayout, SpeculativeRotatingAffineLayout, RotatingKvPositions } from "./rotating-kv-layout";
 import { BatchedRotatingQuantCache } from "./batched-rotating-quant";
@@ -11,7 +11,7 @@ import { captureKvAttention, combineKvDonorAttention } from "./kv-attention-view
  * queries and scale; the shared lifecycle owns membership and conversion. */
 export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvRows<RotatingAffineLayout> implements KvAttentionState, PaddedPrefillCache {
   /** Plain reads per row, answered by this cache's own maintenance. */
-  readonly plainKvReads: PlainKvReads | undefined;
+  readonly denseKvReads: DenseKvReads | undefined;
   constructor(readonly maxSize: number, readonly groupSize: number, readonly bits: number, readonly start: number,
     readonly maintain: KvMaintenance, row?: Cache, readonly speculative = false) {
     super({ signature: `kv:delayed-rotating-quant:${maxSize}:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
@@ -20,7 +20,7 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
       packRows: (layout, rows) => layout.adoptAlignedRows(rows as readonly AlignedRotatingCache[]),
       extractRow: row => (row as AlignedRotatingCache).extract(speculative ? maxSize : undefined),
       rollbackRow: (row, before, keep, preserve) => (row as AlignedRotatingCache).rollback(before, keep, preserve) }, row, new RotatingKvPositions(maxSize));
-    this.plainKvReads = this.plainKvReadsOf(maintain);
+    this.denseKvReads = this.denseKvReadsOf(maintain);
   }
   get attentionState(): KvAttentionState { return this; }
   captureDonorAttention(): import("../contracts/mlx/cache").KvDonorAttention {

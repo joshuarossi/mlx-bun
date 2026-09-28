@@ -10,7 +10,7 @@ export * from "./capabilities";
 export * from "./views";
 export * from "./checkpoint";
 export * from "./kv-maintenance";
-export * from "./plain-kv-reads";
+export * from "./dense-kv-reads";
 export * from "./kv-scheme";
 export * from "./persistence";
 export * from "./batched-kv";

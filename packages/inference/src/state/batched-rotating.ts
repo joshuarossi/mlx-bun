@@ -25,7 +25,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
 import { type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
-import { plainKvStorage } from "./plain-kv-reads";
+import { plainKvStorage } from "./dense-kv-reads";
 import {
   appendRotatingStorage,
   mergeStorageRows,
@@ -85,7 +85,7 @@ export function buildBatchedRotatingMask(
 /** Port of mlx-lm BatchRotatingKVCache; padded singleton chunks use its
  * concat operation with the matching block mask until finalization. */
 export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
-  readonly plainKvReads = plainKvStorage;
+  readonly denseKvReads = plainKvStorage;
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
   readonly #rows: BatchedRotatingState;

@@ -9,6 +9,7 @@ import { decodedKvDonorAttention } from "./decoded-kv-donor";
 import { KVCache } from "./kv";
 import { RotatingKVCache } from "./rotating-kv";
 import { TurboQuantCodec,disposeTurboQuant,turboQuantFusedDecode,type TurboQuantTensor } from "./turboquant-codec";
+import { decodedKvStorage } from "./dense-kv-reads";
 
 
 /** TurboQuant KV cache — v1 (`02d723a:docs/design/turboquant.md`): dequantize-
@@ -30,6 +31,7 @@ import { TurboQuantCodec,disposeTurboQuant,turboQuantFusedDecode,type TurboQuant
  *  a full-window dequant every step; the deferred-InvFWHT trick is a
  *  documented non-goal until the quality gate passes. */
 export class TurboQuantKVCache implements Cache {
+  readonly denseKvReads = decodedKvStorage;
   minimumReusableOffset = 0;
   readonly stateNeedsDispose = true;
   static readonly STEP = 256;

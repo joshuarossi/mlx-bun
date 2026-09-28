@@ -17,8 +17,8 @@ import { DelayedTurboQuantKVCache } from "./delayed-turboquant-kv";
 
 export type { KvMaintenance };
 
-/** Maintenance that never converts: plain storage stays plain. */
-export const unchangedKv: KvMaintenance = Object.assign((_cache: Cache[]): void => {}, { converts: () => false });
+/** Maintenance that never converts: every entry keeps the reads it has. */
+export const unchangedKv: KvMaintenance = Object.assign((_cache: Cache[]): void => {}, { keepsDenseReads: () => true });
 let warnedTurboRotating = false;
 
 /** Port of mlx-lm maybe_quantize_kv_cache + BOTH halves of optiq serve's
@@ -55,6 +55,9 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
     const runtime = runtimeConfig();
     const fusedDecode = turboQuantFusedDecode(runtime);
     const maintain: KvMaintenance = (cache) => withRuntimeConfig(runtime, () => maybeTurboQuantizeKv(cache, scheme, start));
+    // Its only conversion replaces a plain full-attention entry with a
+    // TurboQuantKVCache, which decodes on read; every other entry is left as it is.
+    maintain.keepsDenseReads = () => true;
     if (start > 0) maintain.maxAppendTokens = (cache) => {
       let remaining = Number.POSITIVE_INFINITY;
       for (const c of cache) {
@@ -105,7 +108,8 @@ export function createKvMaintenance(options: Readonly<Omit<KvSchemeOptions, "kvC
       clearCache();
     }
   };
-  maintain.converts = converts;
+  // Affine conversion leaves quantized storage, which does not read dense.
+  maintain.keepsDenseReads = (c, i) => !converts(c, i);
   if (start > 0) maintain.maxAppendTokens = (cache) => {
     let remaining = Number.POSITIVE_INFINITY;
     for (let layer = 0; layer < cache.length; layer++) {

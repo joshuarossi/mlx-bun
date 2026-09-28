@@ -1403,12 +1403,14 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   // quantization needs a head dimension divisible by its group size (64).
   const HEAD_DIM = 64;
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
-  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean } = {}) => {
+  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean } = {}) => {
     const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     const f = mixedFixture(types, true, HEAD_DIM), model = f.make();
     const binding = bindMlxGateway(model);
-    const kvScheme = start === null ? undefined : resolveKvScheme({ override: 4, quantizedKvStart: start });
+    const kvScheme = start === null ? undefined : options.turbo
+      ? resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start })
+      : resolveKvScheme({ override: 4, quantizedKvStart: start });
     let held = false;
     const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
       // Compiled decode stays at its default: these graphs bind none (below).
@@ -1460,7 +1462,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: true,
     turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
 
-  test("admission: affine KV binds as ordinary continuous decoding; the graph binds no compiled replay; TurboQuant does not bind", async () => {
+  test("admission: affine KV binds as ordinary continuous decoding; the graph binds no compiled replay; TurboQuant binds through dense reads", async () => {
     const { legacyCompiledDecodeAvailable } = await import("../../../src/generation/bindings/autoregressive");
     const env = await setup(64);
     try {
@@ -1469,7 +1471,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       // builds its replay from the same predicate, so no plain-read step replays.
       expect(legacyCompiledDecodeAvailable(env.model)).toBe(false);
       expect(env.binding.kvBatchable(env.kvScheme!)).toBe(true);
-      expect(env.binding.kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))).toBe(false);
+      expect(env.binding.kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))).toBe(true);
       const plan = env.binding.plan(shape, { maxTokens: 4, ...env.kvScheme!.generationOptions },
         { continuous: true, quantizedBatch: env.binding.kvBatchable(env.kvScheme!), checkpoints: false });
       expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, compiledDecode: false });
@@ -1500,7 +1502,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const [left, peer] = await control.together([A, 3], [B, 5]);
       expect(left).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "length" });
       const [a, b] = await delayed.together([A, 8], [B, 5]);
-      expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
+      expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
       expect(b).toEqual(peer);
       expect(dl).toEqual(pl);   // every projection of both rows, before and after A leaves
       // The same group drains and serves again.
@@ -1530,7 +1532,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         expect(b).toEqual(peer);
         expect(dl).toEqual(pl);
         // Without the EOS the same row reads past it and is rejected there.
-        expect(await delayed.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, at + 1), outcome: "PlainKvReadError" });
+        expect(await delayed.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, at + 1), outcome: "DenseKvReadError" });
       } finally { await control.close(); await delayed.close(); }
     } finally { await plain.close(); }
   });
@@ -1573,7 +1575,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     try {
       const soloShort = await plain.submit(short, 3);
       const [l, s] = await delayed.together([long, 4], [short, 3]);
-      expect(l).toEqual({ tokens: [], outcome: "PlainKvReadError" });
+      expect(l).toEqual({ tokens: [], outcome: "DenseKvReadError" });
       expect(s).toEqual(soloShort);
     } finally { await plain.close(); await delayed.close(); }
   });
@@ -1643,7 +1645,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     try {
       const control = await run("control", scheme);
       expect({ tokens: control.tokens, outcome: control.outcome, scanned: control.scanned, restored: control.restored })
-        .toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "PlainKvReadError", scanned: 0, restored: [] });
+        .toEqual({ tokens: soloA.tokens.slice(0, 5), outcome: "DenseKvReadError", scanned: 0, restored: [] });
       expect([...control.captured.keys()]).toEqual([2, 4]);
       const interrupted = await run("restart", scheme, 3);
       expect({ outcome: interrupted.outcome, scanned: interrupted.scanned, restored: interrupted.restored })
@@ -1654,7 +1656,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const resumed = await run("restart", scheme);
       expect(resumed.scanned).toBe(1);   // the interrupted row's record at 2, and only it
       expect(resumed.restored).toEqual([A.length + 2]);
-      expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
+      expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "DenseKvReadError" });
       expect(resumed.captured.get(4)).toBe(control.captured.get(4)!);
       // Beside a sibling the resumed row decodes at B2, where one layer-3 value
       // element rounds differently from B1 (a valid-state difference plain KV shares),
@@ -1664,7 +1666,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const plainResumed = await run("plain-restart", null, undefined, true);
       const beside = await run("restart-sibling", scheme, undefined, true);
       expect([beside.scanned, beside.restored, plainResumed.scanned, plainResumed.restored]).toEqual([1, [A.length + 2], 1, [A.length + 2]]);
-      expect({ tokens: beside.tokens, outcome: beside.outcome }).toEqual({ tokens: control.tokens, outcome: "PlainKvReadError" });
+      expect({ tokens: beside.tokens, outcome: beside.outcome }).toEqual({ tokens: control.tokens, outcome: "DenseKvReadError" });
       expect(beside.captured.get(4)).toBe(plainResumed.captured.get(4)!);
       expect(beside.sibling).toEqual(plainResumed.sibling);
     } finally { await rm(directory, { recursive: true, force: true }); }
@@ -1680,7 +1682,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       const grammar = { accept(token: number) { accepted.push(token); }, get isTerminated() { return false; },
         ready: () => Promise.resolve() } as unknown as import("../../../src/sampling").GrammarController;
       const result = await delayed.submit(A, 8, {}, grammar);
-      expect(result).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "PlainKvReadError" });
+      expect(result).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
       expect(accepted).toEqual(result.tokens);
     } finally { await plain.close(); await delayed.close(); }
   });
@@ -1690,12 +1692,134 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     const prompt = [2, 4, 7, 9, 3, 11, 13, 17];
     try {
       // Tail split: the drain chunk converts the row; its tail forward is refused.
-      expect(await split.submit(prompt, 4)).toEqual({ tokens: [], outcome: "PlainKvReadError" });
+      expect(await split.submit(prompt, 4)).toEqual({ tokens: [], outcome: "DenseKvReadError" });
       // One final chunk from offset 0 reads plain; a one-token budget ends before any later append.
       const first = await plain.submit(prompt, 1);
       expect(await single.submit(prompt, 1)).toEqual(first);
       expect(first.outcome).toBe("length");
     } finally { await plain.close(); await split.close(); await single.close(); }
+  });
+
+  // TurboQuant storage decodes on read, so its rows stay dense-readable: no
+  // transition rejects them. B1 is compared with main's serial order (the
+  // drain chunk, maintenance, the final token at L=1, then maintenance before
+  // every decode build: generate.ts and prefill.ts at 02d723a). Main served
+  // no B>1 here, so B2 is checked for its own behavior only.
+  describe("TurboQuant rows", () => {
+    const serial = async (prompt: number[], maxTokens: number, start: number) => {
+      const { createKvMaintenance } = await import("../../../src/state/kv-maintenance");
+      const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), caches = model.makeCache();
+      const maintain = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start });
+      const seen: { shape: number[]; dtype: string; sha256: string }[] = [], tokens: number[] = [];
+      try {
+        maintain(caches);
+        { using head = model.forward(prompt.slice(0, -1), caches); head.eval(); }
+        maintain(caches);
+        let next = prompt.at(-1)!;
+        for (let step = 0; step < maxTokens; step++) {
+          if (step) maintain(caches);
+          using logits = model.forward([next], caches);
+          seen.push({ shape: [...logits.shape], dtype: logits.dtypeName,
+            sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
+          // Main samples normalized scores in the logits dtype. BF16 rounding
+          // can create ties that a raw-logit host argmax would not preserve.
+          using lse = ops.logsumexpAxis(logits, -1, true);
+          using scores = ops.sub(logits, lse);
+          using token = ops.argmaxAxis(scores, -1);
+          next = token.toIntTokens()[0]!; tokens.push(next);
+        }
+        return { seen, tokens, kinds: caches.map(cache => cache.constructor.name) };
+      } finally { dispose(caches); f.dispose(); }
+    };
+
+    for (const start of [0, A.length + 2]) test(`B1 from start ${start} equals main's serial order in every projection`, async () => {
+      const reference = await serial(A, 6, start);
+      // Full layers converted, sliding layers plain, as main's maintenance leaves them.
+      expect(reference.kinds).toEqual(types.map(type => type === F ? "TurboQuantKVCache" : "RotatingKVCache"));
+      const env = await setup(start, { turbo: true });
+      try {
+        const seen = projections(env);
+        expect(await env.submit(A, 6)).toEqual({ tokens: reference.tokens, outcome: "length" });
+        expect(seen).toEqual(reference.seen);
+      } finally { await env.close(); }
+    });
+
+    test("B2 rows with a join finish by their own budgets, never rejected, and the group serves again", async () => {
+      const env = await setup(0, { turbo: true });
+      try {
+        const seen = projections(env);
+        const [a, b] = await env.together([A, 6], [B, 5]);
+        expect([a!.outcome, a!.tokens.length, b!.outcome, b!.tokens.length]).toEqual(["length", 6, "length", 5]);
+        expect(seen.some(projection => projection.shape[0] === 2)).toBe(true);
+        expect(seen.every(projection => projection.dtype === seen[0]!.dtype)).toBe(true);
+        // A lone row afterwards runs the B1 path and equals main's serial order again.
+        const again = await env.submit(A, 6), reference = await serial(A, 6, 0);
+        expect(again).toEqual({ tokens: reference.tokens, outcome: "length" });
+      } finally { await env.close(); }
+    });
+
+    test("a TurboQuant checkpoint restores exactly in a fresh group and repeats the control", async () => {
+      const { bindMlxGateway, createRuntimeConfig, createOrdinaryContinuationRequest, ContinuationPersistence } =
+        await import("../../../src/execution");
+      const { SsdCacheStore, PromptCache, cloneKvCaches, leaseCacheState } = await import("../../../src/state");
+      const directory = await mkdtemp(join(tmpdir(), "turbo-continuation-"));
+      const scheme = resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 });
+      const run = async (name: string, interruptAt?: number) => {
+        const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), binding = bindMlxGateway(model);
+        const store = new SsdCacheStore({ dir: join(directory, name), maxBytes: 1 << 30, modelId: "synthetic-gemma2",
+          configFingerprint: `turbo-continuation:${scheme.cacheKey}`, tokenizerHash: "fixture", verify: true });
+        const scanned = store.scan();
+        const persistence = new ContinuationPersistence(store, { maxBytes: 1 << 30 });
+        const prefix = new PromptCache(1 << 20, null, null, cloneKvCaches);
+        binding.configureContinuation!({ promptCache: prefix, checkpoints: store, checkpointEveryTokens: 2,
+          checkpointPersistence: persistence, identity: "turbo", cloneState: cloneKvCaches, adapterNamespace: () => "" });
+        let held = true;
+        const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64, kvScheme: scheme, admissionHeld: () => held,
+          runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }) });
+        const options = { ...scheme.generationOptions, maxTokens: 8, temperature: 0 };
+        const execution = binding.plan({ ...shape, kvQuant: false, turboQuant: true }, options,
+          { continuous: true, quantizedBatch: binding.kvBatchable(scheme), checkpoints: true });
+        expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+        const tokens: number[] = [], restored: number[] = [], captured = new Map<number, string>(), abort = new AbortController();
+        const request = createOrdinaryContinuationRequest({ store, persistence, interval: 2, prompt: A, options, execution, identity: "turbo",
+          restore: entry => { const loaded = store.restore(entry, model); if (loaded) restored.push(loaded.tokens.length); return loaded; },
+          onToken(token) { tokens.push(token); if (tokens.length === interruptAt) abort.abort(new DOMException("interrupted", "AbortError")); } });
+        const enqueue = request.continuation.captureOwned;
+        request.continuation.captureOwned = state => {
+          const digest = new Bun.CryptoHasher("sha256");
+          digest.update(JSON.stringify([state.pendingToken, state.cacheTokens, state.caches.map(cache => cache.constructor.name)]));
+          for (const cache of state.caches) {
+            const lease = leaseCacheState(cache);
+            try { for (const plane of lease.borrow()) { using exact = ops.contiguous(plane); digest.update(exact.rawBytes()); } } finally { lease.close(); }
+          }
+          captured.set(state.generatedTokens, digest.digest("hex"));
+          enqueue(state);
+        };
+        try {
+          const outcome = group.submit({ ...request, promptIds: A, cacheNamespace: "a", signal: abort.signal, maxTokens: 8, eosTokenIds: [] })
+            .then(stats => stats.finishReason as string, (error: Error) => error.name);
+          held = false; group.kick();
+          return { tokens, outcome: await outcome, scanned, restored, captured };
+        } finally {
+          try { await group.close(); } finally {
+            try { await persistence.flush(); } finally { request.dispose(); prefix.clear(); f.dispose(); }
+          }
+        }
+      };
+      try {
+        const control = await run("control");
+        expect({ outcome: control.outcome, scanned: control.scanned, restored: control.restored, keys: [...control.captured.keys()] })
+          .toEqual({ outcome: "length", scanned: 0, restored: [], keys: [2, 4, 6] });
+        expect(control.tokens).toEqual((await serial(A, 8, 0)).tokens);
+        const interrupted = await run("restart", 3);
+        expect({ outcome: interrupted.outcome, scanned: interrupted.scanned }).toEqual({ outcome: "AbortError", scanned: 0 });
+        expect(interrupted.captured.get(2)).toBe(control.captured.get(2)!);
+        const resumed = await run("restart");
+        expect([resumed.scanned, resumed.restored]).toEqual([1, [A.length + 2]]);
+        expect({ tokens: resumed.tokens, outcome: resumed.outcome }).toEqual({ tokens: control.tokens, outcome: "length" });
+        expect([resumed.captured.get(4), resumed.captured.get(6)]).toEqual([control.captured.get(4), control.captured.get(6)]);
+      } finally { await rm(directory, { recursive: true, force: true }); }
+    });
   });
 });
 }
