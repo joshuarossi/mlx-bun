@@ -979,10 +979,53 @@ run in-process and call the normal HTTP inference surface, so each inference
 request uses continuous batching without an exclusive GPU lease. Shutdown
 cancels requests and retry waits and joins tasks before closing job storage.
 
-Twelve templates are enabled. `verified_code` remains visible with an unavailable
-explanation and returns 501 until generated-code execution has a migrated owner.
-[Dataset tests](tests/dataset/lifecycle.test.ts)
-use temporary storage and synthetic HTTP responses, without a model or download.
+All thirteen templates are enabled. `verified_code` keeps main's prompt, code
+extraction and rows: every extracted program is kept with `metadata.verified`,
+`language`, and `verify_error` (a failure's first 400 characters of stderr, else
+stdout, or `unverified (<reason>): <diagnostic>`); other languages are not run.
+Main ran the code with the host's `python3`. Here `dataset/python-verifier.ts`
+owns the only execution path, `verifyPython(source, signal)`, used by the dataset
+job and by `scripts/verify-python.ts`; there is no host-Python fallback, and
+verification takes no inference lease.
+
+Each program runs in a new container created with `--pull=never` for linux/arm64
+from the digest-pinned image: no network, shared memory, mounts, environment
+or log driver; a read-only root; user 65534 with every capability dropped and
+`no-new-privileges`; Docker's default seccomp profile; 256 MiB of memory without
+swap, 64 processes and one CPU. The program arrives on stdin. The docker CLI
+receives only `PATH` and, when set, `DOCKER_HOST`. Fixed limits: 15 s per run,
+64 KiB of combined output, 20 s for each create, inspect and remove. The
+verifier owns every docker CLI process group and the container: a timeout,
+cancellation (job shutdown) or output overflow kills and joins the CLI, then
+`docker rm --force` removes the container, since killing the CLI does not stop
+it; exit status and OOM come from `docker inspect`. Only a zero exit within every
+limit, with removal confirmed, counts as verified. A missing docker CLI, an
+unreachable daemon, a missing or unpinned image, a timeout, cancellation, output
+overflow, an OOM kill or an unconfirmed removal leaves `verified: false` with
+that reason.
+
+`PYTHON_VERIFIER_IMAGE` is empty until the owner pins it; meanwhile every row is
+unverified (`image-unpinned`). To provision, read the linux/arm64 manifest digest
+of the official image, pull exactly that, and set the constant to
+`python@sha256:<digest>`:
+
+```sh
+docker buildx imagetools inspect python:3.14-slim
+docker pull --platform linux/arm64 python:3.14-slim@sha256:<digest>
+```
+
+Without Docker Desktop's default socket, set
+`DOCKER_HOST=unix://$HOME/.docker/run/docker.sock`. `bun apps/mlx-bun/scripts/verify-python.ts
+[--image <ref>] [file]` verifies one program by hand (`--help`).
+
+[Dataset tests](tests/dataset/lifecycle.test.ts) use temporary storage and synthetic
+HTTP responses, without a model or download. [Verifier tests](tests/dataset/python-verifier.test.ts)
+drive the container lifecycle against a scripted docker CLI. The opt-in
+[Docker acceptance](tests/dataset/python-verifier-docker.test.ts)
+(`MLX_BUN_TEST_DOCKER_VERIFIER=1 MLX_BUN_TEST_DOCKER_IMAGE=python@sha256:<digest>`)
+runs real containers for pass, fail, a missing image, file, host, environment,
+privilege and network isolation, flooding, timeout, cancellation, OOM and the
+runner's SIGTERM, and checks that each container is removed.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;

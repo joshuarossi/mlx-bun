@@ -1,6 +1,7 @@
 // Unit tests for the dataset-building engine (fast tier — no model needed).
 // Covers the non-LLM generators, the 90/10 split + JSONL writing, the template
-// registry, and the LLM-driven generators' "requires a client" guard.
+// registry, the LLM-driven generators' "requires a client" guard, and
+// verified_code's extraction and row policy with an injected verifier.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -24,6 +25,8 @@ import {
   genRagQa,
   genCotSynthesis,
   genHfDatasetImport,
+  genVerifiedCode,
+  extractPythonBlock,
   parseCsv,
   parseInstructionList,
 } from "../../src/dataset/generators";
@@ -165,6 +168,46 @@ describe("parseInstructionList", () => {
   });
 });
 
+describe("extractPythonBlock", () => {
+  test("pulls fenced python", () => {
+    expect(extractPythonBlock("blah\n```python\nx = 1\n```\nmore")).toBe("x = 1");
+  });
+  test("returns whole text when no fence", () => {
+    expect(extractPythonBlock("just code")).toBe("just code");
+  });
+});
+
+describe("genVerifiedCode", () => {
+  const llm = (content: string) => ({ chat: async () => content, chatRaw: async () => ({ choices: [{ message: { content } }] }) });
+  const code = "def f():\n    return 1\n\nassert f() == 1";
+
+  test("keeps other languages unrun and unverified, and drops replies without code", async () => {
+    let calls = 0;
+    const verify = async () => { calls++; return { status: "verified" as const }; };
+    const rows = await genVerifiedCode({ specs: "one\ntwo", language: "JavaScript" }, noopEmit, llm("```python\n" + code + "\n```"), {}, verify);
+    expect(rows.map((row) => row.metadata)).toEqual([
+      { verified: false, language: "javascript", verify_error: null },
+      { verified: false, language: "javascript", verify_error: null },
+    ]);
+    expect(calls).toBe(0);
+    expect(await genVerifiedCode({ specs: "one" }, noopEmit, llm("short"), {}, verify)).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  test("a cancelled verification stops the generator with the job's reason", async () => {
+    const abort = new AbortController();
+    const reason = new Error("shutting down");
+    const signals: Array<AbortSignal | undefined> = [];
+    const verify = async (_source: string, signal?: AbortSignal) => {
+      signals.push(signal);
+      abort.abort(reason);
+      return { status: "unverified" as const, reason: "cancelled" as const, error: "cancelled while the program ran" };
+    };
+    await expect(genVerifiedCode({ specs: "one\ntwo" }, noopEmit, llm("```python\n" + code + "\n```"), { signal: abort.signal }, verify)).rejects.toBe(reason);
+    expect(signals).toEqual([abort.signal]);
+  });
+});
+
 describe("generate() 90/10 split + JSONL writing", () => {
   let dir: string;
   beforeAll(() => {
@@ -303,6 +346,7 @@ describe("LLM-driven generators require a client", () => {
     ["tool_use_traces", genToolUseTraces, { tools_json: "[{}]", scenarios: "s", mock_results: "m" }],
     ["rag_qa", genRagQa, { documents: "doc" }],
     ["cot_synthesis", genCotSynthesis, { questions: "why?" }],
+    ["verified_code", genVerifiedCode, { specs: "fib" }],
   ];
 
   for (const [name, fn, inputs] of cases) {

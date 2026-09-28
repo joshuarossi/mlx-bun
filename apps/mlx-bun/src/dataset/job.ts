@@ -5,12 +5,14 @@
 
 import type { JobRunner } from "../jobs/protocol";
 import { makeLlmClient, type DatasetHttp } from "./llm";
+import type { VerifyPython } from "./python-verifier";
 import { generate } from "./registry";
 
 /** `fetch` serves every request (Hugging Face imports included); `loopback`,
- * when supplied, replaces it for the chat client's calls to the serving host. */
-export function createDatasetRunner(http: Pick<DatasetHttp, "fetch"> & { loopback?: typeof fetch } = {}): JobRunner {
-  const { loopback, ...shared } = http;
+ * when supplied, replaces it for the chat client's calls to the serving host.
+ * `verifyPython` replaces the Docker verifier for verified_code. */
+export function createDatasetRunner(http: Pick<DatasetHttp, "fetch"> & { loopback?: typeof fetch; verifyPython?: VerifyPython } = {}): JobRunner {
+  const { loopback, verifyPython, ...shared } = http;
   return async (emit, config, signal) => {
     const template_id = String(config.template_id ?? "");
     const inputs = (config.inputs as Record<string, unknown>) ?? {};
@@ -29,7 +31,7 @@ export function createDatasetRunner(http: Pick<DatasetHttp, "fetch"> & { loopbac
     });
 
     const llm = api_url ? makeLlmClient(api_url, model_name, { ...shared, ...(loopback ? { fetch: loopback } : {}), signal }) : undefined;
-    const r = await generate(template_id, inputs, output_dir, emit, llm, { ...shared, signal });
+    const r = await generate(template_id, inputs, output_dir, emit, llm, { ...shared, signal }, verifyPython);
     return { outputPath: r.output_dir };
   };
 
