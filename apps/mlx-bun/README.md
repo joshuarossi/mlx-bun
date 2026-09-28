@@ -970,6 +970,24 @@ boundary, and, with a cached bf16 snapshot named by
 reaches the Probing/Sensitivity stage and a complete uniform conversion whose
 output reloads and generates. It downloads nothing.
 
+A further case in the same file consumes finished fine-tune outputs as
+artifacts, with the RAM prompt cache off so every compared request prefills
+cold. Two SFT jobs train on sentences written at run time. Each finished
+adapter (not a checkpoint), and their merge through `POST /api/finetune/merge`,
+is mounted with `POST /v1/adapters` and selected per request. A selected
+adapter changes the greedy `/v1/completions` text; requests without one, and
+requests after `DELETE /v1/adapters/<id>`, return the base choice exactly, text
+and per-token logprobs, and an unmounted id is refused. A fresh process mounting
+the same two directories reproduces both adapters' choices exactly.
+`mlx-bun fuse` then folds one adapter into the base. The output keeps
+`config.json`, the tokenizer files, the tensor inventory (names, dtypes, shapes)
+and every tensor outside the folded modules byte-identical, changes only folded
+modules, and loads with `serve` and generates. Its output is not compared with
+the mounted adapter: `fuse` re-quantizes folded modules with their source spec,
+so the fused model and the adapter are not bit-exact by contract. Run with
+`cd apps/mlx-bun && MLX_BUN_APP_TEST_MODEL=<cached snapshot directory> bun test tests/engine/managed-jobs.test.ts -t "finished fine-tune outputs"`;
+this case has not been run.
+
 ## Dataset jobs
 
 `dataset/` owns the existing template inputs, generation, Hugging Face import,
