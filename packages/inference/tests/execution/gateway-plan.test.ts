@@ -632,6 +632,39 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
   }
 });
 
+test("an adapter request its draft cannot serve decodes ordinarily with ordinary checkpoints on every graph", () => {
+  // Main served sliding and explicit-mask universal graphs serially, where such
+  // a request ignored its draft and checkpointed; the shared lane keeps both.
+  const graphs: [string, () => RuntimeModel][] = [...families,
+    ["sliding universal", () => universal({ modelType: "llama", layerTypes: SLIDING, slidingWindow: 16 })],
+    ["explicit-mask sliding universal", () => universal({ modelType: "llama", maskArray: true, layerTypes: SLIDING, slidingWindow: 16 })]];
+  const services = { checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as never;
+  const request = { ...shape, hasDraft: true, hasAdapters: true };
+  const options: GenerateOptions = { adapters: ["upper"] };
+  for (const [name, model] of graphs) {
+    const binding = bindMlxGateway(model(), { provider: twoModelDraft(), numDraftTokens: 3 });
+    binding.configureContinuation!(services);
+    const scheduling = { ...schedule, continuous: binding.cachesBatchable(), checkpoints: true };
+    const plan = binding.plan(request, options, scheduling);
+    expect({ name, plan }).toMatchObject({ name, plan: { method: "autoregressive", mechanism: "continuous", checkpoint: true } });
+    expect(plan.reasons).toContain("draft-incompatible-with-request");
+    expect(binding.methodRequest!(plan, options)).toBeUndefined();
+    for (const extra of [{ hasGrammar: true }, { wantsLogprobs: true }])
+      expect({ name, extra, checkpoint: binding.plan({ ...request, ...extra }, options, scheduling).checkpoint })
+        .toEqual({ name, extra, checkpoint: false });
+    // The same draft still serves the request without adapters, uncheckpointed.
+    expect({ name, plan: binding.plan({ ...shape, hasDraft: true }, {}, scheduling) })
+      .toMatchObject({ name, plan: { method: "speculative", mechanism: "continuous", checkpoint: false } });
+    // A provider that serves target adapters speculates with them, except on the
+    // softcap graph, where main served adapters ordinarily.
+    const aware = bindMlxGateway(model(), { provider: new NgramProvider(), numDraftTokens: 3 });
+    aware.configureContinuation!(services);
+    const softcap = name === "gemma2 softcap";
+    expect({ name, plan: aware.plan(request, options, scheduling) }).toMatchObject({ name,
+      plan: { method: softcap ? "autoregressive" : "speculative", mechanism: "continuous", checkpoint: softcap } });
+  }
+});
+
 test.each(families)("%s places a delegating provider exactly like the provider it delegates to", (_, model) => {
   const direct = bindMlxGateway(model(), { provider: new NgramProvider(), numDraftTokens: 3 });
   const delegate = bindMlxGateway(model(), { provider: delegatingNgram(), numDraftTokens: 3 });

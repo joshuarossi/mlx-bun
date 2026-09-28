@@ -210,15 +210,19 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       // TurboQuant on a graph reading dense KV: main served these serially,
       // with speculation off (a configured draft is ignored).
       const decodedDense = plainSoftcap && !!options.turboQuant;
-      // Main placed this request ordinarily: no draft provider is opened, so
-      // the fallback and its ordinary checkpoints do not depend on provider kind.
-      // Softcap adapter requests never speculate (below), whatever their KV.
-      // Main bound no grouped speculation on a softcap graph, so a drafted
-      // request over encoded KV there, affine or TurboQuant, decoded ordinarily.
-      const ignoredDraft = request.hasDraft &&
-        (((ordinaryOnly || plainSoftcap) && request.hasAdapters) || decodedDense || (plainSoftcap && affineKv(options)));
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
+      // Main served softcap adapters ordinarily even when a draft was configured.
+      const sharedSpeculativeAdapters = !plainSoftcap && scheduling.continuous && !!sharedMethod && !!adapterState &&
+        provider?.grouped?.supportsTargetAdapters === true;
+      // A drafted request placed ordinarily opens no draft provider and keeps the
+      // ordinary checkpoint rules, as main's serial path did: an adapter request
+      // the provider cannot serve (softcap adapters never speculate) or whose
+      // delayed affine KV keeps it ordinary, and, since main bound no grouped
+      // speculation on a softcap graph, a drafted request over its encoded KV.
+      const ignoredDraft = request.hasDraft &&
+        ((request.hasAdapters && (ordinaryOnly || !sharedSpeculativeAdapters)) || decodedDense ||
+          (plainSoftcap && affineKv(options)));
       return resolveExecution(request, {
         ...scheduling,
         continuous: scheduling.continuous && !(ordinaryOnly && !ignoredDraft && request.hasDraft),
@@ -249,9 +253,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         sharedSpeculativeEcho: !plainSoftcap && !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         // As main's serial path did, logprobs keep a softcap request ordinary.
         speculativeLogprobs: scheduling.continuous && !!sharedMethod && !plainSoftcap,
-        // Main served softcap adapters ordinarily even when a draft was configured.
-        sharedSpeculativeAdapters: !plainSoftcap && scheduling.continuous && !!sharedMethod && !!adapterState &&
-          provider?.grouped?.supportsTargetAdapters === true,
+        sharedSpeculativeAdapters,
         turboQuantBatch: !denoising && scheduling.quantizedBatch,
         speculativeTurboQuant: !plainSoftcap && scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",

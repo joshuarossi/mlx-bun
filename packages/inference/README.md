@@ -243,6 +243,14 @@ restored the base. Actual paged rows remained checkpoint-ineligible. This covers
 one active row within the sliding window, not grouped rows, paged numerics,
 hard-kill durability, external-oracle parity or performance.
 
+On every graph, an adapter request whose configured draft provider cannot serve
+target adapters (the two-model provider) decodes ordinarily, ignores the draft
+and, without fill, grammar or logprobs, takes generation checkpoints. Main's
+serial path did this on the graphs it served serially (sliding and
+explicit-mask universal descriptors); on graphs main served continuously it
+adds checkpoints main did not take. Placement is covered by the native
+gateway-plan test; the checkpointed path is not yet qualified with real weights.
+
 With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, every saved and restored checkpoint
 after conversion (immediately with a start of 0) must hold TurboQuant's exact
 inventory: five encoded planes per full-attention cache (K indices, float16 K
