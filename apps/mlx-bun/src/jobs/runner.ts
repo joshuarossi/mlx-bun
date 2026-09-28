@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { JobEvent } from "./protocol";
-import type { JobStore } from "./db";
+import { jobError, nowIso, type JobStore } from "./db";
 import { executablePath } from "./executable";
 
 export interface SubmitResult { jobId: string; outputPath?: string; }
@@ -10,7 +10,7 @@ interface QueuedSpawn {
   acquire: (signal: AbortSignal) => Promise<DisposableResource>;
   lease?: DisposableResource;
   abort: AbortController;
-  proc?: Bun.Subprocess;
+  proc?: JobProcess;
   finished: Promise<void>;
   finish(): void;
   store: JobStore;
@@ -19,8 +19,11 @@ interface QueuedSpawn {
   bin: string;
   compiled: boolean;
   spawn: typeof Bun.spawn;
+  graceMs: number;
   onComplete?: (jobId: string, code: number) => void;
 }
+
+type JobProcess = Bun.Subprocess<"pipe", "pipe", "pipe">;
 
 let gpuLeaseHolder: string | null = null;
 const spawnQueue: QueuedSpawn[] = [];
@@ -36,6 +39,9 @@ export interface SubprocessOpts {
   bin?: string;
   /** Override process creation for deterministic failure-path tests. */
   spawn?: typeof Bun.spawn;
+  /** SIGTERM first; SIGKILL for whatever of the job's process group is still
+   * alive after this (default 3 s, as main). */
+  graceMs?: number;
   /** Called on the server (parent) after the child exits — used to invalidate
    *  caches (e.g. the Library) so a finished quantize surfaces immediately. */
   onComplete?: (jobId: string, code: number) => void;
@@ -63,6 +69,7 @@ export function submitSubprocess(
     compiled: opts.entry.includes("$bunfs"),
     bin: opts.bin ?? executablePath,
     spawn: opts.spawn ?? Bun.spawn,
+    graceMs: opts.graceMs ?? 3000,
     onComplete: opts.onComplete,
     acquire: opts.acquire,
   };
@@ -71,8 +78,10 @@ export function submitSubprocess(
   return { jobId: row.id, outputPath };
 }
 
-/** Spawn the child, acquire the lease, stream stdout/stderr into the log,
- *  reconcile terminal status on exit, then release the lease and drain. */
+/** Spawn the child as the leader of its own process group, stream its
+ * stdout/stderr into the log, reconcile terminal status on exit, then release
+ * the lease and drain. Everything that can fail runs before the spawn, so a
+ * child that exists is always joined before its lease is released. */
 function spawnNow(item: QueuedSpawn): void {
   const { store, jobId, entry, bin, spawn } = item;
   gpuLeaseHolder = jobId;
@@ -80,26 +89,34 @@ function spawnNow(item: QueuedSpawn): void {
   // The child opens its OWN JobStore over the SAME DB/logs — a sqlite
   // connection can't cross the process boundary, so we hand the paths via
   // env. A :memory: DB can't be shared with a child; subprocess jobs require
-  // a file-backed DB.
-  let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
+  // a file-backed DB. `detached` makes the child a process-group leader, so
+  // stopping the job stops everything it started; a group leader no longer
+  // receives the terminal's signals, so the child watches the parent pipe on
+  // its stdin instead (cli/job-entry.ts) and stops when this process is gone.
+  let proc: JobProcess;
+  let logPath: string | undefined;
   try {
+    logPath = store.get(jobId)?.log_path;
     proc = spawn(item.compiled ? [bin, "__job", jobId] : [bin, entry, jobId], {
+      stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      detached: true,
       env: {
         ...process.env,
         MLX_BUN_JOBS_DB: store.dbPath,
         MLX_BUN_JOBS_DIR: store.logsDir,
+        MLX_BUN_JOB_PARENT_PIPE: "1",
       },
     });
   } catch (e) {
     try {
       store.setStatus(jobId, "failed", {
-        error: errString(e),
+        error: jobError(e),
         endedAt: nowIso(),
       });
     } catch (error) {
-      console.error(`[jobs] failed to record spawn failure: ${errString(error)}`);
+      console.error(`[jobs] failed to record spawn failure: ${jobError(error)}`);
     } finally {
       releaseLease(item);
     }
@@ -107,7 +124,6 @@ function spawnNow(item: QueuedSpawn): void {
   }
 
   item.proc = proc;
-  const logPath = store.get(jobId)?.log_path;
   const logLine = (line: string) => {
     if (!line || !logPath) return;
     const ev: JobEvent = { type: "log", line };
@@ -118,7 +134,11 @@ function spawnNow(item: QueuedSpawn): void {
 
   void (async () => {
     const code = await proc.exited;
+    // Descendants that outlived the child still hold its work and its log
+    // pipes: the job is joined once its whole process group is gone.
+    await stopGroup(proc, item.graceMs);
     await logs;
+    try { proc.stdin?.end(); } catch { /* already closed */ }
     // code 0 ⇒ trust the child's terminal status (it set done/failed itself).
     // non-zero ⇒ if the row never reached terminal (crash before the wrapper
     // could write), force it failed.
@@ -131,7 +151,7 @@ function spawnNow(item: QueuedSpawn): void {
         });
       }
     } } catch (error) {
-      console.error(`[jobs] failed to record child exit: ${errString(error)}`);
+      console.error(`[jobs] failed to record child exit: ${jobError(error)}`);
     } finally {
       releaseLease(item);
       try { item.onComplete?.(jobId, code); } catch {}
@@ -140,9 +160,39 @@ function spawnNow(item: QueuedSpawn): void {
   })();
 }
 
+/** Whether any process of the group the child leads is still alive. False for
+ * a child that leads no group (a supplied spawn without process groups). */
+function groupAlive(proc: JobProcess): boolean {
+  if (!Number.isInteger(proc.pid) || proc.pid <= 0) return false;
+  try { process.kill(-proc.pid, 0); return true; } catch { return false; }
+}
+
+/** Signal the child's process group, or the child alone when it leads none. */
+function signalJob(proc: JobProcess, signal: NodeJS.Signals): void {
+  if (groupAlive(proc)) {
+    try { process.kill(-proc.pid, signal); return; } catch { /* the group just ended */ }
+  }
+  if (proc.exitCode === null && proc.signalCode == null) {
+    try { proc.kill(signal); } catch { /* already gone */ }
+  }
+}
+
+/** After the leader's exit: SIGTERM what is left of its group, SIGKILL it after
+ * the grace, and return once no process of the group remains. */
+async function stopGroup(proc: JobProcess, graceMs: number): Promise<void> {
+  if (!groupAlive(proc)) return;
+  signalJob(proc, "SIGTERM");
+  const force = Date.now() + graceMs;
+  let killed = false;
+  while (groupAlive(proc)) {
+    if (!killed && Date.now() >= force) { killed = true; signalJob(proc, "SIGKILL"); }
+    await Bun.sleep(20);
+  }
+}
+
 function releaseLease(item: QueuedSpawn): void {
   try { item.lease?.dispose(); }
-  catch (error) { console.error(`[jobs] execution lease cleanup failed: ${errString(error)}`); }
+  catch (error) { console.error(`[jobs] execution lease cleanup failed: ${jobError(error)}`); }
   finally {
     item.lease = undefined;
     if (gpuLeaseHolder === item.jobId) gpuLeaseHolder = null;
@@ -168,17 +218,18 @@ export function drainQueue(): void {
         spawnNow(next);
       }).catch((error) => {
         try {
-          next.store.setStatus(next.jobId, "failed", { error: errString(error), endedAt: nowIso() });
+          next.store.setStatus(next.jobId, "failed", { error: jobError(error), endedAt: nowIso() });
         } catch (recordError) {
-          console.error(`[jobs] failed to record admission failure: ${errString(recordError)}`);
+          console.error(`[jobs] failed to record admission failure: ${jobError(recordError)}`);
         } finally { releaseLease(next); }
       }).finally(drainQueue);
     }
   }
 }
 
-/** Stop only this host's managed GPU jobs. Await process death before releasing
- * the execution lease; queued and admission-waiting jobs never spawn. */
+/** Stop only this host's managed GPU jobs. Await the death of the active child's
+ * whole process group before releasing the execution lease; queued and
+ * admission-waiting jobs never spawn. */
 export async function closeSubprocessJobs(store: JobStore): Promise<void> {
   closedStores.add(store);
   const errors: unknown[] = [];
@@ -194,8 +245,8 @@ export async function closeSubprocessJobs(store: JobStore): Promise<void> {
   if (active?.store === store) {
     active.abort.abort(new Error("job host closed"));
     const proc = active.proc;
-    if (proc) proc.kill("SIGTERM");
-    const force = proc ? setTimeout(() => { if (proc.exitCode === null) proc.kill("SIGKILL"); }, 3000) : undefined;
+    if (proc) signalJob(proc, "SIGTERM");
+    const force = proc ? setTimeout(() => signalJob(proc, "SIGKILL"), active.graceMs) : undefined;
     try { await active.finished; }
     finally { if (force) clearTimeout(force); }
   }
@@ -230,19 +281,4 @@ export async function pumpLines(
   } finally {
     reader.releaseLock();
   }
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-function nowIso(): string {
-  // SQLite datetime('now') is "YYYY-MM-DD HH:MM:SS" in UTC — match it so the
-  // ended_at column is uniform whether set here or by a column default.
-  return new Date().toISOString().replace("T", " ").slice(0, 19);
-}
-
-function errString(e: unknown): string {
-  if (e instanceof Error) return `${e.name}: ${e.message}`;
-  return String(e);
 }
