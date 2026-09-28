@@ -298,6 +298,8 @@ export class Qwen3MoeModel {
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: every layer (`cache.updateAndFetch`). */
+  readonly requiredDenseKvLayers: readonly number[];
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3MoeDecoderLayer[];
   readonly finalNorm: RMSNorm;
@@ -313,6 +315,7 @@ export class Qwen3MoeModel {
       { length: config.text.numHiddenLayers },
       (_, i) => new Qwen3MoeDecoderLayer(weights, config, `model.layers.${i}`, i),
     );
+    this.requiredDenseKvLayers = Object.freeze(this.layers.map((_, layer) => layer));
     this.finalNorm = new RMSNorm(weights.tensor("model.norm.weight"), config.text.rmsNormEps); // self.norm
     this.lmHead = config.text.tieWordEmbeddings
       ? null

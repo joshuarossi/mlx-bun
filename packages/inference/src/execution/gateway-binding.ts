@@ -10,7 +10,8 @@ import { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
 import { UniversalDenseModel } from "../models/universal/dense";
 import { KVCache } from "../state/kv";
 import { RotatingKVCache } from "../state/rotating-kv";
-import { cacheSignature, isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state/capabilities";
+import { isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state/capabilities";
+import { bindRequiredDenseKvLayers } from "../state/dense-kv-reads";
 import { SSMCache } from "../state/ssm";
 import { Gemma4Model } from "../models/gemma4/model";
 import { Qwen35Model } from "../models/qwen/qwen3_5";
@@ -64,8 +65,8 @@ export interface MlxGatewayBinding {
 
 /** Which operations the graph's own caches provide: batch rows (plain and
  * rotating KV, batchable layouts, SSM under the binding's policy), target
- * transaction rows, per-layer quantized conversion, and the layers holding KV
- * rather than SSM state (classified as the batch group classifies them). */
+ * transaction rows and per-layer quantized conversion; and the graph's declared
+ * dense-read layers, bound against those caches. */
 function probeStorage(model: RuntimeModel, ssm: boolean) {
   const caches = model.makeCache();
   try {
@@ -74,8 +75,7 @@ function probeStorage(model: RuntimeModel, ssm: boolean) {
         isBatchableCache(cache) || (ssm && cache instanceof SSMCache)),
       targetRows: caches.every(cache => targetRowLayoutFactory(cache) !== undefined),
       convertible: Object.freeze(caches.map(cache => isPlainKvCache(cache) || isRotatingPlainCache(cache))),
-      kvLayers: Object.freeze(caches.flatMap((cache, layer) =>
-        !isBatchableCache(cache) && !isRotatingPlainCache(cache) && cacheSignature(cache) === "ssm" ? [] : [layer])),
+      requiredDenseKvLayers: bindRequiredDenseKvLayers(model.requiredDenseKvLayers, caches),
     });
   } finally { disposeResources(caches); }
 }
@@ -150,13 +150,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // by placement rather than served ordinarily. Grammar proposals stay off softcap.
   const speculative = !denoising && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
-  // Committed spans serve the direct jump main ran serially. Spans on a softcap
-  // graph are held to plain reads in every KV layer, as its ordinary rows are
-  // (the group's denseKvReads, below). A graph whose delayed affine rows are
-  // ordinary-only attends the encoded storage it holds: it states no dense-read
-  // requirement.
-  const grammarSpans = plainSoftcap && storage ? bindGrammarGroupRequests(model, storage.kvLayers)
-    : ordinaryAffineRows ? bindGrammarGroupRequests(model, []) : undefined;
+  // Committed spans serve the direct jump main ran serially, held to the
+  // graph's declared dense-read layers, as its ordinary rows are: every layer
+  // of a softcap graph; none of a graph whose delayed affine rows are
+  // ordinary-only, as it attends the encoded storage it holds.
+  const grammarSpans = (plainSoftcap || ordinaryAffineRows) && storage
+    ? bindGrammarGroupRequests(model, storage.requiredDenseKvLayers) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
@@ -289,7 +288,6 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         storage.convertible.length, capabilities);
     },
     createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options,
-      kvBatchCapabilities: kvBatchCapabilities(options.kvScheme).capabilities,
-      ...(plainSoftcap ? { denseKvReads: true } : {}) }),
+      kvBatchCapabilities: kvBatchCapabilities(options.kvScheme).capabilities }),
   };
 }

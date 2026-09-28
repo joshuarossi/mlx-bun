@@ -618,6 +618,8 @@ export class Qwen35Model {
   /** Base path for LoRA target keys (weights carry the language_model prefix). */
   readonly prefixBase = "language_model.model";
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
+  readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3Layer[];
   readonly finalNorm: RMSNorm;

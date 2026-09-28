@@ -673,6 +673,8 @@ export class Gemma4Model {
   readonly prefixBase: string;
   /** Active LoRA adapters for the current generation (see LoraState). */
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
+  readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
   readonly embed: QuantizedEmbedding;
   readonly layers: DecoderLayer[];
   readonly finalNorm: RMSNorm;

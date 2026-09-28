@@ -663,6 +663,8 @@ export class Glm52Model {
   readonly capabilities: Glm52ModelCapabilities;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: none; it attends its own compressed MLA storage, which no KV scheme converts. */
+  readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
   readonly layers: Glm52DecoderLayer[];
   readonly finalNorm: MlxArray;
   readonly expertBackend: Glm52ExpertExecutionBackend | null;

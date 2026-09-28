@@ -24,6 +24,8 @@ function fixture() {
     config: { modelType: "fixture", text: { numHiddenLayers: 1, layerTypes: ["full_attention"],
       numGlobalKeyValueHeads: 1, globalHeadDim: 8, slidingWindow: 0 } },
     makeCache() { calls.allocations++; return [new TrackedCache()]; },
+    // Its one layer's keys and values are read plain (updateAndFetch).
+    requiredDenseKvLayers: [0],
   } as unknown as RuntimeModel;
   const request: BatchRequest = { promptIds: [0, 1], maxTokens: 1, eosTokenIds: [],
     sample() { throw new Error("unexpected sampling"); }, onToken() { throw new Error("unexpected output"); } };

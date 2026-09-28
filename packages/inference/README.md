@@ -295,7 +295,14 @@ inside generation; the new planner reports `fill-incompatible-with-request`
 and selects ordinary continuous decoding. This pair does not qualify B2 or
 cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
-delayed speculation remains excluded. A graph whose attention reads dense KV
+delayed speculation remains excluded. Each graph declares at construction the
+layers its attention reads as plain keys and values (`requiredDenseKvLayers`:
+Gemma2's softcap layers, every Qwen3 and Qwen3-MoE layer, none for graphs that
+attend the storage their caches hold). The gateway and a directly composed
+batch group each bind that declaration once against the graph's fresh caches;
+an absent or malformed declaration is refused rather than read as none. A row
+whose next append would not read plain in a declared layer is refused with
+`DenseKvReadError` before that append. A graph whose attention reads dense KV
 (a softcap graph such as Gemma2, reading keys and values as arrays) admits a KV
 scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
@@ -318,8 +325,8 @@ same way while a row's storage still reads plain: a span whose maintenance ran
 before the transition appends unsplit even across it, and a row whose next
 append would no longer read plain is refused with `DenseKvReadError` before any
 layer appends, where main threw in that forward. The span method binds the
-graph's dense-read layers explicitly; the gateway supplies them from its cache
-probe. Affine grammar spans are not yet qualified with real weights.
+graph's dense-read layers explicitly; the gateway supplies the graph's own
+declaration. Affine grammar spans are not yet qualified with real weights.
 
 On 2026-09-28 UTC, cached Gemma2-2B-4bit snapshot `2c715097` (26 full-attention
 layers) passed bounded TurboQuant k8v3 acceptance on an M1 Max, MLX 0.32.2 and

@@ -458,6 +458,8 @@ export class UniversalDenseModel {
   readonly #masks: UniversalMaskRecipe;
   /** Whether every attention layer, as bound, reads encoded (affine) KV views. */
   readonly encodedKvAttention: boolean;
+  /** Layers whose bound attention reads plain keys and values: the manual softcap layers. */
+  readonly requiredDenseKvLayers: readonly number[];
   readonly #cacheWindows: readonly (number | null)[];
 
   constructor(weights: Weights, config: ModelConfig, args?: UniversalArgs) {
@@ -485,6 +487,7 @@ export class UniversalDenseModel {
       (_, i) => new UniversalLayer(weights, config, `model.layers.${i}`, a, this.ropes[i]!, audit),
     );
     this.encodedKvAttention = this.layers.every(layer => layer.attn.softcap === null);
+    this.requiredDenseKvLayers = Object.freeze(this.layers.flatMap((layer, index) => layer.attn.softcap === null ? [] : [index]));
     this.finalNorm = a.norm === "layernorm"
       ? loadLayerNorm(weights, "model.norm", a.normEps, audit)
       : loadRmsNorm(weights, "model.norm", a.normEps, a.norm === "rmsnorm_plus_one", audit);

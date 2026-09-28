@@ -1405,8 +1405,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
   const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean;
     promptCache?: import("../../../src/execution/batch-types").RowPromptCache; grammarJump?: boolean;
-    kvScheme?: ReturnType<typeof resolveKvScheme>; encoded?: boolean } = {}) => {
-    const { bindMlxGateway, createRuntimeConfig, createRowSampling, withRuntimeConfig } = await import("../../../src/execution");
+    kvScheme?: ReturnType<typeof resolveKvScheme>; encoded?: boolean; direct?: boolean } = {}) => {
+    const { bindMlxGateway, createRuntimeConfig, createRowSampling, withRuntimeConfig, MlxBatchExecutionGroup } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     // Without manual softcap attention the same graph reads encoded KV.
     const f = mixedFixture(types, !options.encoded, HEAD_DIM), model = f.make();
@@ -1417,12 +1417,17 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       ? resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start })
       : resolveKvScheme({ override: 4, quantizedKvStart: start }));
     let held = false;
-    const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
+    const groupOptions = { maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
       ...(options.promptCache ? { promptCache: options.promptCache } : {}),
       // Compiled decode stays at its default: these graphs bind none (below).
       runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1",
         ...(options.pipeline === false ? { MLX_BUN_BATCH_NO_PIPELINE: "1" } : {}) }),
-      ...(kvScheme ? { kvScheme } : {}) });
+      ...(kvScheme ? { kvScheme } : {}) };
+    // Composed directly, the group binds the graph's own declaration; only
+    // the delayed-affine capability is the composer's to state.
+    const group = options.direct
+      ? new MlxBatchExecutionGroup(model, { ...groupOptions, kvBatchCapabilities: { delayedAffine: true } })
+      : binding.createBatchGroup(groupOptions);
     const submit = (prompt: number[], maxTokens: number, end: End = {}, grammar?: import("../../../src/sampling").GrammarController) => {
       const tokens: number[] = [], abort = new AbortController();
       const request = { maxTokens, temperature: 0, ...(kvScheme?.generationOptions ?? {}) };
@@ -1647,6 +1652,15 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       // The same group drains and serves again.
       expect(await delayed.submit(B, 5)).toEqual(soloB);
     } finally { await plain.close(); await control.close(); await delayed.close(); }
+  });
+
+  test("a group composed directly binds the graph's declared dense-read layers: its ordinary row is refused at the transition", async () => {
+    const plain = await setup(null), direct = await setup(7, { direct: true });
+    try {
+      expect(direct.model.requiredDenseKvLayers).toEqual(LAYERS);
+      const soloA = await plain.submit(A, 8);
+      expect(await direct.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
+    } finally { await plain.close(); await direct.close(); }
   });
 
   test("EOS as the last plain token ends the row as a stop, unpublished, not a rejection", async () => {
@@ -2248,12 +2262,12 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       } finally { await env.close(); }
     });
 
-    test("a directly bound span method refuses by its own copy of the graph's layers on a group composed without dense-read metadata", async () => {
+    test("a directly bound span method refuses by its own copy of the graph's layers on a group composed without the gateway", async () => {
       const { MlxBatchExecutionGroup, createRuntimeConfig } = await import("../../../src/execution");
       const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
       const reference = await serialSpans(A, 10, affine(11), [[11, 12]]);
       const env = await setup(null), kvScheme = affine(11);
-      // No dense-read layers reach this group; only the method's binding has them.
+      // Composed without the gateway: the method refuses by its own copy of the layers.
       const group = new MlxBatchExecutionGroup(env.model, { maxBatch: 2, prefillChunkSize: 64,
         runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }), kvScheme, kvBatchCapabilities: { delayedAffine: true } });
       const layers = [...LAYERS], bound = bindGrammarGroupRequests(env.model, layers);
