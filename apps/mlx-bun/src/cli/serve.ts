@@ -33,7 +33,9 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (thinking !== undefined && !["on", "off", "1", "0", "true", "false"].includes(thinking))
     throw new Error("--thinking expects on|off");
   const policy = numericalPolicy(args);
-  const kv = policy.kv ?? "off";
+  // An explicit --kv-quant is the policy's own choice; reading it here keeps its
+  // accepted values and default in the generated configuration reference.
+  const kv = value("kv-quant") ?? policy.kv ?? "off";
   // Main's TurboQuant spec, turbo (k8v3) or turbo:k<bits>v<bits>, is its own scheme beside affine KV.
   const turboQuant = parseTurboQuantScheme(kv);
   if (!turboQuant && !["off", "config", "4", "8"].includes(kv)) throw new Error("--kv-quant expects off|config|4|8|turbo[:k<bits>v<bits>]");
