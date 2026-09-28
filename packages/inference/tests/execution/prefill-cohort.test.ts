@@ -217,17 +217,25 @@ test.each(schemes.filter(([name]) => name.endsWith("delayed")))(
   const request = () => row(2, 13, 3), prefix = request().req.promptIds.slice(0, 6);
   const run = async (maintained: boolean, joining: boolean) => {
     const f = fixture(scheme), caches: Cache[] = [new KVCache()];
+    // The test owns the prefix until take() transfers it to the cohort.
+    let owned = true;
     try {
       { using ids = ops.fromInt32(prefix, [1, prefix.length]); (await f.cohort.host.forward(ids, caches)).dispose(); }
       if (maintained) createKvMaintenance(scheme)(caches);
       const stored = caches.map(cache => cache.constructor.name);
       f.shapes.length = 0; f.kinds.length = 0;
-      f.cohort.host.promptCache!.take = tokens => tokens[0] === 2000 ? { tokens: prefix, caches } : null;
+      f.cohort.host.promptCache!.take = tokens => {
+        if (tokens[0] !== 2000 || !owned) return null;
+        owned = false; return { tokens: prefix, caches };
+      };
       if (joining) { f.cohort.admit(row(1, 18, 5)); expect(await f.cohort.advance()).toBe(false); }
       f.cohort.admit(request()); await drain(f.cohort);
       expect(f.rejected).toEqual([]);
       return { stored, kinds: f.kinds, shapes: f.shapes, completed: f.completed };
-    } finally { f.cohort.dispose(); }
+    } finally {
+      try { f.cohort.dispose(); }
+      finally { if (owned) dispose(caches); }
+    }
   };
   for (const joining of [false, true]) {
     const control = await run(true, joining), owed = await run(false, joining);

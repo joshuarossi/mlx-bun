@@ -1955,7 +1955,13 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           },
           take(prompt, ...rest) {
             const hit = prefix.take(prompt, ...rest);
-            if (hit) hits.push({ tokens: [...hit.tokens], namespace: rest[0], state: state(hit.caches) });
+            if (!hit) return hit;
+            // The hit is owned here until it is returned to the cohort.
+            try { hits.push({ tokens: [...hit.tokens], namespace: rest[0], state: state(hit.caches) }); }
+            catch (error) {
+              try { dispose(hit.caches); } finally { hit.retain?.(); }
+              throw error;
+            }
             return hit;
           },
         } });
@@ -2032,7 +2038,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         } finally {
           try { await env.close(); }
           finally {
-            try { if (reference) { dispose(reference.caches); reference.retain?.(); } }
+            try { if (reference) { try { dispose(reference.caches); } finally { reference.retain?.(); } } }
             finally { prefix.clear(); }
           }
         }
