@@ -1894,7 +1894,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         } finally { sampler.dispose(); dispose(caches); f.dispose(); }
       };
 
-      type End = { cancelAfter?: number; throwAfter?: number };
+      type End = { stopAfter?: number; cancelAfter?: number; throwAfter?: number };
       const submitSpans = async (env: Awaited<ReturnType<typeof setup>>, prompt: number[], maxTokens: number,
         spans: number[][], end: End = {}, onPublish?: () => void) => {
         const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
@@ -1907,6 +1907,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
             tokens.push(token); onPublish?.();
             if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
             if (tokens.length === end.throwAfter) throw failure;
+            return tokens.length === end.stopAfter ? false : undefined;
           } }).then(stats => stats.finishReason as string, (error: Error) => error === failure ? "consumer failed" : error.name);
         return { tokens, outcome, accepted: grammar.accepted };
       };
@@ -1927,7 +1928,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         } finally { await env.close(); }
       });
 
-      test("two interleaved span rows each equal their solo reference; a cancelled or failing row leaves its peer and the group usable", async () => {
+      test("two interleaved span rows each equal their solo reference; a stopped, cancelled or failing row leaves its peer and the group usable", async () => {
         // A runs longer than B, so both are active together.
         const referenceA = await serialSpans(A, 12, 0, spansA), referenceB = await serialSpans(B, 7, 0, spansB);
         const env = await setup(0, { turbo: true });
@@ -1938,7 +1939,10 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           expect(overlap).toBe(2);
           expect(a).toEqual({ tokens: referenceA.tokens, outcome: "length", accepted: referenceA.accepted });
           expect(b).toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
-          for (const [end, outcome] of [[{ cancelAfter: 2 }, "AbortError"], [{ throwAfter: 2 }, "consumer failed"]] as const) {
+          // Each ends on the first token of A's first forced span, whose KV the
+          // span forward already committed: a stop finishes the row there.
+          for (const [end, outcome] of [[{ stopAfter: 2 }, "stop"], [{ cancelAfter: 2 }, "AbortError"],
+            [{ throwAfter: 2 }, "consumer failed"]] as const) {
             const [left, peer] = await Promise.all([submitSpans(env, A, 12, spansA, end), submitSpans(env, B, 7, spansB)]);
             expect(left, outcome).toMatchObject({ tokens: referenceA.tokens.slice(0, 2), outcome });
             expect(peer, outcome).toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
