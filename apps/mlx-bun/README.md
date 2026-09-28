@@ -414,7 +414,10 @@ towers and calls the library's numerical input builders. The opt-in
 `MLX_BUN_APP_TEST_GEMMA4_AUDIO_MODEL`, `MLX_BUN_APP_TEST_GEMMA4_UNIFIED_MODEL`,
 `MLX_BUN_APP_TEST_QWEN_VISION_MODEL` or `MLX_BUN_APP_TEST_DIFFUSION_MODEL`, each a
 cached snapshot directory) prepares image, audio, mixed and video prompts through a
-loaded model with synthesized media and a warm encoder cache. Grammar and media
+loaded model with synthesized media and a warm encoder cache; the opt-in
+[media generation test](tests/engine/media-generation.test.ts) serves the same
+Gemma4 checkpoint and generates from image, audio and mixed image+audio prompts
+(determinism, streaming, rows released together, disconnect recovery). Grammar and media
 work enter the engine's preparation domain before allocating native resources.
 Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
 requests and semantic completion events, including tools, thinking, and usage.
@@ -1140,6 +1143,13 @@ artifact in `verify-packages --app-only`. The
 sidecar protocol, and the terminate-and-join with shell stand-ins. A real
 microphone is exercised only by hand; package and relocated-bundle verification
 resolve the shipped helper and run `--help` before any audio initialization.
+The opt-in [voice test](tests/engine/voice.test.ts) (`MLX_BUN_TEST_NATIVE=1`,
+`MLX_BUN_APP_TEST_WHISPER_MODEL`, optionally `MLX_BUN_APP_TEST_MODEL`) runs both
+verbs as spawned CLIs on real Whisper weights with speech synthesized by
+macOS `say`, `dictate` through a stand-in sidecar that follows the capture
+protocol, and a chat server with the companion: the mic probe, idle unload,
+transcription while a reply streams, a voice session, unload, and `dictate
+--server`. The physical microphone, key tap, clipboard and typing stay manual.
 
 ## Standalone bundle
 
