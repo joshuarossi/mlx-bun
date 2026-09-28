@@ -758,8 +758,9 @@ external evidence; B>2, KV quantization, HTTP and performance are not covered.
 The [grouped speculation test](tests/parity/speculative-group.test.ts) covers
 each built-in draft provider over its target with plain, affine, TurboQuant or
 per-layer KV. It takes `MLX_BUN_TEST_SPEC_TARGET`, `MLX_BUN_TEST_SPEC_KIND`
-(`ngram|two-model|assistant|mtp|dspark|deepspec`) and `MLX_BUN_TEST_SPEC_DRAFT`
-(none for n-gram), and optionally `MLX_BUN_TEST_SPEC_KV` (`bf16|4|8|turbo|config`),
+(`ngram|two-model|assistant|mtp|dspark|deepspec|glm-mtp`) and
+`MLX_BUN_TEST_SPEC_DRAFT` (none for n-gram or `glm-mtp`), and optionally
+`MLX_BUN_TEST_SPEC_KV` (`bf16|4|8|turbo|config`),
 `MLX_BUN_TEST_SPEC_KV_START`, `MLX_BUN_TEST_SPEC_DEPTH`, `MLX_BUN_TEST_SPEC_WINDOW`
 (the custom sliding-window graph over a Llama-family target) and
 `MLX_BUN_TEST_SPEC_ADAPTER`. Requests go through placement, `methodRequest` and
@@ -771,9 +772,18 @@ a fresh SSD store after a provider reload, and, with an adapter, a live adapter
 whose B2/B4 rows with the draft configured equal B1 controls, context
 partitioning, failure cleanup and adapter-isolated prefix reuse. Adapter rows
 speculate only through providers that support target adapters. It has run for
-n-gram, two-model and assistant providers; MTP, DSpark and DeepSpec have not.
+n-gram, two-model and assistant providers; MTP, DSpark, DeepSpec and GLM
+native MTP have not.
 For example:
 `MLX_BUN_TEST_SPEC_TARGET=/gemma4-e4b MLX_BUN_TEST_SPEC_KIND=assistant MLX_BUN_TEST_SPEC_DRAFT=/e4b-assistant MLX_BUN_TEST_SPEC_KV=4 bun --no-env-file test packages/inference/tests/parity/speculative-group.test.ts`.
+
+`glm-mtp` selects GLM-5.2's checkpoint-native MTP (`--mtp on`), mounted as the
+app's model host mounts it: the Colibri runtime opened with the MTP tier planned
+for one drafting lane, and `Glm52NativeMtpProvider` at the plan's draft depth
+unless `MLX_BUN_TEST_SPEC_DEPTH` overrides it. The same checks run as for the
+other providers, except the KV matrix: GLM's compressed MLA cache has no affine
+or TurboQuant conversion, so this kind takes plain KV only and no custom window:
+`MLX_BUN_TEST_SPEC_TARGET=/GLM-5.2 MLX_BUN_TEST_SPEC_KIND=glm-mtp bun --no-env-file test packages/inference/tests/parity/speculative-group.test.ts`.
 
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,
 and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.
