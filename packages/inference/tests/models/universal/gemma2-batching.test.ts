@@ -2481,6 +2481,104 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         finally { graph.dispose(); }
       }
     });
+
+    /** The gateway's span method over a fresh MiniCPM5 graph; the environment owns the graph. */
+    const miniCpmEnv = async (kvScheme: ReturnType<typeof resolveKvScheme>,
+      promptCache?: import("../../../src/execution/batch-types").RowPromptCache) => {
+      const { bindMlxGateway, createRuntimeConfig, withRuntimeConfig } = await import("../../../src/execution");
+      const graph = await miniCpm();
+      const binding = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(graph.model));
+      const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: 64, ...(promptCache ? { promptCache } : {}),
+        runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }), kvScheme });
+      return { binding, model: graph.model, kvScheme, group, async close() {
+        try { await group.close(); expect(group.activeRows + group.pendingRows).toBe(0); } finally { graph.dispose(); }
+      } };
+    };
+    /** Main's serial order over a separate, identical MiniCPM5 graph. */
+    const miniReference = async (prompt: number[], maxTokens: number, scheme: ReturnType<typeof resolveKvScheme>, spans: number[][]) => {
+      const graph = await miniCpm(), caches = graph.model.makeCache();
+      try { return await serialSpansFrom(graph.model, caches, prompt, 0, maxTokens, scheme, spans, { encoded: true, sampling: penalty }); }
+      finally { try { dispose(caches); } finally { graph.dispose(); } }
+    };
+
+    test("a MiniCPM5 graph: interleaved rows across the conversion equal their solo references; a row stopped, cancelled or failing beside an active peer leaves it and the group usable", async () => {
+      const referenceA = await miniReference(A, 12, affine(7), spansA), referenceB = await miniReference(B, 12, affine(7), spansB);
+      expect(referenceA.kinds).toEqual(["QuantizedKVCache", "QuantizedKVCache"]);
+      expect(referenceB.kinds).toEqual(["QuantizedKVCache", "QuantizedKVCache"]);
+      const env = await miniCpmEnv(affine(7));
+      try {
+        const spans = gatewaySpans(env);
+        // B runs longer than A and is submitted first, so it is active whenever A publishes.
+        for (const [end, outcome] of [[{ stopAfter: 2 }, "stop"], [{ cancelAfter: 2 }, "AbortError"],
+          [{ throwAfter: 2 }, "consumer failed"]] as const) {
+          let active = 0;
+          const [peer, left] = await Promise.all([submitSpans(env, B, 12, spansB, {}, undefined, spans, penalty),
+            submitSpans(env, A, 12, spansA, end, published => { if (published === 2) active = env.group.activeRows; }, spans, penalty)]);
+          expect(active, outcome).toBe(2);
+          expect(left, outcome).toMatchObject({ tokens: referenceA.tokens.slice(0, 2), outcome });
+          expect(peer, outcome).toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
+        }
+        // The group serves the same request again.
+        expect(await submitSpans(env, A, 12, spansA, {}, undefined, spans, penalty))
+          .toEqual({ tokens: referenceA.tokens, outcome: "length", accepted: referenceA.accepted });
+      } finally { await env.close(); }
+    });
+
+    test("a MiniCPM5 graph: a reused prefix owing its conversion converts before its suffix forward, and spans continue over converted layers", async () => {
+      const { PromptCache, cloneKvCaches } = await import("../../../src/state");
+      const prefix = new PromptCache(16 << 20, null, null, cloneKvCaches);
+      const namespaces: (string | undefined)[] = [];
+      const env = await miniCpmEnv(affine(7), {
+        put(tokens, caches, ...rest) { namespaces.push(rest[0]); prefix.put(tokens, caches, ...rest); },
+        take: (prompt, ...rest) => prefix.take(prompt, ...rest),
+      });
+      const forwards = observe(env);
+      let reference: ReturnType<typeof prefix.take> = null;
+      try {
+        const seen = projections(env);
+        const first = await submitSpans(env, A, 3, [[11, 12]], {}, undefined, gatewaySpans(env), penalty);
+        expect(first.outcome).toBe("length");
+        const committed = [...A, ...first.tokens], prompt = [...committed, 17];
+        expect(namespaces).toHaveLength(1);
+        // Borrow the same stored prefix, still plain at 8, as the next hit does.
+        reference = prefix.take(prompt, namespaces[0]);
+        expect(reference!.tokens).toEqual(committed);
+        expect(reference!.caches.map(cache => cache.constructor.name)).toEqual(["KVCache", "KVCache"]);
+        const expected = await serialSpansFrom(env.model, reference!.caches, prompt, committed.length, 6, affine(7), [[21, 22]],
+          { encoded: true, sampling: penalty });
+        expect(expected.refused).toBe(false);
+        expect(expected.tokens.slice(1, 3)).toEqual([21, 22]);
+        seen.length = 0; forwards.length = 0;
+        expect(await submitSpans(env, prompt, 6, [[21, 22]], {}, undefined, gatewaySpans(env), penalty))
+          .toEqual({ tokens: expected.tokens, outcome: "length", accepted: expected.accepted });
+        expect(seen).toEqual(expected.seen);
+        expect(forwards[0]).toEqual({ ids: [17], kinds: ["QuantizedKVCache", "QuantizedKVCache"] });
+      } finally {
+        try { await env.close(); }
+        finally {
+          try { if (reference) { try { dispose(reference.caches); } finally { reference.retain?.(); } } }
+          finally { prefix.clear(); }
+        }
+      }
+    });
+
+    test("a MiniCPM5 graph: spans continue across a partial per-layer conversion", async () => {
+      // Per-layer config: only layer 1 converts at the start; layer 0 keeps plain storage.
+      const partial = resolveKvScheme({ override: "config", config: [{ layerIdx: 1, bits: 4, groupSize: HEAD_DIM }], quantizedKvStart: 7 });
+      const mixedKinds = ["KVCache", "QuantizedKVCache"];
+      const reference = await miniReference(A, 9, partial, spansA);
+      expect(reference.refused).toBe(false);
+      expect(reference.kinds).toEqual(mixedKinds);
+      const env = await miniCpmEnv(partial);
+      const forwards = observe(env);
+      try {
+        const seen = projections(env);
+        expect(await submitSpans(env, A, 9, spansA, {}, undefined, gatewaySpans(env), penalty))
+          .toEqual({ tokens: reference.tokens, outcome: "length", accepted: reference.accepted });
+        expect(seen).toEqual(reference.seen);
+        expect(forwards).toContainEqual({ ids: [reference.tokens[3]!, 13], kinds: mixedKinds });
+      } finally { await env.close(); }
+    });
   });
 });
 }
