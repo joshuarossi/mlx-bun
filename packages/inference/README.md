@@ -623,6 +623,18 @@ Public kernel imports are `@mlx-bun/inference/kernels/turboquant`,
 `@mlx-bun/inference/kernels/attention/paged`. Paged state is available through
 `@mlx-bun/inference/state/paged`. No cache mode or experimental default changed.
 
+The opt-in [Gemma4 paged test](tests/parity/gemma4-paged.test.ts) takes
+`MLX_BUN_TEST_PAGED_MODEL` (any Gemma4 artifact) and places requests through the
+gateway binding's plan, state policy and execution group. Gathered bf16 pages must
+equal plain KV at B1 and B3 with blocks 16 and 256 (tokens, every sampled vector,
+each retired row's valid K/V), main's bit-exact contract. Over bf16, KV4 and KV8
+pages it also requires the direct reader to serve decode with the gathered arm's
+greedy tokens (its reduction is Lab numerics), abort-versus-stop survivor
+identity with recovery on the drained group, and RAM then fresh-SSD-store reuse
+of pages of the same encoding and reader. No run of this test is recorded yet.
+Run it from the root with
+`MLX_BUN_TEST_PAGED_MODEL=/gemma4/snapshot bun --no-env-file test packages/inference/tests/parity/gemma4-paged.test.ts`.
+
 ## Source ownership
 
 All kernel files below live under `src/kernels/trellis/`.
