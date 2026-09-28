@@ -68,6 +68,12 @@ As main's server did, startup also rejects `--kv-quant turbo` when the model's
 full-attention head dimension is not one the TurboQuant codec encodes
 (`TURBOQUANT_HEAD_DIMS`), before any request, instead of failing each request in
 prefill.
+Startup, and `generate`, also reject a requested KV scheme the model's cache
+layers cannot take, since every request carries it: GLM-5.2's MLA cache takes no
+KV scheme, so `--kv-quant 4|8|turbo` (and `config` or `--l2` when a
+`kv_config.json` exists) is refused there; main accepted the option and served GLM-5.2 in bf16
+while reporting the requested scheme.
+`--kv-quant config` without the model's `kv_config.json` stays bf16.
 The opt-in [paged KV test](tests/engine/paged-kv.test.ts) covers both family
 outcomes.
 

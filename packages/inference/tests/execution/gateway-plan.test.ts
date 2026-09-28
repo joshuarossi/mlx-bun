@@ -869,6 +869,19 @@ test("storage is probed once per binding, released on every path and never touch
   expect(released.sort()).toEqual(["failed", "kept"]);
 });
 
+test("GLM-5.2's MLA cache takes no KV scheme: every requested scheme is refused while bf16 and its batching are unaffected", async () => {
+  const { MLACache } = await import("../../src/state/glm52-cache");
+  const binding = bindMlxGateway(standIn(Glm52Model.prototype, "glm_moe_dsa", {
+    config: { modelType: "glm_moe_dsa", text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] },
+    makeCache: () => [new MLACache({ kvLoraRank: 512, ropeHeadDim: 64 })] }));
+  expect(binding.cachesBatchable()).toBe(true);
+  expect(binding.kvBatchable(new KvScheme("bf16", {}))).toBe(true);
+  for (const scheme of [resolveKvScheme({ override: 4 }), resolveKvScheme({ override: 8 }),
+    resolveKvScheme({ override: 4, quantizedKvStart: 64 }), resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } }),
+    resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] })])
+    expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(false);
+});
+
 test("each binding keeps the SSM batching policy it was built with", () => {
   const model = standIn(Qwen35Model.prototype, "qwen3_5", { makeCache: () => [new SSMCache(), new KVCache()] });
   const off = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_BATCH_SSM: "0" }), () => bindMlxGateway(model));
