@@ -714,6 +714,19 @@ or deleted checkout) continues it in the server's directory, the SDK's
 to open it. The file keeps its recorded header, and opening a chat appends the
 SDK's session entries, as before.
 
+The [existing-user data test](tests/existing-user-data.test.ts) opens data a
+prior version left under HOME (sessions, Pi settings, approvals, the saved
+token, jobs and logs, the vault and its Reference links, the memory and
+registry databases, adapter stores, the nightly schedule) through the app with
+HOME set to a clone and native MLX blocked, and requires nothing lost: the
+supplied directory and its link targets unchanged, no deletion, a
+byte-identical vault, and only the app's databases, its bundled skill, and
+append-only or message-preserving session rewrites. Its default case builds
+main's formats in-test; `MLX_BUN_APP_TEST_USER_DATA=<isolated copy laid out as
+a HOME>` (with `MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME=<its original HOME>`
+to follow recorded job paths into the copy) runs it on real data and prints what
+to preserve before an old checkout is deleted.
+
 ## Browser app
 
 `src/web/browser/` preserves the existing chat, model, training, quantization,
