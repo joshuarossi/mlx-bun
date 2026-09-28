@@ -428,7 +428,9 @@ Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 A plain-KV adapter request with a configured TwoModel or Ngram draft uses
 ordinary continuous decoding and ignores both draft and fill, as main did.
-This is an ordinary fallback, not adapter speculation support. Paired B1 greedy
+This is an ordinary fallback, not adapter speculation support; without fill,
+grammar or logprobs it takes generation checkpoints, as main's serial lane did
+and as the affine and TurboQuant fallbacks already do. Paired B1 greedy
 acceptance against main passed with a synthetic nonzero adapter on Gemma2-2B:
 full logits and valid KV match with either draft configured, with or without
 fill and logprobs; draft and fill stay unused, and physical unmount restores

@@ -596,8 +596,10 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
     for (const extra of [{}, { wantsLogprobs: true }, { userSeed: true }, { hasGrammar: true }]) {
       const options: GenerateOptions = { adapters: ["upper"], fill, ...(extra.userSeed ? { seed: 42 } : {}) };
       const plan = binding.plan({ ...request, ...extra }, options, scheduling);
+      // The ignored draft leaves the ordinary checkpoint rules, as main's serial
+      // lane checkpointed these requests: no fill, grammar or logprobs.
       expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false,
-        checkpoint: false, promptCache: true, grammarJump: false });
+        checkpoint: !fill && !("wantsLogprobs" in extra) && !("hasGrammar" in extra), promptCache: true, grammarJump: false });
       expect(refusals(plan)).toEqual([]);
       expect(plan.reasons).toContain("draft-incompatible-with-request");
       if (fill) expect(plan.reasons).toContain("fill-incompatible-with-request");

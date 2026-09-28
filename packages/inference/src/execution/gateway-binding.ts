@@ -212,7 +212,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       const decodedDense = plainSoftcap && !!options.turboQuant;
       // Main placed this request ordinarily: no draft provider is opened, so
       // the fallback and its ordinary checkpoints do not depend on provider kind.
-      const ignoredDraft = request.hasDraft && ((ordinaryOnly && request.hasAdapters) || decodedDense);
+      // Softcap adapter requests never speculate (below), whatever their KV.
+      const ignoredDraft = request.hasDraft &&
+        (((ordinaryOnly || plainSoftcap) && request.hasAdapters) || decodedDense);
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
