@@ -425,6 +425,31 @@ one ([State and attention](#state-and-attention)). Captures and their content
 pins remain external. These checks do not cover cross-version checkpoint
 files, hard-kill durability, an external oracle or performance.
 
+Grammar and supplied fill on these graphs have a separate opt-in consumer, the
+[sliding-window grammar and fill test](tests/parity/sliding-grammar-fill.test.ts).
+It takes `MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_MODEL` (a Llama-family artifact) and
+`MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_WINDOW` (at least 4) and builds the same custom
+graph as the rotating-join and continuation consumers. Main served these graphs
+serially, so this tree's direct generation, which keeps main's serial semantics,
+is the reference for the gateway's placement path (plan, `methodRequest` or row
+sampling, the binding's group), with every case past the window:
+- Grammar (JSON schema, choice, EBNF): at B1, tokens, every forward's IDs and
+  valid K/V, and every projection's complete logits. At B2, prepared together
+  or joining late, each row's tokens.
+- With `MLX_BUN_GRAMMAR_JUMP=1`: main's committed forced spans (one unsplit
+  `[token, ...span]` forward, never sampled), checked against the token-by-token
+  run, and the gateway checked against them at B1 and B2.
+- Supplied strict and echo fill: main's generation skipped it on rotating caches.
+  Output must equal the fill-off control, and the session must stay untouched.
+- For each of these shapes: a B2 row cancelled at its third token beside a
+  surviving peer, then reuse of the drained group.
+
+Reading the placement code, the jump and fill checks are expected to report two
+differences from main. The gateway verifies grammar proposals rather than
+committing forced spans, and it applies supplied fill through the shared fill
+binding. This test has not been run. Run it with
+`MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_MODEL=/Llama-3.2-3B-Instruct-4bit MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_WINDOW=8 bun --no-env-file test packages/inference/tests/parity/sliding-grammar-fill.test.ts`.
+
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
 `MLX_BUN_TEST_PADDED_PREFILL_MODEL` and `MLX_BUN_TEST_PADDED_PREFILL_REFERENCE`.
 The external JSON report is `{ runtime, configSha256, rows }`, where `rows` is
