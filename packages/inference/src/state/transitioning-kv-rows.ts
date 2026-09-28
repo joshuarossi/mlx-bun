@@ -97,6 +97,15 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
     else { for (const row of this.rows) row.trim(count); this.syncPositions(true); }
   }
   protected syncPositions(preserve = false): void { this.positions.sync(this.rows, preserve); }
+  /** Reject incompatible storage before appending any row: rows already
+   * converted refuse with no change; otherwise the scheduled maintenance runs
+   * (deferred during prefill), then every row must still be plain. */
+  protected advancePlain(): void {
+    const plain = () => !this.packed && this.rows.every(row => !this.transition.converted(row));
+    if (!plain()) throw new Error("mixed precision rows use their attention state");
+    this.advance();
+    if (!plain()) throw new Error("mixed precision rows use their attention state");
+  }
   protected advance(): void {
     if (this.packed) return;
     if (!this.#prefilling) this.transition.maintain(this.rows);

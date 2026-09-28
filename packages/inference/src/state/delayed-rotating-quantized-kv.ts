@@ -60,7 +60,31 @@ export class DelayedRotatingQuantizedKVCache extends SpeculativeTransitioningKvR
   makeEmptyBatch(): DelayedRotatingQuantizedKVCache {
     return new DelayedRotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits, this.start, this.maintain, undefined, this.speculative);
   }
-  updateAndFetch(): [MlxArray, MlxArray] { throw new Error("mixed precision rows use their attention state"); }
+  /** Plain keys and values while every row is still plain: each row's own
+   * ring answers (one row keeps its physical columns and phase; several share
+   * one aligned geometry) and rows join along the batch; the caller owns them.
+   * Once a row is converted, or the scheduled maintenance converts one, reading
+   * plain is an error raised before any row appends. */
+  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
+    this.advancePlain();
+    const rows = this.rows as AlignedRotatingCache[];
+    if (rows.length === 1) {
+      const [keys, values] = rows[0]!.updateAndFetch(k, v);
+      try { this.syncPositions(true); } catch (error) { keys.dispose(); values.dispose(); throw error; }
+      return [keys, values];
+    }
+    const parts: MlxArray[][] = [];
+    try {
+      for (const [row, cache] of rows.entries()) {
+        const slice = (a: MlxArray) => a.slice([row, 0, 0, 0], [row + 1, a.shape[1]!, a.shape[2]!, a.shape[3]!]);
+        using kr = slice(k), vr = slice(v);
+        parts.push(cache.updateAndFetch(kr, vr));
+      }
+      this.syncPositions(true);
+      const keys = ops.concatAxis(parts.map(part => part[0]!), 0);
+      try { return [keys, ops.concatAxis(parts.map(part => part[1]!), 0)]; } catch (error) { keys.dispose(); throw error; }
+    } finally { for (const array of parts.flat()) array.dispose(); }
+  }
   releaseRopeArr(): void { this.packed?.releaseRopeArr(); }
   appendAndFetch(k: MlxArray, v: MlxArray): KvAttentionView {
     this.advance();
