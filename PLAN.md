@@ -30,8 +30,9 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
 
 ## Three gates before replacing main
 
-Run these on the assembled candidate before saving main to a reference branch
-and merging `refactor/monorepo` into main. Inventory the existing benchmark and
+Finish the remaining implementation first, then run these on the assembled
+candidate before saving main to a reference branch and merging
+`refactor/monorepo` into main. Inventory the existing benchmark and
 evaluation suites from main rather than substituting a smaller smoke suite.
 Pin both source revisions and retain reproducible commands and results outside
 Git; reusable verification code stays in Git. Focused PR checks do not close
