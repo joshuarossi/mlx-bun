@@ -1864,28 +1864,31 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           using last = hidden.slice([0, length - 1, 0], [1, length, width]);
           const logits = model.logitsFromHidden(last); seen.push(record(logits)); return logits;
         };
-        const draw = (logits: MlxArray, step: number) => {
-          using token = sampler.sample(logits, step).token; return token.toIntTokens()[0]!;
-        };
+        // Sampled tokens stay on device until main commits them to history.
+        const draw = (logits: MlxArray, step: number) => sampler.sample(logits, step).token;
+        let pending: MlxArray | null = null;
         try {
           maintain(caches);
           { using ids = ops.fromInt32(prompt.slice(0, -1), [1, prompt.length - 1]); using head = model.forwardHidden(ids, caches); head.eval(); }
           maintain(caches);
-          let pending: number | null;
           { using ids = ops.fromInt32([prompt.at(-1)!], [1, 1]); using hidden = model.forwardHidden(ids, caches);
             using logits = project(hidden); pending = draw(logits, 0); }
-          while (pending !== null) {
-            const token = pending, step = tokens.length;
+          while (pending) {
+            using current = pending;
             pending = null;
+            const token = current.toIntTokens()[0]!, step = tokens.length;
             const forced = step + 1 < maxTokens ? (grammar.accept(token), grammar.jumpForward(maxTokens - (step + 1))) : null;
             if (forced) {
               maintain(caches);
+              sampler.commitDevice(current);
+              sampler.commitNumbers(forced);
               const after = step + 1 + forced.length;
               using ids = ops.fromInt32([token, ...forced], [1, forced.length + 1]);
               using hidden = model.forwardHidden(ids, caches);
               if (after < maxTokens) { using logits = project(hidden); pending = draw(logits, after); }
             } else if (step + 1 < maxTokens) {
               maintain(caches);
+              sampler.commitDevice(current);
               using ids = ops.fromInt32([token], [1, 1]);
               using hidden = model.forwardHidden(ids, caches);
               using logits = project(hidden); pending = draw(logits, step + 1);
@@ -1893,7 +1896,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
             tokens.push(token, ...(forced ?? []));
           }
           return { tokens, seen, accepted: grammar.accepted, kinds: caches.map(cache => cache.constructor.name) };
-        } finally { sampler.dispose(); dispose(caches); f.dispose(); }
+        } finally { pending?.dispose(); sampler.dispose(); dispose(caches); f.dispose(); }
       };
 
       type End = { stopAfter?: number; cancelAfter?: number; throwAfter?: number };
