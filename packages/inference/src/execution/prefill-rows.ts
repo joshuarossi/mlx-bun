@@ -13,6 +13,7 @@ import { MlxStateRows } from "../state/rows";
 import type { P2RTracePhase, P2RTraceAttributes } from "../runtime/trace";
 import type { MlxForwardWork, MlxPreparationWork } from "../contracts/mlx/forward-work";
 import type { KvMaintenance } from "../state/kv-maintenance";
+import { PlainKvReadError, unreadableRows } from "../state/plain-kv-reads";
 
 // Shared work is recorded on every participating request. workId identifies
 // duplicates when constructing a process timeline; row spans are not additive.
@@ -59,6 +60,9 @@ export interface MlxPrefillRowsHost<State extends MlxPrefillState> {
   close(state: State): void;
   filterRows?(keep: readonly number[]): void;
   dispose?(): void;
+  /** Layers the graph reads plain; a row whose next append is not certified
+   * plain-readable there is rejected before the forward. */
+  plainKvReads?: readonly number[];
 }
 
 /** One target preparation lifecycle at B1/B>1. Late joins retain each row's
@@ -150,6 +154,19 @@ export class MlxPrefillRows<State extends MlxPrefillState> implements MlxGroupPr
     if (keep.length !== this.#states.length) this.#filter(keep);
     if (!this.#states.length) { this.dispose(); return true; }
     while (this.#states.length) {
+      if (this.operations.plainKvReads) {
+        const unreadable = new Set(unreadableRows(this.#stateRows?.caches ?? this.#states[0]!.solo,
+          this.operations.plainKvReads, this.#states.length));
+        if (unreadable.size) {
+          const keep: number[] = [];
+          for (const [index, state] of this.#states.entries()) {
+            if (!unreadable.has(index)) { keep.push(index); continue; }
+            this.#release(state); this.operations.reject(state.row, new PlainKvReadError());
+          }
+          this.#filter(keep);
+          if (!this.#states.length) { this.dispose(); return true; }
+        }
+      }
       for (const state of this.#states) state.planned ??= this.operations.plan(state);
       const count = Math.min(this.#states.some(state => state.planned!.atomic) ? Infinity
         : Math.max(1, Math.floor(remaining / this.#states.length)),

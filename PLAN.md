@@ -12,7 +12,11 @@ draft; keep changes focused and reviewed. Standalone Pi integration is deferred.
   continuation, and relevant specialized paths under identical artifacts and
   settings. Exit: opt-in comparisons meet the numerical contracts against pinned
   published golden revisions that record source revisions and oracle versions;
-  synthetic tests alone do not close this item.
+  synthetic tests alone do not close this item. Same-shaped component controls
+  isolate a change without qualifying the candidate: real Gemma2 B2 rows and a
+  different prefill chunk geometry differ from main's B1 in logits and valid KV,
+  an open difference that needs same-shaped oracle or main comparisons and
+  investigation, not a tolerance.
 - [ ] Confirm the long-term mixed-KV reference contract for single-query decode:
   the documented stock mlx-lm path or OptiQ serve's fused default. The opt-in
   state comparison verifies the existing composition; keep that implementation unchanged during

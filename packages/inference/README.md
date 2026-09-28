@@ -295,7 +295,15 @@ inside generation; the new planner reports `fill-incompatible-with-request`
 and selects ordinary continuous decoding. This pair does not qualify B2 or
 cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
-delayed speculation and softcap encoded KV remain excluded. Universal graphs
+delayed speculation and softcap encoded KV remain excluded. A graph whose
+attention reads plain KV (a softcap graph such as Gemma2) instead admits affine
+KV for ordinary continuous decoding, with checkpoints, while each row's storage
+certifies that its next append still reads plain (`Cache.plainKvReads`, answered
+by the storage's own maintenance). At a row's actual transition its pending
+token publishes first, and the row may finish there; otherwise that row alone is
+rejected with `PlainKvReadError` before any shared append (HTTP 501
+`unsupported_kv_transition`, or the stream's error event once it has opened).
+Main's serial path threw at that forward instead. Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
 attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8

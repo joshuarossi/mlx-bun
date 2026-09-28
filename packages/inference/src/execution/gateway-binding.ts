@@ -15,7 +15,8 @@ import { SSMCache } from "../state/ssm";
 import { Gemma4Model } from "../models/gemma4/model";
 import { Qwen35Model } from "../models/qwen/qwen3_5";
 import { MiniCPM5Model } from "../models/minicpm5/model";
-import { affineQuantizedKvStart } from "../state/kv-maintenance";
+import { affineQuantizedKvStart, createKvMaintenance } from "../state/kv-maintenance";
+import type { Cache } from "../contracts/mlx/cache";
 import { runtimeConfig, type RuntimeConfig } from "../runtime/config";
 import { disposeResources } from "../runtime/resources";
 import { legacyCompiledDecodeAvailable } from "../generation/bindings/autoregressive";
@@ -76,6 +77,17 @@ function probeStorage(model: RuntimeModel, ssm: boolean) {
   } finally { disposeResources(caches); }
 }
 
+/** Whether this graph's storage, once delayed affine maintenance binds it,
+ * certifies plain KV reads in every layer: the storage's own capability,
+ * probed once over fresh caches that hold no buffers. */
+function certifiesPlainKvReads(model: RuntimeModel): boolean {
+  const caches = model.makeCache() as Cache[];
+  try {
+    createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 1 }).preparePrefill!(caches);
+    return caches.every(cache => cache.plainKvReads !== undefined);
+  } finally { disposeResources(caches); }
+}
+
 export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
@@ -101,9 +113,14 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // The scheme's per-layer cache guard still decides.
   const encodedKvRows = (model as { encodedKvAttention?: boolean }).encodedKvAttention === true &&
     !!storage?.convertible.length && storage.convertible.every(Boolean);
+  // A graph reading plain KV serves affine KV rows while their storage reads
+  // plain: rows the storage no longer certifies are rejected before any
+  // shared append (execution/batch-group.ts). Bound once, from the storage.
+  const plainKvRows = plainSoftcap && !!storage?.convertible.length && storage.convertible.every(Boolean) &&
+    certifiesPlainKvReads(model);
   // Delayed affine KV (rows convert once they pass quantizedKvStart) batches row by row.
   const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model ||
-    model instanceof MiniCPM5Model || encodedKvRows };
+    model instanceof MiniCPM5Model || encodedKvRows || plainKvRows };
   const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   // MiniCPM5's and encoded-KV graphs' delayed affine KV are qualified for ordinary
@@ -111,8 +128,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // fill, as main did; actual delayed speculation and fill remain refused.
   // Grammar jump falls back to ordinary masking. Generation checkpoints are
   // qualified for both. Their adapters use the same row context.
+  const affineKv = (options: GenerateOptions) => !options.turboQuant && (options.kvBits !== undefined || !!options.kvConfig?.length);
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
-    (model instanceof MiniCPM5Model || encodedKvRows) && delayedAffine(options);
+    ((model instanceof MiniCPM5Model || encodedKvRows) && delayedAffine(options)) || (plainKvRows && affineKv(options));
   const cachesBatchable = () => storage?.batchable ?? true;
   const supportsTargetRows = () => storage?.targetRows ?? false;
   // Grouped speculation needs batchable caches, row layouts for verification and
@@ -191,10 +209,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       return resolveExecution(request, {
         ...scheduling,
         continuous: scheduling.continuous && !(ordinaryOnly && !ignoredAdapterDraft && request.hasDraft),
-        quantizedBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
+        quantizedBatch: (!plainSoftcap || (plainKvRows && affineKv(options))) && !denoising && scheduling.quantizedBatch,
         // Paging is decided on the resolved plan, which never checkpoints a paged
         // row; an adapter row that bypasses paging checkpoints as main's serial path did.
-        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || encodedKvRows) && !!continuationServices?.checkpointPersistence &&
+        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || encodedKvRows || plainKvRows) && !!continuationServices?.checkpointPersistence &&
           (!request.hasDraft || ignoredAdapterDraft) && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
@@ -234,10 +252,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     },
     cachesBatchable,
     kvBatchable(scheme) {
-      if (!storage || (plainSoftcap && scheme.kind !== "bf16")) return false;
+      if (!storage || (plainSoftcap && scheme.kind !== "bf16" &&
+        !(plainKvRows && (scheme.kind === "affine-uniform" || scheme.kind === "affine-config")))) return false;
       return scheme.batchable(model.config, layer => storage.convertible[layer] === true,
         storage.convertible.length, kvBatchCapabilities);
     },
-    createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options, kvBatchCapabilities }),
+    createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options, kvBatchCapabilities,
+      ...(plainSoftcap ? { plainKvReads: true } : {}) }),
   };
 }
