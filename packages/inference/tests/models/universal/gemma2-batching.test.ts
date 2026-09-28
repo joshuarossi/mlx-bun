@@ -1820,6 +1820,134 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         expect([resumed.captured.get(4), resumed.captured.get(6)]).toEqual([control.captured.get(4), control.captured.get(6)]);
       } finally { await rm(directory, { recursive: true, force: true }); }
     });
+
+    // Committed grammar spans over TurboQuant, as main's serial jump did: one
+    // maintenance call, then one unsplit [token, ...forced] forward over the
+    // maintained caches, which decode on read; the last position is projected.
+    describe("grammar spans", () => {
+      /** A permissive matcher that forces the given spans, one per jump. */
+      const spanGrammar = (spans: readonly (readonly number[])[]) => {
+        const accepted: number[] = [];
+        let next = 0;
+        const grammar = {
+          accepted, get isTerminated() { return false; }, ready: async () => {},
+          applyMask: (scores: MlxArray) => scores,
+          accept(token: number) { accepted.push(token); },
+          jumpForward(budget: number) {
+            const span = spans[next];
+            if (!span || budget < span.length) return null;
+            next++; accepted.push(...span); return [...span];
+          },
+          dispose() {},
+        };
+        return grammar as typeof grammar & import("../../../src/sampling").GrammarController;
+      };
+      const turbo = (start: number) => resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start });
+      type Projection = { shape: number[]; dtype: string; sha256: string };
+      const record = (logits: MlxArray): Projection => ({ shape: [...logits.shape], dtype: logits.dtypeName,
+        sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
+
+      /** Main's serial order with jump-forward (generate.ts at 02d723a). */
+      const serialSpans = async (prompt: number[], maxTokens: number, start: number, spans: number[][]) => {
+        const { createKvMaintenance } = await import("../../../src/state/kv-maintenance");
+        const { makeStepSampler } = await import("../../../src/sampling");
+        const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), caches = model.makeCache();
+        const maintain = createKvMaintenance(turbo(start).generationOptions);
+        const grammar = spanGrammar(spans);
+        const sampler = makeStepSampler({ temperature: 0, grammar }, { tokenRepresentation: "device", grammarWait: "external",
+          historyUpdate: "manual", initialHistory: prompt });
+        const seen: Projection[] = [], tokens: number[] = [];
+        const project = (hidden: MlxArray) => {
+          const [, length, width] = hidden.shape as [number, number, number];
+          using last = hidden.slice([0, length - 1, 0], [1, length, width]);
+          const logits = model.logitsFromHidden(last); seen.push(record(logits)); return logits;
+        };
+        const draw = (logits: MlxArray, step: number) => {
+          using token = sampler.sample(logits, step).token; return token.toIntTokens()[0]!;
+        };
+        try {
+          maintain(caches);
+          { using ids = ops.fromInt32(prompt.slice(0, -1), [1, prompt.length - 1]); using head = model.forwardHidden(ids, caches); head.eval(); }
+          maintain(caches);
+          let pending: number | null;
+          { using ids = ops.fromInt32([prompt.at(-1)!], [1, 1]); using hidden = model.forwardHidden(ids, caches);
+            using logits = project(hidden); pending = draw(logits, 0); }
+          while (pending !== null) {
+            const token = pending, step = tokens.length;
+            pending = null;
+            const forced = step + 1 < maxTokens ? (grammar.accept(token), grammar.jumpForward(maxTokens - (step + 1))) : null;
+            if (forced) {
+              maintain(caches);
+              const after = step + 1 + forced.length;
+              using ids = ops.fromInt32([token, ...forced], [1, forced.length + 1]);
+              using hidden = model.forwardHidden(ids, caches);
+              if (after < maxTokens) { using logits = project(hidden); pending = draw(logits, after); }
+            } else if (step + 1 < maxTokens) {
+              maintain(caches);
+              using ids = ops.fromInt32([token], [1, 1]);
+              using hidden = model.forwardHidden(ids, caches);
+              using logits = project(hidden); pending = draw(logits, step + 1);
+            }
+            tokens.push(token, ...(forced ?? []));
+          }
+          return { tokens, seen, accepted: grammar.accepted, kinds: caches.map(cache => cache.constructor.name) };
+        } finally { sampler.dispose(); dispose(caches); f.dispose(); }
+      };
+
+      type End = { cancelAfter?: number; throwAfter?: number };
+      const submitSpans = async (env: Awaited<ReturnType<typeof setup>>, prompt: number[], maxTokens: number,
+        spans: number[][], end: End = {}, onPublish?: () => void) => {
+        const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
+        const grammar = spanGrammar(spans), tokens: number[] = [], abort = new AbortController();
+        const options = { temperature: 0, maxTokens, ...env.kvScheme!.generationOptions, grammar };
+        const failure = new Error("consumer failed");
+        const outcome = await env.group.submit({ promptIds: prompt, maxTokens, eosTokenIds: [], grammar, signal: abort.signal,
+          method: bindGrammarGroupRequests(env.model)(options),
+          onToken(token: number) {
+            tokens.push(token); onPublish?.();
+            if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
+            if (tokens.length === end.throwAfter) throw failure;
+          } }).then(stats => stats.finishReason as string, (error: Error) => error === failure ? "consumer failed" : error.name);
+        return { tokens, outcome, accepted: grammar.accepted };
+      };
+      const spansA = [[11, 12], [13]], spansB = [[21], [22, 23]];
+
+      for (const start of [0, A.length + 2]) test(`solo spans from start ${start} equal main's serial jump in tokens, matcher history and every projection`, async () => {
+        const reference = await serialSpans(A, 9, start, spansA);
+        // Nonempty spans were forced and sampling continued after them; full layers converted.
+        expect(reference.tokens).toHaveLength(9);
+        expect(reference.tokens).toEqual(expect.arrayContaining([11, 12, 13]));
+        expect(reference.kinds).toEqual(types.map(type => type === F ? "TurboQuantKVCache" : "RotatingKVCache"));
+        const env = await setup(start, { turbo: true });
+        try {
+          const seen = projections(env);
+          const solo = await submitSpans(env, A, 9, spansA);
+          expect(solo).toEqual({ tokens: reference.tokens, outcome: "length", accepted: reference.accepted });
+          expect(seen).toEqual(reference.seen);
+        } finally { await env.close(); }
+      });
+
+      test("two interleaved span rows each equal their solo reference; a cancelled or failing row leaves its peer and the group usable", async () => {
+        // A runs longer than B, so both are active together.
+        const referenceA = await serialSpans(A, 12, 0, spansA), referenceB = await serialSpans(B, 7, 0, spansB);
+        const env = await setup(0, { turbo: true });
+        try {
+          let overlap = 0;
+          const watch = () => { overlap = Math.max(overlap, env.group.activeRows); };
+          const [a, b] = await Promise.all([submitSpans(env, A, 12, spansA, {}, watch), submitSpans(env, B, 7, spansB, {}, watch)]);
+          expect(overlap).toBe(2);
+          expect(a).toEqual({ tokens: referenceA.tokens, outcome: "length", accepted: referenceA.accepted });
+          expect(b).toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
+          for (const [end, outcome] of [[{ cancelAfter: 2 }, "AbortError"], [{ throwAfter: 2 }, "consumer failed"]] as const) {
+            const [left, peer] = await Promise.all([submitSpans(env, A, 12, spansA, end), submitSpans(env, B, 7, spansB)]);
+            expect(left, outcome).toMatchObject({ tokens: referenceA.tokens.slice(0, 2), outcome });
+            expect(peer, outcome).toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
+          }
+          // The group serves the same request again after both failures.
+          expect(await submitSpans(env, A, 12, spansA)).toEqual({ tokens: referenceA.tokens, outcome: "length", accepted: referenceA.accepted });
+        } finally { await env.close(); }
+      });
+    });
   });
 });
 }

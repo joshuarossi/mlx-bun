@@ -131,7 +131,7 @@ test("a dense-read graph takes KV schemes whose own maintenance certifies dense 
   }
 });
 
-test("TurboQuant on a dense-read graph decodes ordinarily as main did: drafts and supplied fill are ignored, grammar jump is refused where main used it", () => {
+test("TurboQuant on a dense-read graph decodes as main did: drafts and supplied fill are ignored, certified grammar spans commit", () => {
   const turbo = { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 } as GenerateOptions;
   const request = { ...shape, turboQuant: true }, scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
   const drafted = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
@@ -154,11 +154,30 @@ test("TurboQuant on a dense-read graph decodes ordinarily as main did: drafts an
     expect(plan.reasons).toContain("fill-incompatible-with-request");
     expect(plain.methodRequest!(plan, withFill)).toBeUndefined();
   }
-  // Direct grammar jump likewise, only when it is enabled.
-  const jumping = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(softcapUniversal()));
-  expect(refusals(jumping.plan({ ...request, hasGrammar: true }, turbo, schedule))).toEqual(["continuous-unavailable"]);
-  expect(jumping.plan({ ...request, hasGrammar: true, wantsLogprobs: true }, turbo, schedule))
+  // Direct grammar jump commits spans over TurboQuant, as main's serial path did,
+  // once the gateway has certified the scheme; grammar keeps its checkpoint exclusion.
+  const jumpRuntime = createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" });
+  const jumping = withRuntimeConfig(jumpRuntime, () => bindMlxGateway(softcapUniversal()));
+  jumping.configureContinuation!({ checkpointPersistence: {} } as never);
+  const spans = jumping.plan({ ...request, hasGrammar: true }, turbo, scheduling);
+  expect(spans).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true, fill: false, checkpoint: false });
+  expect(refusals(spans)).toEqual([]);
+  expect(jumping.methodRequest!(spans, turbo)!.key).toBe("grammar-forced-span");
+  // Logprobs keep masking; an uncertified scheme is refused; affine KV, which stops
+  // reading dense at its transition, keeps masking.
+  expect(jumping.plan({ ...request, hasGrammar: true, wantsLogprobs: true }, turbo, scheduling))
     .toMatchObject({ mechanism: "continuous", grammarJump: false });
+  expect(jumping.plan({ ...request, hasGrammar: true }, turbo, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
+  const affine = jumping.plan({ ...shape, kvQuant: true, hasGrammar: true }, { kvBits: 4 }, scheduling);
+  expect(affine).toMatchObject({ mechanism: "continuous", grammarJump: false });
+  expect(affine.reasons).toContain("grammar-jump-incompatible-with-request");
+  // A configured draft is ignored and the spans still commit, as in main.
+  const draftedJump = withRuntimeConfig(jumpRuntime,
+    () => bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 }));
+  const ignoredJump = draftedJump.plan({ ...request, hasGrammar: true, hasDraft: true }, turbo, scheduling);
+  expect(ignoredJump).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true });
+  expect(draftedJump.methodRequest!(ignoredJump, turbo)!.key).toBe("grammar-forced-span");
+  // Without the jump flag, grammar masks as ever.
   expect(plain.plan({ ...request, hasGrammar: true }, turbo, schedule)).toMatchObject({ mechanism: "continuous", grammarJump: false });
 });
 
@@ -197,9 +216,13 @@ test("Gemma2 softcap selects committed grammar spans without changing the ordina
   // separately tracked adapter-bypass request shape.
   expect(binding.plan({ ...grammar, hasAdapters: true }, { pagedKv: {} }, schedule))
     .toMatchObject({ mechanism: "unsupported", pagedKv: false, grammarJump: false });
-  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, kvQuant: true },
-    { ...grammar, turboQuant: true }, { ...grammar, hasVision: true }])
+  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, kvQuant: true }, { ...grammar, hasVision: true }])
     expect(place(binding, request).grammarJump).toBe(false);
+  // TurboQuant decodes on read: once the gateway has certified the scheme, its
+  // spans commit too; an uncertified scheme stays refused.
+  expect(place(binding, { ...grammar, turboQuant: true })).toMatchObject({ mechanism: "continuous", grammarJump: true });
+  expect(binding.plan({ ...grammar, turboQuant: true }, {}, { ...schedule, quantizedBatch: false }))
+    .toMatchObject({ mechanism: "unsupported", grammarJump: false });
 });
 
 test.each(families)("%s places grammar with a bound grouped draft exactly as the draft alone", (_, model) => {

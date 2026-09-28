@@ -213,16 +213,11 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
       // Main placed this request ordinarily: no draft provider is opened, so
       // the fallback and its ordinary checkpoints do not depend on provider kind.
       const ignoredDraft = request.hasDraft && ((ordinaryOnly && request.hasAdapters) || decodedDense);
-      // Main's serial path also jumped grammar spans over that TurboQuant
-      // storage; the shared span method is not qualified over it yet, so exactly
-      // the requests main jumped are refused, never downgraded.
-      const pendingDecodedJump = decodedDense &&
-        runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && request.hasGrammar && !request.wantsLogprobs;
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredDraft && request.hasDraft) && !pendingDecodedJump,
+        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredDraft && request.hasDraft),
         // The scheme's dense-read certification is part of the scheduling fact (kvBatchable).
         quantizedBatch: !denoising && scheduling.quantizedBatch,
         // Paging is decided on the resolved plan, which never checkpoints a paged
@@ -235,8 +230,13 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
+        // Committed spans append through the graph's dense reads after one
+        // maintenance call, as main's serial jump did. TurboQuant storage decodes
+        // on read, so its spans run once the gateway has certified the scheme's
+        // dense reads (kvBatchable); affine storage stops reading dense at its
+        // transition and keeps ordinary masking.
         sharedGrammarJump: !!grammarSpans && !request.hasVision && !request.kvQuant &&
-          !request.turboQuant && !options.pagedKv,
+          (!request.turboQuant || scheduling.quantizedBatch) && !options.pagedKv,
         // Main filled only through a committed append declaring the scheme's
         // formats (shouldUseFill); this graph declares none for TurboQuant, so
         // supplied fill decodes ordinarily there, as it did in main.
