@@ -755,6 +755,25 @@ Both requests then continue from those checkpoints, twice from RAM and once in a
 fresh process from the flushed SSD store, with identical records. Main parity is
 external evidence; B>2, KV quantization, HTTP and performance are not covered.
 
+The [grouped speculation test](tests/parity/speculative-group.test.ts) covers the
+other provider, target and cache combinations main served. It takes
+`MLX_BUN_TEST_SPEC_TARGET`, `MLX_BUN_TEST_SPEC_KIND`
+(`ngram|two-model|assistant|mtp|dspark|deepspec`) and `MLX_BUN_TEST_SPEC_DRAFT`
+(none for n-gram), and optionally `MLX_BUN_TEST_SPEC_KV` (`bf16|4|8|turbo|config`),
+`MLX_BUN_TEST_SPEC_KV_START`, `MLX_BUN_TEST_SPEC_DEPTH`, `MLX_BUN_TEST_SPEC_WINDOW`
+(the custom sliding-window graph over a Llama-family target) and
+`MLX_BUN_TEST_SPEC_ADAPTER`. It ports main's shared-group, generated-prefix and
+adapter-lookup consumers onto placement, `methodRequest` and the binding's group:
+B1 equal to the serial `specServeRun` producer where that producer serves the KV
+settings, repeatable B4 rounds, stop/failure/abort retirement, late and prefill
+joins, prompt snapshots with their draft attachment, generated prefixes restored
+from RAM and a fresh SSD store after a provider reload, and, with an adapter,
+B2/B4 adapter rows with the draft configured against B1 controls, context
+partitioning, failure cleanup and adapter-isolated prefix reuse. Placement decides
+whether adapter rows speculate; the test requires what main did. No run of this
+test is recorded yet. For example:
+`MLX_BUN_TEST_SPEC_TARGET=/gemma4-e4b MLX_BUN_TEST_SPEC_KIND=assistant MLX_BUN_TEST_SPEC_DRAFT=/e4b-assistant MLX_BUN_TEST_SPEC_KV=4 bun --no-env-file test packages/inference/tests/parity/speculative-group.test.ts`.
+
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,
 and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.
 
