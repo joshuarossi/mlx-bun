@@ -284,9 +284,11 @@ rejected with `DenseKvReadError` before any shared append (HTTP 501
 Main's serial path threw at that forward instead. TurboQuant storage decodes on
 read, so these graphs admit TurboQuant KV for ordinary continuous decoding
 throughout, with checkpoints; a configured draft is ignored, as main's serial
-path did. Fill and direct grammar jump over it, which main served serially,
-are not yet shared: exactly those requests are refused with the typed execution
-error. Universal graphs
+path did. Supplied fill decodes ordinarily without fill, as in main, whose
+serial path filled only through a committed append declaring the scheme's
+formats (none for TurboQuant on this graph). Direct grammar jump over it, which
+main served serially, is not yet shared: exactly those requests are refused with
+the typed execution error. Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
 attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8

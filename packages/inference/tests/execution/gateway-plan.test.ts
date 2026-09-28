@@ -131,7 +131,7 @@ test("a dense-read graph takes KV schemes whose own maintenance certifies dense 
   }
 });
 
-test("TurboQuant on a dense-read graph decodes ordinarily as main did: drafts are ignored, fill and grammar jump are refused where main used them", () => {
+test("TurboQuant on a dense-read graph decodes ordinarily as main did: drafts and supplied fill are ignored, grammar jump is refused where main used it", () => {
   const turbo = { turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 } as GenerateOptions;
   const request = { ...shape, turboQuant: true }, scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
   const drafted = bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 });
@@ -141,13 +141,19 @@ test("TurboQuant on a dense-read graph decodes ordinarily as main did: drafts ar
   expect(ignored).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
   expect(ignored.reasons).toContain("draft-incompatible-with-request");
   expect(drafted.methodRequest!(ignored, turbo)).toBeUndefined();
-  // Fill main would have run is refused, not downgraded; where main did not fill, decoding is ordinary.
+  // Supplied fill decodes ordinarily, as main's did: main filled only through a
+  // committed append declaring TurboQuant formats, which this graph lacks. No fill
+  // method binds, and a request supplying fill stays ineligible for checkpoints.
   const plain = bindMlxGateway(softcapUniversal());
+  plain.configureContinuation!({ checkpointPersistence: {} } as never);
   const withFill = { ...turbo, ...fillOptions(false) };
-  expect(refusals(plain.plan(request, withFill, schedule))).toEqual(["continuous-unavailable"]);
-  for (const other of [{ userSeed: true }, { wantsLogprobs: true }, { hasGrammar: true }])
-    expect(plain.plan({ ...request, ...other }, withFill, schedule), JSON.stringify(other))
-      .toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false });
+  for (const other of [{}, { userSeed: true }, { wantsLogprobs: true }, { hasGrammar: true }]) {
+    const plan = plain.plan({ ...request, ...other }, withFill, scheduling);
+    expect(plan, JSON.stringify(other)).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: false });
+    expect(refusals(plan)).toEqual([]);
+    expect(plan.reasons).toContain("fill-incompatible-with-request");
+    expect(plain.methodRequest!(plan, withFill)).toBeUndefined();
+  }
   // Direct grammar jump likewise, only when it is enabled.
   const jumping = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(softcapUniversal()));
   expect(refusals(jumping.plan({ ...request, hasGrammar: true }, turbo, schedule))).toEqual(["continuous-unavailable"]);
