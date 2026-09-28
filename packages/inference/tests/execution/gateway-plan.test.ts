@@ -411,9 +411,11 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   const logprobs = binding.plan({ ...draft, wantsLogprobs: true }, {}, scheduling);
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
-  // Encoded KV, media and paging stay refused, including when fill is supplied.
+  // Drafted affine KV, TurboQuant, media and paging stay refused, including when
+  // fill is supplied. Affine KV on this graph is ordinary-only: as on every graph
+  // with delayed affine rows, a drafted request is refused rather than speculated.
   for (const [request, options, expected] of [
-    [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["kv-scheme-batch-unsupported"]],
+    [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["continuous-unavailable"]],
     [{ ...draft, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, ["turbo-kv-batch-unsupported"]],
     [{ ...draft, hasVision: true }, {}, ["media-batch-unsupported"]],
     [draft, { pagedKv: {} }, ["paged-kv-batch-unsupported"]],
@@ -509,8 +511,14 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
   expect(model.loraState.active).toEqual(["upper"]);
   leave();
   expect(model.loraState.active).toBe(previous);
+  // Over affine KV the adapter request likewise ignores the draft and decodes
+  // ordinarily, as on every graph with delayed affine rows, keeping its checkpoints.
+  const affine = { kvBits: 4, adapters: ["upper"] } as GenerateOptions;
+  const ordinary = binding.plan({ ...request, kvQuant: true }, affine, scheduling);
+  expect(ordinary).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: true, grammarJump: false });
+  expect(ordinary.reasons).toContain("draft-incompatible-with-request");
+  expect(binding.methodRequest!(ordinary, affine)).toBeUndefined();
   for (const [extra, options, reason] of [
-    [{ kvQuant: true }, { kvBits: 4 }, "kv-scheme-batch-unsupported"],
     [{ turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, "turbo-kv-batch-unsupported"],
     [{ hasVision: true }, {}, "media-batch-unsupported"],
     [{}, { pagedKv: {} }, "paged-kv-batch-unsupported"],
