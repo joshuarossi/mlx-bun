@@ -22,10 +22,16 @@ needs a separate installation or release boundary.
 - The app uses continuous batching by default, including a single request. Do
   not add a separate serial serving lane. Preserve main's application behavior
   while giving each domain a clear owner; benchmark the full draft afterward.
-- Python reference oracles run externally. This repository has no Python
-  dependency, venv, oracle setup script, or Python dependency lock. Comparison
-  data and goldens are published datasets referenced by revision; this repository
-  carries code, tests, and documentation.
+- Inference and the app do not require a Python environment. Separately runnable
+  verification and evaluation tools may use pinned Python environments; their
+  reusable code, launch configuration, and instructions belong in Git. Runtime
+  environments and generated data stay outside the checkout. Docker runs the
+  optional generated-code verifier and CPU evaluation clients; MLX/Metal GPU
+  oracles run natively on macOS. Keep mlx-lm in its own external checkout and
+  environment: our runner references that path and records its revision and
+  versions, without vendoring the oracle or its environment. A containerized
+  client may call the native app over HTTP. Fixtures and goldens retained for
+  reuse live in external datasets referenced by immutable revision.
 
 ## Composition and public APIs
 
@@ -257,12 +263,24 @@ investigations likely to recur. Keep the body frozen, allow a small mutable
 status header, and append dated corrections. Foundational conventions belong
 in the decisions list above. Recover historical decisions only as needed.
 
-No measurement records, goldens, or benchmark data in Git. Published dataset
-records carry machine, chip, RAM, OS, commit, artifact, configuration, context
-length, batch, date, and results; corrections reference the original record.
-Quotable numbers appear as text in documentation with that provenance. A negative performance
-result merits a decision record only with a paired A/B on a named machine and
-a question likely to recur; preserve its conditions rather than generalizing.
+Keep reusable runners and instructions, retain compact results, and store large
+datasets externally. A result records the command, source commits, runtime and
+oracle versions, model and dataset revisions, machine, configuration, seeds,
+execution shape, scores or timings, and failed or skipped cases needed to repeat
+the run. Record corrections explicitly. CI and external run directories can hold
+these summaries; curate consequential results in their owning documentation or
+PR rather than creating a second status ledger.
+
+Raw tensor captures, generated checkpoints, fixtures, goldens, and bulk benchmark
+output do not belong in Git. Keep only the evidence needed for the current
+investigation; permanent retention of every capture is not required. Retained
+reusable data belongs in an external dataset, such as Hugging Face, pinned by
+revision and content hash. Runners default to an output directory outside the
+checkout and distinguish the small result summary from optional detailed
+captures. Instructions must make the inputs and procedure reproducible without
+requiring a machine-local archive. A negative performance result merits a
+decision record only with a paired A/B on a named machine and a question likely
+to recur; preserve its conditions rather than generalizing.
 
 Historical source: pre-refactor main at
 [`02d723a`](https://github.com/joshuarossi/mlx-bun/tree/02d723a2875153196f8c6c10bce2daf6f0044655)

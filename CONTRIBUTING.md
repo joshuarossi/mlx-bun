@@ -33,10 +33,14 @@ and explain and test intentional behavior corrections.
 - **Lab:** a path without an oracle needs explicit numerical acceptance criteria;
   it must win a paired A/B before becoming a default.
 
-Run Python references externally, as required by the architecture, and publish
-the resulting goldens as a dataset revision that records the exact oracle
-versions and source revisions. An opt-in test verifies against a pinned revision
-or regenerates it; this repository stores no comparison data. Use identical
+Run Python references in separate pinned environments, as required by the
+architecture. MLX/Metal GPU references run natively on macOS; run mlx-lm from
+its own external checkout/environment and record its exact revision and versions.
+Docker can run CPU verification and evaluation clients that call the native
+server. Keep reusable runners and instructions in Git. If goldens are retained, publish them as an
+external dataset revision recording the oracle and source versions. An opt-in
+test verifies against a pinned revision or regenerates it; this repository
+stores no comparison tensors or datasets. Use identical
 artifacts, tokens, settings, and state transitions; compare the migrated path
 with both its applicable oracle and pre-refactor main. State exactly which
 models and paths the evidence covers.
@@ -55,8 +59,11 @@ settings and execution shapes, including single-request and batched workloads.
 Retain the same numerical rigor and require performance to match main; investigate
 measured regressions, fix their causes, and rerun affected parity and benchmarks.
 A cleaner architecture is not grounds for accepting degraded performance.
-Reusable verification code and scripts belong in Git; generated captures,
-checkpoints and benchmark output remain external operational artifacts.
+Retain compact results with the reproduction metadata specified in architecture,
+including failures and skips. Reusable verification code and scripts belong in
+Git; generated captures, checkpoints and benchmark output remain external
+operational artifacts. Saving every raw capture permanently is not a gate;
+reproducible inputs, an executable procedure and accurate results are.
 
 ## Commits and review
 
