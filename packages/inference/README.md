@@ -301,7 +301,8 @@ scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
 maintenance that owns it, probed when the binding or group is composed). Affine
 KV serves ordinary continuous decoding, with checkpoints, while each row's
-storage still reads plain. At a row's actual transition its pending token
+storage still reads plain; on a softcap graph a configured draft is ignored, as
+main's serial path did. At a row's actual transition its pending token
 publishes first, and the row may finish there; otherwise that row alone is
 rejected with `DenseKvReadError` before any shared append (HTTP 501
 `unsupported_kv_transition`, or the stream's error event once it has opened).

@@ -500,22 +500,21 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   const logprobs = binding.plan({ ...draft, wantsLogprobs: true }, {}, scheduling);
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
-  // Over TurboQuant, which this graph reads decoded, a drafted request decodes
-  // ordinarily as main's serial path did: the draft is ignored, and so is supplied
+  // Over encoded KV, TurboQuant read decoded or affine until a row's transition,
+  // a drafted request decodes ordinarily as main's serial path did (main bound no
+  // grouped speculation on this graph): the draft is ignored, and so is supplied
   // fill, as for any drafted request; checkpoints follow the ordinary rules.
   const turbo = { turboQuant: { kBits: 8, vBits: 3 } } as GenerateOptions;
-  for (const supplied of [turbo, { ...turbo, ...fillOptions(true) }]) {
-    const plan = binding.plan({ ...draft, turboQuant: true }, supplied, scheduling);
-    expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: !supplied.fill });
-    expect(plan.reasons).toContain("draft-incompatible-with-request");
-    expect(binding.methodRequest!(plan, supplied)).toBeUndefined();
-  }
-  // Drafted affine KV, media and paging stay refused, including when fill is
-  // supplied. Affine KV on this graph is ordinary-only: as on the other graphs
-  // restricted to ordinary affine execution, a drafted request is refused rather
-  // than speculated.
+  const affine = { kvBits: 4, quantizedKvStart: 64 } as GenerateOptions;
+  for (const [flag, kv] of [[{ turboQuant: true }, turbo], [{ kvQuant: true }, affine]] as const)
+    for (const supplied of [kv, { ...kv, ...fillOptions(true) }]) {
+      const plan = binding.plan({ ...draft, ...flag }, supplied, scheduling);
+      expect(plan, JSON.stringify(flag)).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: !supplied.fill });
+      expect(plan.reasons).toContain("draft-incompatible-with-request");
+      expect(binding.methodRequest!(plan, supplied)).toBeUndefined();
+    }
+  // Drafted media and paging stay refused, including when fill is supplied.
   for (const [request, options, expected] of [
-    [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["continuous-unavailable"]],
     [{ ...draft, hasVision: true }, {}, ["media-batch-unsupported"]],
     [draft, { pagedKv: {} }, ["paged-kv-batch-unsupported"]],
   ] as const) {
