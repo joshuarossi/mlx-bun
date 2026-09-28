@@ -465,6 +465,13 @@ test.each(["finish", "cancel", "consumer", "grammar"])("mixed work preserves row
 });
 
 
+test("the forced-span binding requires the graph's dense-read layers as distinct layer indices", () => {
+  const f = fixture();
+  expect(() => bindGrammarGroupRequests(f.model, undefined as never)).toThrow(TypeError);
+  for (const layers of [[-1], [0.5], [0, 0]]) expect(() => bindGrammarGroupRequests(f.model, layers), String(layers)).toThrow(RangeError);
+  expect(bindGrammarGroupRequests(f.model, [0])({}).key).toBe("grammar-forced-span");
+});
+
 function grammarGroupFixture() {
   const f = fixture();
   const forwards: { owner: number; ids: number[] }[] = [];
@@ -484,7 +491,10 @@ function grammarGroupFixture() {
     ids.forEach((token, index) => { values[index * 16 + (token + 1) % 16] = 20; });
     return MlxArray.fromFloat32(values, [1, ids.length, 16]);
   };
-  const method = bindGrammarGroupRequests(f.model);
+  // The graph reads its one layer's keys and values plain. The binding keeps
+  // its own copy: a layer the caller adds later would refuse every row.
+  const layers = [0], method = bindGrammarGroupRequests(f.model, layers);
+  layers.push(1);
   const request = (forcedIds: number[], terminal = false, overrides: import("../../src/generation/index").GenerateOptions = {}) => {
     let jumped = false, terminated = false, disposed = 0;
     const accepted: number[] = [], tokens: number[] = [];

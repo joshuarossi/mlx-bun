@@ -163,14 +163,20 @@ test("TurboQuant on a dense-read graph decodes as main did: drafts and supplied 
   expect(spans).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true, fill: false, checkpoint: false });
   expect(refusals(spans)).toEqual([]);
   expect(jumping.methodRequest!(spans, turbo)!.key).toBe("grammar-forced-span");
-  // Logprobs keep masking; an uncertified scheme is refused; affine KV, which stops
-  // reading dense at its transition, keeps masking.
+  // Logprobs keep masking; an uncertified scheme is refused.
   expect(jumping.plan({ ...request, hasGrammar: true, wantsLogprobs: true }, turbo, scheduling))
     .toMatchObject({ mechanism: "continuous", grammarJump: false });
   expect(jumping.plan({ ...request, hasGrammar: true }, turbo, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
-  const affine = jumping.plan({ ...shape, kvQuant: true, hasGrammar: true }, { kvBits: 4 }, scheduling);
-  expect(affine).toMatchObject({ mechanism: "continuous", grammarJump: false });
-  expect(affine.reasons).toContain("grammar-jump-incompatible-with-request");
+  // Certified delayed affine KV commits spans the same way; the span method
+  // refuses a row before an append its storage would no longer read plain.
+  const affineKv = { kvBits: 4 }, affineRequest = { ...shape, kvQuant: true, hasGrammar: true };
+  const affine = jumping.plan(affineRequest, affineKv, scheduling);
+  expect(affine).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true, fill: false, checkpoint: false });
+  expect(refusals(affine)).toEqual([]);
+  expect(jumping.methodRequest!(affine, affineKv)!.key).toBe("grammar-forced-span");
+  expect(jumping.plan({ ...affineRequest, wantsLogprobs: true }, affineKv, scheduling))
+    .toMatchObject({ mechanism: "continuous", grammarJump: false });
+  expect(jumping.plan(affineRequest, affineKv, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
   // A configured draft is ignored and the spans still commit, as in main.
   const draftedJump = withRuntimeConfig(jumpRuntime,
     () => bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 }));

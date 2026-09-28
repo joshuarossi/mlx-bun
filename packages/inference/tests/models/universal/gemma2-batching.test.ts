@@ -1404,14 +1404,17 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   const HEAD_DIM = 64;
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
   const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean;
-    promptCache?: import("../../../src/execution/batch-types").RowPromptCache } = {}) => {
-    const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
+    promptCache?: import("../../../src/execution/batch-types").RowPromptCache; grammarJump?: boolean;
+    kvScheme?: ReturnType<typeof resolveKvScheme> } = {}) => {
+    const { bindMlxGateway, createRuntimeConfig, createRowSampling, withRuntimeConfig } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     const f = mixedFixture(types, true, HEAD_DIM), model = f.make();
-    const binding = bindMlxGateway(model);
-    const kvScheme = start === null ? undefined : options.turbo
+    const binding = options.grammarJump
+      ? withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(model))
+      : bindMlxGateway(model);
+    const kvScheme = options.kvScheme ?? (start === null ? undefined : options.turbo
       ? resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start })
-      : resolveKvScheme({ override: 4, quantizedKvStart: start });
+      : resolveKvScheme({ override: 4, quantizedKvStart: start }));
     let held = false;
     const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
       ...(options.promptCache ? { promptCache: options.promptCache } : {}),
@@ -1463,6 +1466,121 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   // read before the next build (unpipelined), exactly as the boundary flush does.
   const shape = { hasVision: false, hasAdapters: false, hasRepetitionPenalty: false, userSeed: false, kvQuant: true,
     turboQuant: false, hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: false };
+
+  /** The graph's attention reads every layer's keys and values plain. */
+  const LAYERS = types.map((_, layer) => layer);
+  /** A permissive matcher that forces the given spans, one per jump. */
+  const spanGrammar = (spans: readonly (readonly number[])[]) => {
+    const accepted: number[] = [];
+    let next = 0;
+    const grammar = {
+      accepted, get isTerminated() { return false; }, ready: async () => {},
+      applyMask: (scores: MlxArray) => scores,
+      accept(token: number) { accepted.push(token); },
+      jumpForward(budget: number) {
+        const span = spans[next];
+        if (!span || budget < span.length) return null;
+        next++; accepted.push(...span); return [...span];
+      },
+      dispose() {},
+    };
+    return grammar as typeof grammar & import("../../../src/sampling").GrammarController;
+  };
+  const turbo = (start: number) => resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start });
+  const affine = (start: number) => resolveKvScheme({ override: 4, quantizedKvStart: start });
+  type Projection = { shape: number[]; dtype: string; sha256: string };
+  const record = (logits: MlxArray): Projection => ({ shape: [...logits.shape], dtype: logits.dtypeName,
+    sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
+
+  /** Main's serial order with jump-forward (generate.ts at 02d723a). Main's
+   * softcap attention throws when a forward reads a converted affine layer, so
+   * the reference stops at the first maintenance that leaves one: that step's
+   * token reaches the matcher but is never published. */
+  const serialSpans = async (prompt: number[], maxTokens: number, scheme: ReturnType<typeof resolveKvScheme>, spans: number[][]) => {
+    const { createKvMaintenance } = await import("../../../src/state/kv-maintenance");
+    const { makeStepSampler } = await import("../../../src/sampling");
+    const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), caches = model.makeCache();
+    const maintain = createKvMaintenance(scheme.generationOptions);
+    const readable = () => caches.every(cache => cache.denseKvReads !== undefined);
+    const grammar = spanGrammar(spans);
+    const sampler = makeStepSampler({ temperature: 0, grammar }, { tokenRepresentation: "device", grammarWait: "external",
+      historyUpdate: "manual", initialHistory: prompt });
+    const seen: Projection[] = [], tokens: number[] = [];
+    let refused = false;
+    const project = (hidden: MlxArray) => {
+      const [, length, width] = hidden.shape as [number, number, number];
+      using last = hidden.slice([0, length - 1, 0], [1, length, width]);
+      const logits = model.logitsFromHidden(last); seen.push(record(logits)); return logits;
+    };
+    // Sampled tokens stay on device until main commits them to history.
+    const draw = (logits: MlxArray, step: number) => sampler.sample(logits, step).token;
+    let pending: MlxArray | null = null;
+    try {
+      run: {
+        maintain(caches);
+        if (!readable()) { refused = true; break run; }
+        { using ids = ops.fromInt32(prompt.slice(0, -1), [1, prompt.length - 1]); using head = model.forwardHidden(ids, caches); head.eval(); }
+        maintain(caches);
+        if (!readable()) { refused = true; break run; }
+        { using ids = ops.fromInt32([prompt.at(-1)!], [1, 1]); using hidden = model.forwardHidden(ids, caches);
+          using logits = project(hidden); pending = draw(logits, 0); }
+        while (pending) {
+          using current = pending;
+          pending = null;
+          const token = current.toIntTokens()[0]!, step = tokens.length;
+          const forced = step + 1 < maxTokens ? (grammar.accept(token), grammar.jumpForward(maxTokens - (step + 1))) : null;
+          if (forced || step + 1 < maxTokens) {
+            maintain(caches);
+            if (!readable()) { refused = true; break; }
+          }
+          if (forced) {
+            sampler.commitDevice(current);
+            sampler.commitNumbers(forced);
+            const after = step + 1 + forced.length;
+            using ids = ops.fromInt32([token, ...forced], [1, forced.length + 1]);
+            using hidden = model.forwardHidden(ids, caches);
+            if (after < maxTokens) { using logits = project(hidden); pending = draw(logits, after); }
+          } else if (step + 1 < maxTokens) {
+            sampler.commitDevice(current);
+            using ids = ops.fromInt32([token], [1, 1]);
+            using hidden = model.forwardHidden(ids, caches);
+            using logits = project(hidden); pending = draw(logits, step + 1);
+          }
+          tokens.push(token, ...(forced ?? []));
+        }
+      }
+      return { tokens, seen, accepted: grammar.accepted, refused, kinds: caches.map(cache => cache.constructor.name) };
+    } finally { pending?.dispose(); sampler.dispose(); dispose(caches); f.dispose(); }
+  };
+
+  type SpanEnd = { stopAfter?: number; cancelAfter?: number; throwAfter?: number };
+  /** Direct callers bind the span method with the graph's layers themselves. */
+  const submitSpans = async (env: Awaited<ReturnType<typeof setup>>, prompt: number[], maxTokens: number,
+    spans: number[][], end: SpanEnd = {}, onPublish?: () => void,
+    method?: (options: GenerateOptions) => import("../../../src/execution/batch-types").MlxGroupMethodRequest) => {
+    const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
+    const grammar = spanGrammar(spans), tokens: number[] = [], abort = new AbortController();
+    const options = { temperature: 0, maxTokens, ...env.kvScheme!.generationOptions, grammar };
+    const failure = new Error("consumer failed");
+    const outcome = await env.group.submit({ promptIds: prompt, maxTokens, eosTokenIds: [], grammar, signal: abort.signal,
+      method: (method ?? bindGrammarGroupRequests(env.model, LAYERS))(options),
+      onToken(token: number) {
+        tokens.push(token); onPublish?.();
+        if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
+        if (tokens.length === end.throwAfter) throw failure;
+        return tokens.length === end.stopAfter ? false : undefined;
+      } }).then(stats => stats.finishReason as string, (error: Error) => error === failure ? "consumer failed" : error.name);
+    return { tokens, outcome, accepted: grammar.accepted };
+  };
+  /** The span method the gateway binds, with the layers from its own cache probe. */
+  const gatewaySpans = (env: Awaited<ReturnType<typeof setup>>) => (options: GenerateOptions) => {
+    const turboQuant = !!env.kvScheme!.generationOptions.turboQuant;
+    const execution = env.binding.plan({ ...shape, kvQuant: !turboQuant, turboQuant, hasGrammar: true }, options,
+      { continuous: true, quantizedBatch: env.binding.kvBatchable(env.kvScheme!), checkpoints: false });
+    expect(execution).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true });
+    return env.binding.methodRequest!(execution, options)!;
+  };
+  const spansA = [[11, 12], [13]], spansB = [[21], [22, 23]];
 
   test("admission: affine KV binds as ordinary continuous decoding; the graph binds no compiled replay; TurboQuant binds through dense reads", async () => {
     const { legacyCompiledDecodeAvailable } = await import("../../../src/generation/bindings/autoregressive");
@@ -1827,99 +1945,9 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     // maintenance call, then one unsplit [token, ...forced] forward over the
     // maintained caches, which decode on read; the last position is projected.
     describe("grammar spans", () => {
-      /** A permissive matcher that forces the given spans, one per jump. */
-      const spanGrammar = (spans: readonly (readonly number[])[]) => {
-        const accepted: number[] = [];
-        let next = 0;
-        const grammar = {
-          accepted, get isTerminated() { return false; }, ready: async () => {},
-          applyMask: (scores: MlxArray) => scores,
-          accept(token: number) { accepted.push(token); },
-          jumpForward(budget: number) {
-            const span = spans[next];
-            if (!span || budget < span.length) return null;
-            next++; accepted.push(...span); return [...span];
-          },
-          dispose() {},
-        };
-        return grammar as typeof grammar & import("../../../src/sampling").GrammarController;
-      };
-      const turbo = (start: number) => resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: start });
-      type Projection = { shape: number[]; dtype: string; sha256: string };
-      const record = (logits: MlxArray): Projection => ({ shape: [...logits.shape], dtype: logits.dtypeName,
-        sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
-
-      /** Main's serial order with jump-forward (generate.ts at 02d723a). */
-      const serialSpans = async (prompt: number[], maxTokens: number, start: number, spans: number[][]) => {
-        const { createKvMaintenance } = await import("../../../src/state/kv-maintenance");
-        const { makeStepSampler } = await import("../../../src/sampling");
-        const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), caches = model.makeCache();
-        const maintain = createKvMaintenance(turbo(start).generationOptions);
-        const grammar = spanGrammar(spans);
-        const sampler = makeStepSampler({ temperature: 0, grammar }, { tokenRepresentation: "device", grammarWait: "external",
-          historyUpdate: "manual", initialHistory: prompt });
-        const seen: Projection[] = [], tokens: number[] = [];
-        const project = (hidden: MlxArray) => {
-          const [, length, width] = hidden.shape as [number, number, number];
-          using last = hidden.slice([0, length - 1, 0], [1, length, width]);
-          const logits = model.logitsFromHidden(last); seen.push(record(logits)); return logits;
-        };
-        // Sampled tokens stay on device until main commits them to history.
-        const draw = (logits: MlxArray, step: number) => sampler.sample(logits, step).token;
-        let pending: MlxArray | null = null;
-        try {
-          maintain(caches);
-          { using ids = ops.fromInt32(prompt.slice(0, -1), [1, prompt.length - 1]); using head = model.forwardHidden(ids, caches); head.eval(); }
-          maintain(caches);
-          { using ids = ops.fromInt32([prompt.at(-1)!], [1, 1]); using hidden = model.forwardHidden(ids, caches);
-            using logits = project(hidden); pending = draw(logits, 0); }
-          while (pending) {
-            using current = pending;
-            pending = null;
-            const token = current.toIntTokens()[0]!, step = tokens.length;
-            const forced = step + 1 < maxTokens ? (grammar.accept(token), grammar.jumpForward(maxTokens - (step + 1))) : null;
-            if (forced) {
-              maintain(caches);
-              sampler.commitDevice(current);
-              sampler.commitNumbers(forced);
-              const after = step + 1 + forced.length;
-              using ids = ops.fromInt32([token, ...forced], [1, forced.length + 1]);
-              using hidden = model.forwardHidden(ids, caches);
-              if (after < maxTokens) { using logits = project(hidden); pending = draw(logits, after); }
-            } else if (step + 1 < maxTokens) {
-              maintain(caches);
-              sampler.commitDevice(current);
-              using ids = ops.fromInt32([token], [1, 1]);
-              using hidden = model.forwardHidden(ids, caches);
-              using logits = project(hidden); pending = draw(logits, step + 1);
-            }
-            tokens.push(token, ...(forced ?? []));
-          }
-          return { tokens, seen, accepted: grammar.accepted, kinds: caches.map(cache => cache.constructor.name) };
-        } finally { pending?.dispose(); sampler.dispose(); dispose(caches); f.dispose(); }
-      };
-
-      type End = { stopAfter?: number; cancelAfter?: number; throwAfter?: number };
-      const submitSpans = async (env: Awaited<ReturnType<typeof setup>>, prompt: number[], maxTokens: number,
-        spans: number[][], end: End = {}, onPublish?: () => void) => {
-        const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
-        const grammar = spanGrammar(spans), tokens: number[] = [], abort = new AbortController();
-        const options = { temperature: 0, maxTokens, ...env.kvScheme!.generationOptions, grammar };
-        const failure = new Error("consumer failed");
-        const outcome = await env.group.submit({ promptIds: prompt, maxTokens, eosTokenIds: [], grammar, signal: abort.signal,
-          method: bindGrammarGroupRequests(env.model)(options),
-          onToken(token: number) {
-            tokens.push(token); onPublish?.();
-            if (tokens.length === end.cancelAfter) abort.abort(new DOMException("client left", "AbortError"));
-            if (tokens.length === end.throwAfter) throw failure;
-            return tokens.length === end.stopAfter ? false : undefined;
-          } }).then(stats => stats.finishReason as string, (error: Error) => error === failure ? "consumer failed" : error.name);
-        return { tokens, outcome, accepted: grammar.accepted };
-      };
-      const spansA = [[11, 12], [13]], spansB = [[21], [22, 23]];
 
       for (const start of [0, A.length + 2]) test(`solo spans from start ${start} equal main's serial jump in tokens, matcher history and every projection`, async () => {
-        const reference = await serialSpans(A, 9, start, spansA);
+        const reference = await serialSpans(A, 9, turbo(start), spansA);
         // Nonempty spans were forced and sampling continued after them; full layers converted.
         expect(reference.tokens).toHaveLength(9);
         expect(reference.tokens).toEqual(expect.arrayContaining([11, 12, 13]));
@@ -2046,7 +2074,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
 
       test("two interleaved span rows each equal their solo reference; a stopped, cancelled or failing row leaves its peer and the group usable", async () => {
         // A runs longer than B, so both are active together.
-        const referenceA = await serialSpans(A, 12, 0, spansA), referenceB = await serialSpans(B, 7, 0, spansB);
+        const referenceA = await serialSpans(A, 12, turbo(0), spansA), referenceB = await serialSpans(B, 7, turbo(0), spansB);
         const env = await setup(0, { turbo: true });
         try {
           let overlap = 0;
@@ -2067,6 +2095,154 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           expect(await submitSpans(env, A, 12, spansA)).toEqual({ tokens: referenceA.tokens, outcome: "length", accepted: referenceA.accepted });
         } finally { await env.close(); }
       });
+    });
+  });
+
+  // Main's serial jump served these requests with no KV-format gate: a span or
+  // step whose maintenance leaves every layer plain appends unsplit, even across
+  // the transition; its softcap read then threw in the first forward over a
+  // converted layer. The span method refuses that row before the forward, with
+  // the layers the gateway binds from its cache probe. Preservation is checked
+  // at matched options and chunking (chunk 64, tail split).
+  describe("affine grammar spans", () => {
+    const plainKinds = types.map(type => type === F ? "KVCache" : "RotatingKVCache");
+    const jumping = (start: number | null, options: Parameters<typeof setup>[1] = {}) => setup(start, { grammarJump: true, ...options });
+    /** Record each forward's input offsets; the span method binds model
+     * operations on its first submission, so observers are installed first. */
+    const offsets = (env: Awaited<ReturnType<typeof setup>>) => {
+      const forwards: number[][] = [], forward = env.model.forwardHidden.bind(env.model);
+      env.model.forwardHidden = (ids, caches) => { forwards.push(caches.map(cache => cache.offset)); return forward(ids, caches); };
+      return forwards;
+    };
+
+    test("below the transition, spans equal main's serial jump in tokens, matcher history and every projection", async () => {
+      const reference = await serialSpans(A, 9, affine(64), spansA);
+      expect(reference.refused).toBe(false);
+      expect(reference.tokens).toHaveLength(9);
+      expect(reference.tokens).toEqual(expect.arrayContaining([11, 12, 13]));
+      expect(reference.kinds).toEqual(plainKinds);
+      const env = await jumping(64);
+      try {
+        const seen = projections(env);
+        expect(await submitSpans(env, A, 9, spansA, {}, undefined, gatewaySpans(env)))
+          .toEqual({ tokens: reference.tokens, outcome: "length", accepted: reference.accepted });
+        expect(seen).toEqual(reference.seen);
+      } finally { await env.close(); }
+    });
+
+    test("a final span crossing the transition completes and stores its plain prefix, as main's did; reusing that prefix is refused before its suffix forward", async () => {
+      const { PromptCache, cloneKvCaches } = await import("../../../src/state");
+      const reference = await serialSpans(A, 3, affine(7), [[11, 12]]);
+      expect(reference.refused).toBe(false);
+      expect(reference.tokens).toHaveLength(3);
+      expect(reference.tokens.slice(1)).toEqual([11, 12]);
+      expect(reference.kinds).toEqual(plainKinds);
+      const prefix = new PromptCache(16 << 20, null, null, cloneKvCaches);
+      const puts: { tokens: number[]; kinds: string[]; offsets: number[] }[] = [], hits: number[][] = [];
+      const env = await jumping(7, { promptCache: {
+        put(tokens, caches, ...rest) {
+          puts.push({ tokens: [...tokens], kinds: caches.map(cache => cache.constructor.name), offsets: caches.map(cache => cache.offset) });
+          prefix.put(tokens, caches, ...rest);
+        },
+        take(prompt, ...rest) {
+          const hit = prefix.take(prompt, ...rest);
+          if (hit) hits.push([...hit.tokens]);
+          return hit;
+        },
+      } });
+      const forwards = offsets(env);
+      try {
+        const seen = projections(env);
+        const first = await submitSpans(env, A, 3, [[11, 12]], {}, undefined, gatewaySpans(env));
+        expect(first).toEqual({ tokens: reference.tokens, outcome: "length", accepted: reference.accepted });
+        expect(seen).toEqual(reference.seen);
+        const committed = [...A, ...first.tokens];
+        expect(puts).toEqual([{ tokens: committed, kinds: plainKinds, offsets: types.map(() => committed.length) }]);
+        // Opening converts the reused prefix; its first append would read converted layers.
+        const before = forwards.length;
+        expect(await submitSpans(env, [...committed, 17], 2, [], {}, undefined, gatewaySpans(env)))
+          .toEqual({ tokens: [], outcome: "DenseKvReadError", accepted: [] });
+        expect(hits).toEqual([committed]);
+        expect(forwards).toHaveLength(before);
+      } finally { try { await env.close(); } finally { prefix.clear(); } }
+    });
+
+    test("crossing and continuing, the row is refused before its next forward with that token unpublished; an interleaved peer and the group continue", async () => {
+      // A crosses the transition (11) in a plain step after its span; B finishes below it.
+      const referenceA = await serialSpans(A, 10, affine(11), [[11, 12]]);
+      const referenceB = await serialSpans(B, 7, affine(11), spansB);
+      expect(referenceA.refused).toBe(true);
+      expect(referenceA.tokens.slice(1, 3)).toEqual([11, 12]);
+      expect(referenceA.accepted).toHaveLength(referenceA.tokens.length + 1);
+      expect(referenceB.refused).toBe(false);
+      expect(referenceB.tokens).toHaveLength(7);
+      const env = await jumping(11);
+      try {
+        const seen = projections(env);
+        expect(await submitSpans(env, A, 10, [[11, 12]], {}, undefined, gatewaySpans(env)))
+          .toEqual({ tokens: referenceA.tokens, outcome: "DenseKvReadError", accepted: referenceA.accepted });
+        expect(seen).toEqual(referenceA.seen);
+        let overlap = 0;
+        const watch = () => { overlap = Math.max(overlap, env.group.activeRows); };
+        const [a, b] = await Promise.all([submitSpans(env, A, 10, [[11, 12]], {}, watch, gatewaySpans(env)),
+          submitSpans(env, B, 7, spansB, {}, watch, gatewaySpans(env))]);
+        expect(overlap).toBe(2);
+        expect(a).toEqual({ tokens: referenceA.tokens, outcome: "DenseKvReadError", accepted: referenceA.accepted });
+        expect(b).toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
+        // The same group serves again.
+        expect(await submitSpans(env, B, 7, spansB, {}, undefined, gatewaySpans(env)))
+          .toEqual({ tokens: referenceB.tokens, outcome: "length", accepted: referenceB.accepted });
+      } finally { await env.close(); }
+    });
+
+    test("a prefill reaching the transition is refused before its tail forward with no output, also for immediate affine KV", async () => {
+      for (const start of [3, 0]) {
+        const reference = await serialSpans(A, 4, affine(start), spansA);
+        expect(reference, `start ${start}`).toMatchObject({ refused: true, tokens: [], accepted: [], seen: [] });
+        const env = await jumping(start);
+        const forwards = offsets(env);
+        try {
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            expect(await submitSpans(env, A, 4, spansA, {}, undefined, gatewaySpans(env)))
+              .toEqual({ tokens: [], outcome: "DenseKvReadError", accepted: [] });
+            // Only each attempt's drain chunk ran, from an empty cache.
+            expect(forwards, `start ${start}`).toEqual(Array.from({ length: attempt }, () => types.map(() => 0)));
+          }
+        } finally { await env.close(); }
+      }
+    });
+
+    test("a later layer converting alone refuses the row before any earlier plain layer appends", async () => {
+      // Per-layer config: only layer 2 converts at the transition; 0, 1 and 3 read plain.
+      const partial = resolveKvScheme({ override: "config", config: [{ layerIdx: 2, bits: 4, groupSize: HEAD_DIM }], quantizedKvStart: 11 });
+      const reference = await serialSpans(A, 10, partial, [[11, 12]]);
+      expect(reference.refused).toBe(true);
+      expect(reference.kinds).toEqual(["KVCache", "RotatingKVCache", "QuantizedKVCache", "RotatingKVCache"]);
+      const env = await jumping(null, { kvScheme: partial });
+      const forwards = offsets(env);
+      try {
+        expect(await submitSpans(env, A, 10, [[11, 12]], {}, undefined, gatewaySpans(env)))
+          .toEqual({ tokens: reference.tokens, outcome: "DenseKvReadError", accepted: reference.accepted });
+        // The last forward started below the transition; none began after layer 2 converted.
+        expect(forwards.at(-1)).toEqual(types.map(() => 10));
+        expect(forwards.some(start => start.some(offset => offset >= 11))).toBe(false);
+      } finally { await env.close(); }
+    });
+
+    test("a directly bound span method refuses by its own copy of the graph's layers on a group composed without dense-read metadata", async () => {
+      const { MlxBatchExecutionGroup, createRuntimeConfig } = await import("../../../src/execution");
+      const { bindGrammarGroupRequests } = await import("../../../src/execution/grammar-group");
+      const reference = await serialSpans(A, 10, affine(11), [[11, 12]]);
+      const env = await setup(null), kvScheme = affine(11);
+      // No dense-read layers reach this group; only the method's binding has them.
+      const group = new MlxBatchExecutionGroup(env.model, { maxBatch: 2, prefillChunkSize: 64,
+        runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: "1" }), kvScheme, kvBatchCapabilities: { delayedAffine: true } });
+      const layers = [...LAYERS], bound = bindGrammarGroupRequests(env.model, layers);
+      layers.length = 0;   // a later edit to the caller's list cannot reach the binding
+      try {
+        expect(await submitSpans({ ...env, kvScheme, group } as typeof env, A, 10, [[11, 12]], {}, undefined, bound))
+          .toEqual({ tokens: reference.tokens, outcome: "DenseKvReadError", accepted: reference.accepted });
+      } finally { try { await group.close(); } finally { await env.close(); } }
     });
   });
 });

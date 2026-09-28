@@ -10,7 +10,7 @@ import { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
 import { UniversalDenseModel } from "../models/universal/dense";
 import { KVCache } from "../state/kv";
 import { RotatingKVCache } from "../state/rotating-kv";
-import { isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state/capabilities";
+import { cacheSignature, isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state/capabilities";
 import { SSMCache } from "../state/ssm";
 import { Gemma4Model } from "../models/gemma4/model";
 import { Qwen35Model } from "../models/qwen/qwen3_5";
@@ -64,7 +64,8 @@ export interface MlxGatewayBinding {
 
 /** Which operations the graph's own caches provide: batch rows (plain and
  * rotating KV, batchable layouts, SSM under the binding's policy), target
- * transaction rows, and per-layer quantized conversion. */
+ * transaction rows, per-layer quantized conversion, and the layers holding KV
+ * rather than SSM state (classified as the batch group classifies them). */
 function probeStorage(model: RuntimeModel, ssm: boolean) {
   const caches = model.makeCache();
   try {
@@ -73,6 +74,8 @@ function probeStorage(model: RuntimeModel, ssm: boolean) {
         isBatchableCache(cache) || (ssm && cache instanceof SSMCache)),
       targetRows: caches.every(cache => targetRowLayoutFactory(cache) !== undefined),
       convertible: Object.freeze(caches.map(cache => isPlainKvCache(cache) || isRotatingPlainCache(cache))),
+      kvLayers: Object.freeze(caches.flatMap((cache, layer) =>
+        !isBatchableCache(cache) && !isRotatingPlainCache(cache) && cacheSignature(cache) === "ssm" ? [] : [layer])),
     });
   } finally { disposeResources(caches); }
 }
@@ -145,7 +148,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // by placement rather than served ordinarily. Grammar proposals stay off softcap.
   const speculative = !denoising && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
-  const grammarSpans = plainSoftcap ? bindGrammarGroupRequests(model) : undefined;
+  // Spans on a softcap graph are held to plain reads in every KV layer, as its
+  // ordinary rows are (the group's denseKvReads, below).
+  const grammarSpans = plainSoftcap && storage ? bindGrammarGroupRequests(model, storage.kvLayers) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
@@ -231,12 +236,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         // Committed spans append through the graph's dense reads after one
-        // maintenance call, as main's serial jump did. TurboQuant storage decodes
-        // on read, so its spans run once the gateway has certified the scheme's
-        // dense reads (kvBatchable); affine storage stops reading dense at its
-        // transition and keeps ordinary masking.
-        sharedGrammarJump: !!grammarSpans && !request.hasVision && !request.kvQuant &&
-          (!request.turboQuant || scheduling.quantizedBatch) && !options.pagedKv,
+        // maintenance call, as main's serial jump did, once the gateway has
+        // certified the scheme's dense reads (kvBatchable). TurboQuant storage
+        // decodes on read throughout; a row whose affine storage would no
+        // longer read plain at its next append is refused before that append.
+        sharedGrammarJump: !!grammarSpans && !request.hasVision &&
+          (!(request.kvQuant || request.turboQuant) || scheduling.quantizedBatch) && !options.pagedKv,
         // Main filled only through a committed append declaring the scheme's
         // formats (shouldUseFill); this graph declares none for TurboQuant, so
         // supplied fill decodes ordinarily there, as it did in main.

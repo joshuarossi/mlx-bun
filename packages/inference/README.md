@@ -313,8 +313,13 @@ serial path filled only through a committed append declaring the scheme's
 formats (none for TurboQuant on this graph). Direct grammar jump commits its
 spans over it through the shared span method, as main's serial jump did: one
 maintenance call, then one unsplit forward of the pending token and the forced
-span, once the gateway has certified the scheme. Affine KV, which stops reading
-dense at its transition, keeps ordinary grammar masking. Universal graphs
+span, once the gateway has certified the scheme. Affine KV commits spans the
+same way while a row's storage still reads plain: a span whose maintenance ran
+before the transition appends unsplit even across it, and a row whose next
+append would no longer read plain is refused with `DenseKvReadError` before any
+layer appends, where main threw in that forward. The span method binds the
+graph's dense-read layers explicitly; the gateway supplies them from its cache
+probe. Not yet qualified with real weights. Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
 attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8
