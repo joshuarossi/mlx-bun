@@ -710,6 +710,11 @@ and `models/speculative/*`. Proposal sources live in `generation/speculative/sou
 verification and acceptance belong to `generation/speculative`; batched draft work
 belongs to `generation/speculative/bindings`; draft checkpoints belong to `state/speculative`.
 Existing sampling, rejection, rollback, and specialized kernel behavior is preserved.
+One intentional correction: grouped speculation maintains a reused target prefix
+before its first forward. A round without drafts maintains only before its append,
+so under a delayed KV scheme a stored prefix can still owe the conversion its last
+append reached. Main's batched lane read that prefix unconverted in its first
+suffix chunk.
 
 Grouped speculation binds any provider whose operations the target meets: batchable
 caches, row layouts for verification and rollback, and a forward that captures the

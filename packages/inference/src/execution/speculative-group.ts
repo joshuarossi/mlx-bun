@@ -177,6 +177,10 @@ class SpeculativeGroup implements MlxGroupedMethod {
             } finally { disposeResources([...hit.caches, { dispose: () => disposeAttachments(hit.attachments) },
               { dispose: () => hit.retain?.() }]); }
           } else { prefix.append([null]); appended = true; }
+          // The first forward must read maintained state. A stored prefix can
+          // still owe the conversion its final append reached (a round without
+          // drafts maintains only before its append), so maintain it here.
+          maintain(caches);
           return { row, request, solo: caches, retain: retained, pos: row.cachedTokens,
             end: request.prefixLength, pendingPrompt, transferred: false, closed: false,
             chunkSize: options.prefillChunkSize ?? row.req.prefillChunkSize ?? method.host.prefillChunkSize,
