@@ -873,7 +873,9 @@ test("GLM-5.2's MLA cache takes no KV scheme: every requested scheme is refused 
   const { MLACache } = await import("../../src/state/glm52-cache");
   const binding = bindMlxGateway(standIn(Glm52Model.prototype, "glm_moe_dsa", {
     config: { modelType: "glm_moe_dsa", text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] },
-    makeCache: () => [new MLACache({ kvLoraRank: 512, ropeHeadDim: 64 })] }));
+    makeCache: () => [new MLACache({ kvLoraRank: 512, ropeHeadDim: 64 })],
+    // The graph's declared dense-read layers: MLA reads its compressed cache.
+    requiredDenseKvLayers: [] }));
   expect(binding.cachesBatchable()).toBe(true);
   expect(binding.kvBatchable(new KvScheme("bf16", {}))).toBe(true);
   for (const scheme of [resolveKvScheme({ override: 4 }), resolveKvScheme({ override: 8 }),
