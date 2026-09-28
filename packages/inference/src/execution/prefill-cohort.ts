@@ -64,10 +64,9 @@ export class MlxPrefillCohort extends MlxPrefillRows<PrefillState> {
           });
           const closeSetup = row.req.trace?.begin("prefill.batch_setup", { mechanism: "continuous" });
           owned ??= { caches: row.req.statePolicy?.create() ?? host.model.makeCache() }; closeSetup?.();
-          // mlx-lm maintains after every forward. Steps here maintain before
-          // each forward, so a stored prefix can owe its last append's
-          // conversion: settle it before the suffix, as main's serial
-          // generator did. An empty cache never converts.
+          // The first forward must read maintained state. A stored prefix can
+          // still owe the conversion its final append reached, so maintain
+          // every opened cache here.
           host.maintain?.(owned.caches);
           return { row, solo: owned.caches, pos: hit?.tokens.length ?? 0, retain: owned.retain, snapAt, closePrefill };
         } catch (error) {
