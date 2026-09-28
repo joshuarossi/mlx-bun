@@ -1004,15 +1004,19 @@ unreachable daemon, a missing or unpinned image, a timeout, cancellation, output
 overflow, an OOM kill or an unconfirmed removal leaves `verified: false` with
 that reason.
 
-`PYTHON_VERIFIER_IMAGE` is empty until the owner pins it; meanwhile every row is
-unverified (`image-unpinned`). To provision, read the linux/arm64 manifest digest
-of the official image, pull exactly that, and set the constant to
-`python@sha256:<digest>`:
+`PYTHON_VERIFIER_IMAGE` pins the linux/arm64 manifest of the official
+`python:3.14-slim` image (3.14.7-slim-trixie, read from Docker Hub on
+2026-09-27). The verifier never pulls, so a machine without that image leaves
+rows unverified (`image-missing`). Provision it once:
 
 ```sh
-docker buildx imagetools inspect python:3.14-slim
-docker pull --platform linux/arm64 python:3.14-slim@sha256:<digest>
+docker pull --platform linux/arm64 python@sha256:67994a05c712036dbfc4385b4bceafc0ce20df950f54b9ea355582c153bf6157
 ```
+
+To move to a newer image, read its linux/arm64 manifest digest
+(`docker buildx imagetools inspect python:3.14-slim`), pull exactly that and
+update the constant. An `--image` override without a digest is refused
+(`image-unpinned`).
 
 Without Docker Desktop's default socket, set
 `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock`. `bun apps/mlx-bun/scripts/verify-python.ts

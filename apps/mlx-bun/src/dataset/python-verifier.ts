@@ -13,10 +13,10 @@
 // output overflow and OOM never report verified. There is no host-Python
 // fallback, and verification takes no inference lease.
 
-/** The verifier image: `python@sha256:<digest>` of the linux/arm64 manifest.
- * Empty until the owner provisions it (app README, Dataset jobs); until then
- * every result is unverified with reason `image-unpinned`. */
-export const PYTHON_VERIFIER_IMAGE = "";
+/** The verifier image: the linux/arm64 manifest of `python:3.14-slim`
+ * (3.14.7-slim-trixie), pinned by digest. It is never pulled here; provisioning
+ * is in the app README's Dataset jobs section. */
+export const PYTHON_VERIFIER_IMAGE = "python@sha256:67994a05c712036dbfc4385b4bceafc0ce20df950f54b9ea355582c153bf6157";
 
 /** Fixed limits. `runMs` bounds `docker start` (container start and program);
  * `commandMs` bounds each create, inspect and remove; `outputBytes` bounds the
