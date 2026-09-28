@@ -222,13 +222,16 @@ test("Gemma2 softcap selects committed grammar spans without changing the ordina
   // separately tracked adapter-bypass request shape.
   expect(binding.plan({ ...grammar, hasAdapters: true }, { pagedKv: {} }, schedule))
     .toMatchObject({ mechanism: "unsupported", pagedKv: false, grammarJump: false });
-  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, kvQuant: true }, { ...grammar, hasVision: true }])
+  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, hasVision: true }])
     expect(place(binding, request).grammarJump).toBe(false);
-  // TurboQuant decodes on read: once the gateway has certified the scheme, its
-  // spans commit too; an uncertified scheme stays refused.
-  expect(place(binding, { ...grammar, turboQuant: true })).toMatchObject({ mechanism: "continuous", grammarJump: true });
-  expect(binding.plan({ ...grammar, turboQuant: true }, {}, { ...schedule, quantizedBatch: false }))
-    .toMatchObject({ mechanism: "unsupported", grammarJump: false });
+  // Once the gateway has certified the scheme, spans commit over TurboQuant,
+  // which decodes on read, and over affine KV until a row stops reading plain;
+  // an uncertified scheme stays refused.
+  for (const kv of [{ turboQuant: true }, { kvQuant: true }]) {
+    expect(place(binding, { ...grammar, ...kv }), JSON.stringify(kv)).toMatchObject({ mechanism: "continuous", grammarJump: true });
+    expect(binding.plan({ ...grammar, ...kv }, {}, { ...schedule, quantizedBatch: false }), JSON.stringify(kv))
+      .toMatchObject({ mechanism: "unsupported", grammarJump: false });
+  }
 });
 
 test.each(families)("%s places grammar with a bound grouped draft exactly as the draft alone", (_, model) => {
