@@ -1,6 +1,17 @@
 import type { KvQuantSpec, ModelConfig, TurboQuantScheme } from "../artifacts/config";
+import { TURBOQUANT_HEAD_DIMS } from "../kernels/turboquant/tables";
 
 const BF16_BYTES = 2;
+
+/** Head dimensions the TurboQuant codec encodes (its generated tables). */
+export { TURBOQUANT_HEAD_DIMS };
+
+/** TurboQuant converts full-attention layers only (sliding layers stay bf16),
+ * so a model can take the scheme when its full-attention head dimension is
+ * one the codec encodes. */
+export function supportsTurboQuantHeadDim(config: Pick<ModelConfig, "text">): boolean {
+  return (TURBOQUANT_HEAD_DIMS as readonly number[]).includes(config.text.globalHeadDim);
+}
 
 export type KvQuantOverride = "off" | "config" | number | undefined;
 

@@ -165,3 +165,24 @@ test("stopping idle demotion before request drain preserves caches until final c
     expect(f.events).toContain("prefix flush"); expect(f.events).toContain("cache clear");
   });
 });
+
+test("a TurboQuant scheme the codec cannot encode for this model is refused before any cache is composed, as main's startup did", async () => {
+  const withHeadDim = (globalHeadDim: number) => {
+    const f = setup(); (f.context.model.config as { text?: unknown }).text = { globalHeadDim }; return f;
+  };
+  for (const globalHeadDim of [96, 72]) {
+    const f = withHeadDim(globalHeadDim);
+    await expect(createCacheServices(f.context, f.binding, { turboQuant: { kBits: 8, vBits: 3 } }, f.deps)).rejects.toThrow(
+      `--kv-quant turbo: this model's full-attention head_dim is ${globalHeadDim}; TurboQuant supports {64,128,256,512}`);
+    expect(f.events).toEqual([]);   // no prompt cache, store or persistence was created
+  }
+  for (const globalHeadDim of [128, 256]) {
+    const f = withHeadDim(globalHeadDim);
+    const cache = await createCacheServices(f.context, f.binding, { turboQuant: { kBits: 8, vBits: 3 } }, f.deps);
+    expect(cache.resolvedKvScheme.kind).toBe("turbo"); await cache.close();
+  }
+  // Other schemes do not depend on the TurboQuant codec's dimensions.
+  const f = withHeadDim(96);
+  const cache = await createCacheServices(f.context, f.binding, { kvQuant: 4 }, f.deps);
+  expect(cache.kvScheme.kvBits).toBe(4); await cache.close();
+});
