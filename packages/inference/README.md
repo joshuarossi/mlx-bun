@@ -319,7 +319,24 @@ before the transition appends unsplit even across it, and a row whose next
 append would no longer read plain is refused with `DenseKvReadError` before any
 layer appends, where main threw in that forward. The span method binds the
 graph's dense-read layers explicitly; the gateway supplies them from its cache
-probe. Not yet qualified with real weights. Universal graphs
+probe. Affine grammar spans are not yet qualified with real weights.
+
+On 2026-09-28 UTC, cached Gemma2-2B-4bit snapshot `2c715097` (26 full-attention
+layers) passed bounded TurboQuant k8v3 acceptance on an M1 Max, MLX 0.32.2 and
+Bun 1.4.2. [#210](https://github.com/joshuarossi/mlx-bun/pull/210) qualified
+ordinary decoding, fresh-process continuation and HTTP cancellation/recovery
+against main, with separate same-geometry candidate batching controls.
+[#212](https://github.com/joshuarossi/mlx-bun/pull/212), tested at `e783c7b4`,
+matched main `02d723a` byte for byte in full-vocabulary logits and all valid cache
+planes for immediate and delayed conversion with real choice/JSON grammars.
+The checks cover unsplit forced spans followed by sampling, callback stop within
+a committed span, actual prefix reuse with conversion before the suffix,
+cancellation with an active peer, and same-scheduler recovery. Graph calls remain
+B1 and interleaved; this does not qualify stacked B2 grammar numerics, other
+artifacts, an external TurboQuant oracle or performance. Captures and input pins
+remain outside Git.
+
+Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
 attention reads encoded KV. On those graphs and on MiniCPM5, delayed affine
 rows stay ordinary-only, as main served them serially, and their direct grammar
