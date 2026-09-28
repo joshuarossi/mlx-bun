@@ -412,8 +412,9 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
   // Drafted affine KV, TurboQuant, media and paging stay refused, including when
-  // fill is supplied. Affine KV on this graph is ordinary-only: as on every graph
-  // with delayed affine rows, a drafted request is refused rather than speculated.
+  // fill is supplied. Affine KV on this graph is ordinary-only: as on the other
+  // graphs restricted to ordinary affine execution, a drafted request is refused
+  // rather than speculated.
   for (const [request, options, expected] of [
     [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["continuous-unavailable"]],
     [{ ...draft, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, ["turbo-kv-batch-unsupported"]],
@@ -512,7 +513,8 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
   leave();
   expect(model.loraState.active).toBe(previous);
   // Over affine KV the adapter request likewise ignores the draft and decodes
-  // ordinarily, as on every graph with delayed affine rows, keeping its checkpoints.
+  // ordinarily, as on the other graphs restricted to ordinary affine execution,
+  // keeping its checkpoints.
   const affine = { kvBits: 4, adapters: ["upper"] } as GenerateOptions;
   const ordinary = binding.plan({ ...request, kvQuant: true }, affine, scheduling);
   expect(ordinary).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: true, grammarJump: false });
