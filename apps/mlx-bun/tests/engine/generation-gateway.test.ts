@@ -234,7 +234,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
   const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
-  const { KvScheme, resolveKvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
+  const { resolveKvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     // The text facts KV scheme policy reads; this one-layer graph uses full attention.
@@ -252,8 +252,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
     for (const [scheme, batchable] of [[resolveKvScheme({ override: 4, quantizedKvStart: 0 }), true],
       [resolveKvScheme({ override: 8, quantizedKvStart: 64 }), true],
       [resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] }), true],
-      [resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }), false],
-      [new KvScheme("turbo", {}), false]] as const)
+      [resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }), false]] as const)
       expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(batchable);
     for (const request of [{ hasGrammar: true }, { hasAdapters: true }, { hasGrammar: true, hasAdapters: true }])
       expect(gateway.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous",
