@@ -1,5 +1,5 @@
-import { defaultSessionDir } from "./session-files";
-import { mkdirSync, rmSync } from "node:fs";
+import { defaultSessionDir, recordedSessionCwd } from "./session-files";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
@@ -361,6 +361,16 @@ class PiBackend implements ChatBackend {
     await this.sendSessions();
   }
 
+  /** A chat recorded in a directory that no longer exists (a moved or deleted
+   *  checkout) continues in this server's directory, the SDK's "continue in
+   *  current cwd" choice, which the browser cannot be prompted for. Otherwise
+   *  the SDK refuses to open it. The file keeps its recorded header. */
+  private missingCwdOverride(path: string): string | undefined {
+    let recorded: string | undefined;
+    try { recorded = recordedSessionCwd(readFileSync(path, "utf8")); } catch { return undefined; }
+    return recorded && !existsSync(recorded) ? this.cwd : undefined;
+  }
+
   /** Resume an existing chat by file path. Same "factory re-runs, codingTools
    *  becomes active if pending" note as newSession above. */
   private async openSession(path: string): Promise<void> {
@@ -368,10 +378,11 @@ class PiBackend implements ChatBackend {
       this.send({ type: "error", message: "invalid session path" });
       return;
     }
-    if (!this.runtime) await this.replaceRuntime(SessionManager.open(path, this.sessionDir));
+    const cwdOverride = this.missingCwdOverride(path);
+    if (!this.runtime) await this.replaceRuntime(SessionManager.open(path, this.sessionDir, cwdOverride));
     else {
       const runtime = this.runtime;
-      const change = runtime.switchSession(path);
+      const change = runtime.switchSession(path, cwdOverride ? { cwdOverride } : undefined);
       this.runtimeChanges.add(change);
       try { await change; } finally { this.runtimeChanges.delete(change); }
     }

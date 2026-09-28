@@ -25,6 +25,12 @@ export async function readSessionFile(sessionDir: string, path: string): Promise
   } catch { return { ok: false, reason: "not_found" }; }
 }
 
+/** The working directory a Pi session file records in its header, if any. */
+export function recordedSessionCwd(content: string): string | undefined {
+  const header = sessionEntries(content).find(entry => (entry as { type?: unknown }).type === "session") as { cwd?: unknown } | undefined;
+  return typeof header?.cwd === "string" && header.cwd ? header.cwd : undefined;
+}
+
 /** Preserve raw JSON values and tolerate malformed or mid-append lines. */
 export function sessionEntries(content: string): unknown[] {
   const entries: unknown[] = [];

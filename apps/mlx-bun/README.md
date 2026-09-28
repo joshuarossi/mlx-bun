@@ -707,6 +707,13 @@ uses temporary paths and a fixed loopback SSE response to exercise real Pi
 startup, provider hooks, streaming, cancellation, and transcript persistence
 without a model or access to the installed app's chat storage.
 
+The sidebar lists the chats Pi recorded under the server's working directory,
+as in main. Opening a chat whose recorded directory no longer exists (a moved
+or deleted checkout) continues it in the server's directory, the SDK's
+"continue in current cwd" choice; main, and the SDK without that choice, refuse
+to open it. The file keeps its recorded header, and opening a chat appends the
+SDK's session entries, as before.
+
 ## Browser app
 
 `src/web/browser/` preserves the existing chat, model, training, quantization,
