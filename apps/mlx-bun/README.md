@@ -1211,7 +1211,9 @@ command into `bin`. Preparation checks archive members; release verification
 must additionally check that its binary version matches the archive filename.
 Preparation does not install, sign, notarize, publish, or
 update the tap. [Installer tests](tests/install.test.ts) use local archives and
-temporary homes, including reinstall and failure paths, without network access.
+temporary homes, including reinstall, failure, and every refusal path (usage,
+tag, platform, archive layout, executable and version, command destination,
+app-root and `current` ownership), without network access.
 
 ## Release preparation
 
