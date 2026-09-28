@@ -77,13 +77,15 @@ function probeStorage(model: RuntimeModel, ssm: boolean) {
   } finally { disposeResources(caches); }
 }
 
-/** Whether this graph's storage, once delayed affine maintenance binds it,
- * certifies plain KV reads in every layer: the storage's own capability,
- * probed once over fresh caches that hold no buffers. */
-function certifiesDenseKvReads(model: RuntimeModel): boolean {
+/** Whether this graph's storage, once `scheme`'s own maintenance binds it,
+ * certifies dense KV reads in every layer: the storage's capability, answered
+ * with that maintenance. Probed over fresh caches that hold no buffers, when a
+ * binding or group is composed (never per request, never remembered: the
+ * scheme is read as given each time); every probe cache is released. */
+function certifiesDenseKvReads(model: RuntimeModel, scheme: KvScheme): boolean {
   const caches = model.makeCache() as Cache[];
   try {
-    createKvMaintenance({ kvBits: 4, kvGroupSize: 64, quantizedKvStart: 1 }).preparePrefill!(caches);
+    createKvMaintenance(scheme.generationOptions).preparePrefill?.(caches);
     return caches.every(cache => cache.denseKvReads !== undefined);
   } finally { disposeResources(caches); }
 }
@@ -97,7 +99,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // for grouped drafts (below); plain-KV fill runs inside the request's adapter
   // context like any other row. Configured drafts ignore fill, as main did;
   // adapter-bearing drafted requests also ignore the draft and decode ordinarily.
-  // Encoded attention remains unsupported.
+  // Encoded storage is admitted only where it certifies dense reads (kvBatchable).
   // From the graph as bound (its attention layers), not the mutable descriptor.
   const plainSoftcap = model instanceof UniversalDenseModel && model.encodedKvAttention === false;
   // Denoising rows interleave through their own grouped method. Token-level
@@ -113,14 +115,18 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // The scheme's per-layer cache guard still decides.
   const encodedKvRows = (model as { encodedKvAttention?: boolean }).encodedKvAttention === true &&
     !!storage?.convertible.length && storage.convertible.every(Boolean);
-  // A graph reading plain KV serves affine KV rows while their storage reads
-  // plain: rows the storage no longer certifies are rejected before any
-  // shared append (execution/batch-group.ts). Bound once, from the storage.
-  const denseKvRows = plainSoftcap && !!storage?.convertible.length && storage.convertible.every(Boolean) &&
-    certifiesDenseKvReads(model);
   // Delayed affine KV (rows convert once they pass quantizedKvStart) batches row by row.
-  const kvBatchCapabilities = { delayedAffine: model instanceof Qwen35Model || model instanceof Gemma4Model ||
-    model instanceof MiniCPM5Model || encodedKvRows || denseKvRows };
+  const delayedAffineRows = model instanceof Qwen35Model || model instanceof Gemma4Model ||
+    model instanceof MiniCPM5Model || encodedKvRows;
+  // A graph reading dense KV takes a scheme whose own maintenance leaves every
+  // layer's storage certified for dense reads: affine rows until their
+  // transition (rows the storage no longer certifies are rejected before any
+  // shared append, execution/batch-group.ts), TurboQuant rows throughout, as
+  // they decode on read. Answered for the scheme at hand when composed.
+  const kvBatchCapabilities = (scheme: KvScheme | undefined) => {
+    const dense = plainSoftcap && !!scheme && scheme.kind !== "bf16" ? certifiesDenseKvReads(model, scheme) : undefined;
+    return { certified: dense !== false, capabilities: { delayedAffine: delayedAffineRows || dense === true } };
+  };
   const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   // MiniCPM5's and encoded-KV graphs' delayed affine KV are qualified for ordinary
@@ -130,7 +136,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // qualified for both. Their adapters use the same row context.
   const affineKv = (options: GenerateOptions) => !options.turboQuant && (options.kvBits !== undefined || !!options.kvConfig?.length);
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
-    ((model instanceof MiniCPM5Model || encodedKvRows) && delayedAffine(options)) || (denseKvRows && affineKv(options));
+    ((model instanceof MiniCPM5Model || encodedKvRows) && delayedAffine(options)) || (plainSoftcap && affineKv(options));
   const cachesBatchable = () => storage?.batchable ?? true;
   const supportsTargetRows = () => storage?.targetRows ?? false;
   // Grouped speculation needs batchable caches, row layouts for verification and
@@ -201,19 +207,29 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     } } : {}),
     plan(request, options, scheduling) {
       const ordinaryOnly = delayedAffineOrdinaryOnly(options);
+      // TurboQuant on a graph reading dense KV: main served these serially,
+      // with speculation off (a configured draft is ignored).
+      const decodedDense = plainSoftcap && !!options.turboQuant;
       // Main placed this request ordinarily: no draft provider is opened, so
       // the fallback and its ordinary checkpoints do not depend on provider kind.
-      const ignoredAdapterDraft = ordinaryOnly && request.hasAdapters && request.hasDraft;
+      const ignoredDraft = request.hasDraft && ((ordinaryOnly && request.hasAdapters) || decodedDense);
+      // Main's serial path also filled and jumped grammar spans over that
+      // TurboQuant storage; the shared methods are not qualified over it yet, so
+      // exactly the requests main filled or jumped are refused, never downgraded.
+      const pendingDecodedMethod = decodedDense && (
+        (!!options.fill && !request.hasVision && !request.hasGrammar && !request.wantsLogprobs && !request.hasDraft && !request.userSeed) ||
+        (runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && request.hasGrammar && !request.wantsLogprobs));
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
       return resolveExecution(request, {
         ...scheduling,
-        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredAdapterDraft && request.hasDraft),
-        quantizedBatch: (!plainSoftcap || (denseKvRows && affineKv(options))) && !denoising && scheduling.quantizedBatch,
+        continuous: scheduling.continuous && !(ordinaryOnly && !ignoredDraft && request.hasDraft) && !pendingDecodedMethod,
+        // The scheme's dense-read certification is part of the scheduling fact (kvBatchable).
+        quantizedBatch: !denoising && scheduling.quantizedBatch,
         // Paging is decided on the resolved plan, which never checkpoints a paged
         // row; an adapter row that bypasses paging checkpoints as main's serial path did.
-        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || encodedKvRows || denseKvRows) && !!continuationServices?.checkpointPersistence &&
-          (!request.hasDraft || ignoredAdapterDraft) && !request.hasVision && !request.hasGrammar &&
+        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || encodedKvRows || plainSoftcap) && !!continuationServices?.checkpointPersistence &&
+          (!request.hasDraft || ignoredDraft) && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
         mediaBatch: !!mediaInput,
@@ -222,7 +238,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         sharedGrammarProposals: !!grammarProposals,
         sharedGrammarJump: !!grammarSpans && !request.hasVision && !request.kvQuant &&
           !request.turboQuant && !options.pagedKv,
-        sharedFill: !ordinaryOnly && !!fillRequests && !!options.fill,
+        sharedFill: !ordinaryOnly && !decodedDense && !!fillRequests && !!options.fill,
         // Main's softcap serial verifier ignored fill, including echo proposals.
         sharedSpeculativeEcho: !plainSoftcap && !!options.fill?.plan.echo && provider?.grouped?.supportsExternalTokens === true,
         // As main's serial path did, logprobs keep a softcap request ordinary.
@@ -230,8 +246,8 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         // Main served softcap adapters ordinarily even when a draft was configured.
         sharedSpeculativeAdapters: !plainSoftcap && scheduling.continuous && !!sharedMethod && !!adapterState &&
           provider?.grouped?.supportsTargetAdapters === true,
-        turboQuantBatch: !plainSoftcap && !denoising && scheduling.quantizedBatch,
-        speculativeTurboQuant: scheduling.continuous && !!sharedMethod && !!options.turboQuant,
+        turboQuantBatch: !denoising && scheduling.quantizedBatch,
+        speculativeTurboQuant: !plainSoftcap && scheduling.continuous && !!sharedMethod && !!options.turboQuant,
         method: model instanceof DiffusionGemmaModel ? "denoising" : "autoregressive",
         compiledDecode: legacyCompiledDecodeAvailable(model),
         // The batch group coordinates per-row grammar for every token method;
@@ -252,12 +268,13 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     },
     cachesBatchable,
     kvBatchable(scheme) {
-      if (!storage || (plainSoftcap && scheme.kind !== "bf16" &&
-        !(denseKvRows && (scheme.kind === "affine-uniform" || scheme.kind === "affine-config")))) return false;
-      return scheme.batchable(model.config, layer => storage.convertible[layer] === true,
-        storage.convertible.length, kvBatchCapabilities);
+      if (!storage) return false;
+      const { certified, capabilities } = kvBatchCapabilities(scheme);
+      return certified && scheme.batchable(model.config, layer => storage.convertible[layer] === true,
+        storage.convertible.length, capabilities);
     },
-    createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options, kvBatchCapabilities,
+    createBatchGroup: (options) => new MlxBatchExecutionGroup(model, { ...options,
+      kvBatchCapabilities: kvBatchCapabilities(options.kvScheme).capabilities,
       ...(plainSoftcap ? { denseKvReads: true } : {}) }),
   };
 }

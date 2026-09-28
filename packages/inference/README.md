@@ -271,15 +271,22 @@ inside generation; the new planner reports `fill-incompatible-with-request`
 and selects ordinary continuous decoding. This pair does not qualify B2 or
 cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
-delayed speculation and softcap encoded KV remain excluded. A graph whose
-attention reads plain KV (a softcap graph such as Gemma2) instead admits affine
-KV for ordinary continuous decoding, with checkpoints, while each row's storage
-certifies that its next append still reads plain (`Cache.denseKvReads`, answered
-by the storage's own maintenance). At a row's actual transition its pending
-token publishes first, and the row may finish there; otherwise that row alone is
+delayed speculation remains excluded. A graph whose attention reads dense KV
+(a softcap graph such as Gemma2, reading keys and values as arrays) admits a KV
+scheme when that scheme's own maintenance leaves every layer's storage certified
+for dense reads (`Cache.denseKvReads`, answered by the storage and the
+maintenance that owns it, probed when the binding or group is composed). Affine
+KV serves ordinary continuous decoding, with checkpoints, while each row's
+storage still reads plain. At a row's actual transition its pending token
+publishes first, and the row may finish there; otherwise that row alone is
 rejected with `DenseKvReadError` before any shared append (HTTP 501
 `unsupported_kv_transition`, or the stream's error event once it has opened).
-Main's serial path threw at that forward instead. Universal graphs
+Main's serial path threw at that forward instead. TurboQuant storage decodes on
+read, so these graphs admit TurboQuant KV for ordinary continuous decoding
+throughout, with checkpoints; a configured draft is ignored, as main's serial
+path did. Fill and direct grammar jump over it, which main served serially,
+are not yet shared: exactly those requests are refused with the typed execution
+error. Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
 attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8
