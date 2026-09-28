@@ -7,17 +7,20 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
 import { BatchedQuantizedKVCache } from "./batched-quantized-kv";
 import { QuantizedKVCache } from "./quantized-kv";
-import { type Cache, type Mask, type KvAttentionState, type KvAttentionView } from "../contracts/mlx/cache";
+import { type Cache, type Mask, type KvAttentionState, type KvAttentionView, type PlainKvReads, type KvMaintenance } from "../contracts/mlx/cache";
 
 /** Affine storage keeps its native quantized-attention arithmetic while rows
  * cross the conversion boundary independently. Once all rows convert, their
  * packed planes use the existing batched attention implementation. */
 export class DelayedQuantizedKVCache extends FullTransitioningKvRows<BatchedQuantizedKVCache> implements KvAttentionState {
+  /** Plain reads per row, answered by this cache's own maintenance. */
+  readonly plainKvReads: PlainKvReads | undefined;
   constructor(readonly groupSize: number, readonly bits: number, readonly start: number,
-    readonly maintain: (rows: Cache[]) => void, row?: Cache) {
+    readonly maintain: KvMaintenance, row?: Cache) {
     super({ signature: `kv:delayed-quant:${bits}:${groupSize}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof QuantizedKVCache,
       makeLayout: () => new BatchedQuantizedKVCache(groupSize, bits) }, row);
+    this.plainKvReads = this.plainKvReadsOf(maintain);
   }
   get attentionState(): KvAttentionState { return this; }
   captureDonorAttention() {

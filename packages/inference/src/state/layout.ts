@@ -9,6 +9,7 @@ import { BatchedTurboQuantKVCache } from "./batched-turboquant-kv";
 import { targetRowLayoutFactory, type TargetRowLayout } from "./target-layout";
 import { PagedKVCache } from "./paged/cache";
 import { PagedKvRows } from "./paged/rows";
+import { unchangedKv } from "./kv-maintenance";
 
 /** Bind encoded state to its row layout. Execution owners only move rows. */
 export function ownedCacheLayout(cache: Cache): BatchableCache | undefined {
@@ -22,7 +23,8 @@ export function ownedCacheLayout(cache: Cache): BatchableCache | undefined {
 export function prefillCacheLayout(cache: Cache): BatchableCache {
   if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return cache.makeEmptyBatch();
-  if (cache instanceof RotatingKVCache) return new DelayedRotatingQuantizedKVCache(cache.maxSize, 64, 4, Infinity, () => {});
+  // Plain rotating rows never convert here; their plain reads say so.
+  if (cache instanceof RotatingKVCache) return new DelayedRotatingQuantizedKVCache(cache.maxSize, 64, 4, Infinity, unchangedKv);
   if (cache instanceof RotatingQuantizedKVCache) return new RotatingAffineLayout(cache.maxSize, cache.groupSize, cache.bits);
   return targetCacheLayout(cache);
 }

@@ -3,11 +3,13 @@ import * as ops from "@mlx-bun/mlx/ops";
 import type { Cache,DecodeStepPlan,KvDonorRows,Mask } from "../contracts/mlx/cache";
 import { createCausalMask } from "../kernels/attention/masks";
 import { QuantizedKVCache } from "./quantized-kv";
+import { plainKvStorage } from "./plain-kv-reads";
 
 
 /** KV cache — port of mlx-lm cache.py KVCache: preallocated in steps of
  *  256 along the sequence axis, updated in place via slice_update. */
 export class KVCache implements Cache {
+  readonly plainKvReads = plainKvStorage;
   static readonly STEP = 256;
   /** Set only by compiled-decode trace adapters (see Cache). */
   readonly ropeOffsetArr?: MlxArray;

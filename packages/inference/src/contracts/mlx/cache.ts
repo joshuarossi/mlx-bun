@@ -81,7 +81,36 @@ export interface KvDonorAttention extends KvAttentionView {
   readonly ends: readonly number[];
 }
 
+/** Plain key/value reads (`updateAndFetch`) for a graph whose attention reads
+ * plain keys and values. Storage that can answer declares it. A cache without
+ * it is not certified for a composed plain read (it may still serve
+ * `updateAndFetch` directly). */
+export interface PlainKvReads {
+  /** Pure: whether `row` can take its next append and still be read plain —
+   * its storage is plain now, and the maintenance that append schedules
+   * (deferred during prefill) converts nothing. */
+  appendable(row: number): boolean;
+}
+
+/** KV precision maintenance over a list of caches (a model's layers, or the
+ * rows of a delayed cache): converts eligible entries in place. */
+export interface KvMaintenance {
+  (cache: Cache[]): void;
+  /** Limit committed work at a pending precision transition. */
+  maxAppendTokens?(cache: readonly Cache[]): number;
+  /** Bind state requiring row-local maintenance before shared decode. */
+  prepareBatch?(cache: Cache[]): void;
+  /** Bind all precision policies before a prefill cohort owns row boundaries. */
+  preparePrefill?(cache: Cache[]): void;
+  /** The conversion test this maintenance applies to `cache` at `index` (its
+   * layer, or its row inside a delayed cache). Absent: this maintenance cannot
+   * answer, so storage it maintains is not certified for plain reads. */
+  converts?(cache: Cache, index: number): boolean;
+}
+
 export interface Cache {
+  /** Plain reads, when this storage can answer for them (see PlainKvReads). */
+  readonly plainKvReads?: PlainKvReads;
   /** Maximum committed positions before this state changes precision. */
   maxAppendTokens?(): number;
   captureDonorRows?(): KvDonorRows;

@@ -1,6 +1,6 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { BatchableCache, Cache, Mask } from "../contracts/mlx/cache";
+import type { BatchableCache, Cache, KvMaintenance, Mask, PlainKvReads } from "../contracts/mlx/cache";
 import { KvTensorRows } from "./kv-tensor-rows";
 import { leaseCacheStates } from "./leases";
 import { minimumReusableOffset } from "./views";
@@ -97,6 +97,20 @@ export abstract class TransitioningKvRows<Layout extends TransitionedKvLayout> i
     else { for (const row of this.rows) row.trim(count); this.syncPositions(true); }
   }
   protected syncPositions(preserve = false): void { this.positions.sync(this.rows, preserve); }
+  /** Plain reads answered by `maintain`'s own conversion test, bound to that
+   * maintenance once; undefined when it cannot answer. */
+  protected plainKvReadsOf(maintain: KvMaintenance): PlainKvReads | undefined {
+    if (!maintain.converts) return undefined;
+    const converts = maintain.converts.bind(maintain);
+    return { appendable: row => this.plainAfterNextAppend(row, converts) };
+  }
+  /** Pure: whether `row` is plain now and stays plain through the maintenance
+   * its next append schedules (deferred during prefill), by the maintenance's
+   * own conversion test. The same test gates advancePlain below. */
+  protected plainAfterNextAppend(row: number, converts: (cache: Cache, index: number) => boolean): boolean {
+    const cache = this.rows[row];
+    return !this.packed && !!cache && !this.transition.converted(cache) && (this.#prefilling || !converts(cache, row));
+  }
   /** Reject incompatible storage before appending any row: rows already
    * converted refuse with no change; otherwise the scheduled maintenance runs
    * (deferred during prefill), then every row must still be plain. */
