@@ -1,6 +1,7 @@
 // Small helpers shared by the opt-in real-weight consumers: all-or-nothing
-// opt-in parsing, content hashes, artifact pin checks, and releases that run
-// even when one fails. No native imports.
+// opt-in parsing, content hashes, artifact pin checks, the custom
+// sliding-window descriptor, and releases that run even when one fails.
+// No native imports.
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { closeSync, createReadStream, existsSync, openSync, readFileSync, readSync } from "node:fs";
@@ -71,6 +72,21 @@ export function storedFloatDtype(model: string): string {
   }
   if (found.size !== 1) throw new Error(`${model}: stored floating dtypes [${[...found].join(", ")}]; exactly one is supported`);
   return [...found][0]!;
+}
+
+/** A custom sliding-window graph's descriptor over a Llama-family artifact's
+ * unchanged weights (not a published model): alternating sliding and full
+ * layers, one value source. */
+export interface WindowDescriptor { layerTypes: string[]; slidingWindow: number }
+export function descriptorFor(layers: number, window: number): WindowDescriptor {
+  return { layerTypes: Array.from({ length: layers }, (_, i) => i % 2 === 0 ? "sliding_attention" : "full_attention"), slidingWindow: window };
+}
+/** One descriptor for both the parsed config and the raw arguments the graph is built from. */
+export function applyDescriptor(config: { raw: Record<string, unknown>; text: { layerTypes: string[]; slidingWindow: number } },
+  descriptor: WindowDescriptor): void {
+  const raw = (config.raw.text_config ?? config.raw) as Record<string, unknown>;
+  raw.layer_types = [...descriptor.layerTypes]; raw.sliding_window = descriptor.slidingWindow;
+  config.text.layerTypes = [...descriptor.layerTypes]; config.text.slidingWindow = descriptor.slidingWindow;
 }
 
 /** Run every release even when one throws, then rethrow the first failure. */
