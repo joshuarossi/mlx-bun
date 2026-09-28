@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { resolveKvScheme, type KvQuantOverride } from "@mlx-bun/inference/state/kv-scheme";
+import { resolveKvScheme, supportsTurboQuantHeadDim, TURBOQUANT_HEAD_DIMS, type KvQuantOverride } from "@mlx-bun/inference/state/kv-scheme";
 import type { TurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import type { Cache } from "@mlx-bun/inference/contracts/mlx";
 import type { PromptCache, TieredPromptCache, SsdCacheStore, SsdIndexEntry,
@@ -72,6 +72,11 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
     throw new Error("SSD cache requires the model binding's stateCompatibility identity");
   const resolvedKvScheme = resolveKvScheme({ override: options.kvQuant, turboQuant: options.turboQuant,
     quantizedKvStart: options.quantizedKvStart, config: context.kvConfig });
+  // As main's createServer did, refuse at startup a TurboQuant scheme the codec
+  // cannot encode for this model, instead of failing every request in prefill.
+  if (resolvedKvScheme.kind === "turbo" && !supportsTurboQuantHeadDim(context.model.config))
+    throw new Error(`--kv-quant turbo: this model's full-attention head_dim is ${context.model.config.text.globalHeadDim}; ` +
+      `TurboQuant supports {${TURBOQUANT_HEAD_DIMS.join(",")}} — use --kv-quant config|4|8 or omit it`);
   const deps = supplied ?? await defaultDependencies();
   const runtime = binding.gateway.runtime;
   const stateCodecs = context.stateCodecs ?? deps.defaultStateCodecs;

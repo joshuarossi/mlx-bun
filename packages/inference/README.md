@@ -243,6 +243,30 @@ restored the base. Actual paged rows remained checkpoint-ineligible. This covers
 one active row within the sliding window, not grouped rows, paged numerics,
 hard-kill durability, external-oracle parity or performance.
 
+With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, every saved and restored checkpoint
+after conversion (immediately with a start of 0) must hold TurboQuant's exact
+inventory: five encoded planes per full-attention cache (K indices, float16 K
+scales and zeros per 32-wide group, packed uint8 V, float16 V scales) at the
+scheme's bits, the fused decode when `MLX_BUN_TURBOQUANT_FUSED_DECODE` is unset,
+a plain ring per sliding cache, every KV layer at the checkpoint's offset, and
+no reuse floor with a start of 0. Before a positive start converts, checkpoints
+are still plain. Paired B1 checks on Gemma4
+e4b OptiQ-4bit (snapshot `98d7dc6a`, MacBookPro18,2, MLX 0.32.2) with
+server-wide TurboQuant k8v3 from token 0 matched main `02d723a` through each
+side's continuous gateway at capacity 8 for 16 tokens, greedy and seeded
+sampling: full logits, all 42 layer outputs and the final norm by hash, and all
+24 donor states at every forward (20 plain sliding rings; the 4 full donors
+plain on the prefill forward and TurboQuant, all five planes, from the next),
+checkpoint saves at 4, 8 and 12, an interruption at 10 and a fresh-process
+resume from the durable record at 8. Within this tree, the continuation test
+passed on the same artifact at B1 and B4 with TurboQuant from token 0: seeded
+sampling (temperature 0.7, seed 42 plus the row, repetition penalty 1.1) for
+16 tokens, interrupted at 6 with durable checkpoints at 4, then restored in the
+same process and in a fresh one; every restored record held 12 tokens over 24
+caches of 2 or 5 planes. The main-paired evidence is B1 only; a wrapped sliding
+ring, a delayed TurboQuant start, hard-kill durability, external-oracle parity
+and performance are not claimed.
+
 MiniCPM5 and these universal graphs also ignore a configured draft and supplied
 fill for adapter requests, as main did; requested logprobs remain available.
 Without fill/logprobs/grammar, ordinary checkpoints remain eligible. The fallback
