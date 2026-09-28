@@ -50,7 +50,7 @@ test(`ordinary shared continuation binds ${name} through its loaded backend`, ()
 });
 }
 
-test("Gemma2 softcap plans shared continuation for plain and affine KV, keeping every other exclusion", () => {
+test("Gemma2 softcap plans shared continuation for plain, affine and TurboQuant KV, keeping every other exclusion", () => {
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), { encodedKvAttention: false,
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
@@ -69,24 +69,24 @@ test("Gemma2 softcap plans shared continuation for plain and affine KV, keeping 
       promptCache: true, checkpoint: true, fill: false, pagedKv: false });
     expect(unconfigured.plan(request, options, schedule).checkpoint).toBe(false);
   }
-  // Affine KV places ordinarily (its rows are rejected at their transition) and
-  // takes continuation checkpoints; its placement is otherwise the unconfigured binding's.
-  {
-    const request = { ...shape, kvQuant: true }, options = { kvBits: 4 };
+  // Affine KV (its rows rejected at their transition) and TurboQuant (read
+  // decoded) place ordinarily and take continuation checkpoints; their placement
+  // is otherwise the unconfigured binding's.
+  for (const [request, options] of [[{ ...shape, kvQuant: true }, { kvBits: 4 }],
+    [{ ...shape, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }]] as const) {
     const plan = binding.plan(request, options, schedule), baseline = unconfigured.plan(request, options, schedule);
     const { checkpoint: planned, ...placement } = plan, { checkpoint: unplanned, ...unchanged } = baseline;
-    expect(placement).toEqual(unchanged);
-    expect({ method: plan.method, mechanism: plan.mechanism, planned, unplanned })
-      .toEqual({ method: "autoregressive", mechanism: "continuous", planned: true, unplanned: false });
+    expect({ request, placement }).toEqual({ request, placement: unchanged });
+    expect({ request, method: plan.method, mechanism: plan.mechanism, planned, unplanned })
+      .toEqual({ request, method: "autoregressive", mechanism: "continuous", planned: true, unplanned: false });
   }
-  // Grammar, fill, drafts, media, logprobs, TurboQuant and paging keep their
+  // Grammar, fill, drafts, media, logprobs and paging keep their
   // placement and bind no continuation: placed requests carry no checkpoint,
   // and the rest stay unsupported for this graph.
   const fill = { fill: new FillSession({ rows: [], eos: [], echo: null }, [2, 651]) };
   for (const [request, options, mechanism] of [[{ ...shape, hasGrammar: true }, {}, "continuous"], [shape, fill, "continuous"],
     [{ ...shape, wantsLogprobs: true }, {}, "continuous"], [{ ...shape, hasDraft: true }, {}, "unsupported"],
     [{ ...shape, hasVision: true }, {}, "unsupported"],
-    [{ ...shape, turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } }, "unsupported"],
     [shape, { pagedKv: {} }, "unsupported"]] as const) {
     const plan = binding.plan(request, options, schedule), baseline = unconfigured.plan(request, options, schedule);
     const { checkpoint: _planned, ...placement } = plan, { checkpoint: _baseline, ...unchanged } = baseline;
