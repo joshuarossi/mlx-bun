@@ -234,10 +234,11 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
   const { UniversalDenseModel } = await import("@mlx-bun/inference/models/universal");
   const { bindMlxGateway } = await import("@mlx-bun/inference/execution");
   const { KVCache } = await import("@mlx-bun/inference/state");
-  const { KvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
+  const { KvScheme, resolveKvScheme } = await import("@mlx-bun/inference/state/kv-scheme");
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
-    config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
+    // The text facts KV scheme policy reads; this one-layer graph uses full attention.
+    config: { modelType: "gemma2", text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] },
     makeCache: () => [new KVCache()], loraState: { active: [] },
   });
   const binding = bindMlxGateway(model);
@@ -247,8 +248,13 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
   try {
     expect(gateway.place(shape())).toMatchObject({ mechanism: "continuous",
       execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false } });
-    for (const kind of ["affine-uniform", "affine-config", "turbo"] as const)
-      expect(binding.kvBatchable(new KvScheme(kind, {}))).toBe(false);
+    // Affine KV batches while the storage certifies plain reads; TurboQuant does not.
+    for (const [scheme, batchable] of [[resolveKvScheme({ override: 4, quantizedKvStart: 0 }), true],
+      [resolveKvScheme({ override: 8, quantizedKvStart: 64 }), true],
+      [resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] }), true],
+      [resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }), false],
+      [new KvScheme("turbo", {}), false]] as const)
+      expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(batchable);
     for (const request of [{ hasGrammar: true }, { hasAdapters: true }, { hasGrammar: true, hasAdapters: true }])
       expect(gateway.place({ ...shape(), ...request })).toMatchObject({ mechanism: "continuous",
         execution: { method: "autoregressive", compiledDecode: false, fill: false, checkpoint: false, grammarJump: false } });
@@ -287,8 +293,11 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
       expect(speculating.place({ ...shape(), hasDraft: true }, fill)).toMatchObject({ mechanism: "continuous",
         execution: { method: "speculative", fill: false } });
     } finally { await speculating.close(); }
-    // Even a caller advertising generic encoded support cannot qualify this graph.
+    // Affine KV is placed ordinarily through certified plain reads; even a caller
+    // advertising generic encoded support cannot qualify TurboQuant on this graph.
     expect(binding.plan({ ...shape(), kvQuant: true }, { kvBits: 4 },
+      { continuous: true, quantizedBatch: true, checkpoints: true })).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
+    expect(binding.plan({ ...shape(), turboQuant: true }, { turboQuant: { kBits: 8, vBits: 3 } },
       { continuous: true, quantizedBatch: true, checkpoints: true }).mechanism).toBe("unsupported");
     expect(created).toBe(false);
   } finally { await gateway.close(); }

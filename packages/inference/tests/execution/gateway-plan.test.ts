@@ -231,7 +231,7 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and it
     resolveKvScheme({ override: "config", config, quantizedKvStart: 64 })])
     expect(binding.kvBatchable(scheme)).toBe(true);
   // A model without the capability still refuses a delayed start.
-  expect(bindMlxGateway(universal({ attnLogitSoftcap: 50, maskArray: true, modelType: "gemma2" }))
+  expect(bindMlxGateway(standIn(Qwen3Model.prototype, "qwen3"))
     .kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
   expect(bindMlxGateway(dense()).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
 
@@ -671,8 +671,9 @@ test.each([["MiniCPM5", minicpm5], ["plain universal", universal]] as const)(
 test("delayed affine KV needs the graph's encoded-attention fact and convertible layers", () => {
   const delayed = resolveKvScheme({ override: 4, quantizedKvStart: 64 });
   const plan = (model: UniversalDenseModel) => bindMlxGateway(model).kvBatchable(delayed);
-  // Manual softcap attention reads plain arrays only.
-  expect(plan(universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 }))).toBe(false);
+  // Manual softcap attention reads plain arrays: its delayed affine rows batch
+  // while their storage certifies plain reads (rows past it are rejected).
+  expect(plan(universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 }))).toBe(true);
   // A graph that does not state the fact is not assumed to read encoded KV.
   const silent = universal(); delete (silent as { encodedKvAttention?: boolean }).encodedKvAttention;
   expect(plan(silent)).toBe(false);
@@ -688,11 +689,13 @@ test("gateway policy follows the graph as bound, not a later descriptor", () => 
   (encoded.args as { attnLogitSoftcap: number | null }).attnLogitSoftcap = 50;
   const a = bindMlxGateway(encoded);
   expect([a.kvBatchable(immediate), a.kvBatchable(delayed)]).toEqual([true, true]);
-  // Bound with softcap; the descriptor later drops it: still manual attention over plain KV only.
+  // Bound with softcap; the descriptor later drops it: still manual attention
+  // over plain KV, taking affine KV through certified plain reads, not TurboQuant.
   const softcap = universal({ modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50 });
   (softcap.args as { attnLogitSoftcap: number | null }).attnLogitSoftcap = null;
   const b = bindMlxGateway(softcap);
-  expect([b.kvBatchable(immediate), b.kvBatchable(delayed), b.kvBatchable(new KvScheme("bf16", {}))]).toEqual([false, false, true]);
+  expect([b.kvBatchable(immediate), b.kvBatchable(delayed), b.kvBatchable(new KvScheme("bf16", {})),
+    b.kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))]).toEqual([true, true, true, false]);
   // Its token-method policy is the softcap graph's, whatever the descriptor now says.
   const request = { ...shape, hasGrammar: true };
   expect(bindMlxGateway(softcap).plan(request, {}, schedule)).toEqual(bindMlxGateway(softcapUniversal()).plan(request, {}, schedule));
