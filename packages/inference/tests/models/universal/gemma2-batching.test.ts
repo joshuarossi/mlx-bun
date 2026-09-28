@@ -1403,7 +1403,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   // quantization needs a head dimension divisible by its group size (64).
   const HEAD_DIM = 64;
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
-  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean } = {}) => {
+  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean;
+    promptCache?: import("../../../src/execution/batch-types").RowPromptCache } = {}) => {
     const { bindMlxGateway, createRuntimeConfig, createRowSampling } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     const f = mixedFixture(types, true, HEAD_DIM), model = f.make();
@@ -1413,6 +1414,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       : resolveKvScheme({ override: 4, quantizedKvStart: start });
     let held = false;
     const group = binding.createBatchGroup({ maxBatch: 2, prefillChunkSize: options.chunk ?? 64, admissionHeld: () => held,
+      ...(options.promptCache ? { promptCache: options.promptCache } : {}),
       // Compiled decode stays at its default: these graphs bind none (below).
       runtime: createRuntimeConfig({ MLX_BUN_PREFILL_TAIL_SPLIT: options.tailSplit === false ? "0" : "1",
         ...(options.pipeline === false ? { MLX_BUN_BATCH_NO_PIPELINE: "1" } : {}) }),
@@ -1926,6 +1928,111 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           expect(solo).toEqual({ tokens: reference.tokens, outcome: "length", accepted: reference.accepted });
           expect(seen).toEqual(reference.seen);
         } finally { await env.close(); }
+      });
+
+      test("a reused grammar prefix crossing the TurboQuant threshold is maintained before its first suffix append", async () => {
+        const { PromptCache, cloneKvCaches, leaseCacheState } = await import("../../../src/state");
+        const { createKvMaintenance } = await import("../../../src/state/kv-maintenance");
+        const { makeStepSampler } = await import("../../../src/sampling");
+        const prefix = new PromptCache(16 << 20, null, null, cloneKvCaches);
+        const state = (caches: Cache[]) => caches.map(cache => {
+          const lease = leaseCacheState(cache);
+          try { return { kind: cache.constructor.name, offset: cache.offset,
+            planes: lease.borrow().map(record) }; }
+          finally { lease.close(); }
+        });
+        const puts: { tokens: number[]; namespace: string | undefined; state: ReturnType<typeof state>; minimum: number[]; resident: number; bytes: number }[] = [];
+        const hits: { tokens: number[]; namespace: string | undefined; state: ReturnType<typeof state> }[] = [];
+        const env = await setup(7, { turbo: true, promptCache: {
+          put(tokens, caches, ...rest) {
+            const saved = { tokens: [...tokens], namespace: rest[0], state: state(caches),
+              minimum: caches.map(cache => cache.minimumReusableOffset ?? 0) };
+            prefix.put(tokens, caches, ...rest);
+            puts.push({ ...saved, resident: prefix.size, bytes: prefix.totalBytes });
+          },
+          take(prompt, ...rest) {
+            const hit = prefix.take(prompt, ...rest);
+            if (hit) hits.push({ tokens: [...hit.tokens], namespace: rest[0], state: state(hit.caches) });
+            return hit;
+          },
+        } });
+        let reference: ReturnType<typeof prefix.take> = null;
+        let recordSuffix = false;
+        const forwards: { ids: number[]; kinds: string[]; offsets: number[] }[] = [];
+        const originalForward = env.model.forwardHidden.bind(env.model);
+        // The grammar method binds model operations on its first submission and
+        // survives between requests. Install observers before that first bind.
+        env.model.forwardHidden = (ids, caches) => {
+          if (recordSuffix) forwards.push({ ids: ids.toIntTokens(), kinds: caches.map(cache => cache.constructor.name),
+            offsets: caches.map(cache => cache.offset) });
+          return originalForward(ids, caches);
+        };
+        const seen = projections(env);
+        try {
+          expect(A).toHaveLength(5);
+          const first = await submitSpans(env, A, 3, [[11, 12]]);
+          expect(first.outcome).toBe("length");
+          expect(first.tokens).toHaveLength(3);
+          expect(Number.isInteger(first.tokens[0])).toBe(true);
+          expect(first.tokens.slice(1)).toEqual([11, 12]);
+          const committed = [...A, ...first.tokens];
+          expect(committed).toHaveLength(8);
+          expect(puts).toHaveLength(1);
+          expect(puts[0]!.tokens).toEqual(committed);
+          expect(puts[0]!.state.map(({ kind, offset }) => ({ kind, offset }))).toEqual(
+            types.map(type => ({ kind: type === F ? "KVCache" : "RotatingKVCache", offset: 8 })));
+          expect(hits).toHaveLength(0);
+          expect(puts[0]!.minimum.every(offset => offset <= committed.length), JSON.stringify(puts[0])).toBe(true);
+          expect(puts[0]!.resident, JSON.stringify(puts[0])).toBe(1);
+          expect(prefix.size, JSON.stringify(puts[0])).toBe(1);
+          expect(prefix.totalBytes).toBeLessThanOrEqual(prefix.maxBytes);
+          expect(committed.every(Number.isFinite)).toBe(true);
+          expect(prefix.findExact(committed, puts[0]!.namespace)).not.toBeNull();
+
+          const suffix = 17, prompt = [...committed, suffix];
+          // Borrow the SAME saved physical prefix as the next real cache hit.
+          // Re-prefilling eight tokens as one block would change the reference.
+          reference = prefix.take(prompt, puts[0]!.namespace);
+          expect(reference, JSON.stringify({ stored: puts[0], size: prefix.size, bytes: prefix.totalBytes })).not.toBeNull();
+          expect(reference!.tokens).toEqual(committed);
+          const restored = state(reference!.caches);
+          createKvMaintenance(turbo(7).generationOptions)(reference!.caches);
+          const expectedKinds = types.map(type => type === F ? "TurboQuantKVCache" : "RotatingKVCache");
+          expect(reference!.caches.map(cache => cache.constructor.name)).toEqual(expectedKinds);
+          let expectedProjection: Projection, expectedToken: number;
+          const grammar = spanGrammar([]);
+          const sampler = makeStepSampler({ temperature: 0, grammar }, { tokenRepresentation: "device",
+            grammarWait: "external", historyUpdate: "manual", initialHistory: prompt });
+          try {
+            await grammar.ready();
+            using ids = ops.fromInt32([suffix], [1, 1]);
+            using hidden = env.model.forwardHidden(ids, reference!.caches);
+            using logits = env.model.logitsFromHidden(hidden);
+            expectedProjection = record(logits);
+            using sampled = sampler.sample(logits, 0).token;
+            expectedToken = sampled.toIntTokens()[0]!;
+          } finally { sampler.dispose(); }
+
+          seen.length = 0;
+          recordSuffix = true;
+          const second = await submitSpans(env, prompt, 1, []);
+          recordSuffix = false;
+          expect(hits).toEqual([{ tokens: committed, namespace: puts[0]!.namespace, state: restored }]);
+          expect(forwards).toHaveLength(1);
+          expect(forwards[0]!.ids).toEqual([suffix]);
+          expect(forwards[0]!.offsets).toEqual(types.map(() => 8));
+          // Main generate.ts performs initial maintenance on the borrowed cache
+          // before this suffix, even when it is the final one-token prefill.
+          expect(forwards[0]!.kinds).toEqual(expectedKinds);
+          expect(seen).toEqual([expectedProjection]);
+          expect(second).toEqual({ tokens: [expectedToken], outcome: "length", accepted: [] });
+        } finally {
+          try { await env.close(); }
+          finally {
+            try { if (reference) { dispose(reference.caches); reference.retain?.(); } }
+            finally { prefix.clear(); }
+          }
+        }
       });
 
       test("two interleaved span rows each equal their solo reference; a stopped, cancelled or failing row leaves its peer and the group usable", async () => {
