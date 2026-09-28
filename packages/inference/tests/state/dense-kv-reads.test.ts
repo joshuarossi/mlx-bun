@@ -187,19 +187,25 @@ test("arbitrary maintenance: a callback that cannot answer never certifies, what
 test("plain storage and storage that decodes on read declare dense reads; affine storage and unknown maintenance do not", () => {
   const turbo = createKvMaintenance({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 });
   const dense: Cache[] = [new KVCache(), new RotatingKVCache(W), new BatchedKVCache(), new BatchedRotatingCache(W, []),
-    new TurboQuantKVCache(8, 3), new BatchedTurboQuantKVCache(8, 3), new DelayedTurboQuantKVCache(8, 3, 0, turbo)];
+    new TurboQuantKVCache(8, 3), new BatchedTurboQuantKVCache(8, 3),
+    new DelayedTurboQuantKVCache(8, 3, 0, turbo, new KVCache())];   // one real (empty) row: its row 0
+  // Capability presence is the storage's declaration; appendability is asked of
+  // an actual row. An empty delayed layout declares, but has no row 0 to append.
+  const empty = new DelayedTurboQuantKVCache(8, 3, 0, turbo);
   const encoded: Cache[] = [new QuantizedKVCache(64, 4), new RotatingQuantizedKVCache(W, 64, 4), new BatchedQuantizedKVCache(64, 4),
     new RotatingAffineLayout(W, 64, 4),
     // The same TurboQuant rows under a bare callback: it cannot say what it leaves.
     new DelayedTurboQuantKVCache(8, 3, 0, () => {})];
   try {
     for (const cache of dense) expect(cache.denseKvReads?.appendable(0), cache.constructor.name).toBe(true);
+    expect(empty.denseKvReads).toBeDefined();
+    expect(empty.denseKvReads!.appendable(0)).toBe(false);
     for (const cache of encoded) expect(cache.denseKvReads, cache.constructor.name).toBeUndefined();
     // The prefill cohort's rotating layout never converts, and says so.
     const layout = prefillCacheLayout(new RotatingKVCache(W));
     try { expect(layout).toBeInstanceOf(DelayedRotatingQuantizedKVCache); expect(layout.denseKvReads).toBeDefined(); }
     finally { layout.dispose(); }
-  } finally { for (const cache of [...dense, ...encoded]) cache.dispose(); }
+  } finally { for (const cache of [...dense, ...encoded, empty]) cache.dispose(); }
 });
 
 test("a custom maintenance's answer runs on its own receiver, bound once with the capability", () => {
