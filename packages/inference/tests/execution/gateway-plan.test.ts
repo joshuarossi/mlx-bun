@@ -75,6 +75,31 @@ const place = (binding: MlxGatewayBinding, request: typeof shape) =>
 const refusals = (plan: ResolvedExecution) =>
   plan.reasons.filter(reason => reason.endsWith("-unsupported") || reason === "continuous-unavailable");
 
+/** Main served delayed affine KV serially on graphs whose delayed affine rows
+ * are ordinary-only, so its direct grammar jump committed spans there. */
+function expectOrdinaryAffineSpans(make: () => RuntimeModel, delayed: GenerateOptions, immediate: GenerateOptions) {
+  const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }),
+    () => bindMlxGateway(make(), { provider: new NgramProvider(), numDraftTokens: 3 }));
+  const scheduling = { continuous: true, quantizedBatch: true, checkpoints: false };
+  const kv = { ...shape, kvQuant: true, hasGrammar: true };
+  const spans = jump.plan(kv, delayed, scheduling);
+  expect(spans).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true, checkpoint: false });
+  expect(refusals(spans)).toEqual([]);
+  expect(jump.methodRequest!(spans, delayed)!.key).toBe("grammar-forced-span");
+  // Logprobs keep masking.
+  expect(jump.plan({ ...kv, wantsLogprobs: true }, delayed, scheduling)).toMatchObject({ method: "autoregressive", grammarJump: false });
+  // An adapter request still ignores its configured draft; its grammar commits spans.
+  const options = { ...delayed, adapters: ["upper"] };
+  const adapted = jump.plan({ ...kv, hasAdapters: true, hasDraft: true }, options, scheduling);
+  expect(adapted).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true });
+  expect(adapted.reasons).toContain("draft-incompatible-with-request");
+  expect(jump.methodRequest!(adapted, options)!.key).toBe("grammar-forced-span");
+  // Genuine delayed speculation stays refused.
+  expect(jump.plan({ ...kv, hasDraft: true }, delayed, scheduling)).toMatchObject({ mechanism: "unsupported" });
+  // Where main batched, grammar keeps verified proposals.
+  expect(jump.plan(kv, immediate, scheduling)).toMatchObject({ method: "speculative", mechanism: "continuous", grammarJump: true });
+}
+
 test("the retired MLX_BUN_GRAMMAR_BATCH switch no longer changes grammar placement", () => {
   const [baseline, ...others] = environments.map(env => planUnder(env, gemma4()));
   expect(baseline).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: false });
@@ -359,12 +384,7 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and it
   expect(binding.plan(kv, { ...immediate, ...(fill as object) }, scheduling).fill).toBe(true);
   // Plain KV is unaffected.
   expect(binding.plan({ ...shape, hasDraft: true }, {}, scheduling).method).toBe("speculative");
-  // Grammar jump over delayed affine KV falls back to ordinary grammar masking with its reason.
-  const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(minicpm5()));
-  const masked = jump.plan({ ...kv, hasGrammar: true }, { kvBits: 4, quantizedKvStart: 64 }, { continuous: true, quantizedBatch: true, checkpoints: false });
-  expect(masked).toMatchObject({ mechanism: "continuous", method: "autoregressive", grammarJump: false });
-  expect(masked.reasons).toContain("grammar-jump-incompatible-with-request");
-  expect(jump.plan({ ...kv, hasGrammar: true }, immediate, { continuous: true, quantizedBatch: true, checkpoints: false }).grammarJump).toBe(true);
+  expectOrdinaryAffineSpans(minicpm5, { kvBits: 4, quantizedKvStart: 64 }, immediate);
 });
 
 /** A universal descriptor with the graph's own cache layout: caches follow the descriptor. */
@@ -450,11 +470,7 @@ for (const [name, make] of [
   expect(binding.plan({ ...kv, hasAdapters: true }, { ...immediate, adapters: ["upper"] }, scheduling).mechanism).toBe("continuous");
   expect(binding.plan({ ...shape, hasAdapters: true }, { adapters: ["upper"] }, scheduling).mechanism).toBe("continuous");
   expect(binding.plan({ ...shape, hasDraft: true }, {}, scheduling).method).toBe("speculative");
-  // Grammar jump over delayed affine KV falls back to ordinary grammar masking with its reason.
-  const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(universal()));
-  const masked = jump.plan({ ...kv, hasGrammar: true }, { kvBits: 4, quantizedKvStart: 8 }, { continuous: true, quantizedBatch: true, checkpoints: false });
-  expect(masked).toMatchObject({ mechanism: "continuous", method: "autoregressive", grammarJump: false });
-  expect(masked.reasons).toContain("grammar-jump-incompatible-with-request");
+  expectOrdinaryAffineSpans(universal, { kvBits: 4, quantizedKvStart: 8 }, immediate);
 });
 
 // A strict or echo fill session; placement reads only its plan.

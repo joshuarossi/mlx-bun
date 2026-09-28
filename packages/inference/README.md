@@ -321,7 +321,10 @@ layer appends, where main threw in that forward. The span method binds the
 graph's dense-read layers explicitly; the gateway supplies them from its cache
 probe. Not yet qualified with real weights. Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
-attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
+attention reads encoded KV. On those graphs and on MiniCPM5, delayed affine
+rows stay ordinary-only, as main served them serially, and their direct grammar
+jump commits spans through the same span method with no dense-read requirement,
+before and after conversion; not yet qualified with real weights. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8
 (not a published model) matched main's serial path at B1 in full logits and all
 valid cache planes for bf16, immediate affine, KV4 and KV8 converting in decode
