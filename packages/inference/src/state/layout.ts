@@ -23,7 +23,7 @@ export function ownedCacheLayout(cache: Cache): BatchableCache | undefined {
 export function prefillCacheLayout(cache: Cache): BatchableCache {
   if (cache instanceof PagedKVCache) return new PagedKvRows(cache.capacityTokens, cache.blockSize, cache.direct, cache.quantization);
   if (isBatchableCache(cache)) return cache.makeEmptyBatch();
-  // Plain rotating rows never convert here; their plain reads say so.
+  // Plain rotating rows never convert here; their dense reads say so.
   if (cache instanceof RotatingKVCache) return new DelayedRotatingQuantizedKVCache(cache.maxSize, 64, 4, Infinity, unchangedKv);
   if (cache instanceof RotatingQuantizedKVCache) return new RotatingAffineLayout(cache.maxSize, cache.groupSize, cache.bits);
   return targetCacheLayout(cache);

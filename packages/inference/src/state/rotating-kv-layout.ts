@@ -32,6 +32,9 @@ export class AlignedRotatingCache implements Cache {
   get offset(): number { return this.inner.validOffset(0); }
   get affineConversion(): AlignedRotatingCache | undefined { return this.inner instanceof BatchedRotatingCache ? this : undefined; }
   get quantizedAttention() { return this.inner instanceof BatchedRotatingQuantCache ? this.inner : undefined; }
+  /** The current one-row ring's dense reads (conversion replaces this owner
+   * and its ring); this row is the ring's row 0. */
+  get denseKvReads() { return (this.inner as Cache).denseKvReads; }
   signature(): string { return this.inner.signature(); }
   captureDonorAttention() { return captureRotatingDonorAttention(this.inner); }
   updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] { return this.inner.updateAndFetch(k, v); }

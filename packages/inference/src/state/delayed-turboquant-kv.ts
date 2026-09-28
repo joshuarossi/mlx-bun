@@ -6,7 +6,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { unrotateValues } from "../kernels/turboquant/ops";
-import { type Cache, type RotatedValueAttentionState } from "../contracts/mlx/cache";
+import { type Cache, type DenseKvReads, type KvMaintenance, type RotatedValueAttentionState } from "../contracts/mlx/cache";
 import { TurboQuantKVCache } from "./turboquant-kv";
 import { BatchedTurboQuantKVCache } from "./batched-turboquant-kv";
 import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
@@ -15,12 +15,16 @@ import { FullTransitioningKvRows } from "./full-transitioning-kv-rows";
  * row-transition lifecycle. Model projections and attention remain batched. */
 export class DelayedTurboQuantKVCache extends FullTransitioningKvRows<BatchedTurboQuantKVCache> implements RotatedValueAttentionState {
   #rotated: boolean[] = [];
+  /** Answered by the storage and the bound maintenance: a maintenance that
+   * cannot say what it leaves never certifies. */
+  readonly denseKvReads: DenseKvReads | undefined;
   constructor(readonly kBits: number, readonly vBits: number, readonly start: number,
-    readonly maintain: (rows: Cache[]) => void, row?: Cache,
+    readonly maintain: KvMaintenance, row?: Cache,
     readonly fusedDecode = turboQuantFusedDecode()) {
     super({ signature: `kv:delayed-turboquant:${kBits}:${vBits}:${start}`, conversionOffset: start, maintain,
       converted: row => row instanceof TurboQuantKVCache,
       makeLayout: () => new BatchedTurboQuantKVCache(kBits, vBits, fusedDecode) }, row);
+    this.denseKvReads = this.denseKvReadsOf(maintain);
   }
   captureDonorRows(): import("../contracts/mlx/cache").KvDonorRows {
     return this.packed?.captureDonorRows() ?? captureFullKvDonorRows(this.rows, this.leftPad, this.offset);

@@ -26,6 +26,9 @@ export class FullPrefillRow implements Cache {
   get turboConversion(): FullPrefillRow | undefined { return this.inner instanceof KVCache ? this : undefined; }
   get quantizedAttention() { return (this.inner as Cache).quantizedAttention; }
   get rotatedValueAttention() { return (this.inner as Cache).rotatedValueAttention; }
+  /** The current inner storage's dense reads (maintenance replaces it in
+   * place); this one row is its row 0. */
+  get denseKvReads() { return (this.inner as Cache).denseKvReads; }
   signature(): string { return this.inner.signature(); }
   state(): MlxArray[] { return this.inner.state(); }
   makeMask(tokens: number, window: number | null): Mask { return this.inner.makeMask(tokens, window); }
