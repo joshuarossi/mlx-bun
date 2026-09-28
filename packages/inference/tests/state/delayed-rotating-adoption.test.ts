@@ -228,7 +228,7 @@ test("padded rotating prefill reads plain, finalizes its positions and decodes a
   const group = new DelayedRotatingQuantizedKVCache(W, 64, 4, 1000, noop), twin = new DelayedRotatingQuantizedKVCache(W, 64, 4, 1000, noop);
   const lengths = [3, 6], control = lengths.map(() => new RotatingKVCache(W));
   try {
-    for (const cache of [group, twin]) { cache.beginPrefill(); cache.preparePrefill({ lengths, rightPadding: [3, 0] }); }
+    for (const cache of [group, twin]) { cache.preparePrefill({ lengths, rightPadding: [3, 0] }); cache.beginPrefill(); }
     const step = (index: number, n: number, prefill: boolean) => {
       using q = f16(2, 4, n, 700 + index), k = f16(2, 2, n, 800 + index), v = f16(2, 2, n, 900 + index);
       const mask = group.makeMask(n, W), twinMask = twin.makeMask(n, W);

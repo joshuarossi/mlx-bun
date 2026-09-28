@@ -297,8 +297,8 @@ test("prepared co-prefill rows answer through their current storage: padded full
     const group: Cache & { beginPrefill(): void; endPrefill(): void; commitPrefill(rows: number[]): void;
       preparePrefill(padding: { lengths: number[]; rightPadding: number[] }): void; finalizePrefill(): void } = make();
     try {
-      group.beginPrefill();
       group.preparePrefill({ lengths: [4, 2], rightPadding: [0, 2] });   // the rows are now prepared owners
+      group.beginPrefill();
       expect(appendable(group, 2), `${label}: prepared`).toEqual([true, true]);
       using k = tensor(2, 4, 160), v = tensor(2, 4, 161);
       for (const a of group.updateAndFetch(k, v)) a.dispose();

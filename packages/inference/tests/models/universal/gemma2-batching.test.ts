@@ -1721,8 +1721,12 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
           using logits = model.forward([next], caches);
           seen.push({ shape: [...logits.shape], dtype: logits.dtypeName,
             sha256: createHash("sha256").update(logits.rawBytes()).digest("hex") });
-          const values = logits.toFloat32();
-          next = values.indexOf(Math.max(...values)); tokens.push(next);
+          // Main samples normalized scores in the logits dtype. BF16 rounding
+          // can create ties that a raw-logit host argmax would not preserve.
+          using lse = ops.logsumexpAxis(logits, -1, true);
+          using scores = ops.sub(logits, lse);
+          using token = ops.argmaxAxis(scores, -1);
+          next = token.toIntTokens()[0]!; tokens.push(next);
         }
         return { seen, tokens, kinds: caches.map(cache => cache.constructor.name) };
       } finally { dispose(caches); f.dispose(); }
