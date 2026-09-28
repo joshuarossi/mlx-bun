@@ -1,3 +1,4 @@
+import { numericalPolicy } from "./numerical-policy";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import { parseCommand, type CommandArgs } from "./args";
@@ -31,7 +32,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   const thinking = value("thinking");
   if (thinking !== undefined && !["on", "off", "1", "0", "true", "false"].includes(thinking))
     throw new Error("--thinking expects on|off");
-  const kv = value("kv-quant") ?? "off";
+  const policy = numericalPolicy(args);
+  const kv = policy.kv ?? "off";
   // Main's TurboQuant spec, turbo (k8v3) or turbo:k<bits>v<bits>, is its own scheme beside affine KV.
   const turboQuant = parseTurboQuantScheme(kv);
   if (!turboQuant && !["off", "config", "4", "8"].includes(kv)) throw new Error("--kv-quant expects off|config|4|8|turbo[:k<bits>v<bits>]");
@@ -144,7 +146,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(whisper ? { whisper } : {}),
     readOnly: false, noOpen: args.values["no-open"] === true, isolate,
     ...(isolate && modelPool !== undefined ? { modelPool } : {}),
-    cache, request,
+    cache, request, fusedSdpa: policy.fusedSdpa,
   };
 }
 

@@ -10,13 +10,13 @@ function helpFlags(text: string): string[] {
   const sections = text.split("\nOptions:\n");
   expect(sections).toHaveLength(2);
   const options = sections[1]!.split("\n\n")[0]!;
-  return [...options.matchAll(/^  ((?:-[a-z], )?--[a-z][a-z-]*)/gm)]
+  return [...options.matchAll(/^  ((?:-[a-z], )?--[a-z][a-z0-9-]*)/gm)]
     .flatMap(match => match[1]!.split(", ")).sort();
 }
 
 test("help inventory ignores option mentions in prose but preserves duplicate option rows", () => {
-  const help = "Subcommands:\n  synthesize (--model,\n    --dry-run)\n\nOptions:\n  --dry-run  Preview\n  --dry-run  Duplicate\n  -h, --help  Help\n\n  --example in prose";
-  expect(helpFlags(help)).toEqual(["--dry-run", "--dry-run", "--help", "-h"]);
+  const help = "Subcommands:\n  synthesize (--model,\n    --dry-run)\n\nOptions:\n  --dry-run  Preview\n  --dry-run  Duplicate\n  -h, --help  Help\n  --l1  Numerical preset\n  --l2  Numerical preset\n\n  --example in prose";
+  expect(helpFlags(help)).toEqual(["--dry-run", "--dry-run", "--help", "--l1", "--l2", "-h"]);
 });
 
 async function liveHelp(command?: string): Promise<string> {
