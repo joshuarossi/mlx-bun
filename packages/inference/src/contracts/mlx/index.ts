@@ -13,3 +13,4 @@ export * from "./media";
 export * from "./positions";
 export * from "./token-work";
 export * from "./trainable";
+export * from "./whisper";

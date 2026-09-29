@@ -32,7 +32,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { WhisperDims } from "./contracts";
+import type { FastFilterConfig, WhisperDims, WhisperFastCache, WhisperFastPath as WhisperFastPathContract } from "../../contracts/mlx/whisper";
 
 /** Numerical operations needed by the fused path; model loading stays outside. */
 export interface WhisperFastModel {
@@ -44,22 +44,9 @@ export interface WhisperFastModel {
   linear(input: MlxArray, prefix: string, bias?: boolean): MlxArray;
 }
 
-export interface FastFilterConfig {
-  nVocab: number;
-  eot: number;
-  timestampBegin: number;
-  noTimestamps: number;
-  /** Ids masked at every step (non-speech + task/special tokens). */
-  suppressIds: number[];
-  /** Ids masked at the first sampled position (blank + eot), or null. */
-  blankIds: number[] | null;
-  useTimestampRules: boolean;
-  maxInitialTimestampIndex: number | null;
-}
-
 /** Cache layout of the fast path: head-split self K/V [B, H, T, hd] per
  *  layer; cross K/V [Bc, H, 1500, hd] per layer (Bc = 1 for one window). */
-export class FastKvCache {
+export class FastKvCache implements WhisperFastCache {
   k: MlxArray[] = [];
   v: MlxArray[] = [];
   crossK: MlxArray[] = [];
@@ -91,7 +78,7 @@ const dispose = (old: MlxArray, next: MlxArray): MlxArray => {
   return next;
 };
 
-export class WhisperFastPath {
+export class WhisperFastPath implements WhisperFastPathContract {
   readonly model: WhisperFastModel;
   readonly #H: number;
   readonly #hd: number;
@@ -110,6 +97,10 @@ export class WhisperFastPath {
     this.#H = model.dims.nTextHead;
     this.#hd = model.dims.nTextState / model.dims.nTextHead;
     this.#L = model.dims.nTextLayer;
+  }
+
+  makeCache(): FastKvCache {
+    return new FastKvCache();
   }
 
   // --- helpers ------------------------------------------------------------------

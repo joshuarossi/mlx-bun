@@ -26,7 +26,7 @@ const allowed = {
   generation: ["portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "models", "mlx"],
   scoring: ["portable", "mlx-contracts", "kernels", "state", "models", "mlx"],
   embeddings: ["artifacts", "input", "models", "mlx"],
-  transcription: ["input", "models", "mlx"],
+  transcription: ["mlx-contracts", "input", "mlx"],
   execution: ["portable", "mlx-contracts", "runtime", "artifacts", "layers", "state", "input", "sampling", "models", "generation", "mlx"],
   api: ["contracts", "portable", "mlx-contracts", "runtime", "kernels", "artifacts", "layers", "state", "input", "sampling", "adapters", "models", "generation", "scoring", "embeddings", "transcription", "execution", "mlx"],
 } satisfies Record<string, string[]>;
@@ -579,24 +579,10 @@ function checkRatchet(findings: readonly Finding[], table: RatchetTable): { fail
 
 /** The current violations, per rule and file. Lower a count, or delete a line, when a cleanup lands; never raise one. */
 const seamRatchet: RatchetTable = {
-  "model-class": {
-    "packages/inference/src/state/glm52-cache.ts": 1,
-    "packages/inference/src/state/target-layout.ts": 1,
-    "packages/inference/src/transcription/index.ts": 1,
-    "packages/inference/src/transcription/whisper/decode.ts": 2,
-    "packages/inference/src/transcription/whisper/timing.ts": 1,
-    "packages/inference/src/transcription/whisper/transcribe.ts": 1,
-  },
+  "model-class": {},
   "family-subpath": {},
-  "family-identity": {
-    "packages/inference/src/layers/rope.ts": 1,
-    "packages/inference/src/models/profile.ts": 1,
-    "packages/quantize/src/weight-transform.ts": 6,
-  },
-  "cache-class": {
-    "packages/inference/src/generation/autoregressive.ts": 2,
-    "packages/inference/src/scoring/full-sequence.ts": 2,
-  },
+  "family-identity": {},
+  "cache-class": {},
   "model-env-flag": {},
   "scheduler-core": {},
 };

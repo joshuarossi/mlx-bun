@@ -986,8 +986,8 @@ fill session and proposal interfaces.
   tokenizer, and audio samples. `transcription/format` exposes the
   text/SRT/VTT/verbose-JSON formatters alone, without loading native MLX, for
   HTTP layers that only shape responses.
-- `models/audio/conformer` and `models/audio/silero-vad`: existing audio encoder
-  and voice-activity graphs.
+- `models/audio/conformer`: the audio encoder graph. `transcription/silero-vad`:
+  the voice-activity gate transcription runs before Whisper.
 - `input/vision`: image decoding/preprocessing, multimodal prompt assembly,
   and video frames. Qwen preprocessing and prompt assembly have separate
   `input/vision/qwen3vl` and `input/vision/qwen3vl-prompt` imports.
