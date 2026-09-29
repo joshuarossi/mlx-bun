@@ -17,51 +17,19 @@
 // Streaming (`stream=true`): SSE `transcript.text.delta` per segment,
 // then `transcript.text.done` carrying the final body.
 //
-// The handler borrows the service from its host per request; it never loads
-// a model or opens a socket. Without a host the group is unmounted (null).
+// The handlers borrow the service; they never load a model or open a socket.
+// The routes are declared in the manifest and mounted by the host, which
+// answers a request no route matches itself.
 
 import { formatTranscription, TRANSCRIPTION_FORMATS, toVerboseJson, type TranscriptionFormat } from "@mlx-bun/inference/transcription/format";
-import type { WhisperSegment } from "@mlx-bun/inference/transcription";
+import type { RouteHandler, TranscriptSegment } from "@mlx-bun/app-core";
 import {
   TranscriptionError, type TranscriptionOutcome, type TranscriptionParams, type TranscriptionService,
-} from "../engine/transcription-service";
+} from "./service";
 
-export type AudioRoute =
-  | { kind: "transcriptions"; task: "transcribe" | "translate" }
-  | { kind: "unload" }
-  | { kind: "session-create" }
-  | { kind: "session-audio"; id: string }
-  | { kind: "session-finish"; id: string }
-  | { kind: "session-delete"; id: string };
-
-export function matchAudioRoute(method: string, pathname: string): AudioRoute | null {
-  switch (`${method} ${pathname}`) {
-    case "POST /v1/audio/transcriptions": return { kind: "transcriptions", task: "transcribe" };
-    case "POST /v1/audio/translations": return { kind: "transcriptions", task: "translate" };
-    case "POST /admin/transcription/unload": return { kind: "unload" };
-    case "POST /v1/audio/sessions": return { kind: "session-create" };
-  }
-  if (pathname.startsWith("/v1/audio/sessions/")) {
-    const rest = pathname.slice("/v1/audio/sessions/".length).split("/");
-    const id = decodeURIComponent(rest[0] ?? "");
-    if (!id) return null;
-    if (method === "POST" && rest[1] === "audio" && rest.length === 2) return { kind: "session-audio", id };
-    if (method === "POST" && rest[1] === "finish" && rest.length === 2) return { kind: "session-finish", id };
-    if (method === "DELETE" && rest.length === 1) return { kind: "session-delete", id };
-  }
-  return null;
-}
-
-/** What the route group borrows from the service the composition owns. */
+/** What the handlers borrow from the service. */
 export type AudioService = Pick<TranscriptionService,
-  "modelId" | "resident" | "stats" | "unload" | "transcribe" | "createSession" | "session" | "decodeAudio">;
-
-/** Everything the routes need from the host: a service (or a reason there is none). */
-export interface AudioRouteHost {
-  service(): Promise<AudioService | null>;
-  /** Message for the 503 when no Whisper model is available. */
-  unavailableMessage?: string;
-}
+  "modelId" | "resolveModel" | "resident" | "stats" | "unload" | "transcribe" | "createSession" | "session" | "decodeAudio">;
 
 export interface ParsedAudioRequest {
   audio: Uint8Array;
@@ -70,7 +38,7 @@ export interface ParsedAudioRequest {
   params: TranscriptionParams;
 }
 
-const segmentJson = (s: WhisperSegment) => ({ id: s.id, seek: s.seek, start: s.start, end: s.end, text: s.text, tokens: s.tokens, temperature: s.temperature, avg_logprob: s.avgLogprob, compression_ratio: s.compressionRatio, no_speech_prob: s.noSpeechProb, ...(s.words ? { words: s.words } : {}) });
+const segmentJson = (s: TranscriptSegment) => ({ id: s.id, seek: s.seek, start: s.start, end: s.end, text: s.text, tokens: s.tokens, temperature: s.temperature, avg_logprob: s.avgLogprob, compression_ratio: s.compressionRatio, no_speech_prob: s.noSpeechProb, ...(s.words ? { words: s.words } : {}) });
 
 function errorJson(message: string, status: number, type = "invalid_request_error"): Response {
   return Response.json({ error: { message, type } }, { status });
@@ -216,86 +184,94 @@ function transcriptionFailure(e: unknown): Response {
 export const UNAVAILABLE_MESSAGE =
   "no Whisper model is available — download one (mlx-bun get mlx-community/whisper-large-v3-turbo) or pass --whisper-model";
 
-/** Without a host the group is unmounted and every audio path stays composable (null). */
-export function createAudioRoutes(host?: AudioRouteHost) {
+/** Route handlers keyed by manifest route id, over one service. */
+export function createAudioHandlers(service: AudioService, options: { unavailableMessage?: string } = {}): Record<string, RouteHandler> {
   // Per-session response format chosen at creation, consumed by finish.
   const sessionFormats = new Map<string, TranscriptionFormat>();
-  return { async handle(request: Request): Promise<Response | null> {
-    if (!host) return null;
-    const url = new URL(request.url);
-    const route = matchAudioRoute(request.method, url.pathname);
-    if (!route) return null;
-    const service = await host.service();
-    if (!service) return errorJson(host.unavailableMessage ?? UNAVAILABLE_MESSAGE, 503, "model_unavailable");
-    if (route.kind === "unload") {
-      const unloaded = service.unload();
-      return Response.json({ unloaded, ...service.stats });
+  /** The checkpoint id, or the 503 a host without a Whisper model answers. */
+  const available = async (): Promise<Response | null> =>
+    await service.resolveModel() === null ? errorJson(options.unavailableMessage ?? UNAVAILABLE_MESSAGE, 503, "model_unavailable") : null;
+  const sessionId = (request: Request) => decodeURIComponent(new URL(request.url).pathname.split("/")[4] ?? "");
+  const guarded = (handler: RouteHandler): RouteHandler => async request => await available() ?? await handler(request);
+
+  const unload: RouteHandler = async () => {
+    const unloaded = await service.unload();
+    return Response.json({ unloaded, ...service.stats });
+  };
+
+  const sessionCreate: RouteHandler = async request => {
+    let fields: Record<string, unknown> = {};
+    if ((request.headers.get("content-type") ?? "").includes("application/json")) {
+      try { fields = (await request.json()) as Record<string, unknown>; }
+      catch { return errorJson("invalid JSON body", 400); }
     }
-    if (route.kind === "session-create") {
-      let fields: Record<string, unknown> = {};
-      if ((request.headers.get("content-type") ?? "").includes("application/json")) {
-        try { fields = (await request.json()) as Record<string, unknown>; }
-        catch { return errorJson("invalid JSON body", 400); }
-      }
-      const params = parseParams(fields, fields.task === "translate" ? "translate" : "transcribe");
-      if (params instanceof Response) return params;
-      const format = (fields.response_format as string | undefined) ?? "json";
-      if (!["json", "verbose_json"].includes(format)) return errorJson("sessions return json or verbose_json", 400);
-      try {
-        const session = await service.createSession({ ...params, signal: request.signal });
-        sessionFormats.set(session.id, format as TranscriptionFormat);
-        return Response.json({ id: session.id, model: service.modelId, vocabulary: session.vocabulary ?? null });
-      } catch (e) {
-        return transcriptionFailure(e);
-      }
+    const params = parseParams(fields, fields.task === "translate" ? "translate" : "transcribe");
+    if (params instanceof Response) return params;
+    const format = (fields.response_format as string | undefined) ?? "json";
+    if (!["json", "verbose_json"].includes(format)) return errorJson("sessions return json or verbose_json", 400);
+    try {
+      const session = await service.createSession({ ...params, signal: request.signal });
+      sessionFormats.set(session.id, format as TranscriptionFormat);
+      return Response.json({ id: session.id, model: service.modelId, vocabulary: session.vocabulary ?? null });
+    } catch (e) {
+      return transcriptionFailure(e);
     }
-    if (route.kind === "session-audio" || route.kind === "session-finish" || route.kind === "session-delete") {
-      const session = service.session(route.id);
-      if (!session) return errorJson("unknown transcription session", 404);
-      if (route.kind === "session-delete") {
-        // 204 only once the feed or finish in flight has settled and the lease is back.
-        await session.close();
-        sessionFormats.delete(route.id);
-        return new Response(null, { status: 204 });
-      }
-      if (route.kind === "session-audio") {
-        const ct = request.headers.get("content-type") ?? "";
-        const bytes = new Uint8Array(await request.arrayBuffer());
-        if (bytes.length === 0) return errorJson("empty audio chunk", 400);
-        let pcm: Float32Array;
-        try {
-          if (ct.startsWith("audio/pcm") || ct.startsWith("audio/l32") || ct.includes("float32")) {
-            if (bytes.length % 4 !== 0) return errorJson("float32 PCM chunk length must be a multiple of 4", 400);
-            pcm = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
-            const rate = Number(/rate=(\d+)/.exec(ct)?.[1] ?? 16000);
-            if (rate !== 16000) return errorJson("float32 PCM chunks must be 16 kHz mono", 400);
-          } else pcm = await service.decodeAudio(bytes);
-        } catch (e) {
-          return transcriptionFailure(e);
-        }
-        try {
-          const r = await session.append(pcm);
-          return Response.json({ id: session.id, samples: session.samples, duration: session.durationSeconds, speech: r.speech, segments: r.segments.map(segmentJson) });
-        } catch (e) {
-          return transcriptionFailure(e);
-        }
-      }
-      const format = sessionFormats.get(route.id) ?? "json";
-      sessionFormats.delete(route.id);
-      try {
-        const outcome = await session.finish();
-        return transcriptionResponse(outcome, format, session.params.task ?? "transcribe");
-      } catch (e) {
-        return transcriptionFailure(e);
-      }
+  };
+
+  const sessionAudio: RouteHandler = async request => {
+    const session = service.session(sessionId(request));
+    if (!session) return errorJson("unknown transcription session", 404);
+    const ct = request.headers.get("content-type") ?? "";
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.length === 0) return errorJson("empty audio chunk", 400);
+    let pcm: Float32Array;
+    try {
+      if (ct.startsWith("audio/pcm") || ct.startsWith("audio/l32") || ct.includes("float32")) {
+        if (bytes.length % 4 !== 0) return errorJson("float32 PCM chunk length must be a multiple of 4", 400);
+        pcm = new Float32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
+        const rate = Number(/rate=(\d+)/.exec(ct)?.[1] ?? 16000);
+        if (rate !== 16000) return errorJson("float32 PCM chunks must be 16 kHz mono", 400);
+      } else pcm = await service.decodeAudio(bytes);
+    } catch (e) {
+      return transcriptionFailure(e);
     }
-    const parsed = await parseAudioRequest(request, route.task);
+    try {
+      const r = await session.append(pcm);
+      return Response.json({ id: session.id, samples: session.samples, duration: session.durationSeconds, speech: r.speech, segments: r.segments.map(segmentJson) });
+    } catch (e) {
+      return transcriptionFailure(e);
+    }
+  };
+
+  const sessionFinish: RouteHandler = async request => {
+    const id = sessionId(request), session = service.session(id);
+    if (!session) return errorJson("unknown transcription session", 404);
+    const format = sessionFormats.get(id) ?? "json";
+    sessionFormats.delete(id);
+    try {
+      const outcome = await session.finish();
+      return transcriptionResponse(outcome, format, session.params.task ?? "transcribe");
+    } catch (e) {
+      return transcriptionFailure(e);
+    }
+  };
+
+  const sessionDelete: RouteHandler = async request => {
+    const id = sessionId(request), session = service.session(id);
+    if (!session) return errorJson("unknown transcription session", 404);
+    // 204 only once the feed or finish in flight has settled and the lease is back.
+    await session.close();
+    sessionFormats.delete(id);
+    return new Response(null, { status: 204 });
+  };
+
+  const transcriptions = (task: "transcribe" | "translate"): RouteHandler => async request => {
+    const parsed = await parseAudioRequest(request, task);
     if (parsed instanceof Response) return parsed;
-    const taskName = route.task;
     if (!parsed.stream) {
       try {
         const outcome = await service.transcribe(parsed.audio, { ...parsed.params, signal: request.signal });
-        return transcriptionResponse(outcome, parsed.format, taskName);
+        return transcriptionResponse(outcome, parsed.format, task);
       } catch (e) {
         return transcriptionFailure(e);
       }
@@ -310,13 +286,13 @@ export function createAudioRoutes(host?: AudioRouteHost) {
           const outcome = await service.transcribe(parsed.audio, {
             ...parsed.params,
             signal: request.signal,
-            onSegment: (s: WhisperSegment) => {
+            onSegment: (s: TranscriptSegment) => {
               if (s.text) send("transcript.text.delta", { delta: s.text, segment: { id: s.id, start: s.start, end: s.end } });
             },
             onProgress: (done, total) => send("transcript.progress", { done, total }),
           });
           const body = parsed.format === "verbose_json"
-            ? toVerboseJson(outcome.result, outcome.durationSeconds, taskName)
+            ? toVerboseJson(outcome.result, outcome.durationSeconds, task)
             : { text: outcome.result.text.trim() };
           send("transcript.text.done", {
             ...body,
@@ -332,5 +308,15 @@ export function createAudioRoutes(host?: AudioRouteHost) {
     return new Response(stream, {
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
     });
-  } };
+  };
+
+  return {
+    transcriptions: guarded(transcriptions("transcribe")),
+    translations: guarded(transcriptions("translate")),
+    unload: guarded(unload),
+    "session-create": guarded(sessionCreate),
+    "session-audio": guarded(sessionAudio),
+    "session-finish": guarded(sessionFinish),
+    "session-delete": guarded(sessionDelete),
+  };
 }

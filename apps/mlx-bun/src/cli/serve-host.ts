@@ -9,9 +9,9 @@ import type { ModelBinding } from "../engine/model-binding";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import type { TranscriptionService } from "../engine/transcription-service";
 import type { ModelPromptBuilder } from "../server/prompt-contracts";
-import { defaultWhisperModel } from "./model-selection";
+import pkgJson from "../../package.json" with { type: "json" };
+import { loadInstalledModules } from "./module-host";
 import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
 import type { AppState, RouteGroup } from "./serve-state";
 
@@ -178,11 +178,11 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const [{ modelServingBinding, createCacheServices, createAppEngine },
       { createCompletionRoutes }, { startServer }, { createPiBackend },
       { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { createCacheRoutes },
-      { TranscriptionService }, { createAudioRoutes }, { createAdapterArtifactRoutes }] = await Promise.all([
+      { createHostServices, createModuleRoutes }, { createAdapterArtifactRoutes }] = await Promise.all([
       import("../engine"), import("../server/routes"), import("../server/start"), import("../chat/pi-backend"),
       import("../server/generated-token-history"), import("../server/status-routes"),
       import("../server/management-routes"), import("../server/adapter-routes"), import("../server/cache-routes"),
-      import("../engine/transcription-service"), import("../server/audio-routes"), import("../server/adapter-artifact-routes"),
+      import("@mlx-bun/app-services"), import("../server/adapter-artifact-routes"),
     ]);
     // The default prompt path renders the context's template; a supplied builder replaces it.
     if (!input.buildPrompt) requireChatTemplate(context);
@@ -222,35 +222,42 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const admission = context.memoryPlan ?? fit(context.model.config, context.model.weightsBytes, 1,
       undefined, undefined, 0, options.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
     const limits = resolveServingLimits(options, context.memoryPlan, admission);
-    // Main's speech-to-text companion: an explicit --whisper-model, else the
-    // first downloaded Whisper checkpoint, resolved once on the first audio
-    // request (a later download needs a restart, as in main). The weights load
-    // per take and release per the --whisper-* policy; every take runs under
-    // the gateway's exclusive lock so it never overlaps chat generation.
-    let transcription: Promise<TranscriptionService | null> | undefined;
-    const transcriptionService = () => transcription ??= (async () => {
-      const whisper = options.whisper ?? {};
-      const record = whisper.modelDir ? { path: whisper.modelDir, repoId: whisper.modelId ?? whisper.modelDir } : await defaultWhisperModel();
-      if (!record) return null;
-      return new TranscriptionService({ modelDir: record.path, modelId: record.repoId,
-        idleUnloadSec: whisper.idleUnloadSec, resident: whisper.resident,
-        exclusive: (fn, signal) => engine.gateway.runExclusive(fn, undefined, signal) });
-    })();
+    // Main's speech-to-text companion, served by the transcription module: an
+    // explicit --whisper-model, else the first downloaded Whisper checkpoint,
+    // resolved once on the first audio request (a later download needs a
+    // restart, as in main). The weights load per take and release per the
+    // --whisper-* policy; every decode runs under the gateway's exclusive lock
+    // so it never overlaps chat generation.
+    const moduleHost = createHostServices({ whisper: options.whisper,
+      exclusive: (fn, signal) => engine.gateway.runExclusive(fn, undefined, signal) });
+    let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
+    // The modules stop first (admission stops, takes in flight are joined), then the weights release.
+    const closeModules = async () => {
+      const errors: unknown[] = [];
+      try { await modules?.stop(); } catch (error) { errors.push(error); }
+      try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, "module cleanup failed");
+    };
     const closeApp = async () => {
       const errors: unknown[] = [];
-      // A request admitted before shutdown may initialize the lazy companion while
-      // responses drain. Close again here; the service joins/releases only once.
-      try { await (await transcription)?.close(); } catch (error) { errors.push(error); }
+      // A request admitted before shutdown may lease the companion while
+      // responses drain. Close again here; each owner joins/releases only once.
+      try { await closeModules(); } catch (error) { errors.push(error); }
       try { await engine.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
     cleanup = closeApp;
+    modules = await loadInstalledModules(moduleHost);
+    const whisperInfo = async () => {
+      const id = await moduleHost.whisper.defaultFor("transcribe");
+      return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
+    };
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory, responseHistory: state.responses, downloads: state.downloads.snapshot,
-      transcription: async () => { const service = await transcriptionService(); return service ? { id: service.modelId, resident: service.resident } : null; },
+      transcription: whisperInfo,
       ...(input.buildPrompt ? { buildPrompt: input.buildPrompt } : {}),
       ...(input.defaultAdapter ? { defaultAdapter: input.defaultAdapter } : {}) });
-    const audio = createAudioRoutes({ service: transcriptionService });
+    const moduleRoutes = createModuleRoutes(modules.routes);
     const status = createStatusRoutes({ ...(input.owner ? { owner: input.owner } : {}), context, caches, gateway: engine.gateway,
       diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats,
       artifact: { expertsBytes: input.artifact?.expertsBytes ?? 0, sizeBytes: input.artifact?.sizeBytes ?? null },
@@ -263,7 +270,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPath: input.artifact?.path ?? context.model.config.modelDir });
     const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: state.storagePaths.artifactRoot });
     const persistent = state.routes;
-    const modelRoutes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await audio.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+    const modelRoutes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.quantize.handle(request) ?? await persistent.dataset.handle(request) ?? await persistent.finetune.handle(request) ?? await adapterArtifacts.handle(request) ?? await persistent.publishing.handle(request) ?? await completions.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP
@@ -275,7 +282,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
       readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
       audio: !!(context.audio || context.loadAudio), thinking: context.template?.supportsThinking ?? false,
-      transcription: async () => (await transcriptionService()) !== null,
+      transcription: async () => (await moduleHost.whisper.defaultFor("transcribe")) !== undefined,
       genDefaults: {
         temperature: options.request.defaultTemperature ?? context.genDefaults.temperature ?? null,
         topP: options.request.defaultTopP ?? context.genDefaults.topP ?? null,
@@ -294,7 +301,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
         try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
         // Whisper closes with the persistent owners before drain: admission stops,
         // in-flight takes are joined, weights release ahead of the chat model.
-        for (const result of await Promise.allSettled([hooks.beforeDrain?.(), (async () => { await (await transcription)?.close(); })()]))
+        for (const result of await Promise.allSettled([hooks.beforeDrain?.(), closeModules()]))
           if (result.status === "rejected") errors.push(result.reason);
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "background shutdown failed");
@@ -325,18 +332,29 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
  * wrapper, and a step ahead of the Whisper close (the worker app form). */
 export async function startTranscriptionHost(model: ModelRecord, options: ServeOptions,
   hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
-  const [{ TranscriptionService }, { createAudioRoutes }, { createTranscriptionServerRoutes }, { startServer }] = await Promise.all([
-    import("../engine/transcription-service"), import("../server/audio-routes"), import("../server/transcription-server"), import("../server/start"),
+  const [{ createCompanionInfoRoutes, createHostServices, createModuleRoutes }, { startServer }] = await Promise.all([
+    import("@mlx-bun/app-services"), import("../server/start"),
   ]);
   const whisper = options.whisper ?? {};
-  const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId,
-    idleUnloadSec: whisper.idleUnloadSec, resident: whisper.resident });
-  let cleanup: (() => Promise<void>) | undefined = async () => { await service.close(); };
+  const moduleHost = createHostServices({ whisper: { ...whisper, modelDir: model.path, modelId: model.repoId } });
+  let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
+  // The modules stop first (takes in flight are joined), then the weights release.
+  const close = async () => {
+    const errors: unknown[] = [];
+    try { await modules?.stop(); } catch (error) { errors.push(error); }
+    try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, "transcription cleanup failed");
+  };
+  let cleanup: (() => Promise<void>) | undefined = close;
   try {
-    if (whisper.preload) await service.ensureLoaded();
-    const audio = createAudioRoutes({ service: async () => service });
-    const info = createTranscriptionServerRoutes(service, { startedAt: Date.now() });
-    // startServer owns service cleanup on entry, including a bind failure.
+    modules = await loadInstalledModules(moduleHost);
+    if (whisper.preload) await moduleHost.whisper.preload(model.repoId);
+    const audio = createModuleRoutes(modules.routes);
+    const loaded = modules;
+    const info = createCompanionInfoRoutes({ modelId: model.repoId, models: moduleHost.whisper, counters: () => loaded.status("transcription"),
+      name: "mlx-bun", version: pkgJson.version, startedAt: Date.now(),
+      endpoints: [...modules.routes.map(route => `${route.spec.method} ${route.path}`), "GET /v1/models", "GET /health", "GET /stats"] });
+    // startServer owns the cleanup on entry, including a bind failure.
     cleanup = undefined;
     const routes: RouteGroup = { handle: async request => await audio.handle(request) ?? await info.handle(request) };
     const listener = await startServer({
@@ -345,7 +363,7 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
       // No chat model: a WebSocket session fails to start and its transport closes.
       chat: () => ({ async start() { throw new Error("transcription-only server has no chat model"); }, async handle() {}, dispose() {} }),
       // Whisper closes before drain: admission stops, in-flight takes are joined, weights release.
-      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await service.close(); } },
+      beforeDrain: async () => { try { await hooks.beforeDrain?.(); } finally { await close(); } },
       closeEngine: async () => {},
     }, hooks.unix ? { unix: hooks.unix } : { port: options.port, hostname: options.hostname });
     return { ...(hooks.unix ? {} : { port: listener.server.port! }), close: listener.close,

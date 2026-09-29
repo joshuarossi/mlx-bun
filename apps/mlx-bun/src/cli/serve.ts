@@ -1,8 +1,6 @@
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import { isTranscriptionModelType } from "@mlx-bun/inference/models/support";
-import { loadModules } from "@mlx-bun/app-host";
-import { modules } from "../modules";
 import { parseCommand, type CommandArgs } from "./args";
 import { numericalPolicy } from "./numerical-policy";
 import { resolveModelAuto } from "./model-selection";
@@ -182,33 +180,25 @@ function observeLink(state: AppState, holder: { current?: ModelHostLink }): AppS
 }
 
 /** The app's lifetime around one model host (the CLI's and `mlx-bun/server`'s):
- * the persistent state first, then the installed modules (`src/modules.ts`),
- * then the host that borrows them. `start` makes the host's drain step close
- * the state's producers while the engine is alive; a failed start stops the
- * modules and closes the state. Close resolves with the host's own result once
- * the modules have stopped and the state has closed too. */
+ * the persistent state first, then the host that borrows it. The host loads
+ * the installed modules (`src/modules.ts`) over its own core services and stops
+ * them in its drain. `start` makes the host's drain step close the state's
+ * producers while the engine is alive; a failed start closes the state. Close
+ * resolves with the host's own result once the state has closed too. */
 export async function startApp<Host extends { close(): Promise<unknown> }>(options: AppStateOptions, storagePaths: AppStoragePaths,
   start: (state: AppState) => Promise<Host>) {
   const state = await createAppState(options, storagePaths);
-  // No core-service implementation is bound yet, so only a module that requires none can load;
-  // the first module's PR binds what it needs and mounts what it declares.
-  let loaded: Awaited<ReturnType<typeof loadModules>> | undefined;
   let host: Host;
   try {
-    loaded = await loadModules(modules, { services: {} });
     host = await start(state);
   } catch (error) {
-    const errors: unknown[] = [error];
-    try { await loaded?.stop(); } catch (failure) { errors.push(failure); }
-    try { await state.close(); } catch (failure) { errors.push(failure); }
-    if (errors.length > 1) throw new AggregateError(errors, "startup and cleanup failed");
+    try { await state.close(); } catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
     throw error;
   }
   return { state, host, async close(): Promise<Awaited<ReturnType<Host["close"]>>> {
     const errors: unknown[] = [];
     let result: unknown;
     try { result = await host.close(); } catch (error) { errors.push(error); }
-    try { await loaded.stop(); } catch (error) { errors.push(error); }
     // The host's drain already closed the state; a repeated failure here is the same one.
     try { await state.close(); } catch (error) { errors.push(error); }
     if (errors.length) throw errors[0];

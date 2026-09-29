@@ -19,6 +19,8 @@ export interface ModelCatalog {
   list(filter?: { readonly kind?: CatalogKind }): Promise<readonly CatalogEntry[]>;
   /** Exact id only; never scans or downloads. */
   resolve(id: string): Promise<CatalogEntry | undefined>;
+  /** What a user typed: a model directory (its path is its id), an id, or a query that names exactly one local model. Rejects when it names none or several; never downloads. */
+  find(query: string): Promise<CatalogEntry>;
   /** Bytes the model needs resident, for residency plans. */
   estimate(id: string): Promise<{ readonly residentBytes: number } | undefined>;
   /** Adds a finished output (train, quantize, convert). Publishes `catalog.changed`. */

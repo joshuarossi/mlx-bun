@@ -8,7 +8,7 @@ import { gitBlobSha1 } from "@mlx-bun/hub/download";
 import { bundleNotices } from "../../../scripts/build-binary";
 import { checkCurated, CURATED, noticeSection, packageNotices, retainedInputs, retainedPackages, REVIEWED, type Metafile } from "../../../scripts/bundle-notices";
 import { BUNDLE_FILES } from "../../../scripts/bundle-files";
-import { MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
+import { MIC_CAPTURE_BINARY } from "@mlx-bun/module-transcription/mic-capture";
 import { packageRelease, notarizeRelease, prepareRelease, publicationPlan, signRelease, type Run, type Verify } from "../../../scripts/prepare-release";
 // Importing the verifier must not build, parse argv, or exit.
 import { verifyBundle } from "../../../scripts/verify-binary";

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import {
   defaultMicCaptureCandidates, MIC_CAPTURE_BINARY, MIC_CAPTURE_STAGED, resolveMicCapture, startMicCapture, type MicEvent,
-} from "../../src/engine/mic-capture";
+} from "../src/mic-capture";
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

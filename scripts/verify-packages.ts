@@ -39,10 +39,8 @@ try {
     const directory = dirname(join(workspace, path));
     const archive = join(archives, `${basename(directory)}.tgz`);
     console.log(`Packing ${manifest.name}`);
-    if (manifest.name === "mlx-bun" && args.includes("--app-only")) {
-      await run([process.execPath, "run", "build:web"], directory);
-      await run([process.execPath, "run", "build:native"], directory);
-    }
+    if (manifest.name === "mlx-bun" && args.includes("--app-only")) await run([process.execPath, "run", "build:web"], directory);
+    if (manifest.name === "@mlx-bun/module-transcription" && args.includes("--app-only")) await run([process.execPath, "run", "build:native"], directory);
     await run([process.execPath, "pm", "pack", "--filename", archive, "--quiet", ...(args.includes("--app-only") ? ["--ignore-scripts"] : [])], directory);
     const packed = JSON.parse(await run(["tar", "-xOf", archive, "package/package.json"], workspace));
     for (const [name, range] of Object.entries(packed.dependencies ?? {})) {
@@ -112,7 +110,7 @@ try {
     assert((await run([linked, "--help"], consumer, noNative)).startsWith(`mlx-bun.${name} — `), `linked ${name} alias help`);
   }
   await run([process.execPath, "-e", `
-    const { resolveMicCapture, MIC_CAPTURE_STAGED } = await import("./node_modules/mlx-bun/src/engine/mic-capture.ts");
+    const { resolveMicCapture, MIC_CAPTURE_STAGED } = await import("./node_modules/@mlx-bun/module-transcription/src/mic-capture.ts");
     const { realpathSync } = await import("node:fs");
     const helper = await resolveMicCapture();
     if (helper !== MIC_CAPTURE_STAGED || !realpathSync(helper).startsWith(realpathSync(process.cwd()) + "/"))

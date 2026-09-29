@@ -54,6 +54,8 @@ export interface CliOptionSpec {
   readonly summary: string;
   readonly default?: string | number | boolean;
   readonly repeatable?: boolean;
+  /** The flag may appear without a value, which then takes `default` (`--hotkey`). */
+  readonly optionalValue?: boolean;
 }
 
 export interface CliVerbSpec {
@@ -61,11 +63,15 @@ export interface CliVerbSpec {
   readonly summary: string;
   readonly positional?: readonly { readonly name: string; readonly summary: string; readonly required?: boolean; readonly repeatable?: boolean }[];
   readonly options: readonly CliOptionSpec[];
+  /** The line printed when the verb is invoked wrongly; default `usage: <program> <name> <positionals>`. */
+  readonly usage?: string;
 }
 
 export interface CliInvocation {
-  /** Parsed by the host from the verb's declared options and positionals. */
+  /** Parsed by the host from the verb's declared options: absent flags are undefined, `number` options arrive as numbers. */
   readonly values: Readonly<Record<string, string | number | boolean | readonly string[] | undefined>>;
+  /** The verb's positional arguments in order, checked against its declared positionals. */
+  readonly positionals: readonly string[];
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
   readonly signal: AbortSignal;
@@ -109,6 +115,8 @@ export interface ModuleRuntime {
   readonly sockets?: Readonly<Record<string, SocketHandler>>;
   readonly verbs?: Readonly<Record<string, CliVerbHandler>>;
   readonly jobs?: Readonly<Record<string, JobRunner>>;
+  /** Live counters for the host's health and stats surfaces. Never loads a model. */
+  status?(): Readonly<Record<string, number | string | boolean | null>>;
   /** Called once when the host stops the module, after its in-flight work drains. */
   dispose?(): void | Promise<void>;
 }

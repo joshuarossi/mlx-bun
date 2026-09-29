@@ -1,11 +1,20 @@
 // Model-free: /v1/audio/* dispatch, request parsing (multipart + JSON),
-// response formats, streaming SSE, sessions, the unavailable/unload paths,
-// and the transcription-only discovery routes, against fake services.
+// response formats, streaming SSE, sessions, and the unavailable/unload paths,
+// against fake services. The routes are the manifest's, mounted the way a host
+// mounts them (`createModuleRoutes`).
 import { describe, expect, test } from "bun:test";
-import type { WhisperSegment, WhisperTranscription } from "@mlx-bun/inference/transcription";
-import { createAudioRoutes, matchAudioRoute, parseAudioRequest, type AudioService } from "../../src/server/audio-routes";
-import { createTranscriptionServerRoutes } from "../../src/server/transcription-server";
-import { TranscriptionService, type TranscriptionOutcome, type TranscriptionParams, type TranscriptionRuntime } from "../../src/engine/transcription-service";
+import type { RouteHandler, Transcript } from "@mlx-bun/app-core";
+import { createModuleRoutes } from "@mlx-bun/app-services";
+import { manifest } from "../src/manifest";
+import { createAudioHandlers, parseAudioRequest, type AudioService } from "../src/routes";
+import { TranscriptionError, type TranscriptionOutcome, type TranscriptionParams } from "../src/service";
+import { stack, type TranscriptionRuntime } from "./support";
+
+/** The routes' handlers mounted at the manifest's paths, as a host serves them. */
+function audioRoutes(service: AudioService, options: { unavailableMessage?: string } = {}) {
+  const handlers = createAudioHandlers(service, options);
+  return createModuleRoutes(manifest.routes.map(spec => ({ spec, path: spec.path, handler: handlers[spec.id] as RouteHandler })));
+}
 
 const WAV = (() => {
   const frames = 3200;
@@ -19,7 +28,7 @@ const WAV = (() => {
   return new Uint8Array(buf);
 })();
 
-const RESULT: WhisperTranscription = {
+const RESULT: Transcript = {
   text: " hello world.",
   language: "en",
   segments: [
@@ -32,9 +41,10 @@ function fakeService(record: TranscriptionParams[] = []): AudioService {
   let resident = false;
   return {
     modelId: "fake/whisper",
+    resolveModel: async () => "fake/whisper",
     get resident() { return resident; },
     get stats() { return { resident, loads: 0, unloads: 0, requests: record.length, last_load_ms: 0, idle_unload_sec: 300 }; },
-    unload: () => { const was = resident; resident = false; return was; },
+    unload: async () => { const was = resident; resident = false; return was; },
     session: () => null,
     createSession: () => { throw new Error("not in this fake"); },
     decodeAudio: async bytes => new Float32Array(bytes.length),
@@ -66,41 +76,51 @@ function multipart(fields: Record<string, string | string[]>, file = WAV, path =
 }
 
 describe("audio route dispatch", () => {
-  test("matches the OpenAI audio routes and the unload admin route", () => {
-    expect(matchAudioRoute("POST", "/v1/audio/transcriptions")).toEqual({ kind: "transcriptions", task: "transcribe" });
-    expect(matchAudioRoute("POST", "/v1/audio/translations")).toEqual({ kind: "transcriptions", task: "translate" });
-    expect(matchAudioRoute("POST", "/admin/transcription/unload")).toEqual({ kind: "unload" });
-    expect(matchAudioRoute("POST", "/v1/audio/sessions")).toEqual({ kind: "session-create" });
-    expect(matchAudioRoute("POST", "/v1/audio/sessions/abc/audio")).toEqual({ kind: "session-audio", id: "abc" });
-    expect(matchAudioRoute("POST", "/v1/audio/sessions/abc/finish")).toEqual({ kind: "session-finish", id: "abc" });
-    expect(matchAudioRoute("DELETE", "/v1/audio/sessions/a%2Fb")).toEqual({ kind: "session-delete", id: "a/b" });
-    expect(matchAudioRoute("GET", "/v1/audio/sessions/abc/audio")).toBeNull();
-    expect(matchAudioRoute("POST", "/v1/audio/sessions/abc/other")).toBeNull();
-    expect(matchAudioRoute("GET", "/v1/audio/transcriptions")).toBeNull();
-    expect(matchAudioRoute("POST", "/v1/audio/speech")).toBeNull();
+  test("mounts the OpenAI audio routes and the unload admin route at their exact paths and methods", async () => {
+    const answered: string[] = [];
+    const handlers = Object.fromEntries(manifest.routes.map(spec => [spec.id, (() => { answered.push(spec.id); return new Response(null); }) as RouteHandler]));
+    const routes = createModuleRoutes(manifest.routes.map(spec => ({ spec, path: spec.path, handler: handlers[spec.id]! })));
+    const dispatch = async (method: string, path: string) => { answered.length = 0; const response = await routes.handle(new Request(`http://localhost${path}`, { method })); return response ? answered[0] : null; };
+    expect(await dispatch("POST", "/v1/audio/transcriptions")).toBe("transcriptions");
+    expect(await dispatch("POST", "/v1/audio/translations")).toBe("translations");
+    expect(await dispatch("POST", "/admin/transcription/unload")).toBe("unload");
+    expect(await dispatch("POST", "/v1/audio/sessions")).toBe("session-create");
+    expect(await dispatch("POST", "/v1/audio/sessions/abc/audio")).toBe("session-audio");
+    expect(await dispatch("POST", "/v1/audio/sessions/abc/finish")).toBe("session-finish");
+    expect(await dispatch("DELETE", "/v1/audio/sessions/a%2Fb")).toBe("session-delete");
+    expect(await dispatch("GET", "/v1/audio/sessions/abc/audio")).toBeNull();
+    expect(await dispatch("POST", "/v1/audio/sessions/abc/other")).toBeNull();
+    expect(await dispatch("GET", "/v1/audio/transcriptions")).toBeNull();
+    expect(await dispatch("POST", "/v1/audio/speech")).toBeNull();
   });
 
-  test("an unmounted audio group stays composable", async () => {
-    const unmounted = createAudioRoutes();
-    expect(await unmounted.handle(multipart({}))).toBeNull();
-    expect(await unmounted.handle(post("/admin/transcription/unload"))).toBeNull();
-    expect(await createAudioRoutes({ service: async () => fakeService() }).handle(new Request("http://localhost/v1/models"))).toBeNull();
+  test("the manifest declares every route at the root and its handler, and nothing else", () => {
+    expect(manifest.routes.map(route => route.id as string)).toEqual(Object.keys(createAudioHandlers(fakeService())));
+    expect(manifest.routes.every(route => route.mount === "root")).toBe(true);
+    expect(manifest.routes.map(route => `${route.method} ${route.path}`)).toEqual([
+      "POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /admin/transcription/unload", "POST /v1/audio/sessions",
+      "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id"]);
+  });
+
+  test("a path the module does not serve falls through to the host", async () => {
+    expect(await audioRoutes(fakeService()).handle(new Request("http://localhost/v1/models"))).toBeNull();
   });
 
   test("session routes 404 on unknown ids", async () => {
-    const routes = createAudioRoutes({ service: async () => fakeService() });
+    const routes = audioRoutes(fakeService());
     expect((await routes.handle(post("/v1/audio/sessions/nope/finish")))!.status).toBe(404);
     expect((await routes.handle(post("/v1/audio/sessions/nope/audio", { body: new Uint8Array(4) })))!.status).toBe(404);
     expect((await routes.handle(new Request("http://localhost/v1/audio/sessions/nope", { method: "DELETE" })))!.status).toBe(404);
   });
 
   test("503 with a get hint when no Whisper model is available; the host may word it", async () => {
-    const res = await createAudioRoutes({ service: async () => null }).handle(multipart({}));
+    const unavailable = { ...fakeService(), resolveModel: async () => null };
+    const res = await audioRoutes(unavailable).handle(multipart({}));
     expect(res!.status).toBe(503);
     const body = await res!.json() as { error: { message: string; type: string } };
     expect(body.error.type).toBe("model_unavailable");
     expect(body.error.message).toContain("mlx-bun get");
-    const custom = await createAudioRoutes({ service: async () => null, unavailableMessage: "custom" }).handle(post("/admin/transcription/unload"));
+    const custom = await audioRoutes(unavailable, { unavailableMessage: "custom" }).handle(post("/admin/transcription/unload"));
     expect((await custom!.json()).error.message).toBe("custom");
   });
 });
@@ -165,7 +185,7 @@ describe("audio request parsing", () => {
 describe("audio route responses", () => {
   test("json + mlx_bun block, text, srt, vtt, verbose_json, and word timestamps", async () => {
     const seen: TranscriptionParams[] = [];
-    const routes = createAudioRoutes({ service: async () => fakeService(seen) });
+    const routes = audioRoutes(fakeService(seen));
     const json = await routes.handle(multipart({ vocabulary: "Sotto" }));
     const jb = await json!.json() as { text: string; mlx_bun: { language: string; timings: { load_ms: number }; vocabulary: { included: string[] } } };
     expect(jb.text).toBe("hello world.");
@@ -196,7 +216,7 @@ describe("audio route responses", () => {
   });
 
   test("streaming: one delta per segment, progress, then done", async () => {
-    const res = await createAudioRoutes({ service: async () => fakeService() }).handle(multipart({ stream: "true" }));
+    const res = await audioRoutes(fakeService()).handle(multipart({ stream: "true" }));
     expect(res!.headers.get("content-type")).toBe("text/event-stream");
     const body = await res!.text();
     const events = body.split("\n\n").filter(Boolean).map(chunk => {
@@ -212,10 +232,9 @@ describe("audio route responses", () => {
   test("service failures map to their statuses: typed errors, cancellation, undecodable audio, and 500", async () => {
     const failing = (error: Error): AudioService => ({ ...fakeService(), async transcribe() { throw error; } });
     const status = async (error: Error) => {
-      const response = await createAudioRoutes({ service: async () => failing(error) }).handle(multipart({}));
+      const response = await audioRoutes(failing(error)).handle(multipart({}));
       return [response!.status, (await response!.json()).error] as const;
     };
-    const { TranscriptionError } = await import("../../src/engine/transcription-service");
     expect(await status(new TranscriptionError("audio is shorter than 0.1 s", 400))).toEqual([400, { message: "audio is shorter than 0.1 s", type: "invalid_request_error" }]);
     expect((await status(new Error("transcription cancelled")))[0]).toBe(499);
     expect(await status(new Error("bad RIFF header"))).toEqual([400, { message: "undecodable audio: bad RIFF header", type: "invalid_request_error" }]);
@@ -223,9 +242,9 @@ describe("audio route responses", () => {
   });
 
   test("unload reports residency", async () => {
-    const routes = createAudioRoutes({ service: async () => fakeService() });
+    const routes = audioRoutes(fakeService());
     const svc = fakeService();
-    const owned = createAudioRoutes({ service: async () => svc });
+    const owned = audioRoutes(svc);
     await owned.handle(multipart({}));
     expect(await (await owned.handle(post("/admin/transcription/unload")))!.json()).toMatchObject({ unloaded: true, resident: false, idle_unload_sec: 300 });
     expect(await (await owned.handle(post("/admin/transcription/unload")))!.json()).toMatchObject({ unloaded: false });
@@ -233,7 +252,7 @@ describe("audio route responses", () => {
   });
 });
 
-/** The real service over a fake runtime: sessions exercise the service's own lifecycle. */
+/** The real service over the real Whisper model host and a fake runtime: sessions exercise the service's own lifecycle. */
 function sessionService(beforeLoad?: () => Promise<void>) {
   const runtime: TranscriptionRuntime = {
     async load() {
@@ -242,7 +261,7 @@ function sessionService(beforeLoad?: () => Promise<void>) {
         promptTokenBudget: 223, encode: text => text.split(/\s+/).filter(Boolean).map((_, index) => index),
         transcribe: async () => RESULT,
         start(options) {
-          const segments: WhisperSegment[] = []; let fed = 0;
+          const segments: Transcript["segments"] = []; let fed = 0;
           return { get segments() { return segments; },
             feedSilent(samples: Float32Array) { fed += samples.length; },
             async feed(samples: Float32Array) { fed += samples.length; segments.push({ ...RESULT.segments[segments.length % 2]!, id: segments.length }); },
@@ -254,14 +273,15 @@ function sessionService(beforeLoad?: () => Promise<void>) {
     vad() { throw new Error("no vad in this test"); },
     async decodeAudio(bytes) { return new Float32Array(bytes.length / 2); },
   };
-  return new TranscriptionService({ modelDir: "/w", modelId: "org/whisper", runtime, log() {}, idleUnloadSec: 0 });
+  const { host, service } = stack(runtime, { idleUnloadSec: 0 });
+  return { service, host, close: async () => { await service.close(); await host.close(); } };
 }
 
 describe("streaming sessions", () => {
   test("an aborted session-create request never registers an unreachable session or retains its weights", async () => {
     const loading = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-    const service = sessionService(async () => { loading.resolve(); await release.promise; });
-    const routes = createAudioRoutes({ service: async () => service });
+    const { service, host, close } = sessionService(async () => { loading.resolve(); await release.promise; });
+    const routes = audioRoutes(service);
     const controller = new AbortController();
     const request = post("/v1/audio/sessions", { signal: controller.signal });
     const response = routes.handle(request);
@@ -273,16 +293,17 @@ describe("streaming sessions", () => {
       expect(service.sessionCount).toBe(0);
       expect(service.resident).toBe(false);
       expect(service.stats.unloads).toBe(1);
+      expect(host.stats("org/whisper").unloads).toBe(1);
     } finally {
       release.resolve();
       await response;
-      await service.close();
+      await close();
     }
   });
 
   test("create, append float32 or container chunks, finish in the chosen format, and delete", async () => {
-    const service = sessionService();
-    const routes = createAudioRoutes({ service: async () => service });
+    const { service, close } = sessionService();
+    const routes = audioRoutes(service);
     const created = await routes.handle(json("/v1/audio/sessions", { language: "en", response_format: "verbose_json", vocabulary: ["Sotto"] }));
     expect(created!.status).toBe(200);
     const { id, model, vocabulary } = await created!.json();
@@ -308,29 +329,6 @@ describe("streaming sessions", () => {
     expect(service.sessionCount).toBe(0);
     expect((await routes.handle(json("/v1/audio/sessions", { response_format: "srt" })))!.status).toBe(400);
     expect((await routes.handle(post("/v1/audio/sessions", { headers: { "content-type": "application/json" }, body: "{" })))!.status).toBe(400);
-    service.close();
-  });
-});
-
-describe("transcription-only discovery", () => {
-  test("health, stats, the API index, and /v1/models describe the Whisper checkpoint alone", async () => {
-    let resident = false;
-    const routes = createTranscriptionServerRoutes({ modelId: "org/whisper", get resident() { return resident; }, sessionCount: 2,
-      stats: { resident: false, loads: 1, unloads: 1, requests: 3, last_load_ms: 250, idle_unload_sec: 0 } }, { startedAt: 5_000 });
-    const get = (path: string) => routes.handle(new Request(`http://localhost${path}`));
-    expect(await (await get("/health"))!.json()).toEqual({ status: "ok", transcription: { resident: false, loads: 1, unloads: 1, requests: 3, last_load_ms: 250, idle_unload_sec: 0, sessions: 2 } });
-    expect(await (await get("/stats"))!.json()).toMatchObject({ model: "org/whisper", transcription: { requests: 3 }, uptime_s: expect.any(Number) });
-    const index = await (await get("/v1"))!.json();
-    expect(index).toMatchObject({ name: "mlx-bun", model: "org/whisper", mode: "transcription" });
-    expect(index.endpoints).toContain("POST /v1/audio/transcriptions");
-    expect(index.endpoints).not.toContain("POST /v1/chat/completions");
-    resident = true;
-    const models = await (await get("/v1/models"))!.json();
-    expect(models).toEqual({ object: "list", data: [{ id: "org/whisper", object: "model", created: 5, owned_by: "mlx-bun", transcription: true, resident: true,
-      capabilities: { transcription: true, translation: true, chat_completions: false } }] });
-    expect((await (await get("/v1/models/org/whisper"))!.json()).data).toHaveLength(1);
-    expect((await (await get("/v1/models/other"))!.json()).data).toEqual([]);
-    expect(await get("/v1/chat/completions")).toBeNull();
-    expect(await routes.handle(new Request("http://localhost/health", { method: "POST" }))).toBeNull();
+    await close();
   });
 });

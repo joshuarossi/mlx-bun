@@ -34,7 +34,13 @@ test("serve checks, serve-written keys, and each read site's fallback come from 
   expect(rows(baseline, "MLX_BUN_SESSION_CACHE")[0]).toContain("| value | unset (only `0` changes it) |");
   expect(rows(baseline, "MLX_BUN_LIBMLXC")[0]).toContain("| process.env | computed | [native.ts:");
   expect(rows(baseline, "MLX_BUN_PAGED_KV")[0]).toContain("[cli/serve.ts:");
-  for (const read of baseline.reads) expect(/^(apps\/mlx-bun|packages\/[a-z]+)\/src\//.test(read.file) && read.line > 0).toBe(true);
+  // The installed modules' and host libraries' keys are app keys, not library tuning.
+  expect(rows(baseline, "MLX_BUN_MIC_CAPTURE")[0]).toContain("[module-transcription/src/mic-capture.ts:");
+  expect(rows(baseline, "MLX_BUN_HOME")[0]).toContain("[app-services/src/home.ts:");
+  const page = renderServerConfig(baseline, "a".repeat(40)), appKeys = page.slice(page.indexOf("### App keys"), page.indexOf("## Library tuning"));
+  expect(appKeys).toContain("`MLX_BUN_MIC_CAPTURE`"); expect(appKeys).toContain("`MLX_BUN_HOME`");
+  expect(page.slice(page.indexOf("## Library tuning"))).not.toContain("### @mlx-bun/module-transcription");
+  for (const read of baseline.reads) expect(/^(apps\/mlx-bun|packages\/[a-z-]+)\/src\//.test(read.file) && read.line > 0).toBe(true);
 });
 
 test("generation writes a build-owned page with source links at the revision", async () => {

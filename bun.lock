@@ -26,15 +26,30 @@
         "@earendil-works/pi-coding-agent": "0.80.3",
         "@mlx-bun/app-core": "workspace:*",
         "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/app-services": "workspace:*",
         "@mlx-bun/hub": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
+        "@mlx-bun/module-transcription": "workspace:*",
         "@mlx-bun/quantize": "workspace:*",
         "@mlx-bun/training": "workspace:*",
         "typebox": "1.1.38",
       },
       "devDependencies": {
         "happy-dom": "20.10.6",
+      },
+    },
+    "apps/transcribe": {
+      "name": "mlx-bun-transcribe",
+      "version": "0.0.0",
+      "bin": {
+        "mlx-bun-transcribe": "./bin/mlx-bun-transcribe.mjs",
+      },
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/app-services": "workspace:*",
+        "@mlx-bun/module-transcription": "workspace:*",
       },
     },
     "apps/website": {
@@ -62,6 +77,17 @@
         "@mlx-bun/app-core": "workspace:*",
       },
     },
+    "packages/app-services": {
+      "name": "@mlx-bun/app-services",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/hub": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+        "@mlx-bun/mlx": "workspace:*",
+      },
+    },
     "packages/hub": {
       "name": "@mlx-bun/hub",
       "version": "0.0.0",
@@ -80,6 +106,18 @@
     "packages/mlx": {
       "name": "@mlx-bun/mlx",
       "version": "0.0.0",
+    },
+    "packages/module-transcription": {
+      "name": "@mlx-bun/module-transcription",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/inference": "workspace:*",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-host": "workspace:*",
+        "@mlx-bun/app-services": "workspace:*",
+      },
     },
     "packages/quantize": {
       "name": "@mlx-bun/quantize",
@@ -345,11 +383,15 @@
 
     "@mlx-bun/app-host": ["@mlx-bun/app-host@workspace:packages/app-host"],
 
+    "@mlx-bun/app-services": ["@mlx-bun/app-services@workspace:packages/app-services"],
+
     "@mlx-bun/hub": ["@mlx-bun/hub@workspace:packages/hub"],
 
     "@mlx-bun/inference": ["@mlx-bun/inference@workspace:packages/inference"],
 
     "@mlx-bun/mlx": ["@mlx-bun/mlx@workspace:packages/mlx"],
+
+    "@mlx-bun/module-transcription": ["@mlx-bun/module-transcription@workspace:packages/module-transcription"],
 
     "@mlx-bun/quantize": ["@mlx-bun/quantize@workspace:packages/quantize"],
 
@@ -964,6 +1006,8 @@
     "minipass": ["minipass@7.1.3", "", {}, "sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A=="],
 
     "mlx-bun": ["mlx-bun@workspace:apps/mlx-bun"],
+
+    "mlx-bun-transcribe": ["mlx-bun-transcribe@workspace:apps/transcribe"],
 
     "mlx-bun-website": ["mlx-bun-website@workspace:apps/website"],
 

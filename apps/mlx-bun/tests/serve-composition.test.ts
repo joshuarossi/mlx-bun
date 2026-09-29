@@ -114,10 +114,14 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     }));
     let limit = 77;
     mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
-    mock.module(app + "src/engine/transcription-service.ts", () => ({ TranscriptionService: class {
-      constructor(options) { this.modelId = options.modelId; this.resident = false; }
-      close() { return this.closing ??= (async () => { await Promise.resolve(); events.push("whisper close"); })(); }
-    } }));
+    const lib = app + "../../packages/app-services/src/";
+    // The Whisper model host records its close once used, as the real one releases only what it loaded; the module routes stand in as one group at the audio routes' place.
+    mock.module(lib + "whisper-model-host.ts", () => ({ ModelHostFailure: class extends Error {},
+      createWhisperModelHost: options => ({ used: false, policy: {}, async defaultFor() { this.used = true; return options.configured?.id; },
+        stats() { this.used = true; return { resident: false, loads: 0, unloads: 0, lastLoadMs: 0, idleUnloadSec: 0 }; },
+        resident: () => [], async acquire() { throw new Error("unused"); }, async plan() {}, async unload() {}, pin() {}, unpin() {}, async preload() { this.used = true; },
+        close() { return this.closing ??= (async () => { await Promise.resolve(); if (this.used) events.push("whisper close"); })(); } }) }));
+    mock.module(lib + "routes.ts", () => ({ createModuleRoutes: () => group("modules") }));
     let completionOptions, piOptions, managementOptions, artifactOptions, listenerInput, whisperProbe;
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) { completionOptions = options; whisperProbe = options.transcription;
       return { ...group("completions"), invalidateLibrary() { events.push("invalidate"); }, responseStats: () => ({}) }; } }));
@@ -125,7 +129,6 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     mock.module(app + "src/server/cache-routes.ts", () => ({ createCacheRoutes: () => group("cacheAdmin") }));
     mock.module(app + "src/server/adapter-routes.ts", () => ({ createAdapterRoutes: () => group("adapters") }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes(options) { managementOptions = options; return group("management"); } }));
-    mock.module(app + "src/server/audio-routes.ts", () => ({ createAudioRoutes: () => group("audio") }));
     mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes(_gateway, options) { artifactOptions = options; return group("adapterArtifacts"); } }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) { piOptions = options; return () => {}; } }));
@@ -173,7 +176,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     assert.equal(listenerInput.web, state.web);
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
-    assert.deepEqual(visited, ["status", "cacheAdmin", "hub", "sessions", "adapters", "management", "audio", "memory", "jobs", "quantize", "dataset", "finetune", "adapterArtifacts", "publishing", "completions"]);
+    assert.deepEqual(visited, ["status", "cacheAdmin", "hub", "sessions", "adapters", "management", "modules", "memory", "jobs", "quantize", "dataset", "finetune", "adapterArtifacts", "publishing", "completions"]);
     // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
     // with Whisper alongside them before drain, chat and HTTP drain, Whisper again (idempotent, catches a
     // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.

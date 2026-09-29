@@ -13,7 +13,7 @@ import { JobStore } from "../src/jobs/db";
 import { createJobHost } from "../src/jobs/host";
 import { resizeImage } from "@earendil-works/pi-coding-agent";
 
-import { resolveMicCapture, MIC_CAPTURE_BINARY } from "../src/engine/mic-capture";
+import { resolveMicCapture, MIC_CAPTURE_BINARY } from "@mlx-bun/module-transcription/mic-capture";
 
 const directory = dirname(process.execPath), temporary = resolve(process.argv[2]!);
 assert(import.meta.filename.startsWith("/$bunfs/"));

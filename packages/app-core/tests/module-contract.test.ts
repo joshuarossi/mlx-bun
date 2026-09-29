@@ -51,7 +51,7 @@ test("a manifest activates against only its required services and serves its dec
   expect(Object.keys(runtime.routes!)).toEqual(manifest.routes.map(route => route.id));
   expect(Object.keys(runtime.verbs!)).toEqual(manifest.verbs.map(verb => verb.name));
   let output = "";
-  const invocation: CliInvocation = { values: {}, stdout: text => { output += text; }, stderr: () => {}, signal: context.signal };
+  const invocation: CliInvocation = { values: {}, positionals: [], stdout: text => { output += text; }, stderr: () => {}, signal: context.signal };
   expect(await runtime.verbs!["echo-ping"]!(invocation)).toBe(0);
   expect(output).toBe("pinged\n");
   const response = await runtime.routes!.count!(new Request("http://host/api/echo/count"));

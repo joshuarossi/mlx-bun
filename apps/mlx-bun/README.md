@@ -1323,132 +1323,29 @@ switch.
 
 ## Audio transcription
 
-`engine/transcription-service.ts` owns the Whisper checkpoint's residency
-(main's `TranscriptionService`). The weights load on the first take through
-the library's public `openWhisperModel`, `loadWhisperTokenizer`, and
-`WhisperTranscriber`; takes run one at a time (FIFO) and, in the full server,
-inside the generation gateway's exclusive lock, so decoding never overlaps
-chat generation. Residency follows main's flags: `--whisper-idle-unload <s>`
-(default `0`: release right after every take; the next take pages the weights
-back in from the OS file cache) and `--whisper-resident` (never release).
-`mlx_bun.timings.load_ms` in every response is non-zero exactly when that
-request paged the weights in. Loading, the Silero VAD gate, and audio decoding
-are an injected runtime, so the [service tests](tests/engine/transcription-service.test.ts)
-prove the lifecycle (lazy load, idle timer, resident mode, unload-after-take,
-FIFO takes, sessions, close) with a fake clock and no weights.
-
-`server/audio-routes.ts` serves main's speech-to-text surface:
-`POST /v1/audio/transcriptions` and `POST /v1/audio/translations` (multipart
-`file` or JSON base64/`data:` URL; `language`, `prompt`, `response_format`
-`json` | `verbose_json` | `text` | `srt` | `vtt`, `temperature`, `stream`
-server-sent events, `timestamp_granularities[]`, and main's non-standard
-`beam_size`, `vocabulary`, `condition_on_previous_text`, `no_speech_threshold`,
-`without_timestamps`, `vad`/`vad_threshold`/`vad_min_speech_ms`/`vad_trim`,
-`faithful`, `audio_ctx`); streaming dictation sessions (`POST /v1/audio/sessions`,
-`POST /v1/audio/sessions/<id>/audio` with `audio/pcm;rate=16000` float32 or any
-CoreAudio container, `POST /v1/audio/sessions/<id>/finish`,
-`DELETE /v1/audio/sessions/<id>`; unknown ids 404, a finished session 409, more
-than 64 open sessions 429); and `POST /admin/transcription/unload`, which pages
-the weights out and returns `unloaded` with the stats block (`resident`, `loads`,
-`unloads`, `requests`, `last_load_ms`, `idle_unload_sec`). Errors keep main's
-statuses: 400 for fields, undecodable audio, and clips under 0.1 s; 415 for the
-content type; 499 on client cancel; 503 `model_unavailable` with the
-`mlx-bun get` hint when no Whisper checkpoint is on disk. The group is mounted
-only with a service provider; the app composition always supplies one.
-
-`serve.ts` resolves and `serve-host.ts` composes the companion: `--whisper-model <path|query>` resolves like
-the main model and refuses a non-Whisper checkpoint before loading; without it
-the first downloaded `whisper` checkpoint is looked up once, on the first audio
-request (as in main, a checkpoint downloaded later needs a restart).
-`GET /v1/models` lists the companion (`transcription: true`, `resident`) beside
-the chat model, whose `capabilities.transcription` reports whether one exists;
-the web chat's `ready.transcription` probe (the hold-to-talk mic) reads the
-same provider. Shutdown closes the service (timer cancelled, weights released)
-before the chat model. Serving a Whisper checkpoint as the main model starts
-the transcription-only server: the audio routes plus `/v1`, `/v1/models`,
-`/health`, and `/stats` (the last two carry the `transcription` stats block),
-with no chat model, prompt cache, jobs, web app, or browser open; `--preload`
-loads the weights before the listener binds. The
-[route tests](tests/server/audio-routes.test.ts) cover parsing, every response
-format, streaming, sessions over the real service with a fake runtime, and the
-transcription-only discovery routes; the [serve tests](tests/serve-cli.test.ts)
-cover the flags, both `runServe` branches, and both compositions. The opt-in
-[transcription test](tests/engine/transcription.test.ts)
-(`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_WHISPER_MODEL=<snapshot directory>`)
-serves a real checkpoint, transcribes a synthesized tone, and pages the weights
-out through the unload route; transcript parity against mlx-whisper is the
-library's contract, not this app check. The opt-in
-[transcription parity test](tests/engine/transcription-parity.test.ts) repeats the
-served surface on real speech and requires the oracle's transcripts for the same
-audio; its references and results are in the
-[inference README](../../packages/inference/README.md#speech-and-embedding-parity),
-which also covers the `/v1/embeddings` counterpart.
-
-`mlx-bun transcribe <audio-file> [query]` is main's one-shot speech-to-text
-verb over the same service, no server. The clip is read and decoded (WAV
-through the exact PCM parser, anything CoreAudio reads through AudioToolbox)
-before any model is resolved, so a bad file never opens the registry. The
-model is `--model`, else the second positional, else `--query`, else the first
-downloaded `whisper` checkpoint (the `mlx-bun get` hint when none).
-`--language`, `--task translate`, `--beam-size`, `--temperature`,
-`--no-fallback`, `--prompt`, `--no-timestamps`, `--no-condition`,
-`--word-timestamps`, `--faithful`, and `--audio-ctx` keep main's decoding
-policy (the `(0, 0.2, …, 1.0)` fallback ladder unless a temperature or
-`--no-fallback` is given). `--vad` (with `--vad-threshold` and `--vad-model`)
-prints an empty result and never loads Whisper when the Silero gate finds no
-speech; `--vad-trim` is accepted without cropping, as in main. `--format` is
-`text` (default) | `json` | `verbose_json` | `srt` | `vtt`; `--verbose` prints
-each segment as it decodes and a realtime summary on stderr. SIGINT aborts the
-decode or the take, releases the weights, and exits 1. The file CLI accepts
-clips under 0.1 s, as main did; HTTP keeps its existing minimum duration.
-
-`mlx-bun dictate [query]` is main's push-to-talk loop. `engine/mic-capture.ts`
-spawns the AVAudioEngine sidecar (`native/mic-capture.swift` →
-`mlx-bun-mic-capture`: 16 kHz mono float32 PCM on stdout; `ready`, `hotkey
-down`, `hotkey up`, and `error:` lines on stderr; macOS asks for Microphone
-permission on first use), resolved from `MLX_BUN_MIC_CAPTURE`, beside the
-standalone executable, or the package's `dist/native/`. Source checkouts stage it
-explicitly with `bun run --filter mlx-bun build:native` (requires swiftc);
-`prepack` builds it into the published artifact. Runtime never compiles helpers.
-Enter starts and stops a take (`q` or
-Ctrl-C quits); `--hotkey [keycode]` holds a key instead (default 61, Right
-Option; needs Input Monitoring). Every 250 ms of audio feeds a transcription
-session while you speak, so the text lands about one window after the take
-ends, and the Silero gate keeps silence from running Whisper (`--no-vad` skips
-it and, unlike main, does not load its weights). The transcript prints;
-`--copy` pipes it to `pbcopy`; `--type` sends System Events keystrokes after
-`--type-delay` (1 s in Enter mode, 0 with `--hotkey`; needs Accessibility).
-The backend is the in-process service with `--idle-unload <s>` (default 30;
-0 = release after every take) and `--resident`, or `--server <url>` for a
-running server's `/v1/audio/sessions`. Stopping ends the sidecar's stdin,
-terminates it, joins it (SIGKILL after two seconds), and only then releases
-the weights. It cancels and joins session requests and active transcription,
-cleans up the open session, and prevents delayed copying or typing after
-cancellation. Ctrl-C exits 0, as in main.
-
-The [transcribe tests](tests/transcribe-cli.test.ts) and
-[dictate tests](tests/dictate-cli.test.ts) run both verbs over the real
-service with a fake runtime and a fake capture source (generated WAV and PCM,
-every format, chunked feeding, the VAD gate, residency, delivery, the server
-backend, cancellation joining the capture before the weights release) and
-spawn the CLI for help and error paths; they also run against the installed
-artifact in `verify-packages --app-only`. The
-[mic capture tests](tests/engine/mic-capture.test.ts) cover resolution, the
-sidecar protocol, and the terminate-and-join with shell stand-ins. A real
-microphone is exercised only by hand; package and relocated-bundle verification
-resolve the shipped helper and run `--help` before any audio initialization.
-The opt-in [voice test](tests/engine/voice.test.ts) (`MLX_BUN_TEST_NATIVE=1`,
-`MLX_BUN_APP_TEST_WHISPER_MODEL`, optionally `MLX_BUN_APP_TEST_MODEL`) runs both
-verbs as spawned CLIs on real Whisper weights with speech synthesized by
-macOS `say`, `dictate` through a stand-in sidecar that follows the capture
-protocol, and a chat server with the companion: the mic probe, idle unload,
-transcription while a reply streams, a voice session, unload, and `dictate
---server`. The physical microphone, key tap, clipboard and typing stay manual.
+Speech-to-text is the transcription module's ([`@mlx-bun/module-transcription`](../../packages/module-transcription/README.md):
+the service, `/v1/audio/*`, `/admin/transcription/unload`, `transcribe`, `dictate`).
+This app installs it (`src/modules.ts`) and supplies its core services:
+`serve-host.ts` builds the Whisper model host from `--whisper-model`,
+`--whisper-idle-unload` and `--whisper-resident`, gives it the generation
+gateway's exclusive lock so decoding never overlaps chat, mounts the module's
+routes where the audio routes were, and stops the module and then releases the
+weights ahead of the chat model. `--preload` and serving a Whisper checkpoint as
+the main model start the transcription-only server (the audio routes plus
+`/v1`, `/v1/models`, `/health` and `/stats`). `GET /v1/models` and the web
+chat's `ready.transcription` probe (the hold-to-talk mic, still the chat
+composer's) read the model host's default Whisper. The [serve
+tests](tests/serve-cli.test.ts) cover the flags, both `runServe` branches and
+both compositions over a fake Whisper backend; the [voice
+test](tests/engine/voice.test.ts) and the opt-in [transcription
+test](tests/engine/transcription.test.ts) run real weights through this app, and the
+opt-in [transcription parity test](tests/engine/transcription-parity.test.ts) checks the
+served transcripts against the oracle.
 
 ## Standalone bundle
 
-After staging the root native setup and the app helper with
-`bun run --filter mlx-bun build:native`, run `bun run build:binary` from the root.
+After staging the root native setup and the microphone helper with
+`bun run --filter @mlx-bun/module-transcription build:native`, run `bun run build:binary` from the root.
 `dist/bundle/` contains the executable, native libraries/helpers, Pi's Photon
 WASM sidecar, the project license, and combined third-party notices: the MLX and
 inference package notices, Photon's installed Apache-2.0 license, the app's own

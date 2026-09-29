@@ -52,7 +52,6 @@ const preamble = `
     createCacheServices: async () => cache,
     createAppEngine: async () => ({ gateway, async close() { events.push("engine close"); await cache.close(); context.dispose(); } }),
   }));
-  mock.module(app + "src/engine/transcription-service.ts", () => ({ TranscriptionService: class {} }));
   mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) { events.push("routes " + (options.responseHistory?.size ?? "?"));
     return { async handle(request) { const path = new URL(request.url).pathname;
       if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: "org/model" }] });
@@ -64,7 +63,6 @@ const preamble = `
   mock.module(app + "src/server/cache-routes.ts", () => ({ createCacheRoutes: group }));
   mock.module(app + "src/server/adapter-routes.ts", () => ({ createAdapterRoutes: group }));
   mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: group }));
-  mock.module(app + "src/server/audio-routes.ts", () => ({ createAudioRoutes: group }));
   mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes: group }));
   mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
   mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));
@@ -512,14 +510,12 @@ test("the app form composes the real app over the socket with private storage: p
       createCacheServices: async () => cache,
       createAppEngine: async () => ({ gateway, async close() { events.push("engine close"); context.dispose(); } }),
     }));
-    mock.module(app + "src/engine/transcription-service.ts", () => ({
-      TranscriptionError: class extends Error {},
-      TranscriptionService: class {
-        constructor(options) { this.modelId = options.modelId; this.resident = false; this.sessionCount = 0; }
-        get stats() { return { resident: false, loads: 0, unloads: 0, requests: 0, last_load_ms: 0, idle_unload_sec: 0 }; }
-        async ensureLoaded() {} unload() { return false; }
-        close() { return this.closing ??= (async () => { events.push("whisper close"); })(); }
-      } }));
+    // The Whisper model host records its close; nothing else about it is under test here.
+    mock.module(app + "../../packages/app-services/src/whisper-model-host.ts", () => ({ ModelHostFailure: class extends Error {},
+      createWhisperModelHost: options => ({ used: false, policy: {}, async defaultFor() { this.used = true; return options.configured?.id; },
+        stats() { this.used = true; return { resident: false, loads: 0, unloads: 0, lastLoadMs: 0, idleUnloadSec: 0 }; },
+        resident: () => [], async acquire() { throw new Error("unused"); }, async plan() {}, async unload() {}, pin() {}, unpin() {}, async preload() { this.used = true; },
+        close() { return this.closing ??= (async () => { if (this.used) events.push("whisper close"); })(); } }) }));
     // The model's HTTP surface, recorded: it exists only on the worker socket.
     const encoder = new TextEncoder();
     const frame = text => "data: " + JSON.stringify({ choices: [{ index: 0, delta: { content: text } }] }) + "\\n\\n";
@@ -539,7 +535,7 @@ test("the app form composes the real app over the socket with private storage: p
       }, invalidateLibrary() {}, responseStats: () => ({}) }; } }));
     const group = () => ({ handle: async () => null });
     for (const [module, name] of [["status-routes", "createStatusRoutes"], ["cache-routes", "createCacheRoutes"], ["adapter-routes", "createAdapterRoutes"],
-      ["audio-routes", "createAudioRoutes"], ["adapter-artifact-routes", "createAdapterArtifactRoutes"]])
+      ["adapter-artifact-routes", "createAdapterArtifactRoutes"]])
       mock.module(app + "src/server/" + module + ".ts", () => ({ [name]: group }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => ({ async start() {}, async handle() {}, dispose() {} }) }));

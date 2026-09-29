@@ -45,6 +45,8 @@ export interface LoadedModules {
   readonly jobs: ReadonlyMap<string, RegisteredJob>;
   readonly storage: readonly StorageRegistration[];
   readonly registry: Pick<Registry, "list" | "onChange">;
+  /** A module's live counters (`ModuleRuntime.status`); undefined for a module that reports none or has stopped. */
+  status(moduleId: string): ReturnType<NonNullable<ModuleRuntime["status"]>> | undefined;
   /** Aborts every module, disposes them in reverse order and drops their registrations. Idempotent; rejects with every disposal failure. */
   stop(): Promise<void>;
 }
@@ -128,5 +130,6 @@ export async function loadModules(modules: readonly AppModule[], options: LoadOp
       throw error;
     }
   }
-  return { modules, routes, sockets, verbs, jobs, storage, registry: registry.reader, stop };
+  const status = (moduleId: string) => active.find(module => module.id === moduleId)?.runtime.status?.();
+  return { modules, routes, sockets, verbs, jobs, storage, registry: registry.reader, status, stop };
 }
