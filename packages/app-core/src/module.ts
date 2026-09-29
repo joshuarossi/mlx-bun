@@ -2,6 +2,7 @@ import type { ModelCatalog } from "./services/catalog";
 import type { EventBus } from "./services/events";
 import type { JobRunner, JobService } from "./services/jobs";
 import type { ModelHost } from "./services/model-host";
+import type { ExtensionPointId, Registry } from "./services/registry";
 import type { StorageEntrySpec, StorageService } from "./services/storage";
 
 /** Every core service. A host implements them once; modules borrow them. */
@@ -11,6 +12,7 @@ export interface CoreServices {
   readonly catalog: ModelCatalog;
   readonly storage: StorageService;
   readonly events: EventBus;
+  readonly registry: Registry;
 }
 export type CoreServiceName = keyof CoreServices;
 
@@ -129,6 +131,8 @@ export interface AppModule<R extends CoreServiceName = CoreServiceName> {
   readonly verbs?: readonly CliVerbSpec[];
   readonly jobs?: readonly JobRunnerSpec[];
   readonly storage?: readonly StorageEntrySpec[];
+  /** Extension points the module registers to (needs `registry` in `requires`). */
+  readonly contributes?: readonly ExtensionPointId[];
   readonly panel?: PanelSpec;
   activate(context: ModuleContext<R>): ModuleRuntime | Promise<ModuleRuntime>;
 }

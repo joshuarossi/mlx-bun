@@ -14,10 +14,18 @@
       "version": "0.0.0",
       "bin": {
         "mlx-bun": "./bin/mlx-bun.mjs",
+        "mlx-bun.server": "./bin/mlx-bun.server.mjs",
+        "mlx-bun.generate": "./bin/mlx-bun.generate.mjs",
+        "mlx-bun.convert": "./bin/mlx-bun.convert.mjs",
+        "mlx-bun.fuse": "./bin/mlx-bun.fuse.mjs",
+        "mlx-bun.lora": "./bin/mlx-bun.lora.mjs",
+        "mlx-bun.upload": "./bin/mlx-bun.upload.mjs",
       },
       "dependencies": {
         "@earendil-works/pi-ai": "0.80.3",
         "@earendil-works/pi-coding-agent": "0.80.3",
+        "@mlx-bun/app-core": "workspace:*",
+        "@mlx-bun/app-host": "workspace:*",
         "@mlx-bun/hub": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
@@ -46,6 +54,13 @@
     "packages/app-core": {
       "name": "@mlx-bun/app-core",
       "version": "0.0.0",
+    },
+    "packages/app-host": {
+      "name": "@mlx-bun/app-host",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+      },
     },
     "packages/hub": {
       "name": "@mlx-bun/hub",
@@ -327,6 +342,8 @@
     "@mlc-ai/web-xgrammar": ["@mlc-ai/web-xgrammar@0.1.27", "", {}, "sha512-0WJvW3mjotHA2NeAfaWFE2pQkOgXH9xC2U4IQOJNcioLac0k6VjSbj14jBRprt89frnPzxLo280riaEb+ZQqbg=="],
 
     "@mlx-bun/app-core": ["@mlx-bun/app-core@workspace:packages/app-core"],
+
+    "@mlx-bun/app-host": ["@mlx-bun/app-host@workspace:packages/app-host"],
 
     "@mlx-bun/hub": ["@mlx-bun/hub@workspace:packages/hub"],
 

@@ -45,7 +45,7 @@ function layer(path: string, owner: Library): Layer | undefined {
 }
 
 // Add a domain only with its first consumer; app roots do not become a loophole.
-const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "quantize", "dataset", "finetune", "publishing", "memory", "hub", "storage"], engine: [], chat: ["storage"], server: ["engine", "chat", "memory", "jobs", "quantize", "dataset", "finetune", "publishing", "hub", "storage"], memory: ["storage"], quantize: ["jobs", "storage"], dataset: ["jobs"], finetune: ["jobs"], publishing: ["storage"], jobs: ["storage"], hub: [], storage: [], web: ["chat", "jobs"] };
+const appDomains: Record<string, string[]> = { cli: ["engine", "server", "chat", "web", "jobs", "quantize", "dataset", "finetune", "publishing", "memory", "hub", "storage", "modules.ts"], "modules.ts": [], engine: [], chat: ["storage"], server: ["engine", "chat", "memory", "jobs", "quantize", "dataset", "finetune", "publishing", "hub", "storage"], memory: ["storage"], quantize: ["jobs", "storage"], dataset: ["jobs"], finetune: ["jobs"], publishing: ["storage"], jobs: ["storage"], hub: [], storage: [], web: ["chat", "jobs"] };
 const siteDomains: Record<string, string[]> = { "content.config.ts": [], content: [], styles: [] };
 function domains(owner: Library): Record<string, string[]> {
   return owner.name === "mlx-bun-website" ? siteDomains : appDomains;
@@ -56,7 +56,8 @@ function appDomain(path: string, owner: Library): string {
   return domain;
 }
 
-// Scheduling (`execution/`) and the app's engine, server and CLI consume graphs
+// Scheduling (`execution/`), every host app (engine, server, CLI, composition), host
+// libraries and module packages consume graphs
 // through their declared capabilities, bindings and profiles. They may name the
 // graph handle, its declaration, profiles, the registry-level role predicates
 // (`models/support.ts`) and shared input helpers, never a concrete model, and
@@ -69,10 +70,47 @@ const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/
 const familyPredicate = /^is(Gemma|Qwen|MiniCPM|Llama|Glm|Diffusion|Whisper|Universal)\w*Config$/i;
 const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
 
+// Modular application (ARCHITECTURE.md): `app-core` holds the contracts, `app-host`
+// (and later service implementations) the host side, `module-<id>` the features.
+const coreName = "@mlx-bun/app-core";
+const isModulePackage = (name: string) => name.startsWith("@mlx-bun/module-");
+const isHostLibrary = (name: string) => name.startsWith("@mlx-bun/app-") && name !== coreName;
+/** Libraries below the app: everything that is not a contract, host library, module or app. */
+const belowApp = (owner: Library) => !owner.app && owner.name !== coreName && !isHostLibrary(owner.name) && !isModulePackage(owner.name);
+/** A host's one composition file, the only place that names module packages. */
+const isCompositionFile = (file: string, owner: Library) => owner.app && relative(owner.source, file) === "modules.ts";
+const inModulePanel = (file: string, owner: Library) => isModulePackage(owner.name) && relative(owner.source, file).startsWith("panel/");
+const isModuleProtocol = (file: string, owner: Library) => isModulePackage(owner.name) && relative(owner.source, file) === "protocol.ts";
+
 function schedulingSide(file: string, owner: Library): boolean {
   const name = relative(owner.source, file);
   return (owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) ||
-    (owner.name === "mlx-bun" && (name.startsWith("engine/") || name.startsWith("server/") || name.startsWith("cli/")));
+    (owner.app && owner.name !== "mlx-bun-website") ||
+    isModulePackage(owner.name) || isHostLibrary(owner.name);
+}
+
+/** Anything in a types-only package that exists at runtime: values, `export *`, non-type exports, side-effect imports. */
+function runtimeCode(source: ts.SourceFile): { text: string; line: number }[] {
+  const found: { text: string; line: number }[] = [];
+  const add = (node: ts.Node, text: string) =>
+    found.push({ text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
+  for (const statement of source.statements) {
+    if (ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) continue;
+    if (ts.isImportDeclaration(statement)) {
+      if (!statement.importClause) add(statement, "side-effect import");
+      continue;
+    }
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.isTypeOnly) continue;
+      if (!statement.exportClause || ts.isNamespaceExport(statement.exportClause)) add(statement, "export * (use export type *)");
+      else for (const item of statement.exportClause.elements) if (!item.isTypeOnly) add(item, `runtime re-export ${item.name.text}`);
+      continue;
+    }
+    add(statement, ts.isVariableStatement(statement) ? "value" : ts.isFunctionDeclaration(statement) ? "function" :
+      ts.isClassDeclaration(statement) ? "class" : ts.isEnumDeclaration(statement) ? "enum" : ts.isModuleDeclaration(statement) ? "namespace" :
+      ts.isExportAssignment(statement) ? "default export" : "statement");
+  }
+  return found;
 }
 
 /** Model-identity branches: `instanceof <model class>`, comparing or pattern-matching
@@ -173,6 +211,18 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       if (!owner.app && dependency.app) violations.push(`${owner.name}: libraries cannot depend on apps (${dependency.name})`);
     }
   }
+  for (const owner of libraries) {
+    const workspaceDependencies = libraries.filter(item => owner.dependencies.includes(item.name));
+    if (owner.name === coreName && workspaceDependencies.length)
+      violations.push(`${owner.name}: app-core has no workspace dependencies (${workspaceDependencies.map(item => item.name).join(", ")})`);
+    if (belowApp(owner) && owner.dependencies.includes(coreName))
+      violations.push(`${owner.name}: libraries below the app never depend on app-core`);
+    if (owner.app) for (const dependency of workspaceDependencies.filter(item => item.app))
+      violations.push(`${owner.name}: hosts never depend on hosts (${dependency.name})`);
+    if (isModulePackage(owner.name)) for (const dependency of workspaceDependencies)
+      if (dependency.name !== coreName && (dependency.app || isModulePackage(dependency.name) || isHostLibrary(dependency.name)))
+        violations.push(`${owner.name}: a module depends only on app-core and domain libraries (${dependency.name})`);
+  }
   const packageGraph = new Map(libraries.map(item => [item.name, item.dependencies.filter(name => names.includes(name))]));
   violations.push(...cycles(packageGraph).map(cycle => `Package cycle: ${cycle}`));
   const ownerOf = (path: string) => libraries.find(item => path.startsWith(`${item.source}/`));
@@ -197,9 +247,15 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (JSON.stringify(thirdParty) !== JSON.stringify(Object.keys(packageOwners).toSorted()))
       violations.push("Inference third-party dependencies need an explicit layer owner");
   }
+  const named = new Map<Library, Set<string>>(libraries.map(item => [item, new Set()]));
   for (const [file, source] of sources) {
     const owner = ownerOf(file)!;
     if (owner.app) appDomain(file, owner);
+    if (owner.name === coreName)
+      for (const { text, line } of runtimeCode(source))
+        violations.push(`${relative(root, file)}:${line}: app-core has no runtime exports (${text})`);
+    if (isModuleProtocol(file, owner) && references(source).length)
+      violations.push(`${relative(root, file)}: a module's data protocol imports nothing`);
     if (owner.app && ["chat/protocol.ts", "jobs/protocol.ts"].includes(relative(owner.source, file)) && references(source).length)
       violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
@@ -216,6 +272,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       const siteContentApi = owner.name === "mlx-bun-website" && owner.dependencies.includes("astro") &&
         relative(owner.source, file) === "content.config.ts" && specifier === "astro:content";
       const isExternal = siteContentApi || external.has(specifier) || (dependency !== undefined && !names.includes(dependency));
+      if (inModulePanel(file, owner) && (external.has(specifier) || (dependency !== undefined && !names.includes(dependency)))) {
+        violations.push(`${at}: panel code imports only panel files and its protocol.ts (${specifier})`); continue;
+      }
       const browser = owner.app && relative(owner.source, file).startsWith("web/browser/");
       if (browser && isExternal) { violations.push(`${at}: browser cannot import ${specifier}`); continue; }
       if (isExternal) {
@@ -234,6 +293,19 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
         violations.push(`${at}: browser may import only browser modules and data protocols (${specifier})`);
       const targetOwner = ownerOf(actual)!;
       const to = layer(actual, targetOwner);
+      if (inModulePanel(file, owner) && !(targetOwner === owner &&
+          (actual.startsWith(resolve(owner.source, "panel") + "/") || actual === resolve(owner.source, "protocol.ts"))))
+        violations.push(`${at}: panel code imports only panel files and its protocol.ts (${specifier})`);
+      if (owner.name === coreName && targetOwner !== owner) violations.push(`${at}: app-core has no workspace imports (${specifier})`);
+      if (targetOwner.name === coreName && belowApp(owner)) violations.push(`${at}: libraries below the app never import app-core`);
+      if (isModulePackage(owner.name) && targetOwner !== owner && targetOwner.name !== coreName &&
+          (targetOwner.app || isModulePackage(targetOwner.name) || isHostLibrary(targetOwner.name)))
+        violations.push(`${at}: a module imports only app-core, domain libraries and its own files, not ${
+          targetOwner.app ? "an app" : isModulePackage(targetOwner.name) ? "another module" : "a core-service implementation"} (${specifier})`);
+      if (isModulePackage(targetOwner.name) && targetOwner !== owner && !isModulePackage(owner.name)) {
+        if (isCompositionFile(file, owner)) named.get(owner)!.add(targetOwner.name);
+        else violations.push(`${at}: only a host's src/modules.ts imports module packages (${specifier})`);
+      }
       if (owner.app && owner === targetOwner) {
         const fromDomain = appDomain(file, owner), toDomain = appDomain(actual, owner);
         if (fromDomain !== toDomain && !domains(owner)[fromDomain]!.includes(toDomain))
@@ -252,6 +324,11 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
         violations.push(`${at}: scheduling, engine, server and CLI code cannot import a concrete model (${specifier}); consume its declared capabilities`);
       edges.push(relative(root, actual));
     }
+  }
+  for (const owner of libraries.filter(item => item.app)) {
+    const listed = owner.dependencies.filter(isModulePackage).toSorted(), imported = [...named.get(owner)!].toSorted();
+    if (JSON.stringify(listed) !== JSON.stringify(imported))
+      violations.push(`${owner.name}: package.json lists modules [${listed}] but src/modules.ts names [${imported}]`);
   }
   if (sources.size === 0) violations.push("No workspace source files found");
   violations.push(...cycles(dependencies).map(cycle => `Module cycle: ${cycle}`));
@@ -484,4 +561,197 @@ test("the server and CLI read declared facts: no model type, architecture, famil
     expect(concrete.some(item => item.includes("cannot import a concrete model"))).toBe(true);
     expect(concrete.some(item => item.includes("instanceof Gemma4Model"))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+/** A workspace with the modular-application packages: contracts, host library, a domain library, two modules and a host. */
+function moduleWorkspace() {
+  const root = mkdtempSync(join(tmpdir(), "mlx-module-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const manifest = (path: string, name: string, dependencies: Record<string, string> = {}) =>
+    write(`${path}/package.json`, JSON.stringify({ name, type: "module", exports: { ".": path.startsWith("apps/") ? "./src/cli/main.ts" : "./src/index.ts", "./panel": "./src/panel/index.ts" },
+      dependencies: Object.fromEntries(Object.keys(dependencies).map(dependency => [dependency, "workspace:*"])) }));
+  const link = (name: string, path: string) => {
+    mkdirSync(dirname(resolve(root, "node_modules", name)), { recursive: true });
+    symlinkSync(resolve(root, path), resolve(root, "node_modules", name));
+  };
+  const packages: [string, string, Record<string, string>][] = [
+    ["packages/app-core", "@mlx-bun/app-core", {}],
+    ["packages/app-host", "@mlx-bun/app-host", { "@mlx-bun/app-core": "" }],
+    ["packages/hub", "@mlx-bun/hub", {}],
+    ["packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "", "@mlx-bun/hub": "" }],
+    ["packages/module-b", "@mlx-bun/module-b", { "@mlx-bun/app-core": "" }],
+    ["apps/example", "example-host", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/module-a": "" }],
+  ];
+  for (const [path, name, dependencies] of packages) { manifest(path, name, dependencies); link(name, path); }
+  write("packages/app-core/src/index.ts", 'export type * from "./module"; export type { Thing as Renamed } from "./module";');
+  write("packages/app-core/src/module.ts", "export interface Thing { id: string }\nexport type Id = string;");
+  write("packages/app-host/src/index.ts", 'import type { Thing } from "@mlx-bun/app-core"; export const load = (thing: Thing) => thing.id;');
+  write("packages/hub/src/index.ts", "export const hub = 1;");
+  write("packages/module-a/src/index.ts", 'import type { Thing } from "@mlx-bun/app-core"; import { hub } from "@mlx-bun/hub"; import { own } from "./own"; export default { id: "a", hub, own } satisfies Thing | object;');
+  write("packages/module-a/src/own.ts", "export const own = 1;");
+  write("packages/module-a/src/protocol.ts", "export interface Progress { done: number }");
+  write("packages/module-a/src/panel/index.ts", 'import type { Progress } from "../protocol"; import { helper } from "./helper"; export const panel = (p: Progress) => helper(p.done);');
+  write("packages/module-a/src/panel/helper.ts", "export const helper = (n: number) => n;");
+  write("packages/module-b/src/index.ts", "export default { id: \"b\" };");
+  write("apps/example/src/modules.ts", 'import a from "@mlx-bun/module-a"; import type { Thing } from "@mlx-bun/app-core"; export const modules: readonly unknown[] = [a]; export type T = Thing;');
+  write("apps/example/src/cli/main.ts", 'import { modules } from "../modules"; import { load } from "@mlx-bun/app-host"; export const main = () => [modules, load];');
+  return { root, write, manifest, packages, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+const mentions = (violations: string[], text: string) => violations.some(item => item.includes(text));
+
+test("app-core is types only: no runtime export, value, side-effect import or workspace dependency", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    for (const [code, expected] of [
+      ["export const value = 1;", "value"], ["export function run() {}", "function"],
+      ["export enum Mode { A }", "enum"], ['export * from "./module";', "export * (use export type *)"],
+      ['export { Thing } from "./module";', "runtime re-export Thing"], ['import "./module";', "side-effect import"],
+      ["export default 1;", "default export"],
+    ] as const) {
+      write("packages/app-core/src/index.ts", code);
+      expect(mentions(await inspectWorkspaces(root), `app-core has no runtime exports (${expected})`)).toBe(true);
+    }
+    write("packages/app-core/src/index.ts", 'export type { Thing } from "./module"; export interface Extra { id: string }');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write("packages/app-core/src/index.ts", 'import type { Progress } from "@mlx-bun/module-a"; export type P = Progress;');
+    manifest("packages/app-core", "@mlx-bun/app-core", { "@mlx-bun/hub": "" });
+    const violations = await inspectWorkspaces(root);
+    expect(mentions(violations, "app-core has no workspace dependencies (@mlx-bun/hub)")).toBe(true);
+    expect(mentions(violations, "app-core has no workspace imports")).toBe(true);
+  } finally { cleanup(); }
+});
+
+test("a module imports only app-core, declared domain libraries and its own files", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    for (const [code, expected] of [
+      ['import b from "@mlx-bun/module-b"; export default b;', "not another module"],
+      ['import { load } from "@mlx-bun/app-host"; export default load;', "not a core-service implementation"],
+      ['import { main } from "example-host"; export default main;', "not an app"],
+    ] as const) {
+      write("packages/module-a/src/index.ts", code);
+      manifest("packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "", "@mlx-bun/hub": "", "@mlx-bun/module-b": "", "@mlx-bun/app-host": "", "example-host": "" });
+      const violations = await inspectWorkspaces(root);
+      expect(mentions(violations, `packages/module-a/src/index.ts:1: a module imports only app-core, domain libraries and its own files, ${expected}`)).toBe(true);
+    }
+    // The declaration itself is a violation, even before any import uses it.
+    write("packages/module-a/src/index.ts", "export default 1;");
+    const declared = await inspectWorkspaces(root);
+    for (const name of ["@mlx-bun/module-b", "@mlx-bun/app-host", "example-host"])
+      expect(mentions(declared, `a module depends only on app-core and domain libraries (${name})`)).toBe(true);
+    // Reaching into a sibling package's files is rejected as a private path.
+    manifest("packages/module-a", "@mlx-bun/module-a", { "@mlx-bun/app-core": "" });
+    write("packages/module-a/src/index.ts", 'export { default } from "../../module-b/src/index";');
+    expect(mentions(await inspectWorkspaces(root), "not another module")).toBe(true);
+  } finally { cleanup(); }
+});
+
+test("libraries below the app never import or depend on app-core", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    write("packages/hub/src/index.ts", 'import type { Thing } from "@mlx-bun/app-core"; export type Hub = Thing;');
+    expect(mentions(await inspectWorkspaces(root), "packages/hub/src/index.ts:1: libraries below the app never import app-core")).toBe(true);
+    manifest("packages/hub", "@mlx-bun/hub", { "@mlx-bun/app-core": "" });
+    expect(mentions(await inspectWorkspaces(root), "@mlx-bun/hub: libraries below the app never depend on app-core")).toBe(true);
+    write("packages/hub/src/index.ts", "export const hub = 1;");
+    manifest("packages/hub", "@mlx-bun/hub");
+    expect(await inspectWorkspaces(root)).toEqual([]);
+  } finally { cleanup(); }
+});
+
+test("only a host's src/modules.ts imports module packages, and package.json lists exactly the modules it names", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    write("apps/example/src/cli/main.ts", 'import b from "@mlx-bun/module-b"; export const main = b;');
+    manifest("apps/example", "example-host", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/module-a": "", "@mlx-bun/module-b": "" });
+    const other = await inspectWorkspaces(root);
+    expect(mentions(other, "apps/example/src/cli/main.ts:1: only a host's src/modules.ts imports module packages")).toBe(true);
+    expect(mentions(other, "package.json lists modules [@mlx-bun/module-a,@mlx-bun/module-b] but src/modules.ts names [@mlx-bun/module-a]")).toBe(true);
+    write("apps/example/src/cli/main.ts", "export const main = 1;");
+    write("apps/example/src/modules.ts", 'import a from "@mlx-bun/module-a"; import b from "@mlx-bun/module-b"; export const modules = [a, b];');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    // Naming a module without listing it, and listing one without naming it.
+    manifest("apps/example", "example-host", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/module-a": "" });
+    expect(mentions(await inspectWorkspaces(root), "lists modules [@mlx-bun/module-a] but src/modules.ts names [@mlx-bun/module-a,@mlx-bun/module-b]")).toBe(true);
+    write("apps/example/src/modules.ts", "export const modules = [];");
+    expect(mentions(await inspectWorkspaces(root), "lists modules [@mlx-bun/module-a] but src/modules.ts names []")).toBe(true);
+    // A host with no modules lists none.
+    manifest("apps/example", "example-host", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "" });
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    // A library, including the host library, never names a module either.
+    write("packages/app-host/src/index.ts", 'import a from "@mlx-bun/module-a"; export const load = a;');
+    manifest("packages/app-host", "@mlx-bun/app-host", { "@mlx-bun/app-core": "", "@mlx-bun/module-a": "" });
+    expect(mentions(await inspectWorkspaces(root), "packages/app-host/src/index.ts:1: only a host's src/modules.ts imports module packages")).toBe(true);
+  } finally { cleanup(); }
+});
+
+test("hosts never depend on hosts", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    manifest("apps/other", "other-host", { "example-host": "" });
+    write("apps/other/src/modules.ts", "export const modules = [];");
+    expect(mentions(await inspectWorkspaces(root), "other-host: hosts never depend on hosts (example-host)")).toBe(true);
+  } finally { cleanup(); }
+});
+
+test("module, host-library and host code cannot branch on model identity or import a concrete model", async () => {
+  const { root, write, manifest, cleanup } = moduleWorkspace();
+  try {
+    write("packages/inference/package.json", JSON.stringify({ name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts", "./models/gemma4": "./src/models/gemma4/model.ts" },
+      dependencies: { "@mlx-bun/mlx": "workspace:*", "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" } }));
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = 1;");
+    write("packages/inference/src/index.ts", "export const api = 1;");
+    write("packages/inference/src/models/gemma4/model.ts", "export class Gemma4Model {}");
+    symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
+    symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
+    const identity = 'export const kind = (m: { config: { modelType: string } }, x: object) => m.config.modelType === "gemma4" || x instanceof Object;';
+    const concrete = 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const kind = (x: object) => x instanceof Gemma4Model;';
+    for (const [file, deps] of [
+      ["packages/module-a/src/index.ts", { "@mlx-bun/app-core": "", "@mlx-bun/inference": "" }],
+      ["packages/app-host/src/index.ts", { "@mlx-bun/app-core": "", "@mlx-bun/inference": "" }],
+      ["apps/example/src/modules.ts", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/inference": "" }],
+      ["apps/example/src/chat/anything.ts", { "@mlx-bun/app-core": "", "@mlx-bun/app-host": "", "@mlx-bun/inference": "" }],
+    ] as const) {
+      const [path] = file.split("/src/");
+      const name = path!.startsWith("apps/") ? "example-host" : path!.endsWith("app-host") ? "@mlx-bun/app-host" : "@mlx-bun/module-a";
+      manifest(path!, name, deps);
+      if (path === "apps/example") manifest(path, name, { ...deps, "@mlx-bun/module-a": "" });
+      write(file, identity);
+      const branched = await inspectWorkspaces(root);
+      expect(mentions(branched, `${file}:1: scheduling, engine, server and CLI code cannot branch on model identity (comparing a model type)`)).toBe(true);
+      write(file, concrete);
+      const imported = await inspectWorkspaces(root);
+      expect(mentions(imported, `${file}:1: scheduling, engine, server and CLI code cannot import a concrete model`)).toBe(true);
+      expect(mentions(imported, "instanceof Gemma4Model")).toBe(true);
+      // Restore the fixture file.
+      write(file, "export const restored = 1;");
+    }
+  } finally { cleanup(); }
+});
+
+test("panel code imports only panel files and its protocol.ts, and the protocol imports nothing", async () => {
+  const { root, write, cleanup } = moduleWorkspace();
+  try {
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    const panel = "packages/module-a/src/panel/index.ts";
+    for (const specifier of ["../own", "@mlx-bun/app-core", "@mlx-bun/hub", "node:fs", "bun", "../index"]) {
+      write(panel, `import * as x from ${JSON.stringify(specifier)}; export const y = x;`);
+      expect(mentions(await inspectWorkspaces(root), `${panel}:1: panel code imports only panel files and its protocol.ts (${specifier})`)).toBe(true);
+    }
+    write(panel, 'import type { Progress } from "../protocol"; import { helper } from "./helper"; export const p = (x: Progress) => helper(x.done);');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write("packages/module-a/src/protocol.ts", 'import type { Thing } from "@mlx-bun/app-core"; export type Progress = Thing;');
+    expect(mentions(await inspectWorkspaces(root), "packages/module-a/src/protocol.ts: a module's data protocol imports nothing")).toBe(true);
+    write("packages/module-a/src/protocol.ts", 'export type Progress = { done: number }; import "./own";');
+    expect(mentions(await inspectWorkspaces(root), "a module's data protocol imports nothing")).toBe(true);
+    // Only panel and protocol files are held to this: module server code may import the module's own files.
+    write("packages/module-a/src/protocol.ts", "export interface Progress { done: number }");
+    write("packages/module-a/src/index.ts", 'import { own } from "./own"; import type { Progress } from "./protocol"; export default { own } satisfies object; export type P = Progress;');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+  } finally { cleanup(); }
 });

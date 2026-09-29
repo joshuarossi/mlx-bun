@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { AppEvent, AppModule, CliInvocation, EventBus, ModuleContext, ModuleRuntime, StorageService } from "@mlx-bun/app-core";
+import type { AppEvent, AppModule, CliInvocation, EventBus, ExtensionPointId, ModuleContext, ModuleRuntime, Registration, Registry, StorageService } from "@mlx-bun/app-core";
 
 // A module reaches the host only through its context, so a fake context that
 // implements two core services is enough to run a module end to end.
@@ -56,4 +56,51 @@ test("a manifest activates against only its required services and serves its dec
   expect(output).toBe("pinged\n");
   const response = await runtime.routes!.count!(new Request("http://host/api/echo/count"));
   expect(await response.json()).toEqual({ pings: 1, state: "/home/state" });
+});
+
+function fakeRegistry(source: string): Registry {
+  const entries: Registration[] = [];
+  return {
+    register: (point, contribution) => {
+      const entry = { point, source, contribution } as Registration;
+      entries.push(entry);
+      return () => { entries.splice(entries.indexOf(entry), 1); };
+    },
+    list: <P extends ExtensionPointId>(point: P) => entries.filter((entry): entry is Registration<P> => entry.point === point),
+    onChange: () => () => {},
+  };
+}
+
+// A contributor and a consumer share only the registry; neither names the other.
+const contributor = {
+  id: "notes", title: "Notes", summary: "Offers a chat tool.", requires: ["registry"], contributes: ["chat.tool"],
+  activate(context) {
+    context.services.registry.register("chat.tool", { name: "note", description: "Save a note", parameters: { type: "object" }, run: async () => "saved" });
+    return {};
+  },
+} satisfies AppModule<"registry">;
+
+/** Compile-time checks: a contribution must match its point, and only declared points exist. */
+export function typedPoints(registry: Registry) {
+  // @ts-expect-error a chat tool's shape is not a navigation entry's
+  registry.register("chat.tool", { label: "Notes", path: "/notes" });
+  // @ts-expect-error only declared extension points exist
+  registry.register("chat.unknown", {});
+  // @ts-expect-error a listed contribution has its point's type
+  return registry.list("shell.nav").map(entry => entry.contribution.name);
+}
+
+test("a contribution registered through the registry is listed by a consumer that never names the contributor", async () => {
+  const registry = fakeRegistry(contributor.id);
+  const signal = new AbortController().signal;
+  await contributor.activate({ moduleId: "notes", services: { registry }, signal });
+  const consumer: AppModule<"registry"> = {
+    id: "chat", title: "Chat", summary: "Lists tools.", requires: ["registry"],
+    activate: (context: ModuleContext<"registry">) => ({
+      routes: { tools: () => Response.json(context.services.registry.list("chat.tool").map(entry => [entry.source, entry.contribution.name])) },
+    }),
+  };
+  const runtime = await consumer.activate({ moduleId: "chat", services: { registry }, signal });
+  const response = await runtime.routes!.tools!(new Request("http://host/api/chat/tools"));
+  expect(await response.json()).toEqual([["notes", "note"]]);
 });
