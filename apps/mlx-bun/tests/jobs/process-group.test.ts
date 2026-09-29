@@ -1,7 +1,7 @@
 // Real processes, no native MLX: a managed job child leads its own process
 // group, and the job host joins that whole group (not only the child) on
 // shutdown, on the child's own exit, and when the host disappears.
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -142,3 +142,69 @@ test("a job row that cannot be read after admission is failed without spawning a
   expect(spawned).toBe(0);
   expect(store.get(jobId)).toMatchObject({ status: "failed", error: "Error: database is locked" });
 });
+
+/** A supplied child process that never ends on its own; `exited` settles it. */
+function fakeChild(pid: number, exited: Promise<number>) {
+  return (() => ({ pid, stdout: undefined, stderr: undefined, stdin: { end() {} }, exited, exitCode: null, kill() {} })) as unknown as typeof Bun.spawn;
+}
+async function within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); })]);
+  } finally { clearTimeout(timer); }
+}
+
+test("a group member surviving SIGKILL is left behind one grace later instead of holding the lease", async () => {
+  const { store } = fresh(), group = 2_000_000_001, kill = process.kill.bind(process);
+  // An unkillable group (uninterruptible sleep): it always exists, and every signal to it is lost.
+  const signals: (string | number | undefined)[] = [];
+  const killSpy = spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+    if (pid !== -group) return kill(pid, signal);
+    signals.push(signal);
+    return true;
+  }) as typeof process.kill);
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const released = Promise.withResolvers<void>();
+    submitSubprocess(store, "quantize", {}, undefined, { entry: "child.ts", graceMs: 100, spawn: fakeChild(group, Promise.resolve(0)),
+      acquire: async () => ({ dispose() { released.resolve(); } }) });
+    await within(released.promise, 5_000, "the lease waited on a process that outlived SIGKILL");
+    expect(signals).toContain("SIGTERM");
+    expect(signals).toContain("SIGKILL");
+    expect(errorSpy.mock.calls.flat().join(" ")).toContain("outlived SIGKILL");
+  } finally { killSpy.mockRestore(); errorSpy.mockRestore(); }
+}, 20_000);
+
+test("a process that left the group holding the child's output does not hold the lease past the grace", async () => {
+  const { root, store } = fresh(), pids = join(root, "pids.json"), entry = join(root, "child.ts");
+  // The descendant leads a group of its own, so stopping the child's group cannot reach it.
+  writeFileSync(entry, `
+    const escaped = Bun.spawn(["sleep", "60"], { detached: true, stdout: "inherit", stderr: "inherit" });
+    require("node:fs").writeFileSync(${JSON.stringify(pids)}, JSON.stringify({ escaped: escaped.pid }));
+    process.exit(0);`);
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const released = Promise.withResolvers<void>();
+    submitSubprocess(store, "quantize", {}, undefined, { entry, graceMs: 200, acquire: async () => ({ dispose() { released.resolve(); } }) });
+    await until(() => existsSync(pids));
+    strays.push((JSON.parse(readFileSync(pids, "utf8")) as { escaped: number }).escaped);
+    await within(released.promise, 5_000, "the lease waited on output held outside the group");
+    expect(errorSpy.mock.calls.flat().join(" ")).toContain("outlived SIGKILL or its output");
+  } finally { errorSpy.mockRestore(); }
+}, 20_000);
+
+test("shutdown releases the lease one grace after SIGKILL when the child itself does not die", async () => {
+  const { store } = fresh();
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    let released = false, spawned = false;
+    const child = fakeChild(-1, new Promise<number>(() => {}));
+    submitSubprocess(store, "quantize", {}, undefined, { entry: "child.ts", graceMs: 100,
+      spawn: ((...args: Parameters<typeof Bun.spawn>) => { spawned = true; return child(...args); }) as typeof Bun.spawn,
+      acquire: async () => ({ dispose() { released = true; } }) });
+    await until(() => spawned);
+    await within(closeSubprocessJobs(store), 5_000, "shutdown waited on a child that outlived SIGKILL");
+    expect(released).toBe(true);
+    expect(errorSpy.mock.calls.flat().join(" ")).toContain("outlived SIGKILL");
+  } finally { errorSpy.mockRestore(); }
+}, 20_000);

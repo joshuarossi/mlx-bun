@@ -925,13 +925,15 @@ Composition injects the engine execution lease. A job drains active inference
 and holds that lease until its child's process group is gone and output streams
 finish; inference then resumes. The child leads its own process group, so
 descendants that outlive it are stopped (SIGTERM, then SIGKILL after 3 s) before
-the job counts as joined. Terminal signals no longer reach a group leader, so the
+the job counts as joined. The wait is bounded: a process still alive 3 s after
+SIGKILL, or one outside the group still holding the output after another 3 s, is
+logged and left behind, and the lease is released. Terminal signals no longer reach a group leader, so the
 parent holds a pipe on the child's stdin and the child stops its group when that
 pipe ends (`MLX_BUN_JOB_PARENT_PIPE`, set by the runner). A row the runner cannot
 read after admission fails the job before anything is spawned. As in main's
 direct-process server, resident model weights and caches remain allocated while
 the child runs. Shutdown stops queued jobs, aborts admission waits, terminates
-the active child's process group, and awaits all of it before closing the store
+the active child's process group, and awaits all of it (with the same bound) before closing the store
 and engine. Every job row records main's `ended_at` format
 (`YYYY-MM-DD HH:MM:SS`, UTC) and `Name: message` errors, in-process dataset jobs included. Opening the app does not create the job database until a job
 route is used. A fine-tuning job selects its own model path;

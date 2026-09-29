@@ -135,9 +135,12 @@ function spawnNow(item: QueuedSpawn): void {
   void (async () => {
     const code = await proc.exited;
     // Descendants that outlived the child still hold its work and its log
-    // pipes: the job is joined once its whole process group is gone.
-    await stopGroup(proc, item.graceMs);
-    await logs;
+    // pipes: the job is joined once its whole process group is gone and its
+    // output has drained. Both waits are bounded: a process surviving SIGKILL
+    // (uninterruptible sleep) or one that left the group holding the pipes is
+    // reported and left behind rather than holding the lease forever.
+    const joined = await stopGroup(proc, item.graceMs) && await settles(logs, item.graceMs);
+    if (!joined) console.error(`[jobs] ${jobId}: a process of the job outlived SIGKILL or its output; releasing the lease without it`);
     try { proc.stdin?.end(); } catch { /* already closed */ }
     // code 0 ⇒ trust the child's terminal status (it set done/failed itself).
     // non-zero ⇒ if the row never reached terminal (crash before the wrapper
@@ -178,16 +181,26 @@ function signalJob(proc: JobProcess, signal: NodeJS.Signals): void {
 }
 
 /** After the leader's exit: SIGTERM what is left of its group, SIGKILL it after
- * the grace, and return once no process of the group remains. */
-async function stopGroup(proc: JobProcess, graceMs: number): Promise<void> {
-  if (!groupAlive(proc)) return;
+ * the grace, and wait one more grace for it to go. Whether the group is gone. */
+async function stopGroup(proc: JobProcess, graceMs: number): Promise<boolean> {
+  if (!groupAlive(proc)) return true;
   signalJob(proc, "SIGTERM");
-  const force = Date.now() + graceMs;
+  const force = Date.now() + graceMs, giveUp = force + graceMs;
   let killed = false;
   while (groupAlive(proc)) {
+    if (Date.now() >= giveUp) return false;
     if (!killed && Date.now() >= force) { killed = true; signalJob(proc, "SIGKILL"); }
     await Bun.sleep(20);
   }
+  return true;
+}
+
+/** Whether `work` settles within `ms`. */
+async function settles(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), ms); });
+  try { return await Promise.race([work.then(() => true, () => true), timeout]); }
+  finally { clearTimeout(timer); }
 }
 
 function releaseLease(item: QueuedSpawn): void {
@@ -228,8 +241,8 @@ export function drainQueue(): void {
 }
 
 /** Stop only this host's managed GPU jobs. Await the death of the active child's
- * whole process group before releasing the execution lease; queued and
- * admission-waiting jobs never spawn. */
+ * whole process group before releasing the execution lease, bounded at one
+ * grace after SIGKILL; queued and admission-waiting jobs never spawn. */
 export async function closeSubprocessJobs(store: JobStore): Promise<void> {
   closedStores.add(store);
   const errors: unknown[] = [];
@@ -245,10 +258,18 @@ export async function closeSubprocessJobs(store: JobStore): Promise<void> {
   if (active?.store === store) {
     active.abort.abort(new Error("job host closed"));
     const proc = active.proc;
-    if (proc) signalJob(proc, "SIGTERM");
-    const force = proc ? setTimeout(() => signalJob(proc, "SIGKILL"), active.graceMs) : undefined;
-    try { await active.finished; }
-    finally { if (force) clearTimeout(force); }
+    if (proc) {
+      signalJob(proc, "SIGTERM");
+      const force = setTimeout(() => signalJob(proc, "SIGKILL"), active.graceMs);
+      try {
+        // SIGKILL at the grace, then one more grace for the child to die.
+        if (!(await settles(proc.exited, 2 * active.graceMs))) {
+          console.error(`[jobs] ${active.jobId}: pid ${proc.pid} outlived SIGKILL; releasing the lease without it`);
+          releaseLease(active);
+        }
+      } finally { clearTimeout(force); }
+    }
+    await active.finished;
   }
   if (errors.length) throw new AggregateError(errors, "Failed to persist cancelled jobs");
 }
