@@ -17,6 +17,10 @@
     "./rotate": "./src/rotate.ts",
     "./weight-transform": "./src/weight-transform.ts",
     "./trellis": "./src/trellis.ts",
+    "./trellis-quantizer": "./src/trellis-quantizer.ts",
+    "./trellis-allocation": "./src/trellis-allocation.ts",
+    "./trellis-encoder": "./src/trellis-encoder.ts",
+    "./qwen35-hf-fold": "./src/qwen35-hf-fold.ts",
     "./config-writer": "./src/config-writer.ts",
     "./atomic-output": "./src/atomic-output.ts"
   },

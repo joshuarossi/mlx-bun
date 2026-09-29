@@ -61,7 +61,7 @@ test("main's refusals and validation messages fire before any registry, download
     [["--hf-path", "x", "--target-bpw", "4.5", "--dequantize"], "Choose either quantize or dequantize, not both."],
     [["--hf-path", "x", "-q", "--quant-predicate", "mixed_4_6"], "--quant-predicate: not supported (mlx_lm's mixed_* recipes need 2/3/6-bit; for mixed precision use --target-bpw; see: mlx-bun help convert)"],
     [["--hf-path", "x", "--rotate-weights"], "--rotate-weights folds a rotation before quantization — pass -q or --target-bpw"],
-    [["--hf-path", "x", "-q", "--q-mode", "mxfp4"], '--q-mode mxfp4: only "affine" is supported'],
+    [["--hf-path", "x", "-q", "--q-mode", "mxfp4"], '--q-mode mxfp4: only "affine" and "trellis" are supported'],
     [["-q"], "usage: mlx-bun convert --hf-path <repo-or-path> [-q] [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F] [--dtype float16|bfloat16|float32] [-d]"],
     [["x", "--target-bpw", "abc"], '--target-bpw expects a positive number (got "abc")'],
     [["x", "--target-bpw", "0"], '--target-bpw expects a positive number (got "0")'],
@@ -212,6 +212,47 @@ test("--dtype and -d reach the producer, with and without -q; without either the
     await runConvert(parse(local), copy.deps);
     expect(copy.runs[0]!.config).toEqual({ src_dir: local, out_dir: "/store/models/src-converted", quantize: false });
     expect(copy.lines[0]).toBe("step: converting (copying)");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("--q-mode trellis implies -q and the rotation fold, names its output, and hands the job its own snake_case config", async () => {
+  const { root, local, out } = workspace();
+  try {
+    const kmap = join(root, "kmap.json"), hessians = join(root, "hessians"), bank = join(root, "bank");
+    writeFileSync(kmap, "{}"); mkdirSync(hessians); mkdirSync(bank); writeFileSync(join(bank, "config.json"), "{}");
+    const plain = harness();
+    await runConvert(parse(local, "--q-mode", "trellis"), plain.deps);
+    expect(plain.runs[0]!.config).toEqual({ src_dir: local, out_dir: "/store/models/src-trellis-3bit", mode: "trellis", rotation_seed: 42,
+      trellis_bits: 3, trellis_down_axis: "out" });
+    expect(plain.lines[0]).toContain("quantizing (packed trellis, 3-bit MLP");
+    expect(plain.lines.at(-1)).toContain("transform TurboQuant rotation seed 42");
+    const full = harness();
+    await runConvert(parse(local, "--q-mode", "trellis", "--trellis-bits", "2", "--trellis-k-map", kmap, "--trellis-k-budget", "2.5",
+      "--trellis-ldlq", hessians, "--trellis-reuse", `${bank},${bank}`, "--trellis-down-axis", "in", "--trellis-interleave",
+      "--trellis-layers", "6", "--rotation-seed", "7", "--mlx-path", out), full.deps);
+    expect(full.runs[0]!.config).toEqual({ src_dir: local, out_dir: out, mode: "trellis", rotation_seed: 7, trellis_bits: 2, trellis_down_axis: "in",
+      trellis_k_map: kmap, trellis_k_budget: "2.5", trellis_ldlq: hessians, trellis_reuse: [bank, bank], trellis_interleave: true, trellis_layers: 6 });
+    const named = harness();
+    await runConvert(parse(local, "--q-mode", "trellis", "--trellis-k-map", kmap, "--rotation-seed", "9"), named.deps);
+    expect(named.runs[0]!.config.out_dir).toBe("/store/models/src-trellis-mixed-rot9");
+    const refusals: [string[], string][] = [
+      [["--q-mode", "trellis", "--trellis-bits", "9"], '--trellis-bits must be an integer in [1, 8] (got "9")'],
+      [["--q-mode", "trellis", "--trellis-down-axis", "up"], '--trellis-down-axis must be out or in (got "up")'],
+      [["--q-mode", "trellis", "--trellis-layers", "0"], '--trellis-layers expects a positive integer (got "0")'],
+      [["--q-mode", "trellis", "--trellis-k-map", join(root, "missing.json")], "does not exist"],
+      [["--q-mode", "trellis", "--trellis-k-budget", "3.00"], "--trellis-k-budget needs --trellis-k-map"],
+      [["--q-mode", "trellis", "--trellis-reuse", root], "is not a model directory"],
+      [["--q-mode", "trellis", "--target-bpw", "4"], "--target-bpw does not apply to --q-mode trellis"],
+      [["--q-mode", "trellis", "--q-bits", "8"], "--q-bits does not apply to --q-mode trellis"],
+      [["--q-mode", "trellis", "-d"], "Choose either quantize or dequantize, not both."],
+      [["-q", "--trellis-bits", "3"], "--trellis-bits needs --q-mode trellis"],
+      [["-q", "--trellis-interleave"], "--trellis-interleave needs --q-mode trellis"],
+    ];
+    for (const [flags, message] of refusals) {
+      const run = harness();
+      await expect(runConvert(parse(local, ...flags), run.deps)).rejects.toThrow(message);
+      expect(run.order).toEqual([]);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -390,7 +431,7 @@ test("the spawned CLI renders help, refuses usage errors with main's messages, a
       [["convert", "--hf-path", "x", "-q", "--dtype", "int8"], "--dtype must be float16, bfloat16, float32"],
       [["convert", "--hf-path", "x", "-q", "-d"], "Choose either quantize or dequantize, not both."],
       [["convert", "--hf-path", "x", "-q", "--quant-predicate", "mixed_4_6"], "--quant-predicate: not supported"],
-      [["convert", "--hf-path", "x", "-q", "--q-mode", "mxfp4"], 'only "affine" is supported'],
+      [["convert", "--hf-path", "x", "-q", "--q-mode", "mxfp4"], 'only "affine" and "trellis" are supported'],
       [["convert", "--hf-path", "x", "-q", "--upload-repo"], "--upload-repo expects a repo id (org/name)"],
       [["convert", "--hf-path", "x", "-q", "--q-bits", "3"], "--q-bits must be 4 or 8"],
       [["convert", "--hf-path", "x", "-q", "--q-group-size", "128"], "--q-group-size must be 32 or 64"],
