@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Registry } from "@mlx-bun/hub/registry";
+import { hubCacheRoot, Registry } from "@mlx-bun/hub/registry";
 
 function makeHub(): string {
   const hub = mkdtempSync(join(tmpdir(), "mlx-bun-hub-"));
@@ -85,4 +85,31 @@ describe("Registry drafters", () => {
       rmSync(hub, { recursive: true, force: true });
     }
   });
+});
+
+test("hubCacheRoot follows huggingface_hub's precedence", () => {
+  expect(hubCacheRoot({ HF_HUB_CACHE: "/a", HF_HOME: "/b", XDG_CACHE_HOME: "/c", HOME: "/h" })).toBe("/a");
+  expect(hubCacheRoot({ HF_HOME: "/b", XDG_CACHE_HOME: "/c", HOME: "/h" })).toBe("/b/hub");
+  expect(hubCacheRoot({ XDG_CACHE_HOME: "/c", HOME: "/h" })).toBe("/c/huggingface/hub");
+  expect(hubCacheRoot({ HOME: "/h" })).toBe("/h/.cache/huggingface/hub");
+});
+
+test("scan indexes plain model directories beside the hub; an exact id wins over substring matches", async () => {
+  const hub = makeHub(), models = mkdtempSync(join(tmpdir(), "mlx-bun-models-"));
+  try {
+    for (const name of ["tiny-4bit", ".tiny-4bit.tmp-x", "notes"]) mkdirSync(join(models, name));
+    writeFileSync(join(models, "tiny-4bit", "config.json"), JSON.stringify({ model_type: "llama" }));
+    writeFileSync(join(models, "tiny-4bit", "model.safetensors"), new Uint8Array(8));
+    // A staging directory (dot-prefixed) is never indexed, even when complete.
+    writeFileSync(join(models, ".tiny-4bit.tmp-x", "config.json"), JSON.stringify({ model_type: "llama" }));
+    writeFileSync(join(models, ".tiny-4bit.tmp-x", "model.safetensors"), new Uint8Array(8));
+    const reg = new Registry(":memory:", { modelDirs: [models, join(models, "absent")] });
+    try {
+      expect(await reg.scan(hub)).toBe(3);
+      expect(reg.list().map(model => model.repoId).sort()).toEqual(["test/big-bf16", "test/tiny-4bit", "tiny-4bit"]);
+      expect(reg.resolve("tiny-4bit").path).toBe(join(models, "tiny-4bit"));
+      expect(reg.resolve("test/tiny-4bit").repoId).toBe("test/tiny-4bit");
+      expect(() => reg.resolve("tiny")).toThrow("ambiguous");
+    } finally { reg.close(); }
+  } finally { rmSync(hub, { recursive: true, force: true }); rmSync(models, { recursive: true, force: true }); }
 });

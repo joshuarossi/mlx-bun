@@ -23,7 +23,7 @@ async function runChild(script: string) {
     const child = Bun.spawn([process.execPath, "--no-env-file", "--eval", script], { stdout: "pipe", stderr: "pipe", cwd: app,
       // Bun's own runtime transpiler cache would otherwise land under HOME
       // (Library/Caches/bun); disable it so the HOME assertions see only the app.
-      env: { ...process.env, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", HF_TOKEN: "", HOME: home,
+      env: { ...process.env, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", HF_TOKEN: "", HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"),
         HF_HUB_CACHE: join(scratch, "hub"), SCRATCH: scratch, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" } });
     const deadline = setTimeout(() => child.kill("SIGKILL"), 18_000);
     try {
@@ -235,9 +235,9 @@ test("one caller context and one supplied binding serve the full app across five
     assert.equal(opened.disposals, 1);
     // HOME holds only the stores these requests used: the job database (/api/jobs) and the hub registry (/api/hub/local).
     const stored = tree(home);
-    assert.ok(stored.includes(".cache/mlx-bun/jobs.sqlite") && stored.includes(".cache/mlx-bun/registry.sqlite"), stored.join());
-    const allowed = new Set([".cache", ".cache/mlx-bun", ".cache/mlx-bun/jobs",
-      ...["jobs.sqlite", "registry.sqlite"].flatMap(name => ["", "-wal", "-shm"].map(suffix => ".cache/mlx-bun/" + name + suffix))]);
+    assert.ok(stored.includes(".mlx-bun/db/jobs.sqlite") && stored.includes(".mlx-bun/db/registry.sqlite"), stored.join());
+    const allowed = new Set([".mlx-bun", ".mlx-bun/db", ".mlx-bun/jobs",
+      ...["jobs.sqlite", "registry.sqlite"].flatMap(name => ["", "-wal", "-shm"].map(suffix => ".mlx-bun/db/" + name + suffix))]);
     assert.deepEqual(stored.filter(path => !allowed.has(path)), []);
   `);
   expect(result).toEqual({ code: 0, stdout: "", stderr: "" });

@@ -25,6 +25,7 @@ export const NOTES: readonly { names: string[]; text: string }[] = [
   { names: ["MLX_BUN_RD_PREFILL_CHUNK"], text: "Unset, the model's prefill policy picks the chunk: 2048 tokens, halved for linear-attention models at long context to bound the attention workspace. The `2048` shown for its `number` read applies only to a set, non-numeric value." },
   { names: ["--prompt-cache"], text: "`--prompt-cache` is in GiB (N × 2^30 bytes), but the cap without it is 8e9 bytes (decimal 8 GB, about 7.45 GiB)." },
   { names: ["MLX_BUN_PAGED_KV", "--paged-kv"], text: "`--paged-kv` or `MLX_BUN_PAGED_KV=1` turns paging on; no flag turns an environment `1` off, and either satisfies `--paged-kv-block-size`." },
+  { names: ["MLX_BUN_HOME"], text: "Root of everything mlx-bun writes by default: `models/`, `adapters/`, `exports/`, `datasets/`, `db/`, `jobs/`, chats, wiki, skills, logs and saved credentials. Unset, `~/.mlx-bun`. Explicit paths win; the Hugging Face cache holds only downloads." },
   { names: ["MLX_BUN_FILL_TRACE"], text: "`1` turns fill tracing on. Any other value except empty, `0`, and `true` is a JSONL file path and also turns it on; `true` turns on neither." },
 ];
 

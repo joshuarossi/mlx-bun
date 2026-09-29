@@ -11,7 +11,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 const modelDir = process.env.MLX_BUN_APP_TEST_MODEL;
 const bf16Dir = process.env.MLX_BUN_APP_TEST_BF16_MODEL;
@@ -23,7 +23,7 @@ function isolated() {
   const row = (i: number) => JSON.stringify({ text: `Example ${i}: the quick brown fox jumps over the lazy dog, number ${i * 7}.` }) + "\n";
   writeFileSync(join(data, "train.jsonl"), Array.from({ length: 4 }, (_, i) => row(i)).join(""));
   writeFileSync(join(data, "valid.jsonl"), Array.from({ length: 2 }, (_, i) => row(10 + i)).join(""));
-  return { home, hub, data, env: { HOME: home, HF_HUB_CACHE: hub, HF_HUB_OFFLINE: "1", NO_COLOR: "1" },
+  return { home, hub, data, env: { HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"), HF_HUB_CACHE: hub, HF_HUB_OFFLINE: "1", NO_COLOR: "1" },
     dispose: () => rmSync(home, { recursive: true, force: true }) };
 }
 
@@ -206,7 +206,8 @@ test.skipIf(!modelDir)("managed quantize and fine-tune jobs run through a real s
     expect(existsSync(join(submitted.output_dir, "config.json"))).toBe(true);
     expect(readdirSync(submitted.output_dir).some(name => name.endsWith(".safetensors"))).toBe(true);
     const library = await (await fetch(new URL("/library", app.base))).json();
-    expect(library.models.some((model: { repo_id: string }) => model.repo_id.includes("-OptiQ-4bit"))).toBe(true);
+    expect(submitted.output_dir).toBe(join(io.home, ".mlx-bun", "models", basename(submitted.output_dir)));
+    expect(library.models.some((model: { repo_id: string }) => model.repo_id === basename(submitted.output_dir))).toBe(true);
     await chat(app.base); // inference resumes after the job's lease
     await generateFromArtifact(submitted.output_dir, io.env);
     // A short fine-tune with a periodic checkpoint.
@@ -235,7 +236,7 @@ test.skipIf(!modelDir)("managed quantize and fine-tune jobs run through a real s
     app.proc.kill("SIGTERM");
     expect(await app.exited(180_000, 0)).toBe(0);
     const { JobStore } = await import("../../src/jobs/db");
-    const store = new JobStore(join(io.home, ".cache/mlx-bun/jobs.sqlite"), join(io.home, ".cache/mlx-bun/jobs"));
+    const store = new JobStore(join(io.home, ".mlx-bun/db/jobs.sqlite"), join(io.home, ".mlx-bun/jobs"));
     try {
       const cancelled = store.get(longJob.job_id)!;
       expect(cancelled.status).toBe("failed");

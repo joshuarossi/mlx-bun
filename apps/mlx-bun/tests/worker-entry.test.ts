@@ -600,7 +600,7 @@ test("the app form composes the real app over the socket with private storage: p
     // So does a dataset job's chat client (the job runs in this process).
     const submitted = await json("/api/dataset/submit", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ template_id: "style_transfer", inputs: { reference_samples: "Plain words.", raw_text: "dataset probe" } }) });
-    assert.ok(submitted.ok && submitted.output_dir.startsWith(join(root, ".cache", "mlx-bun", "datasets")), submitted.output_dir);
+    assert.ok(submitted.ok && submitted.output_dir.startsWith(join(storagePaths.artifactRoot, "datasets")), submitted.output_dir);
     let job;
     await until(async () => { job = (await json("/api/jobs/" + submitted.job_id)).job; return job.status === "done" || job.status === "failed"; }, "the dataset job");
     assert.equal(job.status, "done", job.error);

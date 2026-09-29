@@ -1,15 +1,17 @@
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { inspectDataset } from "../finetune/inspect";
 import type { SubmitResult } from "../jobs/runner";
+import { storagePath } from "../storage/paths";
 
 export interface FinetuneRouteDeps {
   submit(kind: "finetune", config: Record<string, unknown>, outputPath: string): SubmitResult;
 }
 
-/** HTTP owns request/output-path policy; the job child owns training. */
+/** HTTP owns request/output-path policy; the job child owns training. An
+ * explicit `adapter_path` wins; otherwise a fresh directory under
+ * ~/.mlx-bun/adapters unless composition supplies another default. */
 export function createFinetuneRoutes(deps: FinetuneRouteDeps,
-  defaultAdapterPath = () => join(homedir(), ".cache/mlx-bun/adapters", `adapter-${Date.now()}-${crypto.randomUUID()}`)) {
+  defaultAdapterPath = () => join(storagePath("adapters"), `adapter-${Date.now()}-${crypto.randomUUID()}`)) {
   return { async handle(request: Request): Promise<Response | null> {
     const path = new URL(request.url).pathname;
     if (request.method !== "POST" || !["/api/finetune/inspect-dataset", "/api/finetune/submit"].includes(path)) return null;

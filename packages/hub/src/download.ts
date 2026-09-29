@@ -20,7 +20,7 @@ import {
   statfsSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { DEFAULT_HUB } from "./registry";
+import { hubCacheRoot } from "./registry";
 
 const ENDPOINT = "https://huggingface.co";
 
@@ -451,7 +451,7 @@ export async function downloadModel(
   const endpoint = opts.endpoint ?? ENDPOINT;
   const revision = opts.revision ?? "main";
   const token = opts.token === undefined ? hfToken() : opts.token;
-  const hub = opts.cacheDir ?? DEFAULT_HUB;
+  const hub = opts.cacheDir ?? hubCacheRoot();
   const signal = opts.signal;
 
   signal?.throwIfAborted();

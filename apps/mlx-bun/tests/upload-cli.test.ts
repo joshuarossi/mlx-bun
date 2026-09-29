@@ -76,9 +76,10 @@ test("usage and directory errors happen before any credential read or upload", a
   await expect(runUpload(parse("--upload-repo", "org/x", "--path", "/nope"), missing.dependencies))
     .rejects.toThrow("not a directory: /nope (pass the model directory via --path)");
   expect(missing.checked).toEqual(["/nope"]); expect(missing.tokenReads()).toBe(0); expect(missing.calls).toEqual([]);
-  const defaulted = harness();
-  await expect(runUpload(parse("--upload-repo", "org/x"), defaulted.dependencies)).rejects.toThrow("not a directory: mlx_model");
-  expect(defaulted.checked).toEqual(["mlx_model"]);
+  // No working-directory default: --path is required.
+  const pathless = harness();
+  await expect(runUpload(parse("--upload-repo", "org/x"), pathless.dependencies)).rejects.toThrow(USAGE);
+  expect(pathless.checked).toEqual([]); expect(pathless.tokenReads()).toBe(0);
 });
 
 test("a missing write token prints main's three sources and never uploads", async () => {
@@ -190,7 +191,7 @@ globalThis.fetch = (input, init) => {
     : 'globalThis.fetch = async input => { throw new Error("unexpected network request: " + String(input)); };');
   const env: Record<string, string> = { ...process.env as Record<string, string>, HOME: home, HF_HUB_OFFLINE: "1", NO_COLOR: "1",
     MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" };
-  delete env.HF_TOKEN;
+  delete env.HF_TOKEN; delete env.MLX_BUN_HOME;
   if (input.token !== undefined) env.HF_TOKEN = input.token;
   return Bun.spawn([process.execPath, "--no-env-file", "--preload", preload, entry, ...args], { env, stdout: "pipe", stderr: "pipe" });
 }

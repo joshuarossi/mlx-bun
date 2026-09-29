@@ -2,8 +2,9 @@ import type { ModelBinding } from "../engine/model-binding";
 import pkgJson from "../../package.json" with { type: "json" };
 import type { LoadedModelContext as ModelContext } from "../engine/model-host";
 import { fit } from "@mlx-bun/inference/execution/fit";
-import { Registry } from "@mlx-bun/hub/registry";
+import type { Registry } from "@mlx-bun/hub/registry";
 import type { DownloadStatus } from "@mlx-bun/hub/download";
+import { openRegistry } from "../storage/paths";
 
 const pkgVersion = (pkgJson as { version: string }).version;
 
@@ -41,7 +42,7 @@ export function createDiscoveryRoutes(
   binding: Pick<ModelBinding, "discovery">,
   startedAt: number,
   transcription: () => Promise<TranscriptionInfo | null> = async () => null,
-  createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => new Registry(),
+  createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => openRegistry(),
   /** Progress rows for `/downloads`; the default is the hub package's process tracker. */
   downloads?: () => readonly DownloadStatus[],
 ): DiscoveryRoutes {
