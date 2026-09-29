@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,8 @@ import { quantizeTrellisModelDir } from "../src/trellis-quantizer";
 // End to end on a synthetic Qwen3.5-layout checkpoint: fold, encode, write,
 // then load the artifact through the inference package. Real weights are not needed.
 
+// Native Viterbi encodes; several seconds each locally and slower on CI runners than the 5 s default.
+setDefaultTimeout(60_000);
 const root = mkdtempSync(join(tmpdir(), "mlx-bun-trellis-quantizer-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 

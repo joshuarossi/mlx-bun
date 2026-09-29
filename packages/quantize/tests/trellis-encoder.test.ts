@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -23,6 +23,8 @@ function gaussian(count: number, seed: number): Float32Array {
 }
 const matrix = (rows: number, cols: number, seed: number, std = 0.05) =>
   MlxArray.fromFloat32(gaussian(rows * cols, seed).map(v => v * std), [rows, cols]);
+// Native Viterbi encodes; several seconds each locally and slower on CI runners than the 5 s default.
+setDefaultTimeout(60_000);
 const encoder = new TrellisEncoder();
 afterAll(() => encoder.dispose());
 
