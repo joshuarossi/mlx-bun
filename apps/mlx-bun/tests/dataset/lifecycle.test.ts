@@ -128,7 +128,7 @@ test("shutdown during verification kills the docker CLI and removes the containe
     output_dir: output, api_url: "http://unused" }, runner);
   await wait(() => events.includes("spawn start"));
   await host.close();
-  expect(events).toEqual(["spawn create", "spawn start", "kill start", "spawn rm", "store closed"]);
+  expect(events).toEqual(["spawn ps", "spawn create", "spawn start", "kill start", "spawn rm", "store closed"]);
   expect(existsSync(join(output, "train.jsonl"))).toBe(false);
   const reopened = new JobStore(join(root, "jobs.sqlite"), join(root, "logs"));
   try { expect(reopened.get(jobId)?.status).toBe("failed"); } finally { reopened.close(); }

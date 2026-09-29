@@ -6,9 +6,9 @@
 // python-verifier-docker.test.ts runs real containers.
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createPythonVerifier, spawnDocker, type DockerProcess, type SpawnDocker } from "../../src/dataset/python-verifier";
+import { createPythonVerifier, PYTHON_VERIFIER_OWNER_LABEL, spawnDocker, type DockerProcess, type SpawnDocker } from "../../src/dataset/python-verifier";
 
 const IMAGE = `python@sha256:${"0".repeat(64)}`;
 const PASSING = "def inc(x):\n    return x + 1\n\nassert inc(1) == 2  # mlx-bun-source-marker\n";
@@ -16,15 +16,16 @@ const PASSING = "def inc(x):\n    return x + 1\n\nassert inc(1) == 2  # mlx-bun-
 type Step = { code?: number; stdout?: string; stderr?: string; hang?: boolean; outputAfterExit?: boolean } | Error;
 interface Call { args: string[]; env: Record<string, string>; stdin?: string; process?: DockerProcess & { killed: boolean } }
 
-/** A docker CLI whose invocations follow `steps` (per subcommand); `events` records spawn, kill and exit order. */
+/** A docker CLI whose invocations follow `steps` (per subcommand); `events` records spawn, kill and exit order.
+ * `sweeps` holds the leftover sweep's calls (before the first create), `calls` the verification's. */
 function fakeDocker(steps: Partial<Record<string, Step>> = {}, onSpawn?: (command: string) => void) {
-  const calls: Call[] = [], events: string[] = [];
-  const defaults: Record<string, Step> = { create: { stdout: "0123abcd\n" }, start: {},
+  const calls: Call[] = [], sweeps: Call[] = [], events: string[] = [];
+  const defaults: Record<string, Step> = { ps: {}, create: { stdout: "0123abcd\n" }, start: {},
     inspect: { stdout: state({}) }, rm: { stdout: "removed\n" } };
   const spawn: SpawnDocker = (args, { env, stdin }) => {
     const command = args[0]!;
     const call: Call = { args, env, ...(stdin ? { stdin: new TextDecoder().decode(stdin) } : {}) };
-    calls.push(call);
+    (command === "ps" || (command === "rm" && !calls.some(c => c.args[0] === "create")) ? sweeps : calls).push(call);
     onSpawn?.(command);
     const step = steps[command] ?? defaults[command]!;
     if (step instanceof Error) throw step;
@@ -53,7 +54,7 @@ function fakeDocker(steps: Partial<Record<string, Step>> = {}, onSpawn?: (comman
     call.process = process;
     return process;
   };
-  return { spawn, calls, events, commands: () => calls.map(call => call.args[0]) };
+  return { spawn, calls, sweeps, events, commands: () => calls.map(call => call.args[0]) };
 }
 
 function state(fields: Record<string, unknown>) {
@@ -96,7 +97,11 @@ test("the container gets every hardening flag, no mount, device, port or environ
   for (const [flag, value] of [["--platform", "linux/arm64"], ["--network", "none"], ["--ipc", "none"], ["--user", "65534:65534"],
     ["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--memory", "256m"], ["--memory-swap", "256m"],
     ["--pids-limit", "64"], ["--cpus", "1"], ["--log-driver", "none"]]) expect(create[create.indexOf(flag!) + 1]).toBe(value!);
-  for (const flag of ["-v", "--volume", "--mount", "--volumes-from", "--tmpfs", "--device", "-e", "--env", "--env-file",
+  // The only writable path is a small, non-executable /tmp; the owner label lets a later run remove leftovers.
+  expect(create.filter(arg => arg === "--tmpfs")).toHaveLength(1);
+  expect(create[create.indexOf("--tmpfs") + 1]).toBe("/tmp:rw,noexec,nosuid,nodev,size=16m");
+  expect(create[create.indexOf("--label") + 1]).toBe(`${PYTHON_VERIFIER_OWNER_LABEL}=${hostname()}:${process.pid}`);
+  for (const flag of ["-v", "--volume", "--mount", "--volumes-from", "--device", "-e", "--env", "--env-file",
     "-p", "--publish", "-P", "--privileged", "--cap-add", "--rm", "-t", "--tty"]) expect(create).not.toContain(flag);
   expect(create.filter(arg => /seccomp|apparmor|unconfined|host/.test(arg))).toEqual([]);
   // runMs 50 → a 1 s program deadline plus the 5 s in-container backstop.
@@ -110,8 +115,9 @@ test("docker receives only PATH, plus DOCKER_HOST when the caller configures it"
   await verifier(plain)(PASSING);
   const hosted = fakeDocker();
   await verifier(hosted, { dockerHost: "unix:///private/tmp/docker.sock" })(PASSING);
-  for (const call of plain.calls) expect(call.env).toEqual({ PATH: process.env.PATH ?? "" });
-  for (const call of hosted.calls) expect(call.env).toEqual({ PATH: process.env.PATH ?? "", DOCKER_HOST: "unix:///private/tmp/docker.sock" });
+  expect(plain.sweeps.length).toBeGreaterThan(0);
+  for (const call of [...plain.sweeps, ...plain.calls]) expect(call.env).toEqual({ PATH: process.env.PATH ?? "" });
+  for (const call of [...hosted.sweeps, ...hosted.calls]) expect(call.env).toEqual({ PATH: process.env.PATH ?? "", DOCKER_HOST: "unix:///private/tmp/docker.sock" });
 });
 
 test("a failing program keeps the bounded stderr, else stdout, and its exit code", async () => {
@@ -156,6 +162,7 @@ test("an image reference without a digest is refused before any docker call", as
     const docker = fakeDocker();
     expect(await verifier(docker, { image })(PASSING)).toMatchObject({ status: "unverified", reason: "image-unpinned" });
     expect(docker.calls).toEqual([]);
+    expect(docker.sweeps).toEqual([]);
   }
 });
 
@@ -183,6 +190,7 @@ test("cancellation before or during create never starts the program and removes 
   const idle = fakeDocker();
   expect(await verifier(idle)(PASSING, before.signal)).toMatchObject({ status: "unverified", reason: "cancelled" });
   expect(idle.calls).toEqual([]);
+  expect(idle.sweeps).toEqual([]);
 
   const during = new AbortController();
   const docker = fakeDocker({}, command => { if (command === "create") during.abort(); });
@@ -270,4 +278,30 @@ test("the standalone runner prints the shared verifier's result and maps it to i
     expect(usage.code).toBe(64);
     expect(usage.stderr).toContain("Verify one Python program");
   }
+});
+
+test("the first verification removes leftover containers whose owner on this host is gone, and only those", async () => {
+  const exited = Bun.spawnSync(["true"]).pid; // a pid whose process is gone
+  const label = (owner: string) => `${PYTHON_VERIFIER_OWNER_LABEL}=${owner}`;
+  const listing = [`dead ${hostname()}:${exited}`, `self ${hostname()}:${process.pid}`, `live ${hostname()}:${process.ppid}`,
+    `elsewhere other-host.invalid:${exited}`, `garbled ${hostname()}`, ""].join("\n");
+  const docker = fakeDocker({ ps: { stdout: listing } });
+  const verify = verifier(docker);
+  expect(await verify(PASSING)).toEqual({ status: "verified" });
+  expect(docker.sweeps.map(call => call.args)).toEqual([
+    ["ps", "--all", "--filter", `label=${PYTHON_VERIFIER_OWNER_LABEL}`, "--format", `{{.ID}} {{.Label "${PYTHON_VERIFIER_OWNER_LABEL}"}}`],
+    ["rm", "--force", "dead"]]);
+  expect(docker.commands()).toEqual(["create", "start", "inspect", "rm"]);
+  expect(docker.calls[0]!.args).toContain(label(`${hostname()}:${process.pid}`));
+  // One successful sweep per verifier.
+  await verify(PASSING);
+  expect(docker.sweeps).toHaveLength(2);
+});
+
+test("a failed sweep does not change the outcome and is retried by the next verification", async () => {
+  const docker = fakeDocker({ ps: { code: 1, stderr: "Cannot connect to the Docker daemon" } });
+  const verify = verifier(docker);
+  expect(await verify(PASSING)).toEqual({ status: "verified" });
+  await verify(PASSING);
+  expect(docker.sweeps.map(call => call.args[0])).toEqual(["ps", "ps"]);
 });

@@ -990,7 +990,8 @@ verification takes no inference lease.
 
 Each program runs in a new container created with `--pull=never` for linux/arm64
 from the digest-pinned image: no network, shared memory, mounts, environment
-or log driver; a read-only root; user 65534 with every capability dropped and
+or log driver; a read-only root with a 16 MiB non-executable `/tmp` tmpfs;
+user 65534 with every capability dropped and
 `no-new-privileges`; Docker's default seccomp profile; 256 MiB of memory without
 swap, 64 processes and one CPU. The program arrives on stdin. The docker CLI
 receives only `PATH` and, when set, `DOCKER_HOST`. Fixed limits: 15 s per run,
@@ -999,7 +1000,11 @@ verifier owns every docker CLI process group and the container: a timeout,
 cancellation (job shutdown) or output overflow kills and joins the CLI, then
 `docker rm --force` removes the container, since killing the CLI does not stop
 it; exit status and OOM come from `docker inspect`. Only a zero exit within every
-limit, with removal confirmed, counts as verified. A missing docker CLI, an
+limit, with removal confirmed, counts as verified. Containers are not created
+with `--rm`, because the exit state is read after the program ends; each carries
+an `mlx-bun.python-verifier.owner=<hostname>:<pid>` label instead, and a
+verifier's first run removes labelled containers whose owner process on this
+host is gone, such as those left when the app was killed mid-verification. A missing docker CLI, an
 unreachable daemon, a missing or unpinned image, a timeout, cancellation, output
 overflow, an OOM kill or an unconfirmed removal leaves `verified: false` with
 that reason.
@@ -1029,7 +1034,7 @@ drive the container lifecycle against a scripted docker CLI. The opt-in
 (`MLX_BUN_TEST_DOCKER_VERIFIER=1 MLX_BUN_TEST_DOCKER_IMAGE=python@sha256:<digest>`)
 runs real containers for pass, fail, a missing image, file, host, environment,
 privilege and network isolation, flooding, timeout, cancellation, OOM and the
-runner's SIGTERM, and checks that each container is removed.
+runner's SIGTERM, and leftover removal, and checks that each container is removed.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;

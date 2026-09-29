@@ -1,17 +1,21 @@
 // The Python verifier behind the verified_code dataset template and the
 // standalone scripts/verify-python.ts runner. Generated code runs only inside a
 // disposable Docker container from a digest-pinned linux/arm64 image that is
-// never pulled here: no network, no mounts or inherited environment, a
+// never pulled here: no network, no host mounts or inherited environment, a
 // read-only root, an unprivileged user without capabilities or new privileges,
 // the default seccomp profile, and fixed memory, process, CPU, output and time
-// limits. The program arrives on stdin.
+// limits; only a small `/tmp` tmpfs is writable. The program arrives on stdin.
 //
 // This module owns the container from create to forced removal and every
 // docker CLI process group it spawns. Killing a CLI does not stop its
 // container, so each path that may have created one removes it; a removal that
 // cannot be confirmed makes the result unverified. Cancellation, timeouts,
 // output overflow and OOM never report verified. There is no host-Python
-// fallback, and verification takes no inference lease.
+// fallback, and verification takes no inference lease. Each container carries
+// its owner's host and pid as a label; a verifier's first run removes leftovers
+// whose owner process on this host is gone (a host killed mid-verification).
+
+import { hostname } from "node:os";
 
 /** The verifier image: the linux/arm64 manifest of `python:3.14-slim`
  * (3.14.7-slim-trixie), pinned by digest. It is never pulled here; provisioning
@@ -20,10 +24,13 @@ export const PYTHON_VERIFIER_IMAGE = "python@sha256:67994a05c712036dbfc4385b4bce
 
 /** Fixed limits. `runMs` bounds `docker start` (container start and program);
  * `commandMs` bounds each create, inspect and remove; `outputBytes` bounds the
- * program's combined stdout and stderr. */
+ * program's combined stdout and stderr; `tmp` sizes the writable `/tmp`. */
 export const PYTHON_VERIFIER_LIMITS = {
-  runMs: 15_000, commandMs: 20_000, outputBytes: 64 * 1024, memory: "256m", pids: 64, cpus: 1,
+  runMs: 15_000, commandMs: 20_000, outputBytes: 64 * 1024, memory: "256m", pids: 64, cpus: 1, tmp: "16m",
 } as const;
+
+/** Label naming a verifier container's owner as `<hostname>:<pid>`. */
+export const PYTHON_VERIFIER_OWNER_LABEL = "mlx-bun.python-verifier.owner";
 
 /** Why an outcome could not be established. */
 export type UnverifiedReason = "image-unpinned" | "docker-missing" | "daemon-unavailable" | "image-missing"
@@ -159,10 +166,20 @@ function dockerFailure(step: string, outcome: Outcome, image: string, commandMs:
   return unverified("docker-error", `${step} failed (exit ${outcome.code}): ${text}`);
 }
 
+const owner = () => `${hostname()}:${process.pid}`;
+
+/** Whether a container labelled `label` belongs to a process on this host that is gone. */
+function ownerGone(label: string): boolean {
+  const at = label.lastIndexOf(":"), pid = Number(label.slice(at + 1));
+  if (at < 0 || label.slice(0, at) !== hostname() || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try { process.kill(pid, 0); return false; } catch (error) { return (error as { code?: unknown }).code === "ESRCH"; }
+}
+
 function createArguments(name: string, image: string, runMs: number): string[] {
-  const { memory, pids, cpus } = PYTHON_VERIFIER_LIMITS;
-  return ["create", "--pull=never", "--platform", "linux/arm64", "--name", name, "--interactive",
-    "--network", "none", "--ipc", "none", "--read-only", "--user", "65534:65534", "--cap-drop", "ALL",
+  const { memory, pids, cpus, tmp } = PYTHON_VERIFIER_LIMITS;
+  return ["create", "--pull=never", "--platform", "linux/arm64", "--name", name, "--label", `${PYTHON_VERIFIER_OWNER_LABEL}=${owner()}`,
+    "--interactive", "--network", "none", "--ipc", "none", "--read-only", "--tmpfs", `/tmp:rw,noexec,nosuid,nodev,size=${tmp}`,
+    "--user", "65534:65534", "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges", "--memory", memory, "--memory-swap", memory,
     "--pids-limit", String(pids), "--cpus", String(cpus), "--log-driver", "none",
     // The in-container deadline only matters if this process dies mid-run.
@@ -236,10 +253,31 @@ export function createPythonVerifier(options: PythonVerifierOptions = {}): Verif
       : `docker rm --force ${name} failed: ${(outcome.stderr || outcome.stdout).trim()}`;
   }
 
+  /** Removes containers left by verifier processes on this host that are gone.
+   * Best effort: a failed sweep is retried at the next verification. */
+  let swept = false;
+  async function sweep(): Promise<void> {
+    try {
+      const listed = await docker(["ps", "--all", "--filter", `label=${PYTHON_VERIFIER_OWNER_LABEL}`,
+        "--format", `{{.ID}} {{.Label "${PYTHON_VERIFIER_OWNER_LABEL}"}}`]);
+      if (listed.ending || listed.code !== 0) return;
+      const stale = listed.stdout.split("\n").flatMap(line => {
+        const [id, label] = line.trim().split(" ");
+        return id && label && ownerGone(label) ? [id] : [];
+      });
+      if (stale.length) {
+        const removed = await docker(["rm", "--force", ...stale]);
+        if (removed.ending || removed.code !== 0) return;
+      }
+      swept = true;
+    } catch { /* no docker CLI: the verification reports it */ }
+  }
+
   return async (source, signal) => {
     if (!PINNED_IMAGE.test(image))
       return unverified("image-unpinned", `no digest-pinned verifier image is configured (${JSON.stringify(image)}); provision one as the app README's Dataset jobs section describes`);
     if (signal?.aborted) return unverified("cancelled", "cancelled before the container was created");
+    if (!swept) await sweep();
     const name = `mlx-bun-python-verify-${crypto.randomUUID()}`;
     const created = { mayExist: false };
     let result: PythonVerification = unverified("docker-error", "verification did not complete");

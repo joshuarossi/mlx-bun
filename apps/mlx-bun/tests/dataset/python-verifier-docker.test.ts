@@ -7,8 +7,9 @@
 // The image must already be present for linux/arm64: nothing is pulled. Each
 // case then checks that no verifier container remains. Skipped without the flag.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { hostname } from "node:os";
 import { resolve } from "node:path";
-import { createPythonVerifier, PYTHON_VERIFIER_LIMITS } from "../../src/dataset/python-verifier";
+import { createPythonVerifier, PYTHON_VERIFIER_LIMITS, PYTHON_VERIFIER_OWNER_LABEL } from "../../src/dataset/python-verifier";
 
 const enabled = process.env.MLX_BUN_TEST_DOCKER_VERIFIER === "1";
 const image = process.env.MLX_BUN_TEST_DOCKER_IMAGE ?? "";
@@ -55,11 +56,13 @@ describe.skipIf(!enabled)("Docker Python verifier acceptance", () => {
     expect(docker("image", "inspect", absent).code).not.toBe(0);
   }, CASE_MS);
 
-  test("the program cannot write files, see host files or environment, hold privileges, or reach the network", async () => {
+  test("the program can write only /tmp, and cannot see host files or environment, hold privileges, or reach the network", async () => {
     process.env.MLX_BUN_VERIFIER_CANARY = "host-secret";
     try {
       const program = `import os, socket
-for path in ["/probe", "/tmp/probe", "/dev/shm/probe", "/root/probe", "/home/probe"]:
+open("/tmp/probe", "w").write("x")
+assert open("/tmp/probe").read() == "x"
+for path in ["/probe", "/dev/shm/probe", "/root/probe", "/home/probe"]:
     try:
         open(path, "w").write("x")
     except OSError:
@@ -84,6 +87,15 @@ for attempt in (lambda: socket.create_connection(("1.1.1.1", 53), timeout=2), la
 `;
       expect(await verify(program)).toEqual({ status: "verified" });
     } finally { delete process.env.MLX_BUN_VERIFIER_CANARY; }
+  }, CASE_MS);
+
+  test("a verifier removes a leftover container whose owner on this host is gone", async () => {
+    const gone = Bun.spawnSync(["true"]).pid;
+    const leftover = `mlx-bun-python-verify-leftover-${gone}`;
+    const created = docker("create", "--label", `${PYTHON_VERIFIER_OWNER_LABEL}=${hostname()}:${gone}`, "--name", leftover, image, "true");
+    expect(created.code, created.stderr).toBe(0);
+    expect(await createPythonVerifier({ image, dockerHost: process.env.DOCKER_HOST })("assert True\n")).toEqual({ status: "verified" });
+    expect(verifierContainers()).not.toContain(leftover);
   }, CASE_MS);
 
   test("flooding output is cut off and unverified", async () => {
