@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { superviseWorker } from "../../src/jobs/worker-supervisor";
-import { createProxyRoutes, unavailableFrame } from "../../src/server/proxy-routes";
+import { createProxyRoutes, forwardToWorker, unavailableFrame } from "../../src/server/proxy-routes";
 import { createResponsesClient } from "../../src/server/responses-client";
 import { ResponseStore } from "../../src/server/responses";
 
@@ -32,7 +32,9 @@ function fixture(restarts = { max: 2, windowMs: 60_000, delayMs: 200 }) {
     notice: line => notices.push(line), error: () => {}, log: () => {} });
   const store = new ResponseStore();
   const downloads: { repoId: string; state: string }[] = [];
-  const proxy = createProxyRoutes({ engine, responses: createResponsesClient(store), downloads: () => downloads, modelId: "org/model", startedAt: 42 });
+  // The model router stands in as the one worker: it leases nothing here, so the proxy's own answers and the forwarding are what is tested.
+  const proxy = createProxyRoutes({ workers: () => [{ id: "org/model", role: "primary", supervisor: engine }], current: () => "org/model",
+    models: { handle: request => forwardToWorker(engine, request) }, responses: createResponsesClient(store), downloads: () => downloads, modelId: "org/model", startedAt: 42 });
   const request = (path: string, init: RequestInit = {}) => proxy.handle(new Request(`http://127.0.0.1:8080${path}`, init)) as Promise<Response>;
   const direct = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socketPath } as RequestInit);
   const seen = async () => (await (await request("/fake/seen")).json() as { pid: number; model: string; seen: { path: string; method: string; aborted: boolean; headers: Record<string, string>; body?: unknown; raw?: string }[] });
@@ -132,13 +134,15 @@ test("the parent answers /engine, /health, /stats and /downloads itself with the
   try {
     // Before the first worker is ready: the parent already reports.
     expect(await (await request("/engine")).json()).toEqual({ isolated: true, state: "starting", pid: engine.pid, restarts: 0, socket: fake.socketPath,
-      model: "org/model", last_exit: null, response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 } });
+      model: "org/model", last_exit: null, response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 },
+      workers: [{ id: "org/model", role: "primary", pid: engine.pid, state: "starting", restarts: 0, socket: fake.socketPath }] });
     expect((await request("/v1/models")).status).toBe(502);
     await fake.engine.ready;
     const pid = engine.pid!;
     expect(await (await request("/engine")).json()).toMatchObject({ isolated: true, state: "ready", pid, restarts: 0, model: "org/model", last_exit: null });
     expect(await (await request("/health")).json()).toEqual({ status: "ok", isolated: true,
-      engine: { state: "ready", pid, restarts: 0, socket: fake.socketPath, model: "org/model", last_exit: null, in_flight: 0, leases: 0 } });
+      engine: { state: "ready", pid, restarts: 0, socket: fake.socketPath, model: "org/model", last_exit: null, in_flight: 0, leases: 0 },
+      workers: [{ id: "org/model", role: "primary", pid, state: "ready", restarts: 0, socket: fake.socketPath }] });
     fake.downloads.push({ repoId: "org/other", state: "active" });
     expect(await (await request("/downloads")).json()).toEqual({ downloads: [{ repoId: "org/other", state: "active" }] });
     // /stats is the worker's, with the parent's Responses history and engine report on top.
@@ -149,7 +153,7 @@ test("the parent answers /engine, /health, /stats and /downloads itself with the
     expect(stats.engine).toMatchObject({ isolated: true, state: "ready", pid });
     // Worker-private paths are the listener's (404), never the worker's; /engine takes GET only.
     for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }], ["/admin/memory/complete", { method: "POST", body: "{}" }],
-      ["/admin/memory/complete", { method: "GET" }], ["/admin/serve", { method: "POST", body: "{}" }], ["/admin/served", { method: "GET" }],
+      ["/admin/memory/complete", { method: "GET" }], ["/admin/events", { method: "GET" }],
       ["/v1/memory/synthesize", { method: "POST" }], ["/engine", { method: "POST" }]] as const)
       expect(await request(path, init)).toBeNull();
     const seenBefore = (await fake.seen()).seen.map(entry => entry.path);
@@ -162,13 +166,15 @@ test("the parent answers /engine, /health, /stats and /downloads itself with the
     process.kill(pid, "SIGKILL");
     await until(() => engine.state === "restarting", "the exit");
     expect(await (await request("/health")).json()).toEqual({ status: "ok", isolated: true,
-      engine: { state: "restarting", pid: null, restarts: 1, socket: fake.socketPath, model: "org/model", last_exit: { code: null, signal: "SIGKILL" } } });
+      engine: { state: "restarting", pid: null, restarts: 1, socket: fake.socketPath, model: "org/model", last_exit: { code: null, signal: "SIGKILL" } },
+      workers: [{ id: "org/model", role: "primary", pid: null, state: "restarting", restarts: 1, socket: fake.socketPath }] });
     const partial = await request("/stats");
     expect(partial.status).toBe(200);
     expect(await partial.json()).toEqual({ server: { owner: "serve", model: "org/model", started_at: 42 },
       response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 },
       engine: { isolated: true, state: "restarting", pid: null, restarts: 1, socket: fake.socketPath, model: "org/model", last_exit: { code: null, signal: "SIGKILL" },
-        response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 } },
+        response_store: { entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 },
+        workers: [{ id: "org/model", role: "primary", pid: null, state: "restarting", restarts: 1, socket: fake.socketPath }] },
       unavailable: "inference engine unavailable: the worker was killed by SIGKILL; respawning — retry shortly" });
     proxy.invalidateLibrary();
     await until(() => engine.state === "ready", "the respawn");

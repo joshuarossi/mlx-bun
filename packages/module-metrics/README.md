@@ -39,8 +39,8 @@ time. The chat model's unload is not published (the process exits with it), and 
 producer publishes swaps yet: residency and swapping arrive with the model host
 ([PLAN](../../PLAN.md#split-the-app-into-modules) (e)), which will publish `model.unload` with reason `evicted`.
 The module requires `jobs`, so the app activates it in its persistent state (`installedModules("state")`), beside
-datasets: it subscribes to the state's bus before any model loads and outlives a model host. Under `--isolate` the
-workers' events do not reach the parent's bus yet, so the view there is empty (see PLAN (e)).
+datasets: it subscribes to the state's bus before any model loads and outlives a model host. In the default isolated
+server each worker's events are relayed onto the parent's bus, so the view covers every resident model.
 
 ## Benchmark runs and history
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { RunningApp } from "../../src/cli/serve";
 
-// Opt-in: `--isolate` against a cached model (MLX_BUN_APP_TEST_MODEL, e.g. the
+// Opt-in: the default isolated server against a cached model (MLX_BUN_APP_TEST_MODEL, e.g. the
 // MiniCPM checkpoint the README names) with MLX_BUN_TEST_NATIVE=1. The worker
 // loads the model natively; this process never does. A supplied invalid model
 // path or a missing native runtime must fail rather than skip.
@@ -16,7 +16,7 @@ async function until(check: () => Promise<boolean>, what: string, timeoutMs: num
   while (!await check()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await Bun.sleep(100); }
 }
 
-test.skipIf(!native || !modelDir)("--isolate serves a real model through the worker, answers 502 while a killed worker respawns, then serves again and closes", async () => {
+test.skipIf(!native || !modelDir)("the isolated server serves a real model through the worker, answers 502 while a killed worker respawns, then serves again and closes", async () => {
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");
   const model = await scanSnapshot(modelDir!, "test-model");
@@ -24,7 +24,7 @@ test.skipIf(!native || !modelDir)("--isolate serves a real model through the wor
   const root = mkdtempSync(join(tmpdir(), "mlx-isolate-real-"));
   const cwd = join(root, "project");
   mkdirSync(cwd);
-  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true, isolate: true }, positionals: [] });
+  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
   options.chatPaths = { cwd, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
@@ -75,7 +75,7 @@ test.skipIf(!native || !modelDir)("--isolate serves a real model through the wor
   expect(existsSync(dirname(socket))).toBe(false);
 }, 15 * 60_000);
 
-// `--isolate` synthesis: this process keeps the pipeline, vault and SSE, and
+// Isolated synthesis: this process keeps the pipeline, vault and SSE, and
 // every stage call runs on the default worker's memory task model (e4b; with
 // MLX_BUN_APP_TEST_MEMORY_ADAPTER its chunk adapter is linked read only and
 // mounted), loaded in that worker by its first call: never on the served model
@@ -89,7 +89,7 @@ test.skipIf(!native || !modelDir)("--isolate serves a real model through the wor
 // cancellation aborts a call the worker has admitted (in_flight counts it
 // before parsing and the lease), not necessarily one in native decoding.
 const adapter = process.env.MLX_BUN_APP_TEST_MEMORY_ADAPTER;
-test.skipIf(!native || !modelDir)("--isolate synthesis runs on the default worker's memory task model, not on the served model or in this process; a run cancelled while its call is admitted in the worker leaves the worker idle and serving; close stops the worker", async () => {
+test.skipIf(!native || !modelDir)("isolated synthesis runs on the default worker's memory task model, not on the served model or in this process; a run cancelled while its call is admitted in the worker leaves the worker idle and serving; close stops the worker", async () => {
   const { readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } = await import("node:fs");
   const { homedir } = await import("node:os");
   if (![realpathSync(tmpdir()), "/private/tmp"].some(dir => realpathSync(homedir()).startsWith(`${dir}/`))) throw new Error("run with a temporary HOME");
@@ -118,7 +118,7 @@ test.skipIf(!native || !modelDir)("--isolate synthesis runs on the default worke
   mkdirSync(join(vault, "articles"), { recursive: true });
   writeFileSync(join(vault, "articles", "Alpha.md"), "# Alpha\n\nAlpha is a test article about lenses. See [[Beta]].\n");
   writeFileSync(join(vault, "articles", "Beta.md"), "# Beta\n\nBeta links to [[Alpha]].\n");
-  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true, isolate: true }, positionals: [] });
+  const options = parseServeOptions({ values: { port: "0", "max-tokens": "8", "prompt-cache": "0.125", "no-open": true }, positionals: [] });
   options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault, skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };

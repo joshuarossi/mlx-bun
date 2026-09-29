@@ -44,8 +44,9 @@ export interface ServeOptions {
   whisper?: { model?: string; modelDir?: string; modelId?: string; idleUnloadSec?: number; resident?: boolean; preload?: boolean };
   readOnly: boolean;
   noOpen: boolean;
-  /** Main's `--isolate`: the model runs in a worker process behind this process's proxy (serve-isolated.ts). */
-  isolate?: boolean;
+  /** `--in-process`: the models load in this process (serve-host.ts) instead of in a worker process each behind this
+   * process's proxy (serve-isolated.ts, the default). */
+  inProcess?: boolean;
   cache: CacheServiceOptions;
   request: RequestPrepOptions;
   /** App-owned vault and skill destinations; not CLI flags. */

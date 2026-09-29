@@ -122,7 +122,7 @@ test("the parent composes the persistent state and the proxy without the engine 
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const { executablePath } = await import(app + "src/jobs/executable.ts");
     const { decodeLaunch, encodeLaunch, WORKER_PROTOCOL_VERSION } = await import(app + "src/jobs/worker-process.ts");
-    const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--ssd-cache", join(root, "ssd"), "--ssd-cache-max", "0", "--temperature", "0.3", "--no-open"]));
+    const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--ssd-cache", join(root, "ssd"), "--ssd-cache-max", "0", "--temperature", "0.3", "--no-open"]));
     options.chatPaths = { sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
     options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
     options.storagePaths = { jobsDb: join(root, "store", "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
@@ -140,9 +140,9 @@ test("the parent composes the persistent state and the proxy without the engine 
       assert.equal(executablePath, process.execPath);
       const launch = decodeLaunch(launches[0].launch);
       assert.deepEqual(launch.model, model);
-      assert.deepEqual(launch.options, decodeLaunch(encodeLaunch({ ...options, isolate: false })));
+      assert.deepEqual(launch.options, decodeLaunch(encodeLaunch({ ...options, inProcess: true, whisper: undefined })));
       assert.equal(launch.options.cache.ssdCacheMaxBytes, Infinity);
-      assert.ok(launch.socketPath.endsWith("/engine.sock"));
+      assert.ok(launch.socketPath.includes("/worker-") && launch.socketPath.endsWith(".sock"));
       assert.equal(launch.version, WORKER_PROTOCOL_VERSION, "the model form carries the protocol version");
       const base = "http://127.0.0.1:" + running.port;
       const get = (path, init) => fetch(base + path, init);
@@ -152,7 +152,9 @@ test("the parent composes the persistent state and the proxy without the engine 
       assert.deepEqual([engine.isolated, engine.state, engine.pid, engine.restarts, engine.model, engine.socket, engine.last_exit], [true, "ready", launches[0].pid, 0, "org/model", launch.socketPath, null]);
       assert.equal("pool" in engine, false);
       assert.ok(dirname(engine.socket).startsWith(join(process.env.TMPDIR_PROBE, "mlx-worker-")) && existsSync(engine.socket));
-      assert.deepEqual(notices, ["engine worker pid " + launches[0].pid + " ready (socket " + engine.socket + ")"]);
+      assert.equal(notices.length, 1);
+      assert.ok(notices[0].startsWith("engine worker pid " + launches[0].pid + " ready for org/model in ") && notices[0].endsWith(" ms (socket " + engine.socket + ")"), notices[0]);
+      assert.deepEqual(engine.workers, [{ id: "org/model", role: "primary", pid: launches[0].pid, state: "ready", restarts: 0, socket: engine.socket }]);
       assert.deepEqual(await (await get("/api/hub/local")).json(), { ok: true, models: [] });
       assert.deepEqual(await (await get("/api/jobs")).json(), { ok: true, jobs: [] });
       assert.deepEqual(await (await get("/downloads")).json(), { downloads: [] });
@@ -161,7 +163,7 @@ test("the parent composes the persistent state and the proxy without the engine 
       const status = await (await get("/api/memory/status")).json();
       assert.deepEqual([status.ok, status.enabled], [false, false]);
       for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }], ["/admin/memory/complete", { method: "POST", body: "{}" }],
-        ["/admin/serve", { method: "POST", body: "{}" }], ["/admin/served", { method: "GET" }]])
+        ["/admin/events", { method: "GET" }]])
         assert.equal((await get(path, init)).status, 404, path);
       // Memory synthesis is parent-owned (its loopback client reaches the model through this proxy):
       // the dry run streams from the parent without touching the worker.
@@ -181,7 +183,7 @@ test("the parent composes the persistent state and the proxy without the engine 
       const completion = await (await get("/v1/chat/completions", { method: "POST", body: JSON.stringify({ model: "x", messages: [{ role: "user", content: "hi" }] }) })).json();
       assert.equal(completion.choices[0].message.content, "echo: hi");
       const seen = await (await get("/fake/seen")).json();
-      assert.deepEqual(seen.seen.filter(entry => entry.path.startsWith("/api") || entry.path === "/engine" || entry.path === "/downloads" || entry.path.startsWith("/admin")), []);
+      assert.deepEqual(seen.seen.filter(entry => entry.path.startsWith("/api") || entry.path === "/engine" || entry.path === "/downloads" || (entry.path.startsWith("/admin") && entry.path !== "/admin/events")), []);
       // The parent's link lends the worker's execution lease to managed jobs.
       // Close: the worker is drained then stopped, the socket directory is gone, the state is closed.
       await running.close(); await running.close();
@@ -235,7 +237,7 @@ const memoryPreamble = `
   const { parseCommand } = await import(app + "src/cli/args.ts");
   const until = async (check, what) => { const end = Date.now() + 10000; while (!await check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(10); } };
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open"]));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
   options.chatPaths = { sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
@@ -433,7 +435,7 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-chat-"));
   const cwd = join(root, "project"), agentDir = join(root, "agent");
   mkdirSync(cwd); mkdirSync(agentDir);
-  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open", "--temperature", "0"]));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open", "--temperature", "0"]));
   options.chatPaths = { cwd, agentDir, sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
@@ -497,26 +499,30 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   expect(leftover).toEqual([]);
 }, 60_000);
 
-test("a hub switch reaches the worker, which serves the new model as the current one: `local` follows it, chat describes it, hub GC asks the worker what it holds, and a refusal or failed load keeps the model that served", async () => {
+const record = (root: string, id: string, sizeBytes = 1) => ({ ...model(root), repoId: id, path: join(root, id.split("/")[1]!), sizeBytes }) as ModelRecord;
+
+test("each resident model has its own worker: a hub switch loads the other beside it, requests naming a model reach its worker, `local` follows the switch, and a refusal or failed load keeps the model that served", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-switch-"));
   const cwd = join(root, "project"), agentDir = join(root, "agent");
   mkdirSync(cwd); mkdirSync(agentDir);
-  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open", "--draft-kind", "ngram"]));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
   options.chatPaths = { cwd, agentDir, sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
-  const workerLog: string[] = [];
+  const workerLog: string[] = [], seenEvents: { type: string; model?: string }[] = [];
   const tmp = privateTmp(root);
-  const record = join(root, "launches.jsonl");
-  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken", FAKE_WORKER_RECORD: record },
-    restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line) }));
+  const launches = join(root, "launches.jsonl");
+  const records = ["org/model", "org/other", "org/broken"].map(id => record(root, id));
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken", FAKE_WORKER_RECORD: launches, FAKE_WORKER_MODELS: "org/model,org/other,org/broken" },
+    restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, records: () => records, notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line),
+    observe: bus => { bus.subscribe("*", event => { seenEvents.push(event as { type: string; model?: string }); }); } }));
   let leftover: string[] = ["not closed"];
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
   const serve = (id: string) => get("/api/hub/serve", { method: "POST", body: JSON.stringify({ model: id }) });
   const answer = async (name?: string) => ((await (await get("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ ...(name ? { model: name } : {}), messages: [{ role: "user", content: "hi" }] }) })).json()) as { model: string }).model;
-  const workerSeen = async () => (await (await get("/fake/seen")).json() as { seen: { path: string }[] }).seen.map(entry => entry.path);
+  const workersOf = async () => ((await (await get("/engine")).json()) as { workers: { id: string; pid: number | null; state: string }[] }).workers;
   const ready = async () => {
     const chat = openChat(base);
     try {
@@ -527,48 +533,122 @@ test("a hub switch reaches the worker, which serves the new model as the current
   try {
     expect(await answer()).toBe("org/model");
     expect((await ready()).model).toBe("org/model");
-    // The switch is the worker's: it now answers as the other model, for a request naming none and for Pi's `local`.
+    // The switch makes the other model current and loads it beside the first: two workers, two processes.
     const switched = await serve("org/other");
     expect([switched.status, await switched.json()]).toEqual([200, { ok: true, model: "org/other" }]);
+    const two = await workersOf();
+    expect(two.map(worker => worker.id)).toEqual(["org/model", "org/other"]);
+    expect(new Set(two.map(worker => worker.pid)).size).toBe(2);
     expect(await answer()).toBe("org/other");
     expect(await answer("local")).toBe("org/other");
-    expect(((await (await get("/v1/models")).json()) as { data: { id: string }[] }).data[0]!.id).toBe("org/other");
+    // A request naming a model reaches that model's worker without changing the current one.
+    expect(await answer("org/model")).toBe("org/model");
+    expect(await answer()).toBe("org/other");
+    const listed = ((await (await get("/v1/models")).json()) as { data: { id: string; resident?: boolean; current?: boolean }[] }).data;
+    expect(listed.map(row => [row.id, row.resident, row.current])).toEqual([["org/other", true, true], ["org/model", true, false], ["org/broken", false, false]]);
     // A chat that connects afterwards describes the model that will answer it.
     expect((await ready()).model).toBe("org/other");
-    // Hub GC asks the worker which snapshots it holds resident.
+    // Hub GC protects every resident worker's snapshot.
     expect((await get("/api/gc/execute", { method: "POST", body: JSON.stringify({ yes: true }) })).status).toBe(200);
-    expect(await workerSeen()).toContain("/admin/served");
-    // A model the worker does not have, or cannot load, is the worker's refusal, and the served model stays.
+    // A model the host does not have, or whose worker cannot start, is refused, and the served model stays.
     const missing = await serve("org/missing-model");
     expect([missing.status, await missing.json()]).toEqual([404, { ok: false, error: "org/missing-model is not a local model; download it first" }]);
     const broken = await serve("org/broken");
-    expect([broken.status, await broken.json()]).toEqual([502, { ok: false, error: "cannot load org/broken" }]);
+    expect(broken.status).toBe(502);
+    expect((await broken.json()).ok).toBe(false);
     expect(await answer()).toBe("org/other");
     expect((await serve("")).status).toBe(400);
-    // The switch survives the worker: a respawned one is launched with the model now served (and without the startup
-    // model's `--draft-*` flags, which belong to it alone), and chat says so.
-    const crashed = ((await (await get("/engine")).json()) as { pid: number }).pid;
+    // A crash respawns that worker with its own model, not the startup model: the current model survives it.
+    const crashed = (await workersOf()).find(worker => worker.id === "org/other")!.pid;
     await get("/fake/crash");
-    await until(async () => { const report = await (await get("/engine")).json() as { state: string; pid: number | null }; return report.state === "ready" && report.pid !== crashed; }, "the respawn");
+    await until(async () => { const worker = (await workersOf()).find(entry => entry.id === "org/other")!; return worker.state === "ready" && worker.pid !== crashed; }, "the respawn");
     expect(await answer()).toBe("org/other");
     expect((await ready()).model).toBe("org/other");
-    const launches = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line).launch as string).map(line => JSON.parse(line) as
-      { model: { repoId: string }; options: { draft?: unknown } });
-    expect(launches.map(launch => launch.model.repoId)).toEqual(["org/model", "org/other"]);
-    expect(launches[0]!.options.draft).toEqual({ kind: "ngram" });
-    expect(launches[1]!.options.draft).toBeUndefined();
+    const runs = readFileSync(launches, "utf8").trim().split("\n").map(line => (JSON.parse(JSON.parse(line).launch) as { model: { repoId: string } }).model.repoId);
+    expect(runs).toEqual(["org/model", "org/other", "org/broken", "org/other"]);
+    // The workers' events reach this process's bus, and the host reports the loads itself (the workers' own load events are dropped).
+    // (The relay reconnects to the respawned worker, so the request is repeated until its stream is attached.)
+    await until(async () => { await get("/fake/emit"); return seenEvents.some(event => event.type === "scheduler.sample" && event.model === "org/other"); }, "a worker's event");
+    expect(seenEvents.filter(event => event.type === "model.load").map(event => event.model)).toContain("org/other");
   } finally {
     await running.close();
     leftover = workerDirs(tmp);
     rmSync(root, { recursive: true, force: true });
   }
   expect(leftover).toEqual([]);
-  expect(workerLog.filter(line => line.startsWith("loading"))).toEqual(["loading org/model", "loading org/other"]);
+}, 60_000);
+
+test("a model that does not fit the budget drains the least recently used worker, which flushes and exits before the newcomer starts; naming it again starts a new worker; a pinned Whisper survives; audio reaches the Whisper worker", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-fit-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open", "--model-budget", "1", "--whisper-resident"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  // Each chat model needs 0.6 GB and the budget is 1 GB, so one fits at a time; Whisper (0.05 GB) is pinned beside it.
+  const records = ["org/model", "org/other"].map(id => record(root, id, 6e8));
+  const whisper = record(root, "org/whisper", 5e7);
+  options.whisper = { resident: true, modelDir: whisper.path, modelId: whisper.repoId };
+  const workerLog: string[] = [], seen: { type: string; model?: string; reason?: string; flushed?: boolean }[] = [];
+  const tmp = privateTmp(root);
+  const eventsFile = join(root, "events.jsonl");
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_EVENTS: eventsFile },
+    records: () => records, companions: () => [whisper], notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line),
+    observe: bus => { bus.subscribe("*", event => { seen.push(event as never); }); } }));
+  let leftover: string[] = ["not closed"];
+  const base = new URL(`http://127.0.0.1:${running.port}`);
+  const get = (path: string, init?: RequestInit) => fetch(new URL(path, base), init);
+  const answer = async (name?: string) => ((await (await get("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ...(name ? { model: name } : {}), messages: [{ role: "user", content: "hi" }] }) })).json()) as { model: string }).model;
+  const residents = async () => ((await (await get("/engine")).json()) as { workers: { id: string; role: string; pid: number | null }[] }).workers;
+  try {
+    expect((await residents()).map(worker => worker.id)).toEqual(["org/model"]);
+    // Audio starts the Whisper worker beside the chat model (0.6 + 0.05 GB fit in 1 GB) and reaches it, not the chat worker.
+    const audio = await get("/v1/audio/transcriptions", { method: "POST", body: "x" });
+    // (The fake Whisper worker names itself by the directory it was launched with.)
+    expect((await audio.json() as { model?: string }).model).toBe(whisper.path);
+    expect((await residents()).map(worker => `${worker.id}:${worker.role}`)).toEqual(["org/model:primary", "org/whisper:companion"]);
+    const first = (await residents())[0]!.pid!;
+    // Another model does not fit beside the first: the first is drained (it flushes, then exits) and the other starts; Whisper stays.
+    expect(await answer("org/other")).toBe("org/other");
+    expect((await residents()).map(worker => `${worker.id}:${worker.role}`).sort()).toEqual(["org/other:primary", "org/whisper:companion"]);
+    expect(() => process.kill(first, 0)).toThrow();
+    const unload = seen.find(event => event.type === "model.unload");
+    expect(unload).toMatchObject({ model: "org/model", reason: "evicted", flushed: true });
+    // The evicted model comes back with a new worker, and the other is drained in turn; Whisper never leaves.
+    expect(await answer("org/model")).toBe("org/model");
+    expect((await residents()).map(worker => `${worker.id}:${worker.role}`).sort()).toEqual(["org/model:primary", "org/whisper:companion"]);
+    expect(seen.filter(event => event.type === "model.unload").map(event => event.model)).toEqual(["org/model", "org/other"]);
+    expect(workerLog.filter(line => line.startsWith("loading")).map(line => line.replace("loading ", ""))).toEqual([
+      "org/model", whisper.path, "org/other", "org/model"]);
+  } finally {
+    await running.close();
+    leftover = workerDirs(tmp);
+    rmSync(root, { recursive: true, force: true });
+  }
+  expect(leftover).toEqual([]);
+}, 60_000);
+
+test("a worker that exits with its saved state not durable is still released, and the host reports the eviction as not flushed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-isolated-flush-"));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open", "--model-budget", "1"]));
+  options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
+  options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
+  const records = ["org/model", "org/other"].map(id => record(root, id, 6e8));
+  const unloads: { model?: string; flushed?: boolean }[] = [];
+  const tmp = privateTmp(root);
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: { ...workerEnv, FAKE_WORKER_STOP_CODE: "3" },
+    records: () => records, notice() {}, log() {}, error() {}, observe: bus => { bus.subscribe(["model.unload"], event => { unloads.push(event as never); }); } }));
+  try {
+    const answered = await fetch(`http://127.0.0.1:${running.port}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "org/other", messages: [{ role: "user", content: "hi" }] }) });
+    expect((await answered.json() as { model: string }).model).toBe("org/other");
+    expect(unloads).toEqual([expect.objectContaining({ model: "org/model", reason: "evicted", flushed: false })]);
+  } finally { await running.close(); rmSync(root, { recursive: true, force: true }); }
 }, 40_000);
 
 test("the worker is given the CLI's shutdown budget to close, so a slow flush of saved state is not cut by a kill after the default grace", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-budget-"));
-  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open"]));
+  const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--no-open"]));
   options.chatPaths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };

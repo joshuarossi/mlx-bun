@@ -16,7 +16,7 @@ export interface HubRouteOptions {
   hubDirectory?: string;
   /** Makes the model the one the app serves now (loading it beside the others or in place of one). Without it, or when it resolves to
    * nothing (no host attached, or a host that serves one model), the route answers that a restart is needed. Rejects with `ServeRefused`. */
-  serve?: (model: string, signal: AbortSignal) => Promise<{ model: string; record?: unknown } | undefined>;
+  serve?: (model: string, signal: AbortSignal) => Promise<{ model: string } | undefined>;
   /** Without an owner the download route is unmounted and answers 404. */
   downloads?: Pick<DownloadOwner, "start">;
   /** The handler owns and closes each registry returned by this factory. */

@@ -49,8 +49,7 @@ export interface WorkerProcessOptions {
   /** The Unix socket path the worker must bind. The parent owns the file's
    * directory; a stale file is removed before the spawn and after the exit. */
   socketPath: string;
-  /** The launch record the worker reads from stdin (`cli/worker-entry.ts` defines it). A function is called at each spawn,
-   * so a respawn can launch with what the owner knows by then. */
+  /** The launch record the worker reads from stdin (`cli/worker-entry.ts` defines it). */
   launch: unknown;
   /** Defaults to the executable captured at startup (Bun for source execution). */
   bin?: string;
@@ -99,8 +98,7 @@ export function spawnWorker(options: WorkerProcessOptions): WorkerProcess {
   const bin = options.bin ?? executablePath;
   if (!options.command && !options.entry) throw new Error("spawnWorker needs an entry or a command");
   const command = options.command ? [...options.command, "__worker"] : options.entry!.includes("$bunfs") ? [bin, "__worker"] : [bin, options.entry!];
-  const launch = typeof options.launch === "function" ? (options.launch as () => unknown)() : options.launch;
-  const version = (launch as { version?: unknown } | null)?.version;
+  const version = (options.launch as { version?: unknown } | null)?.version;
   const log = options.log ?? (line => console.log(`[worker] ${line}`));
   const error = options.error ?? (line => console.error(`[worker] ${line}`));
   rmSync(options.socketPath, { force: true });
@@ -110,7 +108,7 @@ export function spawnWorker(options: WorkerProcessOptions): WorkerProcess {
   });
   // The pipe stays open after the launch record: its end tells the worker the
   // parent is gone, so a crashed parent leaves no orphan holding the GPU.
-  proc.stdin.write(encodeLaunch(launch) + "\n");
+  proc.stdin.write(encodeLaunch(options.launch) + "\n");
   void proc.stdin.flush();
   const ready = Promise.withResolvers<{ socketPath: string; modelId: string }>();
   let settled = false, modelId: string | undefined;

@@ -80,19 +80,6 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
   };
 }
 
-/** What the parent may ask of the host it does not own, through the admin surface: switch the served
- * model and list the snapshots held resident. A host that serves one model refuses a switch (409). */
-function hostAdmin(link: { current?: ModelHostLink }) {
-  return {
-    async serve(model: string, signal: AbortSignal) {
-      const serve = link.current?.serve;
-      if (!serve) throw Object.assign(new Error("this worker serves one model; restart it to change models"), { status: 409 });
-      return serve(model, signal);
-    },
-    servedPaths: () => link.current?.servedPaths?.() ?? [],
-  };
-}
-
 /** What the app form composes with; `runServe`'s own defaults otherwise. */
 export interface AppWorkerDependencies {
   resolve: ServeDependencies["resolve"];
@@ -145,15 +132,18 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
   // lease, and shutdown joins those calls, then closes the task model, both
   // ahead of the host's engine.
   const memory = (await import("./memory-engine")).createInProcessMemoryClient();
+  // The engine's events stay in this process's bus; the parent subscribes to them over the admin surface.
+  const state = createWorkerState(launch.options, link);
   const admin = createWorkerRoutes({ modelId: launch.model.repoId, pid: process.pid,
     acquireExecutionLease(signal) {
       if (!link.current) return Promise.reject(new Error("no model host is attached"));
       return link.current.acquireExecutionLease(signal);
-    }, memoryTaskModel: memory, ...hostAdmin(link) });
+    }, memoryTaskModel: memory, events: state.events });
   let host: Awaited<ReturnType<typeof startModelHost>>;
   try {
-    host = await startModelHost(createWorkerState(launch.options, link), launch.model, launch.options,
-      { unix: launch.socketPath, routes: model => admin.wrap(model),
+    // One model per worker: the parent holds the residency of the workers, so this host never loads another.
+    host = await startModelHost(state, launch.model, launch.options,
+      { unix: launch.socketPath, oneModel: true, routes: model => admin.wrap(model),
         beforeDrain: async () => { try { await admin.close(); } finally { await memory.close(); } } });
   } catch (error) {
     // Nothing was served, so the task model never loaded; closing only refuses later calls.
@@ -170,7 +160,8 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
       if (closing) return;
       closing = true;
       ports.signals.removeListener("SIGTERM", stop); ports.signals.removeListener("SIGINT", stop);
-      host.close().then(() => resolve(0), error => { console.error(error instanceof Error ? error.message : String(error)); resolve(1); });
+      // A close whose saved state is not durable exits 3, so the parent that asked for it can say the flush was incomplete.
+      host.close().then(result => resolve(result.durable ? 0 : 3), error => { console.error(error instanceof Error ? error.message : String(error)); resolve(1); });
     };
     ports.signals.on("SIGTERM", stop); ports.signals.on("SIGINT", stop);
     void parentLeft().finally(stop);
@@ -217,7 +208,7 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
       acquireExecutionLease(signal: AbortSignal) {
         if (!link.current) return Promise.reject(new Error("no model host is attached"));
         return link.current.acquireExecutionLease(signal);
-      }, ...hostAdmin(link) } : {}) });
+      } } : {}) });
     return { unix: launch.socketPath, routes: (routes: RouteGroup) => admin.wrap(routes), beforeDrain: () => admin.close() };
   };
   try {

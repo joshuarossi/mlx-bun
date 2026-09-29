@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ModelOperations } from "@mlx-bun/app-core";
-import { createResidencyHost, type ResidencyEntry } from "../../src/engine/model-residency";
+import { createResidencyHost, type ResidencyEntry } from "../../src/residency/model-residency";
 import { createModelRoutes, modelField, type RoutedUnit } from "../../src/server/model-routes";
 
 const GB = 1000;

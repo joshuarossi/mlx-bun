@@ -62,10 +62,8 @@ export interface ModelHostLink extends ServedHostLink {
   acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
   /** A finished download or job changes the model library the host lists. */
   invalidateLibrary(): void;
-  /** The snapshot paths of every model the host holds resident, so hub GC never deletes one in use. */
-  servedPaths?(): readonly string[];
   /** Make the named local model the one served (`POST /api/hub/serve`): loaded beside the others when it fits, else in place of the least recently used one. Absent on a host that serves one model. */
-  serve?(model: string, signal: AbortSignal): Promise<{ model: string; record?: import("@mlx-bun/hub/registry").ModelRecord }>;
+  serve?(model: string, signal: AbortSignal): Promise<{ model: string }>;
 }
 
 export interface RouteGroup { handle(request: Request): Promise<Response | null> }

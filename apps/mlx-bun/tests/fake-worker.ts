@@ -7,12 +7,12 @@
 // FAKE_WORKER_RECORD appends `{ argv, pid, launch }` per launch (the launch line as received);
 // FAKE_WORKER_EVENTS appends `{ event, model, pid, at }` for loading, ready, drain, stop, and stopped (the exit after a slow close);
 // FAKE_WORKER_FAIL=start exits 1 before ready, like a failed model load;
-// FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only, and refuses a switch to it (`POST /admin/serve`: 502);
+// FAKE_WORKER_FAIL_MODEL=<id> does the same for that model only (a worker that cannot load it);
 // FAKE_WORKER_LOAD_MS delays the ready line, like a weights load.
 // FAKE_WORKER_BAD_READY=1 sends a malformed handshake and remains alive.
 // FAKE_WORKER_VERSION=<v> plays a worker of that package version: a launch record
 // with another one is refused as the real entry refuses it (exit 2, the reason on stderr).
-// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing;
+// FAKE_WORKER_STOP_MS delays the exit after SIGTERM, like an app closing; FAKE_WORKER_STOP_CODE is its exit code (3: the saved state was not durable);
 // FAKE_WORKER_STOP_GATE=<path> holds it until that file exists (no clock involved).
 // `POST /admin/memory/complete` plays the memory task model: each row answers
 // `task <stage>: <user>` in order; a row whose user text contains `hold` waits
@@ -23,8 +23,7 @@
 // FAKE_WORKER_MEMORY_JOIN_GATE=<path> holds an aborted call's settling until that
 // file exists, like rows joining; SIGTERM waits for those joins, as the real
 // worker's close does.
-// `POST /admin/serve` `{ model }` makes that model the current one (404 for an id starting `org/missing`),
-// and `GET /admin/served` lists the snapshots held resident (one per model served so far), like the real worker's host.
+// `GET /admin/events` streams the worker's bus as JSON lines (a scheduler sample per `/fake/emit`).
 // The app launch form (`{ kind: "app", argv }`) serves the `--model` argument as its model id.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -55,9 +54,9 @@ const gateOpen = async (path: string | undefined) => { while (path && !existsSyn
 const heldMemory = new Set<() => void>(), memoryJoins = new Set<Promise<void>>();
 let taskSnapshot: string | undefined;
 let draining = false, inFlight = 0, responseCount = 0;
-/** The model the worker answers as; a switch changes it and the resident set grows, as the real host's does. */
+/** The model the worker answers as: the one it was launched with. */
 let current = modelId;
-const resident = new Set([modelId]);
+const emitters = new Set<() => void>();
 const chunk = (delta: Record<string, unknown>, finish: string | null) => ({
   id: "chatcmpl-fake", object: "chat.completion.chunk", created: 1, model: current, choices: [{ index: 0, delta, finish_reason: finish }],
 });
@@ -100,14 +99,16 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     return new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoder.encode("leased\n")); }, cancel: release }),
       { headers: { "content-type": "application/octet-stream" } });
   }
-  if (path === "/admin/serve" && request.method === "POST") {
-    const { model } = JSON.parse(entry.raw = await request.text()) as { model: string };
-    if (model.startsWith("org/missing")) return Response.json({ error: { message: `${model} is not a local model; download it first`, type: "serve_failed" } }, { status: 404 });
-    if (process.env.FAKE_WORKER_FAIL_MODEL === model) return Response.json({ error: { message: `cannot load ${model}`, type: "serve_failed" } }, { status: 502 });
-    current = model; resident.add(model);
-    return Response.json({ model, record: { repoId: model, path: `/models/${model}`, modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 } });
+  if (path === "/admin/events") {
+    // The worker's own bus: a sample now and then, like the engine's telemetry; a test asks for one through /fake/emit.
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      controller.enqueue(encoder.encode("\n"));
+      const emit = () => { try { controller.enqueue(encoder.encode(JSON.stringify({ type: "scheduler.sample", at: Date.now(), model: current, active: 0, capacity: 8, queued: 0, tokensPerSecond: 0 }) + "\n")); } catch { /* closed */ } };
+      emitters.add(emit);
+      request.signal.addEventListener("abort", () => emitters.delete(emit), { once: true });
+    } }), { headers: { "content-type": "application/x-ndjson" } });
   }
-  if (path === "/admin/served") return Response.json({ paths: [...resident].map(id => `/models/${id}`) });
+  if (path === "/fake/emit") { for (const emit of emitters) emit(); return Response.json({ emitted: emitters.size }); }
   if (path === "/admin/drain") {
     entry.raw = await request.text();
     draining = true;
@@ -155,11 +156,14 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
   }
   if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: current, object: "model", created: 1, owned_by: "mlx-bun",
     context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: 0.6, top_p: 0.9, top_k: null },
-    capabilities: { chat_completions: true, transcription: false }, resident: true, current: true }] });
+    capabilities: { chat_completions: true, transcription: false }, resident: true, current: true },
+    // Like the real worker, the other local models follow as the registry knows them (FAKE_WORKER_MODELS, comma separated).
+    ...(process.env.FAKE_WORKER_MODELS ?? "").split(",").filter(id => id && id !== current).map(id => ({ id, object: "model", created: 1, tier: "targeted" }))] });
   if (path === "/stats") return Response.json({ server: { owner: "serve", model: current, started_at: 1 },
     prompt_cache: { entries: 1, bytes: 2, max_bytes: 3 }, response_store: { entries: 99, bytes: 99, max_bytes: 99, ttl_ms: 99 },
     admission: { enforced_context_tokens: 2048, max_safe_context: 8192 }, batch: { configured: 8, active_rows: 0 } });
   if (path === "/library") return Response.json({ models: [{ repo_id: current, serving: true, refreshed: url.searchParams.get("refresh") === "1" }] });
+  if (path.startsWith("/v1/audio/") && request.method === "POST") return Response.json({ text: "fake transcript", model: current });
   if (path === "/v1/chat/completions" && request.method === "POST") {
     entry.raw = await request.text();
     let body: { stream?: boolean; messages?: { role: string; content: unknown }[] };
@@ -202,7 +206,8 @@ const stop = async () => {
   if (process.env.FAKE_WORKER_STOP_MS) await Bun.sleep(Number(process.env.FAKE_WORKER_STOP_MS));
   await gateOpen(process.env.FAKE_WORKER_STOP_GATE);
   event("stopped");
-  void server.stop(true); process.exit(0);
+  // FAKE_WORKER_STOP_CODE=3 plays a close whose saved state was not durable.
+  void server.stop(true); process.exit(Number(process.env.FAKE_WORKER_STOP_CODE ?? "0"));
 };
 process.on("SIGTERM", stop);
 void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();

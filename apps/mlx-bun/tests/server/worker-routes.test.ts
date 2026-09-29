@@ -395,40 +395,44 @@ test("a managed job holding the worker's execution lease delays a memory call, l
   socket.remove();
 });
 
-test("the parent may ask the host to switch the served model and to list the snapshots it holds; a refusal keeps its status, and a worker without the capability answers 404", async () => {
-  const socket = socketDir(), asked: string[] = [];
-  const admin = createWorkerRoutes({ modelId: "org/model", pid: 42,
-    async serve(name, signal) {
-      asked.push(name);
-      expect(signal.aborted).toBe(false);
-      if (name === "org/missing") throw Object.assign(new Error("org/missing is not a local model; download it first"), { status: 404 });
-      if (name === "org/broken") throw new Error("boom");
-      return { model: name };
-    },
-    servedPaths: () => ["/hub/a", "/hub/b"] });
+test("the worker streams its own events to the parent as JSON lines, one subscription per connection, released when the parent leaves or the surface closes; without the capability the path is 404", async () => {
+  const socket = socketDir();
+  const listeners = new Set<(event: unknown) => void>();
+  const bus = { subscribe(_types: "*" | readonly string[], handler: (event: never) => void) { listeners.add(handler as (event: unknown) => void); return () => { listeners.delete(handler as (event: unknown) => void); }; } };
+  const emit = (event: unknown) => { for (const listener of [...listeners]) listener(event); };
+  const admin = createWorkerRoutes({ modelId: "org/model", pid: 42, events: bus as never });
   const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const call = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
-  const serve = (body: string) => call("/admin/serve", { method: "POST", body });
   try {
-    expect(await (await serve(JSON.stringify({ model: " org/other " }))).json()).toEqual({ model: "org/other" });
-    expect(asked).toEqual(["org/other"]);
-    const missing = await serve(JSON.stringify({ model: "org/missing" }));
-    expect([missing.status, await missing.json()]).toEqual([404, { error: { message: "org/missing is not a local model; download it first", type: "serve_failed" } }]);
-    const broken = await serve(JSON.stringify({ model: "org/broken" }));
-    expect([broken.status, (await broken.json()).error.message]).toEqual([500, "boom"]);
-    for (const body of ["{}", '{"model":""}', '{"model":5}', "not json"]) expect((await serve(body)).status).toBe(400);
-    expect(asked).toEqual(["org/other", "org/missing", "org/broken"]);
-    expect((await call("/admin/serve")).status).toBe(405);
-    expect(await (await call("/admin/served")).json()).toEqual({ paths: ["/hub/a", "/hub/b"] });
-    expect((await call("/admin/served", { method: "POST" })).status).toBe(405);
+    expect((await call("/admin/events", { method: "POST" })).status).toBe(405);
+    const holder = new AbortController();
+    const stream = await call("/admin/events", { signal: holder.signal });
+    expect([stream.status, stream.headers.get("content-type")]).toEqual([200, "application/x-ndjson"]);
+    const reader = stream.body!.getReader(), decoder = new TextDecoder();
+    await until(() => listeners.size === 1, "the subscription");
+    emit({ type: "scheduler.sample", model: "org/model", active: 1 });
+    emit({ type: "request.finished", model: "org/model", totalMs: 12 });
+    let text = "";
+    while (text.split("\n").filter(Boolean).length < 2) text += decoder.decode((await reader.read()).value);
+    expect(text.split("\n").filter(Boolean).map(line => JSON.parse(line).type)).toEqual(["scheduler.sample", "request.finished"]);
+    // A held stream is not model work: drain does not wait for it, and the parent leaving releases the subscription.
+    expect((await (await call("/health")).json()).in_flight).toBe(0);
+    holder.abort();
+    await until(() => listeners.size === 0, "the release on disconnect");
+    // Closing the surface ends a stream still open.
+    const second = await call("/admin/events");
+    await until(() => listeners.size === 1, "the second subscription");
+    await admin.close();
+    const tail = second.body!.getReader();
+    let ended = false;
+    for (let reads = 0; reads < 5 && !ended; reads++) ended = (await tail.read().catch(() => ({ done: true }))).done;
+    expect(ended).toBe(true);
+    expect(listeners.size).toBe(0);
   } finally { await app.close(); }
-  // Without either capability the paths are unknown, as on a TCP listener.
   const bare = socketDir();
   const plain = createWorkerRoutes({ modelId: "org/model", pid: 42 });
   const second = await startServer({ routes: plain.wrap(model()), web: () => null, chat: idle, beforeDrain: () => plain.close(), async closeEngine() {} }, { unix: bare.unix });
-  try {
-    for (const [path, init] of [["/admin/serve", { method: "POST", body: "{}" }], ["/admin/served", {}]] as const)
-      expect((await fetch(`http://worker${path}`, { ...init, unix: bare.unix } as RequestInit)).status).toBe(404);
-  } finally { await second.close(); }
+  try { expect((await fetch("http://worker/admin/events", { unix: bare.unix } as RequestInit)).status).toBe(404); }
+  finally { await second.close(); }
   socket.remove(); bare.remove();
 });

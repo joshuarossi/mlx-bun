@@ -21,7 +21,7 @@ export type {
  *
  * Refused before anything is spawned: a blank `model` (an empty query would
  * select a model automatically and may download the starter model), and any
- * `arguments` the CLI refuses, plus `--isolate`. `--host`,
+ * `arguments` the CLI refuses. `--host`,
  * `--port`, and `--no-open` are accepted and do not affect the socket.
  *
  * `command` is the program and leading arguments of an mlx-bun CLI of this
