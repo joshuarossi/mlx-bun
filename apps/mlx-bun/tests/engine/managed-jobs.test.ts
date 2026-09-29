@@ -382,7 +382,10 @@ test.skipIf(!modelDir)("finished fine-tune outputs mount, merge and unmount over
     const merge = await mergeResponse.json();
     expect(mergeResponse.status, JSON.stringify(merge)).toBe(200);
     expect(merge.ok).toBe(true);
-    expect(merge.merged_path.startsWith(join(io.home, ".cache/mlx-bun/adapters") + "/")).toBe(true);
+    // The default output root is the app's storage policy, not this test's: it
+    // only has to stay inside the isolated HOME and hold a loadable adapter.
+    expect(merge.merged_path.startsWith(io.home + "/")).toBe(true);
+    expect(existsSync(join(merge.merged_path, "adapters.safetensors"))).toBe(true);
     expect(merge.stats.layersMerged).toBeGreaterThan(0);
     await mount(app.base, "merged", merge.merged_path);
     const withMerged = await complete(app.base, "merged");
