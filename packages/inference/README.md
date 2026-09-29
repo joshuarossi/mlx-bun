@@ -297,14 +297,13 @@ cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
 delayed speculation remains excluded. Each graph declares at construction the
 layers its attention reads as plain keys and values (`requiredDenseKvLayers`:
-Gemma2's softcap layers, every Qwen3 and Qwen3-MoE layer, none for graphs that
-attend the storage their caches hold). The gateway and a directly composed
+Gemma2's softcap layers; none for graphs that attend the storage their caches
+hold). The gateway and a directly composed
 batch group each bind that declaration once against the graph's fresh caches;
 an absent or malformed declaration is refused rather than read as none. A row
 whose next append would not read plain in a declared layer is refused with
 `DenseKvReadError` before that append. A graph whose attention reads dense KV
-(a softcap graph such as Gemma2, or Qwen3 and Qwen3-MoE, reading keys and values
-as arrays) admits a KV
+(a softcap graph such as Gemma2, reading keys and values as arrays) admits a KV
 scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
 maintenance that owns it, probed when the binding or group is composed). Affine
@@ -352,22 +351,19 @@ remain outside Git.
 
 Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
-attention reads encoded KV. On Qwen3 and Qwen3-MoE, affine requests take the
-same dense-read path as Gemma2: ordinary decoding, generation checkpoints and
-committed grammar spans run while a row reads plain, and a row whose next
-append would read a converted layer is refused with `DenseKvReadError`, so
-immediate affine KV (start 0) is refused before its first append. Their
-attention reads keys and values through `updateAndFetch`, which quantized
-storage does not serve. A configured draft is refused (`continuous-unavailable`)
-unless an adapter request ignores it, and supplied fill decodes ordinarily (no
-affine committed-append format on these graphs). On 2026-09-28 UTC (M1 Max, MLX 0.32.2) the opt-in spans test above passed on
-cached Qwen3-4B-Instruct-2507-4bit `50d42775` with KV4 (B1 spans equal to direct
-generation below the transition, the crossing row refused with the same
-published tokens, an interleaved peer equal to its solo run), and the opt-in
-ordinary-continuation test passed on it with KV4 starting at prompt+20 (rows
-stay plain; B1 and B4 restored exactly from interrupted checkpoints). No
+attention reads encoded KV. Qwen3 and Qwen3-MoE attend affine KV as mlx-lm's
+`scaled_dot_product_attention` does (quantized SDPA over a quantized cache) and
+take the same encoded-read path: immediate affine KV batches and speculates,
+and delayed affine rows serve ordinary decoding, generation checkpoints and
+committed grammar spans across their conversion. On 2026-09-28 UTC (M1 Max,
+MLX 0.32.2), cached Qwen3-4B-Instruct-2507-4bit `50d42775` matched mlx-lm
+0.31.3's `generate_step` order bit for bit in six greedy steps' full logits
+through direct generation with KV8 and KV4 at starts 0, 8 and 14 (a one-off
+comparison); the opt-in spans test and the ordinary-continuation test (KV8 from
+0, KV4 from prompt+4, KV8 from prompt+2) passed on it; and a grouped n-gram
+draft over immediate KV8 and KV4 reproduced ordinary greedy output. No
 Qwen3-MoE artifact was run.
-On those encoded graphs and on MiniCPM5, delayed affine
+On encoded-read universal graphs and on MiniCPM5, delayed affine
 rows stay ordinary-only, and their direct grammar jump commits spans through the
 same span method with no dense-read requirement, before and after conversion.
 The same opt-in real-weight spans test passed on cached MiniCPM5-1B-OptiQ-4bit

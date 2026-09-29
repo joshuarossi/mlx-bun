@@ -1796,16 +1796,12 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     } finally { await plain.close(); await delayed.close(); }
   });
 
-  /** A checkpoint before the transition restores exactly in a fresh group:
-   * alone it repeats the control byte for byte; beside a sibling it equals
-   * plain KV resumed the same way. `graphOf` makes a fresh, identical graph. */
-  const expectCheckpointRestore = async (graphOf: () => Promise<{ model: SpanGraph & import("../../../src/models/factory").RuntimeModel; dispose(): void }>,
-    modelId: string) => {
+  test("a checkpoint before the transition restores exactly in a fresh group: alone it repeats the control byte for byte; beside a sibling it equals plain KV resumed the same way", async () => {
     const { bindMlxGateway, createRuntimeConfig, createOrdinaryContinuationRequest, ContinuationPersistence, createRowSampling } =
       await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
     const { SsdCacheStore, PromptCache, cloneKvCaches, leaseCacheState } = await import("../../../src/state");
-    const plain = await setupWith(await graphOf(), null);
+    const plain = await setup(null);
     const soloA = await plain.submit(A, 8);
     await plain.close();
     const directory = await mkdtemp(join(tmpdir(), "plain-kv-continuation-"));
@@ -1813,8 +1809,8 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     /** One run of A with delayed affine KV (`kv`) or plain KV (null). */
     const run = async (name: string, kv: typeof scheme | null, interruptAt?: number, sibling = false) => {
       // A fresh graph, binding and group per run: only the SSD directory is shared.
-      const f = await graphOf(), model = f.model, binding = bindMlxGateway(model);
-      const store = new SsdCacheStore({ dir: join(directory, name), maxBytes: 1 << 30, modelId,
+      const f = mixedFixture(types, true, HEAD_DIM), model = f.make(), binding = bindMlxGateway(model);
+      const store = new SsdCacheStore({ dir: join(directory, name), maxBytes: 1 << 30, modelId: "synthetic-gemma2",
         configFingerprint: `plain-kv-continuation:${(kv ?? resolveKvScheme({})).cacheKey}`, tokenizerHash: "fixture", verify: true });
       // A fresh store indexes the durable records it finds, as a restarted server does.
       const scanned = store.scan();
@@ -1890,11 +1886,7 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       expect(beside.captured.get(4)).toBe(plainResumed.captured.get(4)!);
       expect(beside.sibling).toEqual(plainResumed.sibling);
     } finally { await rm(directory, { recursive: true, force: true }); }
-  };
-
-  test("a checkpoint before the transition restores exactly in a fresh group: alone it repeats the control byte for byte; beside a sibling it equals plain KV resumed the same way", () =>
-    expectCheckpointRestore(async () => { const f = mixedFixture(types, true, HEAD_DIM); return { model: f.make(), dispose: () => f.dispose() }; },
-      "synthetic-gemma2"));
+  });
 
   test("a grammar row takes the read-before-build step, publishes its last plain token with its matcher advanced, then is rejected", async () => {
     const plain = await setup(null), delayed = await setup(7);
@@ -2618,27 +2610,26 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     });
   });
 
-  // Qwen3 and Qwen3-MoE read every layer's keys and values plain: a delayed
-  // affine row completes while its storage reads plain, and a row whose next
-  // forward would read a converted layer is refused before the append. Positive explicit starts only;
-  // nothing is claimed for start 0 or for attention after conversion.
-  describe("Qwen3 dense-read graph with delayed affine KV", () => {
+  // Qwen3 and Qwen3-MoE attend the storage their caches hold, plain or affine,
+  // as mlx-lm's scaled_dot_product_attention does: a delayed affine row
+  // converts at its start and continues over converted layers.
+  describe("Qwen3 graph with delayed affine KV", () => {
     const qwen3Graph = async () => {
       const { Qwen3Model } = await import("../../../src/models/qwen/qwen3");
       return quantizedGraph(Qwen3Model, "qwen3", { qkNorm: true });
     };
     const qwen3 = async (start: number | null, options: SetupOptions = {}) => setupWith(await qwen3Graph(), start, options);
-    /** Each forward's input offsets per layer. */
-    const offsets = (env: SpanEnv) => {
-      const forwards: number[][] = [], forward = env.model.forwardHidden.bind(env.model);
-      env.model.forwardHidden = (ids, caches) => { forwards.push(caches.map(cache => cache.offset)); return forward(ids, caches); };
-      return forwards;
+    /** The direct B1 order over a separate, identical graph. */
+    const reference = async (prompt: number[], maxTokens: number, start: number, spans: number[][] = []) => {
+      const g = await qwen3Graph(), caches = g.model.makeCache();
+      try { return await directSpansFrom(g.model, caches, prompt, 0, maxTokens, affine(start), spans, { encoded: true }); }
+      finally { try { dispose(caches); } finally { g.dispose(); } }
     };
 
     test("below the transition, delayed affine rows equal plain rows at B1 and in a B2 co-prefill", async () => {
       const plain = await qwen3(null), delayed = await qwen3(64);
       try {
-        expect(delayed.model.requiredDenseKvLayers).toEqual([0, 1]);
+        expect(delayed.model.requiredDenseKvLayers).toEqual([]);
         const pl = projections(plain), dl = projections(delayed);
         expect(await delayed.submit(A, 6)).toEqual(await plain.submit(A, 6));
         expect(dl).toEqual(pl);
@@ -2648,98 +2639,40 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       } finally { await plain.close(); await delayed.close(); }
     });
 
-    test("at a decode transition the row publishes its last plain token, never the pending one, then only it is refused; the peer and the group continue", async () => {
-      const plain = await qwen3(null), control = await qwen3(null, { pipeline: false });
-      const delayed = await qwen3(7);   // A (5 tokens) may produce 7 - 5 + 1 = 3
-      try {
-        const soloA = await plain.submit(A, 8), soloB = await plain.submit(B, 5);
-        const pl = projections(control), dl = projections(delayed);
-        const [left, peer] = await control.together([A, 3], [B, 5]);
-        expect(left).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "length" });
-        const [a, b] = await delayed.together([A, 8], [B, 5]);
-        expect(a).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
-        expect(b).toEqual(peer);
-        expect(dl).toEqual(pl);
-        expect(await delayed.submit(B, 5)).toEqual(soloB);
-      } finally { await plain.close(); await control.close(); await delayed.close(); }
+    test("rows converting in decode and from the start continue over converted layers, equal to the direct B1 order; a peer and the group continue", async () => {
+      for (const start of [7, 0]) {
+        const expected = await reference(A, 8, start), peer = await reference(B, 5, start);
+        expect(expected.kinds, `start ${start}`).toEqual(["QuantizedKVCache", "QuantizedKVCache"]);
+        const env = await qwen3(start);
+        try {
+          const seen = projections(env);
+          expect(await env.submit(A, 8), `start ${start}`).toEqual({ tokens: expected.tokens, outcome: "length" });
+          expect(seen, `start ${start}`).toEqual(expected.seen);
+          const [a, b] = await Promise.all([env.submit(A, 8), env.submit(B, 5)]);
+          expect(a, `start ${start}`).toEqual({ tokens: expected.tokens, outcome: "length" });
+          expect(b, `start ${start}`).toEqual({ tokens: peer.tokens, outcome: "length" });
+          expect(await env.submit(B, 5), `start ${start}`).toEqual({ tokens: peer.tokens, outcome: "length" });
+        } finally { await env.close(); }
+      }
     });
 
-    test("a prompt past the transition is refused before its tail forward; a later layer converting alone refuses before an earlier plain layer appends", async () => {
-      const split = await qwen3(5);
-      try {
-        expect(await split.submit([2, 4, 7, 9, 3, 11, 13, 17], 4)).toEqual({ tokens: [], outcome: "DenseKvReadError" });
-      } finally { await split.close(); }
-      // Per-layer config: only layer 1 converts at the start; layer 0 keeps plain storage.
-      const partial = resolveKvScheme({ override: "config", config: [{ layerIdx: 1, bits: 4, groupSize: HEAD_DIM }], quantizedKvStart: 7 });
-      const plain = await qwen3(null), env = await qwen3(null, { kvScheme: partial });
-      const forwards = offsets(env);
-      try {
-        const soloA = await plain.submit(A, 8);
-        expect(await env.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
-        expect(forwards.length).toBeGreaterThan(0);
-        expect(forwards.some(start => start.some(offset => offset >= 7))).toBe(false);
-      } finally { await plain.close(); await env.close(); }
-    });
-
-    test("a restored prefix owing its conversion is refused before its suffix forward", async () => {
-      const { PromptCache, cloneKvCaches } = await import("../../../src/state");
-      const prefix = new PromptCache(16 << 20, null, null, cloneKvCaches);
-      const puts: number[][] = [], hits: number[][] = [];
-      const env = await qwen3(7, { promptCache: {
-        put(tokens, caches, ...rest) { puts.push([...tokens]); prefix.put(tokens, caches, ...rest); },
-        take(prompt, ...rest) { const hit = prefix.take(prompt, ...rest); if (hit) hits.push([...hit.tokens]); return hit; },
-      } });
-      const forwards = offsets(env);
-      try {
-        const first = await env.submit(A, 3);
-        expect(first.outcome).toBe("length");
-        // The last sampled token was never forwarded: the stored prefix ends at 7, its last append reaching the start.
-        const committed = [...A, ...first.tokens.slice(0, 2)];
-        expect(puts).toContainEqual(committed);
-        const before = forwards.length;
-        expect(await env.submit([...committed, 17], 2)).toEqual({ tokens: [], outcome: "DenseKvReadError" });
-        expect(hits).toEqual([committed]);
-        expect(forwards).toHaveLength(before);
-      } finally { try { await env.close(); } finally { prefix.clear(); } }
-    });
-
-    test("a group composed directly binds the graph's declaration: its ordinary row is refused at the transition", async () => {
-      const plain = await qwen3(null), direct = await qwen3(7, { direct: true });
-      try {
-        const soloA = await plain.submit(A, 8);
-        expect(await direct.submit(A, 8)).toEqual({ tokens: soloA.tokens.slice(0, 3), outcome: "DenseKvReadError" });
-      } finally { await plain.close(); await direct.close(); }
-    });
-
-    test("a checkpoint before the transition restores exactly in a fresh group", () =>
-      expectCheckpointRestore(qwen3Graph, "synthetic-qwen3"));
-
-    test("grammar spans commit below the transition and across it at the end, as the direct B1 jump does; continuing past it is refused before the next forward", async () => {
-      const reference = async (maxTokens: number, start: number, spans: number[][]) => {
-        const g = await qwen3Graph(), caches = g.model.makeCache();
-        try { return await directSpansFrom(g.model, caches, A, 0, maxTokens, affine(start), spans); }
-        finally { try { dispose(caches); } finally { g.dispose(); } }
-      };
-      const run = async (maxTokens: number, start: number, spans: number[][], outcome: string) => {
-        const expected = await reference(maxTokens, start, spans);
+    test("grammar spans before, across and after the transition equal the direct B1 jump", async () => {
+      const run = async (maxTokens: number, start: number, spans: number[][]) => {
+        const expected = await reference(A, maxTokens, start, spans);
+        expect(expected.refused).toBe(false);
         const env = await qwen3(start, { grammarJump: true });
         try {
           const seen = projections(env);
           expect(await submitSpans(env, A, maxTokens, spans, {}, undefined, gatewaySpans(env)))
-            .toEqual({ tokens: expected.tokens, outcome, accepted: expected.accepted });
+            .toEqual({ tokens: expected.tokens, outcome: "length", accepted: expected.accepted });
           expect(seen).toEqual(expected.seen);
         } finally { await env.close(); }
         return expected;
       };
-      const below = await run(9, 64, spansA, "length");
-      expect(below.refused).toBe(false);
-      expect(below.tokens).toEqual(expect.arrayContaining([11, 12, 13]));
-      const crossing = await run(3, 7, [[11, 12]], "length");
-      expect(crossing.refused).toBe(false);
-      expect(crossing.tokens.slice(1)).toEqual([11, 12]);
-      const continuing = await run(10, 11, [[11, 12]], "DenseKvReadError");
-      expect(continuing.refused).toBe(true);
-      expect(continuing.accepted).toHaveLength(continuing.tokens.length + 1);
+      expect((await run(9, 64, spansA)).tokens).toEqual(expect.arrayContaining([11, 12, 13]));
+      expect((await run(3, 7, [[11, 12]])).tokens.slice(1)).toEqual([11, 12]);
+      const continuing = await run(10, 7, spansA);
+      expect(continuing.kinds).toEqual(["QuantizedKVCache", "QuantizedKVCache"]);
     });
   });
 });
