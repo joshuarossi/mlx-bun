@@ -18,8 +18,10 @@ import {
   genSftQa,
   genStyleTransfer,
   genToolUseTraces,
+  genVerifiedCode,
   type Row,
 } from "./generators";
+import type { VerifyPython } from "./python-verifier";
 
 /** A single user-facing form field. UI forms are built from these. */
 export interface TemplateField {
@@ -413,7 +415,13 @@ export const TEMPLATES: TemplateDef[] = [
   {
     id: "verified_code",
     label: "Verified code generation",
-    description: "Unavailable during migration: generated-code execution has not been migrated.",
+    description:
+      "For each natural-language spec, the served model writes Python " +
+      "code AND a set of `assert` checks. The checks run in an isolated " +
+      "Docker container (no network or host files). Every pair is kept: " +
+      "metadata.verified marks the ones that passed, and verify_error " +
+      "explains a failure or why verification could not run (for example, " +
+      "Docker or its pinned Python image is not available).",
     output_format: "messages",
     needs_llm: true,
     fields: [
@@ -450,7 +458,7 @@ type Inputs = Record<string, unknown>;
 /** Dispatch table: template id → generator function. */
 const GENERATORS: Record<
   string,
-  (inputs: Inputs, emit: Emit, llm?: LlmClient, http?: DatasetHttp) => Promise<Row[]>
+  (inputs: Inputs, emit: Emit, llm?: LlmClient, http?: DatasetHttp, verify?: VerifyPython) => Promise<Row[]>
 > = {
   sft_qa_pairs: genSftQa,
   dpo_pref_pairs: genDpoPairs,
@@ -464,6 +472,7 @@ const GENERATORS: Record<
   tool_use_traces: genToolUseTraces,
   rag_qa: genRagQa,
   cot_synthesis: genCotSynthesis,
+  verified_code: genVerifiedCode,
 };
 
 /**
@@ -479,9 +488,9 @@ export async function generate(
   emit: Emit,
   llm?: LlmClient,
   http: DatasetHttp = {},
+  verify?: VerifyPython,
 ): Promise<GenerateResult> {
   http.signal?.throwIfAborted();
-  if (id === "verified_code") throw new Error("verified_code is unavailable during migration: generated-code execution has not been migrated");
   const gen = Object.hasOwn(GENERATORS, id) ? GENERATORS[id] : undefined;
   if (!gen) throw new Error(`unknown template ${JSON.stringify(id)}`);
 
@@ -489,7 +498,7 @@ export async function generate(
   const { mkdir } = await import("node:fs/promises");
   await mkdir(outputDir, { recursive: true });
 
-  const rows = await gen(inputs, emit, llm, http);
+  const rows = await gen(inputs, emit, llm, http, verify);
   http.signal?.throwIfAborted();
   const n = rows.length;
   if (n === 0) {

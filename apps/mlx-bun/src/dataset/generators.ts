@@ -11,6 +11,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Emit } from "../jobs/protocol";
 import type { ChatMessage, DatasetHttp, LlmClient } from "./llm";
+import { verifyPython, type VerifyPython } from "./python-verifier";
 
 export type Row = Record<string, unknown>;
 
@@ -1004,5 +1005,81 @@ export async function genCotSynthesis(
       metadata: { category },
     });
   }
+  return rows;
+}
+
+/** Pull a ```python ... ``` block out of LLM output, or return whole text. */
+export function extractPythonBlock(text: string): string {
+  const m = text.match(/```(?:python|py)?\n([\s\S]*?)\n```/);
+  return m ? m[1]!.trim() : text.trim();
+}
+
+/** Every generated program is kept. `metadata.verified` is true only for a
+ * Python program the Docker verifier ran to a zero exit; failed and unverified
+ * rows keep `verified: false` with the bounded reason in `verify_error`. Other
+ * languages are not run (`verify_error: null`). */
+export async function genVerifiedCode(
+  inputs: Inputs,
+  emit: Emit,
+  llm?: LlmClient,
+  http: DatasetHttp = {},
+  verify: VerifyPython = verifyPython,
+): Promise<Row[]> {
+  const client = requireLlm(llm, "verified_code");
+  const specs = nonEmptyLines(inputs.specs);
+  const language = (str(inputs.language).trim() || "python").toLowerCase();
+  if (!specs.length) return [];
+
+  const rows: Row[] = [];
+  let nVerified = 0;
+  let nTotal = 0;
+  for (let i = 0; i < specs.length; i++) {
+    const spec = specs[i]!;
+    emit({
+      type: "stage",
+      stage: "generating",
+      progress: 0.05 + 0.9 * (i / specs.length),
+      message: `spec ${i + 1}/${specs.length} (${nVerified}/${nTotal} verified so far)`,
+    });
+    nTotal++;
+    const prompt =
+      "Write a Python function that satisfies the spec. Then write " +
+      "three `assert` statements at module level that verify the " +
+      "function. Output ONLY the code as a single fenced ```python " +
+      "block, no commentary.\n\n" +
+      `SPEC:\n${spec}\n\nCODE:`;
+    const out = await client.chatRaw([{ role: "user", content: prompt }], {
+      maxTokens: 1200,
+      temperature: 0.2,
+    });
+    const outText = out?.choices?.[0]?.message?.content ?? "";
+    const code = extractPythonBlock(outText);
+    if (!code || code.length < 10) continue;
+
+    let verified = false;
+    let verifyError: string | null = null;
+    if (language === "python") {
+      const result = await verify(code, http.signal);
+      http.signal?.throwIfAborted();
+      verified = result.status === "verified";
+      if (result.status === "failed") verifyError = result.error;
+      else if (result.status === "unverified") verifyError = `unverified (${result.reason}): ${result.error}`;
+    }
+    if (verified) nVerified++;
+
+    rows.push({
+      messages: [
+        { role: "user", content: spec },
+        { role: "assistant", content: `\`\`\`python\n${code}\n\`\`\`` },
+      ],
+      metadata: { verified, language, verify_error: verifyError },
+    });
+  }
+  emit({
+    type: "stage",
+    stage: "generating",
+    progress: 0.96,
+    message: `${nVerified}/${nTotal} specs verified (unverified rows kept with verified=false)`,
+  });
   return rows;
 }

@@ -9,6 +9,7 @@ import { makeLlmClient } from "../../src/dataset/llm";
 import { genCodeCompletion, genHfDatasetImport } from "../../src/dataset/generators";
 import { createDatasetRoutes } from "../../src/server/dataset-routes";
 import { generate } from "../../src/dataset/registry";
+import { createPythonVerifier, type SpawnDocker, type VerifyPython } from "../../src/dataset/python-verifier";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -46,17 +47,91 @@ test("dataset HTTP submission writes the existing split through an in-process jo
   } finally { await host.close(); }
 });
 
-test("templates retain verified-code fields but clearly disable execution before submitting a job", async () => {
-  let submitted = false;
-  const routes = createDatasetRoutes({ serverPort: () => 1, submit: () => { submitted = true; throw Error("unexpected"); } });
+test("templates list all thirteen templates; submission refuses only unknown ids", async () => {
+  const submitted: string[] = [];
+  const routes = createDatasetRoutes({ serverPort: () => 1, submit: config => { submitted.push(String(config.template_id)); return { jobId: "job" }; } });
   const templates = await (await routes.handle(new Request("http://local/api/dataset/templates")))!.json();
   expect(templates.templates).toHaveLength(13);
-  expect(templates.templates.find((t: any) => t.id === "verified_code").description).toContain("Unavailable");
-  for (const [id, status] of [["verified_code", 501], ["constructor", 400], ["missing", 400]] as const) {
+  expect(templates.templates.find((t: any) => t.id === "verified_code").description).toContain("isolated Docker container");
+  for (const [id, status] of [["verified_code", 200], ["constructor", 400], ["missing", 400]] as const) {
     expect((await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST", body: JSON.stringify({ template_id: id }) })))!.status).toBe(status);
   }
-  expect(submitted).toBe(false);
-  await expect(generate("verified_code", {}, "/unused", () => {})).rejects.toThrow("unavailable");
+  expect(submitted).toEqual(["verified_code"]);
+  const root = mkdtempSync(join(tmpdir(), "mlx-dataset-")); roots.push(root);
+  await expect(generate("verified_code", { specs: "spec" }, join(root, "out"), () => {})).rejects.toThrow("requires a served model");
+});
+
+const IMAGE = `python@sha256:${"0".repeat(64)}`;
+const fence = (code: string) => "```python\n" + code + "\n```";
+/** A loopback chat server answering each verified_code prompt with the reply its SPEC names. */
+const chatWith = (replies: Record<string, string>) => fetcher(async (_url, init) => {
+  const spec = JSON.parse(init!.body as string).messages[0].content.match(/SPEC:\n(.*)\n/)[1];
+  return Response.json({ choices: [{ message: { content: replies[spec] } }] });
+});
+
+test("verified_code runs over HTTP as an in-process job and keeps failed and unverifiable pairs, without a GPU lease", async () => {
+  const { root, store, host, leases } = setup();
+  const code = { passes: "assert sum([1, 2]) == 3", fails: "assert sum([1, 2]) == 4", unverifiable: "assert len('abc') == 3" };
+  const noDocker = createPythonVerifier({ image: IMAGE, spawn: () => { throw Object.assign(new Error("docker CLI not found on PATH"), { code: "ENOENT" }); } });
+  const seen: Array<{ source: string; signal?: AbortSignal }> = [];
+  const verifyPython: VerifyPython = async (source, signal) => {
+    seen.push({ source, signal });
+    if (source === code.passes) return { status: "verified" };
+    if (source === code.fails) return { status: "failed", exitCode: 1, error: "AssertionError" };
+    return noDocker(source, signal);
+  };
+  const runner = createDatasetRunner({ verifyPython, loopback: chatWith({ passes: fence(code.passes), fails: fence(code.fails),
+    empty: "", unverifiable: `Here you go:\n${fence(code.unverifiable)}\nDone.` }) });
+  const routes = createDatasetRoutes({ outputRoot: root, serverPort: () => 9876,
+    submit: (config, output) => host.submitTask("dataset", config, runner, output) });
+  try {
+    const response = await routes.handle(new Request("http://local/api/dataset/submit", { method: "POST",
+      body: JSON.stringify({ template_id: "verified_code", inputs: { specs: "passes\nfails\nempty\nunverifiable" } }) }));
+    const result = await response!.json();
+    await wait(() => store.get(result.job_id)?.status === "done");
+    const rows = ["train.jsonl", "valid.jsonl"].flatMap(file =>
+      readFileSync(join(result.output_dir, file), "utf8").trim().split("\n").map(line => JSON.parse(line)));
+    expect(rows.map(row => row.messages)).toEqual((["passes", "fails", "unverifiable"] as const).map(spec =>
+      [{ role: "user", content: spec }, { role: "assistant", content: fence(code[spec]) }]));
+    expect(rows.map(row => row.metadata)).toEqual([
+      { verified: true, language: "python", verify_error: null },
+      { verified: false, language: "python", verify_error: "AssertionError" },
+      { verified: false, language: "python", verify_error: expect.stringMatching(/^unverified \(docker-missing\): the docker CLI was not found on PATH/) },
+    ]);
+    expect(seen.map(call => call.source)).toEqual([code.passes, code.fails, code.unverifiable]);
+    expect(seen.every(call => call.signal instanceof AbortSignal && !call.signal.aborted)).toBe(true);
+    expect(leases()).toBe(0);
+    expect(readFileSync(store.get(result.job_id)!.log_path, "utf8")).toContain("1/4 specs verified (unverified rows kept with verified=false)");
+  } finally { await host.close(); }
+});
+
+test("shutdown during verification kills the docker CLI and removes the container before closing job storage", async () => {
+  const { root, host, store } = setup();
+  const events: string[] = [];
+  const close = store.close.bind(store);
+  store.close = () => { events.push("store closed"); close(); };
+  const spawn: SpawnDocker = args => {
+    const command = args[0]!, hang = command === "start";
+    events.push(`spawn ${command}`);
+    let finish!: (code: number | null) => void;
+    const exited = new Promise<number | null>(resolve => { finish = resolve; });
+    const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const stream = () => new ReadableStream<Uint8Array>({ start(controller) { controllers.push(controller); if (!hang) controller.close(); } });
+    if (!hang) finish(0);
+    return { stdout: stream(), stderr: stream(), exited,
+      kill() { events.push(`kill ${command}`); for (const controller of controllers) controller.close(); finish(null); } };
+  };
+  const runner = createDatasetRunner({ verifyPython: createPythonVerifier({ image: IMAGE, spawn }),
+    loopback: chatWith({ loops: fence("while True:\n    pass") }) });
+  const output = join(root, "dataset");
+  const { jobId } = host.submitTask("dataset", { template_id: "verified_code", inputs: { specs: "loops" },
+    output_dir: output, api_url: "http://unused" }, runner);
+  await wait(() => events.includes("spawn start"));
+  await host.close();
+  expect(events).toEqual(["spawn ps", "spawn create", "spawn start", "kill start", "spawn rm", "store closed"]);
+  expect(existsSync(join(output, "train.jsonl"))).toBe(false);
+  const reopened = new JobStore(join(root, "jobs.sqlite"), join(root, "logs"));
+  try { expect(reopened.get(jobId)?.status).toBe("failed"); } finally { reopened.close(); }
 });
 
 test("simultaneous dataset submissions retain separate output files", async () => {
