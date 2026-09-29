@@ -1,19 +1,19 @@
 // Markdown memory vault: filesystem reads, search, links, history, and initialization.
 
 import { access, lstat, mkdir, readdir, readFile, readlink, realpath, stat, symlink, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { spawn } from "node:child_process";
 import { isFenceLine } from "./article";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { storagePath, userHome } from "../storage/paths";
 
 // ---- paths -----------------------------------------------------------
 
 /** Root of the memory vault: ~/.mlx-bun/wiki (override with MLX_BUN_WIKI). */
 export function vaultRoot(): string {
   const override = runtimeValue("MLX_BUN_WIKI")?.trim();
-  if (override) return override.replace(/^~(?=$|[/\\])/, homedir());
-  return join(homedir(), ".mlx-bun", "wiki");
+  if (override) return override.replace(/^~(?=$|[/\\])/, userHome());
+  return storagePath("wiki");
 }
 
 export function articlesDir(root = vaultRoot()): string {
@@ -1122,8 +1122,8 @@ export async function setupVault(root = vaultRoot(), options: { referenceSources
   }
   for (const sub of ["articles", "Reference", "Meta", "Talk"]) await ensureDir(join(root, sub));
   await writeIfMissing(join(root, "README.md"), README);
-  // The vault is pure markdown — the synthesis DB lives in the rebuildable
-  // cache (~/.cache/mlx-bun/memory.sqlite), not here. Just keep OS/editor
+  // The vault is pure markdown — the rebuildable synthesis DB lives in
+  // ~/.mlx-bun/db/memory.sqlite, not here. Just keep OS/editor
   // cruft (Finder, Obsidian workspace state) out of git history.
   await writeIfMissing(join(root, ".gitignore"), ".DS_Store\n.obsidian/workspace*\n");
   for (const [filename, content] of Object.entries(META_PAGES)) {

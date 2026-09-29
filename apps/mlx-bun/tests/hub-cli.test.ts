@@ -27,7 +27,7 @@ function cache() {
 }
 async function cli(home: string, hub: string, ...args: string[]) {
   const proc = Bun.spawn([process.execPath, "--no-env-file", ...(existsSync(join(home, "fetch.ts")) ? ["--preload", join(home, "fetch.ts")] : []), entry, ...args], {
-    env: { ...process.env, HOME: home, HF_HUB_CACHE: hub, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
+    env: { ...process.env, HOME: home, MLX_BUN_HOME: join(home, ".mlx-bun"), HF_HUB_CACHE: hub, NO_COLOR: "1", MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" },
     stdout: "pipe", stderr: "pipe",
   });
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
@@ -75,7 +75,7 @@ test("help and invalid input do not open a registry or fetch a model", async () 
       expect((await cli(home, hub, ...args)).code).toBe(1);
     }
     expect((await cli(home, hub, "--version")).out).toBe("mlx-bun 0.0.0\n");
-    expect(existsSync(join(home, ".cache/mlx-bun/registry.sqlite"))).toBe(false);
+    expect(existsSync(join(home, ".mlx-bun/db/registry.sqlite"))).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 

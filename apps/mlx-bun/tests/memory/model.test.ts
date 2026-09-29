@@ -81,7 +81,7 @@ describe("memory model seam — adapters", () => {
     const home = mkdtempSync(join(tmpdir(), "mlx-memory-adapters-"));
     process.env.HOME = home;
     restores.push(() => { process.env.HOME = previous; rmSync(home, { recursive: true, force: true }); });
-    const stage = "p0t1-fixture", directory = join(home, ".cache", "mlx-bun", "adapters", `memory-${stage}`);
+    const stage = "p0t1-fixture", directory = join(home, ".mlx-bun", "adapters", `memory-${stage}`);
     expect(adapterDirFor("definitely-no-such-stage-xyz")).toBeUndefined();
     const before = adapterDirFor(stage) !== undefined;
     expect(before).toBe(false);
