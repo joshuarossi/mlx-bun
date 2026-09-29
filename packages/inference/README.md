@@ -901,6 +901,9 @@ assistant, two-model, Qwen/GLM MTP, DFlash, DeepSpec, and n-gram proposal provid
 Supply the target graph, draft provider, token budget, and token callback yourself.
 `specRun` accepts an explicit binding from `generation/speculative/binding`; it does not
 require a concrete model class. The former `specServeRun` name remains available.
+`generation/speculative/loader` loads a `dspark.json` checkpoint (`loadDsparkDrafter`) and
+also exports the drafter class and its config types, which `@mlx-bun/training/dspark` uses
+to produce those checkpoints.
 
 `DraftProviderRegistry` (`generation/speculative/draft-registry`) is how a server
 selects and loads a draft: each provider kind registers `detect(artifact)` (files

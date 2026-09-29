@@ -11,6 +11,7 @@
     ".": "./src/index.ts",
     "./quantizer": "./src/quantizer.ts",
     "./convert": "./src/convert.ts",
+    "./drafter": "./src/drafter.ts",
     "./allocator": "./src/allocator.ts",
     "./sensitivity": "./src/sensitivity.ts",
     "./calibration": "./src/calibration.ts",

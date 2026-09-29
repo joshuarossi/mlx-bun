@@ -1114,6 +1114,19 @@ a signal arriving during it lets the output finish (without pushing) rather than
 leaving a partial directory. [Training CLI tests](tests/train-cli.test.ts) use injected
 dependencies and a spawned CLI with native MLX blocked.
 
+`cli/draft.ts` owns `draft <regen|train|calibrate|quantize>`, thin over `@mlx-bun/training/dspark`
+and `@mlx-bun/quantize/drafter`: it validates flags before resolving or loading anything, resolves
+the target model like `train`, runs one stage in the foreground and prints progress. Defaults live
+under the storage root: `regen` writes shards to `~/.mlx-bun/datasets/dspark-<model>`, `train` a
+drafter directory to `~/.mlx-bun/models/<model>-dspark` (serve it with `--draft-model <dir>`),
+`quantize` `~/.mlx-bun/models/<drafter>-affine-q<bits>-g<group>` (refused if it exists), and
+`calibrate` rewrites the drafter's `dspark.json` in place (refused when it already carries thresholds
+unless `--force`). `--tap-layers` defaults to gemma-4 e4b's `20,31,41,42`; other targets pass their own,
+identical for `regen` and `train`. SIGINT/SIGTERM stop at the next topic, step or prompt. The
+[draft CLI tests](tests/draft-cli.test.ts) use injected libraries (an opt-in native check saves a
+tiny drafter and resolves it like a model path); the acceptance gate for a drafter is `bun scripts/drafter-ab.ts`, which serves each
+drafter through `--command` and compares `usage.speculation`.
+
 [Job lifecycle tests](tests/jobs/lifecycle.test.ts) exercise leases, crash/error
 paths, shutdown, HTTP/SSE, and a real CPU-only child with temporary storage;
 [process-group tests](tests/jobs/process-group.test.ts) use real child processes

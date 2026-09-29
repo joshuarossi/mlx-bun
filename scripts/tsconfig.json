@@ -14,6 +14,7 @@
   "include": [
     "*.ts",
     "bench/**/*.ts",
+    "drafter-ab/**/*.ts",
     "eval/**/*.ts"
   ]
 }

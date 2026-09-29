@@ -3,6 +3,8 @@
 
 export { quantizeModelDir, isQuantizable, withPreparedProbe, CONVERT_DTYPES } from "./quantizer";
 export { convertModelDir } from "./convert";
+export { quantizeDrafterDir, drafterQuantizePredicate } from "./drafter";
+export type { QuantizeDrafterOptions } from "./drafter";
 export type { ConvertOptions, ConvertResult } from "./convert";
 export type {
   ConvertDtype,
