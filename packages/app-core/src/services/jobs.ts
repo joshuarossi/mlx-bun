@@ -26,6 +26,8 @@ export interface JobSubmission {
   readonly kind: string;
   readonly config: Readonly<Record<string, unknown>>;
   readonly outputPath?: string;
+  /** A directory the submitter owns for the job's temporary files: a `process` job's `TMPDIR`. The submitter removes it after the job ends. */
+  readonly scratchDir?: string;
 }
 
 /** Sink a runner calls to report progress. Failing to record must not kill the job. */
@@ -42,6 +44,7 @@ export interface JobService {
   submit(submission: JobSubmission): Promise<JobRecord>;
   get(id: string): Promise<JobRecord | undefined>;
   list(filter?: { readonly kind?: string; readonly status?: JobStatus }): Promise<readonly JobRecord[]>;
+  /** Stops a queued or running job and resolves once it has ended and its process, if any, is gone; on a finished job, once its process is gone. */
   cancel(id: string): Promise<void>;
   /** Replays recorded events, then follows until the job ends. */
   events(id: string, signal?: AbortSignal): AsyncIterable<JobEvent>;

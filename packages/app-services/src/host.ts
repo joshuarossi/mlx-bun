@@ -4,7 +4,7 @@
 // execution lock and serving; this is the part a second host would copy.
 import type { ModelCatalog } from "@mlx-bun/app-core";
 import type { ServiceBindings } from "@mlx-bun/app-host";
-import { createRegistryCatalog } from "./catalog";
+import { createRegistryCatalog, type CatalogHub } from "./catalog";
 import { createEventHub, type EventHub } from "./events";
 import { createStorage } from "./storage";
 import type { WhisperBackend } from "./whisper-backend";
@@ -28,6 +28,8 @@ export interface HostServicesOptions {
   /** Test seams. */
   backend?: WhisperBackend;
   catalog?: ModelCatalog;
+  /** Downloads and publishing behind the default catalog; a host without them cannot fetch or push models. */
+  hub?: CatalogHub;
   /** Where declared storage entries live; default `MLX_BUN_HOME`. */
   storageRoot?: () => string;
   /** The host's event bus, shared with whatever else publishes (the engine adapter); default a new one. */
@@ -45,7 +47,7 @@ export interface HostServices {
 
 /** The core services a host that serves Whisper implements: `modelHost`, `catalog`, `storage` and `events`. */
 export function createHostServices(options: HostServicesOptions = {}): HostServices {
-  const catalog = options.catalog ?? createRegistryCatalog();
+  const catalog = options.catalog ?? createRegistryCatalog(options.hub ? { hub: options.hub } : {});
   const events = options.events ?? createEventHub();
   const policy = options.whisper;
   const whisper = createWhisperModelHost({

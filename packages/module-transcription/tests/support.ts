@@ -24,8 +24,11 @@ export function fakeCatalog(models: Record<string, string> = { [MODEL_ID]: MODEL
     resolve: async id => id in models ? entry(id) : undefined,
     find: async query => { if (!(query in models)) throw new Error(`no model matching "${query}"`); return entry(query); },
     estimate: async () => ({ residentBytes: 0 }),
+    locate: async () => undefined,
     register: async () => { throw new Error("unused"); },
     download: async () => { throw new Error("unused"); },
+    canPublish: () => false,
+    publish: async () => { throw new Error("unused"); },
   };
 }
 

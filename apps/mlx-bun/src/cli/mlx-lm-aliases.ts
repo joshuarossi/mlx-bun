@@ -6,7 +6,7 @@
 // Flags mlx-bun cannot honor exit with an error naming the mlx_lm flag.
 import { readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { checkPositionals, commandOptions, help, type Command, type CommandArgs } from "./args";
+import { checkPositionals, commandOptions, help, isCommand, type CommandArgs } from "./args";
 
 type Value = string | boolean;
 export type AliasValues = Record<string, Value | undefined>;
@@ -25,7 +25,7 @@ interface MlxLmFlag {
   set?(value: Value | string[], values: AliasValues): void;
 }
 interface Alias {
-  verb: Command;
+  verb: string;
   /** mlx_lm's flags that need translation, refusal, or acceptance; every other mlx_lm flag is the verb's own option. */
   flags: Record<string, MlxLmFlag>;
   /** Final adjustments once every flag (and the config file) is applied. */
@@ -177,7 +177,7 @@ export function invokedAlias(input: { argv0?: string; argv1?: string; main?: str
 const NEGATIVE_NUMBER = /^-(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
 const looksLikeFlag = (token: string) => token.startsWith("-") && token !== "-" && !NEGATIVE_NUMBER.test(token);
 
-export type AliasResult = { help: string } | { command: Command; parsed: CommandArgs };
+export type AliasResult = { help: string } | { command: string; parsed: CommandArgs };
 
 function requireAlias(name: string): Alias {
   const alias = Object.hasOwn(ALIASES, name) ? ALIASES[name] : undefined;
@@ -248,7 +248,8 @@ export function translateAlias(name: string, argv: string[], readConfig: (path: 
   tagged(() => alias.finish?.(values, given));
   // Positionals belong to the verb (`generate [query] [prompt]`); mlx_lm's commands take none.
   const parsed: CommandArgs = { values, positionals };
-  checkPositionals(alias.verb, parsed);
+  // A module's verb checks its own positionals against its manifest when the host runs it.
+  if (isCommand(alias.verb)) checkPositionals(alias.verb, parsed);
   return { command: alias.verb, parsed };
 }
 

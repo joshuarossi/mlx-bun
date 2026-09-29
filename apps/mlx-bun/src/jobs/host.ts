@@ -1,7 +1,7 @@
 import { createInProcessJobs } from "./in-process";
 import type { JobKind, JobRunner } from "./protocol";
 import { JobStore } from "./db";
-import { closeSubprocessJobs, submitSubprocess, type SubprocessOpts } from "./runner";
+import { cancelSubprocessJob, closeSubprocessJobs, submitSubprocess, type SubprocessOpts } from "./runner";
 
 /** Owns the lazily opened store, in-process tasks, and managed subprocesses. Composition supplies
  * an execution lease; the host never unloads the application's resident model. */
@@ -22,13 +22,16 @@ export function createJobHost(options: SubprocessOpts & { createStore?: () => Jo
   return {
     signal: cancellation.signal,
     ensureStore,
-    submit(kind: "quantize" | "finetune", config: Record<string, unknown>, outputPath: string) {
-      return submitSubprocess(ensureStore(), kind, config, outputPath, options);
+    submit(kind: string, config: Record<string, unknown>, outputPath?: string, scratchDir?: string) {
+      return submitSubprocess(ensureStore(), kind, config, outputPath, options, scratchDir);
     },
     submitTask(kind: JobKind, config: Record<string, unknown>, runner: JobRunner, outputPath?: string) {
       return tasks.submit(ensureStore(), kind, config, runner, outputPath);
     },
-    cancelTask(jobId: string) { tasks.cancel(jobId); },
+    /** Stop a running in-process task; it ends `failed` with "job cancelled". Resolves once it has ended. */
+    cancelTask(jobId: string) { return tasks.cancel(jobId); },
+    /** Stop a queued or running child process of this store and wait until its process group is gone. */
+    cancelProcess(jobId: string) { return cancelSubprocessJob(ensureStore(), jobId); },
     close() {
       if (closing) return closing;
       closed = true;

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { CliVerbSpec } from "@mlx-bun/app-core";
-import { parseVerb, positionalUsage, verbHelp, verbUsage } from "../src";
+import { parseVerb, positionalUsage, verbArguments, verbHelp, verbUsage } from "../src";
 
 const spec: CliVerbSpec = {
   name: "clip", summary: "Cut a clip", usage: "usage: prog clip <file> [more] [--len N]",
@@ -52,4 +52,23 @@ Options:
   --key <value>            Key [default: 61]
   --tag <value>            Tags
   -h, --help               Show help`);
+});
+
+test("a short spelling parses and is listed, and a flag can name its own message for a missing value", () => {
+  const withShort: CliVerbSpec = { name: "cut", summary: "Cut", options: [
+    { name: "quiet", type: "boolean", short: "q", summary: "Say less" },
+    { name: "repo", type: "string", missingValue: "--repo expects a repo id (org/name)", summary: "Target" },
+  ] };
+  expect(parseVerb("prog", withShort, ["-q"]).values).toEqual({ quiet: true });
+  expect(verbHelp("prog", withShort)).toContain("  -q, --quiet              Say less");
+  expect(() => parseVerb("prog", withShort, ["--repo"])).toThrow("--repo expects a repo id (org/name)");
+  expect(() => parseVerb("prog", withShort, ["--repo", "-q"])).toThrow("--repo expects a repo id (org/name)");
+  expect(() => parseVerb("prog", { ...withShort, options: [{ name: "repo", type: "string", summary: "" }] }, ["--repo"])).toThrow("argument missing");
+});
+
+test("values parsed elsewhere (another spelling of the verb) get the same positional rules and number coercion", () => {
+  expect(verbArguments("prog", spec, { len: "3", loud: true, ignored: "x" }, ["a"])).toEqual({ values: { len: 3, loud: true }, positionals: ["a"] });
+  expect(() => verbArguments("prog", spec, {}, [])).toThrow("usage: prog clip <file> [more] [--len N]");
+  expect(() => verbArguments("prog", spec, {}, ["a", "b", "c"])).toThrow("Too many arguments for clip");
+  expect(() => verbArguments("prog", spec, { len: "x" }, ["a"])).toThrow("invalid --len: x");
 });

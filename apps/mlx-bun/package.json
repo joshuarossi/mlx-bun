@@ -44,6 +44,7 @@
     "@mlx-bun/mlx": "workspace:*",
     "@mlx-bun/module-datasets": "workspace:*",
     "@mlx-bun/module-metrics": "workspace:*",
+    "@mlx-bun/module-quantize": "workspace:*",
     "@mlx-bun/module-transcription": "workspace:*",
     "@earendil-works/pi-ai": "0.80.3",
     "@earendil-works/pi-coding-agent": "0.80.3",

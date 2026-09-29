@@ -20,6 +20,10 @@ interface QueuedSpawn {
   compiled: boolean;
   spawn: typeof Bun.spawn;
   graceMs: number;
+  /** The submitter's temporary directory for the child (`TMPDIR`). */
+  scratchDir?: string;
+  /** Set when a caller stopped this job on purpose; recorded as the failure instead of the exit code. */
+  cancelReason?: string;
   onComplete?: (jobId: string, code: number) => void;
 }
 
@@ -56,6 +60,7 @@ export function submitSubprocess(
   config: Record<string, unknown>,
   outputPath: string | undefined,
   opts: SubprocessOpts,
+  scratchDir?: string,
 ): SubmitResult {
   if (closedStores.has(store)) throw new Error("job host is closed");
   const row = store.create(kind, config, outputPath);
@@ -72,6 +77,7 @@ export function submitSubprocess(
     graceMs: opts.graceMs ?? 3000,
     onComplete: opts.onComplete,
     acquire: opts.acquire,
+    ...(scratchDir ? { scratchDir } : {}),
   };
   spawnQueue.push(item);
   drainQueue();
@@ -107,6 +113,7 @@ function spawnNow(item: QueuedSpawn): void {
         MLX_BUN_JOBS_DB: store.dbPath,
         MLX_BUN_JOBS_DIR: store.logsDir,
         MLX_BUN_JOB_PARENT_PIPE: "1",
+        ...(item.scratchDir ? { TMPDIR: item.scratchDir } : {}),
       },
     });
   } catch (e) {
@@ -149,7 +156,7 @@ function spawnNow(item: QueuedSpawn): void {
       const cur = store.get(jobId);
       if (cur && (cur.status === "queued" || cur.status === "running")) {
         store.setStatus(jobId, "failed", {
-          error: `exited ${code}`,
+          error: item.cancelReason ?? `exited ${code}`,
           endedAt: nowIso(),
         });
       }
@@ -255,23 +262,44 @@ export async function closeSubprocessJobs(store: JobStore): Promise<void> {
     finally { item.finish(); }
   }
   const active = activeSpawn;
-  if (active?.store === store) {
-    active.abort.abort(new Error("job host closed"));
-    const proc = active.proc;
-    if (proc) {
-      signalJob(proc, "SIGTERM");
-      const force = setTimeout(() => signalJob(proc, "SIGKILL"), active.graceMs);
-      try {
-        // SIGKILL at the grace, then one more grace for the child to die.
-        if (!(await settles(proc.exited, 2 * active.graceMs))) {
-          console.error(`[jobs] ${active.jobId}: pid ${proc.pid} outlived SIGKILL; releasing the lease without it`);
-          releaseLease(active);
-        }
-      } finally { clearTimeout(force); }
-    }
-    await active.finished;
-  }
+  if (active?.store === store) await stopActive(active, "job host closed");
   if (errors.length) throw new AggregateError(errors, "Failed to persist cancelled jobs");
+}
+
+/** Stop the active job: no child is spawned if it is still waiting for the lease, otherwise the child gets SIGTERM, then SIGKILL after
+ * the grace, and the lease is released once its process group is gone (bounded at one more grace). Resolves when the job has ended. */
+async function stopActive(active: QueuedSpawn, reason: string): Promise<void> {
+  active.abort.abort(new Error(reason));
+  const proc = active.proc;
+  if (proc) {
+    signalJob(proc, "SIGTERM");
+    const force = setTimeout(() => signalJob(proc, "SIGKILL"), active.graceMs);
+    try {
+      // SIGKILL at the grace, then one more grace for the child to die.
+      if (!(await settles(proc.exited, 2 * active.graceMs))) {
+        console.error(`[jobs] ${active.jobId}: pid ${proc.pid} outlived SIGKILL; releasing the lease without it`);
+        releaseLease(active);
+      }
+    } finally { clearTimeout(force); }
+  }
+  await active.finished;
+}
+
+/** Stop one managed job of this store: a queued job never spawns, the active one is stopped as `closeSubprocessJobs` stops it. A job that
+ * has finished but whose process group is still being joined is waited for; anything else is left alone. Resolves when the job's process is gone. */
+export async function cancelSubprocessJob(store: JobStore, jobId: string): Promise<void> {
+  const queued = spawnQueue.findIndex(item => item.store === store && item.jobId === jobId);
+  if (queued >= 0) {
+    const [item] = spawnQueue.splice(queued, 1);
+    store.setStatus(jobId, "failed", { error: "job cancelled", endedAt: nowIso() });
+    item!.finish();
+    return;
+  }
+  const active = activeSpawn;
+  if (active?.store !== store || active.jobId !== jobId) return;
+  const row = store.get(jobId);
+  if (row && row.status !== "done" && row.status !== "failed") { active.cancelReason = "job cancelled"; await stopActive(active, "job cancelled"); }
+  else await active.finished;
 }
 
 /** Read a child stream line-by-line, buffering partial trailing lines, and
