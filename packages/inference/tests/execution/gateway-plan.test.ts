@@ -76,8 +76,8 @@ const place = (binding: MlxGatewayBinding, request: typeof shape) =>
 const refusals = (plan: ResolvedExecution) =>
   plan.reasons.filter(reason => reason.endsWith("-unsupported") || reason === "continuous-unavailable");
 
-/** Main served delayed affine KV serially on graphs whose delayed affine rows
- * are ordinary-only, so its direct grammar jump committed spans there. */
+/** On graphs whose delayed affine rows are ordinary-only, the direct grammar
+ * jump commits spans over delayed affine KV. */
 function expectOrdinaryAffineSpans(make: () => RuntimeModel, delayed: GenerateOptions, immediate: GenerateOptions) {
   const jump = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }),
     () => bindMlxGateway(make(), { provider: new NgramProvider(), numDraftTokens: 3 }));
