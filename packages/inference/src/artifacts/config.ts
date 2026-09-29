@@ -2,6 +2,7 @@
 // Parses HF config.json (Gemma 4 unified layout: text_config nested),
 // the OptiQ per-layer quantization map, and kv_config.json when present.
 
+import { dialectFor } from "./config-dialects";
 import {
   parseGlm52Config,
   type Glm52Config,
@@ -200,58 +201,15 @@ export function quantFor(q: QuantizationConfig | null, modulePath: string): Quan
   return spec.mode === "none" ? null : spec;
 }
 
-/** DiffusionGemma's config.json ships only token ids + canvas_length + the
- *  quant map — the architecture dims live in optiq's `config.py` TextConfig
- *  defaults (and layer_types / rope_parameters are computed in __post_init__).
- *  We reproduce those defaults in snake_case so the generic parser below picks
- *  them up; any field actually present in config.json still overrides. Source:
- *  optiq/vlm/_mlxvlm/models/diffusion_gemma/config.py. */
-function diffusionGemmaRawDefaults(): Record<string, any> {
-  const numLayers = 30;
-  const pattern = ["sliding_attention", "sliding_attention", "sliding_attention",
-    "sliding_attention", "sliding_attention", "full_attention"];
-  const layer_types = Array.from({ length: numLayers }, (_, i) => pattern[i % pattern.length]);
-  layer_types[numLayers - 1] = "full_attention"; // last forced full
-  return {
-    hidden_size: 2816,
-    num_hidden_layers: numLayers,
-    num_attention_heads: 16,
-    num_key_value_heads: 8,
-    num_global_key_value_heads: 2,
-    head_dim: 256,
-    global_head_dim: 512,
-    intermediate_size: 2112,
-    moe_intermediate_size: 704,
-    hidden_activation: "gelu_pytorch_tanh",
-    rms_norm_eps: 1e-6,
-    vocab_size: 262144,
-    max_position_embeddings: 262144,
-    sliding_window: 1024,
-    layer_types,
-    enable_moe_block: true,
-    num_experts: 128,
-    top_k_experts: 8,
-    final_logit_softcapping: 30.0,
-    tie_word_embeddings: true,
-    bos_token_id: 2,
-    eos_token_id: 1,
-    rope_parameters: {
-      sliding_attention: { rope_type: "default", rope_theta: 10000.0 },
-      full_attention: { rope_type: "proportional", partial_rotary_factor: 0.25, rope_theta: 1000000.0 },
-    },
-  };
-}
-
 export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
   const raw = (await Bun.file(`${modelDir}/config.json`).json()) as Record<string, any>;
   const modelType = raw.model_type;
-  const isDiffusion = modelType === "diffusion_gemma";
-  const isGlm52 = modelType === "glm_moe_dsa";
+  const dialect = dialectFor(modelType);
   // The converted Colibri artifact keeps stop metadata split across the two
   // HF files. Preserve the old config-only behavior for every other family;
   // GLM-5.2 explicitly unions both lists through its dedicated parser.
   let glm52: Glm52Config | null = null;
-  if (isGlm52) {
+  if (dialect.container === "colibri") {
     const generationFile = Bun.file(`${modelDir}/generation_config.json`);
     const generation = await generationFile.exists()
       ? await generationFile.json() as Record<string, any>
@@ -259,28 +217,11 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     glm52 = parseGlm52Config(modelDir, raw, generation);
   }
   // Gemma 4 unified nests the LM config; plain text models keep it at top level.
-  // DiffusionGemma keeps it flat too, but omits all dims — backfill from defaults.
+  // Some architectures keep it flat but omit all dims — backfill from their defaults.
   const baseT = (raw.text_config ?? raw) as Record<string, any>;
-  const t = isDiffusion ? { ...diffusionGemmaRawDefaults(), ...baseT } : baseT;
-  const isLlama = modelType === "llama";
-  const isQwen35 = typeof modelType === "string" && modelType.startsWith("qwen3_5");
-  // Plain Qwen3 (Qwen3ForCausalLM, e.g. Qwen3-Embedding): a flat HF config with
-  // a scalar rope_theta and no rope_parameters map — handled like llama below.
-  const isQwen3 = modelType === "qwen3";
-  // Qwen3.5 rope_parameters is a flat dict ({type, rope_theta, mrope_section,
-  // partial_rotary_factor}), not the gemma per-attention-type map — and
-  // type "default" means plain partial nn.RoPE (mrope_section ignored for text).
+  const t = dialect.textDefaults ? { ...dialect.textDefaults(), ...baseT } : baseT;
   const qwenRope = (t.rope_parameters ?? {}) as Record<string, any>;
-  // Qwen3.8 adds output_gate_type ("swish"), which every implementation
-  // (transformers ground truth, mlx-lm pinned + main) currently ignores —
-  // the attention output gate is hardcoded o_proj(out·σ(gate)). Only accept
-  // values verified to mean that; an unknown value must fail at load, not
-  // silently mis-gate a future checkpoint where the field starts mattering.
-  if (isQwen35 && t.output_gate_type != null && t.output_gate_type !== "swish")
-    throw new Error(
-      `qwen3_5: unverified output_gate_type "${t.output_gate_type}" (only "swish" ` +
-        `is verified to mean the standard sigmoid output gate)`,
-    );
+  dialect.validate?.(t);
 
   const text: TextConfig = {
     hiddenSize: glm52?.hiddenSize ?? t.hidden_size,
@@ -305,7 +246,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
     slidingWindow: t.sliding_window ?? 0,
     layerTypes: glm52
       ? Array(glm52.numHiddenLayers).fill("full_attention")
-      : t.layer_types ?? (isLlama ? Array(t.num_hidden_layers).fill("full_attention") : []),
+      : t.layer_types ?? (dialect.fullAttentionByDefault ? Array(t.num_hidden_layers).fill("full_attention") : []),
     hiddenSizePerLayerInput: t.hidden_size_per_layer_input ?? 0,
     vocabSizePerLayerInput:
       t.vocab_size_per_layer_input ?? glm52?.vocabSize ?? t.vocab_size,
@@ -340,7 +281,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
             factor: 1.0,
           },
         }
-      : isQwen35
+      : dialect.rope === "flat"
       ? {
           full_attention: {
             ropeTheta: qwenRope.rope_theta ?? t.rope_theta ?? 10000,
@@ -351,7 +292,7 @@ export async function loadModelConfig(modelDir: string): Promise<ModelConfig> {
         }
       : t.rope_parameters
         ? parseRope(t.rope_parameters)
-        : isLlama || isQwen3
+        : dialect.rope === "theta"
           ? {
               full_attention: {
                 ropeTheta: t.rope_theta ?? 10000,

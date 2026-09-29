@@ -19,7 +19,7 @@ export interface HubRouteOptions {
 }
 
 async function localRow(model: ModelRecord) {
-  const tier = supportTier(model.modelType, model.repoId);
+  const tier = supportTier(model.modelType);
   let assessment: { fits: boolean; max_safe_context: number; predicted_decode_tps: number } | null = null;
   try {
     const config = await loadModelConfig(model.path);

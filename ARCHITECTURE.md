@@ -77,9 +77,12 @@ plans from those declarations and the app engine binds media through graph
 operations. Facts the server and CLI need (memory plans, native draft heads,
 pooled-embedding recipes, tool-call and reasoning marker tokens, media soft
 tokens, chat defaults, template fallbacks) are declared by the model layer, in
-the profile or the opened runtime, and consumed as data. The architecture gate
-rejects model classes, model-type and architecture checks, family predicates and
-model-identity checks in the engine, server and CLI.
+the family record (`models/families`, one record per family) or the opened
+runtime, and consumed as data. The architecture gate rejects model classes,
+model-type and architecture checks, family predicates and model-identity checks
+in the engine, server and CLI, and model-type comparisons anywhere in the
+library outside the family registry, the family directories and the artifact
+readers.
 Scheduling (`execution/`) is written against the structural `MlxTokenGraph`, not
 the registry's closed `RuntimeModel` union of model classes, and moves cache rows
 through each layer's row layout (`state/layout`, the `BatchableCache` port) rather

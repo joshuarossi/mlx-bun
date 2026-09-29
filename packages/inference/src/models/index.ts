@@ -2,6 +2,8 @@ export * from "./factory";
 export * from "./runtime";
 export * from "./memory-plan";
 export * from "./chat-template";
+export * from "./families";
+export type { ModelFamily, MoeDeclaration } from "./family";
 export * from "./profile";
 export * from "./implementation";
 export * from "./support";

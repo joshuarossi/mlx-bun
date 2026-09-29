@@ -26,6 +26,7 @@ import {
 import { UniversalDenseModel } from "./universal/dense";
 import { WhisperModel } from "./whisper/model";
 import { genericArgsFor } from "./universal/archs";
+import { familyForGraph } from "./families";
 import {
   ModelImplementationRegistry,
   type ModelImplementation,
@@ -43,17 +44,20 @@ export type RuntimeModel =
   | Gemma4Model | MiniCPM5Model | Qwen35Model | Qwen3Model | Qwen3MoeModel
   | DiffusionGemmaModel | Glm52Model | UniversalDenseModel;
 
+/** A resident graph's native construction. Its loader and loop are the family's own declaration. */
 function residentImplementation(
   id: string,
   graph: ModelGraph,
   create: ModelImplementation<Weights, RuntimeModel>["create"],
 ): ModelImplementation<Weights, RuntimeModel> {
-  return { id, graph, loader: "safetensors",
-    loop: graph === "diffusion-gemma" ? "diffusion" : "autoregressive", create };
+  const family = familyForGraph(graph);
+  if (!family) throw new Error(`implementation ${id} names graph ${graph}, which no model family declares`);
+  return { id, graph, loader: family.loader, loop: family.loop, create };
 }
 
-/** Engine-owned registrations. Exact quant profiles can name additional
- * implementations in a composed registry, without changing sessions or files. */
+/** Engine-owned registrations, one per resident graph of `MODEL_FAMILIES`. Exact
+ * quant profiles can name additional implementations in a composed registry,
+ * without changing sessions or files. */
 export const MLX_MODEL_IMPLEMENTATIONS = new ModelImplementationRegistry<Weights, RuntimeModel>([
   residentImplementation("diffusion-gemma", "diffusion-gemma", (weights, config) => new DiffusionGemmaModel(weights, config)),
   residentImplementation("minicpm5", "minicpm5", (weights, config) => new MiniCPM5Model(weights, config)),
@@ -213,7 +217,7 @@ export function createModel<Model>(
   assertResolvedModelProfile(config, resolved);
   if (resolved.profile.execution.loader === "colibri")
     throw new Error(
-      "glm_moe_dsa uses the direct Colibri container; construct it with " +
+      `${resolved.profile.id} uses the direct Colibri container; construct it with ` +
       "openModel(modelDir) or Glm52Model.open(modelDir)",
     );
   return implementations.select(config, resolved).create(weights, config, resolved);

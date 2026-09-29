@@ -8,8 +8,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadModelConfig } from "../../../src/artifacts/config";
+import { familyOf } from "../../../src/models/families";
 import {
-  isGlm52Config,
   isSupportedModelConfig,
   isSupportedModelRecord,
   supportTier,
@@ -145,7 +145,7 @@ describe("GLM-5.2 generic config and support registration", () => {
 
   test("registers glm_moe_dsa as dedicated targeted support", async () => {
     const config = await loadModelConfig(modelDir(glm52Raw()));
-    expect(isGlm52Config(config)).toBe(true);
+    expect(familyOf(config)?.graph).toBe("glm5.2");
     expect(supportTier("glm_moe_dsa")).toBe("targeted");
     expect(isSupportedModelRecord("glm_moe_dsa")).toBe(true);
     expect(isSupportedModelConfig(config)).toBe(true);

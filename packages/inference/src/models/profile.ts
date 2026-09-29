@@ -1,71 +1,31 @@
 import type { ModelConfig } from "../artifacts/config";
 import { configFingerprint } from "../artifacts/fingerprint";
-import {
-  isDiffusionGemmaConfig,
-  isGlm52Config,
-  isMiniCPM5Config,
-  isQwen35Config,
-  isQwen3Config,
-  isQwen3MoeConfig,
-  isWhisperConfig,
-} from "./support";
-import { GENERIC_MODEL_TYPES, genericArgsFor, remapModelType } from "./universal/archs";
-import { renderGlm52Chat, type TemplateFallback } from "../input/chat-template";
+import type { TemplateFallback } from "../input/chat-template";
 import type { MediaTokenTexts, SentinelTokenTexts } from "../input/special-tokens";
+import { ENGINE_CAPABILITIES, MODEL_FAMILIES, familyForGraph, familyOf, unsupportedModelMessage } from "./families";
+import {
+  GENERIC_GENERATION_DEFAULTS,
+  GENERIC_TRAINING_DEFAULTS,
+  L1,
+  L3,
+  type EmbeddingDeclaration,
+  type EngineCapability,
+  type FidelityTarget,
+  type GenerationDefaults,
+  type GenerationLoop,
+  type ModelFamily,
+  type ModelGraph,
+  type ModelLoader,
+  type ModelSpecialization,
+  type TrainingDefaults,
+} from "./family";
+import { GENERATED_GEMMA_FINGERPRINTS } from "./gemma4/family";
 
-/** Construction identities are metadata; inspecting a profile never loads native graphs. */
-export const GENERATED_GEMMA_FINGERPRINTS = Object.freeze({
-  "12b": "9f812d2eb461fcbe",
-  "e4b": "418e9adc386ea67c",
-  "26b": "c9dd67ed5a525231",
-});
-const generatedGemmaFingerprints = new Set<string>(Object.values(GENERATED_GEMMA_FINGERPRINTS));
-
-export const ENGINE_CAPABILITIES = Object.freeze([
-  "autoregressive",
-  "colibri-container",
-  "diffusion",
-  "diffusion-gemma-graph",
-  "encoder-decoder",
-  "gemma4-graph",
-  "generated-graph",
-  "glm5.2-graph",
-  "minicpm5-graph",
-  "mixed-precision-kv",
-  "native-mtp",
-  "qwen3-graph",
-  "qwen3-moe-graph",
-  "qwen3.5-graph",
-  "recurrent-state",
-  "safetensors",
-  "streamed-experts",
-  "universal-dense-graph",
-  "vision-sidecar",
-  "whisper-graph",
-] as const);
-
-export type EngineCapability = typeof ENGINE_CAPABILITIES[number];
-export type FidelityTier = "l1" | "l2" | "l3";
-
-export type FidelityTarget =
-  | Readonly<{ tier: "l1"; oracle: "mlx-lm"; claim: "bit-exact" }>
-  | Readonly<{ tier: "l1"; oracle: "mlx-whisper"; claim: "bit-exact" }>
-  | Readonly<{ tier: "l2"; oracle: "mlx-optiq"; claim: "bit-exact" }>
-  | Readonly<{ tier: "l3"; oracle: null; claim: "measured" }>;
-
-export type ModelLoader = "safetensors" | "colibri";
-export type ModelGraph =
-  | "gemma4"
-  | "minicpm5"
-  | "qwen3.5"
-  | "qwen3"
-  | "qwen3-moe"
-  | "diffusion-gemma"
-  | "glm5.2"
-  | "universal-dense"
-  | "whisper";
-export type GenerationLoop = "autoregressive" | "diffusion" | "encoder-decoder";
-export type ModelSpecialization = "artifact" | "dedicated" | "generated" | "generic";
+export { ENGINE_CAPABILITIES, GENERATED_GEMMA_FINGERPRINTS, GENERIC_GENERATION_DEFAULTS, GENERIC_TRAINING_DEFAULTS };
+export type {
+  EmbeddingDeclaration, EngineCapability, FidelityTarget, FidelityTier, GenerationDefaults, GenerationLoop, ModelGraph, ModelLoader,
+  ModelSpecialization, TrainingDefaults,
+} from "./family";
 
 export interface ModelExecutionComposition {
   readonly loader: ModelLoader;
@@ -115,21 +75,6 @@ export interface ResolveModelProfileOptions {
   readonly artifactProfiles?: readonly ArtifactModelProfile[];
   readonly engineCapabilities?: readonly EngineCapability[];
 }
-
-const L1: FidelityTarget = Object.freeze({
-  tier: "l1", oracle: "mlx-lm", claim: "bit-exact",
-});
-/** L1 for speech: the capability's own reference implementation (mlx-whisper)
- * plays the mlx-lm role — no mlx-lm arm exists for Whisper. */
-const L1_WHISPER: FidelityTarget = Object.freeze({
-  tier: "l1", oracle: "mlx-whisper", claim: "bit-exact",
-});
-const L2: FidelityTarget = Object.freeze({
-  tier: "l2", oracle: "mlx-optiq", claim: "bit-exact",
-});
-const L3: FidelityTarget = Object.freeze({
-  tier: "l3", oracle: null, claim: "measured",
-});
 
 function freezeProfile<T extends ModelProfile>(profile: T): T {
   Object.freeze(profile.fidelity);
@@ -185,88 +130,23 @@ export const BUILTIN_ARTIFACT_PROFILES: readonly ArtifactModelProfile[] = Object
   }),
 ]);
 
-const FAMILY_PROFILES = {
-  gemma4Generated: freezeProfile({
-    id: "gemma4-generated",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "gemma4-graph", "generated-graph"],
-    execution: {
-      loader: "safetensors", graph: "gemma4", loop: "autoregressive", specialization: "generated",
-    },
-  }),
-  gemma4: freezeProfile({
-    id: "gemma4-dedicated",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "gemma4-graph"],
-    execution: {
-      loader: "safetensors", graph: "gemma4", loop: "autoregressive", specialization: "dedicated",
-    },
-  }),
-  minicpm5: freezeProfile({
-    id: "minicpm5-dedicated",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "minicpm5-graph"],
-    execution: {
-      loader: "safetensors", graph: "minicpm5", loop: "autoregressive", specialization: "dedicated",
-    },
-  }),
-  qwen35: freezeProfile({
-    id: "qwen3.5-dedicated",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "qwen3.5-graph", "recurrent-state"],
-    execution: {
-      loader: "safetensors", graph: "qwen3.5", loop: "autoregressive", specialization: "dedicated",
-    },
-  }),
-  qwen3: freezeProfile({
-    id: "qwen3-dedicated",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "qwen3-graph"],
-    execution: {
-      loader: "safetensors", graph: "qwen3", loop: "autoregressive", specialization: "dedicated",
-    },
-  }),
-  qwen3Moe: freezeProfile({
-    id: "qwen3-moe-dedicated",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "qwen3-moe-graph"],
-    execution: {
-      loader: "safetensors", graph: "qwen3-moe", loop: "autoregressive", specialization: "dedicated",
-    },
-  }),
-  diffusionGemma: freezeProfile({
-    id: "diffusion-gemma-dedicated",
-    fidelity: L2,
-    requiredCapabilities: ["safetensors", "diffusion", "diffusion-gemma-graph"],
-    execution: {
-      loader: "safetensors", graph: "diffusion-gemma", loop: "diffusion", specialization: "dedicated",
-    },
-  }),
-  glm52: freezeProfile({
-    id: "glm5.2-colibri",
-    fidelity: L3,
-    requiredCapabilities: ["colibri-container", "autoregressive", "glm5.2-graph", "streamed-experts"],
-    execution: {
-      loader: "colibri", graph: "glm5.2", loop: "autoregressive", specialization: "dedicated",
-    },
-  }),
-  whisper: freezeProfile({
-    id: "whisper-dedicated",
-    fidelity: L1_WHISPER,
-    requiredCapabilities: ["safetensors", "encoder-decoder", "whisper-graph"],
-    execution: {
-      loader: "safetensors", graph: "whisper", loop: "encoder-decoder", specialization: "dedicated",
-    },
-  }),
-  universal: freezeProfile({
-    id: "universal-dense",
-    fidelity: L1,
-    requiredCapabilities: ["safetensors", "autoregressive", "universal-dense-graph"],
-    execution: {
-      loader: "safetensors", graph: "universal-dense", loop: "autoregressive", specialization: "generic",
-    },
-  }),
-} satisfies Record<string, ModelProfile>;
+/** What the engine must provide to run a composition: its loader, its loop, and its graph's own capabilities. */
+function executionCapabilities(execution: ModelExecutionComposition, family: ModelFamily): EngineCapability[] {
+  const required: EngineCapability[] = [execution.loader === "colibri" ? "colibri-container" : "safetensors"];
+  if (execution.loop === "diffusion") required.push("diffusion");
+  else if (execution.loop === "encoder-decoder") required.push("encoder-decoder");
+  else required.push("autoregressive");
+  required.push(...family.capabilities);
+  if (execution.specialization === "generated") required.push("generated-graph");
+  return required;
+}
+
+function familyProfile(family: ModelFamily, specialization: ModelSpecialization, id: string): ModelProfile {
+  const execution = { loader: family.loader, graph: family.graph, loop: family.loop, specialization };
+  return freezeProfile({
+    id, fidelity: family.fidelity, requiredCapabilities: executionCapabilities(execution, family), execution,
+  });
+}
 
 /** Return a stable external fingerprint only when the directory is an exact HF
  * snapshot revision. Relocation does not change the identity. Arbitrary local
@@ -283,170 +163,60 @@ export function externalArtifactFingerprint(modelDir: string): string | null {
   return `hf:${repo}@${match[2]!.toLowerCase()}`;
 }
 
-function familyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
-  if (isGlm52Config(config)) return FAMILY_PROFILES.glm52;
-  if (isDiffusionGemmaConfig(config)) return FAMILY_PROFILES.diffusionGemma;
-  if (isMiniCPM5Config(config)) return FAMILY_PROFILES.minicpm5;
-  if (isQwen35Config(config)) return FAMILY_PROFILES.qwen35;
-  if (isQwen3MoeConfig(config)) return FAMILY_PROFILES.qwen3Moe;
-  if (isQwen3Config(config)) return FAMILY_PROFILES.qwen3;
-  if (isWhisperConfig(config)) return FAMILY_PROFILES.whisper;
-  if (config.modelType.startsWith("gemma4"))
-    return generatedGemmaFingerprints.has(fingerprint) ? FAMILY_PROFILES.gemma4Generated : FAMILY_PROFILES.gemma4;
-  if (genericArgsFor(config)) return FAMILY_PROFILES.universal;
+const FAMILY_PROFILES: ReadonlyMap<ModelGraph, { dedicated: ModelProfile; generated?: ModelProfile }> = new Map(
+  MODEL_FAMILIES.map(family => [family.graph, {
+    dedicated: familyProfile(family, family.specialization, family.profileId),
+    ...(family.generated ? { generated: familyProfile(family, "generated", family.generated.profileId) } : {}),
+  }] as const));
 
-  const arch = remapModelType(config.modelType);
-  throw new Error(
-    `unsupported model_type "${config.modelType}"` +
-    (arch !== config.modelType ? ` (mlx-lm remaps it to "${arch}")` : "") +
-    ` — targeted: gemma4*, diffusion_gemma, glm_moe_dsa, qwen3_5, qwen3, qwen3_moe, whisper, MiniCPM5;` +
-    ` generic (Tier-0): ${[...GENERIC_MODEL_TYPES].sort().join(", ")}`,
-  );
+/** The profile the config's family declares. A family lists fingerprints of the
+ * graphs generated from its configs; those get the generated profile. */
+function selectFamilyProfile(config: ModelConfig, fingerprint: string): ModelProfile {
+  const family = familyOf(config);
+  if (!family) throw new Error(unsupportedModelMessage(config));
+  const profiles = FAMILY_PROFILES.get(family.graph)!;
+  return profiles.generated && family.generated!.fingerprints.includes(fingerprint) ? profiles.generated : profiles.dedicated;
 }
 
-/** Fine-tuning defaults a graph may declare. The CLI reads these from the
- * resolved profile; nothing outside the model decides them by name. */
-export interface TrainingDefaults {
-  /** Default maximum training sequence length in tokens. */
-  readonly maxSeqLength: number;
+function declaredBy(resolved: ResolvedModelProfile): ModelFamily | null {
+  return familyForGraph(resolved.profile.execution.graph);
 }
-
-/** Applies to every graph that declares nothing of its own. */
-export const GENERIC_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 4096 });
-const GEMMA_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 8192 });
-
-/** Request defaults a graph declares for chat generation. The server applies
- * them under explicit request and server settings; nothing outside the model
- * decides them by name. */
-export interface GenerationDefaults {
-  /** `enable_thinking` when neither the request nor the server chose; absent leaves the template's own default. */
-  readonly enableThinking?: boolean;
-  /** Upper bound on the configured sampling temperature for replies with thinking off
-   * (model authors publish one think-mode temperature and recommend a cooler one for direct replies). */
-  readonly noThinkTemperatureCap: number;
-}
-
-/** Applies to every graph that declares nothing of its own. */
-export const GENERIC_GENERATION_DEFAULTS: GenerationDefaults = Object.freeze({ noThinkTemperatureCap: 0.7 });
-
-const GEMMA_SENTINELS: SentinelTokenTexts = Object.freeze({
-  toolCallStart: "<|tool_call>", toolCallEnd: "<tool_call|>", channelStart: "<|channel>", channelEnd: "<channel|>",
-});
-const GEMMA_MEDIA_TOKENS: MediaTokenTexts = Object.freeze({
-  vision: Object.freeze({ image: "<|image|>", begin: "<|image>", end: "<image|>" }),
-  audio: Object.freeze({ audio: "<|audio|>", begin: "<|audio>", end: "<audio|>" }),
-});
-
-/** How a graph's pooled text embedding is formed from tokenized input. */
-export interface EmbeddingDeclaration {
-  /** Special token appended to every input; its final hidden state is the vector. */
-  readonly terminator: string;
-}
-
-interface GraphMetadata {
-  readonly accepts: (config: ModelConfig) => boolean;
-  readonly capabilities: readonly EngineCapability[];
-  readonly trainingDefaults?: TrainingDefaults;
-  /** Present when the graph declares `GraphCapabilities.embeddings`. */
-  readonly embedding?: EmbeddingDeclaration;
-  /** Present when generated text delimits tool calls and reasoning with special tokens. */
-  readonly sentinels?: SentinelTokenTexts;
-  /** Soft-token markers of the graph's tower prompts. */
-  readonly mediaTokens?: MediaTokenTexts;
-  readonly generationDefaults?: GenerationDefaults;
-  /** Renders chats for artifacts that ship no template of their own. */
-  readonly chatTemplateFallback?: TemplateFallback;
-}
-
-const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freeze({
-  "gemma4": {
-    accepts: (config) => config.modelType.startsWith("gemma4"),
-    capabilities: ["gemma4-graph"],
-    trainingDefaults: GEMMA_TRAINING_DEFAULTS,
-    sentinels: GEMMA_SENTINELS,
-    mediaTokens: GEMMA_MEDIA_TOKENS,
-  },
-  "minicpm5": {
-    accepts: isMiniCPM5Config,
-    capabilities: ["minicpm5-graph"],
-    // The model card recommends direct replies unless thinking is asked for.
-    generationDefaults: { ...GENERIC_GENERATION_DEFAULTS, enableThinking: false },
-  },
-  "qwen3.5": {
-    accepts: isQwen35Config,
-    capabilities: ["qwen3.5-graph", "recurrent-state"],
-  },
-  "qwen3": {
-    accepts: isQwen3Config,
-    capabilities: ["qwen3-graph"],
-    embedding: { terminator: "<|endoftext|>" },
-  },
-  "qwen3-moe": { accepts: isQwen3MoeConfig, capabilities: ["qwen3-moe-graph"] },
-  "diffusion-gemma": {
-    accepts: isDiffusionGemmaConfig,
-    capabilities: ["diffusion-gemma-graph"],
-    trainingDefaults: GEMMA_TRAINING_DEFAULTS,
-    mediaTokens: GEMMA_MEDIA_TOKENS,
-  },
-  "glm5.2": {
-    accepts: isGlm52Config,
-    capabilities: ["glm5.2-graph", "streamed-experts"],
-    chatTemplateFallback: { render: renderGlm52Chat, thinkingFormat: "think-tag" },
-  },
-  "whisper": { accepts: isWhisperConfig, capabilities: ["whisper-graph"] },
-  "universal-dense": {
-    accepts: (config) => {
-      try { return genericArgsFor(config) !== null; } catch { return false; }
-    },
-    capabilities: ["universal-dense-graph"],
-  },
-});
 
 /** The fine-tuning defaults the resolved model's graph declares, else the
  * generic ones. */
 export function trainingDefaultsFor(resolved: ResolvedModelProfile): TrainingDefaults {
-  return GRAPH_METADATA[resolved.profile.execution.graph].trainingDefaults ?? GENERIC_TRAINING_DEFAULTS;
+  return declaredBy(resolved)?.trainingDefaults ?? GENERIC_TRAINING_DEFAULTS;
 }
 
 /** The tool-call and reasoning-channel marker tokens the resolved model's graph declares, or null. */
 export function sentinelDeclarationFor(resolved: ResolvedModelProfile): SentinelTokenTexts | null {
-  return GRAPH_METADATA[resolved.profile.execution.graph].sentinels ?? null;
+  return declaredBy(resolved)?.sentinels ?? null;
 }
 
 /** The tower-prompt soft-token markers the resolved model's graph declares, or null. */
 export function mediaTokenDeclarationFor(resolved: ResolvedModelProfile): MediaTokenTexts | null {
-  return GRAPH_METADATA[resolved.profile.execution.graph].mediaTokens ?? null;
+  return declaredBy(resolved)?.mediaTokens ?? null;
 }
 
 /** The chat-generation defaults the resolved model's graph declares, else the generic ones. */
 export function generationDefaultsFor(resolved: ResolvedModelProfile): GenerationDefaults {
-  return GRAPH_METADATA[resolved.profile.execution.graph].generationDefaults ?? GENERIC_GENERATION_DEFAULTS;
+  return declaredBy(resolved)?.generationDefaults ?? GENERIC_GENERATION_DEFAULTS;
 }
 
 /** The renderer for artifacts that ship no chat template, or null when they must ship one. */
 export function chatTemplateFallbackFor(resolved: ResolvedModelProfile): TemplateFallback | null {
-  return GRAPH_METADATA[resolved.profile.execution.graph].chatTemplateFallback ?? null;
+  return declaredBy(resolved)?.chatTemplateFallback ?? null;
 }
 
 /** The pooled-embedding recipe the resolved model's graph declares, or null. */
 export function embeddingDeclarationFor(resolved: ResolvedModelProfile): EmbeddingDeclaration | null {
-  return GRAPH_METADATA[resolved.profile.execution.graph].embedding ?? null;
+  return declaredBy(resolved)?.embedding ?? null;
 }
 
 function graphAccepts(profile: ModelProfile, config: ModelConfig): boolean {
-  return GRAPH_METADATA[profile.execution.graph].accepts(config);
-}
-
-function executionCapabilities(profile: ModelProfile): EngineCapability[] {
-  const required: EngineCapability[] = [profile.execution.loader === "colibri"
-    ? "colibri-container"
-    : "safetensors"];
-  if (profile.execution.loop === "diffusion") required.push("diffusion");
-  else if (profile.execution.loop === "encoder-decoder") required.push("encoder-decoder");
-  else required.push("autoregressive");
-  required.push(...GRAPH_METADATA[profile.execution.graph].capabilities);
-  if (profile.execution.specialization === "generated") required.push("generated-graph");
-  return required;
+  const family = familyForGraph(profile.execution.graph);
+  if (!family) return false;
+  try { return family.accepts(config); } catch { return false; }
 }
 
 function validateProfile(profile: ModelProfile): void {
@@ -459,29 +229,26 @@ function validateProfile(profile: ModelProfile): void {
     throw new Error(
       `model profile ${profile.id} must declare artifactFingerprint and configFingerprint together`,
     );
+  const family = familyForGraph(profile.execution.graph);
+  if (!family)
+    throw new Error(`model profile ${profile.id} selects unknown graph ${profile.execution.graph}`);
   const fidelityOk =
     (profile.fidelity.tier === "l1" && profile.fidelity.oracle === "mlx-lm" &&
       profile.fidelity.claim === "bit-exact") ||
     (profile.fidelity.tier === "l1" && profile.fidelity.oracle === "mlx-whisper" &&
-      profile.fidelity.claim === "bit-exact" && profile.execution.graph === "whisper") ||
+      profile.fidelity.claim === "bit-exact" && family.fidelity.oracle === "mlx-whisper") ||
     (profile.fidelity.tier === "l2" && profile.fidelity.oracle === "mlx-optiq" &&
       profile.fidelity.claim === "bit-exact") ||
     (profile.fidelity.tier === "l3" && profile.fidelity.oracle === null &&
       profile.fidelity.claim === "measured");
   if (!fidelityOk) throw new Error(`model profile ${profile.id} has an invalid fidelity contract`);
-  const expectedLoader = profile.execution.graph === "glm5.2" ? "colibri" : "safetensors";
-  const expectedLoop = profile.execution.graph === "diffusion-gemma"
-    ? "diffusion"
-    : profile.execution.graph === "whisper"
-      ? "encoder-decoder"
-      : "autoregressive";
-  if (profile.execution.loader !== expectedLoader || profile.execution.loop !== expectedLoop)
+  if (profile.execution.loader !== family.loader || profile.execution.loop !== family.loop)
     throw new Error(
       `model profile ${profile.id} has an invalid execution composition for ` +
       `${profile.execution.graph}`,
     );
   const declared = new Set(profile.requiredCapabilities);
-  const underdeclared = executionCapabilities(profile).filter((capability) => !declared.has(capability));
+  const underdeclared = executionCapabilities(profile.execution, family).filter((capability) => !declared.has(capability));
   if (underdeclared.length)
     throw new Error(
       `model profile ${profile.id} does not declare execution capabilities: ` +
@@ -526,7 +293,7 @@ export function resolveModelProfile(
         );
     }
   }
-  profile ??= familyProfile(config, fingerprint);
+  profile ??= selectFamilyProfile(config, fingerprint);
   validateProfile(profile);
   profile = snapshotProfile(profile);
 

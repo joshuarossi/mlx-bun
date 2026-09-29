@@ -87,7 +87,7 @@ const glmProfile = (): ResolvedModelProfile => {
   return { profile, artifact: { fingerprint: profile.artifactFingerprint, configFingerprint: profile.configFingerprint }, exactArtifact: true };
 };
 
-// MiniCPM5's structural fingerprint (support.ts isMiniCPM5Config): a llama-typed 1B checkpoint.
+// MiniCPM5's structural fingerprint (minicpm5/family.ts): a llama-typed 1B checkpoint.
 const miniCpm5 = { model_type: "llama", hidden_size: 1536, num_hidden_layers: 24, num_attention_heads: 16, num_key_value_heads: 2,
   head_dim: 128, vocab_size: 130560, intermediate_size: 4096, rms_norm_eps: 1e-6, rope_theta: 1e6, max_position_embeddings: 128,
   tie_word_embeddings: false, eos_token_id: 1 };

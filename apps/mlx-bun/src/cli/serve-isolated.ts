@@ -88,7 +88,7 @@ async function describeServedModel(engine: WorkerSupervisor, modelId: string, op
 function exactModel(id: string, createRegistry: () => Pick<Registry, "listCanonical" | "close">): ModelRecord | null {
   const registry = createRegistry();
   try {
-    return registry.listCanonical().find(model => model.repoId === id && isSupportedModelRecord(model.modelType, model.repoId)) ?? null;
+    return registry.listCanonical().find(model => model.repoId === id && isSupportedModelRecord(model.modelType)) ?? null;
   } finally { registry.close(); }
 }
 

@@ -65,8 +65,9 @@ function appDomain(path: string, owner: Library): string {
 const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
   "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
   "models/chat-template.ts", "models/support.ts"]);
-/** `models/support.ts` also exports one structural predicate per family; the role predicates
- * (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only ones consumers may use. */
+/** The family registry lists one record per family (`models/families.ts`); the role predicates of
+ * `models/support.ts` (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only
+ * ones consumers may use, and a per-family structural predicate must not reappear as an export. */
 const familyPredicate = /^is(Gemma|Qwen|MiniCPM|Llama|Glm|Diffusion|Whisper|Universal)\w*Config$/i;
 const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
 
@@ -178,6 +179,21 @@ function identityChecks(source: ts.SourceFile): { text: string; line: number }[]
   };
   visit(source);
   return found;
+}
+
+/** What "which family is this?" looks like in code: comparing or pattern-matching a config's
+ * model type, or importing a per-family predicate. */
+function familyIdentityChecks(source: ts.SourceFile): { text: string; line: number }[] {
+  return identityChecks(source).filter(({ text }) => text === "comparing a model type" || text === "matching a model type" ||
+    text.startsWith("family predicate"));
+}
+
+/** The only inference source that may decide which family a config is: the family registry and the
+ * families' own directories (their records and their graphs), and the artifact readers that
+ * spell how a `model_type`'s `config.json` is laid out. Everything else asks the registry. */
+function ownsFamilyIdentity(name: string): boolean {
+  return name === "models/families.ts" || name === "models/family.ts" || /^models\/[^/]+\//.test(name) ||
+    name === "artifacts/config-dialects.ts" || name === "artifacts/glm52-config.ts";
 }
 
 // Draft providers are selected, detected and loaded through the library's
@@ -328,6 +344,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (consumer)
       for (const { text, line } of identityChecks(source))
         violations.push(`${name}:${line}: ${consumer} cannot branch on model identity (${text}); read a declared capability`);
+    else if (owner.name === "@mlx-bun/inference" && !ownsFamilyIdentity(relative(owner.source, file)))
+      for (const { text, line } of familyIdentityChecks(source))
+        violations.push(`${name}:${line}: only the family registry decides which family a model is (${text}); resolve the family or read its declaration`);
     for (const { specifier, line } of references(source)) {
       const at = `${name}:${line}`;
       if (specifier === undefined) { violations.push(`${at}: nonliteral module reference`); continue; }
@@ -686,6 +705,40 @@ test("the server and CLI read declared facts: no model type, architecture, famil
     const concrete = await inspectWorkspaces(root);
     expect(concrete.some(item => item.includes("cannot import a concrete model"))).toBe(true);
     expect(concrete.some(item => item.includes("instanceof Gemma4Model"))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("inference decides which family a model is only in the family registry, the families' directories and the artifact readers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-family-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const inference = { name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts" },
+    dependencies: { "@mlx-bun/mlx": "workspace:*", "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" } };
+  const identity = 'export const is = (c: { modelType: string }) => c.modelType === "qwen3" || c.modelType.startsWith("gemma4");';
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify(inference));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/models/families.ts", identity);
+    write("packages/inference/src/models/qwen/family.ts", identity);
+    write("packages/inference/src/artifacts/config-dialects.ts", identity);
+    write("packages/inference/src/state/geometry.ts", "export const layers = 1;");
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    for (const file of ["state/geometry.ts", "generation/plan.ts", "models/factory.ts", "models/support.ts", "artifacts/config.ts"]) {
+      write(`packages/inference/src/${file}`, identity);
+      const found = (await inspectWorkspaces(root)).filter(item => item.includes(`src/${file}:1:`));
+      expect(found.length, file).toBe(2);
+      expect(found.every(item => item.includes("only the family registry decides which family a model is")), file).toBe(true);
+      rmSync(resolve(root, `packages/inference/src/${file}`));
+    }
+    write("packages/inference/src/generation/plan.ts", 'import { isQwen3Config } from "../models/families"; export const is = isQwen3Config;');
+    write("packages/inference/src/models/families.ts", "export const isQwen3Config = (c: object) => !!c;");
+    expect((await inspectWorkspaces(root)).some(item => item.includes("family predicate isQwen3Config"))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -65,7 +65,7 @@ export function createDiscoveryRoutes(
             await registry.scan();
             const rows = [];
             for (const model of registry.listCanonical()) {
-              const tier = supportTier(model.modelType, model.repoId);
+              const tier = supportTier(model.modelType);
               const supported = tier !== null;
               let assessment = null;
               try {
@@ -198,7 +198,7 @@ export function createDiscoveryRoutes(
               if (registry.listCanonical().length === 0) await registry.scan();
               for (const model of registry.listCanonical()) {
                 if (model.repoId === ctx.modelId || model.repoId === stt?.id) continue;
-                const tier = supportTier(model.modelType, model.repoId);
+                const tier = supportTier(model.modelType);
                 if (tier === null) continue;
                 data.push({
                   id: model.repoId,

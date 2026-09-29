@@ -30,6 +30,17 @@ interface ResolvedKvSchemeOptions extends Omit<KvSchemeOptions, "kvConfig" | "tu
 
 export type KvSchemeKind = "bf16" | "affine-uniform" | "affine-config" | "turbo";
 
+/** How one attention layer stores its cache: every position (`full`), a rolling
+ * window (`sliding`), or a fixed-size recurrent state with no KV (`recurrent`). */
+export type CacheLayerKind = "full" | "sliding" | "recurrent";
+
+/** The cache layout the config declares for a layer. A layer the config does not
+ * list is full attention. The one place a layer-type spelling is read. */
+export function cacheLayerKind(config: Pick<ModelConfig, "text">, layer: number): CacheLayerKind {
+  const type = config.text.layerTypes[layer];
+  return type === "linear_attention" ? "recurrent" : type === "sliding_attention" ? "sliding" : "full";
+}
+
 export interface KvGeometry {
   fullBytesPerToken: number;
   slidingBytesPerToken: number;
@@ -61,10 +72,10 @@ export function kvGeometry(config: ModelConfig, options: KvSchemeOptions = {}): 
   let fullBytesPerToken = 0;
   let slidingBytesPerToken = 0;
   for (let layer = 0; layer < text.numHiddenLayers; layer++) {
-    const type = text.layerTypes[layer] ?? "full_attention";
-    if (type === "linear_attention") {
+    const kind = cacheLayerKind(config, layer);
+    if (kind === "recurrent") {
       linearLayers++;
-    } else if (type === "sliding_attention") {
+    } else if (kind === "sliding") {
       slidingBytesPerToken +=
         2 * text.numKeyValueHeads * text.headDim * elementBytes(layer);
     } else {
@@ -122,9 +133,9 @@ export function sdpaFallbackBytes(config: ModelConfig, chunk: number, ctx: numbe
   let peak = 0;
   const layers = text.numHiddenLayers || text.layerTypes.length;
   for (let layer = 0; layer < layers; layer++) {
-    const type = text.layerTypes[layer] ?? "full_attention";
-    if (type === "linear_attention") continue;
-    const sliding = type === "sliding_attention" && text.slidingWindow > 0;
+    const kind = cacheLayerKind(config, layer);
+    if (kind === "recurrent") continue;
+    const sliding = kind === "sliding" && text.slidingWindow > 0;
     const headDim = sliding ? text.headDim : text.globalHeadDim;
     if (FUSED_SDPA_HEAD_DIMS.has(headDim)) continue;
     const keys = sliding ? Math.min(ctx, text.slidingWindow + queries) : ctx;
@@ -191,9 +202,9 @@ export class KvScheme {
     let recurrent_layers = 0;
     const perLayer = new Map(this.options.kvConfig?.map(entry => [entry.layerIdx, entry.bits]));
     for (let layer = 0; layer < config.text.numHiddenLayers; layer++) {
-      const type = config.text.layerTypes[layer] ?? "full_attention";
-      if (type === "linear_attention") { recurrent_layers++; continue; }
-      const sliding = type === "sliding_attention";
+      const kind = cacheLayerKind(config, layer);
+      if (kind === "recurrent") { recurrent_layers++; continue; }
+      const sliding = kind === "sliding";
       attention[sliding ? "sliding_window" : "global"]++;
       const bits = this.kind === "affine-config" ? perLayer.get(layer)
         : this.kind === "affine-uniform" ? this.options.kvBits : undefined;
@@ -243,15 +254,14 @@ export class KvScheme {
       // Some models share the donor prefix's KV in later layers. Probe the
       // actual cache list, just as uniform conversion does.
       for (let layer = 0; layer < cacheLayerCount; layer++) {
-        if (config.text.layerTypes[layer] === "linear_attention") continue;
+        if (cacheLayerKind(config, layer) === "recurrent") continue;
         if (!canConvert(layer)) return false;
       }
       return true;
     }
     return this.options.kvConfig!.every((entry) => {
       if (entry.layerIdx < 0 || entry.layerIdx >= config.text.numHiddenLayers) return false;
-      return (config.text.layerTypes[entry.layerIdx] ?? "full_attention") !== "linear_attention" &&
-        canConvert(entry.layerIdx);
+      return cacheLayerKind(config, entry.layerIdx) !== "recurrent" && canConvert(entry.layerIdx);
     });
   }
 }

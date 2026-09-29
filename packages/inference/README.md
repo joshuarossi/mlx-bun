@@ -44,11 +44,22 @@ graph (`models/gemma4/compiled-decode`) and reaches them through `compiledDecode
 The architecture gate rejects concrete model imports, model-class `instanceof`,
 model-type and `architectures` checks, family predicates and model-scoped flags there,
 in the app's engine, server and CLI, and in `@mlx-bun/training`. What those need to
-know about a model is declared in its profile (`models/profile`:
-`embeddingDeclarationFor`, `sentinelDeclarationFor`, `mediaTokenDeclarationFor`,
-`generationDefaultsFor`, `chatTemplateFallbackFor`, `trainingDefaultsFor`) or returned
-by its opened runtime (`models/runtime`, `models/memory-plan`); token text resolves to
-ids against the tokenizer in use (`input/special-tokens`). `trainable`
+know about a model is declared in its family record and read through its profile
+(`models/profile`: `embeddingDeclarationFor`, `sentinelDeclarationFor`,
+`mediaTokenDeclarationFor`, `generationDefaultsFor`, `chatTemplateFallbackFor`,
+`trainingDefaultsFor`) or returned by its opened runtime (`models/runtime`,
+`models/memory-plan`); token text resolves to
+ids against the tokenizer in use (`input/special-tokens`). One record per model
+family (`models/family`, listed in `models/families`) holds the family's `accepts`
+rule, its graph id (an open string), tier, loader, loop, fidelity, engine
+capabilities, roles and those declarations; support tiers, profiles, engine
+capabilities, implementation loader/loop and fit's expert count derive from the list.
+A new model is a record in `<family>/family.ts`, an entry in `MODEL_FAMILIES` and its
+native implementation in `models/factory`; the records import no graph class, so
+resolving a profile never loads MLX. The gate keeps model-type comparisons and family
+predicates inside the registry, the family directories and the artifact readers
+(`artifacts/config-dialects`, which spell how a `model_type`'s `config.json` is laid
+out). `trainable`
 (`TrainableGraph`) declares what the trainer consumes: the quantized
 `lmHead` for fused linear-CE heads, `segmented` backward (how a range of layers
 runs and which reused K/V crosses segment boundaries), `prefixShared` forwards,
