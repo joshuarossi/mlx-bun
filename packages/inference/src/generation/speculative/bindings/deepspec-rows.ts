@@ -1,14 +1,15 @@
 import { projectedDraftGroups } from "./projected-draft-rows";
 import type { GroupedDraftProvider, TargetView } from "../source";
+import { targetLacks } from "../source";
 import type { DeepspecDrafter } from "../../../models/speculative/deepspec";
 
 /** Existing pairing requirements are checked once when the provider opens. */
 export function bindDeepspecTarget(target: TargetView, drafter: Pick<DeepspecDrafter, "cfg">): void {
-  if (!target.gemmaTaps) throw new Error("DeepSpec drafter requires a Gemma4 target");
+  if (!target.hiddenLayerTaps) throw targetLacks("hiddenLayerTaps");
   const layers = drafter.cfg.num_target_layers;
-  if (target.gemmaTaps.layerCount !== layers) throw new Error(
+  if (target.hiddenLayerTaps.layerCount !== layers) throw new Error(
     `DeepSpec drafter was trained for a ${layers}-layer target; ` +
-    `this model has ${target.gemmaTaps.layerCount} layers — wrong (target, drafter) pairing`);
+    `this model has ${target.hiddenLayerTaps.layerCount} layers — wrong (target, drafter) pairing`);
 }
 
 export function deepspecGroups(drafter: DeepspecDrafter, namespace: string): GroupedDraftProvider {

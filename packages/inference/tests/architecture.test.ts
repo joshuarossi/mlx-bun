@@ -56,11 +56,12 @@ function appDomain(path: string, owner: Library): string {
   return domain;
 }
 
-// Scheduling (`execution/`) and the app's engine, server and CLI consume graphs
-// through their declared capabilities, bindings and profiles. They may name the
-// graph handle, its declaration, profiles, the registry-level role predicates
-// (`models/support.ts`) and shared input helpers, never a concrete model, and
-// never branch on a model's class, type string, architecture list or family flag.
+// Scheduling (`execution/`), the app's engine, server and CLI, and the training
+// package consume graphs through their declared capabilities, bindings, profiles
+// and training operations. They may name the graph handle, its declaration,
+// profiles, the registry-level role predicates (`models/support.ts`) and shared
+// input helpers, never a concrete model, and never branch on a model's class, type
+// string, architecture list or family flag.
 const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
   "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
   "models/chat-template.ts", "models/support.ts"]);
@@ -69,10 +70,12 @@ const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/
 const familyPredicate = /^is(Gemma|Qwen|MiniCPM|Llama|Glm|Diffusion|Whisper|Universal)\w*Config$/i;
 const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
 
-function schedulingSide(file: string, owner: Library): boolean {
+function graphConsumer(file: string, owner: Library): string | undefined {
   const name = relative(owner.source, file);
-  return (owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) ||
-    (owner.name === "mlx-bun" && (name.startsWith("engine/") || name.startsWith("server/") || name.startsWith("cli/")));
+  if ((owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) ||
+      (owner.name === "mlx-bun" && (name.startsWith("engine/") || name.startsWith("server/") || name.startsWith("cli/"))))
+    return "scheduling, engine, server and CLI code";
+  return owner.name === "@mlx-bun/training" ? "training code" : undefined;
 }
 
 /** Model-identity branches: `instanceof <model class>`, comparing or pattern-matching
@@ -104,6 +107,27 @@ function identityChecks(source: ts.SourceFile): { text: string; line: number }[]
       add(node, `model-scoped flag ${node.text}`);
     if (ts.isImportSpecifier(node) && familyPredicate.test((node.propertyName ?? node.name).text))
       add(node, `family predicate ${(node.propertyName ?? node.name).text}`);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
+// Draft providers are selected, detected and loaded through the library's
+// registry; the app never names a concrete provider class. The classes are
+// whatever the provider sources export, so a new provider is covered on arrival.
+const draftProviderSources = "generation/speculative/sources/";
+
+function exportedProviderClasses(source: ts.SourceFile): string[] {
+  return source.statements.filter(ts.isClassDeclaration).filter(node => node.name && /Provider$/.test(node.name.text) &&
+    node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)).map(node => node.name!.text);
+}
+
+function namedIdentifiers(source: ts.SourceFile, names: ReadonlySet<string>): { text: string; line: number }[] {
+  const found: { text: string; line: number }[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isIdentifier(node) && names.has(node.text))
+      found.push({ text: node.text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -197,16 +221,24 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (JSON.stringify(thirdParty) !== JSON.stringify(Object.keys(packageOwners).toSorted()))
       violations.push("Inference third-party dependencies need an explicit layer owner");
   }
+  const draftProviders = new Set<string>();
+  for (const [file, source] of sources)
+    if (inferencePackage && relative(inferencePackage.source, file).startsWith(draftProviderSources))
+      for (const name of exportedProviderClasses(source)) draftProviders.add(name);
   for (const [file, source] of sources) {
     const owner = ownerOf(file)!;
     if (owner.app) appDomain(file, owner);
+    if (owner.app)
+      for (const { text, line } of namedIdentifiers(source, draftProviders))
+        violations.push(`${relative(root, file)}:${line}: the app cannot name a concrete draft provider (${text}); select and load through the draft provider registry`);
     if (owner.app && ["chat/protocol.ts", "jobs/protocol.ts"].includes(relative(owner.source, file)) && references(source).length)
       violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
-    if (schedulingSide(file, owner))
+    const consumer = graphConsumer(file, owner);
+    if (consumer)
       for (const { text, line } of identityChecks(source))
-        violations.push(`${name}:${line}: scheduling, engine, server and CLI code cannot branch on model identity (${text}); read a declared capability`);
+        violations.push(`${name}:${line}: ${consumer} cannot branch on model identity (${text}); read a declared capability`);
     for (const { specifier, line } of references(source)) {
       const at = `${name}:${line}`;
       if (specifier === undefined) { violations.push(`${at}: nonliteral module reference`); continue; }
@@ -247,9 +279,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       }
       if (from !== undefined && (to === undefined || !mayImport(from, to)))
         violations.push(`${at}: ${from} -> ${to ?? targetOwner.name} (${specifier})`);
-      if (schedulingSide(file, owner) && targetOwner.name === "@mlx-bun/inference" &&
+      if (consumer && targetOwner.name === "@mlx-bun/inference" &&
           relative(targetOwner.source, actual).startsWith("models/") && !graphContracts.has(relative(targetOwner.source, actual)))
-        violations.push(`${at}: scheduling, engine, server and CLI code cannot import a concrete model (${specifier}); consume its declared capabilities`);
+        violations.push(`${at}: ${consumer} cannot import a concrete model (${specifier}); consume its declared capabilities`);
       edges.push(relative(root, actual));
     }
   }
@@ -397,7 +429,40 @@ test("browser code can consume data protocols but cannot reach backend modules o
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scheduling, engine, server and CLI code cannot import concrete models or branch on model identity", async () => {
+test("the app cannot name concrete draft providers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-draft-provider-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify({ name: "@mlx-bun/inference", type: "module", dependencies: { "@mlx-bun/mlx": "workspace:*",
+      "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" },
+    exports: { ".": "./src/index.ts", "./generation/speculative": "./src/generation/speculative/index.ts" } }));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/generation/speculative/index.ts",
+      'export * from "./sources/example-source"; export * from "./draft-registry";');
+    write("packages/inference/src/generation/speculative/sources/example-source.ts", "export class ExampleProvider { static load() { return new ExampleProvider(); } }");
+    write("packages/inference/src/generation/speculative/draft-registry.ts", "export class DraftProviderRegistry {}");
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
+    symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
+    const engine = "apps/mlx-bun/src/engine/host.ts";
+    write(engine, 'import { DraftProviderRegistry } from "@mlx-bun/inference/generation/speculative"; export const registry = new DraftProviderRegistry();');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(engine, 'export const load = async () => { const { ExampleProvider } = await import("@mlx-bun/inference/generation/speculative"); return ExampleProvider.load(); };');
+    const named = await inspectWorkspaces(root);
+    expect(named.filter(item => item.includes("the app cannot name a concrete draft provider (ExampleProvider)")).length).toBe(2);
+    // The library's own modules, and the registry class, are unaffected.
+    write(engine, "export const engine = 1;");
+    expect(await inspectWorkspaces(root)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("scheduling, engine, server, CLI and training code cannot import concrete models or branch on model identity", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-scheduling-boundaries-"));
   const write = (path: string, text: string) => {
     const target = resolve(root, path);
@@ -416,6 +481,9 @@ test("scheduling, engine, server and CLI code cannot import concrete models or b
     write("packages/inference/src/models/capabilities.ts", "export const declaredGraph = (model: object) => model;");
     write("packages/inference/src/models/gemma4/model.ts", "export class Gemma4Model { modelType = 'gemma4'; }");
     write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("packages/training/package.json", JSON.stringify({ name: "@mlx-bun/training", type: "module", exports: { ".": "./src/index.ts" },
+      dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("packages/training/src/index.ts", "export const training = true;");
     mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
     symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
     symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
@@ -436,8 +504,18 @@ test("scheduling, engine, server and CLI code cannot import concrete models or b
     expect(typed.filter(item => item.includes("comparing a model type")).length).toBe(1);
     write(engine, 'export const flag = (r: { flag(name: string): boolean }) => r.flag("MLX_BUN_QWEN_SPEC_KV4");');
     expect((await inspectWorkspaces(root)).some(item => item.includes("model-scoped flag MLX_BUN_QWEN_SPEC_KV4"))).toBe(true);
-    // The same code outside scheduling and engine (a model's own binding) is unaffected.
+    // Training consumes a graph's declared training operations the same way.
     write(engine, "export const engine = 1;");
+    const trainer = "packages/training/src/trainer.ts";
+    write(trainer, 'import type { RuntimeModel } from "@mlx-bun/inference/models"; export const train = (m: RuntimeModel) => m;');
+    write("packages/training/src/index.ts", 'export * from "./trainer";');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(trainer, 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const segmented = (m: object) => m instanceof Gemma4Model;');
+    const trained = await inspectWorkspaces(root);
+    expect(trained.some(item => item.includes("packages/training/src/trainer.ts:1: training code cannot import a concrete model (@mlx-bun/inference/models/gemma4)"))).toBe(true);
+    expect(trained.some(item => item.includes("training code cannot branch on model identity (instanceof Gemma4Model)"))).toBe(true);
+    write(trainer, "export const train = 1;");
+    // The same code outside scheduling, engine and training (a model's own binding) is unaffected.
     write("packages/inference/src/models/gemma4/binding.ts", 'import { Gemma4Model } from "./model"; export const own = (m: object) => m instanceof Gemma4Model;');
     expect(await inspectWorkspaces(root)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }

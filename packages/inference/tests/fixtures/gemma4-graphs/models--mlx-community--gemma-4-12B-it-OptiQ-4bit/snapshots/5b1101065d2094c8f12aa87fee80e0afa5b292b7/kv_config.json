@@ -1,0 +1,242 @@
+[
+  {
+    "layer_idx": 0,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 1,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 2,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 3,
+    "bits": 8,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 4,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 5,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 6,
+    "bits": 8,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 7,
+    "bits": 8,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 8,
+    "bits": 8,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 9,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 10,
+    "bits": 8,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 11,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 12,
+    "bits": 8,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 13,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 14,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 15,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 16,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 17,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 18,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 19,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 20,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 21,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 22,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 23,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 24,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 25,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 26,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 27,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 28,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 29,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 30,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 31,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 32,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 33,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 34,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 35,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 36,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 37,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 38,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 39,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 40,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 41,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 42,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 43,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 44,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 45,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 46,
+    "bits": 4,
+    "group_size": 64
+  },
+  {
+    "layer_idx": 47,
+    "bits": 4,
+    "group_size": 64
+  }
+]

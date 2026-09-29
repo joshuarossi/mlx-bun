@@ -14,7 +14,8 @@
 //   decode, whose trace runs the generated layers (12B: exactly the one
 //   quantized step the dense segmented closure leaves to it, as in main);
 // - under plain bf16 caches the generated graph takes its monolith fallback:
-//   identical vectors and no generated forward.
+//   identical vectors and no generated forward;
+// - two different rows in one forward over kv_config caches equal the monolith's.
 // This is within-tree specialization identity, not external-oracle parity; the
 // monolith's oracle consumer is gemma4-parity.test.ts.
 // Opt in with MLX_BUN_TEST_GENERATED_MODEL=/gemma4/snapshot (an artifact whose
@@ -29,7 +30,7 @@ import { releaseAll } from "./real-weight-inputs";
 
 type A = any;
 const MODEL = "MLX_BUN_TEST_GENERATED_MODEL";
-const STEPS = 3, TOKENS = 24;
+const STEPS = 3, TOKENS = 24, ROW_TOKENS = 16;
 
 export function optIn(env: Record<string, string | undefined>) {
   const model = env[MODEL];
@@ -155,6 +156,27 @@ test.skipIf(!inputs)("generated Gemma4 graph equals the monolith under kv_config
     };
     expect(plain(gen).equals(plain(mono))).toBe(true);
     expect(generated.generatedForwardUses).toBe(before);
+
+    // 4. Two different rows through one forward over kv_config caches: the batch axis is not
+    // assumed to be one (e4b slices its per-layer inputs per layer; row 1 must get its own).
+    const rows = (model: A) => {
+      const caches: A[] = model.makeCache();
+      try {
+        for (let layer = 0; layer < caches.length; layer++) {
+          const entry = kvConfig.find(item => item.layerIdx === layer);
+          if (entry) caches[layer] = caches[layer].toQuantized(entry.groupSize, entry.bits);
+        }
+        const ids = ops.fromInt32([...prompt.slice(0, ROW_TOKENS), ...prompt.slice(-ROW_TOKENS)], [2, ROW_TOKENS]);
+        try {
+          const hidden = model.forwardHidden(ids, caches);
+          try { using exact = ops.contiguous(hidden); return Buffer.from(exact.rawBytes()); } finally { hidden.dispose(); }
+        } finally { ids.dispose(); }
+      } finally { releaseAll(caches.map(cache => () => cache.dispose())); ffi.clearCache(); }
+    };
+    const usedBefore = generated.generatedForwardUses;
+    const batched = rows(gen);
+    expect(generated.generatedForwardUses - usedBefore).toBe(1);
+    expect(batched.equals(rows(mono))).toBe(true);
   } finally {
     // Compiled closures borrow weight arrays: release their tapes before the weights.
     try { releaseAll([mono, gen].filter(Boolean).map(model => () => CompiledDecode.for(model).dispose())); }

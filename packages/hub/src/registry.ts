@@ -13,14 +13,6 @@ import {
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
-/** Speculative-decoding drafters declare themselves in config.json with a
- *  `model_type` ending in `_assistant` (`gemma4_assistant`,
- *  `gemma4_unified_assistant`). They are companion artifacts loaded by
- *  explicit path, never selectable on their own. */
-function isDrafterArtifact(modelType: string): boolean {
-  return modelType.endsWith("_assistant");
-}
-
 export interface ModelRecord {
   path: string;
   repoId: string;
@@ -103,15 +95,22 @@ export interface RegistryOptions {
    *  (config.json + weights, no hub layout). scan() indexes them beside the
    *  hub cache; each record's id is the subdirectory name. */
   modelDirs?: readonly string[];
+  /** Whether a `model_type` names a companion artifact (a speculative-decoding
+   *  drafter) that is loaded by explicit path and is never selectable as a
+   *  model on its own. The registry holds no model facts: the caller supplies
+   *  this from the declaring layer. Default: none is. */
+  isCompanion?: (modelType: string) => boolean;
 }
 
 export class Registry {
   readonly db: Database;
   readonly #modelDirs: readonly string[];
+  readonly #isCompanion: (modelType: string) => boolean;
 
   /** `dbPath` is the index file, or ":memory:"; the caller owns its location. */
   constructor(dbPath: string, options: RegistryOptions = {}) {
     this.#modelDirs = options.modelDirs ?? [];
+    this.#isCompanion = options.isCompanion ?? (() => false);
     if (dbPath !== ":memory:") {
       const dir = dbPath.slice(0, dbPath.lastIndexOf("/"));
       try { require("node:fs").mkdirSync(dir, { recursive: true }); } catch {}
@@ -232,10 +231,10 @@ export class Registry {
   }
 
   /** Resolve a fuzzy query to exactly one model (error listing candidates otherwise).
-   *  Speculative-decoding drafters are companion artifacts, never selectable on
-   *  their own, so they never count as candidates here. */
+   *  Companion artifacts (`isCompanion`) are never selectable on their own, so
+   *  they never count as candidates here. */
   resolve(query: string): ModelRecord {
-    const matches = this.list({ query }).filter((m) => !isDrafterArtifact(m.modelType));
+    const matches = this.list({ query }).filter((m) => !this.#isCompanion(m.modelType));
     if (matches.length === 0) throw new Error(`no model matching "${query}" — run \`mlx-bun scan\``);
     // The HF cache can hold several revisions of one repo (snapshots/<hash>
     // dirs), each a registry row. Resolving a repo name must not be "ambiguous"

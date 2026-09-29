@@ -15,7 +15,8 @@ import { sidecarShipsAudioTower } from "@mlx-bun/hub/registry";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
 import type { DisposableResource, MemoryPlan } from "@mlx-bun/inference/contracts/portable";
-import { detectDraftKind, type DraftKind } from "@mlx-bun/inference/generation/speculative/draft-kind";
+import type { DraftKind } from "@mlx-bun/inference/generation/speculative/draft-kind";
+import type { DraftProviderRegistry, LoadedDraft } from "@mlx-bun/inference/generation/speculative/draft-registry";
 
 export interface ServedModelInfo { readonly config: ModelConfig; readonly weightsBytes: number; }
 
@@ -110,8 +111,14 @@ export interface LoadContextOptions<Model extends ServedModelInfo = RuntimeModel
   draftModelDir?: string;
   /** Drafts per round (`--num-draft-tokens`, mlx_lm.server default 3). */
   numDraftTokens?: number;
-  /** Draft-provider kind override (`--draft-kind`). */
-  draftKind?: DraftKind;
+  /** Draft-provider kind override (`--draft-kind`); any kind the registry knows. */
+  draftKind?: DraftKind | (string & {});
+  /** The draft providers this load may select and detect among; defaults to
+   * the library's. Extend a registry to add a provider kind. */
+  draftProviders?: DraftProviderRegistry;
+  /** A ready draft provider and its round width, instead of loading one from
+   * `draftModelDir`/`draftKind`. The context owns it from the call on. */
+  draftProvider?: LoadedDraft;
   ngramMax?: number;
   ngramMin?: number;
 }
@@ -179,31 +186,36 @@ export async function loadContext(
   const [{ Weights }, { createModel, declaredGraph, openPlannedRuntime, plansMemory, loadModelChatTemplate,
       sentinelDeclarationFor, mediaTokenDeclarationFor, generationDefaultsFor },
     { loadTokenizer, resolveSentinelTokens, resolveVisionTokenIds, resolveAudioTokenIds },
-    { AdapterManager }, { bindLegacyDraftTarget }, { nativeDraftProvider }] = await Promise.all([
+    { AdapterManager }, { bindLegacyDraftTarget }, { defaultDraftProviders }] = await Promise.all([
     import("@mlx-bun/inference/artifacts"), import("@mlx-bun/inference/models"),
     import("@mlx-bun/inference/input"),
     import("@mlx-bun/inference/adapters"), import("@mlx-bun/inference/generation/speculative/binding"),
-    import("@mlx-bun/inference/generation/speculative"),
+    import("@mlx-bun/inference/generation/speculative/draft-kind"),
   ]);
   const planned = plansMemory(profile);
-  // Bundled MTP companion: `--draft-kind mtp` with no --draft-model resolves
-  // to the artifact's own mtp/ subfolder (single-repo packaging — the
-  // companion is a complete model dir the provider already loads). Explicit
-  // --draft-model still wins; a missing bundle is a clear refusal below.
-  if (opts.draftKind === "mtp" && !opts.draftModelDir) {
-    const bundled = `${modelDir}/mtp`;
+  const draftRegistry = opts.draftProviders ?? defaultDraftProviders();
+  if (opts.draftProvider && (opts.draftModelDir !== undefined || opts.draftKind !== undefined))
+    throw new Error("a ready draft provider cannot combine with --draft-model/--draft-kind");
+  // A kind that bundles its companion in the target artifact (`--draft-kind
+  // mtp`: the artifact's own mtp/ subfolder — single-repo packaging, the
+  // companion is a complete model dir the provider already loads) resolves
+  // there when no --draft-model is given. Explicit --draft-model still wins; a
+  // missing bundle is a clear refusal.
+  const bundledCompanion = opts.draftKind === undefined ? undefined : draftRegistry.get(opts.draftKind)?.bundledCompanion;
+  if (bundledCompanion && !opts.draftModelDir) {
+    const bundled = `${modelDir}/${bundledCompanion}`;
     if (await Bun.file(`${bundled}/config.json`).exists()) {
       opts = { ...opts, draftModelDir: bundled };
     } else {
       throw new Error(
-        `--draft-kind mtp needs a companion: pass --draft-model <dir> or use ` +
-        `an artifact that bundles one at <model>/mtp/ (none at ${bundled})`,
+        `--draft-kind ${opts.draftKind} needs a companion: pass --draft-model <dir> or use ` +
+        `an artifact that bundles one at <model>/${bundledCompanion}/ (none at ${bundled})`,
       );
     }
   }
-  const externalDraft = opts.draftModelDir !== undefined || opts.draftKind !== undefined;
+  const externalDraft = opts.draftModelDir !== undefined || opts.draftKind !== undefined || opts.draftProvider !== undefined;
   const resolvedDraftKind = opts.draftModelDir
-    ? opts.draftKind ?? await detectDraftKind(opts.draftModelDir)
+    ? opts.draftKind ?? await draftRegistry.detect(opts.draftModelDir)
     : opts.draftKind;
   if (planned && externalDraft && opts.runtime?.nativeDraft === true)
     throw new Error("the checkpoint-native draft head and --draft-model/--draft-kind are mutually exclusive");
@@ -260,89 +272,40 @@ export async function loadContext(
       config.eosTokenIds = [...config.eosTokenIds, tokenizer.eosTokenId];
 
     // Speculative decoding: load the draft (mlx_lm.server --draft-model). The
-    // draft artifact's KIND selects the provider — all three share ONE serve
-    // loop (packages/inference/src/generation/speculative/run.ts): dspark.json → DSpark (KV-injected), a
-    // *_assistant config → the optiq KV-borrowing Gemma drafter, otherwise a
-    // full second model (mlx-lm parity). `--draft-kind` overrides the detect.
+    // draft artifact's KIND selects the provider, each of which recognizes and
+    // loads its own artifact; all share ONE serve loop
+    // (packages/inference/src/generation/speculative/run.ts). `--draft-kind`
+    // overrides the detect.
     let draft: ModelContext["draft"] = null;
-    if (opts.draftKind === "ngram") {
-      // Model-free prompt lookup: no artifact, no dir, no probe/budget concerns
-      // (weightsBytes 0, open() never throws). Default γ=10 per the reference
-      // implementation — drafting is free, so wide blocks cost only verify-window
-      // width when wrong.
-      if (opts.draftModelDir)
-        throw new Error(
-          "--draft-kind ngram is model-free — drop --draft-model (it would be ignored)",
-        );
-      const { NgramProvider } = await import("@mlx-bun/inference/generation/speculative");
-      draft = {
-        provider: new NgramProvider({ max: opts.ngramMax, min: opts.ngramMin }),
-        numDraftTokens: Math.max(1, opts.numDraftTokens ?? 10),
-      };
-    } else if (opts.draftModelDir) {
-      const dir = opts.draftModelDir;
-      const kind = resolvedDraftKind!;
-      let provider: import("@mlx-bun/inference/generation/speculative").DraftProvider;
-      let numDraftTokens = Math.max(1, opts.numDraftTokens ?? 3);
-      if (kind === "dspark") {
-        const { DflashProvider } = await import("@mlx-bun/inference/generation/speculative");
-        const p = await DflashProvider.load(dir);
-        provider = p;
-        owned.add(provider);
-        // Pin to the trained block width — the serve loop must never ask for
-        // more positions than the DSpark block was trained for (n ≤ cfg.gamma).
-        numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
-      } else if (kind === "deepspec") {
-        const { DeepspecProvider } = await import("@mlx-bun/inference/generation/speculative");
-        const p = await DeepspecProvider.load(dir);
-        provider = p;
-        owned.add(provider);
-        // Same pin, from their config's block_size (e.g. 7 for the released
-        // dspark_gemma4_12b_block7).
-        numDraftTokens = Math.max(1, Math.min(opts.numDraftTokens ?? p.gamma, p.gamma));
-      } else if (kind === "assistant") {
-        const { AssistantProvider } = await import("@mlx-bun/inference/generation/speculative");
-        provider = await AssistantProvider.load(dir);
-        owned.add(provider);
-      } else if (kind === "mtp") {
-        const { QwenMtpProvider } = await import("@mlx-bun/inference/generation/speculative");
-        const p = await QwenMtpProvider.load(dir);
-        provider = p;
-        owned.add(provider);
-        // Default the round width to the head's trained block (block_size 3 →
-        // 2 recursive drafts + the pending row per round; the head was trained
-        // multi-step, so an explicit larger --num-draft-tokens is allowed but
-        // acceptance decides whether it pays).
-        const block = (await Bun.file(`${dir}/config.json`).json() as { block_size?: number }).block_size;
-        if (opts.numDraftTokens === undefined && typeof block === "number")
-          numDraftTokens = Math.max(1, block - 1);
-      } else {
-        const { TwoModelProvider } = await import("@mlx-bun/inference/generation/speculative");
-        provider = await TwoModelProvider.load(dir, config.text.vocabSize);
-        owned.add(provider);
-        // Tokenizer-family hard check — two-model ONLY (it ships its own
-        // tokenizer). Exact-token-match acceptance is meaningful only when both
-        // models tokenize identically; a probe that ENCODES differently means
-        // different families — refuse instead of silently accepting ~0% of
-        // drafts. The KV-borrowing drafters share the target's tokenization by
-        // construction, so this check does not apply to them.
-        const draftTok = await loadTokenizer(dir);
-        const probe = "The 3 quick brown foxes jumped över the lazy dog?! 🦊";
-        if (JSON.stringify(tokenizer.encode(probe)) !== JSON.stringify(draftTok.encode(probe))) {
-          release(provider);
-          throw new Error(
-            `--draft-model tokenizer differs from the target's (probe string encodes ` +
-              `differently) — speculation needs the same tokenizer family`,
-          );
-        }
-      }
-      // Fail-fast pairing validation (2026-07-07 review): the KV-borrowing
-      // sources validate the (target, drafter) pairing in open() — non-Gemma4
-      // target, DeepSpec target-layer-count mismatch — which used to surface
-      // as a 500 from inside specServeRun on EVERY text request. Probe-open
-      // once with throwaway caches here so a mismatch refuses at load; open()
-      // allocates no per-request tensors before prefill/draft, so this is
-      // free. The probe sampler is never called during open().
+    let validateDraft = true;
+    if (opts.draftProvider) {
+      draft = opts.draftProvider;
+      owned.add(draft.provider);
+    } else if (resolvedDraftKind !== undefined) {
+      const kind = draftRegistry.get(resolvedDraftKind);
+      if (kind && !kind.artifact && opts.draftModelDir)
+        throw new Error(`--draft-kind ${resolvedDraftKind} is model-free — drop --draft-model (it would be ignored)`);
+      // Every artifact kind names an artifact to load — refuse instead of
+      // silently serving without speculation.
+      if (kind?.artifact && !opts.draftModelDir)
+        throw new Error(`--draft-kind ${resolvedDraftKind} requires --draft-model`);
+      draft = await draftRegistry.load(resolvedDraftKind, {
+        dir: opts.draftModelDir, target: { vocabSize: config.text.vocabSize, tokenizer },
+        numDraftTokens: opts.numDraftTokens, ngram: { max: opts.ngramMax, min: opts.ngramMin },
+      });
+      owned.add(draft.provider);
+      // A model-free provider has no pairing to probe and no weights to budget.
+      validateDraft = kind!.artifact;
+    }
+    if (draft && validateDraft) {
+      const { provider } = draft;
+      // Fail-fast pairing validation (2026-07-07 review): a source validates the
+      // (target, drafter) pairing in open() — a target that lacks the port it
+      // reads, DeepSpec target-layer-count mismatch — which used to surface as a
+      // 500 from inside specServeRun on EVERY text request. Probe-open once with
+      // throwaway caches here so a mismatch refuses at load; open() allocates no
+      // per-request tensors before prefill/draft, so this is free. The probe
+      // sampler is never called during open().
       {
         const probeCaches = model.makeCache();
         try {
@@ -377,22 +340,15 @@ export async function loadContext(
           );
         }
       }
-      draft = { provider, numDraftTokens };
-    } else if (opts.draftKind) {
-      // Every other kind names an artifact to load — refuse instead of silently
-      // serving without speculation.
-      throw new Error(`--draft-kind ${opts.draftKind} requires --draft-model`);
     }
 
-    // A planned runtime's checkpoint-native draft head is the production default.
-    // It uses the already-planned bounded auxiliary tier and the same tokenizer,
-    // so there is no second artifact or compatibility probe to load.
-    if (!draft && runtime?.nativeDraftTokens != null) {
-      draft = {
-        provider: nativeDraftProvider(runtime.model),
-        numDraftTokens: runtime.nativeDraftTokens,
-        native: true,
-      };
+    // A checkpoint-native draft head (a planned runtime's is the production
+    // default) comes from the graph's own declaration: it uses the
+    // already-planned bounded auxiliary tier and the same tokenizer, so there is
+    // no second artifact or compatibility probe to load.
+    if (!draft) {
+      const declared = await draftRegistry.native(model);
+      if (declared) draft = { ...declared, native: true };
     }
 
     if (draft) owned.add(draft.provider);

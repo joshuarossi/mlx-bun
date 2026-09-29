@@ -22,44 +22,10 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { createCausalMask } from "../kernels/attention/masks";
 import { type Cache, type Mask } from "../contracts/mlx/cache";
 import { SSMCache } from "../state/ssm";
+import { TrainingCache } from "../state/training-cache";
 import type { RuntimeModel } from "../models/factory";
 
-/** Stateless cache for the training forward. Training is always a single
- *  offset-0 full-sequence pass, so `updateAndFetch` is a pure pass-through (no
- *  buffer, no state mutation) and `makeMask` is the offset-0 causal/windowed
- *  mask — identical to KVCache at offset 0. The statelessness is REQUIRED for
- *  gradient checkpointing: mlx_checkpoint re-runs the layer closure during the
- *  backward recompute, and a stateful (appending) cache would corrupt on the
- *  second run. */
-export class TrainingCache implements Cache {
-  /** Training-only adapter; never admitted, merged, or persisted. */
-  signature(): string { return "train:training"; }
-  offset = 0;
-  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
-    // Return fresh views: the caller disposes its input k/v right after (its
-    // contract with the real KVCache, which returns buffer slices). A
-    // full-range slice is a cheap view node; mlx keeps the source alive
-    // through it, so disposing the inputs is safe.
-    return [k.slice([0, 0, 0, 0], k.shape), v.slice([0, 0, 0, 0], v.shape)];
-  }
-  makeMask(N: number, windowSize: number | null): Mask {
-    if (N === 1) return { mode: "", arr: null };
-    if (windowSize === null || N <= windowSize) return { mode: "causal", arr: null };
-    return { mode: "array", arr: createCausalMask(N, 0, windowSize) };
-  }
-  state(): MlxArray[] {
-    return [];
-  }
-  isTrimmable(): boolean {
-    return true;
-  }
-  trim(_n: number): void {
-    /* offset is pinned at 0 */
-  }
-  dispose(): void {
-    /* owns no arrays */
-  }
-}
+export { TrainingCache };
 
 /** Stateless DeltaNet stand-in (same re-runnability contract as
  *  TrainingCache): state WRITES are discarded immediately, so a gradient-

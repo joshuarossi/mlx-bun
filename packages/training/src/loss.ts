@@ -21,33 +21,13 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
 import { CustomVjp } from "@mlx-bun/mlx/custom-vjp";
 import type { RuntimeModel } from "@mlx-bun/inference/models";
-import { Gemma4Model } from "@mlx-bun/inference/models/gemma4";
-import { MiniCPM5Model } from "@mlx-bun/inference/models/minicpm5";
 import { logitSoftcap } from "@mlx-bun/inference/scoring";
 import { trainForward, trainForwardHidden } from "@mlx-bun/inference/scoring";
 import { setLoraScale, type TrainableLora } from "./lora-params";
+import type { HeadQuant } from "@mlx-bun/inference/contracts/mlx";
+import { lmHeadOf } from "./declared";
 import { flashCceForward, flashCceBackward, type FlashCceHead } from "./kernels/flash-cce";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
-
-/** The quantized LM-head weights + final-logit softcap, accessed uniformly across
- *  models for the fused linear-CE head: Gemma is tied (`embed.asLinear`, softcap
- *  from config), MiniCPM5 is the separate `lmHead` (no softcap). The head is NOT
- *  a default LoRA target, so the base quantized weights are authoritative. */
-interface HeadQuant {
-  w: MlxArray; scales: MlxArray; biases: MlxArray | null;
-  spec: ops.QuantSpec; softcap: number | null;
-}
-function headQuant(model: RuntimeModel): HeadQuant {
-  if (model instanceof Gemma4Model) {
-    const e = model.embed;
-    return { w: e.w, scales: e.scales, biases: e.biases, spec: e.spec, softcap: model.config.text.finalLogitSoftcapping };
-  }
-  if (model instanceof MiniCPM5Model) {
-    const h = model.lmHead;
-    return { w: h.w, scales: h.scales, biases: h.biases, spec: h.spec, softcap: null };
-  }
-  throw new Error("fused linear-CE head is not wired for this model type");
-}
 
 /** Token-chunking context for the ORPO loss head. When `chunkSize > 0`, the B=1
  *  response-only head is computed in token-chunks, each wrapped in a Checkpoint
@@ -1182,7 +1162,7 @@ export function fusedRespLogpMean(
 ): MlxArray {
   const M = hResp.shape[0]!;
   const hidden = hResp.shape[1]!;
-  const head = headQuant(model);
+  const head = lmHeadOf(model);
   const cap = head.softcap;
   const chunk = Math.max(1, chunkSize);
   const V = head.scales.shape[0]!;

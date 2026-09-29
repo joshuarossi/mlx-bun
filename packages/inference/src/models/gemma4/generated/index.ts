@@ -1,5 +1,5 @@
 // Registry of generated per-architecture specializations (hand-kept;
-// the files themselves come from `02d723a:scripts/gen-model.ts`). Dispatch is by
+// the files themselves come from scripts/gen-gemma4.ts). Dispatch is by
 // config fingerprint; anything unregistered runs the monolith.
 
 import type { Weights } from "../../../artifacts/weights";

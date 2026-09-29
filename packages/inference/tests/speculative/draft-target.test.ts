@@ -51,9 +51,9 @@ test("assistant draft failure releases retained donors and its current embedding
 
 test("target extensions refuse unsupported pairings before touching the drafter", () => {
   const target: TargetView = { identity: {} };
-  expect(() => new AssistantSource(undefined as never, target)).toThrow("donor views");
-  expect(() => new DflashSource(undefined as never, target)).toThrow("Gemma4 target");
-  expect(() => new DeepspecSource(undefined as never, target)).toThrow("Gemma4 target");
+  expect(() => new AssistantSource(undefined as never, target)).toThrow("target graph does not provide assistantRows");
+  expect(() => new DflashSource(undefined as never, target)).toThrow("target graph does not provide hiddenLayerTaps");
+  expect(() => new DeepspecSource(undefined as never, target)).toThrow("target graph does not provide hiddenLayerTaps");
 });
 
 test("projected draft providers declare the immutable target tap list their rows consume", () => {

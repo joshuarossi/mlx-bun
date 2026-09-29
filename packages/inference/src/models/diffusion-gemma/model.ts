@@ -35,6 +35,7 @@ import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
 import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { TrainableGraph } from "../../contracts/mlx/trainable";
 import { declareGraph } from "../capabilities";
 import type { PixelInput } from "../../contracts/mlx/media";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
@@ -557,6 +558,16 @@ export class DiffusionGemmaModel implements MlxDeclaredGraph {
    * the method's pixel prefill input. */
   get graphCapabilities(): GraphCapabilities {
     return declareGraph({ method: "denoising", media: { input: "pixels", video: false } });
+  }
+  /** The denoising objective: LoRA on the decoder blocks (the encoder reuses them, weight-tied). */
+  get trainable(): TrainableGraph {
+    return {
+      denoising: {
+        vocabSize: this.config.text.vocabSize,
+        layerModulePaths: this.layers.map((_, i) => `model.decoder.layers.${i}`),
+        canvasLogits: (promptIds, canvas) => this.forwardCanvasLogitsArr(promptIds, canvas),
+      },
+    };
   }
   pixelInput(): PixelInput | null {
     const tower = this.visionTower;

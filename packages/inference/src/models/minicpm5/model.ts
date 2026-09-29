@@ -6,6 +6,9 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
 import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { PrefixLayout, TrainableGraph } from "../../contracts/mlx/trainable";
+import { activePrefixLayout } from "../../layers/prefix-layout";
+import { miniCpmTrainable } from "./trainable";
 import { declareGraph } from "../capabilities";
 import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
@@ -25,32 +28,12 @@ import { disposeTriple } from "../../state/quantized-tensor";
 import { flashAttention,flashSupported,getTrainingAttn } from "../../kernels/attention/flash";
 import { compiledSwiglu } from "../../layers/swiglu";
 
-// Shared prompt-prefix plan (lever 7). When set, the attention ropes the
-// concatenated [prompt(P); chosenResp(Rc); rejectedResp(Rr)] sequence
-// BLOCK-WISE — prompt at offset 0, EACH response reset to offset P — instead of
-// the uniform cache.offset. This is what lets one forward over the concat be
-// bit-exact with the two separate [prompt;resp] forwards (each response sees the
-// prompt's RoPE positions, not shifted-by-the-other-response). Set by
-// orpoLossPrefixShared around the forward (single-threaded), cleared after; null
-// → the normal uniform-offset rope (every other forward is untouched). The
-// matching block-sparse attention mask rides in via PrefixSharedCache.makeMask.
-export interface PrefixPlan { P: number; Rc: number; Rr: number }
-let _prefixPlan: PrefixPlan | null = null;
-export function setMiniCpmPrefixPlan(p: PrefixPlan | null): void {
-  _prefixPlan = p;
-}
-/** True while a block-wise prefix-shared RoPE plan is active (ORPO forward).
- *  The generated debranched fast path must fall back to the monolith then. */
-export function miniCpmPrefixPlanActive(): boolean {
-  return _prefixPlan != null;
-}
-
 /** Block-wise RoPE for the prefix-shared concat [prompt; chosen; rejected] along
  *  the sequence axis (axis 2 of [B,H,T,D]): prompt rotated at offset 0, each
  *  response at offset P (reset). RoPE is per-token, so roping each contiguous
  *  block at its scalar offset and concatenating == roping with per-token
  *  position-ids [0..P-1, P..P+Rc-1, P..P+Rr-1]. Caller disposes the input. */
-function ropeBlocks(x: MlxArray, dims: number, base: number, plan: PrefixPlan): MlxArray {
+function ropeBlocks(x: MlxArray, dims: number, base: number, plan: PrefixLayout): MlxArray {
   const { P, Rc, Rr } = plan;
   const [B, H, , D] = x.shape as [number, number, number, number];
   const blocks: { start: number; len: number; off: number }[] = [
@@ -112,12 +95,14 @@ export class LlamaAttention {
     // variant — same kernel, offset read from the array. Captured once: rope
     // runs before updateAndFetch, so K and Q share the pre-write offset.
     const offsetArr = cache.ropeOffsetArr;
-    const ropeStep = (x: MlxArray): MlxArray =>
-      _prefixPlan
-        ? ropeBlocks(x, this.headDim, this.ropeBase, _prefixPlan)
+    const ropeStep = (x: MlxArray): MlxArray => {
+      const prefixLayout = activePrefixLayout();
+      return prefixLayout
+        ? ropeBlocks(x, this.headDim, this.ropeBase, prefixLayout)
         : offsetArr
           ? ops.ropeDynamic(x, this.headDim, this.ropeBase, offsetArr, null)
           : ops.rope(x, this.headDim, this.ropeBase, cache.offset, null);
+    };
     q = disposing(q, ropeStep(q));
     k = disposing(k, ropeStep(k));
     let attn: MlxArray;
@@ -246,6 +231,9 @@ export class MiniCPM5Model implements MlxDeclaredGraph {
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
   /** Delayed affine rows convert per layer and serve ordinary decoding only. */
   get graphCapabilities(): GraphCapabilities { return declareGraph({ kv: { delayedAffine: "ordinary" } }); }
+  #trainable: TrainableGraph | undefined;
+  /** The separate quantized head, segmented backward, prefix-shared ORPO and flash training attention. */
+  get trainable(): TrainableGraph { return this.#trainable ??= miniCpmTrainable(this); }
   readonly embed: QuantizedEmbedding;
   readonly layers: LlamaLayer[];
   readonly finalNorm: RMSNorm;

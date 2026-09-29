@@ -18,10 +18,10 @@ import { ValueAndGrad } from "@mlx-bun/mlx/autograd";
 import * as ops from "@mlx-bun/mlx/ops";
 import { evalAll } from "@mlx-bun/mlx/ops";
 import type { RuntimeModel } from "@mlx-bun/inference/models";
-import { Gemma4Model, type GradCheckpointCtx } from "@mlx-bun/inference/models/gemma4";
-import { MiniCPM5Model } from "@mlx-bun/inference/models/minicpm5";
+import type { GradCheckpointRun } from "@mlx-bun/inference/contracts/mlx";
 import { setTrainingAttn } from "@mlx-bun/inference/kernels/attention/flash";
-import { SegmentedBackward, SegmentedBackwardGemma4, SegmentedBackwardOrpo, SegmentedBackwardOrpoGemma4, SegmentedBackwardOrpoPrefix, SegmentedBackwardOrpoPrefixGemma4, planSegmentsBySize } from "./segmented";
+import { SegmentedBackward, SegmentedBackwardOrpo, SegmentedBackwardOrpoPrefix, planSegmentsBySize } from "./segmented";
+import { declaredTraining, declaredTrainingOrNull } from "./declared";
 import type { LoadedTokenizer } from "@mlx-bun/inference/input";
 import type { ChatTemplate } from "@mlx-bun/inference/input";
 import type { TrainingProgressCallback } from "./progress";
@@ -35,7 +35,7 @@ import {
 } from "./lora-params";
 import { resolveRanks, bitsMapFromModel, readPerLayerKl, DEFAULT_TARGET_MODULES, type RankScaling } from "./rank";
 import { sftLoss, dpoLoss, dpoRefLogps, dpoMetrics, orpoLoss, orpoMetrics, type ChunkCtx, type SftScope } from "./loss";
-import { orpoLossPrefixShared, orpoLossPrefixSharedGemma, splitPrefixBatch } from "./prefix-shared";
+import { orpoLossPrefixShared, splitPrefixBatch } from "./prefix-shared";
 import { AdamW, warmupCosineSchedule } from "./optimizer";
 import { writeFileSync, appendFileSync, mkdirSync } from "node:fs";
 
@@ -71,7 +71,7 @@ export interface TrainConfig {
    *  to bound memory at long context (mlx-lm grad_checkpoint; default in optiq).
    *  Numerically identical to off — pure memory↔compute trade. */
   gradCheckpoint: boolean;
-  /** Intra-layer MLP split (lever 4): with gradCheckpoint on (Gemma4 only),
+  /** Intra-layer MLP split (lever 4): with gradCheckpoint on (graphs declaring `gradCheckpoint`),
    *  checkpoint the attention and MLP sub-blocks separately with the post-attn
    *  residual as the boundary, so the backward recompute holds max(attn,MLP)+hMid
    *  instead of the whole layer. Numerically identical to gradCheckpoint alone —
@@ -116,7 +116,7 @@ export interface TrainConfig {
    *  an analytic softmax−onehot backward — no autograd through the head, no
    *  retained `[M,vocab]` logits in either direction. Composes with
    *  `orpoChunkSize` as the token-chunk size (defaults to 512 when unset). B=1,
-   *  non-segmented path only; Gemma + MiniCPM5 heads. Value bit-exact vs the
+   *  non-segmented path only; graphs declaring an LM head (`lmHead`). Value bit-exact vs the
    *  full-logits head, grads in the bf16 class. See
    *  `02d723a:docs/design/orpo-training.md` → fused linear-CE head. */
   orpoFusedCe: boolean;
@@ -128,7 +128,7 @@ export interface TrainConfig {
   orpoFlashCe: boolean;
   /** Shared prompt-prefix ORPO (lever 7): one forward over [prompt; chosen; rejected]
    *  with a block-sparse mask + block-wise RoPE, so the shared prompt is encoded ONCE
-   *  (token cost 2(P+R) → P+2R). B=1, non-segmented path; MiniCPM5 + Gemma4 (e4b).
+   *  (token cost 2(P+R) → P+2R). B=1, non-segmented path; graphs declaring `prefixShared`.
    *  Falls back to the two-forward orpoLoss for rows whose chosen/rejected prompts
    *  differ. Composes with orpoFlashCe/orpoFusedCe (each branch routes through the
    *  [M,V]-free head). See packages/training/src/prefix-shared.ts. */
@@ -178,9 +178,9 @@ export const DEFAULT_TRAIN_CONFIG: TrainConfig = {
   loraDropout: 0.0, // off by default
   rsLora: false, // off by default (opt-in; recommended when rank_scaling != constant)
   loraPlusRatio: 1.0, // 1 = off
-  mlpSplit: false, // default off; only effective with gradCheckpoint (Gemma4)
+  mlpSplit: false, // default off; only effective with gradCheckpoint (graphs declaring it)
   gradCheckpoint: false, // default off until validated; flip to true (optiq default) after
-  segmentSize: 0, // default off; >0 enables segmented backward (MiniCPM5 SFT B=1)
+  segmentSize: 0, // default off; >0 enables segmented backward (graphs declaring `segmented`; SFT B=1)
   saveCheckpoints: false, // off by default; scripts opt in (keep-all-checkpoints + metrics.json)
   gradClipNorm: 1.0, // on by default (standard ORPO/DPO guard); 0 = off
   valMaxExamples: 256, // fixed val subset → fast, meaningful correct/total
@@ -516,14 +516,10 @@ async function sftLoop(
   // value_and_grad below and is mutually exclusive with gradient checkpointing
   // (see `02d723a:docs/design/orpo-training.md`).
   const useSegmented = cfg.segmentSize > 0;
-  let segmented: SegmentedBackward | SegmentedBackwardGemma4 | null = null;
+  let segmented: SegmentedBackward | null = null;
   if (useSegmented) {
-    if (!(model instanceof MiniCPM5Model) && !(model instanceof Gemma4Model))
-      throw new Error("segmented backward (segmentSize > 0) is only wired for MiniCPM5 and Gemma4");
-    const ranges = planSegmentsBySize(model.layers.length, cfg.segmentSize);
-    segmented = model instanceof MiniCPM5Model
-      ? new SegmentedBackward(model, lora, ranges)
-      : new SegmentedBackwardGemma4(model, lora, ranges);
+    const ranges = planSegmentsBySize(declaredTraining(model, "segmented", "segmented backward (segmentSize > 0)").layerCount, cfg.segmentSize);
+    segmented = new SegmentedBackward(model, lora, ranges);
     emit({ type: "stage", stage: "setup", progress: 0.04,
       message: `segmented backward: ${ranges.length} segments of <=${cfg.segmentSize} layers` });
   }
@@ -546,26 +542,22 @@ async function sftLoop(
         }
       }, params.map((_, i) => i));
 
-  // Gradient checkpointing: group each layer's LoRA weights so forwardLayers
-  // can thread them as explicit checkpoint inputs (see Gemma4Model.gradCkpt).
-  // Checkpoints are created per forward and disposed after each step's backward.
-  let ckptCtx: GradCheckpointCtx | null = null;
-  if (!useSegmented && cfg.gradCheckpoint && model instanceof Gemma4Model) {
-    // Partition each layer's LoRA into the attention sub-block (self_attn.*) and
-    // the MLP sub-block (everything else in the layer: gate/up/down_proj +
-    // per_layer_*) so the split-MLP checkpoint can wrap them independently.
-    const byLayer: GradCheckpointCtx["byLayer"] = new Map();
-    for (const t of lora.targets) {
-      const m = t.modulePath.match(/\.layers\.(\d+)\./);
-      if (!m) continue;
-      const li = Number(m[1]);
-      const ll = byLayer.get(li) ?? byLayer.set(li, { attn: [], mlp: [] }).get(li)!;
-      (t.modulePath.includes(".self_attn.") ? ll.attn : ll.mlp).push(t.lw);
+  // Gradient checkpointing (a memory-for-compute trade, numerically identical to
+  // off): the graph groups each layer's LoRA weights so its layer loop can thread
+  // them as explicit checkpoint inputs. Checkpoints are created per forward and
+  // released after each step's backward. A graph that does not declare it trains
+  // without.
+  let ckpt: GradCheckpointRun | null = null;
+  if (!useSegmented && cfg.gradCheckpoint) {
+    const declared = declaredTrainingOrNull(model, "gradCheckpoint");
+    if (!declared)
+      emit({ type: "stage", stage: "setup", progress: 0.04,
+        message: "grad checkpoint: the graph does not declare it; training without (numerically identical)" });
+    else {
+      ckpt = declared.enable(lora.targets, cfg.mlpSplit);
+      if (cfg.mlpSplit) emit({ type: "stage", stage: "setup", progress: 0.04,
+        message: "grad checkpoint: intra-layer attn/MLP split" });
     }
-    ckptCtx = { byLayer, splitMlp: cfg.mlpSplit, keepAlive: [] };
-    model.gradCkpt = ckptCtx;
-    if (cfg.mlpSplit) emit({ type: "stage", stage: "setup", progress: 0.04,
-      message: "grad checkpoint: intra-layer attn/MLP split" });
   }
 
   // Training attention. Default = mlx fused SDPA (ops.sdpa): exact dQ/dK/dV
@@ -576,22 +568,22 @@ async function sftLoop(
   // flash-fd-check.ts (deleted 2026-08-23; git history)), though ~30× slower than ops.sdpa.
   // Cleared in finally.
   //
-  // GEMMA GUARD (enforced at the trainer): e4b on this path SIGTRAPed
-  // (uncatchable native crash) at multi-K sequence lengths (>=2K, reproduced in
-  // segmented-grad-test-e4b.ts (deleted 2026-08-23; git history);
-  // `02d723a:docs/reference/training.md`)
-  // and has NOT been re-validated at that scale since the two kernel fixes —
-  // the regression tests stop at T<=256. apps/mlx-bun/src/cli/train.ts even defaults e4b seq to 8192,
-  // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from a MiniCPM5 experiment
-  // would otherwise ride silently into a crash mid-run. Refuse it for Gemma
-  // until the >=2K re-validation lands; MiniCPM5 stays allowed.
+  // FLASH GUARD (enforced at the trainer from the graph's declaration): e4b on
+  // this path SIGTRAPed (uncatchable native crash) at multi-K sequence lengths
+  // (>=2K, reproduced in segmented-grad-test-e4b.ts (deleted 2026-08-23; git
+  // history); `02d723a:docs/reference/training.md`) and has NOT been
+  // re-validated at that scale since the two kernel fixes — the regression tests
+  // stop at T<=256. apps/mlx-bun/src/cli/train.ts even defaults e4b seq to 8192,
+  // so a stale `export MLX_BUN_TRAIN_ATTN=flash` from another model's experiment
+  // would otherwise ride silently into a crash mid-run. Gemma 4 declares the
+  // refusal until the >=2K re-validation lands; a graph that declares nothing
+  // about it is refused too.
   if (runtimeValue("MLX_BUN_TRAIN_ATTN") === "flash") {
-    if (model instanceof Gemma4Model)
+    const flash = declaredTraining(model, "flashAttention", "flash training attention support (MLX_BUN_TRAIN_ATTN=flash)");
+    if (!flash.supported)
       throw new Error(
-        "MLX_BUN_TRAIN_ATTN=flash is disabled for Gemma models: e4b SIGTRAPs on this " +
-          "path at seq >= 2048 and it has not been " +
-          "re-validated at that scale since the kernel fixes. Unset MLX_BUN_TRAIN_ATTN " +
-          "(ops.sdpa, the default, is exact and ~30x faster) or train MiniCPM5.",
+        `MLX_BUN_TRAIN_ATTN=flash is disabled for this graph: ${flash.reason}. Unset MLX_BUN_TRAIN_ATTN ` +
+          "(ops.sdpa, the default, is exact and ~30x faster).",
       );
     emit({ type: "stage", stage: "setup", progress: 0.045,
       message: "training attention: hand-rolled flash kernel (MLX_BUN_TRAIN_ATTN=flash; O(L) memory, ~30x slower than ops.sdpa)" });
@@ -626,12 +618,7 @@ async function sftLoop(
           windowTokens += countResponseTokens(currentBatch);
           return segmented ? segmented.step(currentBatch!) : vag!.apply(flatParams(lora));
         },
-        ckptCtx
-          ? () => {
-              for (const ck of ckptCtx!.keepAlive) ck.dispose();
-              ckptCtx!.keepAlive.length = 0;
-            }
-          : undefined,
+        ckpt ? () => ckpt!.releaseStep() : undefined,
       );
 
       const gradNorm = globalNorm(grads); // grads already materialized above
@@ -666,10 +653,10 @@ async function sftLoop(
       if (valid.length > 0 && step % cfg.stepsPerEval === 0) {
         // Eval is forward-only (no backward), so disable checkpointing for it —
         // it adds no benefit and a forward-only pass fits without it.
-        if (ckptCtx) (model as Gemma4Model).gradCkpt = null;
+        ckpt?.suspend();
         const tVal = Date.now();
         const { loss: vLoss, used, skipped } = evalSftLoss(model, valid, cfg);
-        if (ckptCtx) (model as Gemma4Model).gradCkpt = ckptCtx;
+        ckpt?.resume();
         // A silently-shrinking val set must be visible: rows whose supervised
         // span is empty after truncation are skipped BY DESIGN (mlx-lm drops
         // them at dataset build time) — report how many, and over what n the
@@ -687,10 +674,7 @@ async function sftLoop(
     vag?.dispose();
     segmented?.dispose();
     opt.dispose();
-    if (ckptCtx) {
-      (model as Gemma4Model).gradCkpt = null;
-      for (const ck of ckptCtx.keepAlive) ck.dispose();
-    }
+    ckpt?.end();
   }
   return { numIters: cfg.iters };
 }
@@ -887,17 +871,17 @@ async function orpoLoop(
       : null;
 
   // Segmented backward for ORPO: stream chosen+rejected backwards segment-by-segment.
-  // MiniCPM5 + Gemma4 (e4b) — same model coverage as SFT segmented. B=1 only.
+  // Any graph declaring `segmented` — same coverage as SFT segmented. B=1 only.
   const useSegmented = cfg.segmentSize > 0;
   // Prefix-sharing + segmented backward COMPOSE (M3-composition): the segmented
   // backward streams the ONE prefix-shared concat forward [prompt; chosen; rejected]
-  // (block-sparse mask via PrefixSharedCache + block-wise RoPE via the prefix plan)
+  // (block-sparse mask + block-wise RoPE from the graph's prefix layout)
   // segment-by-segment — so the prompt-encode-once saving holds AT long seq. Composed
-  // for BOTH MiniCPM5 and Gemma4/e4b (the e4b variant threads donor-KV + the
-  // logical-position sliding-window prefix mask through the segment boundaries).
+  // for any graph declaring both `segmented` and `prefixShared` (a graph with KV
+  // sharing threads the donor K/V + its logical-position sliding-window prefix mask
+  // through the segment boundaries).
   const useSegmentedPrefix = cfg.orpoPrefixShared && useSegmented;
-  if (cfg.orpoPrefixShared && !(model instanceof MiniCPM5Model || model instanceof Gemma4Model))
-    throw new Error("orpoPrefixShared is only wired for MiniCPM5 and Gemma4");
+  if (cfg.orpoPrefixShared) declaredTraining(model, "prefixShared", "prefix-shared training (orpoPrefixShared)");
   // Fused linear-CE head INSIDE the segmented backward (orpo_fused_ce): bounds the
   // head term to [chunk,V] alongside the per-segment layer savings. 0 = the
   // full-[M,V] responseOnlyLogpMean head (unchanged). Reuses orpoChunkSize as the
@@ -915,29 +899,20 @@ async function orpoLoop(
     cfg.orpoFusedCe || cfg.orpoFlashCe
       ? { chunkSize: cfg.orpoChunkSize > 0 ? cfg.orpoChunkSize : 512, fused: true, flash: cfg.orpoFlashCe, sink: [] }
       : undefined;
-  let segmentedOrpo: SegmentedBackwardOrpo | SegmentedBackwardOrpoGemma4 | null = null;
-  let segmentedOrpoPrefix: SegmentedBackwardOrpoPrefix | SegmentedBackwardOrpoPrefixGemma4 | null = null;
+  let segmentedOrpo: SegmentedBackwardOrpo | null = null;
+  let segmentedOrpoPrefix: SegmentedBackwardOrpoPrefix | null = null;
   if (useSegmented) {
-    if (!(model instanceof MiniCPM5Model) && !(model instanceof Gemma4Model))
-      throw new Error("segmented backward (segmentSize > 0) for ORPO is only wired for MiniCPM5 and Gemma4");
-    const ranges = planSegmentsBySize(model.layers.length, cfg.segmentSize);
+    const ranges = planSegmentsBySize(declaredTraining(model, "segmented", "segmented backward (segmentSize > 0)").layerCount, cfg.segmentSize);
     if (useSegmentedPrefix) {
-      // The composed prefix-shared segmented backward (MiniCPM5 or Gemma4/e4b), plus a
-      // plain segmented-ORPO fallback for rows whose chosen/rejected prompts differ
-      // (splitPrefixBatch returns null -> two-forward segmented step).
-      if (model instanceof MiniCPM5Model) {
-        segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefix(model, lora, ranges, cfg.orpoLambda, segPrefixChunk, cfg.sftScope);
-        segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
-      } else {
-        segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefixGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segPrefixChunk, cfg.sftScope);
-        segmentedOrpo = new SegmentedBackwardOrpoGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
-      }
-      emit({ type: "stage", stage: "setup", progress: 0.04,
-        message: `orpo segmented + prefix-share (${model instanceof Gemma4Model ? "e4b" : "MiniCPM5"}): single concat forward streamed over ${ranges.length} segments of <=${cfg.segmentSize} layers (two-forward fallback on prompt mismatch)` });
-    } else if (model instanceof MiniCPM5Model)
+      // The composed prefix-shared segmented backward, plus a plain segmented-ORPO
+      // fallback for rows whose chosen/rejected prompts differ (splitPrefixBatch
+      // returns null -> two-forward segmented step).
+      segmentedOrpoPrefix = new SegmentedBackwardOrpoPrefix(model, lora, ranges, cfg.orpoLambda, segPrefixChunk, cfg.sftScope);
       segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
-    else
-      segmentedOrpo = new SegmentedBackwardOrpoGemma4(model as Gemma4Model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
+      emit({ type: "stage", stage: "setup", progress: 0.04,
+        message: `orpo segmented + prefix-share: single concat forward streamed over ${ranges.length} segments of <=${cfg.segmentSize} layers (two-forward fallback on prompt mismatch)` });
+    } else
+      segmentedOrpo = new SegmentedBackwardOrpo(model, lora, ranges, cfg.orpoLambda, segFusedChunk, cfg.sftScope);
     if (!useSegmentedPrefix) emit({ type: "stage", stage: "setup", progress: 0.04,
       message: `orpo segmented backward: ${ranges.length} segments of <=${cfg.segmentSize} layers${segFusedChunk > 0 ? ` + fused linear-CE head (${segFusedChunk}/chunk)` : ""}` });
   }
@@ -979,11 +954,8 @@ async function orpoLoop(
           // row's chosen/rejected share an identical prompt; else fall back two-forward.
           if (cfg.orpoPrefixShared) {
             const split = splitPrefixBatch(currentBatch!);
-            if (split) {
-              if (model instanceof MiniCPM5Model)
-                return orpoLossPrefixShared(model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk, cfg.sftScope);
-              return orpoLossPrefixSharedGemma(model as Gemma4Model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk, cfg.sftScope);
-            }
+            if (split)
+              return orpoLossPrefixShared(model, split.promptIds, split.chosenResp, split.rejectedResp, cfg.orpoLambda, chunk, cfg.sftScope);
             notePrefixFallback();
           }
           return orpoLoss(model, currentBatch!, cfg.orpoLambda, chunk, cfg.sftScope);

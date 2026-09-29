@@ -9,7 +9,7 @@ import { toLogprobs } from "../../../sampling/index";
 import { BatchedKVCache } from "../../../state/batched-kv";
 import { KVCache } from "../../../state/kv";
 import { DraftVocabularyHead } from "../draft-vocab";
-import type { DraftRowSampling,QwenMtpTarget } from "../source";
+import type { DraftRowSampling,RecurrentMtpTarget } from "../source";
 
 /** Sampling owns each request's RNG policy. Scores are [B,V] log-probabilities;
  * the returned owned [B] token array stays on device through the draft chain. */
@@ -28,7 +28,7 @@ export class QwenMtpRows {
   #vocabulary: DraftVocabularyHead | null = null;
 
   constructor(
-    readonly target: QwenMtpTarget,
+    readonly target: RecurrentMtpTarget,
     readonly module: MtpModule,
     readonly sampling: MtpRowSampling | null,
     states: readonly (MtpRowState | null)[],
