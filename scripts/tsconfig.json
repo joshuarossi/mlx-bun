@@ -13,6 +13,7 @@
   },
   "include": [
     "*.ts",
-    "bench/**/*.ts"
+    "bench/**/*.ts",
+    "eval/**/*.ts"
   ]
 }
