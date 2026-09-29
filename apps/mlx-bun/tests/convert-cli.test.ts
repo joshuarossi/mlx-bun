@@ -370,6 +370,10 @@ test("the spawned CLI renders help, refuses usage errors with main's messages, a
     const failed = await cli(home, "convert", local, "-q");
     expect(failed.code).toBe(1); expect(failed.out).toContain("convert failed"); expect(failed.err).not.toBe("");
     expect(readdirSync(join(home, ".mlx-bun", "models"))).toEqual([]);
-    expect(readdirSync(home).sort()).toEqual([".mlx-bun", "src", "taken"]); // nothing written into the working directory
+    // Nothing lands in the working directory (HOME here) by default: no mlx_lm-style
+    // `mlx_model`, no models or staging outside MLX_BUN_HOME. (The OS may add its own
+    // entries such as ~/Library, so this names what must not exist.)
+    for (const name of ["mlx_model", "src-4bit", "models", "hub"]) expect(existsSync(join(home, name))).toBe(false);
+    expect(readdirSync(home).filter(name => name.startsWith(".src-4bit"))).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
