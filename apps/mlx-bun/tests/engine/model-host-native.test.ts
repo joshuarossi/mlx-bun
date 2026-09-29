@@ -126,7 +126,7 @@ test.skipIf(!native || !dirA || !dirB)("models stay resident by memory fit, swap
     }
 
     // Phase 4: under --isolate one worker process holds the models: a hub switch through the parent and a request naming
-    // the other model swap them inside the worker, the saved state resumes, and a killed worker respawns serving what it started with.
+    // the other model swap them inside the worker, the saved state resumes, and a killed worker respawns serving the model the switch chose.
     // The worker is another process: it inherits the environment, not this process's runtime overrides.
     const previousHome = process.env.MLX_BUN_HOME;
     process.env.MLX_BUN_HOME = join(root, "home");
@@ -154,7 +154,7 @@ test.skipIf(!native || !dirA || !dirB)("models stay resident by memory fit, swap
         if (waited > 60_000) throw new Error("the worker did not respawn");
         await Bun.sleep(50);
       }
-      expect((await chat(app, "local", talk("a", 5))).model).toBe(a.repoId);
+      expect((await chat(app, "local", talk("a", 5))).model).toBe(b.repoId);
       await app.close(); app = undefined;
     } finally { if (previousHome === undefined) delete process.env.MLX_BUN_HOME; else process.env.MLX_BUN_HOME = previousHome; }
   } finally {

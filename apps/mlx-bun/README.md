@@ -251,7 +251,7 @@ startup with its exit and is never retried; the browser opens once the model
 serves. The Pi backend learns the model's capabilities, generation defaults, and
 enforced context window from the worker's `/v1/models` and `/stats` after that
 first ready line, again after each model switch, and again for a respawned worker
-(which serves the model it was started with).
+(which the parent launches with the model the last switch chose, without the startup model's `--draft-*`, `--adapter` and `--mtp`).
 
 **Application state.** The web app, Pi chat, the Responses history, jobs,
 downloads, sessions, memory (the vault and the synthesis pipeline; its task
