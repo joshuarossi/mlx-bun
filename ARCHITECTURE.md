@@ -229,8 +229,12 @@ services. One module's contributions to another (memory's tools in chat, a
 module's settings in the shell) go through a `registry` core service: the
 contributor registers a declared extension and the consumer lists what is
 registered, so neither names the other. The web shell (navigation, routing,
-theme, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
-host's UI, native webviews included. Modules start as private workspace
+theme, the command palette's chrome, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
+host's UI, native webviews included: it has no workspace dependencies, takes the panels to mount as plain
+`{ tag, title, path, connection }` records (a manifest's `panel` plus its `PanelConnection`) and gives each a tab and a
+page, creating the element on first visit. A host's browser build imports each installed module's panel entry from
+the host's module list (`apps/mlx-bun/src/web/build.ts`), so the bundle holds the panels the host installs and no
+others; pages that have not moved into modules stay in the host's own browser code, mounted beside the panels. Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 
 **Hosts** compose. `apps/mlx-bun` installs every module; `apps/transcribe`
@@ -300,6 +304,8 @@ reaches it through the same verb table.
   drop prints a reminder to lower it); each cleanup PR shrinks the table.
 - Panel code imports only panel files and its `protocol.ts`, which imports
   nothing; this generalizes the browser rule for `chat/` and `jobs/`.
+- `web-shell` is browser code with no workspace dependencies and no imports beyond its own files; no module imports
+  it (a panel is handed its connection, not the shell), and an app's browser code may import it.
 - Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
   kinds and storage paths; every `requires` satisfied.
 

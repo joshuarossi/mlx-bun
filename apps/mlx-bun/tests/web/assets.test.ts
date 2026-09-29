@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
@@ -54,6 +54,9 @@ test("a source checkout builds a missing browser bundle without writing installa
     await cp(new URL("../../src/web", import.meta.url), join(root, "src/web"), { recursive: true });
     await mkdir(join(root, "src/chat"), { recursive: true });
     await cp(new URL("../../src/chat/protocol.ts", import.meta.url), join(root, "src/chat/protocol.ts"));
+    // The browser entry builds from the host's module list and the workspace packages it installs.
+    await cp(new URL("../../src/modules.ts", import.meta.url), join(root, "src/modules.ts"));
+    await symlink(new URL("../../node_modules", import.meta.url).pathname, join(root, "node_modules"));
     const { createWebHandler: sourceHandler } = await import(pathToFileURL(join(root, "src/web/assets.ts")).href);
     const source = await sourceHandler();
     const response = source(new Request("http://local/assets/app.js"))!;
