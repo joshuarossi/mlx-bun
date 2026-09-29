@@ -1364,7 +1364,12 @@ cover the flags, both `runServe` branches, and both compositions. The opt-in
 (`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_WHISPER_MODEL=<snapshot directory>`)
 serves a real checkpoint, transcribes a synthesized tone, and pages the weights
 out through the unload route; transcript parity against mlx-whisper is the
-library's contract, not this app check.
+library's contract, not this app check. The opt-in
+[transcription parity test](tests/engine/transcription-parity.test.ts) repeats the
+served surface on real speech and requires the oracle's transcripts for the same
+audio; its references and results are in the
+[inference README](../../packages/inference/README.md#speech-and-embedding-parity),
+which also covers the `/v1/embeddings` counterpart.
 
 `mlx-bun transcribe <audio-file> [query]` is main's one-shot speech-to-text
 verb over the same service, no server. The clip is read and decoded (WAV

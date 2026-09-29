@@ -205,6 +205,86 @@ import, and each produced tensor's shape and dtype before its bytes. Each of the
 tests skips only when none of its settings is present.
 
 
+### Speech and embedding parity
+
+Three opt-in consumers, ported from main `02d723a`, compare Whisper, Silero VAD and
+Qwen3-Embedding with real weights against both the external oracle and main.
+They skip only when none of their settings is present; any other combination
+fails, and every reference and model pin is verified before native libraries load.
+The oracle producers are main's unchanged scripts, run outside this repository in
+their own environments: `scripts/oracle/gen-whisper-golden.py` and
+`gen-silero-golden.py` (mlx-whisper 0.4.3 and silero-vad 6.2.1, MLX 0.32.2, in
+`~/Code/mlx-whisper-oracle/.venv`) and `gen-qwen3-embed-golden.py` (mlx-lm 0.31.3,
+MLX 0.32.2, `~/Code/mlx-lm/.venv-mlx-0.32.2-macos14`). The main side is
+[`scripts/main-speech-reference.ts`](scripts/main-speech-reference.ts), run from a
+main checkout (`whisper`, `vad` and `embed` commands; see its header): it imports
+main's own modules by path, changes nothing there, and writes JSON outside this
+repository. Nothing produced is committed.
+
+- [Whisper](tests/parity/whisper-parity.test.ts): `MLX_BUN_TEST_WHISPER_MODEL`
+  (the mlx-community snapshot), `_AUDIO` (speech-fox.wav and jfk.wav), `_REFERENCE`
+  (the oracle's `whisper.json` and blobs plus `main-whisper.json`),
+  `_REFERENCE_SHA256` and `_MAIN_SHA256`. Against the oracle: mel and window-0
+  encoder output bit for bit, window-0 per-step logits bit for bit on the faithful
+  graph, identical transcripts, segment tokens, timestamps and seeks. Against main:
+  whole results and encoder hashes identical for the faithful and the fast path,
+  greedy and beam 5, word timestamps and a run fed one second at a time. The fast
+  path is held to the oracle within two tokens per clip, the bound main recorded.
+  The openai/whisper-large-v3-turbo tokenizer must be in the Hugging Face cache.
+- [Silero VAD](tests/parity/silero-vad-parity.test.ts): `MLX_BUN_TEST_VAD_MODEL`
+  (`ggml-silero-v6.2.0.bin`), `_AUDIO` (adds chirp-1s6.wav), `_REFERENCE`
+  (`silero-vad.json` and `main-vad.json`), `_REFERENCE_SHA256`, `_MAIN_SHA256`.
+  Probabilities against the torch reference within 5e-3 (the ggml weights are fp16)
+  and identical segments under both parameter sets; against main, probabilities,
+  100 ms-streamed probabilities and segments bit for bit. The oracle's noise clip
+  uses numpy's generator and is not compared.
+- [Qwen3-Embedding](tests/parity/embedding-parity.test.ts): `MLX_BUN_TEST_EMBED_MODEL`,
+  `_REFERENCE` (`meta.json`, `hidden.bin`, `pooled.bin`, `main-embed.json`),
+  `_REFERENCE_SHA256`, `_MAIN_SHA256`. Hidden states and the pooled vector for the
+  oracle's ids bit for bit, the tokenizer's ids equal to the oracle's, and `embedMany`
+  vectors and token counts bit for bit with main for four texts, raw and with a
+  query instruction; it also checks the embed call counter.
+
+The app repeats the served surfaces with the same references.
+[`transcription-parity.test.ts`](../../apps/mlx-bun/tests/engine/transcription-parity.test.ts)
+(`MLX_BUN_TEST_NATIVE=1`, `MLX_BUN_APP_TEST_WHISPER_MODEL`, `MLX_BUN_TEST_WHISPER_AUDIO`,
+`_REFERENCE`, `_REFERENCE_SHA256`) requires the transcription-only server's
+transcripts to equal the oracle's for the same audio across multipart and JSON
+requests, beam search with vocabulary, SRT, translation, event streaming, VAD-gated
+sessions and the error path. [`embeddings-parity.test.ts`](../../apps/mlx-bun/tests/engine/embeddings-parity.test.ts)
+(`MLX_BUN_APP_TEST_EMBED_MODEL` and the embedding references) requires `/v1/embeddings`
+to return the oracle's and main's vectors bit for bit. The
+[voice test](../../apps/mlx-bun/tests/engine/voice.test.ts) covers the CLIs and the
+chat-server companion on synthesized speech at word level.
+
+On 2026-09-29 all of these passed on an Apple M1 Max with 32 GiB, macOS 27.0.1
+(26A434), Bun 1.4.2, native MLX 0.32.2, with this tree on `e878baaa` plus the tests
+above and main at `02d723a`. Whisper: 36 of 36 (7 oracle cases, 21 main runs,
+3 clips), including every mel, encoder output and per-step logit vector bit for bit
+with the oracle; the fast path differed from the oracle by 0 tokens except 2 on
+`long-noprev-en` (the recorded bound), and fast and faithful beam 5 agreed exactly.
+VAD: 4 of 4 clips; the largest difference from torch was 2.8e-3 (jfk) and main matched
+bit for bit. Embedding: 4 of 4; 35,840 hidden values and 2,560 pooled values identical
+to mlx-lm, and main's vectors identical. App: 6 of 6 transcription and 3 of 3 embedding
+route tests. Artifacts: whisper-large-v3-turbo `a4aaeec0` (weights SHA-256
+`951ed3fc1203e6a62467abb2144a96ce7eafca8fa77e3704fdb8635ff3e7f8a6`), tokenizer from
+openai/whisper-large-v3-turbo `41f01f3f`, Silero `ggml-silero-v6.2.0.bin` (SHA-256
+`2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987`),
+Qwen3-Embedding-4B-4bit-DWQ `b5d88f1f` (weights SHA-256
+`cd373d0bc76a3464a69b036ac6beca217a0d668bdf901ff3b05a7d7997d2d607`). Reference
+SHA-256s: whisper.json `348fb1ff2097f6b9b57b236293a67fd6da7c5eedaa886f793866eaba4a0aa965`,
+main-whisper.json `e307ac92f636ac03a4ae95c39b8a1ae5d1cb09c6b42644a79979205281037a67`,
+silero-vad.json `e961872b71f458894658f2f43c2eab6112c4517edaa9f49f5ff8fbc500460a51`,
+main-vad.json `f9194f6d70c030f59f95e049b39e019c658e6486e75c274e79a96c830650a38d`,
+meta.json `cb63915245d57da88f7df0ac088fd19ac249bcebd1829e4b25840163cf9059b3`,
+main-embed.json `85e13387bda46cf9c2aff8181b8dc575cce926a5bf90ff5293211287412f08a1`.
+Inputs were main's `speech-fox.wav` and `chirp-1s6.wav` fixtures and whisper.cpp's
+`jfk.wav`; the mel comparison confirms the same samples. A deliberate change of the
+attention scale made 13 Whisper tests fail, so the comparisons discriminate.
+This covers these checkpoints and clips only: no other Whisper size, no non-WAV
+input (AudioToolbox decoding), no oracle for word timestamps or the streaming run
+(main only), no Whisper batching, and no performance. Raw references remain external.
+
 ### Repeatable runtime comparison
 
 The source-checkout tool `bun packages/inference/scripts/runtime-oracle.ts --help`
