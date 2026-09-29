@@ -158,7 +158,7 @@ test("the parent answers /engine, /health, /stats and /downloads itself with the
     expect(stats.admission).toEqual({ enforced_context_tokens: 2048, max_safe_context: 8192 });
     expect(stats.response_store).toEqual({ entries: 0, bytes: 0, max_bytes: 32 * 1024 * 1024, ttl_ms: 3_600_000 });
     expect(stats.engine).toMatchObject({ isolated: true, state: "ready", pid });
-    // Worker-private and unmigrated paths are the listener's (501, or 404 for the memory route), never the worker's; /engine takes GET only.
+    // Worker-private paths are the listener's (404), never the worker's; /engine takes GET only.
     for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }], ["/admin/memory/complete", { method: "POST", body: "{}" }],
       ["/admin/memory/complete", { method: "GET" }], ["/v1/memory/synthesize", { method: "POST" }], ["/engine", { method: "POST" }]] as const)
       expect(await request(path, init)).toBeNull();

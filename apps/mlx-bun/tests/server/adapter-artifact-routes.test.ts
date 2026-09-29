@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GenerationGateway } from "../../src/engine/generation-gateway";
 import { createAdapterArtifactRoutes } from "../../src/server/adapter-artifact-routes";
-import { pendingRoute } from "../../src/server/start";
 import { storagePath } from "../../src/storage/paths";
 
 const roots: string[] = [];
@@ -33,7 +32,6 @@ test("merge preserves source order, scales, generated path, and wire response un
   expect(events).toEqual(["lock", "merge", "unlock"]);
   await routes.handle(post("merge", { adapter_a: "/a", adapter_b: "/b" }));
   expect(args[2]).toBeUndefined();
-  expect(pendingRoute("/api/finetune/merge")).toBe(false);
 });
 
 test("merge failure releases the lock after library cleanup and returns main's error envelope", async () => {
@@ -89,8 +87,6 @@ test("export writes the public CPU-only manifest into an injected temporary outp
   expect(body.manifest).toMatchObject({ version: 1, base_model: "org/base", adapter_path: "/trained", method: "orpo" });
   expect(await Bun.file(join(body.export_path, "manifest.json")).json()).toEqual(body.manifest);
   expect(events).toEqual([]);
-  expect(pendingRoute("/api/finetune/export")).toBe(false);
-  expect(pendingRoute("/api/finetune/push")).toBe(false);
 });
 
 test("export preserves omitted method and generated default path, and reports write failures", async () => {

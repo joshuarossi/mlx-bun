@@ -17,10 +17,11 @@ to the app's download owner as a background transfer, visible on `GET /downloads
 and joined at shutdown. A signal before the app exists cancels selection (a
 starter download stays resumable); a signal during model load closes the app as
 soon as it is up. Shutdown handlers are installed as soon as the listener binds.
-Known unfinished features return HTTP 501 during migration; their remaining
-work is tracked in [PLAN](../../PLAN.md). Unknown routes return 404, as do
-main's lab pages (`/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`):
-they are not product surface.
+A route a surface does not mount returns 404, as do main's lab pages
+(`/curves`, `/curve-terrain`, `/dag`, `/generate`, `/signal`): they are not
+product surface. A request shape the engine cannot run returns a typed 501
+(`UnsupportedExecutionError`); remaining work is tracked in
+[PLAN](../../PLAN.md).
 
 Main's admission and runtime flags keep their units and semantics: `--memory-budget`
 (decimal GB) is the usable envelope for model load, request admission, the process
@@ -140,12 +141,12 @@ launch forms, and no flag selects either:
 
 `server/worker-routes.ts` answers `GET /health`, `POST /admin/lease`,
 `POST /admin/drain`, and `POST /admin/memory/complete` ahead of the routes on
-the socket only (a TCP listener keeps answering 501 for lease and drain, and
-404 for the memory route). In the app form its `/health` replaces discovery's,
-and the transcription-only app, which has no execution lease, answers
-`/admin/lease` with 501. The memory route (see
+the socket only: a TCP listener answers 404 for all three, and `/engine`
+outside `--isolate` is 404 too. In the app form its `/health` replaces
+discovery's, and the transcription-only app, which has no execution lease, has
+no `/admin/lease` route (404). The memory route (see
 [Memory synthesis](#memory-synthesis)) is the model form's: the app form's
-synthesis runs in the app itself, so there it answers 501.
+synthesis runs in the app itself, so there it is 404.
 
 Both launch forms and the ready line carry the app's package version (the one
 `--version` prints). A worker exits 2 with `worker protocol version mismatch`
@@ -230,7 +231,7 @@ restarts, socket, model, last_exit, in_flight, leases }, pool }` with `in_flight
 body with this process's `response_store` and an `engine` report on top; while
 the worker is down, 200 with only the parent's part and an `unavailable`
 message), and `GET /downloads` from its own transfer owner. `/admin/lease` and
-`/admin/drain` stay unix-socket-only and keep answering 501 on TCP.
+`/admin/drain` stay unix-socket-only and answer 404 on TCP.
 `GET /v1/memory/synthesize` is served by this process's memory owner; each
 stage call or batch runs on the default model worker's memory task model over
 that worker's private `POST /admin/memory/complete` (never forwarded from TCP,
@@ -844,7 +845,7 @@ link leaving the copy.
 `src/web/browser/` preserves the existing chat, model, training, quantization,
 dataset, memory, and status UI. Browser code imports only local browser modules
 and the data-only chat/job protocols. Unported backend features may return 501
-during migration; preserving their UI does not claim their backend is ready.
+(`verified_code` submit); preserving their UI does not claim their backend is ready.
 
 `src/web/assets.ts` provides `createWebHandler()`, which loads the static payloads
 and returns a `Request → Response | null` handler for application composition.

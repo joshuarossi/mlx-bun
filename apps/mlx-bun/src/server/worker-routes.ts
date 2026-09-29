@@ -3,8 +3,8 @@
 // execution lease for managed GPU jobs, a drain that stops admission and
 // waits for the work in flight, and the default model worker's memory task
 // model for the parent's synthesis. It is never mounted on a TCP listener,
-// where lease and drain keep answering 501 from the migration list and the
-// memory path is unknown (404).
+// where all three paths are unknown (404), as they are on a worker that lacks
+// the capability behind one.
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { MemoryCompletionClient, MemoryCompletionRequest } from "../memory/model";
 
@@ -17,7 +17,7 @@ export interface WorkerRoutesOptions {
   modelId: string;
   /** The host's exclusive execution lease: it resolves once generation in
    * flight has finished, so drain waits on it and jobs hold it. A host without
-   * one (the transcription-only app) answers `/admin/lease` with 501 and
+   * one (the transcription-only app) has no `/admin/lease` route (404) and
    * drains on admitted requests alone. */
   acquireExecutionLease?(signal: AbortSignal): Promise<DisposableResource>;
   /** Drain waits at most this long for in-flight work; a request body may
@@ -29,8 +29,8 @@ export interface WorkerRoutesOptions {
    * `complete` or `completeBatch` on it for the `--isolate` parent's synthesis,
    * under the execution lease; the call that loads it loads exactly the
    * snapshot the call carries. The composition owns it and closes it after
-   * `close()` has joined the calls. Without it (or without a lease) the route
-   * answers 501. */
+   * `close()` has joined the calls. Without it (or without a lease) there is
+   * no such route (404). */
   memoryTaskModel?: { clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient };
 }
 
@@ -82,8 +82,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
   // A parent-managed GPU job holds this response open. The connection owns
   // the lease, so the parent dying cannot strand the worker's execution lock.
   const lease = async (request: Request): Promise<Response> => {
-    const acquire = options.acquireExecutionLease;
-    if (!acquire) return Response.json({ error: { message: "this worker has no execution lease", type: "not_implemented", path: "/admin/lease" } }, { status: 501 });
+    const acquire = options.acquireExecutionLease!;
     if (closed) return closing();
     let lease: DisposableResource;
     try { lease = await track(acquire(AbortSignal.any([request.signal, shutdown.signal]))); }
@@ -119,8 +118,7 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
   // managed job's lease. The parent disconnecting (a cancelled run, its
   // shutdown) or close() aborts the rows; close() joins them.
   const memory = async (request: Request): Promise<Response> => {
-    const task = options.memoryTaskModel, acquire = options.acquireExecutionLease;
-    if (!task || !acquire) return Response.json({ error: { message: "this worker has no memory task model", type: "not_implemented", path: "/admin/memory/complete" } }, { status: 501 });
+    const task = options.memoryTaskModel!, acquire = options.acquireExecutionLease!;
     if (closed) return closing();
     let body: WorkerMemoryCall;
     try { body = parseMemoryCall(await request.json()); }
@@ -187,13 +185,13 @@ export function createWorkerRoutes(options: WorkerRoutesOptions) {
       return { async handle(request) {
         const { pathname } = new URL(request.url);
         if (pathname === "/health") return request.method === "GET" ? health() : methodNotAllowed("GET");
-        if (pathname === "/admin/lease") return request.method === "POST" ? lease(request) : methodNotAllowed("POST");
+        if (pathname === "/admin/lease" && options.acquireExecutionLease) return request.method === "POST" ? lease(request) : methodNotAllowed("POST");
         if (pathname === "/admin/drain") return request.method === "POST" ? drain(request) : methodNotAllowed("POST");
         if (draining) return Response.json({ error: { message: "worker is draining; no new requests are admitted", type: "draining" } }, { status: 503 });
         inFlight++;
         try {
           // Memory calls are admitted and drained like model requests.
-          if (pathname === "/admin/memory/complete") return request.method === "POST" ? await memory(request) : methodNotAllowed("POST");
+          if (pathname === "/admin/memory/complete" && options.memoryTaskModel && options.acquireExecutionLease) return request.method === "POST" ? await memory(request) : methodNotAllowed("POST");
           return await model.handle(request);
         } finally { if (--inFlight === 0) for (const wake of [...idleWaiters]) wake(); }
       } };

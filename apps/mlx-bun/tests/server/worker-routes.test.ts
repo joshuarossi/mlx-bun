@@ -61,7 +61,7 @@ test("the worker surface reports readiness, owns a lease per connection, and ans
       expect([response.status, response.headers.get("allow")]).toEqual([status, allow]);
     }
     expect((await get("/api/jobs")).status).toBe(404);
-    expect((await get("/engine")).status).toBe(501);
+    expect((await get("/engine")).status).toBe(404);
     // The connection owns the lease: the body stays open, a disconnect releases it.
     const holder = new AbortController();
     const leased = await get("/admin/lease", { method: "POST", signal: holder.signal });
@@ -147,7 +147,7 @@ test("closing the worker surface ends held lease connections so the listener can
   socket.remove();
 });
 
-test("lease failures answer 503, a caller that left answers 499, and the ordinary TCP listener keeps lease and drain unmigrated", async () => {
+test("lease failures answer 503, a caller that left answers 499, and the ordinary TCP listener has no lease or drain route", async () => {
   const failing = createWorkerRoutes({ modelId: "org/model", async acquireExecutionLease() { throw new Error("gateway is closed"); } });
   const failed = await failing.wrap(model()).handle(new Request("http://worker/admin/lease", { method: "POST" }));
   expect([failed?.status, (await failed?.json()).error.type]).toEqual([503, "lease_failed"]);
@@ -158,7 +158,7 @@ test("lease failures answer 503, a caller that left answers 499, and the ordinar
   try {
     for (const path of ["/admin/lease", "/admin/drain"]) {
       const response = await fetch(new URL(path, app.server.url), { method: "POST" });
-      expect([response.status, (await response.json()).error.type]).toEqual([501, "not_implemented"]);
+      expect([response.status, (await response.json()).error.message]).toEqual([404, "Not found"]);
     }
     // The memory route exists only on a worker's socket: over TCP it is an unknown path.
     const memory = await fetch(new URL("/admin/memory/complete", app.server.url), { method: "POST", body: "{}" });
@@ -310,12 +310,16 @@ test("the private memory route runs one call or batch on the task model under th
     expect(events).toEqual([]);
   } finally { await app.close(); }
   socket.remove();
-  // A worker without a task model or without an execution lease (the app form, the transcription-only app) answers 501.
+  // A worker without a task model or without an execution lease (the app form, the transcription-only app) has no memory route.
   for (const options of [{ acquireExecutionLease: logged(exclusiveLease(), []) }, { memoryTaskModel: taskModel(gate, []) }]) {
     const response = await createWorkerRoutes({ modelId: "m", ...options }).wrap(model())
       .handle(new Request("http://worker/admin/memory/complete", { method: "POST", body: JSON.stringify(call("complete", ["a"])) }));
-    expect([response!.status, await response!.json()]).toEqual([501, { error: { message: "this worker has no memory task model", type: "not_implemented", path: "/admin/memory/complete" } }]);
+    expect(response).toBeNull();
   }
+  // Likewise a worker without a lease has no /admin/lease route, while /admin/drain still answers.
+  const leaseless = createWorkerRoutes({ modelId: "m" }).wrap(model());
+  expect(await leaseless.handle(new Request("http://worker/admin/lease", { method: "POST" }))).toBeNull();
+  expect((await leaseless.handle(new Request("http://worker/admin/drain", { method: "POST" })))!.status).toBe(200);
 });
 
 test("a parent disconnect aborts every row and joins them before the lease is released; draining refuses new calls; close aborts and joins the calls in flight", async () => {

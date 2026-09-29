@@ -149,8 +149,8 @@ test("the parent composes the persistent state and the proxy without the engine 
       assert.deepEqual(await (await get("/api/settings/hf-token")).json(), { ok: true, hasToken: false });
       const status = await (await get("/api/memory/status")).json();
       assert.deepEqual([status.ok, status.enabled], [false, false]);
-      for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }]])
-        assert.equal((await get(path, init)).status, 501, path);
+      for (const [path, init] of [["/admin/lease", { method: "POST" }], ["/admin/drain", { method: "POST" }], ["/admin/memory/complete", { method: "POST", body: "{}" }]])
+        assert.equal((await get(path, init)).status, 404, path);
       // Memory synthesis is parent-owned (its loopback client reaches the model through this proxy):
       // the dry run streams from the parent without touching the worker.
       const synthesize = await get("/v1/memory/synthesize?dry=1");
