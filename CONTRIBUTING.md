@@ -35,15 +35,15 @@ and explain and test intentional behavior corrections.
 
 Run Python references in separate pinned environments, as required by the
 architecture. MLX/Metal GPU references run natively on macOS; run mlx-lm from
-its own external checkout/environment and record its exact revision and versions.
-Docker can run CPU verification and evaluation clients that call the native
-server. Keep reusable runners and instructions in Git. If goldens are retained, publish them as an
-external dataset revision recording the oracle and source versions. An opt-in
-test verifies against a pinned revision or regenerates it; this repository
-stores no comparison tensors or datasets. Use identical
-artifacts, tokens, settings, and state transitions; compare the migrated path
-with both its applicable oracle and pre-refactor main. State exactly which
-models and paths the evidence covers.
+its own external checkout/environment and record its exact revision and
+versions. Docker can run CPU verification and evaluation clients that call the
+native server. Keep reusable runners and instructions in Git. If goldens are
+retained, publish them as an external dataset revision recording the oracle and
+source versions. An opt-in test verifies against a pinned revision or
+regenerates it; this repository stores no comparison tensors or datasets. Use
+identical artifacts, tokens, settings, and state transitions; compare the
+migrated path with both its applicable oracle and pre-refactor main. State
+exactly which models and paths the evidence covers.
 
 Performance claims require paired runs on a quiet, named machine with identical
 artifacts and configuration. Compare decode, prefill, complete-request time,

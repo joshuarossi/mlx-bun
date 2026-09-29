@@ -265,22 +265,22 @@ in the decisions list above. Recover historical decisions only as needed.
 
 Keep reusable runners and instructions, retain compact results, and store large
 datasets externally. A result records the command, source commits, runtime and
-oracle versions, model and dataset revisions, machine, configuration, seeds,
-execution shape, scores or timings, and failed or skipped cases needed to repeat
-the run. Record corrections explicitly. CI and external run directories can hold
-these summaries; curate consequential results in their owning documentation or
-PR rather than creating a second status ledger.
+oracle versions, model and dataset revisions or content hashes, machine,
+configuration, seeds, execution shape, scores or timings, and failed or skipped
+cases needed to repeat the run. Record corrections explicitly. CI and external
+run directories can hold these summaries; curate consequential results in their
+owning documentation or PR rather than creating a second status ledger.
 
-Raw tensor captures, generated checkpoints, fixtures, goldens, and bulk benchmark
-output do not belong in Git. Keep only the evidence needed for the current
-investigation; permanent retention of every capture is not required. Retained
-reusable data belongs in an external dataset, such as Hugging Face, pinned by
-revision and content hash. Runners default to an output directory outside the
-checkout and distinguish the small result summary from optional detailed
-captures. Instructions must make the inputs and procedure reproducible without
-requiring a machine-local archive. A negative performance result merits a
-decision record only with a paired A/B on a named machine and a question likely
-to recur; preserve its conditions rather than generalizing.
+Raw tensor captures, generated checkpoints, fixtures, goldens, and bulk
+benchmark output do not belong in Git. Keep only the evidence needed for the
+current investigation; permanent retention of every capture is not required.
+Retained reusable data belongs in an external dataset, such as Hugging Face,
+pinned by an immutable revision or content hash. Runners default to an output
+directory outside the checkout and distinguish the small result summary from
+optional detailed captures. Instructions must make the inputs and procedure
+reproducible without requiring a machine-local archive. A negative performance
+result merits a decision record only with a paired A/B on a named machine and a
+question likely to recur; preserve its conditions rather than generalizing.
 
 Historical source: pre-refactor main at
 [`02d723a`](https://github.com/joshuarossi/mlx-bun/tree/02d723a2875153196f8c6c10bce2daf6f0044655)
