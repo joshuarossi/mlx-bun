@@ -236,10 +236,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
         // Committed spans append through the graph's dense reads after one
-        // maintenance call, as main's serial jump did, once the gateway has
-        // certified the scheme's dense reads (kvBatchable). TurboQuant storage
-        // decodes on read throughout; a row whose affine storage would no
-        // longer read plain at its next append is refused before that append.
+        // maintenance call, once the gateway has certified the scheme's dense
+        // reads (kvBatchable). TurboQuant storage decodes on read throughout; a
+        // row whose affine storage would no longer read plain at its next
+        // append is refused before that append.
         sharedGrammarJump: !!grammarSpans && !request.hasVision &&
           (!(request.kvQuant || request.turboQuant) || scheduling.quantizedBatch) && !options.pagedKv,
         // Main filled only through a committed append declaring the scheme's

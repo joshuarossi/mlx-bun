@@ -465,10 +465,12 @@ test.each(["finish", "cancel", "consumer", "grammar"])("mixed work preserves row
 });
 
 
-test("the forced-span binding requires the graph's dense-read layers as distinct layer indices", () => {
+test("the forced-span binding requires the graph's dense-read layers as distinct indices within its caches", () => {
   const f = fixture();
   expect(() => bindGrammarGroupRequests(f.model, undefined as never)).toThrow(TypeError);
-  for (const layers of [[-1], [0.5], [0, 0]]) expect(() => bindGrammarGroupRequests(f.model, layers), String(layers)).toThrow(RangeError);
+  // The fixture's graph has one cache layer.
+  for (const layers of [[-1], [0.5], [0, 0], [1]]) expect(() => bindGrammarGroupRequests(f.model, layers), String(layers)).toThrow(RangeError);
+  expect(f.calls.disposals).toBe(f.calls.allocations);
   expect(bindGrammarGroupRequests(f.model, [0])({}).key).toBe("grammar-forced-span");
 });
 
