@@ -39,11 +39,10 @@ test.skipIf(!target)("real-weight committed spans over delayed affine KV equal d
   const { bindMlxGateway, createRuntimeConfig, withRuntimeConfig } = await import("../../src/execution");
   const { bindLegacyAutoregressiveModel } = await import("../../src/generation/bindings/autoregressive");
   const { resolveKvScheme } = await import("../../src/state/kv-scheme");
-  const { UniversalDenseModel } = await import("../../src/models/universal/dense");
   const weights = await Weights.open(target!);
   try {
     const model = createModel(weights, await loadModelConfig(target!));
-    const dense = model instanceof UniversalDenseModel && model.encodedKvAttention === false;
+    const dense = model.requiredDenseKvLayers.length > 0;
     type Projection = { shape: number[]; dtype: string; sha256: string };
     let lane: Projection[] | null = null, kinds: string[][] = [];
     const project = model.logitsFromHidden.bind(model), forward = model.forwardHidden.bind(model);

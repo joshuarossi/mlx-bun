@@ -151,6 +151,8 @@ export class Qwen3Model {
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
+  /** Layers whose attention reads plain keys and values: every layer (`cache.updateAndFetch`). */
+  readonly requiredDenseKvLayers: readonly number[];
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3Layer[];
   readonly finalNorm: RMSNorm;
@@ -166,6 +168,7 @@ export class Qwen3Model {
       { length: config.text.numHiddenLayers },
       (_, i) => new Qwen3Layer(weights, config, `model.layers.${i}`),
     );
+    this.requiredDenseKvLayers = Object.freeze(this.layers.map((_, layer) => layer));
     this.finalNorm = new RMSNorm(weights.tensor("model.norm.weight"), config.text.rmsNormEps);
     this.lmHead = config.text.tieWordEmbeddings
       ? null

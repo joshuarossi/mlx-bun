@@ -239,7 +239,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 admits plain KV, 
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     // The text facts KV scheme policy reads; this one-layer graph uses full attention.
     config: { modelType: "gemma2", text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [0],
   });
   const binding = bindMlxGateway(model);
   let created = false;
@@ -311,7 +311,7 @@ test.skipIf(process.env.MLX_BUN_GEMMA2_NATIVE !== "1")("Gemma2 places shared gen
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [0],
   });
   const binding = bindMlxGateway(model);
   binding.createBatchGroup = () => { throw new Error("unexpected execution"); };

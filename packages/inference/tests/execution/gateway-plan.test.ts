@@ -33,7 +33,7 @@ const environments: Record<string, string>[] = [{}, { MLX_BUN_GRAMMAR_BATCH: "0"
 function gemma4(): Gemma4Model {
   return Object.assign(Object.create(Gemma4Model.prototype), {
     config: { modelType: "gemma4", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [],
   });
 }
 
@@ -41,7 +41,7 @@ function softcapUniversal(): UniversalDenseModel {
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null }, encodedKvAttention: false,
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [0],
   });
 }
 
@@ -55,17 +55,18 @@ const standIn = (prototype: object, modelType: string, extra: object = {}): Runt
   });
 
 // Every autoregressive class the binding distinguishes. Stand-ins share plain
-// KV caches, so only class guards differ: Gemma2's plain softcap graph is the
-// one class whose grammar jump commits forced spans instead of verifying proposals.
+// KV caches, so only class guards and each graph's declared dense-read layers
+// differ: Gemma2's plain softcap graph is the one class whose grammar jump
+// commits forced spans instead of verifying proposals.
 const qualifiedFamilies: [string, () => RuntimeModel][] = [
   ["universal dense", () => standIn(UniversalDenseModel.prototype, "llama",
-    { args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null } })],
+    { args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null }, requiredDenseKvLayers: [] })],
   ["gemma4", gemma4],
-  ["qwen3", () => standIn(Qwen3Model.prototype, "qwen3")],
-  ["qwen3-moe", () => standIn(Qwen3MoeModel.prototype, "qwen3_moe")],
-  ["qwen3.5", () => standIn(Qwen35Model.prototype, "qwen3_5")],
-  ["minicpm5", () => standIn(MiniCPM5Model.prototype, "minicpm5")],
-  ["glm52", () => standIn(Glm52Model.prototype, "glm_moe_dsa")],
+  ["qwen3", () => standIn(Qwen3Model.prototype, "qwen3", { requiredDenseKvLayers: [0] })],
+  ["qwen3-moe", () => standIn(Qwen3MoeModel.prototype, "qwen3_moe", { requiredDenseKvLayers: [0] })],
+  ["qwen3.5", () => standIn(Qwen35Model.prototype, "qwen3_5", { requiredDenseKvLayers: [] })],
+  ["minicpm5", () => standIn(MiniCPM5Model.prototype, "minicpm5", { requiredDenseKvLayers: [] })],
+  ["glm52", () => standIn(Glm52Model.prototype, "glm_moe_dsa", { requiredDenseKvLayers: [] })],
 ];
 const families: [string, () => RuntimeModel][] = [["gemma2 softcap", softcapUniversal], ...qualifiedFamilies];
 
@@ -132,8 +133,13 @@ test("a dense-read graph takes KV schemes whose own maintenance certifies dense 
     resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 64 })])
     expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(true);
   // The probe is the storage's answer: layers whose storage cannot certify keep the scheme off.
-  const opaque = gemma2(); opaque.makeCache = () => [new KVCache(), new SSMCache(), new KVCache(), new KVCache()];
+  const opaque = Object.assign(gemma2(), { requiredDenseKvLayers: [0, 2, 3] });
+  opaque.makeCache = () => [new KVCache(), new SSMCache(), new KVCache(), new KVCache()];
   expect(bindMlxGateway(opaque).kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))).toBe(false);
+  // A declaration naming storage that does not read dense is refused when bound.
+  const misdeclared = Object.assign(gemma2(), { requiredDenseKvLayers: [0, 1] });
+  misdeclared.makeCache = opaque.makeCache;
+  expect(() => bindMlxGateway(misdeclared)).toThrow("does not read dense: 1");
   // Every probe cache is released, whether the probe certifies or throws.
   for (const failing of [false, true]) {
     const made: { dispose(): void }[] = [], disposed = new Set<object>();
@@ -142,7 +148,7 @@ test("a dense-read graph takes KV schemes whose own maintenance certifies dense 
       cache.dispose = () => { disposed.add(cache); dispose(); };
       made.push(cache); return cache;
     };
-    const counted = gemma2();
+    const counted = Object.assign(gemma2(), { requiredDenseKvLayers: [0] });
     counted.makeCache = () => {
       const ring = new RotatingKVCache(8);   // never wrapped by TurboQuant maintenance: its answer is read directly
       if (failing) Object.defineProperty(ring, "denseKvReads", { get() { throw new Error("probe failed"); } });
@@ -268,7 +274,7 @@ test.each(families)("%s places grammar with a bound grouped draft exactly as the
 });
 
 describe("DiffusionGemma interleaved denoising binding", () => {
-  const diffusion = () => standIn(DiffusionGemmaModel.prototype, "diffusion_gemma") as DiffusionGemmaModel;
+  const diffusion = () => standIn(DiffusionGemmaModel.prototype, "diffusion_gemma", { requiredDenseKvLayers: [] }) as DiffusionGemmaModel;
   const planWith = (binding: MlxGatewayBinding, request: typeof shape, options: GenerateOptions = {}) =>
     binding.plan(request, options, { ...schedule, continuous: binding.cachesBatchable() });
 
@@ -334,7 +340,7 @@ describe("DiffusionGemma interleaved denoising binding", () => {
 function minicpm5(layers = 4): MiniCPM5Model {
   return Object.assign(Object.create(MiniCPM5Model.prototype), {
     config: { modelType: "minicpm5", text: { enableMoeBlock: false, numHiddenLayers: layers, layerTypes: Array(layers).fill("full_attention") }, eosTokenIds: [] },
-    makeCache: () => Array.from({ length: layers }, () => new KVCache()), loraState: { active: [] },
+    makeCache: () => Array.from({ length: layers }, () => new KVCache()), loraState: { active: [] }, requiredDenseKvLayers: [],
   });
 }
 
@@ -342,7 +348,7 @@ function dense(layers = 4): UniversalDenseModel {
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null }, encodedKvAttention: true,
     config: { modelType: "llama", text: { enableMoeBlock: false, numHiddenLayers: layers, layerTypes: Array(layers).fill("full_attention") }, eosTokenIds: [] },
-    makeCache: () => Array.from({ length: layers }, () => new KVCache()), loraState: { active: [] },
+    makeCache: () => Array.from({ length: layers }, () => new KVCache()), loraState: { active: [] }, requiredDenseKvLayers: [],
   });
 }
 
@@ -354,7 +360,7 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and it
     resolveKvScheme({ override: "config", config, quantizedKvStart: 64 })])
     expect(binding.kvBatchable(scheme)).toBe(true);
   // A model without the capability still refuses a delayed start.
-  expect(bindMlxGateway(standIn(Qwen3Model.prototype, "qwen3"))
+  expect(bindMlxGateway(standIn(Qwen3Model.prototype, "qwen3", { requiredDenseKvLayers: [0] }))
     .kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
   expect(bindMlxGateway(dense()).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
 
@@ -393,8 +399,9 @@ function universal(args: Record<string, unknown> = {}, layers = 4): UniversalDen
     numHiddenLayers: layers, ...args };
   return Object.assign(Object.create(UniversalDenseModel.prototype), {
     args: descriptor,
-    // The bound attention fact a constructed graph derives from this descriptor.
+    // The bound attention facts a constructed graph derives from this descriptor.
     encodedKvAttention: descriptor.attnLogitSoftcap === null,
+    requiredDenseKvLayers: descriptor.attnLogitSoftcap === null ? [] : Array.from({ length: layers }, (_, layer) => layer),
     makeCache: () => universalCacheWindows(descriptor as unknown as UniversalArgs)
       .map(window => window ? new RotatingKVCache(window) : new KVCache()),
     config: { modelType: descriptor.modelType, text: { enableMoeBlock: false, numHiddenLayers: layers,
@@ -943,7 +950,7 @@ test("GLM-5.2's MLA cache takes no KV scheme: every requested scheme is refused 
 });
 
 test("each binding keeps the SSM batching policy it was built with", () => {
-  const model = standIn(Qwen35Model.prototype, "qwen3_5", { makeCache: () => [new SSMCache(), new KVCache()] });
+  const model = standIn(Qwen35Model.prototype, "qwen3_5", { makeCache: () => [new SSMCache(), new KVCache()], requiredDenseKvLayers: [] });
   const off = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_BATCH_SSM: "0" }), () => bindMlxGateway(model));
   const on = withRuntimeConfig(createRuntimeConfig({}), () => bindMlxGateway(model));
   expect([off.cachesBatchable(), on.cachesBatchable()]).toEqual([false, true]);

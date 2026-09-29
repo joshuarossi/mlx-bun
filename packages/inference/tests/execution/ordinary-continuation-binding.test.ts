@@ -17,7 +17,7 @@ test(`ordinary shared continuation binds ${name} through its loaded backend`, ()
   const model = Object.assign(Object.create(prototype), {
     config: { modelType: name, text: { enableMoeBlock: false }, eosTokenIds: [] },
     makeCache: () => [new KVCache()],
-    loraState: { active: [] },
+    loraState: { active: [] }, requiredDenseKvLayers: [],
   }) as Gemma4Model;
   const binding = bindMlxGateway(model);
   const unconfigured = bindMlxGateway(model);
@@ -54,7 +54,7 @@ test("Gemma2 softcap plans shared continuation for plain, affine and TurboQuant 
   const model = Object.assign(Object.create(UniversalDenseModel.prototype), { encodedKvAttention: false,
     args: { modelType: "gemma2", maskArray: true, attnLogitSoftcap: 50, layerTypes: null },
     config: { modelType: "gemma2", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [0],
   }) as UniversalDenseModel;
   const binding = bindMlxGateway(model), unconfigured = bindMlxGateway(model);
   const schedule = { continuous: true, quantizedBatch: true, checkpoints: true };
@@ -100,7 +100,7 @@ test("Gemma2 softcap plans shared continuation for plain, affine and TurboQuant 
 test("Gemma4 adapter requests bypass server-wide paging and checkpoint exactly as unpaged adapter requests", () => {
   const model = Object.assign(Object.create(Gemma4Model.prototype), {
     config: { modelType: "gemma4", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [],
   }) as Gemma4Model;
   const lookups: unknown[][] = [];
   const store = { findGenerationCheckpoint: (...args: unknown[]) => { lookups.push(args); return null; } } as unknown as ContinuationStore;
@@ -155,7 +155,7 @@ test("Gemma4 adapter requests bypass server-wide paging and checkpoint exactly a
   }
   const qwen = bindMlxGateway(Object.assign(Object.create(Qwen35Model.prototype), {
     config: { modelType: "qwen3_5", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [new KVCache()], loraState: { active: [] },
+    makeCache: () => [new KVCache()], loraState: { active: [] }, requiredDenseKvLayers: [],
   }) as Qwen35Model);
   qwen.configureContinuation!({ checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as ContinuationServices);
   for (const request of [shape, adapterShape]) {

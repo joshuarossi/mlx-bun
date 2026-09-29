@@ -170,7 +170,7 @@ describe("interleaved shared denoising", () => {
   }
 
   const groupModel = { config: { modelType: "diffusion_gemma", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [], weightsBytes: 0 } as unknown as RuntimeModel;
+    makeCache: () => [], weightsBytes: 0, requiredDenseKvLayers: [] } as unknown as RuntimeModel;
 
   type Fixture = ReturnType<typeof interleaved>;
   type RowOptions = Pick<BatchRequest, "signal" | "onAdmitted"> & { onToken?: (token: number) => unknown };
@@ -527,7 +527,7 @@ describe("interleaved shared denoising", () => {
     const f = interleaved();
     const model = Object.assign(Object.create(DiffusionGemmaModel.prototype), {
       config: { modelType: "diffusion_gemma", text: { vocabSize: 4, enableMoeBlock: false }, eosTokenIds: [] },
-      canvasLength: 2, embedScale: 1, loraState: f.adapters, weightsBytes: 0, makeCache: () => [],
+      canvasLength: 2, embedScale: 1, loraState: f.adapters, weightsBytes: 0, makeCache: () => [], requiredDenseKvLayers: [],
       // The legacy binding closes an array of disposable caches.
       prefill: (ids: number[]) => {
         const state = f.graph.prefill(ids);
