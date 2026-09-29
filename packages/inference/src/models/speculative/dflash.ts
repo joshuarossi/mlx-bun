@@ -24,9 +24,9 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 /** STS calibration (§3.2.1) — per-position confidence thresholds fit on real
- *  (confidence, accepted) verify outcomes (the fitter lived in the deleted
- *  standalone loop; `git log -- generation/speculative/dspark/calibration.ts`).
- *  Consumed by the confidence-scheduled
+ *  (confidence, accepted) verify outcomes (`fitStsThresholds` in
+ *  `@mlx-bun/training/dspark`; `mlx-bun draft calibrate` writes them into
+ *  dspark.json). Consumed by the confidence-scheduled
  *  draft-length pruning (Alg 1, single-user form) in forwardInfer. Stored
  *  inside DflashConfig so it round-trips through dspark.json for free.
  *  ABSENT ⟹ no pruning — an uncalibrated checkpoint drafts exactly as before. */
@@ -412,7 +412,7 @@ export class DflashDrafter {
 
   /** Parallel training forward (teacher-forced Markov).
    *  hCtx [A,Lctx,m*H], ctxMask [A,Lctx]|null, anchorEmb [A,H], prevToks [A,γ]. */
-  forwardTrain(model: Gemma4Model, hCtx: MlxArray, ctxMask: MlxArray | null, anchorEmb: MlxArray, prevToks: MlxArray): DflashTrainOut {
+  forwardTrain(model: DraftProjection, hCtx: MlxArray, ctxMask: MlxArray | null, anchorEmb: MlxArray, prevToks: MlxArray): DflashTrainOut {
     const A = hCtx.shape[0]!;
     let block: MlxArray | null = null, Uf: MlxArray | null = null;
     let B: MlxArray | null = null, emb1: MlxArray | null = null;

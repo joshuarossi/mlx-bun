@@ -26,6 +26,7 @@ Opt-in native checks over a caller-supplied cached snapshot (`MLX_BUN_TEST_NATIV
 | `kernels/flash-cce` | Callable fused cross-entropy Metal forward/backward kernels |
 | `diffusion` (`diffusion-lora.ts`) | DiffusionGemma's denoising training objective |
 | `merge`, `fuse`, `export` | Adapter combination, checkpoint fusion, and export manifests |
+| `dspark/` | Drafter production: shards, the DSpark objective, the training loop, STS calibration |
 
 Training consumes a graph only through the `trainable` declaration
 (`TrainableGraph` in `@mlx-bun/inference/contracts`), never a model class:
@@ -38,6 +39,25 @@ memory-for-compute hint, so a graph without it trains without and reports that i
 setup stage. Gemma 4 and MiniCPM5 declare the parts above they implement, and
 DiffusionGemma the denoising objective; the architecture gate rejects concrete
 model imports and model-class `instanceof` in this package.
+
+`@mlx-bun/training/dspark` produces the drafters `--draft-model` mounts (the DSpark/DFlash
+KV-injection module of `@mlx-bun/inference`), in three stages that share one frozen target.
+`regenDrafterData(model, tokenizer, template, topics, { outDir, tapLayers })` has the target
+answer each topic with its own greedy generation (`generate`) and records the tapped layers'
+hiddens over each full sequence through the speculative target binding, as shards.
+`trainDrafter(model, config, onProgress?, signal?)` trains the drafter on those shards with
+`dsparkLoss` (weighted CE, total variation to the target's distribution recomputed from the
+stored final hiddens, and confidence BCE against the analytic acceptance) and saves the best
+held-out expected accepted length (τ) as `<outDir>` (`dspark.json`, `model.safetensors` and a
+`config.json` whose `dspark_assistant` type marks it a companion `--draft-model` resolves by
+path). `calibrateDrafter` runs speculative generations through a provider that drafts the
+unpruned block, fits per-position confidence thresholds with `fitStsThresholds`, and
+`writeSts` sets them in `dspark.json`. The target is any graph declaring hidden-layer taps and
+the draft projection (`embed`, `logitsFromHidden`); `tapLayers` must be identical for regen
+and train (shards record them, and a mismatch is refused). Losses, shard sampling geometry,
+seeded reproducibility, resume and the calibration provider have [synthetic-target
+tests](tests/native/dspark.test.ts); the fit's math is a [CPU test](tests/cpu/dspark-sts.test.ts).
+`mlx-bun draft` is the CLI over these.
 
 These module subpaths are available for composition. The Steel Metal header is
 an implementation detail of flash CCE. Full-sequence forward operations remain

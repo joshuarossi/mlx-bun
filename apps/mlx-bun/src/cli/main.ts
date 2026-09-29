@@ -61,6 +61,12 @@ try {
       } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
     } else if (command === "memory" || command === "setup") {
       await (await import("./memory")).runMemory(parsed);
+    } else if (command === "draft") {
+      const cancellation = new AbortController();
+      const stop = () => cancellation.abort(new Error("draft cancelled"));
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
+      try { await (await import("./draft")).runDraft(parsed, {}, cancellation.signal); }
+      finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
     } else if (command === "train" || command === "fuse" || command === "train-watch") {
       const { runTrain, runFuse, runTrainWatch } = await import("./train");
       const cancellation = new AbortController();

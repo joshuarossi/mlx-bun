@@ -10,6 +10,7 @@ loads and specializes on. Inference never quantizes; this package never serves.
 | `allocator` | Mixed-precision allocation from per-layer sensitivity under a bits-per-weight budget |
 | `sensitivity` | Exact per-layer KL sensitivity on calibration text |
 | `calibration` | Calibration sample loading and tokenization |
+| `drafter` | Quantize a released DeepSpec (`Gemma4DSparkModel`) drafter: every matmul weight and gather table, `confidence_head` kept bf16, then a load smoke through the drafter loader |
 | `rotate`, `weight-transform` | Rotation and fold plans for Llama and Qwen families before quantization |
 | `trellis` | Trellis state packing, interleaving, and the host decoder. The 1MAD codebook and word geometry are imported from the inference kernels, which own the packed format |
 | `trellis-quantizer` | `quantizeTrellisModelDir`: fold an HF-layout Qwen3.5-family checkpoint (γ + R1), code every MLP tensor with the Trellis (QTIP TCQ, L=12, 1MAD, T=256, tail-biting) and write the packed format the inference kernels serve; the rest keeps the shipped-compact affine tiers |
@@ -27,6 +28,11 @@ plans a fold, [weight-transform-numerics](tests/weight-transform-numerics.test.t
 [trellis-roundtrip](tests/trellis-roundtrip.test.ts) packs states here and expands them with the
 inference kernels. `quantizeModelDir(sourceDirectory, outputDirectory, { bits, groupSize })`
 is the entry point for a whole checkpoint; it needs a real one.
+
+`quantizeDrafterDir(sourceDirectory, outputDirectory, { bits, groupSize })` applies the drafter policy
+(the confidence head's sigmoid is compared against thresholds, so it stays bf16); drafter numerics move
+acceptance, never correctness, so gate the result with `scripts/drafter-ab.ts`. A [synthetic DeepSpec
+checkpoint test](tests/drafter.test.ts) covers the policy and refusals; a released drafter is not run here.
 
 `quantizeTrellisModelDir(sourceDirectory, outputDirectory, options)` produces a packed
 Trellis artifact from a full-precision `model.language_model.*` checkpoint (Qwen3.8-27B
@@ -47,5 +53,5 @@ the frozen producer's (`02d723a:scripts/turboquant/tq-quantize-trellis-packed.ts
 checkpoint, [trellis-encoder](tests/trellis-encoder.test.ts) checks the codec and the
 LDLQ arm, and [trellis-allocation](tests/trellis-allocation.test.ts) the planning.
 
-Job orchestration and the CLI verb (`mlx-bun convert --q-mode trellis`) belong to the app.
+Job orchestration and the CLI verbs (`mlx-bun convert --q-mode trellis`, `mlx-bun draft quantize`) belong to the app.
 

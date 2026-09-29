@@ -10,6 +10,11 @@ import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DflashDrafter } from "../../../models/speculative/dflash";
 
+// The drafter's producer (`@mlx-bun/training/dspark`) builds, trains and saves
+// this module through the loader's public path, not the model directory.
+export { DflashDrafter, DEFAULT_DFLASH_CONFIG } from "../../../models/speculative/dflash";
+export type { DflashConfig, DflashTrainOut, StsCalibration, TargetDims } from "../../../models/speculative/dflash";
+
 export function loadDsparkDrafter(dir: string): DflashDrafter {
   const metaPath = join(dir, "dspark.json");
   if (!existsSync(metaPath)) throw new Error(`no dspark.json in ${dir} — not a DSpark checkpoint`);

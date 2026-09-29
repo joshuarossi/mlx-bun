@@ -17,6 +17,7 @@
     "./prefix-shared": "./src/prefix-shared.ts",
     "./segmented": "./src/segmented.ts",
     "./diffusion": "./src/diffusion-lora.ts",
+    "./dspark": "./src/dspark/index.ts",
     "./merge": "./src/merge.ts",
     "./fuse": "./src/fuse.ts",
     "./export": "./src/export.ts",
