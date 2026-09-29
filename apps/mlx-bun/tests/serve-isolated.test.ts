@@ -501,13 +501,14 @@ test("a hub switch reaches the worker, which serves the new model as the current
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-switch-"));
   const cwd = join(root, "project"), agentDir = join(root, "agent");
   mkdirSync(cwd); mkdirSync(agentDir);
-  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open"]));
+  const options = parseServeOptions(parseCommand("serve", ["--isolate", "--port", "0", "--no-open", "--draft-kind", "ngram"]));
   options.chatPaths = { cwd, agentDir, sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
   const workerLog: string[] = [];
   const tmp = privateTmp(root);
-  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken" },
+  const record = join(root, "launches.jsonl");
+  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { entry, env: { ...workerEnv, FAKE_WORKER_FAIL_MODEL: "org/broken", FAKE_WORKER_RECORD: record },
     restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice() {}, log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   let leftover: string[] = ["not closed"];
   const base = new URL(`http://127.0.0.1:${running.port}`);
@@ -544,19 +545,25 @@ test("a hub switch reaches the worker, which serves the new model as the current
     expect([broken.status, await broken.json()]).toEqual([502, { ok: false, error: "cannot load org/broken" }]);
     expect(await answer()).toBe("org/other");
     expect((await serve("")).status).toBe(400);
-    // The switch does not survive the worker: a respawned one serves the model it was started with, and chat says so.
+    // The switch survives the worker: a respawned one is launched with the model now served (and without the startup
+    // model's `--draft-*` flags, which belong to it alone), and chat says so.
     const crashed = ((await (await get("/engine")).json()) as { pid: number }).pid;
     await get("/fake/crash");
     await until(async () => { const report = await (await get("/engine")).json() as { state: string; pid: number | null }; return report.state === "ready" && report.pid !== crashed; }, "the respawn");
-    expect(await answer()).toBe("org/model");
-    expect((await ready()).model).toBe("org/model");
+    expect(await answer()).toBe("org/other");
+    expect((await ready()).model).toBe("org/other");
+    const launches = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line).launch as string).map(line => JSON.parse(line) as
+      { model: { repoId: string }; options: { draft?: unknown } });
+    expect(launches.map(launch => launch.model.repoId)).toEqual(["org/model", "org/other"]);
+    expect(launches[0]!.options.draft).toEqual({ kind: "ngram" });
+    expect(launches[1]!.options.draft).toBeUndefined();
   } finally {
     await running.close();
     leftover = workerDirs(tmp);
     rmSync(root, { recursive: true, force: true });
   }
-  expect(workerDirs()).toBe(before);
-  expect(workerLog.filter(line => line.startsWith("loading"))).toEqual(["loading org/model", "loading org/model"]);
+  expect(leftover).toEqual([]);
+  expect(workerLog.filter(line => line.startsWith("loading"))).toEqual(["loading org/model", "loading org/other"]);
 }, 40_000);
 
 test("the worker is given the CLI's shutdown budget to close, so a slow flush of saved state is not cut by a kill after the default grace", async () => {

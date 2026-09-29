@@ -35,7 +35,7 @@ export interface WorkerRoutesOptions {
    * no such route (404). */
   memoryTaskModel?: { clientFor(signal: AbortSignal, snapshot: string): MemoryCompletionClient };
   /** Make a local model the served one (the host's `serve`): `POST /admin/serve` with `{ model }`. Rejects with a status-carrying error (`status`). Without it there is no such route (404). */
-  serve?(model: string, signal: AbortSignal): Promise<{ model: string }>;
+  serve?(model: string, signal: AbortSignal): Promise<{ model: string; record?: unknown }>;
   /** Snapshots of the models the host holds resident: `GET /admin/served`. Without it there is no such route (404). */
   servedPaths?(): readonly string[];
 }

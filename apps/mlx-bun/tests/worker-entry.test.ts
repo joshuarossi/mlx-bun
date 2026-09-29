@@ -112,7 +112,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     holder.abort();
     await until(() => gateway.held === 0, "the lease release");
     // The parent asks the host it does not own to switch its served model and which snapshots it holds: both reach the attached link.
-    assert.deepEqual(await (await get("/admin/serve", { method: "POST", body: JSON.stringify({ model: "org/model" }) })).json(), { model: "org/model" });
+    assert.deepEqual(await (await get("/admin/serve", { method: "POST", body: JSON.stringify({ model: "org/model" }) })).json(), { model: "org/model", record: { repoId: "org/model", path: "/unused", expertsBytes: 0 } });
     const refused = await get("/admin/serve", { method: "POST", body: JSON.stringify({ model: "org/not-local" }) });
     assert.deepEqual([refused.status, (await refused.json()).error.message], [404, "org/not-local is not a local model; download it first"]);
     assert.deepEqual(await (await get("/admin/served")).json(), { paths: ["/unused"] });

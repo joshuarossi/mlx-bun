@@ -105,7 +105,7 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     if (model.startsWith("org/missing")) return Response.json({ error: { message: `${model} is not a local model; download it first`, type: "serve_failed" } }, { status: 404 });
     if (process.env.FAKE_WORKER_FAIL_MODEL === model) return Response.json({ error: { message: `cannot load ${model}`, type: "serve_failed" } }, { status: 502 });
     current = model; resident.add(model);
-    return Response.json({ model });
+    return Response.json({ model, record: { repoId: model, path: `/models/${model}`, modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 } });
   }
   if (path === "/admin/served") return Response.json({ paths: [...resident].map(id => `/models/${id}`) });
   if (path === "/admin/drain") {

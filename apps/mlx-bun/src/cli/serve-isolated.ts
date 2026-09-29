@@ -83,6 +83,8 @@ async function describeServedModel(engine: WorkerSupervisor, modelId: string, op
  * composition does when the model cannot load. */
 export async function startIsolatedServer(model: ModelRecord, options: ServeOptions, hooks: IsolatedServeHooks = {}): Promise<RunningApp> {
   let engine: WorkerSupervisor | undefined;
+  /** The model a worker is launched with: the one this process resolved, then whatever the last switch chose. */
+  let current: ModelRecord = model;
   const requireEngine = () => { if (!engine) throw new EngineUnavailableError("starting", null); return engine; };
   // Snapshots the worker reads besides the models it serves: the memory task
   // model, selected here and kept out of hub GC from the call that carries it
@@ -117,7 +119,11 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       entry: hooks.entry ?? fileURLToPath(new URL("./worker-entry.ts", import.meta.url)),
       socketPath,
       // The worker gets the resolved model and options; the flag itself is the parent's.
-      launch: { version: WORKER_PROTOCOL_VERSION, socketPath, model, options: { ...options, isolate: false } },
+      // Read at each spawn: a respawn launches with the model the last switch chose. The startup model's own
+      // `--draft-*`, `--adapter` and `--mtp` belong to it alone, so another model launches without them.
+      launch: () => ({ version: WORKER_PROTOCOL_VERSION, socketPath, model: current,
+        options: current === model ? { ...options, isolate: false }
+          : { ...options, isolate: false, draft: undefined, adapterDir: undefined, mtp: undefined } }),
       ...(hooks.restarts ? { restarts: hooks.restarts } : {}),
       ...(hooks.env ? { env: hooks.env } : {}),
       ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}),
@@ -192,10 +198,11 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
           response = await supervisor.fetch("http://engine/admin/serve", { method: "POST", body: JSON.stringify({ model: id }),
             headers: { "content-type": "application/json" }, signal });
         } catch (error) { throw new ServeRefused(502, error instanceof Error ? error.message : String(error)); }
-        const body = await response.json().catch(() => ({})) as { model?: string; error?: { message?: string } };
+        const body = await response.json().catch(() => ({})) as { model?: string; record?: ModelRecord; error?: { message?: string } };
         if (!response.ok || typeof body.model !== "string")
           throw new ServeRefused(response.ok ? 502 : response.status, body.error?.message ?? `the worker answered ${response.status}`);
         modelId = body.model;
+        if (body.record) current = body.record;
         served = await describeServedModel(supervisor, modelId, options).catch(() => served);
         return { model: modelId };
       } });

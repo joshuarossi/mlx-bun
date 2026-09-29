@@ -175,7 +175,7 @@ async function localRecords(): Promise<readonly ModelRecord[]> {
   try {
     // A fresh machine's index is empty until its first scan.
     if (registry.list().length === 0) await registry.scan();
-    return registry.listCanonical().filter(record => declaredOperations(record.modelType, record.repoId).includes("generate"));
+    return registry.listCanonical().filter(record => declaredOperations(record.modelType).includes("generate"));
   } finally { registry.close(); }
 }
 
@@ -290,7 +290,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       async resolve(id) {
         const record = await known(id);
         if (!record) return undefined;
-        return { id: record.repoId, bytes: await estimate(record), operations: declaredOperations(record.modelType, record.repoId) };
+        return { id: record.repoId, bytes: await estimate(record), operations: declaredOperations(record.modelType) };
       },
       async load(entry) {
         const record = (await known(entry.id))!;
@@ -369,7 +369,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
         try { (await residency.acquire(id, { signal, need: ["generate"] })).release(); }
         catch (error) { throw new ServeRefused(error instanceof Error && "code" in error && error.code === "load-failed" ? 502 : 400, error instanceof Error ? error.message : String(error)); }
         current = id;
-        return { model: id };
+        // The record lets a parent that respawns this worker launch it with the model now served.
+        const record = await known(id);
+        return { model: id, ...(record ? { record } : {}) };
       } } : {}) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
