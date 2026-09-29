@@ -161,6 +161,19 @@ test("two fake panels mount through their manifests: a tab and a page each, crea
   expect(shell.panelTargets()).toEqual([{ id: "alpha", title: "Alpha" }, { id: "beta", title: "Beta" }]);
 });
 
+test("panelsFromManifests connects each panel to its module's routes and skips modules without one", () => {
+  const route = (method: string, path: string, response: string, mount?: string) => ({ method, path, response, ...(mount ? { mount } : {}) });
+  const panel = { tag: "mlx-x-panel", title: "X", path: "/x" };
+  expect(api.panelsFromManifests([
+    { id: "x", panel, routes: [route("GET", "/snapshot", "json"), route("POST", "/feed", "sse"), route("GET", "/root-feed", "sse", "root"), route("GET", "/feed", "sse")] },
+    { id: "plain" },
+    { id: "quiet", panel: { tag: "mlx-quiet-panel", title: "Quiet", path: "/quiet" }, routes: [route("GET", "/snapshot", "json")] },
+  ])).toEqual([
+    { ...panel, connection: { apiBase: "/api/x", eventsUrl: "/api/x/feed" } },
+    { tag: "mlx-quiet-panel", title: "Quiet", path: "/quiet", connection: { apiBase: "/api/quiet", eventsUrl: "" } },
+  ]);
+});
+
 test("a panel whose element is not defined shows a note instead of failing, and a taken route is refused", () => {
   const missing: ShellPanel = { tag: "mlx-missing-panel", title: "Missing", path: "/missing", connection: { apiBase: "/api/missing", eventsUrl: "" } };
   shell.mountPanels([missing]);

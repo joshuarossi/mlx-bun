@@ -29,6 +29,24 @@ export interface ShellPanel {
 /** The element as the shell sees it. */
 export type PanelElement = HTMLElement & { connection?: PanelConnection };
 
+/** The parts of a module manifest the shell reads (`@mlx-bun/app-core`'s `AppModule` is assignable). */
+export interface PanelManifest {
+  readonly id: string;
+  readonly panel?: { readonly tag: string; readonly title: string; readonly path: string };
+  readonly routes?: readonly { readonly method: string; readonly path: string; readonly response: string; readonly mount?: string }[];
+}
+
+/** The panels of the given module manifests, each connected to its module's routes: `apiBase` is `/api/<id>` and
+ * `eventsUrl` the module's first server-sent `GET` route (empty when it serves none). Modules without a panel are skipped. */
+export function panelsFromManifests(manifests: readonly PanelManifest[]): ShellPanel[] {
+  return manifests.flatMap((module): ShellPanel[] => {
+    if (!module.panel) return [];
+    const stream = module.routes?.find(route => route.method === "GET" && route.response === "sse" && route.mount !== "root");
+    return [{ tag: module.panel.tag, title: module.panel.title, path: module.panel.path,
+      connection: { apiBase: `/api/${module.id}`, eventsUrl: stream ? `/api/${module.id}${stream.path}` : "" } }];
+  });
+}
+
 /** The route id of a panel: its path without the leading slash. */
 export function panelRouteId(panel: Pick<ShellPanel, "path">): string {
   return panel.path.replace(/^\/+/, "");

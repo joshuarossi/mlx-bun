@@ -35,9 +35,10 @@ A module manifest's `panel` (`tag`, `title`, `path`) plus the `PanelConnection` 
 (`@mlx-bun/app-core`'s `PanelSpec` is assignable). The host imports each panel's entry when it builds its bundle, which
 defines the custom element; the shell adds a tab (a developer tool unless `developer: false`) and a page whose route is
 the panel's path, creates the element on first visit, sets `connection`, and keeps it attached only while its page is
-shown, so its streams stop when the user leaves. A tag that is not defined shows a note instead of failing. The app
-builds the list from `src/modules.ts` (`apps/mlx-bun/src/web/build.ts`): `apiBase` is `/api/<id>`, `eventsUrl` the
-module's first server-sent `GET` route (empty when it has none).
+shown, so its streams stop when the user leaves. A tag that is not defined shows a note instead of failing. `panelsFromManifests`
+builds the list from module manifests: `apiBase` is `/api/<id>`, `eventsUrl` the module's first server-sent `GET`
+route (empty when it has none). The app's build (`apps/mlx-bun/src/web/build.ts`) imports the panel entry and manifest of
+each module its `package.json` lists that exports `./panel`, and hands the manifests to it.
 
 ## Palette
 

@@ -4,7 +4,7 @@
 // browser.test.ts. fetch, EventSource and WebSocket are fakes that record what the page asks for.
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { GlobalWindow } from "happy-dom";
-import { buildWebBundle } from "../../src/web/build";
+import { buildWebBundle, installedPanelsSource, panelModules } from "../../src/web/build";
 
 class FakeEventSource {
   static urls: string[] = [];
@@ -65,6 +65,14 @@ afterAll(() => {
 const tabs = () => [...document.querySelectorAll<HTMLElement>("#tabs .tab")].map(tab => tab.dataset.tab);
 const shown = () => [...document.querySelectorAll<HTMLElement>("#tabs .tab")].filter(tab => tab.style.display !== "none").map(tab => tab.dataset.tab);
 const activePages = () => [...document.querySelectorAll<HTMLElement>("section[data-route].active")].map(section => section.dataset.route);
+
+test("the browser build takes the panels of the host's installed modules that export one, and no others", () => {
+  expect(panelModules()).toEqual(["@mlx-bun/module-metrics"]);
+  const source = installedPanelsSource();
+  expect(source).toContain('import "@mlx-bun/module-metrics/panel";');
+  expect(source).not.toContain("datasets");
+  expect(installedPanelsSource([])).toBe('import { panelsFromManifests } from "@mlx-bun/web-shell";\nexport const panels = panelsFromManifests([]);\n');
+});
 
 test("the bundle boots app.html: the legacy pages keep their tabs in order and the installed module's panel gets its own, after them", () => {
   boot("#/chat");
