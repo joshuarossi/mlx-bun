@@ -7,6 +7,7 @@ import type { RuntimeConfig } from "@mlx-bun/inference/runtime/config";
 import type { PromptResponseTrace } from "@mlx-bun/inference/runtime/trace";
 import type { CacheCodecProvider } from "@mlx-bun/inference/state";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import type { DeviceStepSampler, DeviceStepSamplerConfig } from "@mlx-bun/inference/sampling";
 import type { CompletionEngine, RequestShape, GenerationPlacement, Vision, OnToken } from "./completion";
 import { UnsupportedExecutionError } from "./completion";
 import { acquireReservation } from "./preparation";
@@ -95,6 +96,9 @@ export class GenerationGateway implements CompletionEngine {
     
       promptCache?: RowPromptCache;
       adapterNamespace?: (adapters: string[]) => string;
+      /** Builds the per-row sampler for ordinary rows (binding-owned method and
+       * continuation rows sample through their binding). Default: makeStepSampler. */
+      samplerFactory?: (options: GenerateOptions, config: DeviceStepSamplerConfig) => DeviceStepSampler;
     } = {},
   ) {
     this.#binding = binding;
@@ -310,14 +314,13 @@ export class GenerationGateway implements CompletionEngine {
       const method = this.#binding.methodRequest?.(placement.execution, options);
       const continuation = method ? undefined : this.#binding.continuationRequest?.(placement.execution, options, promptIds, onToken);
       if (!method && !continuation) {
-        const [{ createRowSampling }, { makeStepSampler }] = await Promise.all([
-          import("@mlx-bun/inference/execution"), import("@mlx-bun/inference/sampling"),
-        ]);
-        sampling = createRowSampling(makeStepSampler(options, {
-        tokenRepresentation: "device", grammarWait: "external",
-        historyUpdate: "after-sample", initialHistory: promptIds,
-        captureSelectedLogprob: options.logprobs === true,
-        captureTopLogprobs: options.topLogprobs,
+        const { createRowSampling } = await import("@mlx-bun/inference/execution");
+        const samplerFactory = this.opts.samplerFactory ?? (await import("@mlx-bun/inference/sampling")).makeStepSampler;
+        sampling = createRowSampling(samplerFactory(options, {
+          tokenRepresentation: "device", grammarWait: "external",
+          historyUpdate: "after-sample", initialHistory: promptIds,
+          captureSelectedLogprob: options.logprobs === true,
+          captureTopLogprobs: options.topLogprobs,
         }), onToken);
       } else { sampling = continuation; }
 
