@@ -76,7 +76,11 @@ status = open("/proc/self/status").read()
 assert "CapEff:\\t0000000000000000" in status, status
 assert "NoNewPrivs:\\t1" in status, status
 assert "Seccomp:\\t2" in status, status
-assert sorted(os.listdir("/sys/class/net")) == ["lo"], os.listdir("/sys/class/net")
+# Some kernels (Docker Desktop's) create fallback tunnel devices in every
+# namespace; they stay down and the program cannot raise them.
+up = [n for n in os.listdir("/sys/class/net") if n != "lo" and os.path.isdir("/sys/class/net/" + n)
+      and int(open("/sys/class/net/" + n + "/flags").read(), 16) & 1]
+assert up == [], up
 for attempt in (lambda: socket.create_connection(("1.1.1.1", 53), timeout=2), lambda: socket.getaddrinfo("example.com", 80)):
     try:
         attempt()

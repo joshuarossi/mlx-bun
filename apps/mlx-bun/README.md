@@ -844,8 +844,8 @@ link leaving the copy.
 
 `src/web/browser/` preserves the existing chat, model, training, quantization,
 dataset, memory, and status UI. Browser code imports only local browser modules
-and the data-only chat/job protocols. Unported backend features may return 501
-(`verified_code` submit); preserving their UI does not claim their backend is ready.
+and the data-only chat/job protocols. Unported backend features may return 501;
+preserving their UI does not claim their backend is ready.
 
 `src/web/assets.ts` provides `createWebHandler()`, which loads the static payloads
 and returns a `Request → Response | null` handler for application composition.
@@ -1234,6 +1234,7 @@ drive the container lifecycle against a scripted docker CLI. The opt-in
 runs real containers for pass, fail, a missing image, file, host, environment,
 privilege and network isolation, flooding, timeout, cancellation, OOM and the
 runner's SIGTERM, and leftover removal, and checks that each container is removed.
+It passes on Docker Desktop 29.8.0 (linux/arm64, M1 Max) with the pinned image.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;
