@@ -26,17 +26,15 @@ interface RequestState {
  * active requests. Graph calls remain B1: spans of different lengths are not
  * padded, split, or verified. The gateway owns each borrowed grammar matcher.
  * `denseKvReads` is the graph's requirement: the layers its attention reads as
- * plain keys and values, each below the graph's cache count. It is copied
- * once; a row whose next append would not be read plain there is refused
- * before any layer appends. */
-export function bindGrammarGroupRequests(model: RuntimeModel, denseKvReads: readonly number[]) {
+ * plain keys and values, each an index into the graph's `cacheCount` caches.
+ * It is copied once; a row whose next append would not be read plain there is
+ * refused before any layer appends. */
+export function bindGrammarGroupRequests(model: RuntimeModel, denseKvReads: readonly number[], cacheCount: number) {
   if (!Array.isArray(denseKvReads))
     throw new TypeError("forced grammar spans require the graph's dense KV read layers");
   const layers = Object.freeze([...denseKvReads]);
-  const probe = model.makeCache(), count = probe.length;
-  disposeResources(probe);
-  if (layers.some(layer => !Number.isSafeInteger(layer) || layer < 0 || layer >= count) || new Set(layers).size !== layers.length)
-    throw new RangeError(`dense KV read layers must be distinct layer indices below ${count}`);
+  if (layers.some(layer => !Number.isSafeInteger(layer) || layer < 0 || layer >= cacheCount) || new Set(layers).size !== layers.length)
+    throw new RangeError(`dense KV read layers must be distinct layer indices below ${cacheCount}`);
   return (input: GenerateOptions): MlxGroupMethodRequest => ({
     key: "grammar-forced-span", data: snapshotGenerationPolicy(input),
     open: host => new GrammarGroup(host, model, layers),

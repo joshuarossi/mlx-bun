@@ -154,8 +154,9 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // group's denseKvReads, below). A graph whose delayed affine rows are
   // ordinary-only attends the encoded storage it holds: it states no dense-read
   // requirement.
-  const grammarSpans = plainSoftcap && storage ? bindGrammarGroupRequests(model, storage.kvLayers)
-    : ordinaryAffineRows ? bindGrammarGroupRequests(model, []) : undefined;
+  const grammarSpans = !storage ? undefined
+    : plainSoftcap ? bindGrammarGroupRequests(model, storage.kvLayers, storage.convertible.length)
+    : ordinaryAffineRows ? bindGrammarGroupRequests(model, [], storage.convertible.length) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
