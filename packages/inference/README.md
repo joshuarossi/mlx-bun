@@ -441,17 +441,17 @@ the window:
   forced string instead of committing it. Tokens equal direct token-by-token
   generation at B1 and B2, rejected proposals leave the ring, and proposals are
   both accepted and rejected.
-- Supplied strict and echo fill is applied through the shared fill binding:
-  strict rows restate the fill-off control and echo proposals are verified, so
-  output equals the control while the session records injected and accepted
-  tokens. A strict row joining late beside a wrapped echo row currently
-  diverges from the control (both rows) at the first multi-position verify
-  forward after the join; this check fails until that is fixed.
+- Supplied strict and echo fill is applied through the shared fill binding and
+  by direct `generate`: strict rows restate the fill-off control, and echo and
+  scripted proposals (one accepted, one rejected after the ring wrapped) are
+  verified, so output equals the control while the session records injected and
+  accepted tokens. B2 pairs start together and late (a strict row joining beside
+  a wrapped echo row, whose first multi-position verify forward reads a ring the
+  joiner's one in-place write has rotated).
 - For each of these shapes: a B2 row cancelled at its third token beside a
   surviving peer, then reuse of the drained group.
 
-Direct `generate` still skips supplied fill on rotating caches; the gateway does
-not. Run it with
+Run it with
 `MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_MODEL=/Llama-3.2-3B-Instruct-4bit MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_WINDOW=8 bun --no-env-file test packages/inference/tests/parity/sliding-grammar-fill.test.ts`.
 
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes

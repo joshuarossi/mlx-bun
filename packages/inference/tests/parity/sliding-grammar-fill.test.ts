@@ -176,14 +176,14 @@ export function strictRow(prompt: readonly number[], control: readonly number[],
 const inputs = optIn(Bun.env);
 
 type Shape = "grammar" | "jump" | "fill";
-type FillMode = "strict" | "echo";
+type FillMode = "strict" | "echo" | "reject";
 interface Request { prompt: PromptName; grammar?: GrammarName; fill?: FillMode }
 interface Outcome { tokens: number[]; spans: number[][]; status: "fulfilled" | "rejected"; error?: unknown; fill?: FillSession }
 /** The graph operations the recorder wraps. */
 interface Graph { forwardHidden(ids: MlxArray, caches: Cache[]): MlxArray; logitsFromHidden(hidden: MlxArray): MlxArray; args?: WindowDescriptor }
-/** MLX_BUN_FILL for a set of rows: echo is additive to strict. */
-const fillMode = (rows: readonly Request[]): FillMode | undefined =>
-  rows.some(row => row.fill === "echo") ? "echo" : rows.some(row => row.fill === "strict") ? "strict" : undefined;
+/** MLX_BUN_FILL for a set of rows: echo (which a rejected-proposal row also needs) is additive to strict. */
+const fillMode = (rows: readonly Request[]): "strict" | "echo" | undefined =>
+  rows.some(row => row.fill === "echo" || row.fill === "reject") ? "echo" : rows.some(row => row.fill === "strict") ? "strict" : undefined;
 
 async function setup() {
   const { loadModelConfig, Weights, createModel, generate } = await import("@mlx-bun/inference");
@@ -249,7 +249,7 @@ async function setup() {
   /** The scenario's runtime, active while `run` binds and generates. */
   const under = async <T>(shape: Shape, fill: FillMode | undefined, run: () => Promise<T>) => {
     const restore = configureRuntime({ MLX_BUN_PREFILL_TAIL_SPLIT: "1", MLX_BUN_COMPILED_DECODE: "0", MLX_BUN_GRAMMAR: "1",
-      MLX_BUN_GRAMMAR_JUMP: shape === "jump" ? "1" : "0", MLX_BUN_FILL: fill ?? "off" });
+      MLX_BUN_GRAMMAR_JUMP: shape === "jump" ? "1" : "0", MLX_BUN_FILL: fill === "reject" ? "echo" : fill ?? "off" });
     try { return await run(); } finally { restore(); clearCache(); }
   };
   /** A matcher that reports each forced span it commits (none is expected on
@@ -277,10 +277,15 @@ async function setup() {
       // Besides the echo index, a proposal the model accepts (after 2 tokens).
       const scripted: ProposalSource = { name: "scripted-echo", propose: view =>
         view.length - prompt.length === 2 ? { ids: control.slice(2, 6), policy: "verify", origin: "echo" } : null };
+      // One verify proposal whose last position the model rejects, with the ring wrapped.
+      const rejected: ProposalSource = { name: "scripted-reject", propose: view =>
+        view.length - prompt.length === 10 ? { ids: [...control.slice(10, 13), control[13]! + 1], policy: "verify", origin: "echo" } : null };
       options.fill = request.fill === "strict"
         ? new Session({ rows: [strictRow(prompt, control)], echo: null, eos: [] }, prompt, { maxSpan: 8, appendChunkSize: 0 })
-        : new Session({ rows: [], echo: { k: 4, maxSpan: 8, maxCandidates: 24, indexMax: 131072 }, eos: [] }, prompt,
-          { maxSpan: 8, appendChunkSize: 0, sources: [scripted] });
+        : request.fill === "reject"
+          ? new Session({ rows: [], echo: null, eos: [] }, prompt, { maxSpan: 8, appendChunkSize: 0, sources: [rejected] })
+          : new Session({ rows: [], echo: { k: 4, maxSpan: 8, maxCandidates: 24, indexMax: 131072 }, eos: [] }, prompt,
+            { maxSpan: 8, appendChunkSize: 0, sources: [scripted] });
     }
     return { prompt, options };
   };
@@ -309,6 +314,17 @@ async function setup() {
       });
       return { tokens: value, spans, forwards, projections } satisfies Run;
     } finally { options.grammar?.dispose(); }
+  });
+  /** Direct generation with the request's supplied fill applied, recorded at B1. */
+  const directFill = (request: Request) => under("fill", request.fill, async () => {
+    const { prompt, options } = await optionsFor(request, []);
+    const { value, forwards, projections } = await traced(true, async () => {
+      const tokens: number[] = [];
+      for await (const step of generate(model, prompt, { ...options, decodePolicy: { compiledDecode: false, grammarJump: false } }))
+        tokens.push(step.token);
+      return tokens;
+    });
+    return { run: { tokens: value, spans: [], forwards, projections } satisfies Run, fill: options.fill as FillSession };
   });
   const references = new Map<string, Promise<Run>>();
   /** Direct B1 references, each generated once: a grammar request's
@@ -402,7 +418,7 @@ async function setup() {
     return b1.get(key)!;
   };
   return {
-    prompts, reference, single, alone, gateway, traced, checkFillApplied,
+    prompts, reference, single, alone, directFill, gateway, traced, checkFillApplied,
     release() {
       graph.forwardHidden = forwardHidden; graph.logitsFromHidden = logitsFromHidden;
       releaseWeights();
@@ -476,16 +492,22 @@ describe.skipIf(!inputs)("sliding-window Universal grammar, grammar proposals an
   }, 900_000);
 
   test("supplied strict and echo fill are applied: B1 and B2 equal the fill-off control", async () => {
-    for (const prompt of ["long", "short"] as const) for (const fill of ["strict", "echo"] as const) {
+    // Every request also runs through direct generation, which applies the same
+    // fill (a rejected proposal leaves the wrapped ring by the bypass trim).
+    for (const prompt of ["long", "short"] as const) for (const fill of ["strict", "echo", "reject"] as const) {
       const request = { prompt, fill }, label = `fill ${JSON.stringify(request)}`;
-      const control = await env.reference(request), run = await env.single("fill", request);
-      expect({ label, tokens: run.tokens }).toEqual({ label, tokens: control.tokens });
-      // Every forward continues the history; echo proposals reach verify forwards.
-      const { proposed } = walk(label, run, env.prompts[prompt]);
-      if (fill === "echo") expect(proposed, `${label}: no verified position`).toBeGreaterThan(0);
+      const control = await env.reference(request), gateway = await env.single("fill", request), direct = await env.directFill(request);
+      for (const [path, run] of [["gateway", gateway], ["direct", direct.run]] as const) {
+        expect({ label: `${label} ${path}`, tokens: run.tokens }).toEqual({ label: `${label} ${path}`, tokens: control.tokens });
+        // Every forward continues the history; echo proposals reach verify forwards.
+        const { proposed, accepted } = walk(`${label} ${path}`, run, env.prompts[prompt]);
+        if (fill !== "strict") expect(proposed, `${label} ${path}: no verified position`).toBeGreaterThan(0);
+        if (fill === "reject") expect(proposed, `${label} ${path}: no rejected position`).toBeGreaterThan(accepted);
+      }
+      env.checkFillApplied(`${label} direct`, direct.fill);
     }
     await pairs("fill", [{ together: true, rows: [{ prompt: "long", fill: "strict" }, { prompt: "short", fill: "echo" }] },
-      { together: false, rows: [{ prompt: "long", fill: "echo" }, { prompt: "short", fill: "strict" }] }]);
+      { together: false, rows: [{ prompt: "other", fill: "echo" }, { prompt: "short", fill: "strict" }] }]);
   }, 900_000);
 
   test("a cancelled row leaves its peer equal to its B1 output, and the drained group serves the request again", async () => {
