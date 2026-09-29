@@ -1,12 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Dtype, MlxArray } from "@mlx-bun/mlx";
 import type { Cache } from "@mlx-bun/inference/contracts";
 import {
   KVCache, QuantizedKVCache, RotatingKVCache, RotatingQuantizedKVCache,
-  TurboQuantKVCache, cloneKvCaches, saveKvCache, loadKvCache,
+  TurboQuantKVCache, cloneKvCaches, saveKvCache, loadKvCache, SsdCacheStore,
 } from "@mlx-bun/inference/state";
 
 const factories = [
@@ -50,4 +50,33 @@ for (const factory of factories) test(`${factory().signature()} cloned and persi
     for (const c of [cache, ...clones, ...restored]) c.dispose();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("scan never deletes another model's entry and each store restores only its own", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-ssd-foreign-"));
+  const options = (modelId: string, tokenizerHash = "vocab") =>
+    ({ dir, maxBytes: Infinity, configFingerprint: "shared-shape", tokenizerHash, modelId });
+  const save = (store: SsdCacheStore, tokens: number[]) => {
+    const cache = new KVCache();
+    try {
+      using raw = MlxArray.fromFloat32(Float32Array.from({ length: 4 * 64 }, (_, i) => Math.cos(i)), [1, 1, 4, 64]);
+      using data = raw.astype(Dtype.bfloat16);
+      append(cache, data);
+      expect(store.store(tokens, [cache])).toBe(true);
+    } finally { cache.dispose(); }
+  };
+  try {
+    const four = new SsdCacheStore(options("model-4bit")), eight = new SsdCacheStore(options("model-8bit"));
+    save(four, [1, 2, 3, 4]); save(eight, [5, 6, 7, 8]);
+    const fourPath = four.find([1, 2, 3, 4, 9])!.entry.path, eightPath = eight.find([5, 6, 7, 8, 9])!.entry.path;
+    // Restarts in either order, and a same-name model with another tokenizer.
+    const fourAgain = new SsdCacheStore(options("model-4bit")), eightAgain = new SsdCacheStore(options("model-8bit"));
+    const retokenized = new SsdCacheStore(options("model-4bit", "other-vocab"));
+    expect(fourAgain.scan()).toBe(1); expect(retokenized.scan()).toBe(0); expect(eightAgain.scan()).toBe(1);
+    expect(existsSync(fourPath)).toBe(true); expect(existsSync(eightPath)).toBe(true);
+    expect(fourAgain.find([1, 2, 3, 4, 9])?.prefixLen).toBe(4); expect(fourAgain.find([5, 6, 7, 8, 9])).toBeNull();
+    expect(eightAgain.find([5, 6, 7, 8, 9])?.prefixLen).toBe(4); expect(eightAgain.find([1, 2, 3, 4, 9])).toBeNull();
+    const restored = eightAgain.restore(eightAgain.find([5, 6, 7, 8, 9])!.entry, { makeCache: () => [new KVCache()] });
+    expect(restored?.tokens).toEqual([5, 6, 7, 8]); for (const c of restored?.caches ?? []) c.dispose();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

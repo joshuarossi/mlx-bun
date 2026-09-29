@@ -6,6 +6,10 @@ import { createCacheServices, type CacheServiceDependencies } from "../../src/en
 import { createAppEngine } from "../../src/engine";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 import type { ModelBinding } from "../../src/engine/model-binding";
+import { KVCache, SsdCacheStore, legacyCacheCodecs } from "@mlx-bun/inference/state";
+import { modelWeightsIdentity } from "@mlx-bun/inference/artifacts";
+import { MlxArray } from "@mlx-bun/mlx/array";
+import { disposeResources } from "@mlx-bun/inference/runtime/resources";
 import { createRuntimeConfig } from "@mlx-bun/inference/runtime/config";
 
 function setup(values: Record<string, string> = {}) {
@@ -46,7 +50,7 @@ function setup(values: Record<string, string> = {}) {
     createContinuationPersistence(_store: unknown, options: { maxBytes: number }) {
       events.push(`queue ${options.maxBytes}`); return persistence;
     },
-    costSizeRetention: () => ({ name: "cost-size" }), configFingerprint: () => "config",
+    costSizeRetention: () => ({ name: "cost-size" }), configFingerprint: () => "config", weightsIdentity: async () => "0123456789abcdef".repeat(4),
     activeMemory: () => active, maxWorkingSet: () => 100,
     scheduleDemotion(run: () => void, ms: number) { demote = run; interval = ms; return () => events.push("timer stop"); },
   } as unknown as CacheServiceDependencies;
@@ -87,7 +91,7 @@ test("SSD defaults bind identity, codecs, restoration, checkpoints, idle demotio
     const f = setup({ MLX_BUN_CACHE_RETENTION: "cost-size" }); f.context.model.config.modelDir = directory;
     const cache = await createCacheServices(f.context, f.binding, { ssdCacheDir: directory, generationCheckpointTokens: 32 }, f.deps);
     expect(f.storeOptions).toMatchObject({ dir: directory, maxBytes: Infinity, codecs: f.context.stateCodecs,
-      configFingerprint: `config-${cache.resolvedKvScheme.cacheKey}-${Bun.hash("binding-v1").toString(16)}`,
+      configFingerprint: `config-${cache.resolvedKvScheme.cacheKey}-${Bun.hash("binding-v1").toString(16)}-0123456789abcdef`,
       tokenizerHash: Bun.hash(Buffer.from("{}")).toString(16), storage: { layout: "whole", segmented: true } });
     expect(f.events).toContain(`queue ${2 * 1024 ** 3}`); expect(f.writeBehind).toBe(true);
     expect(f.cache.retention.name).toBe("cost-size"); expect(f.interval).toBe(75_000);
@@ -185,4 +189,48 @@ test("a TurboQuant scheme the codec cannot encode for this model is refused befo
   const f = withHeadDim(96);
   const cache = await createCacheServices(f.context, f.binding, { kvQuant: 4 }, f.deps);
   expect(cache.kvScheme.kvBits).toBe(4); await cache.close();
+});
+
+test("same-shape models and revised weights get separate saved-prefix stores that never delete each other", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-app-ssd-id-")), ssd = join(root, "ssd");
+  const model = (weights: string) => {
+    const dir = mkdtempSync(join(root, "model-")); writeFileSync(join(dir, "tokenizer.json"), "{}");
+    writeFileSync(join(dir, "config.json"), "{}"); writeFileSync(join(dir, "model.safetensors"), weights); return dir;
+  };
+  // Real store and real weights digest; only the memo is in memory.
+  const memo = new Map<string, string>();
+  const memoStore = { get: async (k: string) => memo.get(k), put: (k: string, d: string) => { memo.set(k, d); } };
+  const open = async (modelDir: string) => {
+    const f = setup(); f.context.model.config.modelDir = modelDir;
+    f.context.stateCodecs = legacyCacheCodecs; f.deps.createStore = o => new SsdCacheStore(o);
+    f.deps.weightsIdentity = (dir, seed) => modelWeightsIdentity(dir, seed, memoStore);
+    return createCacheServices(f.context, f.binding, { ssdCacheDir: ssd }, f.deps);
+  };
+  const save = (cache: Awaited<ReturnType<typeof open>>, tokens: number[]) => {
+    const state = new KVCache();
+    state.restoreState(MlxArray.fromFloat32(new Float32Array([1, 2]), [1, 1, 2, 1]),
+      MlxArray.fromFloat32(new Float32Array([3, 4]), [1, 1, 2, 1]), 2);
+    try { expect(cache.checkpoints!.store(tokens, [state])).toBe(true); } finally { disposeResources([state]); }
+  };
+  try {
+    const four = model("q4 weights"), eight = model("q8 weights");
+    const first = await open(four); save(first, [1, 2, 3]); await first.close();
+    // Same architecture, tokenizer and repo id, different weights: no shared state.
+    const second = await open(eight);
+    expect(second.checkpoints!.entries).toBe(0); expect(second.checkpoints!.find([1, 2, 3, 9])).toBeNull();
+    save(second, [7, 8, 9]); await second.close();
+    // Each restart still sees exactly its own entry; nothing was unlinked.
+    const again = await open(four);
+    expect(again.checkpoints!.entries).toBe(1);
+    expect(again.checkpoints!.find([1, 2, 3, 9])?.prefixLen).toBe(3); expect(again.checkpoints!.find([7, 8, 9, 0])).toBeNull();
+    await again.close();
+    const eightAgain = await open(eight);
+    expect(eightAgain.checkpoints!.entries).toBe(1); expect(eightAgain.checkpoints!.find([7, 8, 9, 0])?.prefixLen).toBe(3);
+    await eightAgain.close();
+    // New weights under the same directory (same repo id) miss instead of serving old KV.
+    writeFileSync(join(four, "model.safetensors"), "q4 weights, retrained");
+    const retrained = await open(four);
+    expect(retrained.checkpoints!.entries).toBe(0); expect(retrained.checkpoints!.find([1, 2, 3, 9])).toBeNull();
+    await retrained.close();
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
