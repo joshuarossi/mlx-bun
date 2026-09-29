@@ -1,4 +1,4 @@
-import type { Emit, JobRunner } from "../jobs/protocol";
+import type { JobEmit, JobRunner, ModelCatalog } from "@mlx-bun/app-core";
 import { resolveSrcDir } from "./inspect";
 import { CONVERT_DTYPES } from "./output-name";
 import type { quantizeModelDir, QuantizeOptions, ConvertDtype } from "@mlx-bun/quantize/quantizer";
@@ -6,11 +6,12 @@ import type { convertModelDir } from "@mlx-bun/quantize/convert";
 import type { automaticRotationWeightTransform } from "@mlx-bun/quantize/weight-transform";
 import type { quantizeTrellisModelDir } from "@mlx-bun/quantize/trellis-quantizer";
 
-export function createQuantizeRunner(supplied: Partial<{
+/** The quantize job's producer. `catalog` resolves a `model_id` source; `supplied` replaces the native producers (tests). */
+export function createQuantizeRunner(catalog: Pick<ModelCatalog, "find">, supplied: Partial<{
   quantize: typeof quantizeModelDir; rotation: typeof automaticRotationWeightTransform; convert: typeof convertModelDir;
   trellis: typeof quantizeTrellisModelDir;
 }> = {}): JobRunner {
- return async (emit: Emit, config) => {
+ return async (emit: JobEmit, config) => {
   const outDir = String(config.out_dir ?? "");
   if (!outDir) throw new Error("quantize job: missing out_dir");
 
@@ -20,7 +21,7 @@ export function createQuantizeRunner(supplied: Partial<{
 
   // No quantization requested: rewrite the checkpoint with --dtype and/or dequantized weights.
   if (config.quantize === false) {
-    const srcDir = resolveSrcDir(config);
+    const srcDir = await resolveSrcDir(catalog, config);
     emit({ type: "stage", stage: "starting", progress: 0.01,
       message: `Converting ${srcDir}${config.dequantize ? " → dense" : ""}${dtype ? ` (${dtype})` : ""}` });
     const convert = supplied.convert ?? (await import("@mlx-bun/quantize/convert")).convertModelDir;
@@ -33,7 +34,7 @@ export function createQuantizeRunner(supplied: Partial<{
 
   // Packed Trellis (TCQ) MLP tensors on the rotation-folded checkpoint: its own producer and options.
   if (config.mode === "trellis") {
-    const srcDir = resolveSrcDir(config);
+    const srcDir = await resolveSrcDir(catalog, config);
     const seed = Number(config.rotation_seed ?? 42);
     if (!Number.isInteger(seed)) throw new Error(`quantize job: rotation_seed must be an integer (got ${String(config.rotation_seed)})`);
     const downAxis = config.trellis_down_axis === undefined ? "out" : String(config.trellis_down_axis);
@@ -59,7 +60,7 @@ export function createQuantizeRunner(supplied: Partial<{
   if (groupSize !== 32 && groupSize !== 64)
     throw new Error(`quantize job: group_size must be 32 or 64 (got ${groupSize})`);
 
-  const srcDir = resolveSrcDir(config);
+  const srcDir = await resolveSrcDir(catalog, config);
 
   // Mixed-precision (OptiQ sensitivity sweep + knapsack) is triggered by
   // targetBpw. The server/CLI send these as snake_case in the job config — they

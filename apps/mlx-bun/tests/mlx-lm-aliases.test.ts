@@ -5,10 +5,12 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { plainTerminal } from "@mlx-bun/app-services";
+import { runConvert, type ConvertDependencies } from "@mlx-bun/module-quantize";
 import { isCommand } from "../src/cli/args";
-import { runConvert, type ConvertDependencies } from "../src/cli/convert";
 import { generateOptions } from "../src/cli/inference";
 import { ALIASES, ALIAS_GAPS, invokedAlias, translateAlias } from "../src/cli/mlx-lm-aliases";
+import { installedVerbs, runInstalledVerb } from "../src/cli/module-verbs";
 import { parseServeOptions } from "../src/cli/serve";
 import { parseTrainArgs, runFuse, trainPlan, type FuseDependencies } from "../src/cli/train";
 import { runUpload, type UploadDependencies } from "../src/cli/upload";
@@ -33,7 +35,8 @@ test("every mlx-lm 0.31.3 console script is an alias or a listed gap, and the pa
   expect(scripts.filter(name => !(name in ALIASES) && !(name in ALIAS_GAPS))).toEqual([]);
   expect(Object.keys(ALIASES).filter(name => name in ALIAS_GAPS)).toEqual([]);
   expect(Object.keys(ALIASES).sort()).toEqual(["convert", "fuse", "generate", "lora", "server", "upload"]);
-  for (const alias of Object.values(ALIASES)) expect(isCommand(alias.verb)).toBe(true);
+  // Each alias runs a verb the app owns or one an installed module declares.
+  for (const alias of Object.values(ALIASES)) expect(isCommand(alias.verb) || installedVerbs().has(alias.verb)).toBe(true);
   expect(Object.keys(manifest.bin).sort()).toEqual(["mlx-bun", ...Object.keys(ALIASES).map(name => `mlx-bun.${name}`)].sort());
   for (const [name, file] of Object.entries(manifest.bin)) {
     expect(file).toBe(`./bin/${name}.mjs`);
@@ -118,11 +121,12 @@ test("mlx-bun.server: mlx_lm.server's flags resolve to serve's options, headless
 
 function convertHarness() {
   const configs: Record<string, unknown>[] = [], published: unknown[] = [];
-  const deps: Partial<ConvertDependencies> = {
+  const deps: ConvertDependencies = {
     async quantize(config, outDir) { configs.push(config); return { outputPath: outDir }; },
-    root: () => "/store", credentials: () => ({ get: () => "hf_token" }),
-    async publish(request) { published.push(request); return { url: "https://huggingface.co/org/r" }; },
-    step: () => ({ update() {}, done() {}, fail() {} }), box() {}, log() {},
+    catalog: { find: async () => { throw new Error("no model"); }, download: async () => { throw new Error("no download"); }, canPublish: () => true,
+      async publish(directory, request) { published.push({ ...request, directory }); return { url: "https://huggingface.co/org/r" }; } },
+    modelsDir: () => "/store/models",
+    terminal: { ...plainTerminal(() => {}), step: () => ({ update() {}, done() {}, fail() {} }), box() {} }, log() {},
   };
   return { deps, configs, published };
 }
@@ -137,7 +141,7 @@ test("mlx-bun.convert: mlx_lm.convert's flags, quantized, cast, or dequantized",
   const run = convertHarness();
   await runConvert(quantized.parsed, run.deps);
   expect(run.configs).toEqual([{ src_dir: local, out_dir: out, bits: 8, group_size: 32, mode: "affine", dtype: "float16" }]);
-  expect(run.published).toEqual([{ kind: "quantize", repoId: "org/r", sourcePath: out, signal: undefined }]);
+  expect(run.published).toEqual([{ repoId: "org/r", directory: out }]);
 
   const dense = convertHarness();
   await runConvert(translate("convert", "--model", local, "-d", "--mlx-path", out).parsed, dense.deps);
@@ -156,6 +160,15 @@ test("mlx-bun.convert: mlx_lm.convert's flags, quantized, cast, or dequantized",
     [["--hf-path", local, "-q", "--mlx-path", dir], "already exists"],
   ] as [string[], string][])
     await expect(runConvert(translate("convert", ...argv).parsed, convertHarness().deps)).rejects.toThrow(message);
+});
+
+test("mlx-bun.convert reaches the module's verb through the host's verb table with the alias's translated options", async () => {
+  const { parsed } = translate("convert", "--hf-path", "/nonexistent/model", "-q", "-d", "--trust-remote-code");
+  // The module rejects the combination before any job or download, so this needs no model and starts no child.
+  await expect(runInstalledVerb("convert", { values: parsed.values, positionals: parsed.positionals })).rejects.toThrow("Choose either quantize or dequantize, not both.");
+  const { parsed: numeric } = translate("convert", "--hf-path", "/nonexistent/model", "-q", "--q-bits", "6");
+  await expect(runInstalledVerb("convert", { values: numeric.values, positionals: numeric.positionals })).rejects.toThrow('--q-bits must be 4 or 8 (got "6")');
+  await expect(runInstalledVerb("convert", { values: {}, positionals: ["a", "b"] })).rejects.toThrow("Too many arguments for convert");
 });
 
 function fuseHarness(token: string | null = "hf_token") {

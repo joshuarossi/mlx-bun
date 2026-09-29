@@ -11,20 +11,19 @@ import { loadModelConfig, quantFor } from "@mlx-bun/inference/artifacts/config";
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { parseCommand } from "../src/cli/args";
-import { parseConvertArgs, runConvert } from "../src/cli/convert";
 import { resolveModelAuto } from "../src/cli/model-selection";
 import { runFuse, runTrain, runTrainWatch } from "../src/cli/train";
-import type { JobEvent } from "../src/jobs/protocol";
+import type { AppModule, CatalogEntry, JobEvent, JobRecord } from "@mlx-bun/app-core";
+import { createRegistryCatalog, createStorage, parseVerb, plainTerminal } from "@mlx-bun/app-services";
+import { createQuantizeHandlers, createQuantizeRunner, manifest as quantizeManifest, runConvert } from "@mlx-bun/module-quantize";
 import { adapterDirFor } from "../src/memory/model";
-import { createQuantizeRunner } from "../src/quantize/job";
 import { createAdapterArtifactRoutes } from "../src/server/adapter-artifact-routes";
 import { createAdapterRoutes } from "../src/server/adapter-routes";
 import { createFinetuneRoutes } from "../src/server/finetune-routes";
-import { createQuantizeRoutes } from "../src/server/quantize-routes";
+import { createModelFolderRoutes } from "../src/server/model-folder-routes";
 import { legacyAdapterDirs, mlxBunHome, modelShortName, openRegistry, storagePath } from "../src/storage/paths";
 import { writeQuantizedArtifact, writeSourceModel } from "./quantized-artifact";
 
-const fixture = resolve(import.meta.dir, "quantized-artifact.ts"), dbModule = resolve(import.meta.dir, "../src/jobs/db.ts");
 const AUX = ["tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "generation_config.json"];
 const plain = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
 let root = "", home = "", store = "", hub = "", restoreRuntime = () => {};
@@ -113,19 +112,21 @@ async function expectQuantizedModel(dir: string, bits: number, groupSize: number
 
 test("a web quantize job writes a plain model directory that the registry, `serve` and the folder picker find", async () => {
   const source = join(root, "sources", "tiny-qwen3"); writeSourceModel(source);
-  let submitted: { config: Record<string, unknown>; output: string } | undefined;
-  const routes = createQuantizeRoutes({ submit(_kind, config, output) { submitted = { config, output }; return { jobId: "job_1" }; } });
-  const post = (path: string, body: unknown) => routes.handle(new Request(`http://app${path}`, { method: "POST", body: JSON.stringify(body) }));
-  const response = await (await post("/api/quantize/submit", { model_id: source, bits: 4, group_size: 64 }))!.json();
+  const catalog = createRegistryCatalog();
+  let submitted: { config: Record<string, unknown>; outputPath?: string } | undefined;
+  const routes = createQuantizeHandlers({ catalog, storage: createStorage()({ moduleId: "quantize", manifest: quantizeManifest as unknown as AppModule }),
+    jobs: { submit: async submission => { submitted = submission as never; return { id: "job_1" } as JobRecord; } } });
+  const post = (route: keyof typeof routes, body: unknown) => routes[route](new Request(`http://app/api/quantize/${route}`, { method: "POST", body: JSON.stringify(body) }));
+  const response = await (await post("submit", { model_id: source, bits: 4, group_size: 64 })).json();
   const output = join(store, "models", "tiny-qwen3-4bit");
   expect(response).toEqual({ ok: true, job_id: "job_1", output_dir: output });
-  expect(submitted!.output).toBe(output);
+  expect(submitted!.outputPath).toBe(output);
   // The job child's producer, with the quantizer's CPU-side writers standing in for its native pass.
   const events: JobEvent[] = [];
-  const result = await createQuantizeRunner({ quantize: (async (src: string, out: string, options: { bits: number; groupSize: number }) => {
+  const result = await createQuantizeRunner(catalog, { quantize: (async (src: string, out: string, options: { bits: number; groupSize: number }) => {
     await writeQuantizedArtifact(src, out, options.bits, options.groupSize);
     return { outDir: out, nQuantized: 2, achievedBpw: 4.5 };
-  }) as never })(event => events.push(event), submitted!.config);
+  }) as never })(event => events.push(event), submitted!.config, new AbortController().signal);
   expect(result).toEqual({ outputPath: output });
   await expectQuantizedModel(output, 4, 64, source);
   expect(readdirSync(hub)).toEqual([]); // the hub cache holds downloads only
@@ -141,10 +142,13 @@ test("a web quantize job writes a plain model directory that the registry, `serv
   // `serve <path>`, `serve <name>` and the web folder picker resolve the same directory under the same id.
   expect(await resolveModelAuto(output)).toMatchObject({ picked: false, m: { repoId: "tiny-qwen3-4bit", path: output } });
   expect(await resolveModelAuto("tiny-qwen3-4bit")).toMatchObject({ picked: false, m: { repoId: "tiny-qwen3-4bit", path: output } });
-  expect(await (await post("/api/model/resolve-folder", { folder_name: "tiny-qwen3-4bit" }))!.json())
-    .toEqual({ ok: true, path: output, repo_id: "tiny-qwen3-4bit" });
+  const folder = createModelFolderRoutes(catalog);
+  const picked = (path: string) => folder.handle(new Request(`http://app${path}`, { method: "POST", body: JSON.stringify({ folder_name: "tiny-qwen3-4bit" }) }));
+  expect(await (await picked("/api/model/resolve-folder"))!.json()).toEqual({ ok: true, path: output, repo_id: "tiny-qwen3-4bit" });
+  expect(await picked("/api/quantize/resolve-folder")).toBeNull(); // the quantize module answers its own path
+  expect(await (await post("resolve-folder", { folder_name: "tiny-qwen3-4bit" })).json()).toEqual({ ok: true, path: output, repo_id: "tiny-qwen3-4bit" });
   // The same model and settings name the same directory, which the producer refuses to overwrite.
-  expect((await (await post("/api/quantize/submit", { model_id: source, bits: 4, group_size: 64 }))!.json()).output_dir).toBe(output);
+  expect((await (await post("submit", { model_id: source, bits: 4, group_size: 64 })).json()).output_dir).toBe(output);
   await expect(writeQuantizedArtifact(source, output, 4, 64)).rejects.toThrow("output directory already exists");
 });
 
@@ -158,7 +162,7 @@ test("earlier quantize outputs in the hub cache (`models--local--…`) stay list
     await registry.scan();
     expect(registry.listCanonical().map(model => [model.repoId, model.path])).toEqual([["local/tiny-qwen3-OptiQ-4bit", snapshot]]);
   } finally { registry.close(); }
-  const routes = createQuantizeRoutes({ submit() { throw new Error("not submitted"); } });
+  const routes = createModelFolderRoutes(createRegistryCatalog());
   expect(await (await routes.handle(new Request("http://app/api/model/resolve-folder", { method: "POST",
     body: JSON.stringify({ folder_name: "models--local--tiny-qwen3-OptiQ-4bit" }) })))!.json())
     .toEqual({ ok: true, path: snapshot, repo_id: "local/tiny-qwen3-OptiQ-4bit" });
@@ -166,28 +170,25 @@ test("earlier quantize outputs in the hub cache (`models--local--…`) stay list
 
 test("`convert` without --mlx-path publishes into the models directory and prints how to serve it", async () => {
   const source = join(root, "sources", "src-model"); writeSourceModel(source);
-  // A stand-in job child: the real job store and config, the quantizer's CPU-side writers, then main's terminal row.
-  const spawn = ((command: string[], options: Parameters<typeof Bun.spawn>[1]) => Bun.spawn([process.execPath, "-e", `
-    const { JobStore } = require(${JSON.stringify(dbModule)});
-    const store = new JobStore(process.env.MLX_BUN_JOBS_DB, process.env.MLX_BUN_JOBS_DIR);
-    const row = store.get(process.env.JOB_ID), config = JSON.parse(row.config_json);
-    require(${JSON.stringify(fixture)}).writeQuantizedArtifact(config.src_dir, config.out_dir, config.bits, config.group_size).then(() => {
-      store.setOutputPath(row.id, config.out_dir); store.setStatus(row.id, "done", { endedAt: "2026-09-27 00:00:00" }); store.close();
-    });`], { ...options, env: { ...options?.env, JOB_ID: command[2] } })) as unknown as typeof Bun.spawn;
+  const catalog = createRegistryCatalog();
   const printed: string[] = [];
   const quiet = { update() {}, done() {}, fail() {} };
-  const convert = () => runConvert(parseConvertArgs([source, "-q", "--q-bits", "8", "--q-group-size", "32"]), {
-    spawn, step: () => quiet, box: rows => { printed.push(...rows.map(plain)); }, log() {},
+  const convert = () => runConvert(parseVerb("mlx-bun", quantizeManifest.verbs[0] as never, [source, "-q", "--q-bits", "8", "--q-group-size", "32"]), {
+    // A stand-in job child: the quantizer's CPU-side writers, into the directory the verb asks for.
+    async quantize(config, outDir) { await writeQuantizedArtifact(String(config.src_dir), outDir, Number(config.bits), Number(config.group_size)); return { outputPath: outDir }; },
+    catalog, modelsDir: () => storagePath("models"),
+    terminal: { ...plainTerminal(() => {}), step: () => quiet, box: rows => { printed.push(...rows.map(plain)); } }, log() {},
   });
   await convert();
   const output = join(store, "models", "src-model-8bit");
   expect(printed).toContain(`model     ${output}`);
   expect(printed.some(row => row.includes(`mlx-bun serve ${output}`))).toBe(true);
   await expectQuantizedModel(output, 8, 32, source);
-  expect(readdirSync(join(store, "models"))).toEqual(["src-model-8bit"]); // the private staging root is gone
+  expect(readdirSync(join(store, "models"))).toEqual(["src-model-8bit"]);
   expect(await resolveModelAuto(output)).toMatchObject({ picked: false, m: { repoId: "src-model-8bit", path: output, quantBits: 8 } });
   const registry = openRegistry();
   try { await registry.scan(); expect(registry.resolve("src-model-8bit").path).toBe(output); } finally { registry.close(); }
+  expect((await catalog.find("src-model-8bit") as CatalogEntry).directory).toBe(output);
   // The default is refused like an explicit path once it exists.
   await expect(convert()).rejects.toThrow(`Cannot save to the path ${output} as it already exists`);
 });

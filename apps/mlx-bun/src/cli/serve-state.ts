@@ -7,7 +7,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppModule } from "@mlx-bun/app-core";
-import { activateModules, createEventHub, createModuleRoutes, createStorage, mlxBunHome, type EventHub } from "@mlx-bun/app-services/portable";
+import { activateModules, createEventHub, createModuleRoutes, createRegistryCatalog, createStorage, mlxBunHome, type EventHub } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { PiBackendPaths } from "../chat/pi-backend";
 import { defaultSessionDir } from "../chat/session-files";
@@ -17,10 +17,12 @@ import { createJobHost } from "../jobs/host";
 import { createJobService } from "../jobs/service";
 import { createMemorySurface } from "../memory/surface";
 import { vaultRoot } from "../memory/vault";
+import { createCatalogHub } from "../publishing/catalog-hub";
 import { createHfCredentials } from "../publishing/credentials";
 import { createPublisher } from "../publishing/upload";
 import { createFinetuneRoutes } from "../server/finetune-routes";
 import { createHubRoutes } from "../server/hub-routes";
+import { createModelFolderRoutes } from "../server/model-folder-routes";
 import { createJobRoutes } from "../server/job-routes";
 import type { InProcessMemoryClient } from "./memory-engine";
 import { createServedModelHost, type ServedHostLink } from "./served-model-host";
@@ -28,7 +30,6 @@ import type { MemoryCompletionClient } from "../memory/model";
 import { createMemoryRoutes } from "../server/memory-routes";
 import { createMemorySynthesis } from "../server/memory-synthesis";
 import { createPublishingRoutes } from "../server/publishing-routes";
-import { createQuantizeRoutes } from "../server/quantize-routes";
 import { ResponseStore, type ResponseHistory } from "../server/responses";
 import { createSessionRoutes } from "../server/session-routes";
 import { createWebHandler } from "../web/assets";
@@ -84,7 +85,7 @@ export interface AppState {
   /** Persistent route groups; the host mounts them in the app's route order. */
   readonly routes: {
     hub: RouteGroup; sessions: RouteGroup; memory: RouteGroup; jobs: RouteGroup;
-    quantize: RouteGroup; appModules: RouteGroup; finetune: RouteGroup; publishing: RouteGroup;
+    models: RouteGroup; appModules: RouteGroup; finetune: RouteGroup; publishing: RouteGroup;
   };
   /** Lend a serving host to jobs, downloads, and loopback clients; returns the detach. */
   attach(link: ModelHostLink): () => void;
@@ -124,6 +125,9 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const memoryPaths = options.memoryPaths ?? { vault: vaultRoot(), skills: storagePath("skills") };
   const sessionDir = options.chatPaths?.sessionDir ?? defaultSessionDir();
   const credentials = createHfCredentials({ tokenFile: storagePaths.credentialsFile });
+  // The model catalog the state's modules and the folder picker share: the hub cache and the models directory, with the app's token behind downloads and pushes.
+  const catalog = createRegistryCatalog({ hub: createCatalogHub(credentials),
+    ...(storagePaths.artifactRoot ? { registry: () => openRegistry(storagePaths.artifactRoot), modelsRoot: () => storagePath("models", storagePaths.artifactRoot) } : {}) });
   // The installed modules that need job runners (datasets) run here, beside
   // the job store. They reach the served model through the attached host's own
   // API: over its Unix socket when it listens on one, else over TCP to its port.
@@ -131,7 +135,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   const jobService = createJobService(jobs, { acquire: signal => requireHost().acquireExecutionLease(signal) });
   const served = createServedModelHost({ link: () => host,
     fetch: (request, link) => fetch(request, link.unix ? { unix: link.unix } as RequestInit : undefined) });
-  const loaded = await activateModules(modules, { bindings: { jobs: () => jobService, modelHost: () => served, events: scope => events.scoped(scope),
+  const loaded = await activateModules(modules, { bindings: { jobs: () => jobService, modelHost: () => served, catalog: () => catalog, events: scope => events.scoped(scope),
     storage: createStorage(() => storagePaths.artifactRoot ?? mlxBunHome()) } });
   jobService.serve(loaded.jobs);
   // Memory synthesis runs on the task model, created on first use (its weights
@@ -160,7 +164,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     sessions: createSessionRoutes(sessionDir),
     memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),
-    quantize: createQuantizeRoutes(jobs, { outputRoot: storagePaths.artifactRoot }),
+    models: createModelFolderRoutes(catalog),
     appModules: createModuleRoutes(loaded.routes),
     finetune: createFinetuneRoutes(jobs, storagePaths.artifactRoot
       ? () => join(storagePath("adapters", storagePaths.artifactRoot), `adapter-${Date.now()}-${crypto.randomUUID()}`) : undefined),

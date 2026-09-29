@@ -54,8 +54,12 @@ export interface CliOptionSpec {
   readonly summary: string;
   readonly default?: string | number | boolean;
   readonly repeatable?: boolean;
+  /** A one-letter spelling (`-q`). */
+  readonly short?: string;
   /** The flag may appear without a value, which then takes `default` (`--hotkey`). */
   readonly optionalValue?: boolean;
+  /** The message when the flag is given without a value (default: the parser's). */
+  readonly missingValue?: string;
 }
 
 export interface CliVerbSpec {
@@ -67,6 +71,27 @@ export interface CliVerbSpec {
   readonly usage?: string;
 }
 
+/** One line of progress the host draws (a spinner on a terminal, plain lines elsewhere). */
+export interface CliStep {
+  update(text: string): void;
+  done(text?: string): void;
+  fail(text?: string): void;
+}
+
+/** How a verb presents itself: the host owns the look, so a verb stays the same in a terminal, a script or a native app's console. */
+export interface CliTerminal {
+  step(text: string): CliStep;
+  /** A bordered block, one output line per entry. */
+  box(lines: readonly string[]): void;
+  readonly style: {
+    dim(text: string): string;
+    bold(text: string): string;
+    green(text: string): string;
+    accent(text: string): string;
+    url(text: string): string;
+  };
+}
+
 export interface CliInvocation {
   /** Parsed by the host from the verb's declared options: absent flags are undefined, `number` options arrive as numbers. */
   readonly values: Readonly<Record<string, string | number | boolean | readonly string[] | undefined>>;
@@ -74,6 +99,7 @@ export interface CliInvocation {
   readonly positionals: readonly string[];
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
+  readonly terminal: CliTerminal;
   readonly signal: AbortSignal;
 }
 /** Resolves to the process exit code. */
