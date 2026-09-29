@@ -43,6 +43,10 @@
         "typescript": "6.0.3",
       },
     },
+    "packages/app-core": {
+      "name": "@mlx-bun/app-core",
+      "version": "0.0.0",
+    },
     "packages/hub": {
       "name": "@mlx-bun/hub",
       "version": "0.0.0",
@@ -321,6 +325,8 @@
     "@mistralai/mistralai": ["@mistralai/mistralai@2.2.6", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.40.0", "ws": "^8.18.0", "zod": "^3.25.0 || ^4.0.0", "zod-to-json-schema": "^3.25.0" }, "peerDependencies": { "@opentelemetry/api": "^1.9.0" }, "optionalPeers": ["@opentelemetry/api"] }, "sha512-W8pX7zHxjJvMIpw8JMxeJEleapXX0Q9NPszdNzqkM3MIEoIGPObdodujj+WHteXEvGfaP/AMwlNyRfEzSY6dQQ=="],
 
     "@mlc-ai/web-xgrammar": ["@mlc-ai/web-xgrammar@0.1.27", "", {}, "sha512-0WJvW3mjotHA2NeAfaWFE2pQkOgXH9xC2U4IQOJNcioLac0k6VjSbj14jBRprt89frnPzxLo280riaEb+ZQqbg=="],
+
+    "@mlx-bun/app-core": ["@mlx-bun/app-core@workspace:packages/app-core"],
 
     "@mlx-bun/hub": ["@mlx-bun/hub@workspace:packages/hub"],
 

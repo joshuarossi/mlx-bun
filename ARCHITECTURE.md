@@ -178,7 +178,69 @@ paths win, and libraries take paths from their callers.
 | `MLX_BUN_HOME/cache/` | derived memos (inference artifact identities) |
 | Hugging Face hub cache (`hubCacheRoot()`) | `@mlx-bun/hub` downloads only |
 
-Extract a shared app-contract package only when the app consumers require it.
+Application features are moving into modules; see the next section. Until a domain moves, the rules above apply to it.
+
+## Modular application
+
+Target design; [PLAN.md](PLAN.md) orders the migration. The app splits the way the
+repository did: features become modules a host enables, so a transcription-only
+app installs one module and a native Mac app (Tauri, Electron or Swift) reuses
+the same modules.
+
+**Core services** are interfaces in `@mlx-bun/app-core` (types only, no workspace
+dependencies). A host implements them once and every module depends only on them:
+
+| Service | Owns |
+| --- | --- |
+| `modelHost` | Loaded models, leases and residency: a model that fits the memory budget loads beside the others, otherwise the least recently used unpinned, unleased one is drained, has its KV and prefix state flushed under `MLX_BUN_HOME`, and is released; acquiring it again resumes that state. Companions (Whisper) can be pinned. Consumers ask a lease for a declared operation (`generate`, `embed`, `transcribe`), never for a model family. |
+| `jobs` | Persisted job state, task and child-process lifetimes, the GPU lease (`exclusive` jobs drain models first). |
+| `storage` | A module's declared entries under `MLX_BUN_HOME`; nothing else is written by default. |
+| `catalog` | Local models and adapters, fit estimates, downloads, registering outputs. |
+| `events` | Publish/subscribe: the model host and a scheduler adapter publish loads, unloads, per-model memory, request timings, batch occupancy, queue depth and KV/prefix usage and hit rate; modules subscribe. Libraries below the app never import it. |
+
+**Module contract.** A module is a workspace package `@mlx-bun/module-<id>` in
+`packages/module-<id>/` whose default export is an `AppModule`: a static manifest
+(id, `requires`, HTTP routes mounted under `/api/<id>`, CLI verbs with declared
+options, job runners, storage entries, one web panel) plus `activate(context)`,
+which receives only the services it required and returns the live handlers. The
+manifest is plain data, so inventories and hosts read it without loading a model
+or native code. A route may declare `mount: "root"` for wire-compatible or
+previously shipped paths (`/v1/audio/transcriptions`); existing paths are
+preserved. A panel is a self-contained custom element (`mlx-<id>-panel`) that
+receives a `PanelConnection` (API base and event-stream URL), imports only its
+module's `panel/` files and data `protocol.ts`, and so loads in any webview.
+Modules live in `packages/` because libraries cannot depend on apps and the
+native app must import them; a flat `packages/module-*` needs no new workspace
+glob. Modules never import each other; cross-module needs go through core
+services. One module's contributions to another (memory's tools in chat, a
+module's settings in the shell) go through a `registry` core service: the
+contributor registers a declared extension and the consumer lists what is
+registered, so neither names the other. The web shell (navigation, routing,
+theme, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
+host's UI, native webviews included. Modules start as private workspace
+packages; publishing them is a separate licensing decision.
+
+**Hosts** compose. `apps/mlx-bun` installs every module; a transcription-only
+host installs one; a native app installs what it wants. Each host has one
+composition file, `src/modules.ts`, the only file that names module packages,
+plus the implementations of the core services (extracted from `apps/mlx-bun` as
+libraries when a second host needs them). Installation is build-time; a user
+setting may disable an installed module at start.
+
+**Gate rules** (added with their first consumer, in the architecture test):
+
+- `app-core` has no runtime exports and no workspace imports.
+- A module imports only `@mlx-bun/app-core`, declared domain libraries and its
+  own files: no other module, no app, no core-service implementation.
+- Libraries below the app never import `app-core`.
+- Only a host's `modules.ts` imports module packages, and the host's
+  `package.json` lists exactly the modules it names; hosts never import hosts.
+- Module and host code obey the engine's model-identity rule: declared
+  operations only, no `instanceof <Model>` or model-type checks.
+- Panel code imports only panel files and its `protocol.ts`, which imports
+  nothing; this generalizes the browser rule for `chat/` and `jobs/`.
+- Manifest checks in the host loader's tests: unique ids, routes, verbs, job
+  kinds and storage paths; every `requires` satisfied.
 
 ## Changing or replacing a piece
 
