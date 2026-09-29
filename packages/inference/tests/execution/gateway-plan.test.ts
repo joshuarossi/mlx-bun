@@ -62,8 +62,8 @@ const qualifiedFamilies: [string, () => RuntimeModel][] = [
   ["universal dense", () => standIn(UniversalDenseModel.prototype, "llama",
     { args: { modelType: "llama", maskArray: false, attnLogitSoftcap: null, layerTypes: null }, requiredDenseKvLayers: [] })],
   ["gemma4", gemma4],
-  ["qwen3", () => standIn(Qwen3Model.prototype, "qwen3", { requiredDenseKvLayers: [0] })],
-  ["qwen3-moe", () => standIn(Qwen3MoeModel.prototype, "qwen3_moe", { requiredDenseKvLayers: [0] })],
+  ["qwen3", () => standIn(Qwen3Model.prototype, "qwen3", { requiredDenseKvLayers: [], encodedKvAttention: true })],
+  ["qwen3-moe", () => standIn(Qwen3MoeModel.prototype, "qwen3_moe", { requiredDenseKvLayers: [], encodedKvAttention: true })],
   ["qwen3.5", () => standIn(Qwen35Model.prototype, "qwen3_5", { requiredDenseKvLayers: [] })],
   ["minicpm5", () => standIn(MiniCPM5Model.prototype, "minicpm5", { requiredDenseKvLayers: [] })],
   ["glm52", () => standIn(Glm52Model.prototype, "glm_moe_dsa", { requiredDenseKvLayers: [] })],
@@ -352,6 +352,30 @@ function dense(layers = 4): UniversalDenseModel {
   });
 }
 
+// Qwen3 and Qwen3-MoE attend the storage their caches hold, as the encoded-read
+// universal graphs do: delayed affine rows serve ordinary decoding, generation
+// checkpoints and committed grammar spans; genuine delayed speculation stays
+// refused; immediate affine KV keeps speculation and fill.
+for (const [name, prototype, modelType] of [["qwen3", Qwen3Model.prototype, "qwen3"],
+  ["qwen3-moe", Qwen3MoeModel.prototype, "qwen3_moe"]] as const)
+test(`${name} attends affine KV: delayed rows serve ordinary decoding, checkpoints and committed grammar spans`, () => {
+  const make = () => standIn(prototype, modelType, { requiredDenseKvLayers: [], encodedKvAttention: true,
+    config: { modelType, text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] } });
+  const binding = bindMlxGateway(make(), { provider: new NgramProvider(), numDraftTokens: 3 });
+  binding.configureContinuation!({ checkpointPersistence: {} } as never);
+  const scheduling = { continuous: true, quantizedBatch: true, checkpoints: true };
+  const kv = { ...shape, kvQuant: true }, delayed = { kvBits: 4, quantizedKvStart: 64 }, immediate = { kvBits: 4, quantizedKvStart: 0 };
+  for (const scheme of [resolveKvScheme({ override: 4, quantizedKvStart: 64 }), resolveKvScheme({ override: 8, quantizedKvStart: 0 }),
+    resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }], quantizedKvStart: 64 })])
+    expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(true);
+  expect(binding.plan(kv, delayed, scheduling)).toMatchObject({ method: "autoregressive", mechanism: "continuous", checkpoint: true });
+  const drafted = binding.plan({ ...kv, hasDraft: true }, delayed, scheduling);
+  expect(drafted.mechanism).toBe("unsupported");
+  expect(drafted.reasons).toContain("continuous-unavailable");
+  expect(binding.plan({ ...kv, hasDraft: true }, immediate, scheduling).method).toBe("speculative");
+  expectOrdinaryAffineSpans(make, delayed, immediate);
+});
+
 test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and its generation checkpoints", () => {
   const binding = bindMlxGateway(minicpm5(), { provider: { grouped: {} } as never, numDraftTokens: 4 });
   const unconfigured = bindMlxGateway(minicpm5(), { provider: { grouped: {} } as never, numDraftTokens: 4 });
@@ -359,8 +383,8 @@ test("MiniCPM5 batches delayed affine KV for ordinary continuous decoding and it
   for (const scheme of [resolveKvScheme({ override: 4, quantizedKvStart: 64 }), resolveKvScheme({ override: 8, quantizedKvStart: 64 }),
     resolveKvScheme({ override: "config", config, quantizedKvStart: 64 })])
     expect(binding.kvBatchable(scheme)).toBe(true);
-  // A model without the capability still refuses a delayed start.
-  expect(bindMlxGateway(standIn(Qwen3Model.prototype, "qwen3", { requiredDenseKvLayers: [0] }))
+  // A graph that neither converts rows itself nor declares dense reads still refuses a delayed start.
+  expect(bindMlxGateway(standIn(Glm52Model.prototype, "glm_moe_dsa", { requiredDenseKvLayers: [] }))
     .kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 64 }))).toBe(false);
   expect(bindMlxGateway(dense()).kvBatchable(resolveKvScheme({ override: 4, quantizedKvStart: 0 }))).toBe(true);
 

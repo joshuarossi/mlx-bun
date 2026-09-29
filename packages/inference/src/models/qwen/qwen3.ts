@@ -22,6 +22,7 @@ import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { compiledSwiglu } from "../../layers/swiglu";
+import { captureKvAttention } from "../../state/kv-attention-view";
 
 export class Qwen3Attention {
   readonly qProj: QuantizedLinear;
@@ -72,13 +73,13 @@ export class Qwen3Attention {
     q = disposing(q, ops.rope(q, this.headDim, this.ropeBase, cache.offset, null));
     k = disposing(k, ops.rope(k, this.headDim, this.ropeBase, cache.offset, null));
 
-    const [keys, values] = cache.updateAndFetch(k, v);
-    k.dispose();
-    v.dispose();
-    const attn = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
-    keys.dispose();
-    values.dispose();
-    q.dispose();
+    // Plain, affine or delayed storage: mlx-lm's scaled_dot_product_attention
+    // reads quantized caches through quantized SDPA.
+    let attn: MlxArray;
+    try {
+      const view = captureKvAttention(cache, k, v);
+      try { attn = view.attend(q, this.scale, mask); } finally { view.dispose(); }
+    } finally { k.dispose(); v.dispose(); q.dispose(); }
 
     const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
     attn.dispose();
@@ -151,8 +152,10 @@ export class Qwen3Model {
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
-  /** Layers whose attention reads plain keys and values: every layer (`cache.updateAndFetch`). */
-  readonly requiredDenseKvLayers: readonly number[];
+  /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
+  readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Every attention layer reads encoded (affine) KV views. */
+  readonly encodedKvAttention = true;
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3Layer[];
   readonly finalNorm: RMSNorm;
@@ -168,7 +171,6 @@ export class Qwen3Model {
       { length: config.text.numHiddenLayers },
       (_, i) => new Qwen3Layer(weights, config, `model.layers.${i}`),
     );
-    this.requiredDenseKvLayers = Object.freeze(this.layers.map((_, layer) => layer));
     this.finalNorm = new RMSNorm(weights.tensor("model.norm.weight"), config.text.rmsNormEps);
     this.lmHead = config.text.tieWordEmbeddings
       ? null

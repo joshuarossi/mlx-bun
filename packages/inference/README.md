@@ -345,8 +345,8 @@ cancellation.
 Requests that supply fill remain ineligible for generation checkpoints. Actual
 delayed speculation remains excluded. Each graph declares at construction the
 layers its attention reads as plain keys and values (`requiredDenseKvLayers`:
-Gemma2's softcap layers, every Qwen3 and Qwen3-MoE layer, none for graphs that
-attend the storage their caches hold). The gateway and a directly composed
+Gemma2's softcap layers; none for graphs that attend the storage their caches
+hold). The gateway and a directly composed
 batch group each bind that declaration once against the graph's fresh caches;
 an absent or malformed declaration is refused rather than read as none. A row
 whose next append would not read plain in a declared layer is refused with
@@ -399,7 +399,19 @@ remain outside Git.
 
 Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
-attention reads encoded KV. On those graphs and on MiniCPM5, delayed affine
+attention reads encoded KV. Qwen3 and Qwen3-MoE attend affine KV as mlx-lm's
+`scaled_dot_product_attention` does (quantized SDPA over a quantized cache) and
+take the same encoded-read path: immediate affine KV batches and speculates,
+and delayed affine rows serve ordinary decoding, generation checkpoints and
+committed grammar spans across their conversion. On 2026-09-28 UTC (M1 Max,
+MLX 0.32.2), cached Qwen3-4B-Instruct-2507-4bit `50d42775` matched mlx-lm
+0.31.3's `generate_step` order bit for bit in six greedy steps' full logits
+through direct generation with KV8 and KV4 at starts 0, 8 and 14 (a one-off
+comparison); the opt-in spans test and the ordinary-continuation test (KV8 from
+0, KV4 from prompt+4, KV8 from prompt+2) passed on it; and a grouped n-gram
+draft over immediate KV8 and KV4 reproduced ordinary greedy output. No
+Qwen3-MoE artifact was run.
+On encoded-read universal graphs and on MiniCPM5, delayed affine
 rows stay ordinary-only, and their direct grammar jump commits spans through the
 same span method with no dense-read requirement, before and after conversion.
 The same opt-in real-weight spans test passed on cached MiniCPM5-1B-OptiQ-4bit
