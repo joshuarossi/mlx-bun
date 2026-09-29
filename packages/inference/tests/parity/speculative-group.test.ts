@@ -32,14 +32,22 @@
 // The first two tests require a combination placement serves; run only the
 // adapter test with --test-name-pattern "adapter rows" for such a KV setting.
 // Not covered: equality with main or an external oracle, HTTP, speed.
+// KIND=glm-mtp is GLM-5.2's checkpoint-native MTP (`--mtp on`), mounted as
+// the app's model host mounts it (`apps/mlx-bun/src/engine/model-host.ts`): the
+// Colibri runtime opened with the MTP tier planned for one drafting lane, and
+// Glm52NativeMtpProvider over that target at the plan's draft depth (the default
+// depth here). It takes no draft artifact and only plain KV (see optIn).
+// Observers wrap the target forward the bindings call, forwardHiddenAsync where
+// the graph provides one (the streamed GLM target), otherwise forwardHidden.
 // Opt in with all of
 //   MLX_BUN_TEST_SPEC_TARGET=/target/snapshot
-//   MLX_BUN_TEST_SPEC_KIND=ngram|two-model|assistant|mtp|dspark|deepspec
-//   MLX_BUN_TEST_SPEC_DRAFT=/draft/snapshot   (every kind but ngram; ngram takes none)
+//   MLX_BUN_TEST_SPEC_KIND=ngram|two-model|assistant|mtp|dspark|deepspec|glm-mtp
+//   MLX_BUN_TEST_SPEC_DRAFT=/draft/snapshot   (every kind but ngram and glm-mtp, which take none)
 // and optionally
 //   MLX_BUN_TEST_SPEC_KV=bf16|4|8|turbo|config   (config: the target's kv_config.json)
 //   MLX_BUN_TEST_SPEC_KV_START=<n>                (default 0)
-//   MLX_BUN_TEST_SPEC_DEPTH=<n>                   (default 2, and 3 for prefixes)
+//   MLX_BUN_TEST_SPEC_DEPTH=<n>                   (default 2, and 3 for prefixes;
+//                                                 glm-mtp: the memory plan's MTP draft depth)
 //   MLX_BUN_TEST_SPEC_WINDOW=<n>   a custom graph over a Llama-family target's unchanged
 //                                  weights: alternating sliding (window n) and full layers
 //                                  (not a published model)
@@ -48,7 +56,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
@@ -57,7 +65,10 @@ import type { Cache } from "@mlx-bun/inference/contracts/mlx";
 type A = any;
 const PREFIX = "MLX_BUN_TEST_SPEC_";
 const NAMES = ["TARGET", "KIND", "DRAFT", "KV", "KV_START", "DEPTH", "WINDOW", "ADAPTER"] as const;
-const KINDS = ["ngram", "two-model", "assistant", "mtp", "dspark", "deepspec"] as const;
+const KINDS = ["ngram", "two-model", "assistant", "mtp", "dspark", "deepspec", "glm-mtp"] as const;
+/** Providers whose rows prefill the whole prompt (prefillMode "full"), so a
+ * cohort submitted together prefills together before any row emits. */
+const FULL_PREFILL: readonly Kind[] = ["mtp", "glm-mtp"];
 const KVS = ["bf16", "4", "8", "turbo", "config"] as const;
 type Kind = typeof KINDS[number];
 type Kv = typeof KVS[number];
@@ -71,7 +82,8 @@ export function optIn(env: Record<string, string | undefined>) {
   if (!target || !kind) throw new Error(`speculative group needs ${PREFIX}TARGET and ${PREFIX}KIND`);
   if (!KINDS.includes(kind)) throw new Error(`${PREFIX}KIND must be one of ${KINDS.join(", ")}`);
   if (kind === "ngram" && draft !== undefined) throw new Error(`${PREFIX}KIND=ngram is model-free; drop ${PREFIX}DRAFT`);
-  if (kind !== "ngram" && draft === undefined) throw new Error(`${PREFIX}KIND=${kind} needs ${PREFIX}DRAFT`);
+  if (kind === "glm-mtp" && draft !== undefined) throw new Error(`${PREFIX}KIND=glm-mtp is checkpoint-native; drop ${PREFIX}DRAFT`);
+  if (kind !== "ngram" && kind !== "glm-mtp" && draft === undefined) throw new Error(`${PREFIX}KIND=${kind} needs ${PREFIX}DRAFT`);
   const kv = (value("KV") ?? "bf16") as Kv;
   if (!KVS.includes(kv)) throw new Error(`${PREFIX}KV must be one of ${KVS.join(", ")}`);
   const integer = (name: typeof NAMES[number], min: number) => {
@@ -84,6 +96,16 @@ export function optIn(env: Record<string, string | undefined>) {
   if (start > 0 && kv === "bf16") throw new Error(`${PREFIX}KV_START needs a quantized ${PREFIX}KV`);
   for (const [name, dir] of [["TARGET", target], ["DRAFT", draft]] as const)
     if (dir !== undefined) assert(existsSync(join(dir, "config.json")), `${PREFIX}${name}: no config.json in ${dir}`);
+  if (kind === "glm-mtp") {
+    const raw = JSON.parse(readFileSync(join(target, "config.json"), "utf8"));
+    assert.equal(raw.model_type, "glm_moe_dsa", `${PREFIX}KIND=glm-mtp needs a GLM-5.2 (glm_moe_dsa) target, not ${raw.model_type}`);
+    // GLM's attention stores a compressed MLA latent cache, not plain or rotating
+    // KV: no layer has an affine or TurboQuant conversion, so the gateway's
+    // kvBatchable refuses every quantized scheme and the drafted placement these
+    // tests require is refused. The KV matrix does not apply to this cache;
+    // plain KV is its only layout.
+    if (kv !== "bf16") throw new Error(`${PREFIX}KIND=glm-mtp takes plain KV only: GLM's MLA latent cache has no affine or TurboQuant conversion`);
+  }
   if (window !== undefined) {
     const raw = JSON.parse(readFileSync(join(target, "config.json"), "utf8"));
     assert(["llama", "mistral"].includes(raw.model_type), `a custom window needs a Llama-family target, not ${raw.model_type}`);
@@ -103,7 +125,7 @@ export function attachmentMatches(kind: Kind, tokens: number, attachment: A): bo
 
 // ---- shared native setup ---------------------------------------------------------------
 async function load(inputs: Inputs) {
-  const { loadModelConfig, Weights, createModel } = await import("@mlx-bun/inference");
+  const { loadModelConfig, Weights, createModel, openGlm52RuntimeModel } = await import("@mlx-bun/inference");
   const speculative = await import("@mlx-bun/inference/generation/speculative");
   const { KvScheme, resolveKvScheme } = await import("@mlx-bun/inference/state");
   const config = await loadModelConfig(inputs.target);
@@ -114,8 +136,24 @@ async function load(inputs: Inputs) {
     raw.layer_types = [...types]; raw.sliding_window = inputs.window;
     config.text.layerTypes = [...types]; config.text.slidingWindow = inputs.window;
   }
-  const weights = await Weights.open(inputs.target);
-  const model = createModel(weights, config) as A;
+  let model: A, defaultDepth: number | undefined, dispose: () => void;
+  if (inputs.kind === "glm-mtp") {
+    // `serve --mtp on`, as the app's model host opens it: the Colibri runtime with
+    // native MTP planned for one drafting lane (batchSize 1), its other defaults
+    // unchanged; the provider's draft depth is the plan's.
+    const opened = await openGlm52RuntimeModel(inputs.target, { batchSize: 1, enableMtp: true });
+    model = opened.model;
+    dispose = () => opened.model.dispose();
+    if (!opened.plan.enableMtp) { dispose(); throw new Error("the GLM memory plan leaves native MTP disabled"); }
+    defaultDepth = opened.plan.mtpDraftTokens;
+  } else {
+    const weights = await Weights.open(inputs.target);
+    model = createModel(weights, config) as A;
+    dispose = () => {
+      try { weights.dispose(); }
+      finally { for (const file of weights.shards.files.values()) file.mmap.unmap(); }
+    };
+  }
   if (inputs.window !== undefined) expect({ layerTypes: model.args?.layerTypes, slidingWindow: model.args?.slidingWindow })
     .toEqual({ layerTypes: config.text.layerTypes, slidingWindow: config.text.slidingWindow });
   const loadProvider = async (): Promise<A> => {
@@ -126,6 +164,7 @@ async function load(inputs: Inputs) {
       case "mtp": return speculative.QwenMtpProvider.load(inputs.draft!);
       case "dspark": return speculative.DflashProvider.load(inputs.draft!);
       case "deepspec": return speculative.DeepspecProvider.load(inputs.draft!);
+      case "glm-mtp": return new speculative.Glm52NativeMtpProvider(model);
     }
   };
   const turboQuant = { kBits: 8, vBits: 3 };
@@ -145,10 +184,12 @@ async function load(inputs: Inputs) {
     hasLogitsExtras: false, hasGrammar: false, wantsLogprobs: false, hasDraft: true, ...extra });
   const release = async () => {
     const { clearCache } = await import("@mlx-bun/mlx/ffi");
-    try { weights.dispose(); }
-    finally { for (const file of weights.shards.files.values()) file.mmap.unmap(); clearCache(); }
+    try { dispose(); } finally { clearCache(); }
   };
-  return { model, config, loadProvider, kv, requirements, release };
+  // The target forward the bindings call: forwardHiddenAsync where the graph
+  // provides one, as the execution group and speculative binding select it.
+  const targetForward = typeof model.forwardHiddenAsync === "function" ? "forwardHiddenAsync" as const : "forwardHidden" as const;
+  return { model, config, loadProvider, kv, requirements, release, defaultDepth, targetForward };
 }
 type Loaded = Awaited<ReturnType<typeof load>>;
 
@@ -179,10 +220,10 @@ async function bindFor(loaded: Loaded, provider: A, depth: number) {
 }
 
 /** Target forward shapes while no row has produced a token: the prefill cohort. */
-function watchPrefill(model: A, outputs: number[][]) {
+function watchPrefill(model: A, method: "forwardHidden" | "forwardHiddenAsync", outputs: number[][]) {
   const shapes: number[][] = [];
-  const forward = model.forwardHidden.bind(model);
-  const spy = spyOn(model, "forwardHidden").mockImplementation((ids: A, ...rest: A[]) => {
+  const forward = model[method].bind(model);
+  const spy = spyOn(model, method).mockImplementation((ids: A, ...rest: A[]) => {
     if (outputs.every(tokens => tokens.length === 0)) shapes.push([...ids.shape]);
     return forward(ids, ...rest);
   });
@@ -198,11 +239,11 @@ test.skipIf(!inputs)("grouped speculation: placement, the serial producer at B1,
   const loaded = await load(inputs!);
   const { model } = loaded;
   // Full-prefill providers feed the whole prompt; tail-split ones hold its last token for the first round.
-  const prefillLength = (prompt: number[]) => prompt.length - (inputs!.kind === "mtp" ? 0 : 1);
+  const prefillLength = (prompt: number[]) => prompt.length - (FULL_PREFILL.includes(inputs!.kind) ? 0 : 1);
   let provider: A;
   try {
     provider = await loaded.loadProvider();
-    const depth = inputs!.depth ?? 2;
+    const depth = inputs!.depth ?? loaded.defaultDepth ?? 2;
     const { method, group: groupOf } = await bindFor(loaded, provider, depth);
     const options: A = { temperature: 0, maxTokens: 24, eosTokenIds: [], ...loaded.kv.options };
     const prompt = [1, 2, 3, 4, 5, 6, 7];
@@ -217,7 +258,7 @@ test.skipIf(!inputs)("grouped speculation: placement, the serial producer at B1,
       const group = groupOf({ held: true });
       let maxRows = 0;
       const tokens = Array.from({ length: count }, () => [] as number[]);
-      const prefill = watchPrefill(model, tokens);
+      const prefill = watchPrefill(model, loaded.targetForward, tokens);
       try {
         const pending = tokens.map(output => group.submit({
           method: method(options), promptIds: prompt, maxTokens: options.maxTokens, eosTokenIds: [],
@@ -318,8 +359,8 @@ test.skipIf(!inputs)("grouped speculation: placement, the serial producer at B1,
       const chunked = { ...options, prefillChunkSize: 4 };
       const output: number[][] = [[], []], shapes: number[][] = [];
       let joiner: Promise<unknown> | undefined, submitted = false, sharedBeforeOutput = false;
-      const original = model.forwardHidden.bind(model);
-      const probe = spyOn(model, "forwardHidden").mockImplementation((ids: A, caches: A, ...rest: A[]) => {
+      const original = model[loaded.targetForward].bind(model);
+      const probe = spyOn(model, loaded.targetForward).mockImplementation((ids: A, caches: A, ...rest: A[]) => {
         if (ids.shape[1] === 4) {
           shapes.push([...ids.shape]);
           if (ids.shape[0] === 2 && output.every(tokens => !tokens.length)) sharedBeforeOutput = true;
@@ -386,7 +427,7 @@ test.skipIf(!inputs)("generated prefixes: retired rows publish their companion s
   };
   const loaded = await load(inputs!);
   const { model } = loaded;
-  const kind = inputs!.kind, depth = inputs!.depth ?? 3;
+  const kind = inputs!.kind, depth = inputs!.depth ?? loaded.defaultDepth ?? 3;
   const directory = mkdtempSync(join(tmpdir(), "speculative-prefix-"));
   const options: A = { temperature: 0, seed: 42, maxTokens: 20, ...loaded.kv.options };
   const storeOptions = { dir: directory, maxBytes: 4 * 1024 ** 3, modelId: inputs!.target,
@@ -412,7 +453,7 @@ test.skipIf(!inputs)("generated prefixes: retired rows publish their companion s
     }
     return put(...args);
   });
-  const prefill = watchPrefill(model, outputs);
+  const prefill = watchPrefill(model, loaded.targetForward, outputs);
   try {
     provider = await loaded.loadProvider();
     const bound = await bindFor(loaded, provider, depth);
@@ -518,8 +559,8 @@ test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, 
     return put(...args);
   });
   const frames: { batch: number; adapters: string[] }[] = [];
-  const forward = model.forwardHidden.bind(model);
-  const probe = spyOn(model, "forwardHidden").mockImplementation((ids: A, caches: A, ...rest: A[]) => {
+  const forward = model[loaded.targetForward].bind(model);
+  const probe = spyOn(model, loaded.targetForward).mockImplementation((ids: A, caches: A, ...rest: A[]) => {
     frames.push({ batch: ids.shape[0]!, adapters: [...model.loraState.active] });
     return forward(ids, caches, ...rest);
   });
@@ -532,9 +573,9 @@ test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, 
       snapshotAt: promptIds.length - 1 });
     const upper = { adapters: ["upper"] }, base = { adapters: [] };
     // Placement, decided once per context by the binding. Every adapter row is
-    // served, as in main; it speculates only through a provider that supports
+    // served; it speculates only through a provider that supports
     // target adapters, and otherwise decodes ordinarily with the draft ignored.
-    const probeBinding = await bindFor(loaded, provider, 3);
+    const probeBinding = await bindFor(loaded, provider, loaded.defaultDepth ?? 3);
     const adapterPlan = probeBinding.place(optionsFor(upper, prompt), { hasAdapters: true, wantsLogprobs: true });
     expect({ mechanism: adapterPlan.mechanism, reasons: adapterPlan.reasons.filter(r => r.endsWith("-unsupported")) })
       .toEqual({ mechanism: "continuous", reasons: [] });
@@ -562,7 +603,7 @@ test.skipIf(!inputs?.adapter)("adapter rows with a configured draft: placement, 
         for await (const value of generation) out.sink(value.token, value.logprobs);
         return { ...out, stats: generation.stats! };
       })) };
-      const bound = await bindFor(loaded, provider, 3);
+      const bound = await bindFor(loaded, provider, loaded.defaultDepth ?? 3);
       const group = bound.group({ maxBatch: batch, ...(cached ? { promptCache: cache } : {}) });
       try {
         const results = await Promise.all(requests.map(async request => {
@@ -668,6 +709,17 @@ test("opt-in: none skips; partial, blank or inconsistent settings fail (CPU only
   expect(() => optIn(env({ TARGET: "/t", KIND: "ngram", KV_START: "8" }))).toThrow("needs a quantized");
   expect(() => optIn(env({ TARGET: "/t", KIND: "ngram", DEPTH: "0" }))).toThrow("integer >= 1");
   expect(() => optIn(env({ TARGET: "/nonexistent-spec-target", KIND: "ngram" }))).toThrow("no config.json");
+  // GLM-5.2 native MTP: no draft artifact, a glm_moe_dsa target, plain KV only, no custom window.
+  expect(() => optIn(env({ TARGET: "/t", KIND: "glm-mtp", DRAFT: "/d" }))).toThrow("checkpoint-native");
+  const dir = mkdtempSync(join(tmpdir(), "spec-glm-target-"));
+  try {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ model_type: "llama" }));
+    expect(() => optIn(env({ TARGET: dir, KIND: "glm-mtp" }))).toThrow("glm_moe_dsa");
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ model_type: "glm_moe_dsa" }));
+    expect(optIn(env({ TARGET: dir, KIND: "glm-mtp" }))).toMatchObject({ kind: "glm-mtp", kv: "bf16", draft: undefined, depth: undefined });
+    for (const kv of ["4", "8", "turbo", "config"]) expect(() => optIn(env({ TARGET: dir, KIND: "glm-mtp", KV: kv }))).toThrow("plain KV only");
+    expect(() => optIn(env({ TARGET: dir, KIND: "glm-mtp", WINDOW: "8" }))).toThrow("Llama-family");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("generated-prefix attachments follow each provider's schema (CPU only)", () => {
@@ -675,7 +727,7 @@ test("generated-prefix attachments follow each provider's schema (CPU only)", ()
   expect(attachmentMatches("ngram", 9, { tensors: [{ shape: [8] }] })).toBe(false);
   expect(attachmentMatches("mtp", 9, { metadata: { draftOffset: 8 } })).toBe(true);
   expect(attachmentMatches("mtp", 9, { metadata: { draftOffset: 9 } })).toBe(false);
-  for (const kind of ["two-model", "assistant", "dspark", "deepspec"] as const) {
+  for (const kind of ["two-model", "assistant", "dspark", "deepspec", "glm-mtp"] as const) {
     expect(attachmentMatches(kind, 9, { metadata: { processedTokens: 9 } })).toBe(true);
     expect(attachmentMatches(kind, 9, undefined)).toBe(false);
   }
