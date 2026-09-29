@@ -12,14 +12,14 @@ import type { DraftKind } from "../engine/model-host";
 import { installedModules } from "../modules";
 import { createAppState, type AppState, type AppStateOptions, type AppStoragePaths, type ModelHostLink } from "./serve-state";
 import type { ModelHostHooks } from "./serve-host";
-import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
+import { resolveServingLimits, shutdownTimeoutMs, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
 
 // The composition lives in two halves: serve-state (persistent, CPU-only) and
 // serve-host (model-scoped). This module parses flags, composes both, and owns
 // the process (signals, browser, shutdown deadline). The model half is
 // imported only by the composition that runs it, so an isolated parent
 // (serve-isolated.ts) never loads the engine.
-export { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions };
+export { resolveServingLimits, shutdownTimeoutMs, validatePagedServingOptions, type RunningApp, type ServeOptions };
 
 /** The saved-state root's default byte budget, across every model's directory (`--ssd-cache-max` overrides). */
 export const DEFAULT_SAVED_STATE_BYTES = 20 * 2 ** 30;
@@ -238,12 +238,6 @@ export async function startModelServer(model: ModelRecord, options: ServeOptions
 export async function startTranscriptionServer(model: ModelRecord, options: ServeOptions,
   hooks: Pick<ModelHostHooks, "unix" | "routes" | "beforeDrain"> = {}): Promise<RunningApp> {
   return (await import("./serve-host")).startTranscriptionHost(model, options, hooks);
-}
-
-/** Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s. */
-export function shutdownTimeoutMs(): number {
-  const raw = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
-  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
 }
 
 /** Internal (the worker app form; a parent may call it to fail fast before

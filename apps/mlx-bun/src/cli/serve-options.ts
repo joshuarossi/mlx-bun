@@ -1,6 +1,7 @@
 // Serve's option shape and the pure policy resolved from it. Both halves of
 // the composition (serve-state, serve-host) and the CLI wrapper share these
 // without importing each other.
+import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { MemoryPlan } from "@mlx-bun/inference/contracts/portable";
 import type { RequestPrepOptions } from "../server/request-prep";
@@ -95,4 +96,10 @@ export function validatePagedServingOptions(
     throw new Error("--paged-kv supports bf16 and uniform affine KV4/KV8; per-layer and TurboQuant pages are not implemented.");
   if (hasDraft)
     throw new Error("--paged-kv cannot combine with --draft-model in v1.");
+}
+
+/** Main's MLX_BUN_SHUTDOWN_TIMEOUT_MS: any finite value > 0, else 120 s. How long a close may take to drain work and flush saved state. */
+export function shutdownTimeoutMs(): number {
+  const raw = Number(runtimeValue("MLX_BUN_SHUTDOWN_TIMEOUT_MS"));
+  return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
 }

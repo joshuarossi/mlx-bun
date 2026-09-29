@@ -26,7 +26,7 @@ import { createProxyRoutes } from "../server/proxy-routes";
 import { createResponsesClient } from "../server/responses-client";
 import { ServeRefused } from "../server/hub-routes";
 import { startServer } from "../server/start";
-import type { RunningApp, ServeOptions } from "./serve-options";
+import { shutdownTimeoutMs, type RunningApp, type ServeOptions } from "./serve-options";
 import { createAppState, type RouteGroup } from "./serve-state";
 
 /** What the composition root supplies (`modules`: the installed modules that run in the persistent state)
@@ -121,7 +121,9 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       ...(hooks.restarts ? { restarts: hooks.restarts } : {}),
       ...(hooks.env ? { env: hooks.env } : {}),
       ...(hooks.readyTimeoutMs !== undefined ? { readyTimeoutMs: hooks.readyTimeoutMs } : {}),
-      ...(hooks.graceMs !== undefined ? { graceMs: hooks.graceMs } : {}),
+      // The worker flushes every resident model's saved state when it closes, and a kill would cut that: it gets the
+      // CLI's shutdown budget to drain and then to stop, as the library host's worker does.
+      drainTimeoutMs: hooks.graceMs ?? shutdownTimeoutMs(), graceMs: hooks.graceMs ?? shutdownTimeoutMs(),
       notice,
       ...(hooks.log ? { log: hooks.log } : {}),
       ...(hooks.error ? { error: hooks.error } : {}),
