@@ -1,0 +1,41 @@
+{
+  "name": "@mlx-bun/module-chat",
+  "version": "0.0.0",
+  "description": "Chat module for mlx-bun applications: the default assistant, a Pi agent over the served model on a WebSocket, saved chats, tool approvals and the browser panel",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./panel": "./src/panel/index.ts"
+  },
+  "files": [
+    "src",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/inference": "workspace:*",
+    "@earendil-works/pi-ai": "0.80.3",
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "typebox": "1.1.38"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
+    "happy-dom": "20.10.6"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}

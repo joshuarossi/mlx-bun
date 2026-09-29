@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { downloadsSnapshot, gitBlobSha1 } from "@mlx-bun/hub/download";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 import { createDownloadOwner } from "../../src/hub/downloads";
 import { createDiscoveryRoutes } from "../../src/server/discovery-routes";
@@ -67,7 +68,7 @@ test("Download button: slow listing shows preparing, then progress, then done; a
   const discovery = createDiscoveryRoutes(context, { discovery: { adapters: false, training: false, dsa: true, embeddings: false } },
     Date.now(), undefined, undefined, owner.snapshot);
   const routes = createHubRoutes({ downloads: owner, endpoint: hub.endpoint, token: () => null });
-  const app = await startServer({ web: () => null, chat: () => ({ async start() {}, async handle() {}, dispose() {} }),
+  const app = await startServer({ web: () => null, sockets: createModuleSockets([]),
     routes: { handle: async request => await routes.handle(request) ?? await discovery.handle(new URL(request.url), request) },
     beforeDrain: () => owner.close(), async closeEngine() {} }, { port: 0 });
   cleanups.push(() => app.close());

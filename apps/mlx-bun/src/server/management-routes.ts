@@ -1,14 +1,11 @@
 import { executeGc, planGc, type Registry } from "@mlx-bun/hub/registry";
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { listAlwaysAllowedTools, revokeToolAlwaysAllowed } from "../chat/tool-approvals";
 import { errorResponse } from "./http";
 import { openRegistry } from "../storage/paths";
 
 export interface ManagementRouteOptions {
   invalidateLibrary(): void;
-  /** Share this path with PiBackendOptions.paths.toolApprovalsFile. */
-  toolApprovalsFile?: string;
   /** The loaded model may still need files from this snapshot after startup. */
   servedModelPath?: string;
   /** Under a model pool: every resident or loading model's snapshot, read at execution time. */
@@ -18,7 +15,7 @@ export interface ManagementRouteOptions {
   createRegistry?: () => Pick<Registry, "scan" | "close">;
 }
 
-/** HTTP policy over chat approval storage and the public hub GC operations.
+/** HTTP policy over the public hub GC operations.
  * Each GC rescan owns and closes its registry; the discovery cache is borrowed. */
 export function createManagementRoutes(options: ManagementRouteOptions) {
   const canonicalPath = (path: string) => {
@@ -30,16 +27,6 @@ export function createManagementRoutes(options: ManagementRouteOptions) {
     const pathname = new URL(request.url).pathname;
     try {
       switch (`${request.method} ${pathname}`) {
-        case "GET /api/settings/tool-approvals":
-          return Response.json({ ok: true, alwaysAllow: listAlwaysAllowedTools(options.toolApprovalsFile) });
-        case "DELETE /api/settings/tool-approvals": {
-          const body: unknown = await request.json().catch(() => undefined);
-          const tool = body && typeof body === "object" && !Array.isArray(body) && "tool" in body ? body.tool : undefined;
-          if (typeof tool !== "string" || !tool)
-            return Response.json({ ok: false, error: "tool required" }, { status: 400 });
-          const file = revokeToolAlwaysAllowed(tool, options.toolApprovalsFile);
-          return Response.json({ ok: true, alwaysAllow: Object.keys(file.allows).sort() });
-        }
         case "GET /api/gc/plan": {
           const plans = gcPlans();
           const superseded = plans.map(plan => ({

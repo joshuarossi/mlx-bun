@@ -10,5 +10,7 @@ export type { CatalogHub, RegistryCatalogOptions } from "./catalog";
 export { ModelHostFailure } from "./failure";
 export { createModuleRoutes } from "./routes";
 export type { ModuleRoutes } from "./routes";
+export { createModuleSockets } from "./sockets";
+export type { ModuleSocketData, ModuleSockets, Upgrader } from "./sockets";
 export { MODEL_LAYOUT, mlxBunHome } from "./home";
 export { createStorage } from "./storage";

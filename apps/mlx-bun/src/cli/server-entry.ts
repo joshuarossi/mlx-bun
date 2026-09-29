@@ -108,7 +108,7 @@ export async function createServer(context: LoadedModelContext, port = 0, option
     ]);
     const serving: ContextHostOptions = { port, hostname: options.hostname ?? null, capacity: options.capacity ?? 8,
       contextLimit: options.contextLimit === undefined ? profileContextLimit() : options.contextLimit,
-      readOnly: options.readOnly ?? false, cache: options.cache ?? {}, request: options.request ?? {},
+      cache: options.cache ?? {}, request: options.request ?? {},
       defaultGeneratedTokens: options.defaultGeneratedTokens, kvBudgetBytes: options.kvBudgetBytes,
       memoryBudgetBytes: options.memoryBudgetBytes, whisper: options.whisper };
     const served: ContextHost = { ownership, binding: options.binding, buildPrompt: options.buildPrompt,
@@ -116,7 +116,7 @@ export async function createServer(context: LoadedModelContext, port = 0, option
     // Memory synthesis gets main's task model, as in `mlx-bun serve`; nothing
     // loads before a run. The host's drain joins the state's close (jobs,
     // downloads, synthesis) while the engine and model are still alive.
-    app = await startApp({ port, memoryPaths: options.memoryPaths, chatPaths: options.chatPaths,
+    app = await startApp({ port, memoryPaths: options.memoryPaths, chatPaths: options.chatPaths, readOnly: options.readOnly ?? false,
       memoryTaskModel: () => createInProcessMemoryClient() }, options.storagePaths ?? {}, state => {
       transferred = true;
       return startContextHost(state, context, serving, served, { beforeDrain: () => state.close() });

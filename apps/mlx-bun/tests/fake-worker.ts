@@ -140,8 +140,11 @@ const server = Bun.serve({ unix: launch.socketPath, idleTimeout: 0, async fetch(
     event("memory answered");
     return Response.json({ outputs: body.requests.map(row => `task ${row.stage}: ${row.input.user}`) });
   }
+  // The real discovery reports the server's own sampling defaults (the launch options') over the model's.
+  const served = (launch.options?.request ?? {}) as Record<string, number | undefined>;
   if (path === "/v1/models") return Response.json({ object: "list", data: [{ id: modelId, object: "model", created: 1, owned_by: "mlx-bun",
-    context_window: 4096, reasoning: false, vision: false, audio: false, gen_defaults: { temperature: 0.6, top_p: 0.9, top_k: null },
+    context_window: 4096, reasoning: false, vision: false, audio: false,
+    gen_defaults: { temperature: served.defaultTemperature ?? 0.6, top_p: served.defaultTopP ?? 0.9, top_k: served.defaultTopK ?? null },
     capabilities: { chat_completions: true, transcription: false } }] });
   if (path === "/stats") return Response.json({ server: { owner: "serve", model: modelId, started_at: 1 },
     prompt_cache: { entries: 1, bytes: 2, max_bytes: 3 }, response_store: { entries: 99, bytes: 99, max_bytes: 99, ttl_ms: 99 },

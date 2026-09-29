@@ -62,14 +62,12 @@ test("the persistent state composes and serves its routes with fakes, without th
     const chatPaths = { sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
     const storagePaths = { jobsDb: join(root, "store", "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
     const { installedModules } = await import(app + "src/modules.ts");
-    // The state runs the modules that need job runners; Whisper's module belongs to the model host.
+    // The state runs the modules that need job runners or serve a socket (chat); Whisper's module belongs to the model host.
     const stateModules = await installedModules("state");
-    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize"]);
+    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "chat"]);
     assert.deepEqual((await installedModules("model")).map(module => module.id), ["transcription"]);
     const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths, stateModules);
-    assert.equal(state.sessionDir, chatPaths.sessionDir);
     assert.deepEqual(state.memoryPaths, memoryPaths);
-    assert.equal(state.chatPaths, chatPaths);
     assert.equal(state.storagePaths, storagePaths);
     assert.equal(state.responses.size, 0);
     const get = (path) => new Request("http://127.0.0.1" + path);
@@ -108,9 +106,14 @@ test("the persistent state composes and serves its routes with fakes, without th
     assert.match(quantizing.error, /no model host is attached/);
     const status = await (await state.routes.memory.handle(get("/api/memory/status"))).json();
     assert.deepEqual([status.ok, status.enabled, status.root], [false, false, memoryPaths.vault]);
-    assert.equal(await state.memorySurface(), undefined);
     assert.ok(!existsSync(memoryPaths.vault), "reading memory status never initializes a vault");
-    assert.deepEqual(await (await state.routes.sessions.handle(get("/api/sessions/search?q=hello"))).json(), { ok: true, results: [] });
+    // The chat module runs in the state: its shipped paths, over the stores the embedder chose (an explicit path wins and is never created by a read), and its socket.
+    assert.deepEqual(await (await state.routes.appModules.handle(get("/api/sessions/search?q=hello"))).json(), { ok: true, results: [] });
+    assert.deepEqual(await (await state.routes.appModules.handle(get("/api/settings/tool-approvals"))).json(), { ok: true, alwaysAllow: [] });
+    assert.ok(!existsSync(chatPaths.sessionDir) && !existsSync(chatPaths.toolApprovalsFile));
+    const listener = { upgrade: () => false };
+    assert.equal((await state.sockets.upgrade(get("/ws/chat"), listener)).status, 426);
+    assert.equal(state.sockets.upgrade(get("/ws/other"), listener), null);
     assert.deepEqual(await (await state.routes.publishing.handle(get("/api/settings/hf-token"))).json(), { ok: true, hasToken: false });
     for (const group of ["models", "finetune"]) assert.equal(await state.routes[group].handle(get("/api/" + group + "/anything")), null);
     // Modules leasing the served model follow the attached host's port; none is lent before one attaches and after it detaches.
@@ -158,7 +161,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
         resident: () => [], async acquire() { throw new Error("unused"); }, async plan() {}, async unload() {}, pin() {}, unpin() {}, async preload() { this.used = true; },
         close() { return this.closing ??= (async () => { await Promise.resolve(); if (this.used) events.push("whisper close"); })(); } }) }));
     mock.module(lib + "routes.ts", () => ({ createModuleRoutes: () => group("modules") }));
-    let completionOptions, piOptions, managementOptions, artifactOptions, listenerInput, whisperProbe;
+    let completionOptions, managementOptions, artifactOptions, listenerInput, whisperProbe;
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) { completionOptions = options; whisperProbe = options.transcription;
       return { ...group("completions"), invalidateLibrary() { events.push("invalidate"); }, responseStats: () => ({}) }; } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: () => group("status") }));
@@ -167,26 +170,24 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes(options) { managementOptions = options; return group("management"); } }));
     mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes(_gateway, options) { artifactOptions = options; return group("adapterArtifacts"); } }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) { piOptions = options; return () => {}; } }));
     let bind = true;
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
       listenerInput = input; events.push("listener");
       if (!bind) { await input.closeEngine(); throw new Error("bind failed"); }
       let closing;
       return { server: { port: 1234 }, close: () => closing ??= (async () => {
-        await input.beforeDrain(); events.push("chat dispose"); events.push("drain"); await input.closeEngine(); })() };
+        await input.beforeDrain(); events.push("drain"); await input.closeEngine(); })() };
     } }));
     // A hand-built persistent state: every service the host needs, nothing reachable any other way.
-    const chatPaths = { cwd: "/unused", toolApprovalsFile: "/unused/approvals.json" };
-    const surface = { readOnly: true };
     const snapshot = () => [];
+    const sockets = { upgrade: () => null, websocket: {} };
     let link, detaches = 0, stateCloses = 0;
     const state = {
       web: () => null, downloads: { snapshot, active: [], start() {}, async close() {} }, responses: { size: 0 },
-      memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" }, chatPaths, sessionDir: "/unused/sessions",
-      storagePaths: { artifactRoot: "/unused/artifacts" }, memorySurface: async () => surface,
+      memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" },
+      storagePaths: { artifactRoot: "/unused/artifacts" }, sockets,
       events: createEventHub(),
-      routes: Object.fromEntries(["hub", "sessions", "memory", "jobs", "models", "appModules", "finetune", "publishing"].map(name => [name, group(name)])),
+      routes: Object.fromEntries(["hub", "memory", "jobs", "models", "appModules", "finetune", "publishing"].map(name => [name, group(name)])),
       attach(supplied) { link = supplied; events.push("attach"); return () => { detaches++; events.push("detach"); }; },
       async close() { stateCloses++; },
     };
@@ -205,22 +206,19 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     assert.deepEqual(events.slice(3), ["lease", "invalidate"]);
     // Persistent services arrive by parameter.
     assert.equal(completionOptions.downloads, snapshot); assert.equal(completionOptions.responseHistory, state.responses);
-    assert.equal(piOptions.memory, state.memorySurface); assert.equal(piOptions.downloadsSnapshot, snapshot);
-    assert.deepEqual(piOptions.paths, { ...chatPaths, sessionDir: "/unused/sessions" });
-    assert.equal(await piOptions.memory(), surface);
-    assert.equal(managementOptions.toolApprovalsFile, chatPaths.toolApprovalsFile); assert.deepEqual(managementOptions.servedModelPaths(), ["/unused"]);
+    assert.deepEqual(managementOptions.servedModelPaths(), ["/unused"]);
     assert.equal(artifactOptions.outputRoot, "/unused/artifacts");
-    assert.equal(listenerInput.web, state.web);
+    assert.equal(listenerInput.web, state.web); assert.equal(listenerInput.sockets, state.sockets, "the listener upgrades the state's module sockets");
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
-    assert.deepEqual(visited, ["status", "cacheAdmin", "adapters", "adapterArtifacts", "completions", "hub", "sessions", "management", "modules", "memory", "jobs", "models", "appModules", "finetune", "publishing"]);
+    assert.deepEqual(visited, ["status", "cacheAdmin", "adapters", "adapterArtifacts", "completions", "hub", "management", "modules", "memory", "jobs", "models", "appModules", "finetune", "publishing"]);
     // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
-    // with Whisper alongside them before drain, chat and HTTP drain, Whisper again (idempotent, catches a
+    // with Whisper alongside them before drain, HTTP drain (the chat's sockets closed with the state's modules, in the hook), Whisper again (idempotent, catches a
     // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.
     assert.deepEqual(await whisperProbe(), { id: "org/whisper", resident: false });
     events.length = 0;
     await host.close(); await host.close();
-    assert.deepEqual(events, ["timer stop", "jobs close", "downloads close", "whisper close", "chat dispose", "drain", "engine close", "cache close", "model close", "allocator 77", "detach"]);
+    assert.deepEqual(events, ["timer stop", "jobs close", "downloads close", "whisper close", "drain", "engine close", "cache close", "model close", "allocator 77", "detach"]);
     assert.equal(limit, 77); assert.equal(detaches, 1);
     assert.equal(stateCloses, 0, "the host never closes the persistent state");
     // Startup failure after the link is lent detaches it and restores the process without touching the state.
@@ -254,7 +252,6 @@ test("two sequential model hosts share one persistent state; only the app closes
       return { handle: async () => null, invalidateLibrary() {}, responseStats: () => ({}) }; } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => {} }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/jobs/host.ts", () => ({ createJobHost() { let closing;
       return { signal: new AbortController().signal, ensureStore() { throw new Error("unused"); }, submit() {}, submitTask() {},

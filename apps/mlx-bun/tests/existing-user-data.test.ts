@@ -32,7 +32,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
   statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, sep } from "node:path";
-import { sessionEntries } from "../src/chat/session-files";
+import { sessionEntries } from "@mlx-bun/module-chat";
 import type { UserDataReport } from "./support/user-data-probe";
 
 const APP = join(import.meta.dir, "..");

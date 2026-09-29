@@ -3,11 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { downloadsSnapshot, gitBlobSha1 } from "@mlx-bun/hub/download";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import { createDownloadOwner, DuplicateDownloadError } from "../../src/hub/downloads";
 import { createHubRoutes } from "../../src/server/hub-routes";
 import { startServer } from "../../src/server/start";
 
-const idleChat = () => ({ async start() {}, async handle() {}, dispose() {} });
+const noSockets = createModuleSockets([]);
 /** Completion hooks run inside the transfer's settlement; wait for it to leave the map. */
 async function drained(owner: { readonly active: readonly string[] }) { while (owner.active.length) await Bun.sleep(1); }
 
@@ -72,7 +73,7 @@ test("the listener joins a web-started transfer through beforeDrain before relea
     options.signal!.addEventListener("abort", () => { events.push("aborted"); setTimeout(() => { events.push("settled"); reject(options.signal!.reason); }, 10); });
   }) });
   const hub = createHubRoutes({ downloads: owner });
-  const app = await startServer({ web: () => null, chat: idleChat, routes: hub,
+  const app = await startServer({ web: () => null, sockets: noSockets, routes: hub,
     beforeDrain: () => owner.close(), async closeEngine() { events.push("engine-close"); } }, { port: 0 });
   try {
     const started = await fetch(new URL("/api/hub/download", app.server.url), { method: "POST",

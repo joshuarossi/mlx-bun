@@ -29,6 +29,11 @@ test("activation refuses what these hosts do not serve yet, stopping what it act
   events.length = 0;
   await expect(activateModules([module({ sockets: [{ id: "live", path: "/live", summary: "" }], activate: () => ({ sockets: { live: { message() {} } }, dispose() { events.push("module stop"); } }) })],
     services)).rejects.toThrow("this host does not serve socket /api/echo/live yet");
+  // A host that serves sockets (`createModuleSockets`) says so.
+  const serving = await activateModules([module({ sockets: [{ id: "live", path: "/live", summary: "" }], activate: () => ({ sockets: { live: { message() {} } } }) })],
+    { bindings: services.bindings, sockets: true });
+  expect(serving.sockets.map(socket => socket.path)).toEqual(["/api/echo/live"]);
+  await serving.stop();
   await expect(activateModules([module({ jobs: [{ kind: "echo.run", isolation: "task", gpu: "none" }], activate: () => ({ jobs: { "echo.run": async () => {} }, dispose() { events.push("module stop"); } }) })],
     services)).rejects.toThrow("this host does not serve job kind echo.run yet");
   expect(events).toEqual(["module stop", "module stop"]);

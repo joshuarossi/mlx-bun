@@ -84,7 +84,7 @@ export function checkManifests(modules: readonly AppModule[], options: ManifestO
     for (const socket of module.sockets ?? []) {
       if (socketIds.has(socket.id)) problems.push(`${at}: duplicate socket id "${socket.id}"`);
       socketIds.add(socket.id);
-      claim("GET", socket.path, mountedPath(id, socket.path), `socket "${socket.id}"`);
+      claim("GET", socket.path, mountedPath(id, socket.path, socket.mount), `socket "${socket.id}"`);
     }
 
     for (const verb of module.verbs ?? []) {

@@ -45,6 +45,8 @@ export function createDiscoveryRoutes(
   createRegistry: () => Pick<Registry, "scan" | "listCanonical" | "close"> = () => openRegistry(),
   /** Progress rows for `/downloads`; the default is the hub package's process tracker. */
   downloads?: () => readonly DownloadStatus[],
+  /** The server's own sampling defaults (`--temperature`, `--top-p`, `--top-k`): they win over the model's, as they do for a request that names none. */
+  serverDefaults: { temperature?: number; topP?: number; topK?: number } = {},
 ): DiscoveryRoutes {
   let libraryCache: { at: number; rows: unknown[] } | null = null;
 
@@ -141,9 +143,9 @@ export function createDiscoveryRoutes(
             : null;
           const created = Math.floor(startedAt / 1000);
           const genDefaults = {
-            temperature: ctx.genDefaults.temperature ?? null,
-            top_p: ctx.genDefaults.topP ?? null,
-            top_k: ctx.genDefaults.topK ?? null,
+            temperature: serverDefaults.temperature ?? ctx.genDefaults.temperature ?? null,
+            top_p: serverDefaults.topP ?? ctx.genDefaults.topP ?? null,
+            top_k: serverDefaults.topK ?? ctx.genDefaults.topK ?? null,
           };
           const capabilities = binding.discovery;
           const stt = await transcription();

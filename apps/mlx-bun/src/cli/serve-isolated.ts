@@ -1,6 +1,6 @@
 // The isolated serve composition (`--isolate`): this process keeps the
-// persistent CPU state (serve-state.ts), the web app, Pi chat, the Responses
-// history, and the managed jobs, and proxies every model-scoped route to a
+// persistent CPU state (serve-state.ts: the web app, the chat module, the
+// Responses history, the managed jobs), and proxies every model-scoped route to a
 // worker process (worker-entry.ts) that composes the model host alone over a
 // Unix socket. Workers are spawned through the executable captured at startup
 // with a model this process resolved and the options it parsed, one per exact
@@ -16,8 +16,6 @@ import { fileURLToPath } from "node:url";
 import type { AppModule } from "@mlx-bun/app-core";
 import type { ModelRecord, Registry } from "@mlx-bun/hub/registry";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
-import { createPiBackend } from "../chat/pi-backend";
-import { PI_LOCAL_MODEL_ID } from "../chat/provider";
 import { createWorkerPool, type WorkerPool } from "../jobs/worker-pool";
 import { WORKER_PROTOCOL_VERSION } from "../jobs/worker-process";
 import { EngineUnavailableError, superviseWorker, type WorkerRestartBudget, type WorkerSupervisor } from "../jobs/worker-supervisor";
@@ -45,40 +43,6 @@ export interface IsolatedServeHooks {
   error?(line: string): void;
   /** The registry the pool resolves exact ids through; never scans or downloads. */
   createRegistry?(): Pick<Registry, "listCanonical" | "close">;
-}
-
-interface ServedModel {
-  contextWindow: number | undefined;
-  vision: boolean; audio: boolean; thinking: boolean; transcription: boolean;
-  genDefaults: { temperature: number | null; topP: number | null; topK: number | null };
-}
-
-/** What the direct host reads from the loaded context, over the worker's own
- * discovery surface: `/v1/models` for capabilities and generation defaults,
- * `/stats` for the enforced context window. Constant for the worker's life. */
-async function describeServedModel(engine: WorkerSupervisor, modelId: string, options: ServeOptions): Promise<ServedModel> {
-  const json = async (path: string) => {
-    const response = await engine.fetch(`http://engine${path}`);
-    if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`worker answered ${response.status} on ${path}`); }
-    return await response.json() as Record<string, unknown>;
-  };
-  const [models, stats] = await Promise.all([json("/v1/models"), json("/stats")]);
-  const rows = Array.isArray(models.data) ? models.data as Record<string, unknown>[] : [];
-  const served = rows.find(row => row.id === modelId) ?? rows[0] ?? {};
-  const defaults = (served.gen_defaults ?? {}) as Record<string, unknown>;
-  const capabilities = (served.capabilities ?? {}) as Record<string, unknown>;
-  const admission = (stats.admission ?? {}) as Record<string, unknown>;
-  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
-  return {
-    contextWindow: number(admission.enforced_context_tokens) ?? number(served.context_window),
-    vision: served.vision === true, audio: served.audio === true, thinking: served.reasoning === true,
-    transcription: capabilities.transcription === true,
-    genDefaults: {
-      temperature: options.request.defaultTemperature ?? number(defaults.temperature) ?? null,
-      topP: options.request.defaultTopP ?? number(defaults.top_p) ?? null,
-      topK: options.request.defaultTopK ?? number(defaults.top_k) ?? null,
-    },
-  };
 }
 
 /** Main's strict pool resolver: only an exact id the worker's `/v1/models`
@@ -122,7 +86,8 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
   let cleanup: (() => Promise<void>) | undefined = closeEngine;
   try {
     const workers = createWorkerPool({
-      cap: options.modelPool ?? 1, defaultModel: model, aliases: [PI_LOCAL_MODEL_ID],
+      // `local` is the id clients (chat, dataset generation) send for "the served model".
+      cap: options.modelPool ?? 1, defaultModel: model, aliases: ["local"],
       resolve: id => exactModel(id, hooks.createRegistry ?? (() => openRegistry())),
       socketFor: index => join(socketDir, index === 0 ? "engine.sock" : `engine-${index}.sock`),
       supervise: (record, socketPath) => superviseWorker({
@@ -144,40 +109,29 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const supervisor = await workers.ready;
     const modelId = supervisor.modelId ?? model.repoId;
     notice(`engine worker pid ${supervisor.pid} ready (socket ${supervisor.socketPath})`);
-    const served = await describeServedModel(supervisor, modelId, options);
     const responses = createResponsesClient(state.responses);
     const proxy = createProxyRoutes({ pool: workers, responses, downloads: () => state.downloads.snapshot(), modelId, startedAt: Date.now() });
-    // Tool-approval settings and hub GC are CPU work over the parent's own
-    // files; GC protects resident, queued/loading, and still-draining
-    // snapshots, with the task model's retained on the workers it reached.
-    const management = createManagementRoutes({ invalidateLibrary: proxy.invalidateLibrary,
-      toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: () => workers.servedPaths() });
+    // Hub GC is CPU work over the parent's own files; it protects resident,
+    // queued/loading, and still-draining snapshots, with the task model's
+    // retained on the workers it reached.
+    const management = createManagementRoutes({ invalidateLibrary: proxy.invalidateLibrary, servedModelPaths: () => workers.servedPaths() });
     const persistent = state.routes;
     // The persistent groups answer first, in the direct host's order among
     // themselves; the proxy takes every remaining path to a worker.
-    const routes: RouteGroup = { handle: async request => await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ??
+    const routes: RouteGroup = { handle: async request => await persistent.hub.handle(request) ??
       await management.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
       await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
-    let boundPort = options.port;
-    // Pi lives here and reaches the model over loopback through the proxy, so
+    // The chat module lives in the state and reaches the model through the served model host (over this listener's proxy), so
     // web chat survives a worker restart and reports its failures as errors.
-    // Its `local` model id is the pool's alias for the default worker.
-    const chat = createPiBackend({ port: () => boundPort, modelId,
-      memory: state.memorySurface,
-      paths: { ...state.chatPaths, sessionDir: state.sessionDir },
-      ...(served.contextWindow !== undefined ? { contextWindow: served.contextWindow } : {}),
-      readOnly: options.readOnly, vision: served.vision, audio: served.audio, thinking: served.thinking,
-      transcription: async () => served.transcription,
-      genDefaults: served.genDefaults, downloadsSnapshot: state.downloads.snapshot,
-    });
+    let boundPort = options.port;
     // Jobs lease every resident worker through the pool; loopback clients reach the workers through the proxy.
     detachLink = state.attach({ model: { id: modelId, bytes: model.sizeBytes }, get port() { return boundPort; },
       acquireExecutionLease: signal => workers.acquireExecutionLease(signal),
       invalidateLibrary: proxy.invalidateLibrary });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
-    const listener = await startServer({ routes, web: state.web, chat,
+    const listener = await startServer({ routes, web: state.web, sockets: state.sockets,
       // The app stops its producers (jobs, downloads) while the workers are alive,
       // then chat and HTTP drain, then every worker is drained and stopped.
       beforeDrain: () => state.close(),

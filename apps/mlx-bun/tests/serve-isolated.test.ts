@@ -4,10 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import type { ClientMessage, ServerMessage } from "../src/chat/protocol";
+import type { ClientMessage, ServerMessage } from "@mlx-bun/module-chat";
 import { parseCommand } from "../src/cli/args";
 import { startIsolatedServer } from "../src/cli/serve-isolated";
-import { parseServeOptions } from "../src/cli/serve";
+import { parseServeOptions, stateModuleSettings } from "../src/cli/serve";
+import { installedModules } from "../src/modules";
 
 // The isolated composition (src/cli/serve-isolated.ts) over the fake worker
 // (tests/fake-worker.ts): the parent never loads the engine, spawns the worker
@@ -117,7 +118,8 @@ test("the parent composes the persistent state and the proxy without the engine 
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => request =>
       new URL(request.url).pathname === "/" ? new Response("web") : null }));
     const { startIsolatedServer } = await import(app + "src/cli/serve-isolated.ts");
-    const { parseServeOptions } = await import(app + "src/cli/serve.ts");
+    const { parseServeOptions, stateModuleSettings } = await import(app + "src/cli/serve.ts");
+    const { installedModules } = await import(app + "src/modules.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const { executablePath } = await import(app + "src/jobs/executable.ts");
     const { decodeLaunch, encodeLaunch, WORKER_PROTOCOL_VERSION } = await import(app + "src/jobs/worker-process.ts");
@@ -129,7 +131,8 @@ test("the parent composes the persistent state and the proxy without the engine 
     const record = join(root, "launches.jsonl");
     const notices = [];
     const env = { FAKE_WORKER_RECORD: record, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
-    const running = await startIsolatedServer(model, options, { entry: process.env.FAKE_WORKER, env, restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice: line => notices.push(line) });
+    const modules = await installedModules("state", stateModuleSettings(options));
+    const running = await startIsolatedServer(model, options, { modules, entry: process.env.FAKE_WORKER, env, restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, notice: line => notices.push(line) });
     // A failed assertion still closes the server, stopping its workers and removing their sockets.
     try {
       // The spawn: the captured executable, the entry, and the launch record with the model pinned and the options serialized (Infinity intact, the flag the parent's).
@@ -229,7 +232,8 @@ const memoryPreamble = `
     return { implemented: true, stages: ["entity", "route"], note: "probe" };
   } }));
   const { startIsolatedServer } = await import(app + "src/cli/serve-isolated.ts");
-  const { parseServeOptions } = await import(app + "src/cli/serve.ts");
+  const { parseServeOptions, stateModuleSettings } = await import(app + "src/cli/serve.ts");
+  const { installedModules } = await import(app + "src/modules.ts");
   const { parseCommand } = await import(app + "src/cli/args.ts");
   const until = async (check, what) => { const end = Date.now() + 10000; while (!await check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(10); } };
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -241,7 +245,7 @@ const memoryPreamble = `
   const eventsFile = join(root, "events.jsonl"), lines = [];
   const started = [];
   const start = async env => {
-    const running = await startIsolatedServer(records[0], options, { entry: process.env.FAKE_WORKER,
+    const running = await startIsolatedServer(records[0], options, { modules: await installedModules("state", stateModuleSettings(options)), entry: process.env.FAKE_WORKER,
       env: { FAKE_WORKER_EVENTS: eventsFile, MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1", ...env },
       restarts: { max: 1, windowMs: 60_000, delayMs: 0 }, createRegistry: () => ({ listCanonical: () => records, close() {} }),
       notice: line => lines.push(line), log: line => lines.push(line), error: line => lines.push(line) });
@@ -444,7 +448,8 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
   const notices: string[] = [], workerLog: string[] = [];
   const tmp = privateTmp(root);
-  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
+  const modules = await installedModules("state", stateModuleSettings(options));
+  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { modules, entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
     notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const engine = async () => await (await fetch(new URL("/engine", base))).json() as { state: string; pid: number | null; restarts: number };
@@ -454,7 +459,7 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   const chat = openChat(base);
   let leftover: string[] = ["not closed"];
   try {
-    // The ready frame describes the worker's model through the proxy: capabilities and defaults from /v1/models, the option's temperature on top.
+    // The ready frame describes the worker's model through the proxy: capabilities and defaults from /v1/models (the worker's discovery applies the server's own sampling options).
     await chat.waitFor(() => chat.frames.some(frame => frame.type === "ready"), "ready");
     expect(chat.frames.find(frame => frame.type === "ready")).toEqual({ type: "ready", model: "org/model", vision: false, audio: false, thinking: false,
       genDefaults: { temperature: 0, topP: 0.9, topK: null }, transcription: false });
@@ -511,7 +516,8 @@ test("the model pool through the real composition: exact ids reach their own wor
   const records = ["org/model", "org/second", "org/third"].map(id => ({ ...model(root), repoId: id, path: join(root, id.split("/")[1]!) }) as ModelRecord);
   const notices: string[] = [], workerLog: string[] = [];
   const tmp = privateTmp(root);
-  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: workerEnv, restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
+  const modules = await installedModules("state", stateModuleSettings(options));
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { modules, entry, env: workerEnv, restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
     createRegistry: () => ({ listCanonical: () => records, close() {} }),
     notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   const base = `http://127.0.0.1:${running.port}`;

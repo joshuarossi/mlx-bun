@@ -63,7 +63,8 @@ export function createCompletionRoutes(engine: {
     options.defaultAdapter, engine.preparation, options.buildPrompt);
   const text = new TextCompletionStage(ctx, prep, options.contextLimit, options.defaultGeneratedTokens, options.defaultAdapter, engine.preparation);
   const inference = new InferenceStage(new CompletionExecutor(engine.completion));
-  const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), options.transcription, undefined, options.downloads);
+  const discovery = createDiscoveryRoutes(ctx, engine.binding, Date.now(), options.transcription, undefined, options.downloads,
+    { temperature: options.defaultTemperature, topP: options.defaultTopP, topK: options.defaultTopK });
   const applyCacheSession = (body: ChatRequestParams, request: Request, original: unknown = body) => {
     const fields = original as { session_id?: unknown; prompt_cache_key?: unknown };
     const session = typeof fields.session_id === "string" ? fields.session_id :

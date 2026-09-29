@@ -2,14 +2,14 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChatBackendFactory } from "../../src/chat/backend";
+import { createModuleSockets } from "@mlx-bun/app-services";
 import type { MemoryCompletionClient, MemoryCompletionRequest } from "../../src/memory/model";
 import { startServer } from "../../src/server/start";
 import { createWorkerRoutes } from "../../src/server/worker-routes";
 
 // The worker's admin surface over a real Unix socket, with a fake exclusive
 // lease standing in for the gateway. The worker entry test composes the real host.
-const idle: ChatBackendFactory = () => ({ async start() {}, async handle() {}, dispose() {} });
+const idle = createModuleSockets([]);
 
 /** One holder at a time; waiters queue in order and leave the queue on abort. */
 function exclusiveLease() {
@@ -49,7 +49,7 @@ const model = (slow?: Promise<void>) => ({ async handle(request: Request) {
 test("the worker surface reports readiness, owns a lease per connection, and answers ahead of the model routes", async () => {
   const socket = socketDir(), gate = exclusiveLease();
   const admin = createWorkerRoutes({ modelId: "org/model", pid: 42, acquireExecutionLease: signal => gate.acquire(signal) });
-  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
   try {
     expect(app.server.port).toBeUndefined();
@@ -89,7 +89,7 @@ test("the worker surface reports readiness, owns a lease per connection, and ans
 test("drain stops admission, waits for admitted requests and the execution lease within a deadline, and reports either way", async () => {
   const socket = socketDir(), gate = exclusiveLease(), slow = Promise.withResolvers<void>();
   const admin = createWorkerRoutes({ modelId: "org/model", pid: 7, acquireExecutionLease: signal => gate.acquire(signal), drainTimeoutMs: 5000 });
-  const app = await startServer({ routes: admin.wrap(model(slow.promise)), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const app = await startServer({ routes: admin.wrap(model(slow.promise)), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
   const drain = async (body?: unknown) => (await get("/admin/drain", { method: "POST", ...(body === undefined ? {} : { body: JSON.stringify(body) }) })).json();
   try {
@@ -127,7 +127,7 @@ test("drain stops admission, waits for admitted requests and the execution lease
 test("closing the worker surface ends held lease connections so the listener can drain, and refuses new leases", async () => {
   const socket = socketDir(), gate = exclusiveLease();
   const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: signal => gate.acquire(signal) });
-  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
   try {
     const leased = await get("/admin/lease", { method: "POST" });
@@ -154,7 +154,7 @@ test("lease failures answer 503, a caller that left answers 499, and the ordinar
   const gone = new AbortController(); gone.abort();
   const left = await failing.wrap(model()).handle(new Request("http://worker/admin/lease", { method: "POST", signal: gone.signal }));
   expect(left?.status).toBe(499);
-  const app = await startServer({ routes: model(), web: () => null, chat: idle, async closeEngine() {} }, { port: 0 });
+  const app = await startServer({ routes: model(), web: () => null, sockets: idle, async closeEngine() {} }, { port: 0 });
   try {
     for (const path of ["/admin/lease", "/admin/drain"]) {
       const response = await fetch(new URL(path, app.server.url), { method: "POST" });
@@ -277,7 +277,7 @@ test("the private memory route runs one call or batch on the task model under th
   const socket = socketDir(), gate = exclusiveLease(), events: string[] = [];
   const task = taskModel(gate, events);
   const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: logged(gate, events), memoryTaskModel: task });
-  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const post = (body: unknown, init: RequestInit = {}) => fetch("http://worker/admin/memory/complete", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body), ...init, unix: socket.unix } as RequestInit);
   try {
     const batch = await post(call("completeBatch", ["a", "b", "c"]));
@@ -326,7 +326,7 @@ test("a parent disconnect aborts every row and joins them before the lease is re
   const socket = socketDir(), gate = exclusiveLease(), events: string[] = [];
   const task = taskModel(gate, events, 20);
   const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: logged(gate, events), memoryTaskModel: task });
-  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const post = (body: unknown, init: RequestInit = {}) => fetch("http://worker/admin/memory/complete", { method: "POST", body: JSON.stringify(body), ...init, unix: socket.unix } as RequestInit);
   const health = async () => await (await fetch("http://worker/health", { unix: socket.unix } as RequestInit)).json() as { in_flight: number; leases: number };
   try {
@@ -365,7 +365,7 @@ test("a managed job holding the worker's execution lease delays a memory call, l
   const socket = socketDir(), gate = exclusiveLease(), events: string[] = [];
   const task = taskModel(gate, events);
   const admin = createWorkerRoutes({ modelId: "org/model", acquireExecutionLease: logged(gate, events), memoryTaskModel: task });
-  const app = await startServer({ routes: admin.wrap(model()), web: () => null, chat: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
+  const app = await startServer({ routes: admin.wrap(model()), web: () => null, sockets: idle, beforeDrain: () => admin.close(), async closeEngine() {} }, { unix: socket.unix });
   const get = (path: string, init: RequestInit = {}) => fetch(`http://worker${path}`, { ...init, unix: socket.unix } as RequestInit);
   const post = (body: unknown) => get("/admin/memory/complete", { method: "POST", body: JSON.stringify(body) });
   try {

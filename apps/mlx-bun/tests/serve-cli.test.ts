@@ -1,6 +1,9 @@
 import { configureRuntime } from "@mlx-bun/inference/runtime/config";
 import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import { commandInvocation, parseCommand } from "../src/cli/args";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
@@ -325,10 +328,10 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     const app = ${JSON.stringify(app)};
     const events = [], remembered = [];
     const memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
-    const memorySurface = { readOnly: true, toolNames: [], customTools: [], skillPaths: [], hint: "memory" };
-    const chatPaths = { toolApprovalsFile: "/unused/approvals.json", sessionDir: ${JSON.stringify(sessionDir) ?? "undefined"} };
-    const { defaultSessionDir } = await import(app + "src/chat/session-files.ts");
-    let sessionsDirectory;
+    // The agent directory is explicit so nothing is created; the sessions directory is explicit or the chat module's default under HOME.
+    const chatPaths = { toolApprovalsFile: "/unused/approvals.json", agentDir: "/unused/agent", sessionDir: ${JSON.stringify(sessionDir) ?? "undefined"} };
+    const { join } = await import("node:path");
+    const chatModule = app + "../../packages/module-chat/src/";
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 65536 } } },
       memoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048, totalBytes: 1e9 }, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
@@ -365,19 +368,11 @@ for (const [sessionDir, jobPaths, expectedStore] of [
       events.push("routes"); return { handle: async () => null, invalidateLibrary() {} };
     } }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes(options) {
-      assert.equal(options.toolApprovalsFile, chatPaths.toolApprovalsFile);
       assert.deepEqual(options.servedModelPaths(), ["/unused"]); assert.equal(typeof options.invalidateLibrary, "function");
       return { handle: async () => null };
     } }));
-    mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async (root, skills) => {
-      assert.equal(root, memoryPaths.vault); assert.equal(skills, memoryPaths.skills); return memorySurface;
-    } }));
     mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes(options) {
       assert.equal(options.root(), memoryPaths.vault); return { handle: async () => null };
-    } }));
-    mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes(directory) {
-      sessionsDirectory = directory; assert.equal(directory, chatPaths.sessionDir ?? defaultSessionDir());
-      return { handle: async () => null };
     } }));
     // Storage seams: the job store, credential file, and artifact root follow composition, not HOME.
     const storagePaths = { ...${JSON.stringify(jobPaths)}, credentialsFile: "/unused/hf.json", artifactRoot: "/unused/artifacts" };
@@ -392,11 +387,11 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     mock.module(app + "src/server/adapter-artifact-routes.ts", () => ({ createAdapterArtifactRoutes(_gateway, options) {
       assert.equal(options.outputRoot, storagePaths.artifactRoot); return { handle: async () => null }; } }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) {
-      assert.equal(typeof options.memory, "function"); memoryCallback = options.memory;
-      // The served model's facts come from the host when a chat connects.
-      assert.equal(options.model().contextWindow, 8192); assert.equal(options.readOnly, true); assert.deepEqual(options.paths, { ...chatPaths, sessionDir: sessionsDirectory }); return () => {};
-    } }));
+    // The chat module runs in the persistent state and builds its Pi backend when a socket connects: read-only policy from the options,
+    // its stores from the explicit paths or its storage entries, tools from the registry, the model through the model host.
+    let piOptions;
+    mock.module(chatModule + "pi-backend.ts", () => ({ createPiBackend(options) { piOptions = options;
+      return () => ({ async start() {}, async handle() {}, dispose() {} }); } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => {
       listenerInput = input; events.push("listener");
       return { server: { port: 1234 }, close: async () => { await input.beforeDrain(); await input.closeEngine(); } };
@@ -408,16 +403,23 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     });
     assert.equal(running.port, 1234);
     assert.equal(typeof running.downloads.start, "function");
-    assert.equal(await memoryCallback(), memorySurface);
     assert.deepEqual(events, ["continuation", "engine", "routes", "listener"]);
+    // A chat connects through the listener's module sockets.
+    await listenerInput.sockets.websocket.open({ data: { path: "/ws/chat", request: new Request("http://127.0.0.1/ws/chat") }, send() {}, close() {} });
+    assert.equal(piOptions.readOnly, true);
+    assert.deepEqual(piOptions.paths, { agentDir: "/unused/agent", sessionDir: chatPaths.sessionDir ?? join(process.env.HOME, ".mlx-bun", "sessions"), toolApprovalsFile: chatPaths.toolApprovalsFile });
+    assert.equal(typeof piOptions.model, "function"); assert.equal(await piOptions.memory(), undefined, "no vault, so memory offers no tool");
     storeFactory();
     assert.equal(events.pop(), ${JSON.stringify(expectedStore)});
     await running.close();
     assert.deepEqual(events.slice(-4), ["timer stop", "jobs close", "cache close", "model close"]);
   `;
-  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
-    env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });
+  const home = mkdtempSync(join(tmpdir(), "mlx-serve-cli-home-"));
+  const environment: Record<string, string | undefined> = { ...process.env, HOME: home, MLX_BUN_LIBMLXC: "/nonexistent" };
+  delete environment.MLX_BUN_HOME;
+  const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe", env: environment as Record<string, string> });
   const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+  rmSync(home, { recursive: true, force: true });
   expect(stderr).toBe(""); expect(code).toBe(0);
 });
 
@@ -512,11 +514,8 @@ test("startup wires the memory budget, runtime context, allocator limit, expert 
     } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes(input) { statusBudget = input.memoryBudgetBytes; return { handle: async () => null }; } }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async () => ({}) }));
     mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend: () => () => {} }));
     // Like the real listener, close is idempotent: one drain and one engine release.
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing;
       return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await input.closeEngine(); })() }; } }));
@@ -710,7 +709,6 @@ test("incompatible paged startup closes caches and the loaded model before engin
       createAppEngine: async () => { events.push("engine"); throw new Error("must not construct engine"); },
     }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend() { throw new Error("must not construct chat"); } }));
     mock.module(app + "src/server/start.ts", () => ({ startServer() { events.push("listener"); throw new Error("must not bind"); } }));
     const { parseServeOptions, startModelServer } = await import(app + "src/cli/serve.ts");
     const options = parseServeOptions({ values: { "paged-kv": true, "force-wire": true }, positionals: [] });
@@ -739,7 +737,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)}, lib = app + "../../packages/app-services/src/";
     const events = [], loads = [];
-    let found = null, discovery, piProbe, listenerInput, drain;
+    let found = null, discovery, listenerInput, drain;
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { promptCache: { totalBytes: 0 }, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
@@ -762,13 +760,10 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
       discovery = options.transcription; return { handle: async () => null, invalidateLibrary() {} };
     } }));
-    mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) { piProbe = options.transcription; return () => {}; } }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class { remember() {} } }));
     mock.module(app + "src/server/status-routes.ts", () => ({ createStatusRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/server/management-routes.ts", () => ({ createManagementRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/memory/surface.ts", () => ({ createMemorySurface: async () => ({}) }));
     mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
-    mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
     mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing; listenerInput = input;
       return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await drain?.(); await input.closeEngine(); })() }; } }));
@@ -784,10 +779,9 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     options.whisper = { ...options.whisper, modelDir: "/unused/whisper", modelId: "mlx-community/whisper-large-v3-turbo" };
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
-    // Lazy: nothing loads until a take asks; the discovery and chat probes share the one companion without loading it.
+    // Lazy: nothing loads until a take asks; discovery (which the chat reads its speech-to-text flag from) sees the one companion without loading it.
     assert.deepEqual(events, []);
     assert.deepEqual(await discovery(), { id: "mlx-community/whisper-large-v3-turbo", resident: false });
-    assert.equal(await piProbe(), true);
     assert.ok(!events.includes("registry lookup"), "an explicit checkpoint never scans the registry");
     // Takes run under the gateway's exclusive lock, on the explicit checkpoint, and the parsed policy applies: resident stays loaded.
     const first = await take();
@@ -795,7 +789,6 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     assert.equal((await first.json()).mlx_bun.model, "mlx-community/whisper-large-v3-turbo");
     assert.deepEqual(events, ["load /unused/whisper", "lock", "decode 16000 en"]);
     assert.deepEqual(await discovery(), { id: "mlx-community/whisper-large-v3-turbo", resident: true });
-    assert.equal(await piProbe(), true);
     assert.deepEqual({ ...await unload(), last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 1, last_load_ms: 0, idle_unload_sec: null });
     events.length = 0;
     await running.close();
@@ -822,7 +815,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     events.length = 0;
     delete options.whisper;
     const bare = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
-    assert.equal(await discovery(), null); assert.equal(await piProbe(), false);
+    assert.equal(await discovery(), null);
     const unavailable = await take();
     assert.equal(unavailable.status, 503); assert.equal((await unavailable.json()).error.type, "model_unavailable");
     assert.deepEqual(events, ["registry lookup"]);
@@ -880,9 +873,9 @@ test("the transcription-only server preloads on request, serves audio and discov
         "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id", "GET /v1/models", "GET /health", "GET /stats"]);
       const unloaded = await (await fetch(base + "/admin/transcription/unload", { method: "POST" })).json();
       assert.deepEqual({ ...unloaded, last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 0, last_load_ms: 0, idle_unload_sec: 5 });
-      // No chat model, no web app, no chat completions: 404s, never a placeholder.
-      for (const path of ["/", "/v1/chat/completions", "/api/hub/local"]) assert.equal((await fetch(base + path, { method: path === "/" ? "GET" : "POST" })).status, 404);
-      assert.equal((await fetch(base + "/ws/chat")).status, 426);
+      // No chat model, no web app, no chat completions, no chat socket (no module here declares one): 404s, never a placeholder.
+      for (const path of ["/", "/v1/chat/completions", "/api/hub/local", "/ws/chat"]) assert.equal((await fetch(base + path, { method: path === "/" ? "GET" : "POST" })).status, 404);
+      assert.equal((await fetch(base + "/ws/chat")).status, 404);
       assert.throws(() => running.downloads.start("org/x"), /owns no downloads/);
     } finally { await running.close(); }
     assert.deepEqual(events, ["load /unused/whisper", "close /unused/whisper"]);

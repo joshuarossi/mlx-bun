@@ -11,6 +11,8 @@ export { createHostServices } from "./host";
 export type { HostServices, HostServicesOptions, WhisperServing } from "./host";
 export { createModuleRoutes } from "./routes";
 export type { ModuleRoutes } from "./routes";
+export { createModuleSockets } from "./sockets";
+export type { ModuleSocketData, ModuleSockets, Upgrader } from "./sockets";
 export { createStorage } from "./storage";
 export { plainTerminal } from "./terminal";
 export { parseVerb, positionalUsage, verbArguments, verbHelp, verbUsage } from "./verbs";

@@ -119,7 +119,7 @@ export async function loadModules(modules: readonly AppModule[], options: LoadOp
       for (const spec of module.routes ?? [])
         routes.push({ moduleId: module.id, spec, path: mountedPath(module.id, spec.path, spec.mount), handler: live.routes.get(spec.id)! });
       for (const spec of module.sockets ?? [])
-        sockets.push({ moduleId: module.id, spec, path: mountedPath(module.id, spec.path), handler: live.sockets.get(spec.id)! });
+        sockets.push({ moduleId: module.id, spec, path: mountedPath(module.id, spec.path, spec.mount), handler: live.sockets.get(spec.id)! });
       for (const spec of module.verbs ?? []) verbs.set(spec.name, { moduleId: module.id, spec, handler: live.verbs.get(spec.name)! });
       for (const spec of module.jobs ?? []) jobs.set(spec.kind, { moduleId: module.id, spec, runner: live.jobs.get(spec.kind)! });
       for (const entry of module.storage ?? []) storage.push({ ...entry, moduleId: module.id });

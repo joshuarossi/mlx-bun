@@ -22,7 +22,7 @@ import type { RouteGroup } from "./serve-state";
 
 /** The serving policy one host applies to every unit: serve's options minus the loader's and the CLI process's own. */
 export type ContextHostOptions = Pick<ServeOptions, "port" | "capacity" | "contextLimit" | "defaultGeneratedTokens" |
-  "kvBudgetBytes" | "memoryBudgetBytes" | "modelBudgetBytes" | "whisper" | "readOnly" | "cache" | "request"> & {
+  "kvBudgetBytes" | "memoryBudgetBytes" | "modelBudgetBytes" | "whisper" | "cache" | "request"> & {
   /** The interface to bind; null binds Bun's default, every interface. */
   hostname: string | null;
 };
@@ -48,16 +48,6 @@ export interface ContextHost {
   loadMs?: number;
 }
 
-/** What chat needs to describe the model it talks to. */
-export interface ServedModelFacts {
-  readonly modelId: string;
-  readonly contextWindow: number;
-  readonly vision: boolean;
-  readonly audio: boolean;
-  readonly thinking: boolean;
-  readonly genDefaults: { readonly temperature: number | null; readonly topP: number | null; readonly topK: number | null };
-}
-
 /** Shared by every unit of one host. */
 export interface UnitShared {
   readonly responses: ResponseHistory;
@@ -78,7 +68,6 @@ export interface UnitShared {
 export interface ServingUnit extends ResidentUnit {
   readonly context: LoadedModelContext;
   readonly artifactPath: string;
-  readonly facts: ServedModelFacts;
   /** Everything model-scoped: status, cache administration, adapters, adapter artifacts, and the wire routes. */
   readonly routes: RouteGroup;
   invalidateLibrary(): void;
@@ -159,18 +148,9 @@ export async function createServingUnit(context: LoadedModelContext, options: Co
     // Weights plus the KV and working set of a typical context, plus the RAM prefix cache it holds now.
     const reserve = context.memoryPlan ? 0 : servingReserveBytes(context.model.config, context.model.weightsBytes,
       { expertsBytes: input.artifact?.expertsBytes, kvScheme: caches.resolvedKvScheme.fitOptions });
-    const facts: ServedModelFacts = { modelId: context.modelId,
-      contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
-      vision: !!(context.vision || context.loadVision), audio: !!(context.audio || context.loadAudio),
-      thinking: context.template?.supportsThinking ?? false,
-      genDefaults: {
-        temperature: options.request.defaultTemperature ?? context.genDefaults.temperature ?? null,
-        topP: options.request.defaultTopP ?? context.genDefaults.topP ?? null,
-        topK: options.request.defaultTopK ?? context.genDefaults.topK ?? null,
-      } };
     let closing: Promise<UnitClosed> | undefined;
     const unit: ServingUnit = {
-      id: context.modelId, context, artifactPath, facts, routes, gateway: engine.gateway,
+      id: context.modelId, context, artifactPath, routes, gateway: engine.gateway,
       // Saved state was found for this model: a request can resume from it.
       resumed: (caches.checkpoints?.entries ?? 0) > 0,
       operations: ["generate", ...(binding.discovery.embeddings ? ["embed" as const] : [])],

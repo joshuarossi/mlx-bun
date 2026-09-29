@@ -3,10 +3,16 @@ import { createMemoryRoutes } from "../src/server/memory-routes";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createModuleSockets } from "@mlx-bun/app-services";
+import { createChatSocket, type ChatBackendFactory } from "@mlx-bun/module-chat";
 import { startServer } from "../src/server/start";
-import type { ChatBackendFactory } from "../src/chat/backend";
 
-const idle: ChatBackendFactory = () => ({ async start() {}, async handle() {}, dispose() {} });
+/** The chat module's socket on the listener, as the app's state serves it: `dispose` is the module's stop, which the app runs in its drain. */
+function chatSocket(factory: ChatBackendFactory) {
+  const chat = createChatSocket(factory);
+  return { sockets: createModuleSockets([{ path: "/ws/chat", handler: chat }]), dispose: () => chat.dispose() };
+}
+const idle = chatSocket(() => ({ async start() {}, async handle() {}, dispose() {} })).sockets;
 function connection(url: URL) {
   const socket = new WebSocket(new URL("/ws/chat", url).href.replace("http:", "ws:"));
   const opened = new Promise<void>((resolve, reject) => {
@@ -23,7 +29,7 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
   const app = await startServer({
     web: request => new URL(request.url).pathname === "/" ? new Response("web") : null,
     routes: { async handle(request) { return await memory.handle(request) ?? (new URL(request.url).pathname === "/health" ? Response.json({ status: "ok" }) : null); } },
-    chat: idle, async closeEngine() { disposals++; },
+    sockets: idle, async closeEngine() { disposals++; },
   }, { port: 0 });
   try {
     expect(await (await fetch(app.server.url)).text()).toBe("web");
@@ -46,13 +52,14 @@ test("the mounted app serves implemented routes, explicit migration gaps, and un
 
 test("live WebSocket chat handles frames and cancels before engine disposal", async () => {
   const events: string[] = [];
+  const chat = chatSocket(send => ({
+    async start() { events.push("start"); },
+    async handle(message) { events.push(message.type); send({ type: "text_delta", delta: "ready" }); },
+    async dispose() { events.push("chat-close"); },
+  }));
   const app = await startServer({
     web: () => null, routes: { async handle() { return null; } },
-    chat: send => ({
-      async start() { events.push("start"); },
-      async handle(message) { events.push(message.type); send({ type: "text_delta", delta: "ready" }); },
-      async dispose() { events.push("chat-close"); },
-    }),
+    sockets: chat.sockets, beforeDrain: () => chat.dispose(),
     async closeEngine() { events.push("engine-close"); },
   }, { port: 0 });
   const client = connection(app.server.url);
@@ -70,7 +77,7 @@ test("bind failure transfers cleanup ownership without requiring a returned serv
   const occupied = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
   let disposed = 0;
   try {
-    await expect(startServer({ web: () => null, routes: { async handle() { return null; } }, chat: idle,
+    await expect(startServer({ web: () => null, routes: { async handle() { return null; } }, sockets: idle,
       async closeEngine() { disposed++; },
     }, { port: occupied.port })).rejects.toThrow();
     expect(disposed).toBe(1);
@@ -79,7 +86,7 @@ test("bind failure transfers cleanup ownership without requiring a returned serv
 
 test("engine cleanup errors are reported once after the listener has stopped", async () => {
   let disposed = 0;
-  const app = await startServer({ web: () => null, routes: { async handle() { return null; } }, chat: idle,
+  const app = await startServer({ web: () => null, routes: { async handle() { return null; } }, sockets: idle,
     async closeEngine() { disposed++; throw new Error("cache flush failed"); },
   }, { port: 0 });
   await expect(app.close()).rejects.toThrow("server cleanup failed");
@@ -92,7 +99,7 @@ test("shutdown stops background work then drains a delayed HTTP stream before re
   const events: string[] = [];
   let stream!: ReadableStreamDefaultController<Uint8Array>;
   const app = await startServer({
-    web: () => null, chat: idle,
+    web: () => null, sockets: idle,
     beforeDrain() { events.push("timer stop"); },
     routes: { async handle(request) {
       request.signal.addEventListener("abort", () => events.push("request-abort"), { once: true });
@@ -123,13 +130,14 @@ test("shutdown joins delayed chat work and reports cleanup failure after engine 
   const handled = Promise.withResolvers<void>();
   const finish = Promise.withResolvers<void>();
   const disposed = Promise.withResolvers<void>();
+  const chat = chatSocket(() => ({
+    async start() {},
+    async handle() { handled.resolve(); await finish.promise; events.push("late-cleanup"); },
+    dispose() { events.push("chat-close"); disposed.resolve(); throw new Error("chat cleanup failed"); },
+  }));
   const app = await startServer({
     web: () => null, routes: { async handle() { return null; } },
-    chat: () => ({
-      async start() {},
-      async handle() { handled.resolve(); await finish.promise; events.push("late-cleanup"); },
-      dispose() { events.push("chat-close"); disposed.resolve(); throw new Error("chat cleanup failed"); },
-    }),
+    sockets: chat.sockets, beforeDrain: () => chat.dispose(),
     async closeEngine() { events.push("engine-close"); },
   }, { port: 0 });
   const client = connection(app.server.url);
@@ -148,7 +156,7 @@ test("shutdown joins delayed chat work and reports cleanup failure after engine 
 
 
 test("the listener preserves handler 499 and 501 envelopes on the HTTP wire", async () => {
-  const app = await startServer({ web: () => null, chat: idle, async closeEngine() {},
+  const app = await startServer({ web: () => null, sockets: idle, async closeEngine() {},
     routes: { async handle(request) {
       const status = new URL(request.url).pathname === "/cancelled" ? 499 : 501;
       return Response.json({ error: { message: status === 499 ? "Request cancelled" : "unsupported execution" } }, { status });
@@ -165,7 +173,7 @@ test("the listener preserves handler 499 and 501 envelopes on the HTTP wire", as
 
 test("shutdown awaits producer cancellation before listener drain and engine release", async () => {
   const events: string[] = [], cancel = Promise.withResolvers<void>();
-  const app = await startServer({ web: () => null, routes: { async handle() { return new Response("ready"); } }, chat: idle,
+  const app = await startServer({ web: () => null, routes: { async handle() { return new Response("ready"); } }, sockets: idle,
     async beforeDrain() { events.push("cancel jobs"); await cancel.promise; events.push("jobs closed"); },
     async closeEngine() { events.push("engine-close"); },
   }, { port: 0 });
@@ -181,8 +189,9 @@ test("shutdown awaits producer cancellation before listener drain and engine rel
 
 test("failed chat startup closes its transport so graceful listener drain can finish", async () => {
   let disposed = 0;
+  const failing = chatSocket(() => ({ async start() { throw new Error("session failed"); }, async handle() {}, dispose() {} }));
   const app = await startServer({ web: () => null, routes: { async handle() { return null; } },
-    chat: () => ({ async start() { throw new Error("session failed"); }, async handle() {}, dispose() {} }),
+    sockets: failing.sockets, beforeDrain: () => failing.dispose(),
     async closeEngine() { disposed++; },
   }, { port: 0 });
   const client = connection(app.server.url);
@@ -195,7 +204,7 @@ test("a Unix listener replaces a stale socket file, narrows it to its owner, ign
   const dir = mkdtempSync(join(tmpdir(), "mlx-worker-")), unix = join(dir, "worker.sock");
   writeFileSync(unix, "stale");
   let disposals = 0;
-  const app = await startServer({ web: () => null, chat: idle, async closeEngine() { disposals++; },
+  const app = await startServer({ web: () => null, sockets: idle, async closeEngine() { disposals++; },
     routes: { async handle(request) { return new URL(request.url).pathname === "/ping" ? Response.json({ pong: true }) : null; } },
   }, { unix, port: 1, hostname: "203.0.113.1" });
   try {

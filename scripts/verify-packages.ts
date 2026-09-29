@@ -127,13 +127,14 @@ try {
     const { mkdtemp, mkdir, readFile, rm } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { createMemorySurface } = await import("./node_modules/mlx-bun/src/memory/surface.ts");
+    const { memoryChatTools } = await import("./node_modules/mlx-bun/src/memory/chat.ts");
+    const { materializeMemorySkill } = await import("./node_modules/mlx-bun/src/memory/skills.ts");
     const vault = await mkdtemp(join(tmpdir(), "mlx-packed-memory-"));
     try {
       await mkdir(join(vault, "articles"));
-      const surface = await createMemorySurface(vault, join(vault, "skills"));
-      if (!surface?.toolNames.includes("memory_section")) throw new Error("Missing packed memory tools");
-      const skill = await readFile(join(surface.skillPaths[0], "SKILL.md"), "utf8");
+      const paths = { vault, skills: join(vault, "skills") };
+      if (!memoryChatTools(paths).some(tool => tool.name === "memory_section")) throw new Error("Missing packed memory tools");
+      const skill = await readFile(join(materializeMemorySkill(paths.skills), "SKILL.md"), "utf8");
       if (!skill.includes("name: memory")) throw new Error("Missing packed memory skill");
     } finally { await rm(vault, { recursive: true, force: true }); }
   `], consumer);

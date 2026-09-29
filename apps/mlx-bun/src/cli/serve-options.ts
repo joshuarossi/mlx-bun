@@ -4,11 +4,10 @@
 import type { CacheServiceOptions } from "../engine/cache-services";
 import type { MemoryPlan } from "@mlx-bun/inference/contracts/portable";
 import type { RequestPrepOptions } from "../server/request-prep";
-import type { PiBackendPaths } from "../chat/pi-backend";
 import type { DraftKind } from "../engine/model-host";
 import type { DownloadOwner } from "../hub/downloads";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
-import type { AppStoragePaths } from "./serve-state";
+import type { AppStoragePaths, ChatPaths } from "./serve-state";
 
 export interface ServeOptions {
   query: string | null;
@@ -51,8 +50,8 @@ export interface ServeOptions {
   request: RequestPrepOptions;
   /** App-owned vault and skill destinations; not CLI flags. */
   memoryPaths?: { vault: string; skills: string };
-  /** App composition only; shares Pi storage with its settings routes. */
-  chatPaths?: PiBackendPaths;
+  /** App composition only; where the chat module's stores live instead of its storage entries. */
+  chatPaths?: ChatPaths;
   /** App-owned storage overrides for embedding and tests, like chatPaths and
    * memoryPaths: the job store, the saved Hugging Face token file, and the root
    * for adapter merge/export and fine-tune outputs. Defaults live under HOME. */

@@ -142,19 +142,24 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: models, train, benchmarks, chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets and quantize landed (their browser
-    pages, `web/browser/dataset.ts` and `web/browser/quantize.ts`, are still legacy pages that become
-    panels the `@mlx-bun/web-shell` mounts; quantize's calls the app's toast, push and library-refresh
-    helpers, which a panel gets through its connection or the shell instead). `/api/model/resolve-folder` stays in the app for the models module (the fine-tune
-    picker also calls it). Modules contribute to each other through the
-    `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
-    hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
-    when the first module that declares them lands (they refuse them until then); job runners are served
-    by any host that binds `jobs` (the app's job host runs `task` and, with quantize, `process` runners).
-    Exit per module: its domain leaves `apps/mlx-bun/src`, its browser page becomes its panel (the shell
-    mounts it; the app's legacy pages shrink), the app's domain map shrinks accordingly, and
-    served-surface inventories are unchanged.
+  - [ ] (d) Remaining modules, one PR each: models, train, benchmarks, memory (last, moved as is: the memory feature
+    stays deferred). Datasets, quantize and chat landed. Their browser pages, `web/browser/dataset.ts` and
+    `web/browser/quantize.ts`, are still legacy pages that become panels the `@mlx-bun/web-shell` mounts (quantize's calls the
+    app's toast, push and library-refresh helpers, which a panel gets through its connection or the shell instead).
+    `/api/model/resolve-folder` stays in the app for the models module (the fine-tune picker also calls it). Modules
+    contribute to each other through the `registry` service: memory's tools and guidance reach chat through `chat.tool` and
+    `chat.guidance` (`apps/mlx-bun/src/memory/chat.ts` is memory's contributor until it becomes a module). Chat is a
+    workspace panel; the pieces of the page that sit beside it stay the app's until their modules land: the memory
+    entry, consent card and provenance chips (`web/browser/memory-panel.ts`, wired through the panel's `host`), the settings
+    dialog's agent-tools section, and the model picker. Open in chat: its browser code carries its own markdown renderer
+    (the app keeps the part the memory panel needs, until memory moves), and the assistant's catalog of the host page's routes,
+    overlays and spotlight targets (`panel/ui-catalog.ts`, `APP_ROUTE_IDS`) is the chat's knowledge of this app: it should
+    come from contributions (`shell.nav`) once the shell lists them. The hold-to-talk mic (`panel/voice.ts`) stays in the
+    chat's composer and calls transcription's `/v1/audio/sessions` routes over HTTP. Job runners are served by any host that
+    binds `jobs` (the app's job host runs `task` and, with quantize, `process` runners); module sockets are served by the
+    app's persistent state. Exit per module: its domain leaves `apps/mlx-bun/src`, its browser page becomes its panel (the shell
+    mounts it; the app's legacy pages shrink), the app's domain map shrinks accordingly, and served-surface inventories are
+    unchanged.
   - [ ] (e) Model host: pool removal, events and the combined service. Residency, live switching, saved state and the
     model router landed (the default server swaps models in-process by memory fit), and the host publishes
     `model.load` (with `resumed` when saved state was found), `model.unload` (reason `evicted`, flushed) and

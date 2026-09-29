@@ -19,7 +19,7 @@ const rows = (api: ServerApi, id: string) => api.modes.find(mode => mode.id === 
 test("each server mode lists its composed routes, statuses, and conditions", () => {
   expect(baseline.modes.map(mode => mode.id)).toEqual(["serve", "isolate", "worker", "app-worker", "transcription"]);
   const serve = rows(baseline, "serve");
-  for (const row of ["GET /ws/chat WebSocket upgrade (Pi chat)", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions routed by model id",
+  for (const row of ["GET /ws/chat WebSocket upgrade", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions routed by model id",
     "GET /v1/models/{id} implemented", "DELETE /v1/adapters/{id} implemented", "GET /api/jobs/{id}/stream implemented", "POST /api/dataset/push implemented",
     "POST /api/hub/download implemented [falls through if !options.downloads]", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
     "POST /v1/audio/sessions/{id}/finish implemented", "GET /api/dataset/templates implemented", "POST /api/dataset/submit implemented"]) expect(serve).toContain(row);
@@ -42,10 +42,14 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   expect(worker.some(row => /^\S+ \/api\/(hub|jobs|memory|sessions|quantize|dataset)\b/.test(row))).toBe(false);
   // The app launch form: the Server app, web and chat included, with the same admin routes ahead of its groups.
   const appWorker = rows(baseline, "app-worker");
-  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(1, 9), ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
+  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(0, 8), ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
   const transcription = rows(baseline, "transcription");
-  expect(transcription).toContain("GET /ws/chat WebSocket upgrade (no chat model)");
+  // The chat module runs in the persistent state, so the transcription-only host and the isolation worker (whose state is a stub) do not upgrade its socket.
+  expect(transcription.some(row => row.includes("/ws/chat"))).toBe(false);
+  expect(worker.some(row => row.includes("/ws/chat"))).toBe(false);
+  expect(rows(baseline, "isolate")[0]).toBe("GET /ws/chat WebSocket upgrade");
+  expect(appWorker[0]).toBe("GET /ws/chat WebSocket upgrade");
   expect(transcription).toContain("DELETE /v1/audio/sessions/{id} implemented");
   expect(transcription.some(row => row.startsWith("GET / "))).toBe(false);
   for (const mode of baseline.modes) for (const route of mode.routes) expect((route.file.startsWith(APP) || route.file.startsWith("packages/")) && route.line > 0).toBe(true);
@@ -155,7 +159,7 @@ test("a changed or removed allowlisted non-route site fails", () => {
 
 test("a path answered by the listener itself, not a route group, fails the dispatch check", () => {
   expect(() => serverApiReference(mutate("server/start.ts", '        return Response.json({ error: { message: "Not found" } }, { status: 404 });',
-    '        if (url.pathname === "/engine") return Response.json({ error: { message: "placeholder" } }, { status: 501 });\n        return Response.json({ error: { message: "Not found" } }, { status: 404 });')))
+    '        if (new URL(request.url).pathname === "/engine") return Response.json({ error: { message: "placeholder" } }, { status: 501 });\n        return Response.json({ error: { message: "Not found" } }, { status: 404 });')))
     .toThrow(/^server\/start\.ts:\d+: the listener's dispatch changed/);
 });
 

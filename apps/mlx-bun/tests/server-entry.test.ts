@@ -61,9 +61,16 @@ const prelude = (mocks = "") => `
         prefixScans: 0, objectHits: 0, objectMisses: 0, objectRestores: 0, demotions: 0, closeSession() {} },
       async close() { events.push("cache close"); if (caches.closeFails) throw new Error("cache close failed"); return result(); } };
   } }));
-  mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) { return send => ({
-    // The served model's facts are read when a chat connects, as the real backend does.
-    async start() { const served = { ...options, ...options.model?.() }; send({ type: "text_delta", delta: ["pi", served.modelId, options.port(), served.thinking].join(" ") }); },
+  // The chat module is real: its socket, its model description over the model host, and the loopback the Pi SDK talks to. Only the SDK is a stand-in:
+  // it reads the served model's facts when a chat connects, as the real backend does, and asks the loopback for one completion.
+  mock.module(app + "../../packages/module-chat/src/pi-backend.ts", () => ({ createPiBackend(options) { return send => ({
+    async start() {
+      const served = { ...options, ...await options.model?.() };
+      const reply = await fetch("http://127.0.0.1:" + options.port() + "/v1/chat/completions", { method: "POST",
+        headers: { authorization: "Bearer " + options.apiKey, "content-type": "application/json" },
+        body: JSON.stringify({ model: "local", messages: [{ role: "user", content: "hello" }], temperature: 0, max_tokens: 4 }) });
+      send({ type: "text_delta", delta: ["pi", served.modelId, served.thinking, (await reply.json()).choices[0].message.content].join(" ") });
+    },
     async handle() {}, dispose() {} }); } }));
   ${mocks}
   const dir = join(scratch, "model");
@@ -215,7 +222,7 @@ test("one caller context and one supplied binding serve the full app across five
     registry.allowed = true;
     assert.deepEqual(await (await fetch(base + "/api/hub/local")).json(), { ok: true, models: [] });
     registry.allowed = false;
-    assert.deepEqual(await socketFrame(base), { type: "text_delta", delta: "pi independent-model " + server.port + " false" });
+    assert.deepEqual(await socketFrame(base), { type: "text_delta", delta: "pi independent-model false t1" });
     assert.equal((await server.flush()).durable, true);
     const closed = await server.close();
     assert.deepEqual([closed.stopped, closed.timedOut, closed.durability.durable, closed.durability.flushedSnapshots], [true, false, true, 1]);
@@ -234,10 +241,11 @@ test("one caller context and one supplied binding serve the full app across five
     assert.deepEqual(signals(), before);
     opened.dispose();
     assert.equal(opened.disposals, 1);
-    // HOME holds only the stores these requests used: the job database (/api/jobs) and the hub registry (/api/hub/local).
+    // HOME holds only the stores these requests used: the job database (/api/jobs), the hub registry (/api/hub/local) and the chat's directories.
     const stored = tree(home);
     assert.ok(stored.includes(".mlx-bun/db/jobs.sqlite") && stored.includes(".mlx-bun/db/registry.sqlite"), stored.join());
-    const allowed = new Set([".mlx-bun", ".mlx-bun/db", ".mlx-bun/jobs",
+    // A chat connected (through the chat module's socket), which creates its saved-chats and agent directories.
+    const allowed = new Set([".mlx-bun", ".mlx-bun/db", ".mlx-bun/jobs", ".mlx-bun/sessions", ".mlx-bun/pi-sessions",
       ...["jobs.sqlite", "registry.sqlite"].flatMap(name => ["", "-wal", "-shm"].map(suffix => ".mlx-bun/db/" + name + suffix))]);
     assert.deepEqual(stored.filter(path => !allowed.has(path)), []);
   `);
@@ -255,7 +263,7 @@ test("a context without a template serves through a supplied prompt builder; the
     assert.equal(prompts.length, 1);
     const models = await (await fetch(base + "/v1/models")).json();
     assert.equal(models.data[0].reasoning, false);
-    assert.deepEqual(await socketFrame(base), { type: "text_delta", delta: "pi independent-model " + server.port + " false" });
+    assert.deepEqual(await socketFrame(base), { type: "text_delta", delta: "pi independent-model false t1" });
     assert.equal((await server.close()).stopped, true);
     assert.equal(bare.disposals, 0);
   `);

@@ -15,11 +15,17 @@ class FakeEventSource {
 }
 class FakeWebSocket {
   static opened = 0;
+  static last: FakeWebSocket | undefined;
+  static closed = 0;
   readyState = 0;
-  constructor(readonly url: string) { FakeWebSocket.opened++; }
-  send() {}
-  close() {}
+  sent: Record<string, unknown>[] = [];
+  onmessage: ((event: { data: string }) => void) | null = null;
+  constructor(readonly url: string) { FakeWebSocket.opened++; FakeWebSocket.last = this; }
+  send(data: string) { this.sent.push(JSON.parse(data)); }
+  close() { FakeWebSocket.closed++; }
   addEventListener() {}
+  /** The server's frame, as the page's own handler receives it. */
+  emit(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
 }
 const requests: string[] = [];
 const fakeFetch = (async (input: string | URL | Request) => {
@@ -53,7 +59,7 @@ function boot(hash: string, storage: Record<string, string> = {}): void {
     EventSource: FakeEventSource, WebSocket: FakeWebSocket, fetch: fakeFetch,
   });
   stopIntervals();
-  requests.length = 0; FakeEventSource.urls.length = 0; FakeEventSource.closed.length = 0; FakeWebSocket.opened = 0;
+  requests.length = 0; FakeEventSource.urls.length = 0; FakeEventSource.closed.length = 0; FakeWebSocket.opened = 0; FakeWebSocket.closed = 0; FakeWebSocket.last = undefined;
   (0, eval)(bundle);
 }
 
@@ -75,14 +81,15 @@ const shown = () => [...document.querySelectorAll<HTMLElement>("#tabs .tab")].fi
 const activePages = () => [...document.querySelectorAll<HTMLElement>("section[data-route].active")].map(section => section.dataset.route);
 
 test("the browser build takes the panels of the host's installed modules that export one, and no others", () => {
-  expect(panelModules()).toEqual(["@mlx-bun/module-metrics"]);
+  expect(panelModules()).toEqual(["@mlx-bun/module-chat", "@mlx-bun/module-metrics"]);
   const source = installedPanelsSource();
+  expect(source).toContain('import "@mlx-bun/module-chat/panel";');
   expect(source).toContain('import "@mlx-bun/module-metrics/panel";');
   expect(source).not.toContain("datasets");
   expect(installedPanelsSource([])).toBe('import { panelsFromManifests } from "@mlx-bun/web-shell";\nexport const panels = panelsFromManifests([]);\n');
 });
 
-test("the bundle boots app.html: the legacy pages keep their tabs in order and the installed module's panel gets its own, after them", () => {
+test("the bundle boots app.html: the chat workspace panel leads, the legacy pages keep their tabs in order and the other module panel gets its own, after them", () => {
   boot("#/chat");
   expect(tabs()).toEqual(["chat", "quantize", "finetune", "dataset", "status", "routes", "metrics"]);
   expect(document.querySelector('#tabs .tab[data-tab="metrics"]')!.textContent).toBe("Metrics");
@@ -152,4 +159,71 @@ test("the routes tab hides itself when /dag is not served, as before", async () 
   await new Promise(resolve => setTimeout(resolve, 10));
   expect(document.querySelector<HTMLElement>('#tabs .tab[data-tab="routes"]')!.style.display).toBe("none");
   expect(location.hash).toBe("#/chat");
+});
+
+test("the chat is a workspace panel: it fills the page without a card, and stays attached with its socket open while another page shows", () => {
+  boot("#/chat");
+  const section = document.getElementById("s-chat")!;
+  const panel = section.querySelector("mlx-chat-panel")!;
+  expect(panel.parentElement).toBe(section);
+  expect(section.querySelector(".shell-panel-title")).toBeNull();
+  expect(panel.querySelector("#chat-box")).not.toBeNull();
+  expect("dev" in (document.querySelector('#tabs .tab[data-tab="chat"]') as HTMLElement).dataset).toBe(false);
+  expect(document.querySelector("#tabs .tab")!.getAttribute("data-tab")).toBe("chat"); // it leads the tabs
+  location.hash = "#/status";
+  window.dispatchEvent(new window.Event("hashchange"));
+  expect(activePages()).toEqual(["status"]);
+  expect(panel.isConnected).toBe(true);
+  expect(FakeWebSocket.closed).toBe(0);
+  location.hash = "#/chat";
+  window.dispatchEvent(new window.Event("hashchange"));
+  expect(document.querySelector("mlx-chat-panel")).toBe(panel);
+  expect(FakeWebSocket.opened).toBe(1);
+});
+
+test("the app's side of the chat panel is wired: memory attaches to its sidebar, memory tools draw as chips, and the settings dialog follows the server's reports", () => {
+  boot("#/chat", { "mlxbun.codingTools": "1" });
+  // The panel's markup exists, so the memory panel's status poll (its sidebar entry and consent card) ran.
+  expect(requests).toContain("/api/memory/status");
+  const socket = FakeWebSocket.last!;
+  socket.readyState = 1;
+  socket.emit({ type: "ready", model: "test-model", vision: false, audio: false, thinking: false, genDefaults: { temperature: null, topP: null, topK: null } });
+  // The host's saved wish for file-changing tools is re-asserted on every connection.
+  expect(socket.sent.find(frame => frame.type === "set_coding_tools")).toEqual({ type: "set_coding_tools", enabled: true });
+  socket.emit({ type: "coding_tools", active: false, pending: true });
+  expect((document.getElementById("settings-coding-tools") as HTMLInputElement).checked).toBe(true);
+  expect(document.getElementById("settings-coding-tools-note")!.textContent).toContain("next new chat");
+  socket.emit({ type: "tool_approvals", alwaysAllow: ["bash", "edit"] });
+  expect([...document.querySelectorAll("#settings-approvals-list .satool")].map(node => node.textContent)).toEqual(["bash", "edit"]);
+  // A memory tool is drawn by the host as a provenance chip; any other tool keeps the panel's own card.
+  socket.emit({ type: "turn_start" });
+  socket.emit({ type: "tool_start", callId: "m1", tool: "memory_read", args: { article: "Travel" } });
+  socket.emit({ type: "tool_start", callId: "w1", tool: "web_search", args: { query: "x" } });
+  expect(document.querySelectorAll("#chat-thread .memchip")).toHaveLength(1);
+  expect(document.querySelectorAll("#chat-thread .tool")).toHaveLength(1);
+  // The checkbox in the host's dialog reaches the panel's socket.
+  const box = document.getElementById("settings-coding-tools") as HTMLInputElement;
+  box.checked = false; box.dispatchEvent(new window.Event("change"));
+  expect(socket.sent.at(-1)).toEqual({ type: "set_coding_tools", enabled: false });
+});
+
+test("the hamburger in the nav opens the panel's drawer, and Escape closes the drawer and the panel's popovers in turn", () => {
+  boot("#/chat");
+  const sidebar = document.getElementById("chat-sidebar")!, hamburger = document.getElementById("chat-hamburger")!;
+  hamburger.click();
+  expect(sidebar.classList.contains("drawer-open")).toBe(true);
+  expect(hamburger.getAttribute("aria-expanded")).toBe("true");
+  expect(document.getElementById("chat-drawer-backdrop")!.classList.contains("open")).toBe(true);
+  document.getElementById("chat-sampling")!.click();
+  expect(document.getElementById("chat-sampling-pop")!.classList.contains("open")).toBe(true);
+  const escape = () => document.dispatchEvent(new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }) as unknown as Event);
+  escape();
+  expect(document.getElementById("chat-sampling-pop")!.classList.contains("open")).toBe(false); // the popover first
+  expect(sidebar.classList.contains("drawer-open")).toBe(true);
+  escape();
+  expect(sidebar.classList.contains("drawer-open")).toBe(false);
+  expect(hamburger.getAttribute("aria-expanded")).toBe("false");
+  hamburger.click();
+  document.getElementById("chat-drawer-backdrop")!.click();
+  expect(sidebar.classList.contains("drawer-open")).toBe(false);
 });

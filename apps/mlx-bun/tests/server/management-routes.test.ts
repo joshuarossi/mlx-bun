@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
-import { isToolAlwaysAllowed, setToolAlwaysAllowed } from "../../src/chat/tool-approvals";
 import { createManagementRoutes } from "../../src/server/management-routes";
 
 const roots: string[] = [];
@@ -33,30 +32,16 @@ function syntheticCache() {
   return { root, hub, repo };
 }
 
-test("tool settings list and revoke the same approval store consumed by chat", async () => {
-  const root = temporary(), approvals = join(root, "settings/approvals.json"), other = join(root, "other.json");
-  setToolAlwaysAllowed("write", approvals); setToolAlwaysAllowed("bash", approvals); setToolAlwaysAllowed("edit", other);
-  const routes = createManagementRoutes({ toolApprovalsFile: approvals, invalidateLibrary() { throw new Error("unexpected GC"); } });
-  expect(await (await routes.handle(request("/api/settings/tool-approvals")))!.json()).toEqual({ ok: true, alwaysAllow: ["bash", "write"] });
-  expect(await (await routes.handle(request("/api/settings/tool-approvals", "DELETE", { tool: "bash" })))!.json())
-    .toEqual({ ok: true, alwaysAllow: ["write"] });
-  expect(isToolAlwaysAllowed("bash", approvals)).toBe(false);
-  expect(isToolAlwaysAllowed("write", approvals)).toBe(true);
-  expect(isToolAlwaysAllowed("edit", other)).toBe(true);
-});
-
-test("malformed settings and unconfirmed GC requests reject without opening storage", async () => {
-  const root = temporary(), approvals = join(root, "absent/approvals.json");
-  const routes = createManagementRoutes({ toolApprovalsFile: approvals, hubDirectory: join(root, "absent-hub"),
+test("unconfirmed GC requests reject without opening storage", async () => {
+  const root = temporary();
+  const routes = createManagementRoutes({ hubDirectory: join(root, "absent-hub"),
     createRegistry() { throw new Error("must not open registry"); }, invalidateLibrary() { throw new Error("must not invalidate"); } });
   for (const [path, method, bodies] of [
-    ["/api/settings/tool-approvals", "DELETE", [null, [], {}, { tool: 1 }, { tool: "" }]],
     ["/api/gc/execute", "POST", [null, [], {}, { yes: false }, { yes: "true" }, { yes: 1 }]],
   ] as const) {
     for (const body of bodies) expect((await routes.handle(request(path, method, body)))!.status).toBe(400);
     expect((await routes.handle(new Request(`http://local${path}`, { method, body: "{" })))!.status).toBe(400);
   }
-  expect(existsSync(approvals)).toBe(false);
 });
 
 test("GC preview is read-only and confirmed execution rescans, closes, and invalidates discovery", async () => {
@@ -131,7 +116,7 @@ test("GC planning failures use the management JSON error shape", async () => {
 });
 
 test("management matches only its owned methods and leaves HF credentials and uploads to publishing", async () => {
-  const routes = createManagementRoutes({ toolApprovalsFile: join(temporary(), "approvals.json"), invalidateLibrary() {} });
+  const routes = createManagementRoutes({ invalidateLibrary() {} });
   for (const [path, method] of [["/api/settings/tool-approvals", "POST"], ["/api/gc/plan", "POST"],
     ["/api/gc/execute", "GET"], ["/api/settings/hf-token", "GET"], ["/api/quantize/push", "POST"]])
     expect(await routes.handle(request(path!, method))).toBeNull();

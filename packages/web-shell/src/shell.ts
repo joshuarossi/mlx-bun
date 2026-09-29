@@ -59,7 +59,7 @@ export interface Shell {
   updateTabFades(): void;
   /** Hides a route's tab for good (a page the build does not carry); the host decides what its page shows instead. */
   markUnavailable(id: string): void;
-  /** Navigation targets for the panels mounted so far. */
+  /** Navigation targets for the (non-workspace) panels mounted so far. */
   panelTargets(): readonly { id: string; title: string }[];
 }
 
@@ -156,10 +156,12 @@ export function createShell(options: ShellOptions): Shell {
     for (const panel of panels) {
       const page = buildPanelPage(panel);
       if (hasRoute(page.id)) throw new Error(`Panel route /${page.id} is already taken`);
-      routes.push({ id: page.id, developer: panel.developer !== false });
+      routes.push({ id: page.id, developer: panel.developer ?? !panel.workspace });
       controllers[page.id] = page.controller;
-      panelTitles.push({ id: page.id, title: panel.title });
-      $("tabs").append(page.tab);
+      // Navigation targets are the tools; a workspace is the page the product opens on.
+      if (!panel.workspace) panelTitles.push({ id: page.id, title: panel.title });
+      // A workspace leads the tabs.
+      if (panel.workspace) $("tabs").prepend(page.tab); else $("tabs").append(page.tab);
       outlet.append(page.section);
     }
   }

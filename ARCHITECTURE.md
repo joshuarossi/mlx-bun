@@ -143,16 +143,18 @@ while application startup owns closing it. Serve startup is two halves inside
 model and imports no engine or native module at runtime; `serve-host.ts` owns
 the model-scoped composition and borrows that state explicitly, lending back
 its execution lease, library invalidation, and port through an attached link,
-so a later isolation step can run the host in another process. `chat/` owns the WebSocket backend
-and its Pi adapter; `web/` owns browser modules, static assets, and compilation.
-Browser code consumes only its own modules and the leaf chat/job protocols.
+so a later isolation step can run the host in another process. The chat (the WebSocket backend, its Pi
+adapter, saved chats and tool approvals) is `@mlx-bun/module-chat`, which runs in the persistent state;
+`web/` owns browser modules, static assets, and compilation.
+Browser code consumes only its own modules and the leaf job protocol.
 `jobs/protocol.ts` owns the browser's job events and runner contracts. Add
 other domains with their first migrated consumers and explicit dependency rules.
 
 `memory/` owns Markdown vault storage, initialization, and article semantics.
 Its HTTP adapter belongs to `server/`; composition supplies reference sources
 explicitly rather than deriving them from repository layout. Read-only memory
-tools and prompt context are built by `memory/` and injected into chat, with
+tools and prompt context are built by `memory/` and reach the chat through the `registry` service
+(`chat.tool` and `chat.guidance`; `memory/chat.ts` is memory's contributor until it becomes a module), with
 composition supplying the vault and bundled-skill destinations. Query navigation
 uses local article structure; scheduling and synthesis have separate lifecycles.
 
@@ -160,8 +162,8 @@ Standalone Pi integration is deferred pending Josh's decision. The web app
 uses Pi through the app-owned chat adapter.
 
 Application contracts migrate with their owning apps: Pi UI/provider protocols,
-job runner types, engine host, and completion clients. Within the apps, browser chat
-protocols belong to chat, job contracts to job orchestration, and
+job runner types, engine host, and completion clients. Within the apps, the browser chat
+protocol belongs to the chat module, job contracts to job orchestration, and
 host/client interfaces to their application boundary. Apps import reusable
 inference contracts from the library rather than duplicating them. Portability
 is a dependency constraint; domain ownership determines the home.
@@ -185,7 +187,8 @@ paths win, and libraries take paths from their callers.
 
 | Location | Owner |
 | --- | --- |
-| `MLX_BUN_HOME` (default `~/.mlx-bun`): `models/`, `adapters/`, `exports/`, `datasets/`, `db/`, `jobs/`, chat, wiki, skills, logs, credentials | the app |
+| `MLX_BUN_HOME` (default `~/.mlx-bun`): `models/`, `adapters/`, `exports/`, `datasets/`, `db/`, `jobs/`, wiki, skills, logs, credentials | the app |
+| `MLX_BUN_HOME`: `sessions/`, `pi-sessions/`, `tool-approvals.json` | the chat module |
 | `~/.mlx-bun/app-install/` | the installer |
 | `MLX_BUN_HOME/cache/` | derived memos (inference artifact identities) |
 | `MLX_BUN_HOME/kv/` | saved prompt/KV state, one directory per model identity, one byte budget across them (`--ssd-cache-max`) |
@@ -217,8 +220,8 @@ dependencies). A host implements them once and every module depends only on them
 options, job runners, storage entries, one web panel) plus `activate(context)`,
 which receives only the services it required and returns the live handlers. The
 manifest is plain data, so inventories and hosts read it without loading a model
-or native code. A route may declare `mount: "root"` for wire-compatible or
-previously shipped paths (`/v1/audio/transcriptions`); existing paths are
+or native code. A route or socket may declare `mount: "root"` for wire-compatible or
+previously shipped paths (`/v1/audio/transcriptions`, `/ws/chat`); existing paths are
 preserved. A panel is a self-contained custom element (`mlx-<id>-panel`) that
 receives a `PanelConnection` (API base and event-stream URL), imports only its
 module's `panel/` files and data `protocol.ts`, and so loads in any webview.
@@ -232,7 +235,10 @@ registered, so neither names the other. The web shell (navigation, routing,
 theme, the command palette's chrome, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
 host's UI, native webviews included: it has no workspace dependencies, takes the panels to mount as plain
 `{ tag, title, path, connection }` records (a manifest's `panel` plus its `PanelConnection`) and gives each a tab and a
-page, creating the element on first visit. A host's browser build imports each installed module's panel entry from
+page, creating the element on first visit. A `workspace` panel (the chat) is the product's own page: it fills the page
+without a card, leads the tabs, stays outside the Developer switch and stays attached while another page shows, hearing
+`enter()` and `leave()`; the host may hand a panel more than its connection through the element's properties (the chat's
+`host`: what lives beside it on the page, such as memory's chips and the settings dialog's agent-tools section). A host's browser build imports each installed module's panel entry from
 the host's installed modules (`apps/mlx-bun/src/web/build.ts` reads the host's `package.json`, which the gate ties to `src/modules.ts`), so the bundle holds the panels the host installs and no
 others; pages that have not moved into modules stay in the host's own browser code, mounted beside the panels. Modules start as private workspace
 packages; publishing them is a separate licensing decision.
@@ -251,8 +257,9 @@ lock and serving; `apps/mlx-bun` also owns the generation side of `modelHost`
 `src/server/model-routes.ts` routing requests by model id). A module's manifest is also importable alone
 (`@mlx-bun/module-<id>/manifest`, data only), so a host lists commands and
 `--help` and the documentation generators read verbs and routes without loading
-the module. A host refuses a module that declares sockets, and one that declares
-job runners unless it binds the `jobs` service, which then runs them. Installation
+the module. A host refuses a module that declares sockets unless it serves them (`createModuleSockets`: the app's
+persistent state does, on the listener that answers the browser; the model composition, the transcription-only host and
+`apps/transcribe` do not), and one that declares job runners unless it binds the `jobs` service, which then runs them. Installation
 is build-time; a user setting may disable an installed module at start.
 
 The `events` bus is `createEventHub` in `@mlx-bun/app-services`, one per app state (`AppState.events`), so the
@@ -275,12 +282,16 @@ serves, dispatches and creates what it returns; `stop()` disposes the modules in
 reverse order. The mlx-bun app activates them in its serve composition, next to
 the engine's execution lock, and stops them first in its drain, then releases
 the weights they leased. The app composes its services at two scopes: modules that
-require `jobs` (datasets, quantize) activate in the persistent state, beside the job store, with
+require `jobs` (datasets, metrics, quantize) or declare sockets (chat) activate in the persistent state, beside the job store, with
 `jobs` (the job host's `task` runners in this process, and `process` runners as a child that
 stops with its parent under the execution lease, which activates the owning module itself),
 `storage`, `catalog` and a `modelHost` that leases the serving host's model for `generate` over
 its own HTTP surface (so the `--isolate` parent, which loads no model, runs them too); the
-others activate with the model host. A one-shot CLI verb (`convert`) activates only its own
+others activate with the model host. The chat talks to the model only through that `modelHost`: each connection reads the
+current model's description from its wire (`GET /v1/models`, `/stats`), and the Pi SDK, which takes no transport of ours,
+reaches the model through a private loopback (a per-run bearer token, started with the first chat) that leases
+the current model's `generate` per request; the request's own `local` model id is the host's to route. The state also serves the
+modules' sockets on the app's listener and stops the modules (closing the sockets) before the listener drains. A one-shot CLI verb (`convert`) activates only its own
 module over a private, throwaway job store, and a translated spelling of a verb (`mlx-bun.convert`)
 reaches it through the same verb table.
 
