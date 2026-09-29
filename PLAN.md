@@ -142,8 +142,8 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: models, train, benchmarks, memory (last, moved as is: the memory feature
-    stays deferred). Datasets, quantize and chat landed. The legacy pages `web/browser/dataset.ts` and `web/browser/quantize.ts`
+  - [ ] (d) Remaining modules, one PR each: models, train, memory (last, moved as is: the memory feature
+    stays deferred). Datasets, quantize, benchmarks and chat landed (benchmarks' panel is the shell's, from its manifest). The legacy pages `web/browser/dataset.ts` and `web/browser/quantize.ts`
     become panels the `@mlx-bun/web-shell` mounts (quantize's calls the app's toast, push and library-refresh helpers,
     which a panel gets through its connection or the shell instead); `/api/model/resolve-folder` stays in the app for the
     models module (the fine-tune picker also calls it). Memory reaches chat through the registry (`chat.tool`,

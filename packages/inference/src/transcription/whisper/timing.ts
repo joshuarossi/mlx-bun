@@ -9,7 +9,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { WhisperKvCache, type WhisperModel } from "../../models/whisper/model";
+import type { WhisperGraph } from "../../contracts/mlx/whisper";
 import { WHISPER_HOP, WHISPER_SAMPLE_RATE, WHISPER_TOKENS_PER_SECOND } from "../../input/audio/whisper-mel";
 import type { WhisperTokenizer } from "../../input/audio/whisper-tokenizer";
 import type { WhisperSegment, WhisperWord } from "./types";
@@ -90,7 +90,7 @@ export function dtw(x: Float32Array, N: number, M: number): { text: Int32Array; 
 /** find_alignment: word timings for `textTokens` within one 30 s window
  *  (`mel` [1, 3000, n_mels] model dtype, `numFrames` = content mel frames). */
 export function findAlignment(
-  model: WhisperModel, tokenizer: WhisperTokenizer, language: string,
+  model: WhisperGraph, tokenizer: WhisperTokenizer, language: string,
   textTokens: number[], mel: MlxArray, numFrames: number,
   medfiltWidth = 7, qkScale = 1.0,
 ): WordTiming[] {
@@ -98,7 +98,7 @@ export function findAlignment(
   const sot = tokenizer.sotSequence(language, "transcribe");
   const tokens = [...sot, tokenizer.noTimestamps, ...textTokens, tokenizer.eot];
   const feats = model.encode(mel);
-  const cache = new WhisperKvCache(model.dims.nTextLayer);
+  const cache = model.makeCache();
   const tokArr = ops.fromInt32(tokens, [1, tokens.length]);
   const { logits, crossQk } = model.decode(tokArr, feats, cache, { wantCrossQk: true });
   tokArr.dispose();
@@ -212,7 +212,7 @@ function mergePunctuations(alignment: WordTiming[], prepended: string, appended:
 
 /** add_word_timestamps: annotates `segments` (one window) with words. */
 export function addWordTimestamps(
-  segments: WhisperSegment[], model: WhisperModel, tokenizer: WhisperTokenizer, language: string,
+  segments: WhisperSegment[], model: WhisperGraph, tokenizer: WhisperTokenizer, language: string,
   mel: MlxArray, numFrames: number, lastSpeechTimestamp: number,
   prependPunctuations = "\"'“¿([{-", appendPunctuations = "\"'.。,，!！?？:：”)]}、",
 ): number {

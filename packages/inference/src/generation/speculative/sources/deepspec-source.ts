@@ -28,7 +28,8 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { DeepspecDrafter, type ContextKV } from "../../../models/speculative/deepspec";
+import type { ContextKV, DeepspecDrafterModel } from "../../../contracts/mlx/drafter";
+import { loadDeepspecDrafter } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, TargetView } from "../source";
 
 function safetensorsBytes(dir: string): number {
@@ -46,7 +47,7 @@ export class DeepspecProvider implements DraftProvider {
    *  numDraftTokens to this. */
   readonly gamma: number;
 
-  private constructor(private readonly drafter: DeepspecDrafter, id: string, weightsBytes: number, namespace: string) {
+  private constructor(private readonly drafter: DeepspecDrafterModel, id: string, weightsBytes: number, namespace: string) {
     this.id = id;
     this.weightsBytes = weightsBytes;
     this.gamma = drafter.gamma;
@@ -54,7 +55,7 @@ export class DeepspecProvider implements DraftProvider {
   }
 
   static async load(modelDir: string): Promise<DeepspecProvider> {
-    const drafter = await DeepspecDrafter.load(modelDir);
+    const drafter = await loadDeepspecDrafter(modelDir);
     const id = modelDir.split("/").filter(Boolean).at(-1)!;
     try {
       const identity = await artifactIdentity(await Bun.file(`${modelDir}/config.json`).text(),
@@ -79,7 +80,7 @@ export class DeepspecSource implements DraftSource {
   private ctxKV: ContextKV[] | null = null; // per-layer projected context rows
   private ctxLen = 0; // context rows cached == the anchor's absolute position
 
-  constructor(private readonly drafter: Pick<DeepspecDrafter,
+  constructor(private readonly drafter: Pick<DeepspecDrafterModel,
     "cfg" | "tapLayers" | "projectContext" | "projectContextKV" | "draftBlock">, target: TargetView) {
     bindDeepspecTarget(target, drafter);
     this.tapLayers = drafter.tapLayers;

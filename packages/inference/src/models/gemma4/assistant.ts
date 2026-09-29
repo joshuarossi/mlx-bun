@@ -27,6 +27,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Weights } from "../../artifacts/weights";
+import type { AssistantDrafterModel, DrafterRowsStep } from "../../contracts/mlx/drafter";
 import { disposeResources } from "../../runtime/resources";
 
 /** Legacy plain donor adapter. The common graph never reads cache geometry. */
@@ -44,7 +45,7 @@ export function plainAssistantDonors(shared: { sliding: [MlxArray, MlxArray]; fu
   return { sliding: bind(shared.sliding), full: bind(shared.full) };
 }
 
-export interface DrafterRowsStep { tokens: MlxArray; nextHidden: MlxArray; }
+export type { DrafterRowsStep };
 
 export interface DrafterStep {
   /** Drafted token id. */
@@ -71,7 +72,7 @@ interface Block {
   layerScalar: MlxArray;
 }
 
-export class GemmaAssistantDrafter {
+export class GemmaAssistantDrafter implements AssistantDrafterModel {
   readonly hidden: number;
   readonly nHeads: number;
   readonly slidingWindow: number;

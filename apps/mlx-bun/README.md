@@ -1295,6 +1295,20 @@ module's panel element while it is visible (`web/browser/status.ts`). The opt-in
 test](tests/engine/metrics-native.test.ts) (`MLX_BUN_APP_TEST_MODEL=<snapshot directory>`) serves a model and requires
 the module's numbers to equal each response's `usage` and `/stats`.
 
+## Benchmarks
+
+Answer-quality evaluation is the benchmarks module's ([`@mlx-bun/module-benchmarks`](../../packages/module-benchmarks/README.md):
+`/api/benchmarks/tasks`, `/runs`, `/compare`, the `eval-serve` job kind). It orchestrates `scripts/eval-serve.ts`
+(the capability evaluation runner) and scores nothing itself. This app installs it and supplies what it requires in the
+persistent state (`cli/serve-state.ts`): the `eval-serve` runner runs on the job host under the engine's execution lease
+(`gpu: "exclusive"`), `storage` resolves its `benchmarks/` entries under `MLX_BUN_HOME` (datasets in `benchmarks/data`,
+placed by the user, never downloaded), `modelHost` names the served model, and `catalog` (the registry-backed one
+over the model index, native-free like the rest of the state) resolves it to its directory.
+The runner then starts its own server from `bin/mlx-bun.mjs serve --model <dir> --port <free>` in a sandboxed `HOME`;
+the app's served model stays resident and idle. The web shell mounts the module's panel (a Benchmarks tab, from its manifest). The opt-in [real-weights test](tests/engine/benchmarks-native.test.ts)
+(`MLX_BUN_APP_TEST_MODEL=<snapshot directory> MLX_BUN_EVAL_DATA=<pinned datasets>`) runs `gsm8k-50` and `mmlu` through
+the module and requires its history to equal a direct `eval-serve.ts run` of the same plan.
+
 ## Standalone bundle
 
 After staging the root native setup and the microphone helper with

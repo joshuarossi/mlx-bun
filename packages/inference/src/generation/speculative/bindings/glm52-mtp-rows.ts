@@ -3,7 +3,7 @@ import { Dtype } from "@mlx-bun/mlx/ffi";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { PreparedStateChange } from "../../../contracts/portable/resources";
-import type { Glm52MtpGraph } from "../../../models/glm52/mtp";
+import type { NativeMtpHead } from "../../../contracts/mlx/drafter";
 import { applyStateChanges,disposeResources } from "../../../runtime/resources";
 import { toLogprobs } from "../../../sampling/index";
 import { MLACache } from "../../../state/glm52-cache";
@@ -18,13 +18,11 @@ export class Glm52MtpRows {
   #drafts: number[][] = [];
   #depth = 0;
 
-  constructor(readonly graph: Glm52MtpGraph, readonly sampling: DraftRowSampling | null) {
+  constructor(readonly graph: NativeMtpHead, readonly sampling: DraftRowSampling | null) {
     this.#cache = this.makeCache();
   }
   makeCache(): MLACache {
-    const c = this.graph.model.glmConfig;
-    return new MLACache({ kvLoraRank: c.kvLoraRank, ropeHeadDim: c.qkRopeHeadDim,
-      maxTokens: c.maxPositionEmbeddings, role: "mtp" });
+    return new MLACache({ ...this.graph.cache, role: "mtp" });
   }
   get rowCount(): number { return this.#processed.length; }
   append(states: readonly (Glm52MtpRowState | null)[]): void {
@@ -42,7 +40,7 @@ export class Glm52MtpRows {
       })]);
       hidden = ops.concatAxis([...(this.#hidden ? [this.#hidden] : []), ...states.map(state => {
         if (state) return state.hidden;
-        const zero = ops.zeros([1, 1, this.graph.model.glmConfig.hiddenSize], Dtype.float32);
+        const zero = ops.zeros([1, 1, this.graph.hiddenSize], Dtype.float32);
         held.push(zero); return zero;
       })], 0);
     } catch (error) { cache.dispose(); hidden?.dispose(); throw error; }

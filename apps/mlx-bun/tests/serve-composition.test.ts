@@ -64,7 +64,7 @@ test("the persistent state composes and serves its routes with fakes, without th
     const { installedModules } = await import(app + "src/modules.ts");
     // The state runs the modules that need job runners or serve a socket (chat); Whisper's module belongs to the model host.
     const stateModules = await installedModules("state");
-    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "chat"]);
+    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics", "quantize", "benchmarks", "chat"]);
     assert.deepEqual((await installedModules("model")).map(module => module.id), ["transcription"]);
     const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths, stateModules);
     assert.deepEqual(state.memoryPaths, memoryPaths);
