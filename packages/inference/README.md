@@ -361,8 +361,19 @@ only through a committed append declaring the scheme's formats (none for
 TurboQuant on this graph). Direct grammar jump commits its
 spans over it through the shared span method, as main's serial jump did: one
 maintenance call, then one unsplit forward of the pending token and the forced
-span, once the gateway has certified the scheme. Affine KV, which stops reading
-dense at its transition, keeps ordinary grammar masking.
+span, once the gateway has certified the scheme. Affine KV commits spans the
+same way while a row's storage still reads plain: a span whose maintenance ran
+before the transition appends unsplit even across it, and a row whose next
+append would no longer read plain is refused with `DenseKvReadError` before any
+layer appends, where direct generation fails in that forward. The span method
+binds the graph's dense-read layers explicitly; the gateway supplies them from
+its cache probe. On 2026-09-28 UTC (M1 Max, MLX 0.32.2) the opt-in
+`tests/parity/affine-grammar-spans.test.ts` (`MLX_BUN_TEST_AFFINE_SPANS_MODEL`)
+passed on cached Gemma2-2B-4bit `2c715097` with KV4: below the transition, B1
+spans matched direct jump-forward generation in tokens, matcher history and
+every projection's bytes; a row crossing it was refused with the same published
+tokens and matcher history; an interleaved peer matched its solo run and the
+group served again.
 
 On 2026-09-28 UTC, cached Gemma2-2B-4bit snapshot `2c715097` (26 full-attention
 layers) passed bounded TurboQuant k8v3 acceptance on an M1 Max, MLX 0.32.2 and

@@ -163,14 +163,20 @@ test("TurboQuant on a dense-read graph decodes as main did: drafts and supplied 
   expect(spans).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true, fill: false, checkpoint: false });
   expect(refusals(spans)).toEqual([]);
   expect(jumping.methodRequest!(spans, turbo)!.key).toBe("grammar-forced-span");
-  // Logprobs keep masking; an uncertified scheme is refused; affine KV, which stops
-  // reading dense at its transition, keeps masking.
+  // Logprobs keep masking; an uncertified scheme is refused.
   expect(jumping.plan({ ...request, hasGrammar: true, wantsLogprobs: true }, turbo, scheduling))
     .toMatchObject({ mechanism: "continuous", grammarJump: false });
   expect(jumping.plan({ ...request, hasGrammar: true }, turbo, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
-  const affine = jumping.plan({ ...shape, kvQuant: true, hasGrammar: true }, { kvBits: 4 }, scheduling);
-  expect(affine).toMatchObject({ mechanism: "continuous", grammarJump: false });
-  expect(affine.reasons).toContain("grammar-jump-incompatible-with-request");
+  // Certified delayed affine KV commits spans the same way; the span method
+  // refuses a row before an append its storage would no longer read plain.
+  const affineKv = { kvBits: 4 }, affineRequest = { ...shape, kvQuant: true, hasGrammar: true };
+  const affine = jumping.plan(affineRequest, affineKv, scheduling);
+  expect(affine).toMatchObject({ method: "autoregressive", mechanism: "continuous", grammarJump: true, fill: false, checkpoint: false });
+  expect(refusals(affine)).toEqual([]);
+  expect(jumping.methodRequest!(affine, affineKv)!.key).toBe("grammar-forced-span");
+  expect(jumping.plan({ ...affineRequest, wantsLogprobs: true }, affineKv, scheduling))
+    .toMatchObject({ mechanism: "continuous", grammarJump: false });
+  expect(jumping.plan(affineRequest, affineKv, { ...scheduling, quantizedBatch: false }).mechanism).toBe("unsupported");
   // A configured draft is ignored and the spans still commit, as in main.
   const draftedJump = withRuntimeConfig(jumpRuntime,
     () => bindMlxGateway(softcapUniversal(), { provider: new NgramProvider(), numDraftTokens: 3 }));
@@ -216,13 +222,16 @@ test("Gemma2 softcap selects committed grammar spans without changing the ordina
   // separately tracked adapter-bypass request shape.
   expect(binding.plan({ ...grammar, hasAdapters: true }, { pagedKv: {} }, schedule))
     .toMatchObject({ mechanism: "unsupported", pagedKv: false, grammarJump: false });
-  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, kvQuant: true }, { ...grammar, hasVision: true }])
+  for (const request of [{ ...grammar, wantsLogprobs: true }, { ...grammar, hasVision: true }])
     expect(place(binding, request).grammarJump).toBe(false);
-  // TurboQuant decodes on read: once the gateway has certified the scheme, its
-  // spans commit too; an uncertified scheme stays refused.
-  expect(place(binding, { ...grammar, turboQuant: true })).toMatchObject({ mechanism: "continuous", grammarJump: true });
-  expect(binding.plan({ ...grammar, turboQuant: true }, {}, { ...schedule, quantizedBatch: false }))
-    .toMatchObject({ mechanism: "unsupported", grammarJump: false });
+  // Once the gateway has certified the scheme, spans commit over TurboQuant,
+  // which decodes on read, and over affine KV until a row stops reading plain;
+  // an uncertified scheme stays refused.
+  for (const kv of [{ turboQuant: true }, { kvQuant: true }]) {
+    expect(place(binding, { ...grammar, ...kv }), JSON.stringify(kv)).toMatchObject({ mechanism: "continuous", grammarJump: true });
+    expect(binding.plan({ ...grammar, ...kv }, {}, { ...schedule, quantizedBatch: false }), JSON.stringify(kv))
+      .toMatchObject({ mechanism: "unsupported", grammarJump: false });
+  }
 });
 
 test.each(families)("%s places grammar with a bound grouped draft exactly as the draft alone", (_, model) => {

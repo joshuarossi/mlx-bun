@@ -11,6 +11,7 @@ import { createKvMaintenance, type KvMaintenance } from "../state/kv-maintenance
 import { cleanupFailure, disposeResources } from "../runtime/resources";
 import { snapshotGenerationPolicy } from "./request-policy";
 import { MlxPrefillCohort } from "./prefill-cohort";
+import { DenseKvReadError, unreadableRows } from "../state/dense-kv-reads";
 import type { MlxGroupedMethod, MlxGroupMethodHost, MlxGroupMethodRequest, MlxGroupPreparation, Row } from "./batch-types";
 
 interface RequestState {
@@ -23,11 +24,20 @@ interface RequestState {
 
 /** Preserve committed grammar spans while the shared scheduler interleaves
  * active requests. Graph calls remain B1: spans of different lengths are not
- * padded, split, or verified. The gateway owns each borrowed grammar matcher. */
-export function bindGrammarGroupRequests(model: RuntimeModel) {
+ * padded, split, or verified. The gateway owns each borrowed grammar matcher.
+ * `denseKvReads` is the graph's requirement: the layers its attention reads as
+ * plain keys and values, each an index into the graph's `cacheCount` caches.
+ * It is copied once; a row whose next append would not be read plain there is
+ * refused before any layer appends. */
+export function bindGrammarGroupRequests(model: RuntimeModel, denseKvReads: readonly number[], cacheCount: number) {
+  if (!Array.isArray(denseKvReads))
+    throw new TypeError("forced grammar spans require the graph's dense KV read layers");
+  const layers = Object.freeze([...denseKvReads]);
+  if (layers.some(layer => !Number.isSafeInteger(layer) || layer < 0 || layer >= cacheCount) || new Set(layers).size !== layers.length)
+    throw new RangeError(`dense KV read layers must be distinct layer indices below ${cacheCount}`);
   return (input: GenerateOptions): MlxGroupMethodRequest => ({
     key: "grammar-forced-span", data: snapshotGenerationPolicy(input),
-    open: host => new GrammarGroup(host, model),
+    open: host => new GrammarGroup(host, model, layers),
   });
 }
 
@@ -36,7 +46,8 @@ class GrammarGroup implements MlxGroupedMethod {
   readonly #requests = new Map<Row, RequestState>();
   #next = 0;
 
-  constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel) {
+  constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel,
+    readonly denseKvReads: readonly number[]) {
     this.#binding = bindLegacyAutoregressiveModel(model);
   }
 
@@ -52,7 +63,7 @@ class GrammarGroup implements MlxGroupedMethod {
     const target = new MlxPrefillCohort({
       model: this.model, chunkSize: this.host.prefillChunkSize,
       tailSplit: this.host.runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true),
-      promptCache: this.host.promptCache, maintain,
+      promptCache: this.host.promptCache, maintain, denseKvReads: this.denseKvReads,
       forward: (ids, caches) => Promise.resolve(this.#binding.graph.forwardHidden(ids, caches)),
       project: hidden => {
         const [, length, width] = hidden.shape as [number, number, number];
@@ -135,9 +146,8 @@ class GrammarGroup implements MlxGroupedMethod {
     }
     let next: MlxArray | null = null;
     try {
-      const maintain = state.maintain;
       if (forced) {
-        maintain(state.caches);
+        this.#maintain(state);
         state.sampling.commitDevice(current);
         state.sampling.commitNumbers(forced);
         const after = step + 1 + forced.length;
@@ -146,7 +156,7 @@ class GrammarGroup implements MlxGroupedMethod {
           after < row.req.maxTokens && !grammar.isTerminated
             ? logits => { next = state.sampling.sample(logits, after).token; } : undefined);
       } else if (step + 1 < row.req.maxTokens && !grammar.isTerminated) {
-        maintain(state.caches);
+        this.#maintain(state);
         state.sampling.commitDevice(current);
         using ids = ops.reshape(current, [1, 1]);
         using hidden = await this.#binding.graph.forwardHidden(ids, state.caches);
@@ -179,6 +189,14 @@ class GrammarGroup implements MlxGroupedMethod {
         this.#complete(row, stop || row.generated < row.req.maxTokens ? "stop" : "length");
       } else { state.pending = next; next = null; }
     } finally { next?.dispose(); }
+  }
+
+  /** One maintenance call before the step's forward, then the graph's read
+   * requirement: a row whose next append would not be read plain is refused
+   * with `DenseKvReadError` before any layer appends. */
+  #maintain(state: RequestState): void {
+    state.maintain(state.caches);
+    if (unreadableRows(state.caches, this.denseKvReads, 1).length) throw new DenseKvReadError();
   }
 
   #complete(row: Row, reason: "stop" | "length"): void {
