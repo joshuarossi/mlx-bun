@@ -55,6 +55,7 @@ async function availableAdapters(): Promise<{ id: string; path: string }[]> {
 test("the storage root follows MLX_BUN_HOME, else HOME, at call time", () => {
   expect(mlxBunHome("/h")).toBe(store);
   expect(storagePath("adapters")).toBe(join(store, "adapters"));
+  expect(storagePath("kv")).toBe(join(store, "kv"));
   const unset = configureRuntime({ MLX_BUN_HOME: undefined });
   try {
     expect(mlxBunHome("/h")).toBe("/h/.mlx-bun");

@@ -104,6 +104,24 @@ test("SSD defaults bind identity, codecs, restoration, checkpoints, idle demotio
   });
 });
 
+test("every store shares the process's saved-state budget: it enforces the live limit, counts as a member, and is reclaimed once closed", async () => {
+  await withTokenizer(async directory => {
+    const f = setup(); f.context.model.config.modelDir = directory;
+    const calls: string[] = [];
+    let lent = 700;
+    const ssdBudget = { root: directory, maxBytes: 1000,
+      attach: (member: { dir: string; bytes(): number }) => { calls.push(`attach ${member.dir.replace(directory, "")}`);
+        return { limit: () => lent, detach: () => { calls.push("detach"); } }; },
+      reclaim: () => { calls.push("reclaim"); return { removedFiles: 0, removedBytes: 0 }; }, usage: () => ({ bytes: 0, idleBytes: 0, maxBytes: 1000 }) };
+    const cache = await createCacheServices(f.context, f.binding, { ssdCacheDir: directory, ssdBudget }, f.deps);
+    const options = f.storeOptions as { maxBytes: number; limit(): number; configFingerprint: string };
+    expect(options.limit()).toBe(700); lent = 300; expect(options.limit()).toBe(300);
+    expect(calls).toEqual([`attach /${options.configFingerprint}`, "reclaim"]);
+    await cache.close();
+    expect(calls.slice(2)).toEqual(["detach", "reclaim"]);
+  });
+});
+
 test("optional SSD policy overrides do not alter pressure or checkpoint accounting", async () => {
   await withTokenizer(async directory => {
     const f = setup({ MLX_BUN_SSD_LAYOUT: "blocks", MLX_BUN_SSD_SEGMENTED: "0", MLX_BUN_SSD_PREFETCH: "0",

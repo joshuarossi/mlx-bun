@@ -80,3 +80,32 @@ test("scan never deletes another model's entry and each store restores only its 
     expect(restored?.tokens).toEqual([5, 6, 7, 8]); for (const c of restored?.caches ?? []) c.dispose();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a store enforces the live limit its owner lends, evicting the oldest entry when it shrinks", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mlx-ssd-limit-"));
+  let lent = Infinity;
+  const store = new SsdCacheStore({ dir, maxBytes: Infinity, limit: () => lent, configFingerprint: "limited", tokenizerHash: "vocab", modelId: "limited" });
+  const save = (tokens: number[]) => {
+    const cache = new KVCache();
+    try {
+      using raw = MlxArray.fromFloat32(Float32Array.from({ length: 4 * 64 }, (_, i) => Math.cos(i + tokens[0]!)), [1, 1, 4, 64]);
+      using data = raw.astype(Dtype.bfloat16);
+      append(cache, data);
+      return store.store(tokens, [cache]);
+    } finally { cache.dispose(); }
+  };
+  try {
+    expect(store.maxBytes).toBe(Infinity);
+    expect(save([1, 2, 3, 4])).toBe(true); expect(save([5, 6, 7, 8])).toBe(true);
+    expect(store.entries).toBe(2);
+    // The owner now lends room for one entry: the next write evicts the older one.
+    lent = store.totalBytes / 2 + 1;
+    expect(store.maxBytes).toBe(lent);
+    expect(save([9, 10, 11, 12])).toBe(true);
+    expect(store.entries).toBe(1);
+    expect(store.find([9, 10, 11, 12, 13])?.prefixLen).toBe(4); expect(store.find([1, 2, 3, 4, 13])).toBeNull();
+    // An entry larger than the limit is not stored at all.
+    lent = 1;
+    expect(save([20, 21, 22, 23])).toBe(false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

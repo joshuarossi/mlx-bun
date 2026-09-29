@@ -21,6 +21,19 @@ test("serving defaults to continuous capacity eight; capacity one uses the same 
   expect(() => parse("--compiled-decode", "on")).toThrow();
 });
 
+test("saved prompt/KV state is on by default under MLX_BUN_HOME/kv with a 20 GiB budget; a directory moves it, off and a zero RAM cache disable it", () => {
+  const restore = configureRuntime({ MLX_BUN_HOME: "/tmp/mlx-home" });
+  try {
+    expect(parse().cache).toMatchObject({ ssdCacheDir: "/tmp/mlx-home/kv", ssdCacheMaxBytes: 20 * 2 ** 30, ssdCacheVerify: false });
+    expect(parse("--generation-checkpoint", "64").cache).toMatchObject({ ssdCacheDir: "/tmp/mlx-home/kv", generationCheckpointTokens: 64 });
+    expect(parse("--ssd-cache-max", "0").cache.ssdCacheMaxBytes).toBe(Infinity);
+    expect(parse("--ssd-cache-max", "3").cache.ssdCacheMaxBytes).toBe(3 * 2 ** 30);
+    expect(parse("--ssd-cache", "/elsewhere").cache.ssdCacheDir).toBe("/elsewhere");
+    expect(parse("--ssd-cache", "off").cache.ssdCacheDir).toBeUndefined();
+    expect(parse("--prompt-cache", "0").cache.ssdCacheDir).toBeUndefined();
+  } finally { restore(); }
+});
+
 test("serving numerical aliases and kernel overrides survive isolated worker serialization", () => {
   for (const [flags, kvQuant, fusedSdpa] of [
     [[], "off", false], [["--l1"], "off", false], [["--l2"], "config", true],
@@ -89,15 +102,15 @@ test("ordinary models receive no inferred context or generation cap from plan co
 });
 
 test("serving parses main's TurboQuant spec into the cache scheme, through the isolated launch", () => {
-  expect(parse("--kv-quant", "turbo").cache).toEqual({ turboQuant: { kBits: 8, vBits: 3 } });
-  expect(parse("--kv-quant", "turbo:k4v2").cache).toEqual({ turboQuant: { kBits: 4, vBits: 2 } });
+  expect(parse("--kv-quant", "turbo").cache).toMatchObject({ turboQuant: { kBits: 8, vBits: 3 } });
+  expect(parse("--kv-quant", "turbo:k4v2").cache).toMatchObject({ turboQuant: { kBits: 4, vBits: 2 } });
   // Cache services resolve it as main's standalone scheme: TurboQuant from decode start.
   const { cache } = parse("--kv-quant", "turbo:k5v4");
   expect(resolveKvScheme({ override: cache.kvQuant, turboQuant: cache.turboQuant, quantizedKvStart: cache.quantizedKvStart })
     .generationOptions).toEqual({ turboQuant: { kBits: 5, vBits: 4 }, quantizedKvStart: 0 });
   // An isolated worker receives the parent's resolved options as its launch record.
   expect((decodeLaunch(encodeLaunch({ ...parse("--isolate", "--kv-quant", "turbo:k4v3"), isolate: false })) as ServeOptions).cache)
-    .toEqual({ turboQuant: { kBits: 4, vBits: 3 } });
+    .toMatchObject({ turboQuant: { kBits: 4, vBits: 3 } });
   for (const [spec, message] of [["turbo:k3v3", "kBits must be one of 2,4,5,8 (got 3)"],
     ["turbo:k8v6", "vBits must be one of 2,3,4,5,8 (got 6)"], ["turbo:8", 'must look like "turbo:k<bits>v<bits>"'],
     ["turbo8", "--kv-quant expects off|config|4|8|turbo[:k<bits>v<bits>]"]] as const)
@@ -111,7 +124,8 @@ test("serving parses main's TurboQuant spec into the cache scheme, through the i
 test("invalid serving input fails before model selection", async () => {
   for (const args of [["--batch", "0"], ["--batch", "1.5"], ["--port", "65536"],
     ["--temp", "6"], ["--top-p", "2"], ["--thinking", "maybe"], ["--fused-sdpa", "maybe"], ["--kv-quant", "3"], ["--kv-quant", "turbo:k3v3"],
-    ["--ssd-cache-verify"], ["--generation-checkpoint", "128"], ["--ssd-cache", "/cache", "--prompt-cache", "0"]]) {
+    ["--ssd-cache", "off", "--ssd-cache-verify"], ["--ssd-cache", "off", "--generation-checkpoint", "128"], ["--ssd-cache", "off", "--ssd-cache-max", "1"],
+    ["--prompt-cache", "0", "--ssd-cache-verify"], ["--ssd-cache", "/cache", "--prompt-cache", "0"], ["--ssd-cache", " "]]) {
     let selected = false;
     await expect(runServe(parseCommand("serve", args), { resolve: async () => { selected = true; throw new Error("must not select"); } })).rejects.toThrow();
     expect(selected).toBe(false);

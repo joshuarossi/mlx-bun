@@ -84,8 +84,8 @@ outcomes.
 Shutdown stops background cache demotion, closes chat sessions, drains active
 HTTP responses, then flushes caches and releases the engine. The CLI bounds this
 with a 120-second deadline; cleanup failures or deadline expiry exit with code 1
-(main exited 0 on timeout). SSD sub-options without `--ssd-cache` now fail before
-model loading instead of warning and being ignored. The existing
+(main exited 0 on timeout). SSD sub-options fail before model loading when saved
+state is off (`--ssd-cache off` or `--prompt-cache 0`) instead of warning and being ignored. The existing
 `MLX_BUN_RD_CONTEXT_LIMIT` cap remains supported and is intersected with a loaded
 loaded runtime memory plan; this draft adds no serving context or read-only CLI flags.
 Programmatic composition still accepts explicit context and read-only policy.
@@ -312,7 +312,7 @@ becomes routable and, over the cap, the least recently used worker (the default
 included) is deregistered at once, then drained (`POST /admin/drain` over its
 socket: no new admissions, generation in flight finishes) and stopped through
 its ordinary close, where the worker's cache services demote its prompt cache to
-the SSD tier when `--ssd-cache` is set; the next cold start waits for that stop.
+the saved state (on unless `--ssd-cache off`); the next cold start waits for that stop.
 Naming the evicted id again respawns it. A cold start that fails answers only
 the request that caused it (502 with the worker's exit) and leaves the pool
 unchanged.
@@ -458,7 +458,14 @@ draft, logprobs, logits processors, fill, encoded or paged KV) receive the typed
 capability error.
 
 `engine/cache-services` composes the library prompt cache and persistence. Its
-default is 8 GB of RAM with plain KV; SSD storage requires an explicit directory.
+default is 8 GB of RAM with plain KV; a caller supplies `ssdCacheDir` for saved state.
+`mlx-bun serve` supplies it by default (`MLX_BUN_HOME/kv`, `--ssd-cache <dir>` moves it,
+`off` disables it): one directory per model identity under the root, and
+`engine/kv-budget.ts` holds one byte budget across all of them (`--ssd-cache-max`,
+default 20 GiB, 0 unlimited). A live store is lent what the other stores and idle
+directories leave (never less than a quarter of the budget); a closed store's
+directory is idle, and idle directories lose their oldest files first, at start and
+after every close. A model that returns finds its directory, and its prefix, intact.
 Composition must pass the returned `continuationServices` to
 `binding.gateway.configureContinuation` and supply `promptCache`,
 `resolvedKvScheme`, `stateCodecs`, `adapterNamespace`, and checkpoint availability

@@ -7,14 +7,20 @@ import type { PromptCache, TieredPromptCache, SsdCacheStore, SsdIndexEntry,
 import type { ContinuationPersistence, MlxGatewayBinding } from "@mlx-bun/inference/execution";
 import type { LoadedModelContext } from "./model-host";
 import type { ModelBinding } from "./model-binding";
+import { createKvBudget, type KvBudget } from "./kv-budget";
+import { join } from "node:path";
 
 export interface CacheServiceOptions {
   promptCacheBytes?: number;
   kvQuant?: KvQuantOverride;
   turboQuant?: TurboQuantScheme;
   quantizedKvStart?: number;
+  /** The saved-state root; each model's store lives in its own directory under it. */
   ssdCacheDir?: string;
+  /** Bytes the whole root may hold, across every model's directory; unset means unlimited. */
   ssdCacheMaxBytes?: number;
+  /** One budget shared by every store in the process; without it this call makes one over `ssdCacheDir`. */
+  ssdBudget?: KvBudget;
   ssdCacheVerify?: boolean;
   ssdDemoteIdleSec?: number;
   generationCheckpointTokens?: number;
@@ -86,6 +92,7 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
   const cloneState = (caches: Cache[]) => deps.cloneState(caches, stateCodecs);
   const adapterNamespace = (adapters: string[]) => context.adapters.cacheNamespace(adapters);
   let checkpoints: SsdCacheStore | null = null;
+  let budgetMember: ReturnType<KvBudget["attach"]> | undefined, budget: KvBudget | undefined;
   if (options.ssdCacheDir) {
     const tokenizer = readFileSync(`${context.model.config.modelDir}/tokenizer.json`);
     // The store directory is keyed by architecture, KV scheme, binding
@@ -95,14 +102,20 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
     // live under the old directory name and are ignored, not deleted.
     const architecture = deps.configFingerprint(context.model.config);
     const weights = await deps.weightsIdentity(context.model.config.modelDir, architecture);
+    const configFingerprint = `${architecture}-${resolvedKvScheme.cacheKey}-${Bun.hash(binding.stateCompatibility).toString(16)}-${weights.slice(0, 16)}`;
+    budget = options.ssdBudget ?? createKvBudget(options.ssdCacheDir, options.ssdCacheMaxBytes ?? Infinity);
     checkpoints = deps.createStore({ codecs: stateCodecs, dir: options.ssdCacheDir,
-      maxBytes: options.ssdCacheMaxBytes ?? Infinity, modelId: context.modelId,
-      configFingerprint: `${architecture}-${resolvedKvScheme.cacheKey}-${Bun.hash(binding.stateCompatibility).toString(16)}-${weights.slice(0, 16)}`,
+      maxBytes: budget.maxBytes, limit: () => budgetMember?.limit() ?? budget!.maxBytes, modelId: context.modelId,
+      configFingerprint,
       tokenizerHash: Bun.hash(tokenizer).toString(16), verify: options.ssdCacheVerify,
       storage: { layout: runtime.value("MLX_BUN_SSD_LAYOUT") === "blocks" ? "blocks" : "whole",
         segmented: runtime.value("MLX_BUN_SSD_SEGMENTED") !== "0" },
     });
+    const created = checkpoints;
+    budgetMember = budget.attach({ dir: join(options.ssdCacheDir, configFingerprint), bytes: () => created.totalBytes });
     checkpoints.scan();
+    // A lowered budget, or another process's leftovers, takes effect at once; this store's directory is live and untouched.
+    budget.reclaim();
   }
   const store = checkpoints;
   const cold: ColdTier | null = store ? {
@@ -188,6 +201,8 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
           try { stopIdleDemotion(); } catch (error) { errors.push(error); }
           try { result = await flush(); } catch (error) { errors.push(error); }
           try { promptCache.clear(); } catch (error) { errors.push(error); }
+          // The directory is idle from here: its files count against the root's budget and may be evicted.
+          try { budgetMember?.detach(); budget?.reclaim(); } catch (error) { errors.push(error); }
           if (errors.length === 1) throw errors[0];
           if (errors.length) throw new AggregateError(errors, "cache cleanup failed");
           return result!;
@@ -198,6 +213,7 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
     const errors: unknown[] = [error];
     try { stopIdleDemotion(); } catch (cleanup) { errors.push(cleanup); }
     try { promptCache.clear(); } catch (cleanup) { errors.push(cleanup); }
+    try { budgetMember?.detach(); } catch (cleanup) { errors.push(cleanup); }
     if (errors.length > 1) throw new AggregateError(errors, "cache construction and cleanup failed");
     throw error;
   }
