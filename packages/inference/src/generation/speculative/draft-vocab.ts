@@ -3,8 +3,9 @@
 // A native MTP head spends most of each draft step in the target's vocabulary
 // projection (Qwen3.8: 248,320 rows). Drafts only need to be LIKELY tokens, so
 // the draft projects onto the N most frequent rows of the same quantized head.
-// The target still verifies and samples over the full vocabulary: outputs are
-// unchanged, a token outside the list simply cannot be drafted (one miss).
+// The target still verifies and samples over the full vocabulary: the output
+// distribution is unchanged (a different acceptance pattern can re-roll a seeded
+// trajectory), a token outside the list simply cannot be drafted (one miss).
 //
 // Coupling is preserved. For a [1, V] input MLX's categorical draws by INVERSE
 // CDF in token-id order with ONE uniform from the step key (random.cpp
@@ -14,9 +15,9 @@
 // full-vocabulary draw with zero mass outside the list: same uniform, same order,
 // same coupling. No noise reconstruction is involved.
 //
-// Opt-in: MLX_BUN_SPEC_DRAFT_VOCAB=<json {"ids":[...]}>. Build lists with
-// reports/qwen38-trellis-publication/build-draft-vocab.ts (corpus provenance
-// and coverage are recorded beside the list).
+// A list shipped beside the draft companion (`draft_vocab.json`) loads
+// automatically; MLX_BUN_SPEC_DRAFT_VOCAB=<path to json {"ids":[...]}> selects
+// another list and =0/=off disables it (see configuredDraftVocabulary).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MlxArray } from "@mlx-bun/mlx/array";

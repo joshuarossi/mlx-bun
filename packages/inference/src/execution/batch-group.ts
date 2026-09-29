@@ -61,8 +61,9 @@ import { driveExecutionGroup } from "./scheduler";
 // When `admissionHeld` reports a waiting serial-lane request, the loop stops
 // admitting, finishes the running rows, and releases the lock so the serial
 // request runs (mlx-lm's drain_batch) — resumed via kick().
-// Joins re-merge the whole batch; the keep-the-running-batch `extend`
-// optimization is a later refinement (batching-v2-plan item a).
+// Joins keep the running batch: a full-attention join appends the new row with
+// `extendKVRows` (`extendQuantRows` for quantized layers) in one pad + concat;
+// rotating layers re-merge. MLX_BUN_BATCH_EXTEND=0 forces the re-merge.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { activeMemory,cacheMemory,clearCache,Dtype,peakMemory } from "@mlx-bun/mlx/ffi";
@@ -742,8 +743,9 @@ export class MlxBatchExecutionGroup {
   }
 
   /** Merge a fully-prefilled joiner with the running batch, layer by layer
-   *  (re-merge; `extend` is the later refinement). Flushes the decode pipeline
-   *  first so the row set is settled and the next step starts cold. */
+   *  (extend-join for full-attention layers, re-merge for rotating ones).
+   *  Flushes the decode pipeline first so the row set is settled and the next
+   *  step starts cold. */
   async #mergeJoiner(p: PrefillState): Promise<void> {
     await this.#flushPipeline();
     this.#maintainKv?.prepareBatch?.(p.solo);

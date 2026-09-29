@@ -16,7 +16,7 @@ import {
 } from "../kernels/trellis/index";
 export { TRELLIS_MATVEC_MAX_M, type TrellisGeometry, type MixedGateUpTail } from "../kernels/trellis/index";
 
-/** Decode variant (see HEADER). Default passed the M4 Pro closeout matrix;
+/** Decode variant (semantics in kernels/trellis/index.ts). Default passed the M4 Pro closeout matrix;
  *  `MLX_BUN_TRELLIS_VARIANT` overrides for experiments. */
 let variantOverride: number | null = null;
 /** Explicit override (benches); otherwise the runtime flag — read per call so

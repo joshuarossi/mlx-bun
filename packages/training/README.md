@@ -19,11 +19,11 @@ Opt-in native checks over a caller-supplied cached snapshot (`MLX_BUN_TEST_NATIV
 | --- | --- |
 | `trainer` | Training loops, checkpoint output, progress, and run configuration |
 | `dataset`, `rank` | Tokenized SFT/preference batches and adapter rank assignment |
-| `lora` | Trainable A/B leaves, attachment, warm start, save, and disposal |
+| `lora` (`lora-params.ts`) | Trainable A/B leaves, attachment, warm start, save, and disposal |
 | `optimizer`, `loss` | AdamW, schedules, and differentiable training objectives |
 | `prefix-shared`, `segmented` | Specialized shared-prefix forwards and bounded backward passes |
 | `kernels/flash-cce` | Callable fused cross-entropy Metal forward/backward kernels |
-| `diffusion` | DiffusionGemma's denoising training objective |
+| `diffusion` (`diffusion-lora.ts`) | DiffusionGemma's denoising training objective |
 | `merge`, `fuse`, `export` | Adapter combination, checkpoint fusion, and export manifests |
 
 These module subpaths are available for composition. The Steel Metal header is
