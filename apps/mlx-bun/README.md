@@ -49,7 +49,10 @@ becomes the default for requests without an `adapter` field, an explicit
 directory fails startup with `adapter mount failed: …` after releasing the
 model.
 The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces
-a three-step adapter with the fine-tune producer and serves with it.
+a three-step adapter with the fine-tune producer and serves with it; the opt-in
+[DiffusionGemma adapter test](tests/engine/diffusion-adapter.test.ts) serves a
+saved denoising adapter (hot mount and unmount, per-request selection, an
+adapter row beside a base row, the startup default).
 Main's speculative flags are restored with its validation: `--draft-model`
 resolves like the main model (a query never downloads) and its kind is
 auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone
@@ -1016,7 +1019,18 @@ establish parity for actual checkpoint quantization.
 [Fine-tuning policy tests](tests/finetune/policy.test.ts) cover the app recipe,
 explicit overrides, dataset inspection, HTTP submission, progress, and resource
 cleanup with a fake native runtime. These CPU checks do not extend the numerical
-claims in the [training evidence](../../packages/training/README.md).
+claims in the [training evidence](../../packages/training/README.md). The opt-in
+[fine-tune preservation test](tests/engine/finetune-preservation.test.ts)
+(`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_FINETUNE_REFERENCES=<ref.json>[:…]`) runs
+this producer on each submit record main's producer ran, for any family or
+training path, and requires main's metrics, config files, adapter and checkpoint
+tensors, fresh-reload logits, and optionally its `fuse` output exactly; its
+header gives the commands that produce the references outside the repository.
+On 2026-09-28 it passed on the M1 Max against main `02d723a` run from source with
+this tree's staged native library, for mlx-community MiniCPM5-1B-OptiQ-4bit
+(`664aabae`). The records were SFT (8 iterations, batch 2, accumulation 2, dropout,
+rsLoRA, checkpoints, fused output), ORPO (default L3 heads, grad checkpointing)
+and DPO (LoRA+). A reference with a changed seed failed as expected.
 
 Composition takes `storagePaths` (job store, saved token file, artifact root)
 like `chatPaths` and `memoryPaths`, so embedded and test servers never touch
