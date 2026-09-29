@@ -158,11 +158,11 @@ export function createRequestPrep(input: {
     return { controller: r.controller, degradeHint: r.degradeHint };
   };
 
-  // Map OpenAI reasoning_effort levels onto the Qwen3.8 template's supported
-  // set (xhigh|medium|low — the template raises on anything else). "none"
+  // Map OpenAI reasoning_effort levels onto the depth set a template that reads
+  // `reasoning_effort` supports (xhigh|medium|low — such a template raises on anything else). "none"
   // means thinking off (handled by resolveEnableThinking), so no depth is
   // passed. Only consumed for templates with readsReasoningEffort.
-  const qwenReasoningEffort = (
+  const templateReasoningEffort = (
     effort: ChatRequestParams["reasoning_effort"],
   ): "xhigh" | "medium" | "low" | undefined => {
     switch (effort) {
@@ -185,7 +185,7 @@ export function createRequestPrep(input: {
     return {
       tools,
       enableThinking: resolveEnableThinking(req),
-      reasoningEffort: qwenReasoningEffort(req.reasoning_effort),
+      reasoningEffort: templateReasoningEffort(req.reasoning_effort),
       preserveThinking: req.chat_template_kwargs?.preserve_thinking,
     };
   };
