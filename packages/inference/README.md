@@ -437,6 +437,35 @@ one ([State and attention](#state-and-attention)). Captures and their content
 pins remain external. These checks do not cover cross-version checkpoint
 files, hard-kill durability, an external oracle or performance.
 
+Grammar, grammar proposals and supplied fill on these graphs have a separate
+opt-in consumer, the
+[sliding-window grammar and fill test](tests/parity/sliding-grammar-fill.test.ts).
+It takes `MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_MODEL` (a Llama-family artifact) and
+`MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_WINDOW` (at least 4) and builds the same custom
+graph as the rotating-join and continuation consumers. The reference is this
+tree's direct token-by-token generation; the gateway runs its placement path
+(plan, `methodRequest` or row sampling, the binding's group), with every case past
+the window:
+- Grammar (JSON schema, choice, EBNF): at B1, tokens, every forward's IDs and
+  valid K/V, and every projection's complete logits. At B2, prepared together
+  or joining late, each row's tokens.
+- With `MLX_BUN_GRAMMAR_JUMP=1`: the speculative group verifies the matcher's
+  forced string instead of committing it. Tokens equal direct token-by-token
+  generation at B1 and B2, rejected proposals leave the ring, and proposals are
+  both accepted and rejected.
+- Supplied strict and echo fill is applied through the shared fill binding and
+  by direct `generate`: strict rows restate the fill-off control, and echo and
+  scripted proposals (one accepted, one rejected after the ring wrapped) are
+  verified, so output equals the control while the session records injected and
+  accepted tokens. B2 pairs start together and late (a strict row joining beside
+  a wrapped echo row, whose first multi-position verify forward reads a ring the
+  joiner's one in-place write has rotated).
+- For each of these shapes: a B2 row cancelled at its third token beside a
+  surviving peer, then reuse of the drained group.
+
+Run it with
+`MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_MODEL=/Llama-3.2-3B-Instruct-4bit MLX_BUN_TEST_SLIDING_GRAMMAR_FILL_WINDOW=8 bun --no-env-file test packages/inference/tests/parity/sliding-grammar-fill.test.ts`.
+
 The [padded-prefill test](tests/parity/padded-prefill-model.test.ts) takes
 `MLX_BUN_TEST_PADDED_PREFILL_MODEL` and `MLX_BUN_TEST_PADDED_PREFILL_REFERENCE`.
 The external JSON report is `{ runtime, configSha256, rows }`, where `rows` is

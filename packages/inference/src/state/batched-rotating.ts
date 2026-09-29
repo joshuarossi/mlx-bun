@@ -52,8 +52,11 @@ export function buildBatchedRotatingMask(
   const off = Math.min(maxSize - 1, offsetScalar);
   const S = off + N;
 
-  // Local (non-persisted) leftPad for the mask: trim + rotation shrink it.
-  const trimSize = idx - maxSize + (block ? 1 : 0);
+  // Local (non-persisted) leftPad for the mask: trim + rotation shrink it. A
+  // block write first puts the ring in temporal order, so its history is the
+  // ring's active length (the whole ring once rotated), not the write head.
+  const history = block && rotated ? maxSize : idx;
+  const trimSize = history - maxSize + (block ? 1 : 0);
   const isRot = !block && (rotated || idx >= maxSize);
   const lp = leftPad.map((x) => x - (trimSize > 0 ? trimSize : 0) - (isRot ? 1 : 0));
 

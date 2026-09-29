@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import type { Cache } from "@mlx-bun/inference/contracts/mlx";
+import { applyDescriptor, descriptorFor } from "./real-weight-inputs";
 const target = Bun.env.MLX_BUN_TEST_CONTINUATION_MODEL;
 const adapter = Bun.env.MLX_BUN_TEST_CONTINUATION_ADAPTER;
 if (target && !existsSync(`${target}/config.json`)) throw new Error(`unavailable model: ${target}`);
@@ -42,11 +43,7 @@ async function continuationConfig() {
   const config = await loadModelConfig(target!);
   if (windowSetting === undefined) return config;
   if (!["llama", "mistral"].includes(config.modelType)) throw new Error(`a custom window needs a Llama-family artifact, not ${config.modelType}`);
-  const window = Number(windowSetting);
-  const types = Array.from({ length: config.text.numHiddenLayers }, (_, i) => i % 2 === 0 ? "sliding_attention" : "full_attention");
-  const raw = (config.raw.text_config ?? config.raw) as Record<string, unknown>;
-  raw.layer_types = [...types]; raw.sliding_window = window;
-  config.text.layerTypes = [...types]; config.text.slidingWindow = window;
+  applyDescriptor(config, descriptorFor(config.text.numHiddenLayers, Number(windowSetting)));
   return config;
 }
 /** The graph must carry the custom descriptor it was built from. */

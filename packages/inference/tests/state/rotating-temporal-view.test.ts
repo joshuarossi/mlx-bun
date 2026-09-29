@@ -14,6 +14,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "../../src/state/rotating-kv";
 import { RotatingQuantizedKVCache } from "../../src/state/rotating-quantized-kv";
 import { BatchedRotatingCache } from "../../src/state/batched-rotating";
+import { rollbackRotatingRing } from "../../src/state/rotating-row-transaction";
 import { BatchedRotatingQuantCache } from "../../src/state/batched-rotating-quant";
 import { alignRotatingRows, rotatingSourcePosition } from "../../src/state/rotating-kv-layout";
 import { plainRowStorage, quantizedRowStorage, temporalStorageView } from "../../src/state/batched-row-storage";
@@ -252,6 +253,87 @@ test("a late join merges each row's newest window, and extraction and decode kee
       extractAll(`decode ${step}`, offsets);
     }
     batched.dispose();
+  }
+});
+
+/** One forward on a batched ring, as attention reads it: write `N` positions per
+ * row (tagged with their absolute position) and return, per row and query, the
+ * tags of the columns its mask admits. The cache's offsets advance by `N`. */
+function forwardSeen(batched: BatchedRotatingCache, offsets: number[], N: number): number[][][] {
+  const kRows = offsets.map(offset => block(offset, offset + N, 1)), vRows = offsets.map(offset => block(offset, offset + N, -1));
+  using k = ops.concatAxis(kRows, 0);
+  using v = ops.concatAxis(vRows, 0);
+  for (const a of [...kRows, ...vRows]) a.dispose();
+  const mask = batched.makeMask(N, W);
+  if (mask.mode !== "array") throw new Error("expected an array mask");
+  using allowed = mask.arr!;
+  const [keys, values] = batched.updateAndFetch(k, v);
+  using _values = values;
+  using keysOwned = keys;
+  using numeric = allowed.astype(keysOwned.dtype);
+  const S = keysOwned.shape[2]!, tags = floats(keysOwned), flags = floats(numeric);
+  return offsets.map((_, row) => Array.from({ length: N }, (_, i) => {
+    const columns: number[] = [];
+    for (let col = 0; col < S; col++)
+      if (flags[(row * N + i) * S + col]) columns.push(Math.round(tags[((row * H) * S + col) * D]!));
+    return columns.toSorted((a, b) => a - b);
+  }));
+}
+/** What each query must attend: its own newest window, from the row's history. */
+const windows = (offsets: readonly number[], N: number) =>
+  offsets.map(offset => Array.from({ length: N }, (_, i) => range(Math.max(0, offset + i - W + 1), offset + i + 1)));
+
+function mergedRows(rowWrites: number[][]): { batched: BatchedRotatingCache; offsets: number[] } {
+  const solos = rowWrites.map(writes => drive(() => new RotatingKVCache(W), writes, () => {}));
+  const offsets = rowWrites.map(writes => writes.reduce((a, b) => a + b, 0));
+  const views = solos.map(solo => solo.temporalView());
+  const batched = BatchedRotatingCache.merge(views.map(([keys, values]) => ({ keys, values })), offsets, W);
+  for (const view of views) for (const a of view) a.dispose();
+  for (const solo of solos) solo.dispose();
+  return { batched, offsets };
+}
+
+test("a block write after in-place decode masks each merged row to its own window", () => {
+  // A joiner with fewer positions than the window keeps left padding; once
+  // in-place decode rotates the ring, a verify block reorders the ring into
+  // temporal order and its mask must drop the same history column the block drops.
+  for (let decode = 0; decode <= W; decode++) {
+    const label = `after ${decode} decode steps`;
+    const { batched, offsets } = mergedRows([CASES["mixed"]!, [3]]);
+    try {
+      for (let step = 0; step < decode; step++) {
+        forwardSeen(batched, offsets, 1);
+        for (let row = 0; row < offsets.length; row++) offsets[row]! += 1;
+      }
+      const expected = windows(offsets, 3);
+      expect({ label, seen: forwardSeen(batched, offsets, 3) }).toEqual({ label, seen: expected });
+    } finally { batched.dispose(); }
+  }
+});
+
+test("verify rounds that keep different prefixes per row leave every row's window intact", () => {
+  // The scheduler's shape: decode, a wide verify block, a per-row rollback, and
+  // decode again, repeatedly, on rows of different lengths.
+  const rounds: [number, number[]][] = [[3, [3, 1]], [4, [4, 1]], [2, [2, 2]], [5, [1, 5]], [3, [1, 1]]];
+  for (const [first, second] of [[CASES["mixed"]!, [3]], [CASES["mixed"]!, [5]], [[13], [4]]] as [number[], number[]][]) {
+    for (let decode = 0; decode <= W; decode++) {
+      const label = `${first.join("+")} with ${second.join("+")}, ${decode} decode steps`;
+      let { batched, offsets } = mergedRows([first, second]);
+      try {
+        const decodeOnce = () => {
+          expect({ label, seen: forwardSeen(batched, offsets, 1) }).toEqual({ label, seen: windows(offsets, 1) });
+          offsets = offsets.map(offset => offset + 1);
+        };
+        for (let step = 0; step < decode; step++) decodeOnce();
+        for (const [round, [width, keep]] of rounds.entries()) {
+          const before = [...offsets];
+          expect({ label, round, seen: forwardSeen(batched, offsets, width) }).toEqual({ label, round, seen: windows(offsets, width) });
+          batched = rollbackRotatingRing(batched, before, keep);
+          offsets = before.map((offset, row) => offset + keep[row]!);
+          decodeOnce(); decodeOnce();
+        }
+      } finally { batched.dispose(); }
+    }
   }
 });
 
