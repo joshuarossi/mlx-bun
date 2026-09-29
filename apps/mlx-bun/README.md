@@ -143,7 +143,11 @@ switch makes a different one current; naming a model in a request never changes 
 and `/library` list every local model with `resident` and `current`/`serving`; `GET /stats`
 adds `models` (budget, resident bytes, each resident model's bytes, leases and last use).
 Managed jobs and Whisper decoding pause every resident model (`pauseAll`) and hold back new
-loads meanwhile.
+loads meanwhile. The host publishes `model.load` (with `resumed` when saved state was found),
+`model.unload` (reason `evicted` or `requested`, whether the flush was durable) and `model.memory`
+on the app's `events` bus, and each unit's engine publishes its request timings and samples through
+`engine/telemetry.ts`; the persistent services' `modelHost` (`served-model-host.ts`) leases the
+current model, whose id follows a switch.
 
 `--draft-*`, `--adapter` and `--mtp` belong to the model named at startup and apply
 whenever it is (re)loaded; the other models load plain. Adapters mounted at runtime are
