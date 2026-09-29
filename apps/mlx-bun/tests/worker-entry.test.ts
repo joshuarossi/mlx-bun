@@ -41,14 +41,15 @@ const preamble = `
   const until = async (check, what) => { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(5); } };
   const context = { modelId: "org/model", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
     template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
-  const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
+  const cache = { promptCache: { totalBytes: 0 }, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
     checkpoints: null, continuationServices: {}, stopIdleDemotion() { events.push("timer stop"); }, async close() { events.push("cache close"); return { durable: true }; } };
-  const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, held: 0, async acquireExecutionLease(signal) { signal.throwIfAborted(); gateway.held++; events.push("lease");
+  const gateway = { held: 0, activeRows: 0, kvBytes: { projected: 0, budget: null }, async acquireExecutionLease(signal) { signal.throwIfAborted(); gateway.held++; events.push("lease");
     return { dispose() { gateway.held--; events.push("release"); } }; }, async runExclusive(fn) { return fn(); } };
-  mock.module("@mlx-bun/mlx/ffi", () => { throw new Error("native library loaded"); });
+  // The host reads two numbers from the native library to size its budget; nothing else may load it.
+  mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
   mock.module(app + "src/engine/index.ts", () => ({
     loadContext: async () => { if (process.env.WORKER_LOAD_FAILS) throw new Error("load failed"); events.push("load"); return context; },
-    modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
+    modelServingBinding: async () => ({ discovery: { embeddings: false }, gateway: { configureContinuation() {} } }),
     createCacheServices: async () => cache,
     createAppEngine: async () => ({ gateway, async close() { events.push("engine close"); await cache.close(); context.dispose(); } }),
   }));
@@ -96,7 +97,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.deepEqual(events, ["load", "routes 0"], "only the model half composes; the Responses history is the worker's own, empty store");
     assert.equal(statSync(socketPath).mode & 0o777, 0o600);
     assert.deepEqual(await (await get("/health")).json(), { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
-    assert.deepEqual(await (await get("/v1/models")).json(), { object: "list", data: [{ id: "org/model" }] });
+    assert.deepEqual(await (await get("/v1/models")).json(), { object: "list", data: [{ id: "org/model", resident: true, current: true }] });
     // Persistent surfaces are the parent's: no web app, no hub, jobs, sessions, memory, or publishing routes.
     for (const path of ["/", "/index.html", "/api/hub/local", "/api/jobs", "/api/sessions/search?q=x", "/api/memory/status", "/api/settings/hf-token", "/api/quantize/anything"])
       assert.equal((await get(path)).status, 404, path);
@@ -499,14 +500,14 @@ test("the app form composes the real app over the socket with private storage: p
     const root = process.env.HOME;
     const until = async (check, what) => { const end = Date.now() + 10000; while (!await check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(10); } };
     const events = [], seen = [];
-    mock.module("@mlx-bun/mlx/ffi", () => { throw new Error("native library loaded"); });
+    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
     const context = { modelId: "org/model", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
-    const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
+    const cache = { promptCache: { totalBytes: 0 }, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };
     const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, async acquireExecutionLease(signal) { signal.throwIfAborted(); events.push("lease"); return { dispose() { events.push("release"); } }; }, async runExclusive(fn) { return fn(); } };
     mock.module(app + "src/engine/index.ts", () => ({
-      loadContext: async () => context, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
+      loadContext: async () => context, modelServingBinding: async () => ({ discovery: { embeddings: false }, gateway: { configureContinuation() {} } }),
       createCacheServices: async () => cache,
       createAppEngine: async () => ({ gateway, async close() { events.push("engine close"); context.dispose(); } }),
     }));
@@ -522,7 +523,7 @@ test("the app form composes the real app over the socket with private storage: p
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes() { return {
       async handle(request) {
         const url = new URL(request.url);
-        if (url.pathname === "/library") return Response.json({ models: [{ repo_id: "org/model", serving: true }] });
+        if (url.pathname === "/library") return Response.json({ models: [{ repo_id: "org/model", serving: true, resident: true }] });
         if (url.pathname !== "/v1/chat/completions" || request.method !== "POST") return null;
         const body = await request.json();
         const entry = { host: url.host, authorization: request.headers.get("authorization"), prompt: body.messages.at(-1).content, stream: body.stream === true, aborted: false };
@@ -578,7 +579,7 @@ test("the app form composes the real app over the socket with private storage: p
     // The whole app answers on the socket, over private storage.
     assert.equal(await (await run.get("/")).text(), "web");
     assert.deepEqual(await json("/health"), { status: "ok", state: "ready", model: "org/model", pid: process.pid, in_flight: 0, leases: 0 });
-    assert.deepEqual(await json("/library"), { models: [{ repo_id: "org/model", serving: true }] });
+    assert.deepEqual(await json("/library"), { models: [{ repo_id: "org/model", serving: true, resident: true }] });
     assert.deepEqual(await json("/api/hub/local"), { ok: true, models: [] });
     assert.deepEqual(await json("/api/jobs"), { ok: true, jobs: [] });
     assert.ok(existsSync(storagePaths.jobsDb), "the job store is the private one");

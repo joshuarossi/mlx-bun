@@ -950,6 +950,8 @@ export interface PiBackendOptions {
   port: number | (() => number);
   modelId?: string;
   contextWindow?: number;
+  /** What the served model is, read when each chat connects; overrides the static fields below. A host that swaps models supplies it. */
+  model?: () => Pick<PiBackendOptions, "modelId" | "contextWindow" | "vision" | "audio" | "thinking" | "genDefaults">;
   readOnly?: boolean;
   vision?: boolean;
   audio?: boolean;
@@ -960,6 +962,9 @@ export interface PiBackendOptions {
   memory?: () => Promise<MemorySurface | undefined>;
   downloadsSnapshot?: () => readonly { state: string; repoId: string }[];
 }
+
+const definedOnly = <T extends object>(value: T | undefined): Partial<T> =>
+  Object.fromEntries(Object.entries(value ?? {}).filter(([, item]) => item !== undefined)) as Partial<T>;
 
 /** Creates isolated chat sessions over the application's loopback HTTP API. */
 export function createPiBackend(options: PiBackendOptions): ChatBackendFactory {
@@ -980,5 +985,5 @@ export function createPiBackend(options: PiBackendOptions): ChatBackendFactory {
     genDefaults: options.genDefaults ?? { temperature: null, topP: null, topK: null },
     transcription: options.transcription ?? (async () => false),
   };
-  return (send) => new PiBackend(send, resolved);
+  return (send) => new PiBackend(send, { ...resolved, ...definedOnly(options.model?.()) });
 }

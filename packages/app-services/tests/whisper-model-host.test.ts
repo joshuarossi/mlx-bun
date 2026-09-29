@@ -180,3 +180,34 @@ test("loads, unloads and memory are published with their durations, and a bus th
   const throwing = setup({ events: { publish() { throw new Error("bus down"); } } });
   expect((await throwing.host.acquire("org/whisper")).loadMs).toBe(250);
 });
+
+test("a host that also generates is asked to make room for the bytes before a checkpoint loads, and a refusal is a load failure", async () => {
+  const admitted: number[] = [];
+  const { host, events } = setup({ admit: async bytes => { events.push(`admit ${bytes}`); admitted.push(bytes); } });
+  (await host.acquire("org/whisper")).release();
+  expect(events).toEqual(["admit 100", "load /models/org/whisper", "dispose /models/org/whisper"]);
+  expect(admitted).toEqual([100]);
+  // A warm lease loads nothing, so nothing is asked.
+  host.pin("org/whisper");
+  (await host.acquire("org/whisper")).release(); (await host.acquire("org/whisper")).release();
+  expect(admitted).toEqual([100, 100]);
+  const refusing = setup({ admit: async () => { throw new Error("no room"); } });
+  const error = await refusing.host.acquire("org/whisper").catch(failure => failure as ModelHostError);
+  expect(error).toMatchObject({ code: "load-failed", message: "no room" });
+  expect(refusing.events).toEqual([]);
+});
+
+test("an explicitly configured checkpoint is sized from its files, so residency can count it", async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const directory = mkdtempSync(join(tmpdir(), "mlx-whisper-size-"));
+  try {
+    writeFileSync(join(directory, "weights.safetensors"), new Uint8Array(4096));
+    writeFileSync(join(directory, "config.json"), "{}");
+    const { host } = setup({ configured: { id: "local-whisper", directory } }, []);
+    const lease = await host.acquire("local-whisper");
+    expect(lease.model.bytes).toBe(4098);
+    lease.release();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});

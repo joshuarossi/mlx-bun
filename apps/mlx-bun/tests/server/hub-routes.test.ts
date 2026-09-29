@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Registry } from "@mlx-bun/hub/registry";
-import { createHubRoutes } from "../../src/server/hub-routes";
+import { createHubRoutes, ServeRefused } from "../../src/server/hub-routes";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -108,6 +108,26 @@ test("model selection preserves main's restart answer and never claims a loaded 
   expect(await routes.handle(request("/api/hub/local", { method: "POST" }))).toBeNull();
 });
 
+
+test("a host that switches models answers a serve request with the model it now serves; a refusal keeps its status; a host that cannot switch still says restart", async () => {
+  const seen: { model: string; aborted: boolean }[] = [];
+  const routes = createHubRoutes({ serve: async (model, signal) => {
+    seen.push({ model, aborted: signal.aborted });
+    if (model === "org/missing") throw new ServeRefused(404, "org/missing is not a local model; download it first");
+    if (model === "org/broken") throw new Error("boom");
+    return model === "org/one-model-host" ? undefined : { model };
+  } });
+  const post = (model: string) => routes.handle(request("/api/hub/serve", { method: "POST", body: JSON.stringify({ model }) }));
+  const served = (await post(" org/model "))!;
+  expect(served.status).toBe(200);
+  expect(await served.json()).toEqual({ ok: true, model: "org/model" });
+  expect(seen).toEqual([{ model: "org/model", aborted: false }]);
+  const refused = (await post("org/missing"))!;
+  expect(refused.status).toBe(404);
+  expect(await refused.json()).toEqual({ ok: false, error: "org/missing is not a local model; download it first" });
+  expect(await (await post("org/one-model-host"))!.json()).toEqual({ ok: false, restart_required: true, command: "mlx-bun serve org/one-model-host" });
+  expect((await post("org/broken"))!.status).toBe(500);
+});
 
 test("cancellation during an empty registry scan returns 499 and closes the registry", async () => {
   const controller = new AbortController();

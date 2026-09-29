@@ -3,17 +3,16 @@
 // scripts/build-web.ts.
 //
 // Model picker: makes the nav model label
-// (#nav-model, previously a dead <span> with no click handler) open a
-// popover of every downloaded model from GET /library, each with its own
-// fit verdict computed on THIS Mac (`assessment`, from packages/inference/src/execution/fit.ts) — not a
-// generic heuristic like LM Studio's. Investigated: there is no in-process
-// model reload/swap path anywhere in apps/mlx-bun/src/server/ or apps/mlx-bun/src/cli/ (grepped
-// for reload/swapModel/switchModel/loadModel — none exist; the runtime is
-// one model per process by design, same as mlx-lm). So rows offer a
-// copy-able `mlx-bun serve <id>` restart command instead of faking a live
-// swap.
+// (#nav-model) open a popover of every downloaded model from GET /library,
+// each with its own fit verdict computed on THIS Mac (`assessment`, from
+// packages/inference/src/execution/fit.ts). A row's Serve button asks the
+// server to switch (POST /api/hub/serve): the model loads beside the running
+// ones when it fits, otherwise the least recently used one is unloaded with
+// its saved state, and switching back resumes that state. A host that serves
+// one model (an embedded server) answers restart_required, and the row then
+// shows the copy-able `mlx-bun serve <id>` command instead.
 
-import { $, setModelPopClose, openHubFromModelPicker } from "./shell";
+import { $, setModelPopClose, openHubFromModelPicker, pollIdentity, toast } from "./shell";
 import { api } from "./api";
 import { esc } from "./markdown";
 
@@ -26,6 +25,8 @@ export interface LibraryRow {
   supported: boolean;
   support_tier: "targeted" | "generic" | null;
   serving: boolean;
+  /** Loaded now (the served model and any that fit beside it). Absent from a host that predates residency. */
+  resident?: boolean;
   assessment: { fits: boolean; max_safe_context: number; predicted_decode_tps: number } | null;
 }
 
@@ -67,11 +68,11 @@ function renderRow(m: LibraryRow): string {
   const tpsBit = m.assessment && m.assessment.fits
     ? m.assessment.predicted_decode_tps.toFixed(0) + " tok/s predicted"
     : m.assessment ? "doesn't fit this Mac's memory" : "fit unknown";
-  const servingTag = m.serving ? '<div class="mp-serving-tag">● currently serving</div>' : "";
-  const cmd = "mlx-bun serve " + m.repo_id;
+  const servingTag = m.serving ? '<div class="mp-serving-tag">● currently serving</div>'
+    : m.resident ? '<div class="mp-serving-tag">○ loaded</div>' : "";
   const cmdRow = m.serving || !m.supported
     ? ""
-    : '<div class="mp-cmd"><code>' + esc(cmd) + '</code><button type="button" class="mp-copy" data-cmd="' + esc(cmd) + '">Copy</button></div>';
+    : '<div class="mp-cmd"><button type="button" class="mp-serve" data-repo="' + esc(m.repo_id) + '">Serve</button></div>';
   return (
     '<div class="mp-row' + (m.serving ? " serving" : "") + '">' +
       dot +
@@ -98,10 +99,46 @@ export function renderModelPopBodyHtml(models: LibraryRow[]): string {
   return (
     rows +
     '<div class="mp-foot-note">Fit is predicted for THIS Mac, not a generic guess. ' +
-    "Switching the served model restarts the process — there's no live " +
-    "in-process swap yet; copy the command above and restart.</div>" +
+    "Serving a model loads it beside the running ones when it fits; otherwise the least recently used one is unloaded " +
+    "with its saved state, and switching back resumes it.</div>" +
     browseRow
   );
+}
+
+type ServeResp = { ok?: boolean; error?: string; restart_required?: boolean; command?: string };
+
+/** Ask the server to make this model the served one. A host that cannot switch answers with the restart command, shown in place of the button. */
+async function serveFromPicker(btn: HTMLButtonElement): Promise<void> {
+  const repo = btn.dataset.repo || "";
+  if (!repo) return;
+  btn.disabled = true;
+  btn.textContent = "Loading…";
+  const d = await api<ServeResp>("/api/hub/serve", { method: "POST", body: { model: repo } })
+    .catch((): ServeResp => ({ ok: false, error: "request failed" }));
+  if (d.ok) {
+    toast("Now serving " + repo, "ok");
+    void pollIdentity();
+    await refreshModelPop();
+    return;
+  }
+  if (d.restart_required && d.command) {
+    const cmd = d.command;
+    const row = btn.parentElement;
+    if (row) {
+      row.innerHTML = '<code>' + esc(cmd) + '</code><button type="button" class="mp-copy" data-cmd="' + esc(cmd) + '">Copy</button>';
+      row.querySelector<HTMLButtonElement>(".mp-copy")!.onclick = (ev) => {
+        const copy = ev.currentTarget as HTMLButtonElement;
+        if (navigator.clipboard) navigator.clipboard.writeText(cmd).then(() => {
+          const prev = copy.textContent; copy.textContent = "Copied";
+          setTimeout(() => { copy.textContent = prev; }, 1200);
+        }).catch(() => {});
+      };
+    }
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = "Serve";
+  toast("Couldn't switch models: " + (d.error || "unknown error"), "err");
 }
 
 async function refreshModelPop(): Promise<void> {
@@ -112,16 +149,8 @@ async function refreshModelPop(): Promise<void> {
     const d = await api("/library");
     const models = ((d as { models?: LibraryRow[] }).models) || [];
     body.innerHTML = renderModelPopBodyHtml(models);
-    body.querySelectorAll<HTMLButtonElement>(".mp-copy").forEach((btn) => {
-      btn.onclick = () => {
-        const cmd = btn.dataset.cmd || "";
-        if (navigator.clipboard) {
-          navigator.clipboard.writeText(cmd).then(() => {
-            const prev = btn.textContent; btn.textContent = "Copied";
-            setTimeout(() => { btn.textContent = prev; }, 1200);
-          }).catch(() => {});
-        }
-      };
+    body.querySelectorAll<HTMLButtonElement>(".mp-serve").forEach((btn) => {
+      btn.onclick = () => { void serveFromPicker(btn); };
     });
     const browseBtn = body.querySelector<HTMLButtonElement>("#model-pop-browse");
     if (browseBtn) {

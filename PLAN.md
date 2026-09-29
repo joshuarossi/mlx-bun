@@ -151,19 +151,14 @@ Migration gaps stay required work in the feature table.
     by any host that binds `jobs` (the app's job host runs `task` runners; `process` runners with quantize).
     Exit per module: its domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and
     served-surface inventories are unchanged.
-  - [ ] (e) Model host residency and swapping. Today swapping needs `--isolate` (one worker per
-    model), and the pool's spawn-overlap loads the new model while the old ones stay resident, so two
-    models can be resident past any budget. Implement the `modelHost` contract: memory-fit residency,
-    drain then flush per-model KV/prefix state to `MLX_BUN_HOME` and resume it on return (reusing the
-    SSD cache tier), pinned companions (Whisper's `resident`/idle-unload setting becomes the pinned
-    role). `--isolate` stays crash isolation, decoupled from swapping; decide `--model-pool`'s meaning
-    then. Exit: swap between two models without `--isolate` never exceeds the budget (resident bytes
-    from events), the returning model resumes its state (prefix hit), a pinned companion survives
-    swaps, and a request for a non-resident model waits instead of thrashing; verified with real
-    weights (MiniCPM5-1B and Qwen3.5-0.8B, Whisper as companion). The host publishes `model.unload` with
-    reason `evicted` and `model.load` with `resumed`, which the metrics module already renders as swap times;
-    the chat model's own unload is not published until it can be evicted, and under `--isolate` the workers'
-    events reach the parent's bus (the metrics view there is empty until they do).
+  - [ ] (e) Model host events reach every consumer. Residency, live switching, saved state and the model router landed
+    (the default server swaps models in-process by memory fit; `--isolate` runs one worker that does; the pool is
+    gone), and the host publishes `model.load` (with `resumed` when saved state was found), `model.unload` (reason
+    `evicted`, flushed) and `model.memory` for the metrics module. Remaining: under `--isolate` the worker's events
+    reach the parent's bus (the metrics view there is empty until they do), and modules get one `modelHost`
+    that leases `generate` and `transcribe` (today persistent services lease the served model through
+    `served-model-host.ts` and the model composition's modules get Whisper's). Exit: a paired run under `--isolate`
+    shows the same swap events in the parent's metrics, and a module acquires `generate` and `transcribe` from one service.
 
 ## Remaining features by layer
 

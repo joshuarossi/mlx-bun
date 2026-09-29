@@ -20,6 +20,8 @@ export interface ServeOptions {
   kvBudgetBytes?: number;
   /** Main's `--memory-budget`, decimal bytes: the usable envelope for load, admission, and the allocator. */
   memoryBudgetBytes?: number;
+  /** `--model-budget`, decimal bytes: what all resident models may use together; absent uses a share of the GPU's recommended working set. */
+  modelBudgetBytes?: number;
   /** Main's `--context-length`: the context a memory-planning runtime reserves; models without a plan ignore it. */
   contextTokens?: number;
   /** Startup kernel override; absent derives from the selected KV scheme. */

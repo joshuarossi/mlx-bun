@@ -196,6 +196,9 @@ export function createChatController() {
     ws.onerror = () => { setChatStatus("error"); };
     ws.onmessage = (ev) => { let m: ServerMessage; try { m = JSON.parse(ev.data); } catch { return; } handle(m); };
   }
+  // The served model changed (the hub or picker switched it): a session that is not mid-turn reconnects,
+  // so its capabilities (vision, thinking) and model name describe the model that will answer.
+  window.addEventListener("mlx-model-changed", () => { if (!turnActive && ws && ws.readyState === 1) ws.close(); });
   function scheduleReconnect(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => { if (currentRoute() === "chat") connect(); }, 2200);

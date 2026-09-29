@@ -19,7 +19,7 @@ const rows = (api: ServerApi, id: string) => api.modes.find(mode => mode.id === 
 test("each server mode lists its composed routes, statuses, and conditions", () => {
   expect(baseline.modes.map(mode => mode.id)).toEqual(["serve", "isolate", "worker", "app-worker", "transcription"]);
   const serve = rows(baseline, "serve");
-  for (const row of ["GET /ws/chat WebSocket upgrade (Pi chat)", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions implemented",
+  for (const row of ["GET /ws/chat WebSocket upgrade (Pi chat)", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions routed by model id",
     "GET /v1/models/{id} implemented", "DELETE /v1/adapters/{id} implemented", "GET /api/jobs/{id}/stream implemented", "POST /api/dataset/push implemented",
     "POST /api/hub/download implemented [falls through if !options.downloads]", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
     "POST /v1/audio/sessions/{id}/finish implemented", "GET /api/dataset/templates implemented", "POST /api/dataset/submit implemented"]) expect(serve).toContain(row);
@@ -35,7 +35,7 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   const worker = rows(baseline, "worker");
   for (const row of ["GET /health implemented", "* /health 405 method not allowed", "POST /admin/lease implemented [served if options.acquireExecutionLease]",
     "POST /admin/memory/complete implemented [served if options.memoryTaskModel] [served if options.acquireExecutionLease]",
-    "* /admin/memory/complete 405 method not allowed [served if options.memoryTaskModel] [served if options.acquireExecutionLease]", "POST /v1/chat/completions implemented"]) expect(worker).toContain(row);
+    "* /admin/memory/complete 405 method not allowed [served if options.memoryTaskModel] [served if options.acquireExecutionLease]", "POST /v1/chat/completions routed by model id"]) expect(worker).toContain(row);
   // The admin routes answer first: discovery's /health is unreachable here.
   expect(worker.filter(row => row.includes(" /health "))).toEqual(["GET /health implemented", "* /health 405 method not allowed"]);
   // The worker state stands in for the persistent groups with ones that serve nothing.
@@ -60,10 +60,11 @@ test("generation writes a build-owned page with source links at the revision", a
     expect(page).toContain("title: HTTP API reference");
     for (const title of ["## Server", "## Isolated server (`--isolate`)", "## Isolation worker socket", "## App worker socket (`openIsolatedHost`)", "## Transcription-only server"])
       expect(page).toContain(`\n${title}\n`);
-    expect(page).toMatch(/\| GET \| `\/v1\/models` \| implemented \| \[server\/discovery-routes\.ts:\d+\]\(https:\/\/github\.com\/joshuarossi\/mlx-bun\/blob\/a{40}\/apps\/mlx-bun\/src\/server\/discovery-routes\.ts#L\d+\) \|/);
+    expect(page).toMatch(/\| GET \| `\/v1\/models` \| implemented \| \[server\/model-routes\.ts:\d+\]\(https:\/\/github\.com\/joshuarossi\/mlx-bun\/blob\/a{40}\/apps\/mlx-bun\/src\/server\/model-routes\.ts#L\d+\) \|/);
     // A module's routes cite its manifest, and the shared discovery routes their library file.
     expect(page).toMatch(/\| POST \| `\/v1\/audio\/transcriptions` \| implemented \| \[module-transcription\/src\/manifest\.ts:\d+\]\(https:\/\/github\.com\/joshuarossi\/mlx-bun\/blob\/a{40}\/packages\/module-transcription\/src\/manifest\.ts#L\d+\) \|/);
     expect(page).toMatch(/\| GET \| `\/health` \| implemented \| \[app-services\/src\/companion-info-routes\.ts:\d+\]/);
+    expect(page).toMatch(/\| POST \| `\/v1\/embeddings` \| routed by model id \| \[server\/model-routes\.ts:\d+\]/);
   } finally { await rm(destination, { recursive: true, force: true }); }
   expect(await readFile(resolve(root, "apps/website/.gitignore"), "utf8")).toContain(SERVER_API_PAGE);
 });
@@ -130,6 +131,19 @@ test("a changed module manifest shape or module route group fails instead of omi
     .toThrow(/^packages\/module-transcription\/src\/manifest\.ts:\d+: a route method must be a string literal/);
   expect(() => serverApiReference(mutate("cli/serve-host.ts", "createModuleRoutes(modules.routes)", "createMountedRoutes(modules.routes)")))
     .toThrow(/^cli\/serve-host\.ts:\d+: unrecognized composition shape: `createMountedRoutes\(modules\.routes\)` is not an exported route factory call/);
+});
+
+test("the model router lists its own rows first, then the current model's route chain read from its composition; a changed shape fails", () => {
+  const serve = rows(baseline, "serve");
+  // The router answers discovery and the wire; the unit's own groups follow at their file order.
+  expect(serve.indexOf("GET /v1/models implemented")).toBeLessThan(serve.indexOf("GET /fit implemented"));
+  for (const path of ["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings"]) expect(serve).toContain(`POST ${path} routed by model id`);
+  // The wire routes appear once: the router's row wins over the unit's completions group.
+  expect(serve.filter(row => row.startsWith("POST /v1/chat/completions "))).toHaveLength(1);
+  expect(() => serverApiReference(mutate("server/model-routes.ts", "MODEL_ROUTED.has(pathname)", "isRouted(pathname)")))
+    .toThrow(/unrecognized router shape: expected MODEL_ROUTED routing in handle/);
+  expect(() => serverApiReference(mutate("cli/serving-unit.ts", "const routes: RouteGroup = {", "const chain: RouteGroup = {")))
+    .toThrow(/unrecognized composition shape; expected `const routes = \{ handle: … \}` in createServingUnit/);
 });
 
 test("a changed or removed allowlisted non-route site fails", () => {

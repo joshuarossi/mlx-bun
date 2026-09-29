@@ -104,11 +104,55 @@ borrowing that state by parameter and lending it an execution lease, library
 invalidation, and the bound port through an attached link. Its
 `startModelHost` is the CLI's loader (runtime switches, expert offload, the
 model context, the startup adapter) and hands the context to
-`startContextHost`, which serves one loaded context (binding, caches, engine,
-Whisper companion, model routes, Pi backend, listener) and releases it by the
-ownership it is given. `startApp` (`serve.ts`) composes the state and one host
-with one close in the app's order; `startModelServer` and
+`startContextHost`, which serves it and any other local model (below): the model
+host, the Whisper companion, the model router, the Pi backend, and the listener.
+A loaded model is a serving unit (`serving-unit.ts`: binding, caches, engine and
+the routes bound to them); the host releases each by the ownership it is given.
+`startApp` (`serve.ts`) composes the state and one host with one close in the
+app's order; `startModelServer` and
 [`mlx-bun/server`](#server-entry-mlx-bunserver) use it.
+
+### Model host: residency by memory fit
+
+`engine/model-residency.ts` implements the `modelHost` contract (`@mlx-bun/app-core`)
+for models that generate. Residency is by memory, not count: a model that fits
+the budget loads beside the others; otherwise the least recently used unpinned,
+unleased model is drained (admission stops, work in flight ends), its saved
+prompt/KV state is flushed durably under `MLX_BUN_HOME/kv`, and its weights are
+released, all before the newcomer loads, so resident bytes never exceed the budget
+during a swap. Acquiring it again reloads it, and the next request finds its
+prefix by token match in the saved state (a swap-back follow-up reports the
+prior conversation as `cached_tokens`). A request for a model that cannot fit
+while every other model is busy waits, and never evicts one mid-request. A model
+bigger than the whole budget is still served alone. The budget is `--model-budget`
+(decimal GB; default 70% of the GPU's recommended working set); a model's need is
+its weights plus the KV and prefill working set of an 8k context (`engine/resident-estimate.ts`,
+the `/fit` model) and, once loaded, what it
+reports it holds (weights, projected KV, RAM prefix cache), floored by the process's measured
+MLX active memory. A runtime that plans its own memory is served alone. The Whisper companion
+counts against the budget and, when it loads, drains a chat model to make room;
+`--whisper-resident` pins it (it is never a victim).
+
+`server/model-routes.ts` routes by the request's `model`: an exact local id (the ids
+`GET /v1/models` lists) leases that model, and the response body holds the lease until
+it ends, so a model is never released under a stream. Anything else (no id, Pi's `local`,
+a name another server would know) is the current model's, as is every other model-scoped
+path (`/stats`, `/fit`, cache administration, adapters). The current model is the one the
+server started with until `POST /api/hub/serve` (the hub panel and model picker) or another
+switch makes a different one current; naming a model in a request never changes it. `GET /v1/models`
+and `/library` list every local model with `resident` and `current`/`serving`; `GET /stats`
+adds `models` (budget, resident bytes, each resident model's bytes, leases and last use).
+Managed jobs and Whisper decoding pause every resident model (`pauseAll`) and hold back new
+loads meanwhile.
+
+`--draft-*`, `--adapter` and `--mtp` belong to the model named at startup and apply
+whenever it is (re)loaded; the other models load plain. Adapters mounted at runtime are
+lost when their model is evicted. `--expert-offload` routes the process's loads through one
+file, so that model is all the process serves. A host built with `createServer` around a
+caller's context serves only that context (never evicted); `POST /api/hub/serve` then still
+answers that a restart is needed. The [residency tests](tests/engine/model-residency.test.ts),
+[router tests](tests/server/model-routes.test.ts) and the opt-in
+[native test](tests/engine/model-host-native.test.ts) cover it.
 
 Worker mode serves over a Unix socket a parent supplies, in another process.
 `jobs/worker-process.ts` is the parent-side owner: it spawns the executable
@@ -1262,7 +1306,7 @@ home directory and an invented token.
 
 ## Web hub
 
-`server/hub-routes.ts` owns the web hub list/search and restart-required response.
+`server/hub-routes.ts` owns the web hub list/search and the serve action.
 Local rows consume registry and fit APIs; search remains request-owned and
 cancels with its caller. `hub/downloads.ts` owns web-started transfers: admission
 is synchronous before the metadata request, so a duplicate submit answers 409;
@@ -1272,8 +1316,12 @@ hub tracker's live row to done, or to an error when the listing fails or
 shutdown cancels it; completion rescans the registry and
 invalidates discovery; shutdown aborts and joins every transfer before the engine
 closes, leaving resumable partials and publishing nothing. Selecting a model
-returns a restart command, preserving main's behavior without claiming a live
-switch.
+(`POST /api/hub/serve`, the hub panel's and model picker's Serve button) asks the
+attached host to make it current: it loads beside the running models when it fits,
+otherwise the least recently used one is drained first (see the model host), and the
+answer is `{ ok: true, model }` (404 for an id that is not a local model, 502 when it
+cannot load). A host that serves one model answers `restart_required` with the
+`mlx-bun serve <id>` command.
 
 ## Audio transcription
 

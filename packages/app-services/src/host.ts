@@ -23,6 +23,8 @@ export interface HostServicesOptions {
   whisper?: WhisperServing;
   /** The host's exclusive lock around decoding; without one decoding runs at once. */
   exclusive?: Exclusive;
+  /** Makes room for a checkpoint about to load; see `WhisperModelHostOptions.admit`. */
+  admit?: (bytes: number) => Promise<void>;
   /** Test seams. */
   backend?: WhisperBackend;
   catalog?: ModelCatalog;
@@ -52,6 +54,7 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     ...(policy?.idleUnloadSec !== undefined ? { idleUnloadSec: policy.idleUnloadSec } : {}),
     ...(policy?.resident ? { resident: true } : {}),
     ...(options.exclusive ? { exclusive: options.exclusive } : {}),
+    ...(options.admit ? { admit: options.admit } : {}),
     ...(options.backend ? { backend: options.backend } : {}),
     ...(options.log ? { log: options.log } : {}),
     events,

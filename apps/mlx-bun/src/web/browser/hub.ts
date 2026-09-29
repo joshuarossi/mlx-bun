@@ -24,7 +24,7 @@
 // server-reported but ultimately HF-namespace strings, same hazard class
 // model-picker.ts already treats as untrusted.
 
-import { $, toast, trapFocus, setHubPanelClose, setOpenHubFromModelPicker, type FocusTrap } from "./shell";
+import { $, toast, trapFocus, setHubPanelClose, setOpenHubFromModelPicker, pollIdentity, type FocusTrap } from "./shell";
 import { api } from "./api";
 import type { ApiEnvelope } from "./protocol";
 import { esc } from "./markdown";
@@ -145,10 +145,11 @@ async function loadLocal(): Promise<void> {
 }
 
 /* ────────────────────────────────────────────────────────────────────
-   Serve action — handles BOTH the live-swap outcome (if a future server
-   ever returns ok:true) and today's honest restart_required outcome,
-   rendered as a copy-able command. NEVER auto-serves — this is only
-   reachable from an explicit button click.
+   Serve action — the server loads the model beside the running ones when
+   it fits, or in place of the least recently used one (its saved state is
+   kept), and answers ok:true; a host that serves one model answers
+   restart_required, rendered as a copy-able command. NEVER auto-serves —
+   this is only reachable from an explicit button click.
    ──────────────────────────────────────────────────────────────────── */
 
 function wireServeButtons(container: HTMLElement): void {
@@ -163,15 +164,15 @@ async function serveModel(repo: string, btn: HTMLButtonElement): Promise<void> {
   if (!repo) return;
   btn.disabled = true;
   const prevText = btn.textContent;
-  btn.textContent = "Checking…";
+  btn.textContent = "Loading…";
   const d = await api<ServeResp>("/api/hub/serve", { method: "POST", body: { model: repo } })
     .catch((): ServeResp => ({ ok: false, error: "request failed" }));
   btn.disabled = false;
   btn.textContent = prevText;
   if (d.ok) {
-    // Honest today-doesn't-happen branch, kept real rather than dead code:
-    // if the server ever reports a completed live swap, reflect it plainly.
     toast("Now serving " + repo, "ok");
+    hideRestartStrip();
+    void pollIdentity();
     return;
   }
   if (d.restart_required && d.command) {
@@ -191,7 +192,7 @@ function showRestartCommand(repo: string, command: string): void {
   if (!strip) return;
   strip.innerHTML =
     '<div class="hub-restart-note">Switching to <strong>' + esc(repo) + '</strong> needs a restart — ' +
-    "there's no live in-process model swap on this path yet. Restarting takes about a second " +
+    "this server holds one model and cannot swap. Restarting takes about a second " +
     "and your sessions are preserved on disk, exactly as they are now.</div>" +
     '<div class="hub-cmd"><code>' + esc(command) + '</code>' +
     '<button type="button" class="hub-copy-btn" data-cmd="' + esc(command) + '">Copy</button></div>';
