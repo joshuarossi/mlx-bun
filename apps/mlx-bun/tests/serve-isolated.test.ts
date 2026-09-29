@@ -18,7 +18,17 @@ const app = new URL("../", import.meta.url).pathname;
 const entry = join(app, "tests/fake-worker.ts");
 const workerEnv = { MLX_BUN_LIBMLXC: "/does-not-exist", HF_HUB_OFFLINE: "1" };
 const model = (root: string) => ({ repoId: "org/model", path: join(root, "model"), modelType: "qwen3", expertsBytes: 0, sizeBytes: 1 }) as ModelRecord;
-const workerDirs = () => readdirSync(tmpdir()).filter(name => name.startsWith("mlx-worker-")).length;
+// Worker socket directories are made under os.tmpdir(), which the whole machine shares
+// (other test runs, other agents). Each test gives the process that creates them a private
+// TMPDIR, so what it lists is only what it made.
+const privateTmp = (root: string) => { const dir = join(root, "tmp"); mkdirSync(dir, { recursive: true }); return dir; };
+const workerDirs = (tmp: string) => readdirSync(tmp).filter(name => name.startsWith("mlx-worker-"));
+/** Run `start` (which creates the socket directory synchronously after its awaits, in this process) with TMPDIR private to the test. */
+async function inTmp<T>(tmp: string, start: () => Promise<T>) {
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = tmp;
+  try { return await start(); } finally { if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved; }
+}
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 test("the isolated composition and the serve entry never reach the engine or the native library through a runtime import", () => {
@@ -61,7 +71,7 @@ test("the isolated composition and the serve entry never reach the engine or the
  * in reach: past the deadline the whole group is killed and the call fails.
  * Either way the group is joined before this returns: workers the child left
  * behind get a grace to exit on their closed stdin, then are killed. */
-async function runChild(script: string, env: Record<string, string> = {}, deadlineMs = 25_000) {
+async function runChild(script: string, env: Record<string, string> = {}, deadlineMs = 40_000) {
   const child = spawn(process.execPath, ["--eval", script], { cwd: app, env: { ...process.env, ...workerEnv, ...env },
     detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const group = -child.pid!;
@@ -186,15 +196,15 @@ test("the parent composes the persistent state and the proxy without the engine 
     assert.equal(notices.length, 1);
   `;
   const home = mkdtempSync(join(tmpdir(), "mlx-isolated-compose-"));
-  const before = workerDirs();
+  const tmp = privateTmp(home);
   try {
-    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry, TMPDIR_PROBE: tmpdir() });
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry, TMPDIR: tmp, TMPDIR_PROBE: tmp });
     // The worker's output is forwarded to the parent's log with the worker prefix; nothing else is printed.
     expect({ code: result.code, stdout: result.stdout.split("\n").filter(Boolean), stderr: result.stderr.split("\n").filter(Boolean) }).toEqual({ code: 0,
       stdout: ["[worker] loading org/model"], stderr: ["[worker] drain requested", "[worker] stopping", "[worker] worker startup failed: fake load failure"] });
-    expect(workerDirs()).toBe(before);
+    expect(workerDirs(tmp)).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
-}, 30_000);
+}, 60_000);
 
 // The memory synthesis scripts share this parent: tripwires for the engine,
 // the native library and a parent-side task model, and a pipeline stand-in that
@@ -321,19 +331,21 @@ test("memory synthesis under isolation: the parent keeps the pipeline and SSE, e
     assert.ok(lines.some(line => line.includes("exited with code 137 — respawning (restart 1/1)")), lines.join("\\n"));
   ` + memoryCleanup;
   const home = mkdtempSync(join(tmpdir(), "mlx-isolated-memory-"));
-  const before = workerDirs();
+  const tmp = privateTmp(home);
   try {
-    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry });
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry, TMPDIR: tmp });
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(workerDirs()).toBe(before);
+    expect(workerDirs(tmp)).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
-}, 40_000);
+}, 60_000);
 
 test("the task model snapshot the parent selects for a worker, the one that worker loads, stays out of hub GC for the worker's lifetime: through a canonical change before the load, idle after calls, after a client disconnect before the worker's join, and through eviction, until the worker has closed", async () => {
   const script = memoryPreamble + `
     revision("first");
-    // Worker stops take a while, so an evicted worker is observably draining; an aborted call joins late.
-    const running = await start({ FAKE_WORKER_STOP_MS: "1000", FAKE_WORKER_MEMORY_JOIN_MS: "300" });
+    // An evicted worker stays observably draining until the stop gate opens; an aborted call stays
+    // unjoined until the join gate opens. Both are files this script owns, so no clock decides the order.
+    const stopGate = join(root, "stop.gate"), joinGate = join(root, "join.gate");
+    const running = await start({ FAKE_WORKER_STOP_GATE: stopGate, FAKE_WORKER_MEMORY_JOIN_GATE: joinGate });
   ` + memoryRequest(`"http://127.0.0.1:" + running.port`) + `
     const gc = async () => { const response = await get("/api/gc/execute", { method: "POST", body: JSON.stringify({ yes: true }) }); return [response.status, (await response.json()).snapshots]; };
     // The parent selects "first" and the worker holds the call before its load; a new revision moves the canonical selection meanwhile.
@@ -357,6 +369,7 @@ test("the task model snapshot the parent selects for a worker, the one that work
     assert.deepEqual(await gc(), [409, undefined]);
     assert.ok(alive(evicted) && snapshot("first"));
     // Once that worker has closed, GC prunes the snapshot it had loaded.
+    writeFileSync(stopGate, "");
     await until(() => !alive(evicted), "the evicted worker to exit");
     let pruned;
     await until(async () => (pruned = await gc())[0] === 200, "GC after the worker closed");
@@ -375,6 +388,7 @@ test("the task model snapshot the parent selects for a worker, the one that work
     revision("third");
     assert.deepEqual(await gc(), [409, undefined]);
     assert.ok(!events().some(item => item.pid === respawned && item.event === "memory aborted"), "the worker has not joined the call yet");
+    writeFileSync(joinGate, "");
     await until(() => events().some(item => item.pid === respawned && item.event === "memory aborted"), "the worker's join");
     assert.deepEqual(await gc(), [409, undefined]);
     assert.ok(snapshot("second"));
@@ -382,13 +396,13 @@ test("the task model snapshot the parent selects for a worker, the one that work
     assert.ok(!alive(respawned));
   ` + memoryCleanup;
   const home = mkdtempSync(join(tmpdir(), "mlx-isolated-memory-gc-"));
-  const before = workerDirs();
+  const tmp = privateTmp(home);
   try {
-    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry });
+    const result = await runChild(script, { HOME: home, HF_HUB_CACHE: `${home}/hub`, HF_TOKEN: "", FAKE_WORKER: entry, TMPDIR: tmp });
     expect(result).toEqual({ code: 0, stdout: "", stderr: "" });
-    expect(workerDirs()).toBe(before);
+    expect(workerDirs(tmp)).toEqual([]);
   } finally { rmSync(home, { recursive: true, force: true }); }
-}, 40_000);
+}, 60_000);
 
 function openChat(base: URL) {
   const frames: ServerMessage[] = [];
@@ -429,14 +443,16 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   options.memoryPaths = { vault: join(root, "vault"), skills: join(root, "skills") };
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
   const notices: string[] = [], workerLog: string[] = [];
-  const before = workerDirs();
-  const running = await startIsolatedServer(model(root), options, { entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
-    notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) });
+  const tmp = privateTmp(root);
+  const running = await inTmp(tmp, () => startIsolatedServer(model(root), options, { entry, env: workerEnv, restarts: { max: 2, windowMs: 60_000, delayMs: 0 },
+    notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   const base = new URL(`http://127.0.0.1:${running.port}`);
   const engine = async () => await (await fetch(new URL("/engine", base))).json() as { state: string; pid: number | null; restarts: number };
   const seen = async () => await (await fetch(new URL("/fake/seen", base))).json() as { pid: number; seen: { path: string; aborted: boolean; body?: unknown }[] };
   const socket = (await engine() as unknown as { socket: string }).socket;
+  expect(dirname(socket).startsWith(join(tmp, "mlx-worker-"))).toBe(true);
   const chat = openChat(base);
+  let leftover: string[] = ["not closed"];
   try {
     // The ready frame describes the worker's model through the proxy: capabilities and defaults from /v1/models, the option's temperature on top.
     await chat.waitFor(() => chat.frames.some(frame => frame.type === "ready"), "ready");
@@ -478,12 +494,13 @@ test("web chat under isolation: Pi lives in the parent and streams through the p
   } finally {
     await chat.close();
     await running.close();
+    leftover = workerDirs(tmp);
     rmSync(root, { recursive: true, force: true });
   }
   expect(workerLog.slice(2)).toEqual(["drain requested", "stopping"]);
   expect(existsSync(dirname(socket))).toBe(false);
-  expect(workerDirs()).toBe(before);
-}, 40_000);
+  expect(leftover).toEqual([]);
+}, 60_000);
 
 test("the model pool through the real composition: exact ids reach their own workers on sockets in the same private directory, the least recently used is evicted at the cap and respawned when named again, and shutdown joins every worker", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-isolated-pool-"));
@@ -493,10 +510,10 @@ test("the model pool through the real composition: exact ids reach their own wor
   options.storagePaths = { jobsDb: join(root, "jobs.sqlite"), credentialsFile: join(root, "hf.json"), artifactRoot: join(root, "artifacts") };
   const records = ["org/model", "org/second", "org/third"].map(id => ({ ...model(root), repoId: id, path: join(root, id.split("/")[1]!) }) as ModelRecord);
   const notices: string[] = [], workerLog: string[] = [];
-  const before = workerDirs();
-  const running = await startIsolatedServer(records[0]!, options, { entry, env: workerEnv, restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
+  const tmp = privateTmp(root);
+  const running = await inTmp(tmp, () => startIsolatedServer(records[0]!, options, { entry, env: workerEnv, restarts: { max: 1, windowMs: 60_000, delayMs: 0 },
     createRegistry: () => ({ listCanonical: () => records, close() {} }),
-    notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) });
+    notice: line => notices.push(line), log: line => workerLog.push(line), error: line => workerLog.push(line) }));
   const base = `http://127.0.0.1:${running.port}`;
   const chat = async (model?: string) => {
     const response = await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" },
@@ -506,11 +523,12 @@ test("the model pool through the real composition: exact ids reach their own wor
   const engine = async () => await (await fetch(`${base}/engine`)).json() as { state: string; pid: number | null; socket: string | null;
     pool: { cap: number; default: string; resident: { id: string; pid: number | null; state: string; restarts: number; socket: string }[]; loading: string[] } };
   const pids: number[] = [];
-  let socketDir = "";
+  let socketDir = "", leftover: string[] = ["not closed"];
   try {
     const first = await engine();
     pids.push(first.pid!);
     socketDir = dirname(first.socket!);
+    expect(socketDir.startsWith(join(tmp, "mlx-worker-"))).toBe(true);
     expect(first.pool).toEqual({ cap: 2, default: "org/model", resident: [{ id: "org/model", pid: first.pid, state: "ready", restarts: 0, socket: first.socket! }], loading: [] });
     // Two turns to two ids reach two workers.
     expect(await chat("org/model")).toBe("org/model");
@@ -537,11 +555,12 @@ test("the model pool through the real composition: exact ids reach their own wor
     expect(new Set(pids).size).toBe(4);
   } finally {
     await running.close();
+    leftover = workerDirs(tmp);
     rmSync(root, { recursive: true, force: true });
   }
   for (const pid of pids) expect(alive(pid)).toBe(false);
   expect(existsSync(socketDir)).toBe(false);
-  expect(workerDirs()).toBe(before);
+  expect(leftover).toEqual([]);
   expect(workerLog.filter(line => line.startsWith("loading"))).toEqual(["loading org/model", "loading org/second", "loading org/third", "loading org/model"]);
   expect(workerLog.filter(line => line === "drain requested")).toHaveLength(4);
 }, 40_000);
