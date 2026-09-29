@@ -132,9 +132,9 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (a) Contracts landed (`AppModule`, `CoreServices`). Remaining: the host-side loader
-    (validate manifests, mount routes, verbs, runners and storage) and the gate rules in the
-    architecture section. Exit: tests reject duplicate ids, routes, verbs, job kinds and storage
+  - [ ] (a) Contracts landed (`AppModule`, `CoreServices`). Remaining: the `registry` service
+    contract, the host-side loader (validate manifests, mount routes, verbs, runners and
+    storage) and the gate rules in the architecture section. Exit: tests reject duplicate ids, routes, verbs, job kinds and storage
     paths, an unmet `requires`, a module importing another module, an app or a service
     implementation, and a host file other than `modules.ts` importing a module.
   - [ ] (b) Pilot: `@mlx-bun/module-transcription` (Whisper service, `/v1/audio/*`, `transcribe`,

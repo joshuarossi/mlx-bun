@@ -212,7 +212,13 @@ module's `panel/` files and data `protocol.ts`, and so loads in any webview.
 Modules live in `packages/` because libraries cannot depend on apps and the
 native app must import them; a flat `packages/module-*` needs no new workspace
 glob. Modules never import each other; cross-module needs go through core
-services.
+services. One module's contributions to another (memory's tools in chat, a
+module's settings in the shell) go through a `registry` core service: the
+contributor registers a declared extension and the consumer lists what is
+registered, so neither names the other. The web shell (navigation, routing,
+theme, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
+host's UI, native webviews included. Modules start as private workspace
+packages; publishing them is a separate licensing decision.
 
 **Hosts** compose. `apps/mlx-bun` installs every module; a transcription-only
 host installs one; a native app installs what it wants. Each host has one
