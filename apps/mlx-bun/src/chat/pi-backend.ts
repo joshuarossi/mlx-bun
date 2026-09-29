@@ -1,8 +1,8 @@
 import { defaultSessionDir } from "./session-files";
 import { mkdirSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
+import { storagePath } from "../storage/paths";
 import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, SessionManager,
   type AgentSession, type AgentSessionEvent, type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory,
   type ExtensionAPI, type SessionInfo, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
@@ -954,7 +954,7 @@ export function createPiBackend(options: PiBackendOptions): ChatBackendFactory {
     ...options,
     paths: {
       cwd: options.paths?.cwd ?? process.cwd(),
-      agentDir: options.paths?.agentDir ?? join(homedir(), ".mlx-bun", "pi-sessions"),
+      agentDir: options.paths?.agentDir ?? storagePath("piSessions"),
       sessionDir: options.paths?.sessionDir ?? defaultSessionDir(),
       toolApprovalsFile: options.paths?.toolApprovalsFile,
     },

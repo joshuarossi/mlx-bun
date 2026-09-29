@@ -9,10 +9,8 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { storagePath } from "../storage/paths";
 import type { JobRow, JobStatus } from "./protocol";
-
-export const DEFAULT_JOBS_DB = `${process.env.HOME}/.cache/mlx-bun/jobs.sqlite`;
-export const DEFAULT_JOBS_DIR = `${process.env.HOME}/.cache/mlx-bun/jobs`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -58,7 +56,7 @@ export class JobStore {
   readonly dbPath: string;
   readonly logsDir: string;
 
-  constructor(dbPath: string = DEFAULT_JOBS_DB, logsDir: string = DEFAULT_JOBS_DIR) {
+  constructor(dbPath: string = storagePath("jobsDb"), logsDir: string = storagePath("jobLogs")) {
     if (dbPath !== ":memory:") {
       try { mkdirSync(dbPath.slice(0, dbPath.lastIndexOf("/")), { recursive: true }); } catch {}
     }

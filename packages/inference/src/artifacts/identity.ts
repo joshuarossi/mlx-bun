@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { runtimeValue } from "../runtime/config";
 
 /** Identity calculation owns bytes; this interface owns memo persistence. */
 export interface ArtifactIdentityStore {
@@ -42,7 +43,16 @@ export class FileArtifactIdentityStore implements ArtifactIdentityStore {
   async flush(): Promise<void> { await Promise.all(this.#pending); }
 }
 
-const defaultStore = new FileArtifactIdentityStore(join(homedir(), ".cache", "mlx-bun", "artifact-identities"));
+let defaultStore: FileArtifactIdentityStore | undefined;
+/** The memo directory under the mlx-bun storage root (MLX_BUN_HOME, default
+ * ~/.mlx-bun), read at call time so an isolated environment gets its own. */
+function defaultIdentityStore(): FileArtifactIdentityStore {
+  const configured = runtimeValue("MLX_BUN_HOME");
+  const root = configured ? resolve(configured) : join(process.env.HOME || homedir(), ".mlx-bun");
+  const directory = join(root, "cache", "artifact-identities");
+  if (defaultStore?.directory !== directory) defaultStore = new FileArtifactIdentityStore(directory);
+  return defaultStore;
+}
 export interface ArtifactIdentityFile { name: string; path: string; }
 
 async function revision(files: readonly ArtifactIdentityFile[]): Promise<string> {
@@ -56,7 +66,7 @@ async function revision(files: readonly ArtifactIdentityFile[]): Promise<string>
  * are unchanged. ctime catches same-size edits even when mtime is restored.
  * A memo miss computes the full identity; persistence never delays its caller. */
 export async function artifactIdentity(seed: string, input: readonly ArtifactIdentityFile[],
-  store: ArtifactIdentityStore = defaultStore): Promise<string> {
+  store: ArtifactIdentityStore = defaultIdentityStore()): Promise<string> {
   const files = [...input].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   const before = await revision(files);
   const key = createHash("sha256").update(JSON.stringify([seed, before])).digest("hex");

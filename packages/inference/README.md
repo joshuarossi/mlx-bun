@@ -95,6 +95,20 @@ Apple M1 Max (MLX 0.32.2, mlx-lm 0.31.3), with input pins unchanged. This qualif
 the plain-KV scope above; the generated graph's unrolled `kv_config` path and
 performance remain separate checks.
 
+The [generated-graph test](tests/parity/gemma4-generated.test.ts) is that
+unrolled-path check, ported from `02d723a:tests/parity/generated-parity.test.ts`
+for each registered fingerprint (12B, e4b, 26B-A4B). With
+`MLX_BUN_TEST_GENERATED_MODEL` naming an artifact that ships `kv_config.json`, it
+requires `createModel` to select the generated graph, byte-identical vectors
+against `new Gemma4Model` over caches converted to `kv_config` before a prompt past
+the sliding window, identical 24-token greedy trajectories (stop tokens off, so
+every trajectory is full length) uncompiled and with compiled decode (counting
+generated forwards), and the monolith fallback under plain caches. This is
+specialization identity within this tree, not an oracle claim. On 2026-09-28 it
+passed on the M1 Max for mlx-community gemma-4-e4b-it-OptiQ-4bit (`98d7dc6a`; 24
+generated forwards uncompiled, 2 compiled) and gemma-4-12B-it-OptiQ-4bit
+(`5b110106`; 24 uncompiled, 1 compiled). The 26B-A4B cell was not run.
+
 On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
 checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections
 made independently of `temporalView`, main `02d723a`, and pinned optiq 0.2.7.
@@ -154,11 +168,34 @@ live cache planes and one-token continuation; `compare` is CPU-only. Supply loca
 weights and external reference reports. No Python environment or reference data
 is installed by this repository. The opt-in test uses `MLX_BUN_PARITY_PLAN` and
 `MLX_BUN_PARITY_REFERENCE`; it skips only when none of its settings (those two,
-`MLX_BUN_PARITY_TIMEOUT_MS`, `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG`) is set, and a
-partial or blank opt-in fails. Legacy reports require explicit
+`MLX_BUN_PARITY_TIMEOUT_MS`, `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG`,
+`MLX_BUN_PARITY_REFERENCE_SHA256`) is set, and a partial or blank opt-in fails.
+`MLX_BUN_PARITY_REFERENCE_SHA256` pins a published reference revision: the report's
+bytes must match before the worker starts. Legacy reports require explicit
 `--allow-unrecorded-config` (test: `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG=1`), after
 verifying their environment separately. New reports record runtime overrides,
 source/harness/native hashes, machine and plan; `--hash-weights` adds weight hashes.
+
+The same consumer covers Qwen Trellis and Gemma; no such run is recorded yet.
+Produce references outside this repository with the unchanged producers at main
+`02d723a`, sequentially on the comparison machine. Stock mlx-lm architectures
+(Gemma4 e2b/e4b/26B-A4B, Gemma2, Llama, MiniCPM5) use
+`MLX_BUN_TEST_RUNTIME_ORACLE=1 HF_HUB_OFFLINE=1 python scripts/oracle/check-runtime.py plan.json reference.json`
+in the pinned oracle environment; it registers no OptiQ architectures, so the 12B
+`gemma4_unified` artifact keeps its dedicated consumer above. Packed Qwen Trellis
+has no external oracle (mlx-lm cannot load it), so main is the reference:
+`MLX_BUN_TEST_RUNTIME_ORACLE=1 MLX_BUN_COMPILED_DECODE=0 bun --no-env-file tests/support/runtime-oracle-worker.ts plan.json reference.json`
+in the main checkout. Neither producer records provenance or applies `kv`, so
+compare plain-KV plans with the legacy acceptance and pin the report:
+`MLX_BUN_COMPILED_DECODE=0 MLX_BUN_PARITY_PLAN=plan.json MLX_BUN_PARITY_REFERENCE=reference.json MLX_BUN_PARITY_REFERENCE_SHA256=<sha256> MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG=1 bun --no-env-file test packages/inference/tests/parity/runtime-oracle.test.ts`.
+Useful plans keep main's IDs and vary geometry: for Trellis, contexts 0/64/512 ×
+lengths 1/3/4/8/16/128 with prefix chunk 256 cover the M≤4, M5–15 and M≥16
+dispatch profiles; for Gemma4 e2b/e4b, a context past the 512-token window (for
+example 0/64/600 × 1/8/128, chunk 128) covers sliding-window wrap; for MiniCPM5
+beyond the recorded cases, a longer multi-chunk context with `restore: true` adds
+persisted-state continuation. Mixed KV (`kv: "artifact"`) has no reference producer
+until the mixed-KV reference contract in [PLAN](../../PLAN.md#verify-the-migrated-library)
+is confirmed.
 
 On 2026-09-25 UTC, `6b0fd69` matched main `02d723a` and its unchanged external
 `02d723a:scripts/oracle/check-runtime.py` for the same MiniCPM snapshot above. All nine

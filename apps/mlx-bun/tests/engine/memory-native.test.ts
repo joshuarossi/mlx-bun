@@ -141,8 +141,9 @@ test.skipIf(!native || !servedModel)("serve's own synthesis runs on the task mod
   const { join } = await import("node:path");
   if (![realpathSync(tmpdir()), "/private/tmp"].some(dir => realpathSync(homedir()).startsWith(`${dir}/`))) throw new Error("run with a temporary HOME");
   if (adapter) {
-    mkdirSync(join(homedir(), ".cache/mlx-bun/adapters"), { recursive: true });
-    symlinkSync(adapter, join(homedir(), ".cache/mlx-bun/adapters/memory-chunk"));
+    const { storagePath } = await import("../../src/storage/paths");
+    mkdirSync(storagePath("adapters"), { recursive: true });
+    symlinkSync(adapter, join(storagePath("adapters"), "memory-chunk"));
   }
   const { startModelServer, parseServeOptions } = await import("../../src/cli/serve");
   const { scanSnapshot } = await import("@mlx-bun/hub/registry");

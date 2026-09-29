@@ -49,7 +49,10 @@ becomes the default for requests without an `adapter` field, an explicit
 directory fails startup with `adapter mount failed: …` after releasing the
 model.
 The opt-in [startup adapter test](tests/engine/startup-adapter.test.ts) produces
-a three-step adapter with the fine-tune producer and serves with it.
+a three-step adapter with the fine-tune producer and serves with it; the opt-in
+[DiffusionGemma adapter test](tests/engine/diffusion-adapter.test.ts) serves a
+saved denoising adapter (hot mount and unmount, per-request selection, an
+adapter row beside a base row, the startup default).
 Main's speculative flags are restored with its validation: `--draft-model`
 resolves like the main model (a query never downloads) and its kind is
 auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone
@@ -454,7 +457,10 @@ towers and calls the library's numerical input builders. The opt-in
 `MLX_BUN_APP_TEST_GEMMA4_AUDIO_MODEL`, `MLX_BUN_APP_TEST_GEMMA4_UNIFIED_MODEL`,
 `MLX_BUN_APP_TEST_QWEN_VISION_MODEL` or `MLX_BUN_APP_TEST_DIFFUSION_MODEL`, each a
 cached snapshot directory) prepares image, audio, mixed and video prompts through a
-loaded model with synthesized media and a warm encoder cache. Grammar and media
+loaded model with synthesized media and a warm encoder cache; the opt-in
+[media generation test](tests/engine/media-generation.test.ts) serves the same
+Gemma4 checkpoint and generates from image, audio and mixed image+audio prompts
+(determinism, streaming, rows released together, disconnect recovery). Grammar and media
 work enter the engine's preparation domain before allocating native resources.
 Text-only protocol work loads no MLX library. `anthropic.ts` translates Messages
 requests and semantic completion events, including tools, thinking, and usage.
@@ -818,7 +824,7 @@ synthesis run.
 ### Memory synthesis
 
 Main's nightly pipeline lives under `src/memory/` unchanged in prompts, stage
-order, database schema (`db.ts`, `~/.cache/mlx-bun/memory.sqlite`), vault
+order, database schema (`db.ts`, `~/.mlx-bun/db/memory.sqlite`), vault
 layout, Git usage, and the dedup/normalize/reconcile rules: `pipeline.ts` drives
 the four resumable, chronological stage workers in `stages.ts` (SEGMENT via
 `chunk.ts`, ENTITY-EXTRACT via `entity.ts` + `resolve.ts`, ROUTE via `route.ts`,
@@ -841,7 +847,7 @@ loopback client posts each stage call to a serving mlx-bun's own
 `/v1/chat/completions` (raw greedy sampling, neutral logit processors and the
 model template's thinking defaults, the stage's system/user turns,
 `adapter: "memory-chunk"` for the chunk stage when
-`~/.cache/mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise):
+`~/.mlx-bun/adapters/memory-chunk` exists and `"none"` otherwise):
 `memory --host`/`--port` use it.
 
 Under `serve --isolate` the parent, which loads no model, keeps the pipeline,
@@ -936,6 +942,18 @@ reaches the real launchd, `~/Library/LaunchAgents`, or `~/.mlx-bun`.
 
 ## Jobs, quantization, and fine-tuning
 
+`storage/paths.ts` owns every default location the app writes, all under
+`MLX_BUN_HOME` (default `~/.mlx-bun`), read from the environment at call time:
+`models/` (convert, web quantize and fuse outputs, plain model directories),
+`adapters/` (train, web fine-tune, merge, memory stages), `exports/`,
+`datasets/`, `db/` (jobs, model index, memory), `jobs/` (job logs), and the
+existing chat, wiki, skill, log and credential files. The Hugging Face cache
+holds downloads only; the model index (`openRegistry()`) scans it and
+`models/`, so `ls`, `/library`, `serve <name>` and the folder picker find both.
+Explicit paths (`--mlx-path`, `--save-path`, `--adapter`, request fields) win.
+Earlier versions' job history and model index under `~/.cache/mlx-bun` are not
+carried over (the index rebuilds by scan); their adapter stores stay listed.
+
 `jobs/` owns the lazily opened SQLite store, durable NDJSON events, SSE tails,
 and managed subprocess lifetimes. `quantize/` owns submitted quantization policy
 and CPU-only model inspection; the numerical work uses `@mlx-bun/quantize`.
@@ -952,8 +970,10 @@ wire responses stay in `server/job-routes.ts`, `server/quantize-routes.ts`, and
 
 `mlx-bun convert <repo-or-path> -q` is main's mlx_lm.convert counterpart: a
 local model directory, a downloaded model, or an `org/name` repo id (fetched
-first, resumable) is quantized into `--mlx-path` (default `mlx_model`, which
-must not already exist) by the same `createQuantizeRunner` producer the web
+first, resumable) is quantized into `--mlx-path` (default
+`~/.mlx-bun/models/<model>-<bits>bit`, or `-mixed-<bpw>bpw` with `-rot<seed>`
+for a rotated run, named from the resolved source; either must not already
+exist) by the same `createQuantizeRunner` producer the web
 quantize job runs, as an owned child process over a temporary job store (the
 sensitivity sweep is synchronous, so only a separate process keeps the parent
 responsive; progress is tailed from the job log). `--q-bits 4|8` and `--q-group-size 32|64` select
@@ -1000,7 +1020,10 @@ at the plan). SIGINT/SIGTERM abort at the next optimizer-step boundary, after an
 checkpoint writes already started have completed. Cancellation detaches training
 state and releases its resources; completed checkpoints remain usable. A final
 save already started is allowed to finish and is reported as success. `train-watch` (`finetune/watch.ts`) tails the trainer's
-`<adapter>/metrics.jsonl`. `fuse` merges an adapter through `fuseAdapter` and
+`<adapter>/metrics.jsonl` (default: the most recently updated run in
+`~/.mlx-bun/adapters`); `train` writes `~/.mlx-bun/adapters/<method>-<model>`
+unless `--adapter` is given. `fuse` merges an adapter through `fuseAdapter` into
+`--save-path` (default `~/.mlx-bun/models/<model>-fused`, refused if it exists) and
 refuses the mlx_lm.fuse flags main refused; the merge cannot be interrupted, so
 a signal arriving during it lets the output finish rather than leaving a partial
 directory. [Training CLI tests](tests/train-cli.test.ts) use injected
@@ -1016,11 +1039,23 @@ establish parity for actual checkpoint quantization.
 [Fine-tuning policy tests](tests/finetune/policy.test.ts) cover the app recipe,
 explicit overrides, dataset inspection, HTTP submission, progress, and resource
 cleanup with a fake native runtime. These CPU checks do not extend the numerical
-claims in the [training evidence](../../packages/training/README.md).
+claims in the [training evidence](../../packages/training/README.md). The opt-in
+[fine-tune preservation test](tests/engine/finetune-preservation.test.ts)
+(`MLX_BUN_TEST_NATIVE=1 MLX_BUN_APP_TEST_FINETUNE_REFERENCES=<ref.json>[:…]`) runs
+this producer on each submit record main's producer ran, for any family or
+training path, and requires main's metrics, config files, adapter and checkpoint
+tensors, fresh-reload logits, and optionally its `fuse` output exactly; its
+header gives the commands that produce the references outside the repository.
+On 2026-09-28 it passed on the M1 Max against main `02d723a` run from source with
+this tree's staged native library, for mlx-community MiniCPM5-1B-OptiQ-4bit
+(`664aabae`). The records were SFT (8 iterations, batch 2, accumulation 2, dropout,
+rsLoRA, checkpoints, fused output), ORPO (default L3 heads, grad checkpointing)
+and DPO (LoRA+). A reference with a changed seed failed as expected.
 
-Composition takes `storagePaths` (job store, saved token file, artifact root)
-like `chatPaths` and `memoryPaths`, so embedded and test servers never touch
-the user's jobs or credentials. The opt-in
+Composition takes `storagePaths` (job store, saved token file, and an artifact
+root replacing `MLX_BUN_HOME` for models, adapters, exports and datasets) like
+`chatPaths` and `memoryPaths`, so embedded and test servers never touch the
+user's jobs, credentials or artifacts. The opt-in
 [managed-jobs acceptance](tests/engine/managed-jobs.test.ts) runs a real
 `mlx-bun serve` process under a temporary HOME and `HF_HUB_CACHE` with the
 cached model named by `MLX_BUN_APP_TEST_MODEL`: a quantize job whose artifact
@@ -1067,9 +1102,24 @@ use temporary storage and synthetic HTTP responses, without a model or download.
 
 Adapter merge/export requests are owned by `server/adapter-artifact-routes.ts`.
 Merge uses the public training library while holding the engine execution lock;
-export writes a CPU-only manifest without taking that lock. Both preserve the
-existing output roots and prefixes, with unique suffixes so simultaneous requests
-cannot overwrite each other's artifacts.
+export writes a CPU-only manifest without taking that lock. Merges land in
+`~/.mlx-bun/adapters/merged-…` and exports in `~/.mlx-bun/exports/export-…`,
+with unique suffixes so simultaneous requests cannot overwrite each other's
+artifacts.
+
+`GET /v1/adapters/available` lists `adapterCatalogDirs()` in
+`server/adapter-routes.ts`: `~/.mlx-bun/adapters`, then, read-only, the stores
+earlier versions wrote (`~/.cache/mlx-bun/adapters`,
+`~/.cache/mlx-bun/mlx-bun-finetunes`, `~/.cache/mlx-bun-finetunes`), each
+directory once. Nothing is moved. The [storage layout tests](tests/storage-layout.test.ts)
+drive each producer's real default (web fine-tune, merge, a `train` dry run,
+the memory stage reader) and require the route's own catalog to list it; they
+check that a quantize job's and a default `convert` run's directories under
+`models/` are what the index, `serve <path|name>` and the folder picker read,
+that nothing lands in the hub cache, and that earlier `models--local--…`
+quantize snapshots there still resolve. Their tensor files are zeroed
+stand-ins; loading and generating from real artifacts is the opt-in
+managed-jobs and startup-adapter acceptance.
 
 `publishing/credentials.ts` owns the app's `~/.mlx-bun/hf.json` token file (mode
 0600). Resolution prefers the saved token, then `HF_TOKEN`, then the shared HF
@@ -1085,8 +1135,8 @@ storage and an injected uploader; they never read installed credentials or
 publish to Hugging Face.
 
 `cli/upload.ts` is the `upload` verb, main's `mlx_lm.upload` counterpart:
-`mlx-bun upload --path <dir> --upload-repo <org/repo> [--private]` (the path
-defaults to `mlx_model`). It resolves the token through
+`mlx-bun upload --path <dir> --upload-repo <org/repo> [--private]` (`--path`
+is required; there is no working-directory default). It resolves the token through
 `publishing/credentials.ts`, fails before any request when the repo id,
 directory, or write token is missing, and pushes a model repo through the same
 public hub uploader with the commit message "Upload with mlx-bun". SIGINT or
@@ -1221,6 +1271,13 @@ artifact in `verify-packages --app-only`. The
 sidecar protocol, and the terminate-and-join with shell stand-ins. A real
 microphone is exercised only by hand; package and relocated-bundle verification
 resolve the shipped helper and run `--help` before any audio initialization.
+The opt-in [voice test](tests/engine/voice.test.ts) (`MLX_BUN_TEST_NATIVE=1`,
+`MLX_BUN_APP_TEST_WHISPER_MODEL`, optionally `MLX_BUN_APP_TEST_MODEL`) runs both
+verbs as spawned CLIs on real Whisper weights with speech synthesized by
+macOS `say`, `dictate` through a stand-in sidecar that follows the capture
+protocol, and a chat server with the companion: the mic probe, idle unload,
+transcription while a reply streams, a voice session, unload, and `dictate
+--server`. The physical microphone, key tap, clipboard and typing stay manual.
 
 ## Standalone bundle
 
