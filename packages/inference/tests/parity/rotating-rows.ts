@@ -23,7 +23,7 @@ export async function rotatingRowReader() {
   const { plainRowStorage, temporalStorageView } = await import("../../src/state/batched-row-storage");
   const hash = (a: MlxArray) => { const c = ops.contiguous(a); try { return sha256(new Uint8Array(c.rawBytes())); } finally { c.dispose(); } };
   const tensor = (a: MlxArray): Tensor => ({ shape: [...a.shape], dtype: a.dtypeName, sha: hash(a) });
-  /** A serial rotating cache's newest min(offset, window) rows, through the source
+  /** A solo rotating cache's newest min(offset, window) rows, through the source
    * position; each view is handed to `own` as soon as it exists. */
   const newest = (c: InstanceType<typeof RotatingKVCache>, own: (a: MlxArray) => MlxArray): [MlxArray, MlxArray] => {
     const state = rotatingSourcePosition(c), valid = Math.min(c.offset, c.maxSize);
@@ -41,7 +41,7 @@ export async function rotatingRowReader() {
       const own = <T extends { dispose(): void }>(a: T): T => { owned.push(() => a.dispose()); return a; };
       try {
         if (c instanceof RotatingKVCache) {
-          assert.equal(B, 1, "serial rotating cache in a multi-row forward");
+          assert.equal(B, 1, "solo rotating cache in a multi-row forward");
           const [k, v] = newest(c, own);
           rows[0]!.layers.push({ kind: "rotating", offset: c.offset, keys: tensor(k), values: tensor(v) });
         } else if (c instanceof BatchedRotatingCache) {

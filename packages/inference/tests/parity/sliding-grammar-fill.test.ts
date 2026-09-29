@@ -1,45 +1,33 @@
-// Grammar and supplied fill on a sliding-window Universal graph, on real weights,
-// through the gateway's real placement path and through direct generation.
-//
-// Main served a Universal descriptor with sliding layers serially
-// (`02d723a:src/backends/mlx/gateway-binding.ts`: `cachesBatchable` is false),
-// so every request, alone or concurrent, ran main's direct generation
-// (`02d723a:src/generate.ts`) under its serial plan: compiled decode as planned
-// (off here), jump-forward when MLX_BUN_GRAMMAR_JUMP=1, and the supplied fill
-// session for unseeded requests. This tree serves these graphs continuously.
-// Its direct generation keeps main's serial semantics and is the reference;
-// the gateway path is the binding's plan, then methodRequest or row sampling,
-// then the binding's execution group, composed as the app's generation gateway
-// composes them. Comparisons against main's own tree remain external. Every
-// case runs past the sliding window. Checked:
+// Grammar, grammar proposals and supplied fill on a sliding-window Universal
+// graph, on real weights, through the gateway's real placement path (the
+// binding's plan, then methodRequest or row sampling, then the binding's
+// execution group, composed as the app's generation gateway composes them),
+// against this tree's direct token-by-token generation. Every case runs past the
+// sliding window. Checked:
 // - Grammar (JSON schema, choice, EBNF) without jump: at B1 the gateway equals
 //   direct generation in tokens, every forward (IDs and the row's valid K/V
 //   before it) and every projection's complete logits; the scheduler may add
 //   one discarded single-token lookahead step. Rows prepared together or
-//   joining late (B2) each equal their B1 direct output, as main's serial lane
-//   produced them one at a time.
-// - Grammar with MLX_BUN_GRAMMAR_JUMP=1: main's serial jump commits each forced
-//   span returned by the matcher with one unsplit [token, ...span] forward,
-//   never samples it, and projects one position per step. Direct generation
-//   must show exactly that, against the token-by-token run, which never jumps
-//   and forwards one decode position at a time; both outputs satisfy the
-//   grammar. The gateway must equal the direct jump run at B1 in tokens, forced
-//   spans, forwards and projections, and at B2 in tokens and forced spans. As
-//   in main's own consumer (`02d723a:tests/parity/grammar-jump.test.ts`), jump
-//   and token-by-token output are not required to be equal: a forced span's
-//   retokenization may legally differ from sampled tokens.
+//   joining late (B2) each equal their B1 direct output.
+// - Grammar with MLX_BUN_GRAMMAR_JUMP=1: the graph binds grammar proposals, so
+//   the gateway places the request on the speculative group, which verifies
+//   the matcher's forced string rather than committing it (no forced span is
+//   taken from the matcher). At B1 and B2 its tokens equal direct
+//   token-by-token generation, every forward continues the row's history
+//   (rejected proposals are rolled back out of the ring), and across the cases
+//   proposals are verified, some accepted and some rejected.
 // - Supplied fill (strict assert rows; echo verify proposals), with MLX_BUN_FILL
-//   set: main's generation skips token fast-forwarding whenever a cache is a
-//   RotatingKVCache, so the session is never consulted. Runs with fill, direct
-//   and through the gateway, must equal the fill-off control (B1: tokens,
-//   forwards and projections; B2: tokens), and every session's statistics stay
-//   untouched.
+//   set: the gateway applies it through the shared fill binding. Strict rows
+//   assert the fill-off control's own continuation and echo proposals are
+//   verified, so B1 and B2 output equals the fill-off direct control while the
+//   session records the injected and accepted tokens, and echo proposals reach
+//   verify forwards.
 // - For each of those three shapes, a B2 group in which one row is cancelled at
-//   its third token: it emits exactly those three tokens (main's generation
-//   checks the signal after every token) and rejects with the cancellation;
-//   its peer runs to its end equal to its B1 direct output; the drained group
-//   then serves the cancelled request again, equal to direct generation at B1
-//   in everything above.
+//   its third token: it emits exactly those three tokens and rejects with the
+//   cancellation; its peer runs to its end equal to its B1 output; the drained
+//   group then serves the cancelled request again, equal to its B1 run (direct
+//   generation for grammar, a fresh group for proposals and fill) in tokens,
+//   forwards and projections.
 // Compiled decode is off and the prompt tail is split on both paths, so every
 // step is observed and both issue the same calls.
 // Opt in with both of
@@ -111,43 +99,38 @@ export function checkSameRun(label: string, shared: Run, direct: Run): void {
   }
 }
 
-/** Each B1 forward continues prompt + tokens; returns the decode forwards (those
- * starting at or after the prompt's end). Every projection covers one position. */
-function walk(label: string, run: Run, prompt: readonly number[]) {
+/** Each B1 forward continues the row's history (prompt + tokens) from what the
+ * cache holds. A forward may carry unverified positions past the prompt
+ * (proposals): its IDs match the history up to the first rejected one, and only
+ * the matching prefix stays in the cache. Every projection covers one position
+ * unless proposals are verified. Returns the decode forwards (those starting at
+ * or after the prompt's end) and the proposed and accepted positions. */
+export function walk(label: string, run: Run, prompt: readonly number[]) {
   const history = [...prompt, ...run.tokens], decode: number[][] = [];
-  let cursor = 0;
+  let cursor = 0, proposed = 0, accepted = 0;
   run.forwards.forEach((forward, index) => {
     const ids = forward.ids[0]!;
     assert(forward.B === 1 && forward.ids.length === 1 && ids.length === forward.L, `${label}: forward ${index} is not one row`);
-    assert.deepEqual(ids, history.slice(cursor, cursor + ids.length), `${label}: forward ${index} does not continue the history at ${cursor}`);
+    let kept = 0;
+    while (kept < ids.length && ids[kept] === history[cursor + kept]) kept++;
+    assert(kept > 0 && (kept === ids.length || cursor + kept >= prompt.length),
+      `${label}: forward ${index} does not continue the history at ${cursor}`);
+    const verified = Math.max(0, ids.length - Math.max(1, prompt.length - cursor));
+    proposed += verified; accepted += Math.max(0, verified - (ids.length - kept));
     if (cursor >= prompt.length) decode.push(ids);
-    cursor += ids.length;
+    cursor += kept;
   });
-  run.projections.forEach((projection, index) =>
-    assert(projection.B === 1 && projection.L === 1, `${label}: projection ${index} covers ${projection.B}x${projection.L} positions`));
-  return decode;
+  return { decode, proposed, accepted };
 }
 
-/** Main's serial jump in one B1 run: the k-th forced span follows the token
- * sampled before it in exactly one unsplit [token, ...span] decode forward (the
- * k-th multi-position one), and is emitted right after it; any other decode
- * forward carries one position and no forced token is projected. Returns the
- * number of forced tokens. */
-export function checkCommittedSpans(label: string, run: Run, prompt: readonly number[]): number {
-  const wide = walk(label, run, prompt).filter(ids => ids.length > 1);
-  assert.equal(wide.length, run.spans.length, `${label}: ${wide.length} multi-position decode forwards for ${run.spans.length} forced spans`);
-  run.spans.forEach((span, k) => {
-    assert(span.length > 0, `${label}: empty forced span ${k}`);
-    assert.deepEqual(wide[k]!.slice(1), span, `${label}: forced span ${k} is not committed by one [token, ...span] forward`);
-  });
-  return run.spans.reduce((sum, span) => sum + span.length, 0);
-}
-
-/** The token-by-token run: no forced span and one position per decode forward. */
+/** The token-by-token run: no forced span, every forward continues the
+ * history in full with no verified position, and every projection covers one. */
 export function checkTokenByToken(label: string, run: Run, prompt: readonly number[]): void {
   assert.equal(run.spans.length, 0, `${label}: the token-by-token run forced a span`);
-  const wide = walk(label, run, prompt).filter(ids => ids.length !== 1);
-  assert.equal(wide.length, 0, `${label}: ${wide.length} decode forwards carry more than one position`);
+  const { proposed } = walk(label, run, prompt);
+  assert.equal(proposed, 0, `${label}: ${proposed} positions were verified`);
+  run.projections.forEach((projection, index) =>
+    assert(projection.B === 1 && projection.L === 1, `${label}: projection ${index} covers ${projection.B}x${projection.L} positions`));
 }
 
 export const REVIEW_SCHEMA = { type: "object", properties: { city: { type: "string", maxLength: 16 },
@@ -172,18 +155,21 @@ export function checkGrammarOutput(label: string, grammar: GrammarName, text: st
   else assert(/^(yes|no), [a-z]{2,}$/.test(text), `${label}: ${JSON.stringify(text)} does not match the EBNF`);
 }
 
-/** A strict assert row that would fire exactly once if the session were
- * consulted: its trigger is the control's pair (control[t-1], control[t]) at the
- * first t >= 4 where that pair ends no earlier position of the session's history
- * (the prompt's last token, then the control), and its fixed emit differs from
- * what the control generated next. */
-export function strictRow(prompt: readonly number[], control: readonly number[], emit: readonly number[]) {
+/** A strict assert row of `length` tokens that restates the fill-off control:
+ * its trigger is the control's pair (control[t-1], control[t]) at the first
+ * t >= 4 whose every occurrence in the session's history (the prompt's last
+ * token, then the control) is followed by the same `length` tokens, which it
+ * emits. Applied, it cannot change the output; it only commits those tokens
+ * without sampling them. */
+export function strictRow(prompt: readonly number[], control: readonly number[], length = 4) {
   const history = [prompt.at(-1)!, ...control];
-  const t = control.findIndex((_, t) => t >= 4 && t + emit.length < control.length &&
-    !history.slice(0, t).some((token, i) => token === control[t - 1] && history[i + 1] === control[t]));
-  if (t < 0) throw new Error(`the control (${control.length} tokens) has no usable strict trigger`);
-  assert.notDeepEqual([...emit], control.slice(t + 1, t + 1 + emit.length), "the strict emit equals the control's continuation");
-  return { trigger: [control[t - 1]!, control[t]!], emit: [...emit], kind: "scaffold" as const };
+  for (let t = 4; t + length < control.length; t++) {
+    const [a, b] = [control[t - 1]!, control[t]!], emit = control.slice(t + 1, t + 1 + length);
+    if (history.every((token, i) => token !== a || history[i + 1] !== b ||
+        history.slice(i + 2, i + 2 + length).every((id, j) => id === emit[j])))
+      return { trigger: [a, b], emit, kind: "scaffold" as const };
+  }
+  throw new Error(`the control (${control.length} tokens) has no usable strict trigger`);
 }
 
 // ---- real weights ------------------------------------------------------------------------
@@ -266,7 +252,8 @@ async function setup() {
       MLX_BUN_GRAMMAR_JUMP: shape === "jump" ? "1" : "0", MLX_BUN_FILL: fill ?? "off" });
     try { return await run(); } finally { restore(); clearCache(); }
   };
-  /** A matcher that reports each forced span it returns. */
+  /** A matcher that reports each forced span it commits (none is expected on
+   * the gateway, which verifies proposals instead). */
   const grammarFor = async (name: GrammarName, spans: number[][]) => {
     const compiled = await compileGrammarRequest(GRAMMARS[name].request, tokenizer, config.text.vocabSize);
     if (!compiled?.controller) throw new Error(`grammar ${name} did not compile: ${compiled?.degradeHint}`);
@@ -275,7 +262,6 @@ async function setup() {
     return controller;
   };
   const controls = new Map<PromptName, number[]>();
-  const emit = tokenizer.encode(" (a fixed scaffold span)", false).slice(0, 4);
   /** Fresh request options; a fill session is built from its prompt's fill-off control. */
   const optionsFor = async (request: Request, spans: number[][]) => {
     const prompt = prompts[request.prompt];
@@ -288,56 +274,57 @@ async function setup() {
     if (request.fill) {
       const control = controls.get(request.prompt);
       if (!control) throw new Error(`no fill-off control for ${request.prompt}`);
-      // Echo proposals the model would accept (at 2) and reject (at 7), if consulted.
-      const wrong = (token: number) => [2000, 2001].find(id => id !== token)!;
-      const script = new Map([[2, control.slice(2, 6)], [7, [wrong(control[7]!), control[8]!]]]);
-      const scripted: ProposalSource = { name: "scripted-echo", propose: view => {
-        const ids = script.get(view.length - prompt.length);
-        return ids ? { ids: [...ids], policy: "verify", origin: "echo" } : null;
-      } };
+      // Besides the echo index, a proposal the model accepts (after 2 tokens).
+      const scripted: ProposalSource = { name: "scripted-echo", propose: view =>
+        view.length - prompt.length === 2 ? { ids: control.slice(2, 6), policy: "verify", origin: "echo" } : null };
       options.fill = request.fill === "strict"
-        ? new Session({ rows: [strictRow(prompt, control, emit)], echo: null, eos: [] }, prompt, { maxSpan: 8, appendChunkSize: 0 })
+        ? new Session({ rows: [strictRow(prompt, control)], echo: null, eos: [] }, prompt, { maxSpan: 8, appendChunkSize: 0 })
         : new Session({ rows: [], echo: { k: 4, maxSpan: 8, maxCandidates: 24, indexMax: 131072 }, eos: [] }, prompt,
           { maxSpan: 8, appendChunkSize: 0, sources: [scripted] });
     }
     return { prompt, options };
   };
-  const untouched = JSON.stringify(new Session({ rows: [], echo: null, eos: [] }, [1]).stats);
-  /** Main never consulted a supplied session on these graphs. */
-  const checkFillUntouched = (label: string, fill: FillSession | undefined) => {
-    if (fill) expect(JSON.stringify(fill.stats), `${label}: fill session statistics`).toBe(untouched);
+  /** The session was applied: strict rows committed tokens; echo proposals
+   * reached a verify forward and some were accepted. */
+  const checkFillApplied = (label: string, fill: FillSession | undefined) => {
+    if (!fill) return;
+    const { events, strict, verifyEvents, verifyAccepted, verifyUnsupported } = fill.stats;
+    const applied: Record<string, boolean> = fill.plan.rows.length ? { events: events > 0, strict: strict > 0 }
+      : { verifyEvents: verifyEvents > 0, verifyAccepted: verifyAccepted > 0 };
+    expect({ label, applied, verifyUnsupported })
+      .toEqual({ label, applied: Object.fromEntries(Object.keys(applied).map(key => [key, true])), verifyUnsupported: 0 });
   };
 
-  /** Main's serial path: direct generation under the serial plan, recorded at B1. */
-  const direct = (shape: Shape, request: Request) => under(shape, request.fill, async () => {
+  /** Direct token-by-token generation, recorded at B1: grammar masking without
+   * jump, or the fill-off control. */
+  const direct = (request: Request) => under("grammar", undefined, async () => {
     const spans: number[][] = [];
-    const { prompt, options } = await optionsFor(request, spans);
+    const { prompt, options } = await optionsFor({ prompt: request.prompt, grammar: request.grammar }, spans);
     try {
       const { value, forwards, projections } = await traced(true, async () => {
         const tokens: number[] = [];
-        const generation = generate(model, prompt, { ...options,
-          decodePolicy: { compiledDecode: false, grammarJump: shape === "jump" && !!options.grammar } });
+        const generation = generate(model, prompt, { ...options, decodePolicy: { compiledDecode: false, grammarJump: false } });
         for await (const step of generation) tokens.push(step.token);
         return tokens;
       });
-      checkFillUntouched(`direct ${JSON.stringify(request)}`, options.fill);
       return { tokens: value, spans, forwards, projections } satisfies Run;
     } finally { options.grammar?.dispose(); }
   });
   const references = new Map<string, Promise<Run>>();
-  /** Direct B1 references, each generated once; a fill request's reference is
-   * its prompt's fill-off control. */
-  const reference = (shape: Shape, request: Request): Promise<Run> => {
-    const key = JSON.stringify([shape === "fill" ? "fill-off" : shape, request.prompt, request.grammar ?? null]);
+  /** Direct B1 references, each generated once: a grammar request's
+   * token-by-token run, or a fill request's fill-off control. */
+  const reference = (request: Request): Promise<Run> => {
+    const key = JSON.stringify([request.prompt, request.grammar ?? null]);
     if (!references.has(key)) references.set(key, (async () => {
-      const run = await direct(shape, { prompt: request.prompt, grammar: request.grammar });
+      const run = await direct(request);
       const prompt = prompts[request.prompt];
+      checkTokenByToken(key, run, prompt);
       // Past the window: the ring wrapped before or during decode.
       assert(prompt.length + run.tokens.length > window + 1, `${key}: ${run.tokens.length} tokens stay within the window`);
       assert(run.forwards.some(forward => forward.state && "layers" in forward.state &&
         forward.state.layers.some(layer => layer.kind === "rotating" && layer.offset > window)), `${key}: no forward read a wrapped ring`);
       if (request.grammar) checkGrammarOutput(key, request.grammar, tokenizer.decode(run.tokens, true));
-      if (shape === "fill") {
+      else {
         if (run.tokens.length !== FILL_TOKENS) throw new Error(`${key}: the control ended after ${run.tokens.length} tokens`);
         controls.set(request.prompt, run.tokens);
       }
@@ -401,11 +388,21 @@ async function setup() {
     const { start } = await lane.prepare(request);
     const { value, forwards, projections } = await traced(true, start);
     assert.equal(value.status, "fulfilled", `gateway ${JSON.stringify(request)}: ${String(value.error)}`);
-    checkFillUntouched(`gateway ${JSON.stringify(request)}`, value.fill);
+    checkFillApplied(`gateway ${JSON.stringify(request)}`, value.fill);
     return { tokens: value.tokens, spans: value.spans, forwards, projections } satisfies Run;
   });
+  const b1 = new Map<string, Promise<Run>>();
+  /** Each request's B1 run, generated once: direct generation for grammar;
+   * a fresh gateway group, once its prompt's reference exists, for grammar
+   * proposals and fill. */
+  const single = (shape: Shape, request: Request): Promise<Run> => {
+    if (shape === "grammar") return reference(request);
+    const key = JSON.stringify([shape, request]);
+    if (!b1.has(key)) b1.set(key, reference(request).then(() => alone(shape, request)));
+    return b1.get(key)!;
+  };
   return {
-    prompts, reference, direct, alone, gateway, traced, checkFillUntouched,
+    prompts, reference, single, alone, gateway, traced, checkFillApplied,
     release() {
       graph.forwardHidden = forwardHidden; graph.logitsFromHidden = logitsFromHidden;
       releaseWeights();
@@ -413,7 +410,7 @@ async function setup() {
   };
 }
 
-describe.skipIf(!inputs)("sliding-window Universal grammar and fill preserve main's serial generation", () => {
+describe.skipIf(!inputs)("sliding-window Universal grammar, grammar proposals and fill: the gateway against direct generation", () => {
   let env: Awaited<ReturnType<typeof setup>>;
   beforeAll(async () => { env = await setup(); }, 600_000);
   afterAll(() => { env?.release(); });
@@ -426,10 +423,10 @@ describe.skipIf(!inputs)("sliding-window Universal grammar and fill preserve mai
     { together: false, rows: [{ prompt: "long", grammar: "json" }, { prompt: "other", grammar: "ebnf" }] },
   ];
 
-  /** B2 rows each equal their B1 direct reference in tokens and forced spans. */
+  /** B2 rows each equal their B1 run in tokens and forced spans. */
   async function pairs(shape: Shape, cases: { together: boolean; rows: [Request, Request] }[]) {
     for (const { together, rows } of cases) {
-      const expected = await Promise.all(rows.map(request => env.reference(shape, request)));
+      const expected = await Promise.all(rows.map(request => env.single(shape, request)));
       const label = `${shape} B2 ${together ? "together" : "late join"} ${JSON.stringify(rows)}`;
       const { value, forwards } = await env.gateway(shape, fillMode(rows), 2, async lane => {
         const second = await lane.prepare(rows[1]);
@@ -451,47 +448,47 @@ describe.skipIf(!inputs)("sliding-window Universal grammar and fill preserve mai
           .toEqual({ label, index, status: "fulfilled", error: "" });
         expect({ label, index, tokens: outcome.tokens, spans: outcome.spans })
           .toEqual({ label, index, tokens: expected[index]!.tokens, spans: expected[index]!.spans });
-        env.checkFillUntouched(`${label} row ${index}`, outcome.fill);
+        env.checkFillApplied(`${label} row ${index}`, outcome.fill);
       });
     }
   }
 
-  test("grammar without jump: B1 equals main's serial generation in every step; B2 rows equal their B1 output", async () => {
+  test("grammar without jump: B1 equals direct generation in every step; B2 rows equal their B1 output", async () => {
     for (const request of GRAMMAR_CASES) {
-      const expected = await env.reference("grammar", request);
-      checkTokenByToken(`grammar ${JSON.stringify(request)}`, expected, env.prompts[request.prompt]);
-      checkSameRun(`grammar ${JSON.stringify(request)}`, await env.alone("grammar", request), expected);
+      const label = `grammar ${JSON.stringify(request)}`;
+      checkSameRun(label, await env.alone("grammar", request), await env.reference(request));
     }
     await pairs("grammar", GRAMMAR_PAIRS);
   }, 900_000);
 
-  test("grammar jump commits forced spans as main's serial jump did, at B1 in every step and at B2", async () => {
-    let forced = 0;
+  test("grammar jump verifies proposals: B1 and B2 equal direct token-by-token generation", async () => {
+    let proposed = 0, accepted = 0;
     for (const request of GRAMMAR_CASES) {
       const label = `jump ${JSON.stringify(request)}`;
-      const jump = await env.reference("jump", request), tokenwise = await env.reference("grammar", request);
-      // Direct generation is main's serial jump; the token-by-token run never jumps.
-      forced += checkCommittedSpans(label, jump, env.prompts[request.prompt]);
-      checkTokenByToken(`grammar ${JSON.stringify(request)}`, tokenwise, env.prompts[request.prompt]);
-      checkSameRun(label, await env.alone("jump", request), jump);
+      const tokenwise = await env.reference(request), run = await env.single("jump", request);
+      expect({ label, tokens: run.tokens, spans: run.spans }).toEqual({ label, tokens: tokenwise.tokens, spans: [] });
+      const walked = walk(label, run, env.prompts[request.prompt]);
+      proposed += walked.proposed; accepted += walked.accepted;
     }
-    expect(forced, "no case forced a span").toBeGreaterThan(0);
+    expect({ proposed: proposed > 0, accepted: accepted > 0, rejected: proposed > accepted }, "verified grammar proposals")
+      .toEqual({ proposed: true, accepted: true, rejected: true });
     await pairs("jump", GRAMMAR_PAIRS);
   }, 900_000);
 
-  test("supplied strict and echo fill are ignored as on main's serial path: B1 and B2 equal the fill-off control", async () => {
+  test("supplied strict and echo fill are applied: B1 and B2 equal the fill-off control", async () => {
     for (const prompt of ["long", "short"] as const) for (const fill of ["strict", "echo"] as const) {
-      const request = { prompt, fill }, control = await env.reference("fill", request);
-      checkTokenByToken(`fill-off ${prompt}`, control, env.prompts[prompt]);
-      // Main's serial executor handed the session to generation, which skipped it.
-      checkSameRun(`direct fill ${JSON.stringify(request)}`, await env.direct("fill", request), control);
-      checkSameRun(`gateway fill ${JSON.stringify(request)}`, await env.alone("fill", request), control);
+      const request = { prompt, fill }, label = `fill ${JSON.stringify(request)}`;
+      const control = await env.reference(request), run = await env.single("fill", request);
+      expect({ label, tokens: run.tokens }).toEqual({ label, tokens: control.tokens });
+      // Every forward continues the history; echo proposals reach verify forwards.
+      const { proposed } = walk(label, run, env.prompts[prompt]);
+      if (fill === "echo") expect(proposed, `${label}: no verified position`).toBeGreaterThan(0);
     }
     await pairs("fill", [{ together: true, rows: [{ prompt: "long", fill: "strict" }, { prompt: "short", fill: "echo" }] },
       { together: false, rows: [{ prompt: "long", fill: "echo" }, { prompt: "short", fill: "strict" }] }]);
   }, 900_000);
 
-  test("a cancelled row leaves its peer equal to main's serial output, and the drained group serves the request again", async () => {
+  test("a cancelled row leaves its peer equal to its B1 output, and the drained group serves the request again", async () => {
     const cases: [Shape, Request, Request][] = [
       ["grammar", { prompt: "long", grammar: "json" }, { prompt: "short", grammar: "json" }],
       ["jump", { prompt: "long", grammar: "json" }, { prompt: "short", grammar: "json" }],
@@ -499,7 +496,7 @@ describe.skipIf(!inputs)("sliding-window Universal grammar and fill preserve mai
     ];
     for (const [shape, survivor, cancelled] of cases) {
       const label = `${shape} cancellation`;
-      const kept = await env.reference(shape, survivor), left = await env.reference(shape, cancelled);
+      const kept = await env.single(shape, survivor), left = await env.single(shape, cancelled);
       assert(left.tokens.length > CANCEL_AT, `${label}: the cancelled request ends within ${CANCEL_AT} tokens`);
       const reused = await env.gateway(shape, fillMode([survivor, cancelled]), 2, async lane => {
         const peer = await lane.prepare(survivor), gone = await lane.prepare(cancelled, { cancelAt: CANCEL_AT });
@@ -514,13 +511,13 @@ describe.skipIf(!inputs)("sliding-window Universal grammar and fill preserve mai
           .toEqual({ label, status: "rejected", error: "Error: client left", tokens: left.tokens.slice(0, CANCEL_AT) });
         expect({ label, status: kept2!.status, error: String(kept2!.error ?? ""), tokens: kept2!.tokens, spans: kept2!.spans })
           .toEqual({ label, status: "fulfilled", error: "", tokens: kept.tokens, spans: kept.spans });
-        env.checkFillUntouched(`${label} peer`, kept2!.fill);
+        env.checkFillApplied(`${label} peer`, kept2!.fill);
         await lane.drained();
         // The same group serves the cancelled request again, alone.
         const again = await lane.prepare(cancelled);
         const { value, forwards: replayed, projections } = await env.traced(true, again.start);
         assert.equal(value.status, "fulfilled", `${label}: reuse ${String(value.error)}`);
-        env.checkFillUntouched(`${label} reuse`, value.fill);
+        env.checkFillApplied(`${label} reuse`, value.fill);
         return { tokens: value.tokens, spans: value.spans, forwards: replayed, projections } satisfies Run;
       });
       checkSameRun(`${label} reuse`, reused, left);
@@ -553,12 +550,13 @@ const state = (offset: number, c = "a"): RowState => ({ offset, layers: [{ kind:
   keys: { shape: [1, 1, Math.min(offset, 2), 2], dtype: "bfloat16", sha: c.repeat(64) },
   values: { shape: [1, 1, Math.min(offset, 2), 2], dtype: "bfloat16", sha: c.repeat(64) } }] });
 const projection = (c = "e", L = 1): Projection => ({ B: 1, L, dtype: "bfloat16", rows: Array(L).fill(c.repeat(64)) });
-/** Prompt [10, 11, 12], tokens 1, 2, 3, 4 with a forced span [2, 3] after 1. */
-const jumpRun = (): Run => ({ tokens: [1, 2, 3, 4], spans: [[2, 3]], forwards: [
+/** Prompt [10, 11, 12], tokens 1, 2, 3, 4: proposals [1, 9] after the prompt
+ * (1 accepted, 9 rejected), then [3, 4] after 2 (both accepted). */
+const verifyRun = (): Run => ({ tokens: [1, 2, 3, 4], spans: [], forwards: [
   { B: 1, L: 2, ids: [[10, 11]], state: null },
-  { B: 1, L: 1, ids: [[12]], state: state(2) },
-  { B: 1, L: 3, ids: [[1, 2, 3]], state: state(3) },
-], projections: [projection("p"), projection("q")] });
+  { B: 1, L: 3, ids: [[12, 1, 9]], state: state(2) },
+  { B: 1, L: 3, ids: [[2, 3, 4]], state: state(4) },
+], projections: [projection("p", 3), projection("q", 3)] });
 const tokenRun = (): Run => ({ tokens: [1, 2, 3], spans: [], forwards: [
   { B: 1, L: 2, ids: [[10, 11]], state: null }, { B: 1, L: 1, ids: [[12]], state: state(2) },
   { B: 1, L: 1, ids: [[1]], state: state(3) }, { B: 1, L: 1, ids: [[2]], state: state(4) },
@@ -585,25 +583,26 @@ test("the B1 comparison allows one discarded lookahead step and nothing else (CP
   rejects(run => { run.projections.push(projection("s", 2)); }, "1 projections past");
 });
 
-test("committed spans are one unsplit forward each and never projected; token-by-token runs never jump (CPU only)", () => {
-  expect(checkCommittedSpans("jump", jumpRun(), PROMPT)).toBe(2);
+test("walks count verified proposals and keep only the accepted prefix; token-by-token runs verify none (CPU only)", () => {
+  expect(walk("verify", verifyRun(), PROMPT)).toEqual({ decode: [[2, 3, 4]], proposed: 4, accepted: 3 });
+  expect(walk("tokens", tokenRun(), PROMPT)).toEqual({ decode: [[1], [2]], proposed: 0, accepted: 0 });
   expect(() => checkTokenByToken("tokens", tokenRun(), PROMPT)).not.toThrow();
   const rejects = (make: () => Run, change: (run: Run) => void, check: (run: Run) => unknown, message: string) => {
     const run = make(); change(run); expect(() => check(run)).toThrow(message);
   };
-  const spans = (run: Run) => checkCommittedSpans("jump", run, PROMPT), tokens = (run: Run) => checkTokenByToken("tokens", run, PROMPT);
-  // Verified proposals: the span split from its token, or every position projected.
-  rejects(jumpRun, run => { run.forwards.splice(2, 1, { B: 1, L: 1, ids: [[1]], state: null }, { B: 1, L: 2, ids: [[2, 3]], state: null }); },
-    spans, "forced span 0 is not committed");
-  rejects(jumpRun, run => { run.projections[1] = projection("q", 3); }, spans, "projection 1 covers 1x3");
-  rejects(jumpRun, run => { run.spans = []; }, spans, "1 multi-position decode forwards for 0 forced spans");
-  rejects(jumpRun, run => { run.forwards[2]!.ids = [[1, 3, 2]]; }, spans, "does not continue the history");
-  rejects(jumpRun, run => { run.forwards[1]!.B = 2; }, spans, "forward 1 is not one row");
+  const walked = (run: Run) => walk("verify", run, PROMPT), tokens = (run: Run) => checkTokenByToken("tokens", run, PROMPT);
+  // A rejected proposal is not in the cache: the next forward must not skip past it.
+  rejects(verifyRun, run => { run.forwards[2]!.ids = [[3, 4]]; run.forwards[2]!.L = 2; }, walked, "forward 2 does not continue the history at 4");
+  rejects(verifyRun, run => { run.forwards[0]!.ids = [[10, 99]]; }, walked, "forward 0 does not continue the history at 0");
+  rejects(verifyRun, run => { run.forwards[1]!.B = 2; }, walked, "forward 1 is not one row");
+  rejects(verifyRun, run => { run.forwards[1]!.ids = [[12, 1]]; }, walked, "forward 1 is not one row");
+  rejects(verifyRun, () => {}, tokens, "4 positions were verified");
   rejects(tokenRun, run => { run.spans = [[2]]; }, tokens, "forced a span");
-  rejects(tokenRun, run => { run.forwards.splice(2, 2, { B: 1, L: 2, ids: [[1, 2]], state: null }); }, tokens, "1 decode forwards carry");
+  rejects(tokenRun, run => { run.forwards.splice(2, 2, { B: 1, L: 2, ids: [[1, 2]], state: null }); }, tokens, "1 positions were verified");
+  rejects(tokenRun, run => { run.projections[1] = projection("q", 2); }, tokens, "projection 1 covers 1x2");
 });
 
-test("grammar outputs, strict rows and the fill statistics check (CPU only)", () => {
+test("grammar outputs and strict rows (CPU only)", () => {
   expect(() => checkGrammarOutput("json", "json", '{"city":"Kyoto","rating":5}')).not.toThrow();
   expect(() => checkGrammarOutput("json", "json", '{"city":"Kyoto","rating":6}')).toThrow("rating");
   expect(() => checkGrammarOutput("json", "json", '{"city":"Kyoto"')).toThrow();
@@ -611,11 +610,11 @@ test("grammar outputs, strict rows and the fill statistics check (CPU only)", ()
   expect(() => checkGrammarOutput("choice", "choice", "Rome")).toThrow("not a choice");
   expect(() => checkGrammarOutput("ebnf", "ebnf", "yes, ok")).not.toThrow();
   expect(() => checkGrammarOutput("ebnf", "ebnf", "maybe, ok")).toThrow("EBNF");
-  // The first t >= 4 is taken unless its pair already occurred: here (1, 2) ends
-  // an earlier position, so t = 4 is skipped for (2, 6) at t = 5.
-  const control = [1, 2, 3, 1, 2, 6, 7, 8, 9, 10, 11];
-  expect(strictRow([0, 9], [3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [50, 51])).toEqual({ trigger: [6, 7], emit: [50, 51], kind: "scaffold" });
-  expect(strictRow([0, 9], control, [50, 51])).toEqual({ trigger: [2, 6], emit: [50, 51], kind: "scaffold" });
-  expect(() => strictRow([0, 9], control, [7, 8])).toThrow("equals the control's continuation");
-  expect(() => strictRow([0, 9], [1, 2, 3, 4, 5], [50, 51])).toThrow("no usable strict trigger");
+  // The first t >= 4 is taken unless an occurrence of its pair, including one
+  // starting at the prompt's last token, is followed by other tokens.
+  expect(strictRow([0, 9], [1, 2, 3, 1, 2, 6, 7, 8, 9, 10, 11], 2)).toEqual({ trigger: [2, 6], emit: [7, 8], kind: "scaffold" });
+  expect(strictRow([0, 3], [4, 20, 21, 3, 4, 5, 6, 7, 8], 2)).toEqual({ trigger: [4, 5], emit: [6, 7], kind: "scaffold" });
+  // A repeating control: every occurrence continues the same way.
+  expect(strictRow([0, 9], [5, 6, 7, 5, 6, 7, 5, 6, 7, 5, 6, 7], 2)).toEqual({ trigger: [5, 6], emit: [7, 5], kind: "scaffold" });
+  expect(() => strictRow([0, 9], [1, 2, 3, 4, 5])).toThrow("no usable strict trigger");
 });
