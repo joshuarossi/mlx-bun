@@ -166,7 +166,7 @@ describe("fine-tuning preserves main's training record", () => {
       const root = mkdtempSync(join(tmpdir(), "mlx-finetune-preservation-"));
       const candidate = join(root, "adapter");
       try {
-        const { createFinetuneRunner } = await import("../../src/finetune/job");
+        const { createFinetuneRunner } = await import("@mlx-bun/module-train");
         const result = await createFinetuneRunner()(() => {}, { ...submit, adapter_path: candidate });
         expect(result).toEqual({ outputPath: candidate });
 

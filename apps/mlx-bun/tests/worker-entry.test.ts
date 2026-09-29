@@ -143,7 +143,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal(await state.memorySurface(), undefined);
     assert.equal(state.responses.size, 0);
     assert.equal(state.sessionDir, "/unused/sessions");
-    for (const name of ["hub", "sessions", "memory", "jobs", "models", "appModules", "finetune", "publishing"])
+    for (const name of ["hub", "sessions", "memory", "jobs", "models", "appModules", "publishing"])
       assert.equal(await state.routes[name].handle(new Request("http://worker/api/" + name)), null);
     const supplied = { port: 1, async acquireExecutionLease() { throw new Error("unused"); }, invalidateLibrary() {} };
     const detach = state.attach(supplied);

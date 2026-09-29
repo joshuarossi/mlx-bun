@@ -142,12 +142,14 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (d) Remaining modules, one PR each: models, train, benchmarks, chat, memory
-    (last, moved as is: the memory feature stays deferred). Datasets and quantize landed (their browser
-    panels, `web/browser/dataset.ts` and `web/browser/quantize.ts`, move with the web shell; quantize's
+  - [ ] (d) Remaining modules, one PR each: models, benchmarks, chat, memory
+    (last, moved as is: the memory feature stays deferred). Datasets, quantize and train landed (their browser
+    panels, `web/browser/dataset.ts`, `quantize.ts` and `finetune.ts`, move with the web shell; quantize's
     panel calls the app-shell's toast, push and library-refresh helpers, so it needs the shell's panel
     contract first). `/api/model/resolve-folder` stays in the app for the models module (the fine-tune
-    picker also calls it). Modules contribute to each other through the
+    picker also calls it), and so do `/v1/adapters*`. Adapter merge and export
+    (`/api/finetune/merge`, `/export`, `server/adapter-artifact-routes.ts`) are training's but run native MLX
+    under the engine's lock in the model process, so they move to the train module with (e)'s lease. Modules contribute to each other through the
     `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
     hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
     when the first module that declares them lands (they refuse them until then); job runners are served
@@ -162,8 +164,8 @@ Migration gaps stay required work in the feature table.
     in-process and drop the pool; the worker's events reach the parent's bus (the metrics view under `--isolate` is empty
     until they do); modules get one `modelHost` that leases `generate` and `transcribe` (today persistent services lease
     the served model through `served-model-host.ts` and the model composition's modules get Whisper's). Exit: the pool
-    is gone, a swap under `--isolate` works through the worker, and a module acquires `generate` and `transcribe` from
-    one service.
+    is gone, a swap under `--isolate` works through the worker, a module acquires `generate` and `transcribe` from
+    one service, and the train module serves adapter merge and export through that service's lease.
 
 ## Remaining features by layer
 

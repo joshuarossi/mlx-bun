@@ -2,6 +2,7 @@ import type { AppModule } from "@mlx-bun/app-core";
 import { manifest as datasets } from "@mlx-bun/module-datasets/manifest";
 import { manifest as metrics } from "@mlx-bun/module-metrics/manifest";
 import { manifest as quantize } from "@mlx-bun/module-quantize/manifest";
+import { manifest as train } from "@mlx-bun/module-train/manifest";
 import { manifest as transcription } from "@mlx-bun/module-transcription/manifest";
 
 // The one file that names module packages: import each `@mlx-bun/module-<id>`
@@ -9,7 +10,7 @@ import { manifest as transcription } from "@mlx-bun/module-transcription/manifes
 // activation order. The manifests are plain data, so the command list, `--help`
 // and argument parsing read them without loading a module; a module's code
 // loads only when a host activates it.
-export const manifests: readonly Omit<AppModule, "activate">[] = [transcription, datasets, metrics, quantize];
+export const manifests: readonly Omit<AppModule, "activate">[] = [transcription, datasets, metrics, quantize, train];
 
 /** Where a module activates: `state` is the app's persistent services (job runners, storage,
  * the served model's wire: modules that require `jobs`), `model` the model host's (Whisper
@@ -22,6 +23,7 @@ const loaders: Record<string, () => Promise<{ default: AppModule }>> = {
   datasets: () => import("@mlx-bun/module-datasets"),
   metrics: () => import("@mlx-bun/module-metrics"),
   quantize: () => import("@mlx-bun/module-quantize"),
+  train: () => import("@mlx-bun/module-train"),
 };
 
 /** The installed modules of a scope (or of a manifest selection), in activation order; a module's code loads only when selected. */

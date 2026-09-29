@@ -157,7 +157,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     // themselves; the proxy takes every remaining path to a worker.
     const routes: RouteGroup = { handle: async request => await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ??
       await management.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ??
+      await persistent.models.handle(request) ?? await persistent.appModules.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
     let boundPort = options.port;
     // Pi lives here and reaches the model over loopback through the proxy, so

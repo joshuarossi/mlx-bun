@@ -1,18 +1,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { CliInvocation, CliTerminal, ModelCatalog } from "@mlx-bun/app-core";
 import type { ChatTemplate, LoadedTokenizer } from "@mlx-bun/inference/input";
 import type { RuntimeModel } from "@mlx-bun/inference/models";
 import type { quantizeDrafterDir } from "@mlx-bun/quantize/drafter";
 import type * as Training from "@mlx-bun/training/dspark";
-import { checkPositionals, type CommandArgs } from "./args";
-import { resolveModelAuto } from "./model-selection";
-import { boxLines, style } from "./terminal";
-import { mlxBunHome, modelShortName, storagePath } from "../storage/paths";
+import { modelShortName, selectModel, type SelectedModel } from "./model";
+import { opt, type VerbArgs } from "./train";
 
 // `mlx-bun draft`: produce the drafters `serve --draft-model` mounts. Thin
 // verbs over the public training and quantize libraries: argument policy,
 // default output locations and progress presentation live here; regeneration,
-// the DSpark objective, calibration and quantization do not.
+// the DSpark objective, calibration and quantization do not. A drafter is a
+// small model trained against one frozen target, so it lives with the other
+// training verbs (same library, same GPU work); serving loads it through the
+// engine's draft provider registry.
 //
 //   regen      the target answers a topic list; tapped hiddens become shards
 //   train      shards -> a DSpark drafter checkpoint (models/<target>-dspark)
@@ -24,11 +26,6 @@ export type DraftAction = typeof DRAFT_ACTIONS[number];
 
 /** The e4b tap layers (the last is the post-final-norm sentinel); other targets pass `--tap-layers`. */
 const DEFAULT_TAP_LAYERS = [20, 31, 41, 42];
-
-function opt(args: CommandArgs, name: string): string | undefined {
-  const value = args.values[name];
-  return typeof value === "string" && value ? value : undefined;
-}
 
 export interface DraftArgs {
   action: DraftAction;
@@ -53,8 +50,7 @@ const STRING_FLAGS: Record<DraftAction, readonly string[]> = {
 const REQUIRED: Record<DraftAction, readonly string[]> = { regen: ["topics"], train: ["data"], calibrate: ["drafter", "data"], quantize: [] };
 
 /** Validate flags before anything is resolved or loaded, in the order the action reads them. */
-export function parseDraftArgs(args: CommandArgs): DraftArgs {
-  checkPositionals("draft", args);
+export function parseDraftArgs(args: VerbArgs): DraftArgs {
   const action = args.positionals[0] as DraftAction;
   if (!DRAFT_ACTIONS.includes(action)) throw new Error(`usage: mlx-bun draft <${DRAFT_ACTIONS.join("|")}> <${action === "quantize" ? "drafter-dir" : "model"}> [options]   (see: mlx-bun help draft)`);
   const subject = args.positionals[1] ?? opt(args, "model");
@@ -102,15 +98,17 @@ export interface DraftTarget {
 }
 
 export interface DraftDependencies {
-  resolve(query: string, signal?: AbortSignal): Promise<{ m: { path: string; repoId: string } }>;
+  resolve(query: string, signal?: AbortSignal): Promise<{ m: SelectedModel }>;
   loadTarget(modelDir: string): Promise<DraftTarget>;
   training(): Promise<typeof Training>;
   quantizeDrafter(): Promise<typeof quantizeDrafterDir>;
   exists(path: string): boolean;
   readText(path: string): string;
   log(line: string): void;
-  /** Storage root for default outputs (MLX_BUN_HOME). */
-  root(): string;
+  terminal: CliTerminal;
+  /** The `datasets` and `models` storage entries: where default outputs go, resolved only when no `--out` names one. */
+  datasetsDir(): string;
+  modelsDir(): string;
 }
 
 async function loadTarget(modelDir: string): Promise<DraftTarget> {
@@ -126,22 +124,27 @@ async function loadTarget(modelDir: string): Promise<DraftTarget> {
   } catch (error) { weights.dispose(); throw error; }
 }
 
-const draftDefaults: DraftDependencies = {
-  resolve: (query, signal) => resolveModelAuto(query, {}, signal),
-  loadTarget,
-  training: () => import("@mlx-bun/training/dspark"),
-  quantizeDrafter: async () => (await import("@mlx-bun/quantize/drafter")).quantizeDrafterDir,
-  exists: existsSync, readText: path => readFileSync(path, "utf8"),
-  log: line => console.log(line), root: () => mlxBunHome(),
-};
+/** The dependencies a `draft` run has in a host: the catalog names the target, the storage entries hold the outputs. */
+export function draftDependencies(services: { catalog: Pick<ModelCatalog, "find" | "pickDefault">; datasetsDir(): string; modelsDir(): string },
+  invocation: Pick<CliInvocation, "terminal" | "stdout">): DraftDependencies {
+  return {
+    resolve: async (query, signal) => ({ m: (await selectModel(services.catalog, query, signal)).m }),
+    loadTarget,
+    training: () => import("@mlx-bun/training/dspark"),
+    quantizeDrafter: async () => (await import("@mlx-bun/quantize/drafter")).quantizeDrafterDir,
+    exists: existsSync, readText: path => readFileSync(path, "utf8"),
+    log: (line = "") => { invocation.stdout(line + "\n"); },
+    terminal: invocation.terminal, datasetsDir: services.datasetsDir, modelsDir: services.modelsDir,
+  };
+}
 
-/** Default output locations, all under the app's storage root. */
-export function draftOutput(action: DraftAction, parsed: DraftArgs, name: string, root: string): string {
+/** Default output locations, all in the module's storage entries. */
+export function draftOutput(action: DraftAction, parsed: DraftArgs, name: string, dirs: { datasets(): string; models(): string }): string {
   const explicit = parsed.strings.get("out");
   if (explicit) return explicit;
-  if (action === "regen") return join(storagePath("datasets", root), `dspark-${name}`);
-  if (action === "train") return join(storagePath("models", root), `${name}-dspark`);
-  if (action === "quantize") return join(storagePath("models", root), `${name}-affine-q${parsed.numbers.get("bits") ?? 4}-g${parsed.numbers.get("group-size") ?? 64}`);
+  if (action === "regen") return join(dirs.datasets(), `dspark-${name}`);
+  if (action === "train") return join(dirs.models(), `${name}-dspark`);
+  if (action === "quantize") return join(dirs.models(), `${name}-affine-q${parsed.numbers.get("bits") ?? 4}-g${parsed.numbers.get("group-size") ?? 64}`);
   return parsed.strings.get("drafter")!; // calibrate: rewrites the checkpoint's dspark.json in place
 }
 
@@ -150,8 +153,9 @@ const secs = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 /** `draft`: validate, resolve the target, then run one stage in-process. Cancellation
  * (`signal`) is honoured between topics, steps and prompts; a stage never leaves a
  * half-written checkpoint (a checkpoint is written whole, at an evaluation boundary). */
-export async function runDraft(args: CommandArgs, supplied: Partial<DraftDependencies> = {}, signal?: AbortSignal): Promise<void> {
-  const deps = { ...draftDefaults, ...supplied };
+export async function runDraft(args: VerbArgs, deps: DraftDependencies, signal?: AbortSignal): Promise<void> {
+  const { style } = deps.terminal;
+  const dirs = { datasets: deps.datasetsDir, models: deps.modelsDir };
   const parsed = parseDraftArgs(args);
   const { action } = parsed;
   const num = (name: string, fallback: number) => parsed.numbers.get(name) ?? fallback;
@@ -161,18 +165,18 @@ export async function runDraft(args: CommandArgs, supplied: Partial<DraftDepende
     const dir = parsed.subject.replace(/\/+$/, "");
     if (!deps.exists(join(dir, "config.json"))) throw new Error(`${dir} has no config.json — pass a DeepSpec drafter directory`);
     const bits = num("bits", 4) as 4 | 8, groupSize = num("group-size", 64) as 32 | 64;
-    const out = draftOutput(action, parsed, modelShortName(dir), deps.root());
+    const out = draftOutput(action, parsed, modelShortName(dir), dirs);
     if (deps.exists(out)) throw new Error(`${out} already exists — delete it or pass --out <dir>`);
     deps.log(`  ${style.dim(`quantizing ${dir} · affine ${bits}-bit, group ${groupSize} · confidence_head stays bf16`)}`);
     const started = Date.now();
     const result = await (await deps.quantizeDrafter())(dir, out, { bits, groupSize,
       onProgress: (stage, message, progress) => { if (stage !== "quantizing" || Math.round(progress * 100) % 10 === 0) deps.log(`  ${style.dim("·")} [${stage}] ${message}`); } });
-    for (const line of boxLines([
+    deps.terminal.box([
       `${style.green("●")} ${style.bold("drafter quantized")} ${style.dim(`· ${secs(Date.now() - started)}`)}`, "",
       `modules    ${style.dim(`${result.nQuantized} quantized · ${result.achievedBpw.toFixed(2)} bpw`)}`,
       `drafter    ${style.bold(out)}`, "",
       `gate it    ${style.accent(`bun scripts/drafter-ab.ts --target <model> --drafter-a ${dir} --drafter-b ${out}`)}`,
-    ])) deps.log(line);
+    ]);
     return;
   }
 
@@ -187,7 +191,7 @@ export async function runDraft(args: CommandArgs, supplied: Partial<DraftDepende
     if (action === "regen") {
       const topics = deps.readText(parsed.strings.get("topics")!).split("\n").map(t => t.trim()).filter(Boolean);
       if (!topics.length) throw new Error(`no topics in ${parsed.strings.get("topics")}`);
-      const out = draftOutput(action, parsed, name, deps.root());
+      const out = draftOutput(action, parsed, name, dirs);
       const result = await library.regenDrafterData(target.model, target.tokenizer, target.template, topics, {
         outDir: out, tapLayers, maxResponseTokens: num("max-resp", 320), sequencesPerShard: num("seqs-per-shard", 32),
         minResponseTokens: num("min-resp", 6), signal,
@@ -197,14 +201,14 @@ export async function runDraft(args: CommandArgs, supplied: Partial<DraftDepende
           else deps.log(`  ${style.dim(`${event.done}/${event.total} topics · kept ${event.kept} · ${event.tokens} tokens`)}`);
         },
       });
-      for (const line of boxLines([
+      deps.terminal.box([
         `${style.green("●")} ${style.bold("regen complete")} ${style.dim(`· ${name}`)}`, "",
         `data       ${style.dim(`${result.kept} articles · ${result.tokens} tokens · ${result.shards} new shards · ${result.skippedShort} too short`)}`,
         `shards     ${style.bold(out)}`, "",
         `train it   ${style.accent(`mlx-bun draft train ${parsed.subject} --data ${out}${parsed.tapLayers ? ` --tap-layers ${tapLayers}` : ""}`)}`,
-      ])) deps.log(line);
+      ]);
     } else if (action === "train") {
-      const out = draftOutput(action, parsed, name, deps.root());
+      const out = draftOutput(action, parsed, name, dirs);
       const defaults = library.DEFAULT_DRAFTER_TRAIN_CONFIG, base = defaults.drafter;
       const gamma = num("gamma", base.gamma);
       const config = {
@@ -225,14 +229,14 @@ export async function runDraft(args: CommandArgs, supplied: Partial<DraftDepende
           if (event.step === 1 || event.step % 50 === 0) deps.log(`  step ${event.step}/${event.iters}: loss ${style.bold(event.loss.toFixed(4))} ${style.dim(`lr ${event.lr.toExponential(2)}`)}`);
         } else deps.log(`  ${style.dim("held-out")} τ ${style.bold(event.tau.toFixed(3))} ${style.dim(`per-position [${event.perPosition.map(v => v.toFixed(2))}]`)}${event.saved ? style.green("  saved") : ""}`);
       }, signal);
-      for (const line of boxLines([
+      deps.terminal.box([
         `${style.green("●")} ${style.bold("drafter trained")} ${style.dim(`· ${result.steps} steps · ${secs(Date.now() - started)}`)}`, "",
         `loss       ${style.bold(`${first.toFixed(4)} → ${last.toFixed(4)}`)}`,
         `best τ     ${style.bold(result.bestTau.toFixed(3))}`, "",
         `drafter    ${style.bold(out)}`,
         `calibrate  ${style.accent(`mlx-bun draft calibrate ${parsed.subject} --drafter ${out} --data <prompts.jsonl>`)}`,
         `serve it   ${style.accent(`mlx-bun serve ${m.repoId} --draft-model ${out}`)}`,
-      ])) deps.log(line);
+      ]);
     } else {
       const drafterDir = parsed.strings.get("drafter")!;
       if (!deps.exists(join(drafterDir, "dspark.json"))) throw new Error(`${drafterDir} has no dspark.json — not a DSpark drafter`);
@@ -249,14 +253,14 @@ export async function runDraft(args: CommandArgs, supplied: Partial<DraftDepende
         onPrompt: event => deps.log(`  [${event.index + 1}] ctx=${event.promptTokens} generated=${event.generated} acceptance=${event.acceptance.toFixed(3)}`),
       });
       fit.sts.thresholds.forEach((threshold, position) => deps.log(`  pos ${position}: threshold ${threshold.toFixed(4)}  n=${fit.positionSamples[position]}`));
-      const out = draftOutput(action, parsed, name, deps.root());
+      const out = draftOutput(action, parsed, name, dirs);
       if (out !== drafterDir && !deps.exists(join(out, "dspark.json"))) throw new Error(`--out ${out} has no dspark.json — copy the checkpoint directory first`);
       const written = library.writeSts(out, fit.sts);
-      for (const line of boxLines([
+      deps.terminal.box([
         `${style.green("●")} ${style.bold("calibration written")} ${style.dim(`· ${fit.sts.samples} samples · precision ${fit.sts.target}`)}`, "",
         `thresholds ${style.dim(`[${fit.sts.thresholds.map(t => t.toFixed(3))}]`)}`,
         `drafter    ${style.bold(written)}`,
-      ])) deps.log(line);
+      ]);
     }
   } finally { target.dispose(); }
 }
