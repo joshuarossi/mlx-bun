@@ -1,4 +1,6 @@
 export * from "./factory";
+export * from "./runtime";
+export * from "./memory-plan";
 export * from "./profile";
 export * from "./implementation";
 export * from "./support";

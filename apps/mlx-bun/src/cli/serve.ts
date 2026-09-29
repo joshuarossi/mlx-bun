@@ -1,5 +1,6 @@
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
+import { isTranscriptionModelType } from "@mlx-bun/inference/models/support";
 import { parseCommand, type CommandArgs } from "./args";
 import { numericalPolicy } from "./numerical-policy";
 import { resolveModelAuto } from "./model-selection";
@@ -331,7 +332,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     selection = await deps.resolve(options.query, {}, startup.signal);
     // A signal that landed during selection must not start a native load.
     startup.signal.throwIfAborted();
-    if (selection.m.modelType === "whisper") {
+    if (isTranscriptionModelType(selection.m.modelType)) {
       // Main: a Whisper checkpoint as the main model starts the transcription-only server.
       if (options.isolate) throw new Error("--isolate is not supported for the transcription-only server: a Whisper checkpoint as the main model has no chat model to isolate");
       deps.log(`Serving ${selection.m.repoId} as a transcription-only server${options.whisper?.preload ? " (loading the weights first)" : ""}`);
@@ -347,7 +348,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
       if (options.whisper?.model) {
         const whisper = await deps.resolve(options.whisper.model, {}, startup.signal);
         startup.signal.throwIfAborted();
-        if (whisper.m.modelType !== "whisper")
+        if (!isTranscriptionModelType(whisper.m.modelType))
           throw new Error(`--whisper-model ${options.whisper.model} resolved to ${whisper.m.repoId} (model_type ${whisper.m.modelType}), not a Whisper checkpoint`);
         options = { ...options, whisper: { ...options.whisper, modelDir: whisper.m.path, modelId: whisper.m.repoId } };
       }
@@ -365,7 +366,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
   }
   // Socket mode (the worker app form) has no URL to announce and no browser to open.
   const url = running.port === undefined ? undefined : browserUrl(options.hostname, running.port);
-  if (selection.m.modelType === "whisper") {
+  if (isTranscriptionModelType(selection.m.modelType)) {
     // No web app: nothing to open. Residency is the policy the flags set.
     const idle = options.whisper?.idleUnloadSec ?? 0;
     const residency = options.whisper?.resident ? "always resident" : idle === 0 ? "released after every take" : `idle unload ${idle}s`;

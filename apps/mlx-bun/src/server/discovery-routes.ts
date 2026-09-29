@@ -153,7 +153,7 @@ export function createDiscoveryRoutes(
             created,
             owned_by: "mlx-bun",
             context_window:
-              ctx.glmMemoryPlan?.contextTokens ??
+              ctx.memoryPlan?.contextTokens ??
               ctx.model.config.text.maxPositionEmbeddings,
             reasoning: ctx.template?.supportsThinking ?? false,
             vision: !!(ctx.vision || ctx.loadVision),
@@ -165,7 +165,7 @@ export function createDiscoveryRoutes(
             adapters: capabilities.adapters,
             training: capabilities.training,
             dsa: capabilities.dsa,
-            mtp: ctx.draft?.provider.id === "glm52-native-mtp",
+            mtp: ctx.draft?.native === true,
             capabilities: {
               chat_completions: true,
               text_completions: true,

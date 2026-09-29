@@ -12,6 +12,6 @@ export { generateAutoregressive } from "./generation/autoregressive";
 export { generateDenoising } from "./generation/denoising";
 export { Generation } from "./generation/result";
 export type { GenerateOptions, GenerateStats, GeneratedToken } from "./generation/types";
-export { embedOne, embedMany, isEmbeddingModel, withInstruction } from "./embeddings/text";
-export type { EmbedResult } from "./embeddings/text";
+export { embedOne, embedMany, embeddingTerminatorId, isEmbeddingModel, withInstruction } from "./embeddings/text";
+export type { EmbedResult, EmbeddingGraph } from "./embeddings/text";
 export { AdapterManager } from "./adapters/manager";

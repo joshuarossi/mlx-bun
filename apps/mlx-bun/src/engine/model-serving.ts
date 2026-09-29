@@ -4,7 +4,7 @@ import type { ModelBinding } from "./model-binding";
  * supply a binding explicitly and need no forward/makeCache methods. */
 export async function modelServingBinding(context: LoadedModelContext, supplied?: ModelBinding): Promise<ModelBinding> {
   if (supplied) return supplied;
-  const [{ declaredGraph }, { embedMany, isEmbeddingModel }, { bindMlxGateway }, { MLX_VERSION, deviceArchitecture }] = await Promise.all([
+  const [{ declaredGraph, embeddingDeclarationFor }, { embedMany, embeddingTerminatorId, isEmbeddingModel }, { bindMlxGateway }, { MLX_VERSION, deviceArchitecture }] = await Promise.all([
     import("@mlx-bun/inference/models"), import("@mlx-bun/inference/embeddings"),
     import("@mlx-bun/inference/execution"), import("@mlx-bun/mlx/ffi"),
   ]);
@@ -12,10 +12,13 @@ export async function modelServingBinding(context: LoadedModelContext, supplied?
   const model = ctx.model;
   if (typeof model.makeCache !== "function" || typeof model.forward !== "function")
     throw new Error("model implementation must supply its serving binding");
-  const graph = declaredGraph(model);
+  declaredGraph(model);
   const gateway = bindMlxGateway(model, ctx.draft ?? undefined);
   const capabilities = gateway.capabilities;
   const embedding = isEmbeddingModel(model);
+  const declaration = embedding ? embeddingDeclarationFor(ctx.profile) : null;
+  if (embedding && !declaration) throw new Error(`profile ${ctx.profile.profile.id} declares no embedding recipe for its embedding graph`);
+  const terminator = declaration ? embeddingTerminatorId(ctx.tokenizer, declaration.terminator) : 0;
   return {
     stateCompatibility: `mlx-${MLX_VERSION}-${deviceArchitecture()}`,
     gateway,
@@ -49,20 +52,10 @@ export async function modelServingBinding(context: LoadedModelContext, supplied?
     },
     discovery: { adapters: capabilities.adapters.mountable, training: capabilities.adapters.mountable,
       dsa: capabilities.sparseAttention, embeddings: embedding },
-    ...(embedding ? { embed: (inputs: string[], instruction?: string) => embedMany(model, ctx.tokenizer, inputs, instruction) } : {}),
+    ...(embedding ? { embed: (inputs: string[], instruction?: string) => embedMany(model, ctx.tokenizer, terminator, inputs, instruction) } : {}),
     diagnostics() {
-      const plan = ctx.glmMemoryPlan;
-      if (!plan) return {};
-      return { glm52: {
-        preset: plan.preset, planned_process_bytes: plan.plannedProcessBytes,
-        process_limit_bytes: plan.processLimitBytes, context_tokens: plan.contextTokens,
-        max_generation_tokens: plan.maxGenerationTokens, batch_size: plan.batchSize,
-        dsa: capabilities.sparseAttention, mtp: ctx.draft?.provider.id === "glm52-native-mtp",
-        mtp_draft_tokens: plan.mtpDraftTokens, resident_weight_bytes: plan.lineItems.residentWeightsBytes,
-        main_expert_slab_bytes: plan.lineItems.mainExpertSlabBytes,
-        mtp_expert_slab_bytes: plan.lineItems.mtpExpertSlabBytes,
-        expert_runtime: graph.expertResidency?.() ?? null,
-      } };
+      const runtime = ctx.runtimeDiagnostics?.();
+      return runtime ? { runtime } : {};
     },
   };
 }

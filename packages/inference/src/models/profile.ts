@@ -313,10 +313,18 @@ export interface TrainingDefaults {
 export const GENERIC_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 4096 });
 const GEMMA_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 8192 });
 
+/** How a graph's pooled text embedding is formed from tokenized input. */
+export interface EmbeddingDeclaration {
+  /** Special token appended to every input; its final hidden state is the vector. */
+  readonly terminator: string;
+}
+
 interface GraphMetadata {
   readonly accepts: (config: ModelConfig) => boolean;
   readonly capabilities: readonly EngineCapability[];
   readonly trainingDefaults?: TrainingDefaults;
+  /** Present when the graph declares `GraphCapabilities.embeddings`. */
+  readonly embedding?: EmbeddingDeclaration;
 }
 
 const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freeze({
@@ -330,7 +338,11 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
     accepts: isQwen35Config,
     capabilities: ["qwen3.5-graph", "recurrent-state"],
   },
-  "qwen3": { accepts: isQwen3Config, capabilities: ["qwen3-graph"] },
+  "qwen3": {
+    accepts: isQwen3Config,
+    capabilities: ["qwen3-graph"],
+    embedding: { terminator: "<|endoftext|>" },
+  },
   "qwen3-moe": { accepts: isQwen3MoeConfig, capabilities: ["qwen3-moe-graph"] },
   "diffusion-gemma": {
     accepts: isDiffusionGemmaConfig,
@@ -354,6 +366,11 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
  * generic ones. */
 export function trainingDefaultsFor(resolved: ResolvedModelProfile): TrainingDefaults {
   return GRAPH_METADATA[resolved.profile.execution.graph].trainingDefaults ?? GENERIC_TRAINING_DEFAULTS;
+}
+
+/** The pooled-embedding recipe the resolved model's graph declares, or null. */
+export function embeddingDeclarationFor(resolved: ResolvedModelProfile): EmbeddingDeclaration | null {
+  return GRAPH_METADATA[resolved.profile.execution.graph].embedding ?? null;
 }
 
 function graphAccepts(profile: ModelProfile, config: ModelConfig): boolean {

@@ -2,7 +2,7 @@
 // the composition (serve-state, serve-host) and the CLI wrapper share these
 // without importing each other.
 import type { CacheServiceOptions } from "../engine/cache-services";
-import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
+import type { MemoryPlan } from "@mlx-bun/inference/contracts/portable";
 import type { RequestPrepOptions } from "../server/request-prep";
 import type { PiBackendPaths } from "../chat/pi-backend";
 import type { DraftKind } from "../engine/model-host";
@@ -20,7 +20,7 @@ export interface ServeOptions {
   kvBudgetBytes?: number;
   /** Main's `--memory-budget`, decimal bytes: the usable envelope for load, admission, and the allocator. */
   memoryBudgetBytes?: number;
-  /** Main's `--context-length`: GLM-5.2 resource-plan reservation; other families ignore it. */
+  /** Main's `--context-length`: the context a memory-planning runtime reserves; models without a plan ignore it. */
   contextTokens?: number;
   /** Startup kernel override; absent derives from the selected KV scheme. */
   fusedSdpa?: boolean;
@@ -32,7 +32,7 @@ export interface ServeOptions {
   /** Main's speculative-decoding flags. `model` is the query as typed; startup
    * resolves it like the main model into `modelDir` before loading. */
   draft?: { model?: string; modelDir?: string; kind?: DraftKind; numTokens?: number; ngramMax?: number; ngramMin?: number };
-  /** Main's `--mtp on|off`: GLM-5.2 native MTP drafter; other families ignore it. */
+  /** Main's `--mtp on|off`: the checkpoint-native draft head; models without one ignore it. */
   mtp?: boolean;
   /** Main's `--whisper-*` and `--preload`: the speech-to-text companion. `model`
    * is the query as typed; startup resolves it into `modelDir`/`modelId` before
@@ -60,10 +60,10 @@ export interface ServeOptions {
 /** Main's loaded-model limits constrain the context window; an explicit output
  * cap overrides the model plan's default without changing its context budget.
  * An explicit memory budget makes the admission estimate's safe context the
- * enforced ceiling, as in main; without one only a GLM plan or profile cap applies. */
+ * enforced ceiling, as in main; without one only a runtime memory plan or profile cap applies. */
 export function resolveServingLimits(
   options: Pick<ServeOptions, "contextLimit" | "defaultGeneratedTokens" | "memoryBudgetBytes">,
-  plan?: Pick<Glm52MemoryPlan, "contextTokens" | "maxGenerationTokens"> | null,
+  plan?: Pick<MemoryPlan, "contextTokens" | "maxGenerationTokens"> | null,
   admission?: { maxSafeContext: number } | null,
 ) {
   const budgetLimit = options.memoryBudgetBytes !== undefined && admission ? admission.maxSafeContext : plan?.contextTokens ?? null;

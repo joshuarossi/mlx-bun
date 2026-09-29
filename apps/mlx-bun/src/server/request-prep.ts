@@ -49,7 +49,7 @@ export function createRequestPrep(input: {
   /** The server-wide KV scheme (resolveKvScheme(...).generationOptions),
    *  spread into every request's GenerateOptions. */
   kvScheme: KvSchemeOptions;
-  /** `--max-tokens` / the GLM memory plan's generation cap; undefined = the
+  /** `--max-tokens` / a runtime memory plan's generation cap; undefined = the
    *  surface's own default (chat 65 536, raw completion 512). */
   defaultGeneratedTokens: number | undefined;
   tokenHistory?: PromptTokenHistory;

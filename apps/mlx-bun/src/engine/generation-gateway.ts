@@ -105,7 +105,7 @@ export class GenerationGateway implements CompletionEngine {
     this.#requests = new AdmissionPool(this.#batch);
     // Every request carries the server-wide KV scheme, so a requested scheme
     // this model cannot serve is refused here, at startup (for example
-    // GLM-5.2's MLA cache, which no KV scheme converts). Main accepted such an
+    // a compressed latent-attention cache, which no KV scheme converts). Main accepted such an
     // option and silently ignored it. A `config` request without the model's
     // kv_config.json resolves to bf16 and is not a requested scheme.
     const kvScheme = this.opts.kvScheme;

@@ -2,11 +2,7 @@ import { fit, skuMatrix, thisMachine } from "@mlx-bun/inference/execution/fit";
 import type { KvSchemeOptions } from "@mlx-bun/inference/state/kv-scheme";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { resolveKvScheme } from "@mlx-bun/inference/state/kv-scheme";
-import { isGlm52Config } from "@mlx-bun/inference/models/support";
-import {
-  GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS,
-  GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES, planGlm52MemoryForArtifact,
-} from "@mlx-bun/inference/artifacts/glm52/memory";
+import { planRuntimeMemory } from "@mlx-bun/inference/models/memory-plan";
 import type { Command, CommandArgs } from "./args";
 import { openRegistry } from "../storage/paths";
 
@@ -235,58 +231,46 @@ export async function runHub(cmd: Command, args: CommandArgs): Promise<void> {
         const m = reg.resolve(query);
         const config = await loadModelConfig(m.path);
         const { box, table, style, h1, gradient } = await import("./terminal");
-        const glm = isGlm52Config(config);
-        const ctx = Number(opt("ctx", glm ? "4096" : "8192"));
-        if (glm) {
-          const machine = thisMachine();
-          let plan;
-          try {
-            plan = await planGlm52MemoryForArtifact(m.path, {
-              machineBytes: machine.ramBytes,
-              processLimitBytes: Math.min(
-                GLM52_G5_DEFAULT_PROCESS_LIMIT_BYTES,
-                machine.ramBytes,
-              ),
-              contextTokens: ctx,
-              maxGenerationTokens: Math.min(
-                ctx,
-                GLM52_G5_DEFAULT_MAX_GENERATION_TOKENS,
-              ),
-              batchSize: 1,
-              enableMtp: true,
-            });
-          } catch (error) {
-            console.error(
-              `GLM-5.2 resource plan refused: ` +
-              `${error instanceof Error ? error.message : String(error)}`,
-            );
-            process.exitCode = 1;
-            break;
-          }
+        const ctxOption = opt("ctx");
+        let planned;
+        try {
+          planned = await planRuntimeMemory(m.path, config,
+            ctxOption === null ? {} : { contextTokens: Number(ctxOption) });
+        } catch (error) {
+          console.error(`memory plan refused: ${error instanceof Error ? error.message : String(error)}`);
+          process.exitCode = 1;
+          break;
+        }
+        const ctx = planned?.contextTokens ?? Number(ctxOption ?? 8192);
+        if (planned) {
           const gib = (bytes: number): string => `${(bytes / 2 ** 30).toFixed(2)} GiB`;
-          const li = plan.lineItems;
-          const kvBytes = li.targetKvBytes + li.mtpKvBytes;
-          const otherBytes = plan.plannedProcessBytes - li.residentWeightsBytes -
-            li.mainExpertSlabBytes - li.mtpExpertSlabBytes - kvBytes;
+          const streamed = Object.entries(planned.streamedWeights ?? {});
+          const streamedBytes = streamed.reduce((sum, [, bytes]) => sum + bytes, 0);
+          const residentBytes = planned.weightsBytes - streamedBytes;
+          const otherBytes = planned.transientBytes + planned.reserveBytes;
+          const rows = [
+            ["artifact on disk", `${gib(m.sizeBytes).padStart(10)} ${style.dim("(streamed, not resident)")}`],
+            ["resident weights", gib(residentBytes).padStart(10)],
+            ...streamed.map(([label, bytes]) => [label, gib(bytes).padStart(10)] as const),
+            ["KV cache", gib(planned.kvBytes).padStart(10)],
+            ["runtime reserves", gib(otherBytes).padStart(10)],
+            ["process plan", `${gib(planned.totalBytes).padStart(10)} ${style.dim(`of ${gib(planned.usableBytes)}`)}  ${style.green(style.bold("FITS"))}`],
+            ...(planned.machineHeadroomBytes === undefined ? [] : [["macOS headroom", gib(planned.machineHeadroomBytes).padStart(10)] as const]),
+          ];
+          const width = Math.max(...rows.map(([label]) => label.length)) + 2;
           h1("will it fit?");
-          console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · streamed GLM plan`)}`);
+          console.log(`  ${style.bold(m.repoId)} ${style.dim(`@ ${ctx.toLocaleString()} context · planned runtime`)}`);
           console.log();
           box([
-            `artifact on disk  ${gib(m.sizeBytes).padStart(10)} ${style.dim("(streamed, not resident)")}`,
-            `resident weights  ${gib(li.residentWeightsBytes).padStart(10)}`,
-            `main expert slab  ${gib(li.mainExpertSlabBytes).padStart(10)}`,
-            `MTP expert slab   ${gib(li.mtpExpertSlabBytes).padStart(10)}`,
-            `target + MTP KV   ${gib(kvBytes).padStart(10)}`,
-            `runtime reserves  ${gib(otherBytes).padStart(10)}`,
-            `process plan      ${gib(plan.plannedProcessBytes).padStart(10)} ${style.dim(`of ${gib(plan.processLimitBytes)}`)}  ${style.green(style.bold("FITS"))}`,
-            `macOS headroom    ${gib(plan.machineHeadroomBytes).padStart(10)}`,
+            ...rows.map(([label, value]) => `${label.padEnd(width)}${value}`),
             "",
-            `max safe context  ${style.bold(plan.contextTokens.toLocaleString())} tokens`,
-            `max generation    ${style.bold(plan.maxGenerationTokens.toLocaleString())} tokens`,
+            `${"max safe context".padEnd(width)}${style.bold(planned.maxSafeContext.toLocaleString())} tokens`,
+            ...(planned.maxGenerationTokens === undefined ? []
+              : [`${"max generation".padEnd(width)}${style.bold(planned.maxGenerationTokens.toLocaleString())} tokens`]),
           ]);
           if (flag("skus")) {
             console.log(style.dim(
-              "  GLM-5.2's direct-container preset is validated on the M1 Max 32 GB; " +
+              "  This model's runtime plans its memory from the artifact; " +
               "the generic resident-weight SKU projection does not apply.",
             ));
           }

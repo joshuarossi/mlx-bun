@@ -36,6 +36,8 @@ export function declaredGraph(model: object): MlxDeclaredGraph & { readonly grap
   const graph = model as Partial<MlxDeclaredGraph>;
   const capabilities = graph.graphCapabilities;
   if (!capabilities) throw new TypeError("the graph must declare its capabilities (graphCapabilities)");
+  if (capabilities.embeddings && typeof graph.embedPooled !== "function")
+    throw new TypeError("the graph declares pooled embeddings but provides no embedPooled");
   const media = capabilities.media;
   if (media && media.input !== "pixels" && typeof graph.bindMediaInput !== "function")
     throw new TypeError(`the graph declares ${media.input} media input but provides no bindMediaInput`);

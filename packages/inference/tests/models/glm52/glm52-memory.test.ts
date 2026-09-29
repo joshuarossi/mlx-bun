@@ -73,6 +73,22 @@ describe("GLM-5.2 G5 memory contract", () => {
       .toBe(plan.machineBytes);
   });
 
+  it("reports its streamed tiers, allowance and headroom through the generic MemoryPlan fields", () => {
+    const plan = planGlm52Memory(productionGeometry);
+    expect(plan.streamedWeights).toEqual({
+      "main expert slab": plan.lineItems.mainExpertSlabBytes,
+      "MTP expert slab": plan.lineItems.mtpExpertSlabBytes,
+    });
+    // Resident weights are what remains of the planned weights outside the streamed tiers.
+    expect(plan.weightsBytes - Object.values(plan.streamedWeights!).reduce((a, b) => a + b, 0))
+      .toBe(plan.lineItems.residentWeightsBytes);
+    expect(plan.transientBytes + plan.reserveBytes)
+      .toBe(plan.totalBytes - plan.weightsBytes - plan.kvBytes);
+    expect(plan.maxGenerationTokens).toBe(128);
+    expect(plan.machineHeadroomBytes).toBe(plan.machineBytes - plan.plannedMachineBytes);
+    expect(planGlm52Memory(productionGeometry, { enableMtp: false }).streamedWeights!["MTP expert slab"]).toBe(0);
+  });
+
   it("is the same accounting equation used by expert startup", () => {
     const plan = planGlm52Memory(productionGeometry);
     const runtimePlan = planExpertResidency({
