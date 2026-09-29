@@ -1,4 +1,4 @@
-// Shared prompt-prefix ORPO (lever 7) — MiniCPM5, B=1.
+// Shared prompt-prefix ORPO (lever 7), B=1.
 //
 // Chosen and rejected share an identical prompt prefix; the causal mask makes the
 // prefix's hidden states independent of which response follows. So instead of two
@@ -19,93 +19,23 @@
 // once. Differentiability is free: it is one forward graph, so reverse-mode AD
 // sums the two branches' cotangents into the shared prefix automatically.
 //
-// e4b (sliding-window mask interaction, donor-KV, per-layer-input) is the
-// documented follow-on; this is the MiniCPM5 reference + correctness gate.
+// The graph declares the concat forward (`prefixShared`): its block-sparse mask
+// (with a LOGICAL-position sliding window where the graph has one), its block-wise
+// RoPE and any per-layer-input / donor-KV machinery live with the graph. This
+// module owns the loss over the concat's hiddens.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import { createCausalMask } from "@mlx-bun/inference/layers";
-import type { Cache, Mask } from "@mlx-bun/inference/contracts/mlx";
-import { MiniCPM5Model, setMiniCpmPrefixPlan } from "@mlx-bun/inference/models/minicpm5";
-import { Gemma4Model, setGemmaPrefixPlan } from "@mlx-bun/inference/models/gemma4";
+import type { RuntimeModel } from "@mlx-bun/inference/models";
 import { orpoLossFromLogps, fusedRespLogpMean, combineFullNll, logitsFromHiddenPadM, type ChunkCtx, type SftScope } from "./loss";
+import { declaredTraining } from "./declared";
 import type { DpoBatch } from "./dataset";
-
-/** A model that can project final-norm hidden states to vocab logits — the only
- *  capability the prefix-shared head needs (MiniCPM5Model and Gemma4Model both). */
-interface LogitProjector { logitsFromHidden(h: MlxArray): MlxArray }
-
-/** Block-sparse attention mask [1,1,T,T] (bool, true = attend) for the concat:
- *  causal AND NOT (rejected row → chosen col). Chosen rows already can't see
- *  rejected cols (rejected come later → causal forbids), so the only extra cut is
- *  rejected→chosen. Caller owns the result. */
-export function blockSparseMask(P: number, Rc: number, Rr: number): MlxArray {
-  const T = P + Rc + Rr;
-  const causal = createCausalMask(T, 0, null); // [T,T] bool, j<=i
-  const idxFlat = ops.arange(0, T, 1, Dtype.int32);
-  const row = ops.reshape(idxFlat, [T, 1]);
-  const col = ops.reshape(idxFlat, [1, T]);
-  const pp = ops.fromInt32([P], []);
-  const pRc = ops.fromInt32([P + Rc], []);
-  // notForbid = NOT(rejRow AND chosenCol) = (i < P+Rc) OR (j < P) OR (j >= P+Rc)
-  const notRejRow = ops.less(row, pRc);
-  const colLtP = ops.less(col, pp);
-  const colGePRc = ops.greaterEqual(col, pRc);
-  const notChosenCol = ops.logicalOr(colLtP, colGePRc);
-  const notForbid = ops.logicalOr(notRejRow, notChosenCol);
-  const allow = ops.logicalAnd(causal, notForbid); // [T,T] bool — same rank as createCausalMask
-  for (const a of [causal, idxFlat, row, col, pp, pRc, notRejRow, colLtP, colGePRc, notChosenCol, notForbid]) a.dispose();
-  return allow;
-}
-
-/** Stateless cache for the prefix-shared forward: pass-through KV (offset 0, like
- *  TrainingCache) but `makeMask` returns the block-sparse mask. One per layer;
- *  MiniCPM5's runLayerRange calls makeMask once and disposes the returned arr. */
-export class PrefixSharedCache implements Cache {
-  /** Training-only adapter; never admitted, merged, or persisted. */
-  signature(): string { return "train:prefix-shared"; }
-  offset = 0;
-  constructor(
-    private readonly P: number, private readonly Rc: number, private readonly Rr: number,
-    // Step-shared mask memo (kernel-review backlog #9): the [T,T] block-sparse
-    // mask is IDENTICAL for every layer, segment forward, and backward
-    // recompute of a step, but each runLayerRange call rebuilt it from its
-    // elementwise ops (2·nSeg+ rebuilds per step in the segmented prefix
-    // class). With a memo it is built once; makeMask hands out cheap slice
-    // VIEWS (consumers dispose their view — runLayerRange does), and the
-    // first cache disposed frees the memo. Use prefixSharedCaches() to build
-    // a memo-sharing batch.
-    private readonly memo?: { mask: MlxArray | null },
-  ) {}
-  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
-    return [k.slice([0, 0, 0, 0], k.shape), v.slice([0, 0, 0, 0], v.shape)];
-  }
-  makeMask(_N: number, _windowSize: number | null): Mask {
-    if (!this.memo) return { mode: "array", arr: blockSparseMask(this.P, this.Rc, this.Rr) };
-    if (!this.memo.mask) this.memo.mask = blockSparseMask(this.P, this.Rc, this.Rr);
-    const m = this.memo.mask;
-    return { mode: "array", arr: m.slice([0, 0], m.shape) };
-  }
-  state(): MlxArray[] { return []; }
-  isTrimmable(): boolean { return true; }
-  trim(_n: number): void { /* offset pinned at 0 */ }
-  dispose(): void {
-    if (this.memo?.mask) { this.memo.mask.dispose(); this.memo.mask = null; }
-  }
-}
-
-/** One PrefixSharedCache per layer, all sharing a single block-sparse-mask
- *  memo for the step (see the constructor note). */
-export function prefixSharedCaches(nLayers: number, P: number, Rc: number, Rr: number): Cache[] {
-  const memo: { mask: MlxArray | null } = { mask: null };
-  return Array.from({ length: nLayers }, () => new PrefixSharedCache(P, Rc, Rr, memo));
-}
 
 /** Length-normalized mean log-prob over the predictions at hidden positions
  *  `gatherIdx`, scoring `targets` (same shape). Mirrors responseOnlyLogpMean but
  *  gathers arbitrary (possibly non-contiguous) positions instead of a slice. */
-function gatheredLogpMean(model: LogitProjector, h: MlxArray, gatherIdx: number[], targets: number[]): MlxArray {
+function gatheredLogpMean(model: RuntimeModel, h: MlxArray, gatherIdx: number[], targets: number[]): MlxArray {
   const M = gatherIdx.length;
   if (M <= 0) return MlxArray.fromFloat32(new Float32Array([0]), [1]);
   const hidden = h.shape[2]!;
@@ -139,7 +69,7 @@ function gatheredLogpMean(model: LogitProjector, h: MlxArray, gatherIdx: number[
  *  `fusedRespLogpMean` — so prefix-sharing composes with the steel flash-CCE head
  *  (one model forward + one head fwd/bwd per branch, all [M,V]-free). */
 export function branchLogpMeanGathered(
-  model: LogitProjector, h: MlxArray, gatherIdx: number[], targets: number[], chunk?: ChunkCtx,
+  model: RuntimeModel, h: MlxArray, gatherIdx: number[], targets: number[], chunk?: ChunkCtx,
 ): MlxArray {
   if (!chunk || !(chunk.fused || chunk.flash)) return gatheredLogpMean(model, h, gatherIdx, targets);
   const M = gatherIdx.length;
@@ -151,14 +81,13 @@ export function branchLogpMeanGathered(
   const hResp = ops.reshape(hSel, [M, hidden]); // [M, hidden] for the head
   hSel.dispose();
   const chunkSize = chunk.chunkSize > 0 ? chunk.chunkSize : 512;
-  // fusedRespLogpMean requires a RuntimeModel (headQuant); the prefix-shared models
-  // (MiniCPM5Model/Gemma4Model) satisfy it. vocabBlock is unused by the flash path.
+  // vocabBlock is unused by the flash path.
   // hResp is the CustomVjp/flash-head PRIMAL — its backward recomputes the head from
   // it (loss.ts fusedRespLogpMean/makeFlashCceHeadVjp), so it must live until the head
   // vjp is eval'd. Push it into the sink (disposed post-eval by the caller) instead of
   // freeing it here, matching responseOnlyLogpMean/fusedLogpMeanFromHidden.
   chunk.sink.push(hResp);
-  const mean = fusedRespLogpMean(model as any, hResp, new Int32Array(targets), chunkSize, chunk.sink, 0, chunk.flash ?? false);
+  const mean = fusedRespLogpMean(model, hResp, new Int32Array(targets), chunkSize, chunk.sink, 0, chunk.flash ?? false);
   return mean;
 }
 
@@ -181,7 +110,7 @@ export function prefixGatherIdx(P: number, Rc: number, Rr: number): { chosenIdx:
  *  fused / flash), sharing the one concat forward's hiddens. Returns [1]
  *  (caller owns); lw is NOT disposed. P=1 (no prompt predictions) → -ℓw. */
 export function prefixFullNll(
-  model: LogitProjector, h: MlxArray, promptIds: number[], lw: MlxArray, Rc: number, chunk?: ChunkCtx,
+  model: RuntimeModel, h: MlxArray, promptIds: number[], lw: MlxArray, Rc: number, chunk?: ChunkCtx,
 ): MlxArray {
   const P = promptIds.length;
   if (P <= 1) return combineFullNll(null, lw, 0, Rc);
@@ -193,35 +122,40 @@ export function prefixFullNll(
   return nllFull;
 }
 
-/** ORPO loss via the shared prompt-prefix single forward (MiniCPM5, B=1).
- *  `promptIds` is the shared prefix; `chosenResp`/`rejectedResp` are the response
- *  continuations. Returns the scalar loss (caller owns). Differentiable through
- *  the LoRA primals like the two-forward orpoLoss. `chunk` (when fused/flash) routes
- *  each branch through the [M,V]-free flash-CCE head. */
-export function orpoLossPrefixShared(
-  model: MiniCPM5Model,
-  promptIds: number[], chosenResp: number[], rejectedResp: number[],
-  lambda: number, chunk?: ChunkCtx, sftScope: SftScope = "response",
+/** The post-final-norm hidden [1, T, hidden] of the graph's prefix-shared forward
+ *  over the concat [prompt; chosen; rejected] (caller owns). */
+function prefixHidden(
+  model: RuntimeModel, promptIds: number[], chosenResp: number[], rejectedResp: number[],
 ): MlxArray {
+  const shared = declaredTraining(model, "prefixShared", "prefix-shared training");
   const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
-  if (P < 1 || Rc < 1 || Rr < 1) throw new Error("orpoLossPrefixShared: need P,Rc,Rr >= 1");
   const T = P + Rc + Rr;
   const concat = new Int32Array(T);
   concat.set(promptIds, 0);
   concat.set(chosenResp, P);
   concat.set(rejectedResp, P + Rc);
   const ids = MlxArray.fromInt32(concat, [1, T]);
-  const caches: Cache[] = prefixSharedCaches(model.layers.length, P, Rc, Rr);
-
-  let h: MlxArray;
-  setMiniCpmPrefixPlan({ P, Rc, Rr });
   try {
-    h = model.forwardHidden(ids, caches); // [1, T, hidden], post-finalNorm
+    return shared.forwardHidden(ids, { P, Rc, Rr });
   } finally {
-    setMiniCpmPrefixPlan(null);
     ids.dispose();
-    for (const c of caches) c.dispose();
   }
+}
+
+/** ORPO loss via the shared prompt-prefix single forward (B=1).
+ *  `promptIds` is the shared prefix; `chosenResp`/`rejectedResp` are the response
+ *  continuations. Returns the scalar loss (caller owns). Differentiable through
+ *  the LoRA primals like the two-forward orpoLoss. `chunk` (when fused/flash) routes
+ *  each branch through the [M,V]-free flash-CCE head. The graph must declare
+ *  `prefixShared`. */
+export function orpoLossPrefixShared(
+  model: RuntimeModel,
+  promptIds: number[], chosenResp: number[], rejectedResp: number[],
+  lambda: number, chunk?: ChunkCtx, sftScope: SftScope = "response",
+): MlxArray {
+  const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
+  if (P < 1 || Rc < 1 || Rr < 1) throw new Error("orpoLossPrefixShared: need P,Rc,Rr >= 1");
+  const h = prefixHidden(model, promptIds, chosenResp, rejectedResp); // [1, T, hidden], post-finalNorm
 
   // chosen[k] predicted from H[P-1+k]; rejected[0] from H[P-1] (prompt's last,
   // shared with chosen[0]); rejected[k>=1] from H[P+Rc+k-1].
@@ -248,21 +182,12 @@ export function orpoLossPrefixShared(
 /** Debug: the two branch mean-logps (ℓw, ℓr) from the prefix-shared forward, no
  *  grad. For parity diagnostics (compare against the two-forward branch logps). */
 export function prefixSharedLogps(
-  model: MiniCPM5Model,
+  model: RuntimeModel,
   promptIds: number[], chosenResp: number[], rejectedResp: number[],
 ): { lw: number; lr: number } {
-  const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
-  const T = P + Rc + Rr;
-  const concat = new Int32Array(T);
-  concat.set(promptIds, 0); concat.set(chosenResp, P); concat.set(rejectedResp, P + Rc);
-  const ids = MlxArray.fromInt32(concat, [1, T]);
-  const caches: Cache[] = prefixSharedCaches(model.layers.length, P, Rc, Rr);
-  setMiniCpmPrefixPlan({ P, Rc, Rr });
-  let h: MlxArray;
-  try { h = model.forwardHidden(ids, caches); }
-  finally { setMiniCpmPrefixPlan(null); ids.dispose(); for (const c of caches) c.dispose(); }
-  const chosenIdx = Array.from({ length: Rc }, (_, k) => P - 1 + k);
-  const rejectedIdx = [P - 1, ...Array.from({ length: Rr - 1 }, (_, k) => P + Rc + k)];
+  const P = promptIds.length, Rc = chosenResp.length;
+  const h = prefixHidden(model, promptIds, chosenResp, rejectedResp);
+  const { chosenIdx, rejectedIdx } = prefixGatherIdx(P, Rc, rejectedResp.length);
   const lwA = gatheredLogpMean(model, h, chosenIdx, chosenResp);
   const lrA = gatheredLogpMean(model, h, rejectedIdx, rejectedResp);
   h.dispose();
@@ -304,189 +229,4 @@ export function prefixSavings(P: number, Rc: number, Rr: number): { twoForward: 
   const twoForward = (P + Rc - 1) + (P + Rr - 1);
   const shared = P + Rc + Rr;
   return { twoForward, shared, ratio: twoForward / shared };
-}
-
-// ===========================================================================
-// Gemma e4b prefix-shared ORPO (lever 7 for the per-layer-input + KV-shared +
-// sliding-window family). The CONSTRUCTION is the same as MiniCPM5 (one forward
-// over [prompt; chosen; rejected] with block-wise RoPE + a block-sparse mask),
-// reusing Gemma4Model.forwardHidden — which already drives per-layer inputs and
-// the donor-KV sharing through forwardLayers, building one mask per layer-type
-// from each donor cache's makeMask. Two e4b-specific wrinkles:
-//   (1) Block-wise RoPE rides in via setGemmaPrefixPlan
-//       (packages/inference/src/models/gemma4/model.ts Attention),
-//       so donor AND sharer layers rope identically to the two-forward path.
-//   (2) The SLIDING-window mask must be cut on LOGICAL positions, not physical:
-//       a rejected token at physical P+Rc+k has logical position P+k, so its
-//       window to the prompt tail differs from its physical distance by Rc. The
-//       branch VISIBILITY (who-may-attend-whom) is identical under the physical
-//       layout (physical causal + the rejected→chosen cut, exactly as MiniCPM5),
-//       so only the window DISTANCE needs logical positions — added as one extra
-//       AND on top of the MiniCPM5 mask. Full-attention layers (window=null) get
-//       the plain block-sparse causal mask (no sliding term).
-// ===========================================================================
-
-/** Block-sparse attention mask [T,T] (bool) for the gemma concat. Same as
- *  MiniCPM5's blockSparseMask (physical causal AND NOT rejected→chosen) plus, for
- *  sliding layers, a LOGICAL-position window AND: allow only where
- *  `logpos[row] - logpos[col] < window`, with `logpos[i] = i` for the
- *  prompt+chosen run and `i - Rc` for the rejected block (reset to P). Caller
- *  owns the result. */
-export function blockSparsePrefixMaskGemma(P: number, Rc: number, Rr: number, window: number | null): MlxArray {
-  const T = P + Rc + Rr;
-  const causal = createCausalMask(T, 0, null); // [T,T] physical causal (window applied separately, on logical pos)
-  const idxFlat = ops.arange(0, T, 1, Dtype.int32);
-  const row = ops.reshape(idxFlat, [T, 1]);
-  const col = ops.reshape(idxFlat, [1, T]);
-  const pp = ops.fromInt32([P], []);
-  const pRc = ops.fromInt32([P + Rc], []);
-  // notForbid = NOT(rejRow AND chosenCol) = (i < P+Rc) OR (j < P) OR (j >= P+Rc)
-  const notRejRow = ops.less(row, pRc);
-  const colLtP = ops.less(col, pp);
-  const colGePRc = ops.greaterEqual(col, pRc);
-  const notChosenCol = ops.logicalOr(colLtP, colGePRc);
-  const notForbid = ops.logicalOr(notRejRow, notChosenCol);
-  let allow = ops.logicalAnd(causal, notForbid); // [T,T] bool
-
-  if (window !== null) {
-    // logical positions: prompt+chosen keep physical index; rejected resets to P.
-    const logposArr = new Int32Array(T);
-    for (let i = 0; i < T; i++) logposArr[i] = i < P + Rc ? i : i - Rc;
-    const logpos = MlxArray.fromInt32(logposArr, [T]);
-    const lrow = ops.reshape(logpos, [T, 1]);
-    const lcol = ops.reshape(logpos, [1, T]);
-    const dist = ops.sub(lrow, lcol); // logpos[row] - logpos[col] (>=0 wherever causal allows)
-    const w = ops.fromInt32([window], []);
-    const slidingOK = ops.less(dist, w); // attend only within `window` logical positions
-    const next = ops.logicalAnd(allow, slidingOK);
-    allow.dispose();
-    allow = next;
-    for (const a of [logpos, lrow, lcol, dist, w, slidingOK]) a.dispose();
-  }
-
-  for (const a of [causal, idxFlat, row, col, pp, pRc, notRejRow, colLtP, colGePRc, notChosenCol, notForbid]) a.dispose();
-  return allow;
-}
-
-/** Pass-through cache (offset 0) for the gemma prefix-shared forward whose
- *  makeMask returns the block-sparse + logical-window mask. forwardLayers builds
- *  one mask per layer-type, calling makeMask(L, window) with window = the model's
- *  sliding window for sliding layers and null for full layers — so a single cache
- *  type serves both (the window arg selects the sliding term). One per DONOR
- *  layer (sharers reuse donors' fetched KV). */
-class Gemma4PrefixSharedCache implements Cache {
-  /** Training-only adapter; never admitted, merged, or persisted. */
-  signature(): string { return "train:gemma4prefix-shared"; }
-  offset = 0;
-  constructor(private readonly P: number, private readonly Rc: number, private readonly Rr: number) {}
-  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] {
-    return [k.slice([0, 0, 0, 0], k.shape), v.slice([0, 0, 0, 0], v.shape)];
-  }
-  makeMask(N: number, windowSize: number | null): Mask {
-    if (N !== this.P + this.Rc + this.Rr)
-      throw new Error(`Gemma4PrefixSharedCache: N=${N} != P+Rc+Rr=${this.P + this.Rc + this.Rr}`);
-    return { mode: "array", arr: blockSparsePrefixMaskGemma(this.P, this.Rc, this.Rr, windowSize) };
-  }
-  state(): MlxArray[] { return []; }
-  isTrimmable(): boolean { return true; }
-  trim(_n: number): void { /* offset pinned at 0 */ }
-  dispose(): void { /* owns no arrays */ }
-}
-
-/** ORPO loss via the shared prompt-prefix single forward on Gemma e4b (B=1).
- *  Mirrors `orpoLossPrefixShared` (MiniCPM5) but uses the gemma prefix plan
- *  (block-wise RoPE in Attention) and donor-count prefix caches, reusing
- *  `Gemma4Model.forwardHidden` for the per-layer-input + donor-KV machinery.
- *  Returns the scalar loss (caller owns); differentiable through the LoRA
- *  primals like the two-forward orpoLoss. */
-export function orpoLossPrefixSharedGemma(
-  model: Gemma4Model,
-  promptIds: number[], chosenResp: number[], rejectedResp: number[],
-  lambda: number, chunk?: ChunkCtx, sftScope: SftScope = "response",
-): MlxArray {
-  const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
-  if (P < 1 || Rc < 1 || Rr < 1) throw new Error("orpoLossPrefixSharedGemma: need P,Rc,Rr >= 1");
-  const T = P + Rc + Rr;
-  const concat = new Int32Array(T);
-  concat.set(promptIds, 0);
-  concat.set(chosenResp, P);
-  concat.set(rejectedResp, P + Rc);
-  const ids = MlxArray.fromInt32(concat, [1, T]);
-  // One prefix cache per DONOR layer (sharers consume donors' fetched KV inside
-  // forwardLayers); makeCache() also returns numDonors entries.
-  const caches: Cache[] = Array.from({ length: model.numDonors }, () => new Gemma4PrefixSharedCache(P, Rc, Rr));
-
-  let h: MlxArray;
-  setGemmaPrefixPlan({ P, Rc, Rr });
-  try {
-    h = model.forwardHidden(ids, caches); // [1, T, hidden], post-finalNorm
-  } finally {
-    setGemmaPrefixPlan(null);
-    ids.dispose();
-    for (const c of caches) c.dispose();
-  }
-
-  // Same gather as MiniCPM5 (identical concat layout): chosen[k] from H[P-1+k];
-  // rejected[0] from H[P-1] (shared prompt-last), rejected[k>=1] from H[P+Rc+k-1].
-  const chosenIdx = Array.from({ length: Rc }, (_, k) => P - 1 + k);
-  const rejectedIdx = [P - 1, ...Array.from({ length: Rr - 1 }, (_, k) => P + Rc + k)];
-
-  // Same head-primal lifetime as orpoLossPrefixShared: keep h alive in the sink
-  // through the fused/flash backward recompute; free it now on the whole-vocab path.
-  const keepForBwd = !!chunk && (chunk.fused || chunk.flash);
-  if (keepForBwd) chunk!.sink.push(h);
-  const lw = branchLogpMeanGathered(model, h, chosenIdx, chosenResp, chunk);
-  const lr = branchLogpMeanGathered(model, h, rejectedIdx, rejectedResp, chunk);
-  // sft_scope:"full": prompt predictions from the same concat forward (see
-  // orpoLossPrefixShared); ℓw/ℓr stay response-only for the odds ratio.
-  const nllFull = sftScope === "full" ? prefixFullNll(model, h, promptIds, lw, Rc, chunk) : null;
-  if (!keepForBwd) h.dispose();
-  const loss = orpoLossFromLogps(lw, lr, lambda, nllFull ?? undefined);
-  lw.dispose();
-  lr.dispose();
-  nllFull?.dispose();
-  return loss;
-}
-
-/** Debug: the raw [1,T,hidden] post-finalNorm hidden of the gemma prefix-shared
- *  forward (caller owns/disposes). For localizing forward divergence per position. */
-export function prefixForwardHiddenGemma(
-  model: Gemma4Model,
-  promptIds: number[], chosenResp: number[], rejectedResp: number[],
-): MlxArray {
-  const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
-  const T = P + Rc + Rr;
-  const concat = new Int32Array(T);
-  concat.set(promptIds, 0); concat.set(chosenResp, P); concat.set(rejectedResp, P + Rc);
-  const ids = MlxArray.fromInt32(concat, [1, T]);
-  const caches: Cache[] = Array.from({ length: model.numDonors }, () => new Gemma4PrefixSharedCache(P, Rc, Rr));
-  setGemmaPrefixPlan({ P, Rc, Rr });
-  try { return model.forwardHidden(ids, caches); }
-  finally { setGemmaPrefixPlan(null); ids.dispose(); for (const c of caches) c.dispose(); }
-}
-
-/** Debug: the two branch mean-logps (ℓw, ℓr) from the gemma prefix-shared forward,
- *  no grad. For parity diagnostics (compare against the two-forward branch logps). */
-export function prefixSharedLogpsGemma(
-  model: Gemma4Model,
-  promptIds: number[], chosenResp: number[], rejectedResp: number[],
-): { lw: number; lr: number } {
-  const P = promptIds.length, Rc = chosenResp.length, Rr = rejectedResp.length;
-  const T = P + Rc + Rr;
-  const concat = new Int32Array(T);
-  concat.set(promptIds, 0); concat.set(chosenResp, P); concat.set(rejectedResp, P + Rc);
-  const ids = MlxArray.fromInt32(concat, [1, T]);
-  const caches: Cache[] = Array.from({ length: model.numDonors }, () => new Gemma4PrefixSharedCache(P, Rc, Rr));
-  setGemmaPrefixPlan({ P, Rc, Rr });
-  let h: MlxArray;
-  try { h = model.forwardHidden(ids, caches); }
-  finally { setGemmaPrefixPlan(null); ids.dispose(); for (const c of caches) c.dispose(); }
-  const chosenIdx = Array.from({ length: Rc }, (_, k) => P - 1 + k);
-  const rejectedIdx = [P - 1, ...Array.from({ length: Rr - 1 }, (_, k) => P + Rc + k)];
-  const lwA = gatheredLogpMean(model, h, chosenIdx, chosenResp);
-  const lrA = gatheredLogpMean(model, h, rejectedIdx, rejectedResp);
-  h.dispose();
-  const lw = lwA.toFloat32()[0]!, lr = lrA.toFloat32()[0]!;
-  lwA.dispose(); lrA.dispose();
-  return { lw, lr };
 }

@@ -18,7 +18,8 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { ValueAndGrad } from "@mlx-bun/mlx/autograd";
-import { DiffusionGemmaModel } from "@mlx-bun/inference/models/diffusion-gemma";
+import type { RuntimeModel } from "@mlx-bun/inference/models";
+import { declaredTraining } from "./declared";
 import { AdamW } from "./optimizer";
 import {
   attachForTraining,
@@ -86,13 +87,14 @@ function sumAll(a: MlxArray): MlxArray {
  *  diffusion_loss). Returns a scalar loss MlxArray, differentiable w.r.t. the
  *  mounted LoRA. */
 export function diffusionLoss(
-  model: DiffusionGemmaModel,
+  model: RuntimeModel,
   promptIds: number[],
   targetIds: number[],
   tMin: number,
   tMax: number,
   vocab: number,
 ): MlxArray {
+  const denoising = declaredTraining(model, "denoising", "a denoising training objective");
   const L = targetIds.length;
   // t ~ U(t_min, t_max) scalar; corrupt[i] = U(0,1) < t ; noise ~ randint
   const t = ops.randomUniform([1], Dtype.float32, tMin, tMax, null);
@@ -105,7 +107,7 @@ export function diffusionLoss(
   const canvas = ops.where(corrupt, noise, target);
   noise.dispose();
 
-  const logits = model.forwardCanvasLogitsArr(promptIds, canvas); // [1, L, vocab] f32
+  const logits = denoising.canvasLogits(promptIds, canvas); // [1, L, vocab] f32
   canvas.dispose();
 
   // cross_entropy(reduction=none) = logsumexp(logits) - logit_at_target
@@ -142,7 +144,7 @@ export function diffusionLoss(
 /** Train a LoRA adapter on DiffusionGemma with the denoising objective. Returns
  *  the TrainableLora (caller saves it via saveAdapter) + the loss history. */
 export function trainDiffusionLora(
-  model: DiffusionGemmaModel,
+  model: RuntimeModel,
   pairs: DiffusionPair[],
   cfg: DiffusionLoraConfig = {},
 ): { lora: TrainableLora; losses: number[] } {
@@ -154,7 +156,8 @@ export function trainDiffusionLora(
   const tMax = cfg.tMax ?? 0.8;
   const seed = cfg.seed ?? 0;
   const reportEvery = cfg.reportEvery ?? 10;
-  const vocab = model.config.text.vocabSize;
+  const denoising = declaredTraining(model, "denoising", "a denoising training objective");
+  const vocab = denoising.vocabSize;
   if (pairs.length === 0) throw new Error("no training pairs");
 
   ops.randomSeed(BigInt(seed >>> 0));
@@ -162,8 +165,8 @@ export function trainDiffusionLora(
   // LoRA on every decoder block's attn + dense MLP (skips full-layer v_proj
   // automatically — buildTrainableLora filters to existing loraTargets).
   const ranks = new Map<string, number>();
-  for (let i = 0; i < model.layers.length; i++)
-    for (const key of DEFAULT_LORA_KEYS) ranks.set(`model.decoder.layers.${i}.${key}`, rank);
+  for (const layerPath of denoising.layerModulePaths)
+    for (const key of DEFAULT_LORA_KEYS) ranks.set(`${layerPath}.${key}`, rank);
   const lora = buildTrainableLora(model, ranks, scale, seed);
   attachForTraining(model, lora, "train");
   model.loraState.active = ["train"];
