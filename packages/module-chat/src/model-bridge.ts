@@ -61,7 +61,7 @@ export async function generateThroughHost(models: Pick<ModelHost, "acquire" | "d
   }
 }
 
-export function startModelBridge(models: Pick<ModelHost, "acquire" | "defaultFor">, token = crypto.randomUUID()): ModelBridge {
+export function startModelBridge(models: Pick<ModelHost, "acquire" | "defaultFor">, token: string = crypto.randomUUID()): ModelBridge {
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0, idleTimeout: 0,
     async fetch(request) {

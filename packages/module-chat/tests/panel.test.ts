@@ -1252,3 +1252,12 @@ describe("ui-catalog.ts: route/view validation", () => {
     expect(resolveRouteId("nonexistent")).toBeNull();
   });
 });
+
+describe("the panel entry outside a browser", () => {
+  it("loads without a DOM and defines nothing (package verification and inventories import every entry)", () => {
+    const child = Bun.spawnSync([process.execPath, "-e", 'const m = await import("@mlx-bun/module-chat/panel"); if (typeof customElements !== "undefined" || Object.keys(m).length !== 0) throw new Error("unexpected")'],
+      { cwd: import.meta.dir, stdout: "pipe", stderr: "pipe" });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(0);
+  });
+});
