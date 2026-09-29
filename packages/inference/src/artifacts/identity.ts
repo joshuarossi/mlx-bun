@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { runtimeValue } from "../runtime/config";
@@ -80,4 +80,15 @@ export async function artifactIdentity(seed: string, input: readonly ArtifactIde
   const value = digest.digest("hex");
   if (before === await revision(files)) store.put(key, value);
   return value;
+}
+
+/** Content identity of a model directory's weights: config.json plus every
+ * safetensors shard (and the shard index), so quantization, fine-tunes and
+ * revised weights each get their own digest under one repo id. Memoized by
+ * file revision like every artifactIdentity. */
+export async function modelWeightsIdentity(modelDir: string, seed: string,
+  store?: ArtifactIdentityStore): Promise<string> {
+  const names = (await readdir(modelDir)).filter(name =>
+    name === "config.json" || name === "model.safetensors.index.json" || name.endsWith(".safetensors"));
+  return artifactIdentity(seed, names.map(name => ({ name, path: join(modelDir, name) })), store);
 }

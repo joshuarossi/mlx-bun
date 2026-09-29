@@ -3,12 +3,13 @@ import type { CheckpointAttachment } from "../contracts/mlx/checkpoint";
 //
 // Files ARE the database: no sidecar index. Layout
 //   <dir>/<configFingerprint>/<nsHash>/<uuid>.mlxkv
-// so two models (or two kv-quant schemes of one model) share a directory
-// without ever colliding, and an incompatible fingerprint dir is simply
-// ignored (never deleted — it may belong to the user's other model).
+// where the caller's configFingerprint includes the weights digest, so two
+// models (or two kv-quant schemes, or two weight revisions of one model)
+// share a directory without ever colliding, and a foreign fingerprint dir is
+// simply ignored (never deleted — it may belong to the user's other model).
 // Startup recovery = a header-only scan of OUR fingerprint dir: header hash
-// verified (cheap), corrupt or metadata-mismatched files unlinked, `.tmp`
-// write orphans reaped. LRU state = file mtime (bumped on hit); the byte
+// verified (cheap), corrupt files unlinked, files whose header names another
+// identity SKIPPED (never deleted), `.tmp` write orphans reaped. LRU state = file mtime (bumped on hit); the byte
 // cap is enforced at write time by oldest-mtime eviction. A cache is always
 // droppable: every failure path degrades to "no hit" or "not stored" — the
 // tier must never take serving down (oMLX paged_ssd_cache lesson, Apache-2.0
@@ -131,7 +132,8 @@ export class SsdCacheStore {
   }
 
   /** Startup recovery: rebuild the in-memory index from disk. Corrupt
-   *  headers and metadata mismatches are unlinked; `.tmp` orphans reaped.
+   *  headers are unlinked; `.tmp` orphans reaped; a file whose header names
+   *  another model/tokenizer/fingerprint is left in place and not indexed.
    *  Only OUR fingerprint dir is touched. Returns entries indexed. */
   scan(): number {
     this.#index = []; this.#exact.clear();
@@ -151,12 +153,12 @@ export class SsdCacheStore {
         if (!f.endsWith(".mlxkv")) continue;
         try {
           const h = readKvHeader(path); // verifies the header hash
+          // Another identity's entry: never ours to delete or serve.
           if (
             h.modelId !== this.#opts.modelId ||
             h.configFingerprint !== this.#opts.configFingerprint ||
             h.tokenizerHash !== this.#opts.tokenizerHash
-          )
-            throw new Error("metadata mismatch");
+          ) continue;
           if ((h.codecProvider ?? legacyCacheCodecs.id) !== this.#codecs.id) continue;
           const st = statSync(path);
           this.#addIndex({

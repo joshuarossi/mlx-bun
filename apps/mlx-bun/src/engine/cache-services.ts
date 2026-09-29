@@ -33,6 +33,8 @@ export interface CacheServiceDependencies {
   createContinuationPersistence(...args: ConstructorParameters<typeof ContinuationPersistence>): ContinuationPersistence;
   costSizeRetention(): PromptCache["retention"];
   configFingerprint(config: LoadedModelContext["model"]["config"]): string;
+  /** Content digest of the model's weights and config (memoized per file revision). */
+  weightsIdentity(modelDir: string, seed: string): Promise<string>;
   activeMemory(): number;
   maxWorkingSet(): number;
   scheduleDemotion(run: () => void, intervalMs: number): () => void;
@@ -50,6 +52,7 @@ async function defaultDependencies(): Promise<CacheServiceDependencies> {
     createStore: options => new state.SsdCacheStore(options),
     createContinuationPersistence: (...args) => new execution.ContinuationPersistence(...args),
     costSizeRetention: () => new state.CostSizeRetention(), configFingerprint: artifacts.configFingerprint,
+    weightsIdentity: artifacts.modelWeightsIdentity,
     activeMemory: memory.activeMemory, maxWorkingSet: memory.maxRecommendedWorkingSetSize,
     scheduleDemotion(run, interval) { const timer = setInterval(run, interval); timer.unref(); return () => clearInterval(timer); },
   };
@@ -85,9 +88,16 @@ export async function createCacheServices(context: LoadedModelContext, binding: 
   let checkpoints: SsdCacheStore | null = null;
   if (options.ssdCacheDir) {
     const tokenizer = readFileSync(`${context.model.config.modelDir}/tokenizer.json`);
+    // The store directory is keyed by architecture, KV scheme, binding
+    // compatibility AND the weights digest: same-shape models (4-bit vs 8-bit,
+    // base vs fine-tune) and revised weights under one repo id never share
+    // entries. Saved entries from before the weights digest joined the key
+    // live under the old directory name and are ignored, not deleted.
+    const architecture = deps.configFingerprint(context.model.config);
+    const weights = await deps.weightsIdentity(context.model.config.modelDir, architecture);
     checkpoints = deps.createStore({ codecs: stateCodecs, dir: options.ssdCacheDir,
       maxBytes: options.ssdCacheMaxBytes ?? Infinity, modelId: context.modelId,
-      configFingerprint: `${deps.configFingerprint(context.model.config)}-${resolvedKvScheme.cacheKey}-${Bun.hash(binding.stateCompatibility).toString(16)}`,
+      configFingerprint: `${architecture}-${resolvedKvScheme.cacheKey}-${Bun.hash(binding.stateCompatibility).toString(16)}-${weights.slice(0, 16)}`,
       tokenizerHash: Bun.hash(tokenizer).toString(16), verify: options.ssdCacheVerify,
       storage: { layout: runtime.value("MLX_BUN_SSD_LAYOUT") === "blocks" ? "blocks" : "whole",
         segmented: runtime.value("MLX_BUN_SSD_SEGMENTED") !== "0" },
