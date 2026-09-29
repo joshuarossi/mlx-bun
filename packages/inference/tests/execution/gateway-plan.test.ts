@@ -556,22 +556,20 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   const logprobs = binding.plan({ ...draft, wantsLogprobs: true }, {}, scheduling);
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
-  // Over TurboQuant, which this graph reads decoded, a drafted request decodes
-  // ordinarily as main's serial path did: the draft is ignored, and so is supplied
+  // Over encoded KV, TurboQuant read decoded or affine until a row's transition,
+  // a drafted request decodes ordinarily: the draft is ignored, and so is supplied
   // fill, as for any drafted request; checkpoints follow the ordinary rules.
   const turbo = { turboQuant: { kBits: 8, vBits: 3 } } as GenerateOptions;
-  for (const supplied of [turbo, { ...turbo, ...fillOptions(true) }]) {
-    const plan = binding.plan({ ...draft, turboQuant: true }, supplied, scheduling);
-    expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: !supplied.fill });
-    expect(plan.reasons).toContain("draft-incompatible-with-request");
-    expect(binding.methodRequest!(plan, supplied)).toBeUndefined();
-  }
-  // Drafted affine KV, media and paging stay refused, including when fill is
-  // supplied. Affine KV on this graph is ordinary-only: as on the other graphs
-  // restricted to ordinary affine execution, a drafted request is refused rather
-  // than speculated.
+  const affine = { kvBits: 4, quantizedKvStart: 64 } as GenerateOptions;
+  for (const [flag, kv] of [[{ turboQuant: true }, turbo], [{ kvQuant: true }, affine]] as const)
+    for (const supplied of [kv, { ...kv, ...fillOptions(true) }]) {
+      const plan = binding.plan({ ...draft, ...flag }, supplied, scheduling);
+      expect(plan, JSON.stringify(flag)).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false, checkpoint: !supplied.fill });
+      expect(plan.reasons).toContain("draft-incompatible-with-request");
+      expect(binding.methodRequest!(plan, supplied)).toBeUndefined();
+    }
+  // Drafted media and paging stay refused, including when fill is supplied.
   for (const [request, options, expected] of [
-    [{ ...draft, kvQuant: true }, { kvBits: 4 }, ["continuous-unavailable"]],
     [{ ...draft, hasVision: true }, {}, ["media-batch-unsupported"]],
     [draft, { pagedKv: {} }, ["paged-kv-batch-unsupported"]],
   ] as const) {
@@ -652,8 +650,10 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
     for (const extra of [{}, { wantsLogprobs: true }, { userSeed: true }, { hasGrammar: true }]) {
       const options: GenerateOptions = { adapters: ["upper"], fill, ...(extra.userSeed ? { seed: 42 } : {}) };
       const plan = binding.plan({ ...request, ...extra }, options, scheduling);
+      // The ignored draft leaves the ordinary checkpoint rules: no fill, grammar
+      // or logprobs.
       expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false,
-        checkpoint: false, promptCache: true, grammarJump: false });
+        checkpoint: !fill && !("wantsLogprobs" in extra) && !("hasGrammar" in extra), promptCache: true, grammarJump: false });
       expect(refusals(plan)).toEqual([]);
       expect(plan.reasons).toContain("draft-incompatible-with-request");
       if (fill) expect(plan.reasons).toContain("fill-incompatible-with-request");
@@ -684,6 +684,39 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
     const plan = binding.plan({ ...request, ...extra }, { ...options, adapters: ["upper"] } as GenerateOptions, scheduling);
     expect(plan.mechanism).toBe("unsupported");
     expect(plan.reasons).toContain(reason);
+  }
+});
+
+test("an adapter request its draft cannot serve decodes ordinarily with ordinary checkpoints on every graph", () => {
+  // Including sliding and explicit-mask universal graphs: the draft is ignored
+  // and the request checkpoints like a draftless adapter request.
+  const graphs: [string, () => RuntimeModel][] = [...families,
+    ["sliding universal", () => universal({ modelType: "llama", layerTypes: SLIDING, slidingWindow: 16 })],
+    ["explicit-mask sliding universal", () => universal({ modelType: "llama", maskArray: true, layerTypes: SLIDING, slidingWindow: 16 })]];
+  const services = { checkpointPersistence: {}, checkpoints: {}, checkpointEveryTokens: 4 } as never;
+  const request = { ...shape, hasDraft: true, hasAdapters: true };
+  const options: GenerateOptions = { adapters: ["upper"] };
+  for (const [name, model] of graphs) {
+    const binding = bindMlxGateway(model(), { provider: twoModelDraft(), numDraftTokens: 3 });
+    binding.configureContinuation!(services);
+    const scheduling = { ...schedule, continuous: binding.cachesBatchable(), checkpoints: true };
+    const plan = binding.plan(request, options, scheduling);
+    expect({ name, plan }).toMatchObject({ name, plan: { method: "autoregressive", mechanism: "continuous", checkpoint: true } });
+    expect(plan.reasons).toContain("draft-incompatible-with-request");
+    expect(binding.methodRequest!(plan, options)).toBeUndefined();
+    for (const extra of [{ hasGrammar: true }, { wantsLogprobs: true }])
+      expect({ name, extra, checkpoint: binding.plan({ ...request, ...extra }, options, scheduling).checkpoint })
+        .toEqual({ name, extra, checkpoint: false });
+    // The same draft still serves the request without adapters, uncheckpointed.
+    expect({ name, plan: binding.plan({ ...shape, hasDraft: true }, {}, scheduling) })
+      .toMatchObject({ name, plan: { method: "speculative", mechanism: "continuous", checkpoint: false } });
+    // A provider that serves target adapters speculates with them, except on the
+    // softcap graph, which serves adapters ordinarily.
+    const aware = bindMlxGateway(model(), { provider: new NgramProvider(), numDraftTokens: 3 });
+    aware.configureContinuation!(services);
+    const softcap = name === "gemma2 softcap";
+    expect({ name, plan: aware.plan(request, options, scheduling) }).toMatchObject({ name,
+      plan: { method: softcap ? "autoregressive" : "speculative", mechanism: "continuous", checkpoint: softcap } });
   }
 });
 
@@ -923,6 +956,21 @@ test("storage is probed once per binding, released on every path and never touch
   } }) as never];
   expect(() => bindMlxGateway(failing)).toThrow("probe failed");
   expect(released.sort()).toEqual(["failed", "kept"]);
+});
+
+test("GLM-5.2's MLA cache takes no KV scheme: every requested scheme is refused while bf16 and its batching are unaffected", async () => {
+  const { MLACache } = await import("../../src/state/glm52-cache");
+  const binding = bindMlxGateway(standIn(Glm52Model.prototype, "glm_moe_dsa", {
+    config: { modelType: "glm_moe_dsa", text: { enableMoeBlock: false, numHiddenLayers: 1, layerTypes: ["full_attention"] }, eosTokenIds: [] },
+    makeCache: () => [new MLACache({ kvLoraRank: 512, ropeHeadDim: 64 })],
+    // The graph's declared dense-read layers: MLA reads its compressed cache.
+    requiredDenseKvLayers: [] }));
+  expect(binding.cachesBatchable()).toBe(true);
+  expect(binding.kvBatchable(new KvScheme("bf16", {}))).toBe(true);
+  for (const scheme of [resolveKvScheme({ override: 4 }), resolveKvScheme({ override: 8 }),
+    resolveKvScheme({ override: 4, quantizedKvStart: 64 }), resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 } }),
+    resolveKvScheme({ override: "config", config: [{ layerIdx: 0, bits: 4, groupSize: 64 }] })])
+    expect(binding.kvBatchable(scheme), scheme.cacheKey).toBe(false);
 });
 
 test("each binding keeps the SSM batching policy it was built with", () => {

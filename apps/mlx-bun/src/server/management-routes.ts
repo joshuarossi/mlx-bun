@@ -1,8 +1,9 @@
-import { executeGc, planGc, Registry } from "@mlx-bun/hub/registry";
+import { executeGc, planGc, type Registry } from "@mlx-bun/hub/registry";
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { listAlwaysAllowedTools, revokeToolAlwaysAllowed } from "../chat/tool-approvals";
 import { errorResponse } from "./http";
+import { openRegistry } from "../storage/paths";
 
 export interface ManagementRouteOptions {
   invalidateLibrary(): void;
@@ -64,7 +65,7 @@ export function createManagementRoutes(options: ManagementRouteOptions) {
             error: "GC would delete the active model snapshot. Serve another revision before cleaning this cache." }, { status: 409 });
           try {
             const result = executeGc(plans);
-            const registry = options.createRegistry?.() ?? new Registry();
+            const registry = options.createRegistry?.() ?? openRegistry();
             try { await registry.scan(options.hubDirectory); }
             finally { registry.close(); }
             return Response.json({ ok: true, snapshots: result.snapshots,

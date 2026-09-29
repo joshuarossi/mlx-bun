@@ -27,7 +27,7 @@ test("serve checks, serve-written keys, and each read site's fallback come from 
   expect(serve.get("prompt-cache")).toMatchObject({ accepts: "number ≥ 0" });
   expect(serve.get("prompt-cache")!.fallback).toBeUndefined();
   expect(baseline.writes.filter(w => w.flag).map(w => `${w.key} ${w.flag}`))
-    .toEqual(["MLX_BUN_NO_FUSED_SDPA kv-quant", "MLX_BUN_FORCE_WIRE force-wire", "MLX_BUN_ALLOW_PRIVATE_MEDIA allow-private-media"]);
+    .toEqual(["MLX_BUN_NO_FUSED_SDPA fused-sdpa", "MLX_BUN_FORCE_WIRE force-wire", "MLX_BUN_ALLOW_PRIVATE_MEDIA allow-private-media"]);
   // Different contextual fallbacks at different sites are listed, not an error.
   expect(rows(baseline, "MLX_BUN_RD_PREFILL_CHUNK").map(row => row.split(" | ").slice(1, 3).join(" | "))).toEqual(["value | computed", "number | `2048`", "number | computed"]);
   expect(rows(baseline, "MLX_BUN_FLASH_MIN_M")).toEqual(["| `MLX_BUN_FLASH_MIN_M` | value | `1024` | [loss.ts:" + lineOf("packages/training/src/loss.ts", 'runtimeValue("MLX_BUN_FLASH_MIN_M")') + "] |"]);

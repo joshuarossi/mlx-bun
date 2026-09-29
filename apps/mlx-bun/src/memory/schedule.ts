@@ -18,8 +18,8 @@
 
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { mlxBunHome, storagePath, userHome } from "../storage/paths";
 
 export const LAUNCHD_LABEL = "com.mlx-bun.memory";
 
@@ -28,7 +28,8 @@ export const SCHEDULE_NOTE = "runs mlx-bun memory synthesize, which loads the me
 
 /** The persistent system the schedule touches; composition uses the real one. */
 export interface LaunchdSystem {
-  /** Home directory whose Library/LaunchAgents and .mlx-bun/logs the job uses. */
+  /** Home directory whose Library/LaunchAgents the job uses; its logs go to
+   *  MLX_BUN_HOME/logs (default <home>/.mlx-bun/logs). */
   home: string;
   /** Run `launchctl <args>`; resolves true on exit 0, false otherwise (never throws). */
   launchctl(args: string[]): Promise<boolean>;
@@ -44,15 +45,15 @@ async function runLaunchctl(args: string[]): Promise<boolean> {
 }
 
 function system(supplied: Partial<LaunchdSystem>): LaunchdSystem {
-  return { home: supplied.home ?? homedir(), launchctl: supplied.launchctl ?? runLaunchctl };
+  return { home: supplied.home ?? userHome(), launchctl: supplied.launchctl ?? runLaunchctl };
 }
 
-export function plistPath(home = homedir()): string {
+export function plistPath(home = userHome()): string {
   return join(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 }
 
 function logsDir(home: string): string {
-  return join(home, ".mlx-bun", "logs");
+  return storagePath("logs", mlxBunHome(home));
 }
 
 function shQuote(s: string): string {
@@ -88,7 +89,7 @@ export function formatAt(at: ClockTime): string {
 }
 
 /** Pure: build the launchd plist XML for the nightly synthesis job. */
-export function buildPlist(opts: ScheduleOptions, home = homedir()): string {
+export function buildPlist(opts: ScheduleOptions, home = userHome()): string {
   const { hour, minute } = parseAt(opts.at);
   if (!opts.program.length) throw new Error("memory schedule: the job's program is required");
   // Login shell so the user's PATH resolves under launchd.

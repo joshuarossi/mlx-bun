@@ -16,10 +16,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deflateSync } from "node:zlib";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { LoadedModelContext } from "../../src/engine/model-host";
 import type { BuiltPrompt } from "../../src/server/prompt-contracts";
+import { pngBase64, tone, wavBytes } from "../support/media";
 
 const native = process.env.MLX_BUN_TEST_NATIVE === "1";
 const models = {
@@ -32,47 +32,9 @@ const ffmpeg = Bun.which("ffmpeg");
 const scratch = mkdtempSync(join(tmpdir(), "mlx-bun-media-native-"));
 afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
-/** An RGB PNG with a seeded pattern (stored with zlib, filter byte 0 per row). */
-function png(seed: number, width = 64, height = 48): string {
-  const crcTable = Array.from({ length: 256 }, (_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c >>> 0;
-  });
-  const crc = (bytes: Uint8Array) => {
-    let c = 0xffffffff;
-    for (const byte of bytes) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
-  const chunk = (type: string, data: Uint8Array) => {
-    const body = new Uint8Array(4 + data.length);
-    body.set(new TextEncoder().encode(type)); body.set(data, 4);
-    const out = new Uint8Array(12 + data.length), view = new DataView(out.buffer);
-    view.setUint32(0, data.length); out.set(body, 4); view.setUint32(8 + data.length, crc(body));
-    return out;
-  };
-  const header = new Uint8Array(13), view = new DataView(header.buffer);
-  view.setUint32(0, width); view.setUint32(4, height); header.set([8, 2, 0, 0, 0], 8);
-  const rows = new Uint8Array(height * (1 + width * 3));
-  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
-    const at = y * (1 + width * 3) + 1 + x * 3;
-    rows.set([(x * seed) % 256, (y * 7 + seed) % 256, (x + y * seed) % 256], at);
-  }
-  const bytes = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header),
-    chunk("IDAT", deflateSync(rows)), chunk("IEND", new Uint8Array())];
-  return Buffer.concat(bytes).toString("base64");
-}
-
+const png = pngBase64;
 /** One second of 16-bit mono PCM at 16 kHz. */
-function wav(hz = 440): string {
-  const rate = 16_000, frames = rate, buffer = new ArrayBuffer(44 + frames * 2), view = new DataView(buffer);
-  const ascii = (offset: number, text: string) => { for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i)); };
-  ascii(0, "RIFF"); view.setUint32(4, 36 + frames * 2, true); ascii(8, "WAVE"); ascii(12, "fmt ");
-  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true);
-  view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true); ascii(36, "data"); view.setUint32(40, frames * 2, true);
-  for (let i = 0; i < frames; i++) view.setInt16(44 + i * 2, Math.round(Math.sin(2 * Math.PI * hz * i / rate) * 0.3 * 32767), true);
-  return Buffer.from(buffer).toString("base64");
-}
+const wav = (hz = 440) => Buffer.from(wavBytes(tone(1, hz))).toString("base64");
 
 function clip(): string {
   const path = join(scratch, "clip.mp4");

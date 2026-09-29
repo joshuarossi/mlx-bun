@@ -1,6 +1,6 @@
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { Registry } from "@mlx-bun/hub/registry";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import type { Registry } from "@mlx-bun/hub/registry";
 import type { fuseAdapter } from "@mlx-bun/training";
 import { createFinetuneRunner } from "../finetune/job";
 import { inspectDataset } from "../finetune/inspect";
@@ -9,6 +9,7 @@ import type { JobEvent, JobRunner } from "../jobs/protocol";
 import type { CommandArgs } from "./args";
 import { resolveModelAuto } from "./model-selection";
 import { boxLines, step, style } from "./terminal";
+import { mlxBunHome, modelShortName, openRegistry, storagePath } from "../storage/paths";
 
 // Thin verbs over the app's fine-tuning producer and the public training
 // library: argument policy, main's plan/summary presentation, and process
@@ -27,7 +28,6 @@ function opt(args: CommandArgs, name: string): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 const flag = (args: CommandArgs, name: string): boolean => args.values[name] === true;
-const home = () => process.env.HOME ?? homedir();
 
 export interface TrainArgs {
   query: string | null; dataDir: string; method: TrainMethod; sftScope: "full" | "response" | null;
@@ -69,11 +69,12 @@ export interface TrainPlan {
   cfg: Record<string, unknown>;
 }
 
-/** Main's method- and model-dependent defaults over the validated flags. */
-export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: boolean, homeDir: string = home()): TrainPlan {
+/** Main's method- and model-dependent defaults over the validated flags. The
+ * adapter defaults to `<root>/adapters/<method>-<model>` (root: MLX_BUN_HOME). */
+export function trainPlan(parsed: TrainArgs, model: SelectedModel, isGemma: boolean, root: string = mlxBunHome()): TrainPlan {
   const num = (name: string, fallback: number) => parsed.numbers.get(name) ?? fallback;
   const { method } = parsed, isOrpo = method === "orpo";
-  const adapter = parsed.adapter ?? `${homeDir}/.cache/mlx-bun/mlx-bun-finetunes/${method}-${isGemma ? "e4b" : "cpm5"}`;
+  const adapter = parsed.adapter ?? join(storagePath("adapters", root), `${method}-${modelShortName(model.repoId)}`);
   const iters = num("iters", 100);
   const seq = num("seq", isGemma ? 8192 : 4096);
   const seg = parsed.noSegment ? 0 : num("seg", isOrpo ? 2 : 0);
@@ -148,7 +149,8 @@ export interface TrainDependencies {
   exists(path: string): boolean;
   readText(path: string): Promise<string>;
   log(line: string): void;
-  home(): string;
+  /** Storage root for default outputs (MLX_BUN_HOME). */
+  root(): string;
   now(): number;
 }
 const trainDefaults: TrainDependencies = {
@@ -164,7 +166,7 @@ const trainDefaults: TrainDependencies = {
     } catch { return null; }
   },
   exists: existsSync, readText: path => Bun.file(path).text(),
-  log: line => console.log(line), home, now: Date.now,
+  log: line => console.log(line), root: () => mlxBunHome(), now: Date.now,
 };
 
 /** `train`: validate, resolve the model, preflight the dataset, print the plan,
@@ -176,7 +178,7 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
   signal?.throwIfAborted();
   const { m, picked } = await deps.resolve(parsed.query, signal);
   const isGemma = (await deps.readText(`${m.path}/config.json`)).toLowerCase().includes("gemma");
-  const plan = trainPlan(parsed, m, isGemma, deps.home());
+  const plan = trainPlan(parsed, m, isGemma, deps.root());
 
   // Pre-flight: dataset counts + detected format (bail before loading the model).
   const ds = await deps.inspect(parsed.dataDir);
@@ -230,13 +232,15 @@ export async function runTrain(args: CommandArgs, supplied: Partial<TrainDepende
 
 export interface FuseDependencies {
   registry(): ModelRegistry;
+  /** Storage root for the default output (MLX_BUN_HOME). */
+  root(): string;
   fuse: typeof fuseAdapter;
   exists(path: string): boolean;
   log(line: string): void;
   step: typeof step;
 }
 const fuseDefaults: FuseDependencies = {
-  registry: () => new Registry(),
+  registry: () => openRegistry(), root: () => mlxBunHome(),
   fuse: async (...call) => (await import("@mlx-bun/training")).fuseAdapter(...call),
   exists: existsSync, log: line => console.log(line), step,
 };
@@ -252,15 +256,21 @@ export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependenc
   const modelArg = args.positionals[0] ?? opt(args, "model");
   if (!modelArg) throw new Error("usage: mlx-bun fuse <model-query-or-path> --adapter <dir> [--save-path <dir>]");
   const adapterDir = opt(args, "adapter") ?? opt(args, "adapter-path") ?? "adapters";
-  const savePath = opt(args, "save-path") ?? "fused_model";
   if (!deps.exists(adapterDir)) throw new Error(`adapter dir not found: ${adapterDir}`);
-  let modelDir = modelArg;
+  let modelDir = modelArg, modelId = modelArg;
   if (!deps.exists(`${modelArg}/config.json`)) {
     const reg = deps.registry();
     try {
       if (reg.list().length === 0) await reg.scan();
-      modelDir = reg.resolve(modelArg).path;
+      ({ path: modelDir, repoId: modelId } = reg.resolve(modelArg));
     } finally { reg.close(); }
+  }
+  // An explicit --save-path keeps mlx_lm.fuse's semantics; the default is a
+  // fresh directory in the app's models, never overwritten.
+  let savePath = opt(args, "save-path");
+  if (savePath === undefined) {
+    savePath = join(storagePath("models", deps.root()), `${modelShortName(modelId)}-fused`);
+    if (deps.exists(savePath)) throw new Error(`${savePath} already exists — delete it or pass --save-path <dir>`);
   }
   signal?.throwIfAborted();
   const s = deps.step(`fusing ${adapterDir} into ${modelDir}`);
@@ -292,12 +302,30 @@ export async function runFuse(args: CommandArgs, supplied: Partial<FuseDependenc
   } finally { signal?.removeEventListener("abort", onAbort); }
 }
 
-export interface WatchDependencies { watch: typeof runWatch; home(): string }
-const watchDefaults: WatchDependencies = { watch: runWatch, home };
+export interface WatchDependencies { watch: typeof runWatch; root(): string }
+const watchDefaults: WatchDependencies = { watch: runWatch, root: () => mlxBunHome() };
 
-/** `train-watch`: live dashboard over `<adapter>/metrics.jsonl`. */
+/** The adapter directory under `<root>/adapters` whose metrics.jsonl changed last. */
+function latestRun(root: string): string | undefined {
+  const adapters = storagePath("adapters", root);
+  let latest: { dir: string; at: number } | undefined;
+  try {
+    for (const name of readdirSync(adapters)) {
+      const dir = join(adapters, name);
+      try {
+        const at = statSync(join(dir, "metrics.jsonl")).mtimeMs;
+        if (!latest || at > latest.at) latest = { dir, at };
+      } catch { /* not a training run */ }
+    }
+  } catch { /* no adapter store yet */ }
+  return latest?.dir;
+}
+
+/** `train-watch`: live dashboard over `<adapter>/metrics.jsonl`; without a
+ * directory, the most recently updated run in the app's adapter store. */
 export async function runTrainWatch(args: CommandArgs, supplied: Partial<WatchDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...watchDefaults, ...supplied };
-  const dir = args.positionals[0] ?? opt(args, "adapter") ?? `${deps.home()}/.cache/mlx-bun/mlx-bun-finetunes/orpo-cpm5`;
+  const dir = args.positionals[0] ?? opt(args, "adapter") ?? latestRun(deps.root());
+  if (!dir) throw new Error(`no training run found in ${storagePath("adapters", deps.root())} — usage: mlx-bun train-watch <adapter-dir>`);
   await deps.watch(dir, { signal });
 }

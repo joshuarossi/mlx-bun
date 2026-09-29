@@ -22,13 +22,13 @@
 //
 // Reuses mlx-bun's per-domain sqlite pattern (cf. JobStore in src/jobs/db.ts,
 // EvalDB in `02d723a:src/evaldb.ts`): a small class over bun:sqlite with WAL +
-// schema-in-constructor + a migrate() hook, living under ~/.cache/mlx-bun/.
-// It's rebuildable derived state, so it belongs in the cache, NOT the vault.
+// schema-in-constructor + a migrate() hook, at storagePath("memoryDb").
+// It's rebuildable derived state, so it lives beside the app's other
+// databases, NOT in the vault.
 
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
-
-export const DEFAULT_MEMORY_DB = `${process.env.HOME}/.cache/mlx-bun/memory.sqlite`;
+import { storagePath } from "../storage/paths";
 
 export interface ConversationRow {
   /** Stable conv id: first 8 hex of the session UUID (the conv:HASH citation). */
@@ -190,7 +190,7 @@ export class MemoryStore {
   readonly db: Database;
   readonly dbPath: string;
 
-  constructor(dbPath: string = DEFAULT_MEMORY_DB) {
+  constructor(dbPath: string = storagePath("memoryDb")) {
     if (dbPath !== ":memory:") {
       try { mkdirSync(dbPath.slice(0, dbPath.lastIndexOf("/")), { recursive: true }); } catch {}
     }

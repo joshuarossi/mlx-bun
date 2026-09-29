@@ -24,6 +24,12 @@ test("runtime parity skips only a wholly absent opt-in and rejects invalid deadl
   expect(parityInputs({ ...full, MLX_BUN_PARITY_TIMEOUT_MS: String(maximum) })!.timeoutMs + TEST_OVERHEAD_MS).toBe(2_147_483_647);
   expect(() => parityInputs({ ...full, MLX_BUN_PARITY_TIMEOUT_MS: String(maximum + 1) })).toThrow("must be finite, positive");
   expect(() => parityInputs({ ...full, MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG: " " })).toThrow("must be 0 or 1");
+  const pin = "a".repeat(64);
+  expect(parityInputs({ ...full, MLX_BUN_PARITY_REFERENCE_SHA256: pin })).toMatchObject({ referenceSha256: pin });
+  expect(parityInputs(full)).not.toHaveProperty("referenceSha256");
+  for (const invalid of ["", " ", "A".repeat(64), "a".repeat(63)])
+    expect(() => parityInputs({ ...full, MLX_BUN_PARITY_REFERENCE_SHA256: invalid })).toThrow("must be a lowercase SHA-256");
+  expect(() => parityInputs({ MLX_BUN_PARITY_REFERENCE_SHA256: pin })).toThrow("requires nonblank");
 });
 
 test("the actual test entry rejects partial configuration without loading native libraries", () => {
@@ -66,7 +72,8 @@ function expectGone(pidPath: string) {
 
 test("worker excludes only opt-in controls without reloading dotenv or changing its parent environment", () => {
   const directory = mkdtempSync(join(tmpdir(), "runtime-parity-environment-"));
-  const controls = { ...full, MLX_BUN_PARITY_TIMEOUT_MS: "60000", MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG: "1" };
+  const controls = { ...full, MLX_BUN_PARITY_TIMEOUT_MS: "60000", MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG: "1",
+    MLX_BUN_PARITY_REFERENCE_SHA256: "b".repeat(64) };
   const numerical = { MLX_BUN_COMPILED_DECODE: "0", MLX_BUN_PREFILL_TAIL_SPLIT: "0",
     MLX_BUN_PARITY_FUTURE_RUNTIME_OPTION: "keep", MLX_BUN_LIBMLXC: "/native-must-not-load" };
   const keys = [...Object.keys(controls), ...Object.keys(numerical), "PARITY_DOTENV_ONLY"];

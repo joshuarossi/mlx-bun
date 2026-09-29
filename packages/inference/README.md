@@ -95,6 +95,20 @@ Apple M1 Max (MLX 0.32.2, mlx-lm 0.31.3), with input pins unchanged. This qualif
 the plain-KV scope above; the generated graph's unrolled `kv_config` path and
 performance remain separate checks.
 
+The [generated-graph test](tests/parity/gemma4-generated.test.ts) is that
+unrolled-path check, ported from `02d723a:tests/parity/generated-parity.test.ts`
+for each registered fingerprint (12B, e4b, 26B-A4B). With
+`MLX_BUN_TEST_GENERATED_MODEL` naming an artifact that ships `kv_config.json`, it
+requires `createModel` to select the generated graph, byte-identical vectors
+against `new Gemma4Model` over caches converted to `kv_config` before a prompt past
+the sliding window, identical 24-token greedy trajectories (stop tokens off, so
+every trajectory is full length) uncompiled and with compiled decode (counting
+generated forwards), and the monolith fallback under plain caches. This is
+specialization identity within this tree, not an oracle claim. On 2026-09-28 it
+passed on the M1 Max for mlx-community gemma-4-e4b-it-OptiQ-4bit (`98d7dc6a`; 24
+generated forwards uncompiled, 2 compiled) and gemma-4-12B-it-OptiQ-4bit
+(`5b110106`; 24 uncompiled, 1 compiled). The 26B-A4B cell was not run.
+
 On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
 checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections
 made independently of `temporalView`, main `02d723a`, and pinned optiq 0.2.7.
@@ -154,11 +168,34 @@ live cache planes and one-token continuation; `compare` is CPU-only. Supply loca
 weights and external reference reports. No Python environment or reference data
 is installed by this repository. The opt-in test uses `MLX_BUN_PARITY_PLAN` and
 `MLX_BUN_PARITY_REFERENCE`; it skips only when none of its settings (those two,
-`MLX_BUN_PARITY_TIMEOUT_MS`, `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG`) is set, and a
-partial or blank opt-in fails. Legacy reports require explicit
+`MLX_BUN_PARITY_TIMEOUT_MS`, `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG`,
+`MLX_BUN_PARITY_REFERENCE_SHA256`) is set, and a partial or blank opt-in fails.
+`MLX_BUN_PARITY_REFERENCE_SHA256` pins a published reference revision: the report's
+bytes must match before the worker starts. Legacy reports require explicit
 `--allow-unrecorded-config` (test: `MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG=1`), after
 verifying their environment separately. New reports record runtime overrides,
 source/harness/native hashes, machine and plan; `--hash-weights` adds weight hashes.
+
+The same consumer covers Qwen Trellis and Gemma; no such run is recorded yet.
+Produce references outside this repository with the unchanged producers at main
+`02d723a`, sequentially on the comparison machine. Stock mlx-lm architectures
+(Gemma4 e2b/e4b/26B-A4B, Gemma2, Llama, MiniCPM5) use
+`MLX_BUN_TEST_RUNTIME_ORACLE=1 HF_HUB_OFFLINE=1 python scripts/oracle/check-runtime.py plan.json reference.json`
+in the pinned oracle environment; it registers no OptiQ architectures, so the 12B
+`gemma4_unified` artifact keeps its dedicated consumer above. Packed Qwen Trellis
+has no external oracle (mlx-lm cannot load it), so main is the reference:
+`MLX_BUN_TEST_RUNTIME_ORACLE=1 MLX_BUN_COMPILED_DECODE=0 bun --no-env-file tests/support/runtime-oracle-worker.ts plan.json reference.json`
+in the main checkout. Neither producer records provenance or applies `kv`, so
+compare plain-KV plans with the legacy acceptance and pin the report:
+`MLX_BUN_COMPILED_DECODE=0 MLX_BUN_PARITY_PLAN=plan.json MLX_BUN_PARITY_REFERENCE=reference.json MLX_BUN_PARITY_REFERENCE_SHA256=<sha256> MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG=1 bun --no-env-file test packages/inference/tests/parity/runtime-oracle.test.ts`.
+Useful plans keep main's IDs and vary geometry: for Trellis, contexts 0/64/512 ×
+lengths 1/3/4/8/16/128 with prefix chunk 256 cover the M≤4, M5–15 and M≥16
+dispatch profiles; for Gemma4 e2b/e4b, a context past the 512-token window (for
+example 0/64/600 × 1/8/128, chunk 128) covers sliding-window wrap; for MiniCPM5
+beyond the recorded cases, a longer multi-chunk context with `restore: true` adds
+persisted-state continuation. Mixed KV (`kv: "artifact"`) has no reference producer
+until the mixed-KV reference contract in [PLAN](../../PLAN.md#verify-the-migrated-library)
+is confirmed.
 
 On 2026-09-25 UTC, `6b0fd69` matched main `02d723a` and its unchanged external
 `02d723a:scripts/oracle/check-runtime.py` for the same MiniCPM snapshot above. All nine
@@ -214,7 +251,10 @@ The opt-in [continuation test](tests/parity/ordinary-continuation.test.ts) takes
 and interrupted/restarted B1/B4 generation, including pending tokens, seeded
 sampling history, byte-identical checkpoint planes, and actual restored-row
 counts. `MLX_BUN_TEST_CONTINUATION_ADAPTER=/cached/adapter` adds adapter-context
-and cache-namespace isolation without bundled fixtures. The existing KV matrix
+and cache-namespace isolation without bundled fixtures; with it,
+`MLX_BUN_TEST_CONTINUATION_IGNORED_DRAFT=1` binds a two-model draft whose rows
+fail if opened and requires the adapter rows to match a draftless adapter
+control, tokens and checkpoint planes. The existing KV matrix
 uses `MLX_BUN_TEST_CONTINUATION_KV=bf16|4|8|per-layer|turbo`,
 `MLX_BUN_TEST_CONTINUATION_KV_START=0` (or `prompt+N`), and
 `MLX_BUN_TEST_CONTINUATION_INTERRUPT=6` (6–15).
@@ -242,6 +282,14 @@ final norm matched by hash. The nonzero adapter changed logits and unmounting
 restored the base. Actual paged rows remained checkpoint-ineligible. This covers
 one active row within the sliding window, not grouped rows, paged numerics,
 hard-kill durability, external-oracle parity or performance.
+
+An adapter request whose draft cannot serve target adapters (the two-model
+provider on any graph; any provider on a softcap graph, which never speculates
+with adapters) decodes ordinarily, ignores the draft and, without fill, grammar
+or logprobs, takes generation checkpoints like a draftless adapter request.
+The continuation test's ignored-draft opt-in passed with a synthetic nonzero
+q/v adapter on gemma-2-2b-it-4bit (with fresh-process restore) and on
+Llama-3.2-3B-Instruct-4bit with a custom 4-token window (M1 Max, bf16 KV).
 
 With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, every saved and restored checkpoint
 after conversion (immediately with a start of 0) must hold TurboQuant's exact
@@ -308,16 +356,16 @@ scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
 maintenance that owns it, probed when the binding or group is composed). Affine
 KV serves ordinary continuous decoding, with checkpoints, while each row's
-storage still reads plain. At a row's actual transition its pending token
-publishes first, and the row may finish there; otherwise that row alone is
-rejected with `DenseKvReadError` before any shared append (HTTP 501
+storage still reads plain; on a softcap graph a drafted request ignores the
+draft. At a row's actual transition its pending token publishes first, and the
+row may finish there; otherwise that row alone is rejected with `DenseKvReadError` before any shared append (HTTP 501
 `unsupported_kv_transition`, or the stream's error event once it has opened).
 Main's serial path threw at that forward instead. TurboQuant storage decodes on
 read, so these graphs admit TurboQuant KV for ordinary continuous decoding
-throughout, with checkpoints; a configured draft is ignored, as main's serial
-path did. Supplied fill decodes ordinarily without fill, as in main, whose
-serial path filled only through a committed append declaring the scheme's
-formats (none for TurboQuant on this graph). Direct grammar jump commits its
+throughout, with checkpoints; a drafted request ignores the draft. Supplied
+fill decodes ordinarily without fill, as in main, whose serial path filled
+only through a committed append declaring the scheme's formats (none for
+TurboQuant on this graph). Direct grammar jump commits its
 spans over it through the shared span method, as main's serial jump did: one
 maintenance call, then one unsplit forward of the pending token and the forced
 span, once the gateway has certified the scheme. Affine KV commits spans the
@@ -660,6 +708,19 @@ Public kernel imports are `@mlx-bun/inference/kernels/turboquant`,
 `@mlx-bun/inference/kernels/attention/paged`. Paged state is available through
 `@mlx-bun/inference/state/paged`. No cache mode or experimental default changed.
 
+The opt-in [Gemma4 paged test](tests/parity/gemma4-paged.test.ts) takes
+`MLX_BUN_TEST_PAGED_MODEL` (any Gemma4 artifact) and places requests through the
+gateway binding's plan, state policy and execution group. Gathered bf16 pages must
+equal plain KV at B1 and B3 with blocks 16 and 256 (tokens, every sampled vector,
+each retired row's valid K/V), the bit-exact contract. Over bf16, KV4 and KV8
+pages it also requires the direct reader to serve decode, each call within 2^-4
+of the gathered reader's output scale over the same query and pages (Lab
+numerics; greedy tokens are reported, not compared, since that difference can
+flip a low-margin step), abort-versus-stop survivor identity with recovery on
+the drained group, and RAM then fresh-SSD-store reuse of pages of the same
+encoding and reader. It passes on Gemma4 E4B and 12B. Run it from the root with
+`MLX_BUN_TEST_PAGED_MODEL=/gemma4/snapshot bun --no-env-file test packages/inference/tests/parity/gemma4-paged.test.ts`.
+
 ## Source ownership
 
 All kernel files below live under `src/kernels/trellis/`.
@@ -791,6 +852,36 @@ to its terminal committed state while a cancelled or failed one publishes none.
 Both requests then continue from those checkpoints, twice from RAM and once in a
 fresh process from the flushed SSD store, with identical records. Main parity is
 external evidence; B>2, KV quantization, HTTP and performance are not covered.
+
+The [grouped speculation test](tests/parity/speculative-group.test.ts) covers
+each built-in draft provider over its target with plain, affine, TurboQuant or
+per-layer KV. It takes `MLX_BUN_TEST_SPEC_TARGET`, `MLX_BUN_TEST_SPEC_KIND`
+(`ngram|two-model|assistant|mtp|dspark|deepspec|glm-mtp`) and
+`MLX_BUN_TEST_SPEC_DRAFT` (none for n-gram or `glm-mtp`), and optionally
+`MLX_BUN_TEST_SPEC_KV` (`bf16|4|8|turbo|config`),
+`MLX_BUN_TEST_SPEC_KV_START`, `MLX_BUN_TEST_SPEC_DEPTH`, `MLX_BUN_TEST_SPEC_WINDOW`
+(the custom sliding-window graph over a Llama-family target) and
+`MLX_BUN_TEST_SPEC_ADAPTER`. Requests go through placement, `methodRequest` and
+the binding's group: B1 equal to the serial `specServeRun` producer where that
+producer serves the KV settings, B4 cohorts that prefill together and repeat,
+stop/failure/abort retirement at exact counts, late and prefill joins, prompt
+snapshots with their draft attachment, generated prefixes restored from RAM and
+a fresh SSD store after a provider reload, and, with an adapter, a live adapter
+whose B2/B4 rows with the draft configured equal B1 controls, context
+partitioning, failure cleanup and adapter-isolated prefix reuse. Adapter rows
+speculate only through providers that support target adapters. It has run for
+n-gram, two-model and assistant providers; MTP, DSpark, DeepSpec and GLM
+native MTP have not.
+For example:
+`MLX_BUN_TEST_SPEC_TARGET=/gemma4-e4b MLX_BUN_TEST_SPEC_KIND=assistant MLX_BUN_TEST_SPEC_DRAFT=/e4b-assistant MLX_BUN_TEST_SPEC_KV=4 bun --no-env-file test packages/inference/tests/parity/speculative-group.test.ts`.
+
+`glm-mtp` selects GLM-5.2's checkpoint-native MTP (`--mtp on`), mounted as the
+app's model host mounts it: the Colibri runtime opened with the MTP tier planned
+for one drafting lane, and `Glm52NativeMtpProvider` at the plan's draft depth
+unless `MLX_BUN_TEST_SPEC_DEPTH` overrides it. The same checks run as for the
+other providers, except the KV matrix: GLM's compressed MLA cache has no affine
+or TurboQuant conversion, so this kind takes plain KV only and no custom window:
+`MLX_BUN_TEST_SPEC_TARGET=/GLM-5.2 MLX_BUN_TEST_SPEC_KIND=glm-mtp bun --no-env-file test packages/inference/tests/parity/speculative-group.test.ts`.
 
 `state` also exposes the byte-limited `PromptCache`, retention policies, row state,
 and checkpoint attachments. The caller owns cache lifetime and reuse namespaces.

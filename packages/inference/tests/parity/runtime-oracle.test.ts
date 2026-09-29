@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { compareReports, parsePlan } from "../../scripts/runtime-oracle";
+import { compareReports, parsePlan, sha } from "../../scripts/runtime-oracle";
 import { TEST_OVERHEAD_MS, parityInputs, runParityWorker } from "./runtime-oracle-process";
 
 const plan = parsePlan({ model: "/external/model", runtime: "0.32.2", contexts: [0, 4], lengths: [1, 2], prefixChunk: 2 });
@@ -79,7 +79,10 @@ test.skipIf(!inputs)("local model matches the supplied external runtime report",
   try {
     // Parse caller inputs before starting the native worker. Keep comparison semantics unchanged.
     const suppliedPlan = parsePlan(await Bun.file(inputs!.planPath).json());
-    const reference = await Bun.file(inputs!.referencePath).json();
+    const referenceBytes = await Bun.file(inputs!.referencePath).bytes();
+    if (inputs!.referenceSha256 && sha(referenceBytes) !== inputs!.referenceSha256)
+      throw new Error("reference report SHA-256 differs from MLX_BUN_PARITY_REFERENCE_SHA256; worker was not started");
+    const reference = JSON.parse(new TextDecoder().decode(referenceBytes));
     await runParityWorker([process.execPath, "--no-env-file", resolve(import.meta.dir, "../../scripts/runtime-oracle.ts"), "emit", "--plan", inputs!.planPath, "--report", output],
       directory, deadline);
     compareReports(await Bun.file(output).json(), reference, suppliedPlan, inputs!.allowLegacy);
