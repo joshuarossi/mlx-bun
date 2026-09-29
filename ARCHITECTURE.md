@@ -204,7 +204,7 @@ dependencies). A host implements them once and every module depends only on them
 | `jobs` | Persisted job state, task and child-process lifetimes, the GPU lease (`exclusive` jobs drain models first). |
 | `storage` | A module's declared entries under `MLX_BUN_HOME`; nothing else is written by default. |
 | `catalog` | Local models and adapters, fit estimates, downloads, registering outputs. |
-| `events` | Publish/subscribe: the model host and a scheduler adapter publish loads, unloads, per-model memory, request timings, batch occupancy, queue depth and KV/prefix usage and hit rate; modules subscribe. Libraries below the app never import it. |
+| `events` | Publish/subscribe: the model host and a scheduler adapter publish loads, unloads, per-model memory, request timings, batch occupancy, queue depth and KV/prefix usage and hit rate; modules subscribe. Publishing appends to each subscriber's bounded queue and never waits for it; handlers run later, in order, and the oldest events of a subscriber that falls behind are dropped and counted. Libraries below the app never import it. |
 
 **Module contract.** A module is a workspace package `@mlx-bun/module-<id>` in
 `packages/module-<id>/` whose default export is an `AppModule`: a static manifest
@@ -243,6 +243,13 @@ lock and serving. A module's manifest is also importable alone
 the module. A host refuses a module that declares sockets, and one that declares
 job runners unless it binds the `jobs` service, which then runs them. Installation
 is build-time; a user setting may disable an installed module at start.
+
+The `events` bus is `createEventHub` in `@mlx-bun/app-services`, one per app state (`AppState.events`), so the
+model loader, the Whisper host and the engine adapter (`apps/mlx-bun/src/engine/telemetry.ts`, which times each
+request from the run's own stats and samples the gateway and caches) publish into the bus the modules subscribe to.
+A module's scoped bus publishes only its own `<id>.*` events, never a core type. A module that requires `jobs`
+(datasets, metrics) activates in the app's persistent state and gets the job service over the app's job host; a
+runner that declares `gpu: "exclusive"` holds the engine's execution lease for its run.
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
 { services })` validates the manifests before activating anything (unique ids,

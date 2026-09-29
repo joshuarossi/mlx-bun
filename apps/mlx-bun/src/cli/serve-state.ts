@@ -7,7 +7,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppModule } from "@mlx-bun/app-core";
-import { activateModules, createModuleRoutes, createStorage, mlxBunHome } from "@mlx-bun/app-services/portable";
+import { activateModules, createEventHub, createModuleRoutes, createStorage, mlxBunHome, type EventHub } from "@mlx-bun/app-services/portable";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
 import type { PiBackendPaths } from "../chat/pi-backend";
 import { defaultSessionDir } from "../chat/session-files";
@@ -69,6 +69,8 @@ export interface AppState {
   /** Serves already-built browser assets; never loads a model. */
   web(request: Request): Response | null;
   readonly downloads: DownloadOwner;
+  /** The `events` core service's bus: the model loader and the engine adapter publish, modules subscribe. It lives as long as the state. */
+  readonly events: EventHub;
   /** Responses API conversation history, shared by every host this state serves. */
   readonly responses: ResponseHistory;
   readonly memoryPaths: { vault: string; skills: string };
@@ -123,10 +125,11 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   // The installed modules that need job runners (datasets) run here, beside
   // the job store. They reach the served model through the attached host's own
   // API: over its Unix socket when it listens on one, else over TCP to its port.
-  const jobService = createJobService(jobs);
+  const events = createEventHub();
+  const jobService = createJobService(jobs, { acquire: signal => requireHost().acquireExecutionLease(signal) });
   const served = createServedModelHost({ link: () => host,
     fetch: (request, link) => fetch(request, link.unix ? { unix: link.unix } as RequestInit : undefined) });
-  const loaded = await activateModules(modules, { bindings: { jobs: () => jobService, modelHost: () => served,
+  const loaded = await activateModules(modules, { bindings: { jobs: () => jobService, modelHost: () => served, events: scope => events.scoped(scope),
     storage: createStorage(() => storagePaths.artifactRoot ?? mlxBunHome()) } });
   jobService.serve(loaded.jobs);
   // Memory synthesis runs on the task model, created on first use (its weights
@@ -165,7 +168,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
   };
   let closing: Promise<void> | undefined;
   return {
-    web, downloads, responses: new ResponseStore(), memoryPaths, chatPaths: options.chatPaths, sessionDir, storagePaths,
+    web, downloads, events, responses: new ResponseStore(), memoryPaths, chatPaths: options.chatPaths, sessionDir, storagePaths,
     memorySurface: () => createMemorySurface(memoryPaths.vault, memoryPaths.skills),
     routes,
     attach(link) {
@@ -187,6 +190,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
       for (const result of await Promise.allSettled([synthesis.close(), stopJobs(), downloads.close()]))
         if (result.status === "rejected") errors.push(result.reason);
       try { await taskModel?.close(); } catch (error) { errors.push(error); }
+      events.close();
       if (errors.length === 1) throw errors[0];
       if (errors.length) throw new AggregateError(errors, "background shutdown failed");
     })(),

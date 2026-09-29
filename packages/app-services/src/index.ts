@@ -4,6 +4,8 @@ export { createCompanionInfoRoutes, transcriptionStats } from "./companion-info-
 export type { CompanionInfoOptions } from "./companion-info-routes";
 export { MODEL_LAYOUT, mlxBunHome, openModelRegistry, userHome } from "./home";
 export { activateModules, runVerb } from "./activation";
+export { createEventHub } from "./events";
+export type { EventHub, EventHubOptions, EventHubStats, SubscriberStats } from "./events";
 export { ModelHostFailure } from "./failure";
 export { createHostServices } from "./host";
 export type { HostServices, HostServicesOptions, WhisperServing } from "./host";

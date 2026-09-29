@@ -9,10 +9,10 @@ const catalog: ModelCatalog = { list: async () => [entry], resolve: async () => 
 const module = (parts: Partial<AppModule>, events: string[] = []): AppModule => ({ id: "echo", title: "Echo", summary: "", requires: ["modelHost", "catalog"],
   activate: () => ({ dispose() { events.push("module stop"); } }), ...parts });
 
-test("a host that serves Whisper implements modelHost, catalog and storage, with the configured checkpoint as the default", async () => {
+test("a host that serves Whisper implements modelHost, catalog, storage and events, with the configured checkpoint as the default", async () => {
   const services = createHostServices({ catalog, whisper: { modelDir: "/dir/whisper", modelId: "mine", idleUnloadSec: 9, resident: true } });
   expect(services.catalog).toBe(catalog);
-  expect(Object.keys(services.bindings).sort()).toEqual(["catalog", "modelHost", "storage"]);
+  expect(Object.keys(services.bindings).sort()).toEqual(["catalog", "events", "modelHost", "storage"]);
   expect(await services.whisper.defaultFor("transcribe")).toBe("mine");
   expect(services.whisper.policy).toMatchObject({ idleUnloadSec: 9, pinned: ["mine"] });
   const bare = createHostServices({ catalog });

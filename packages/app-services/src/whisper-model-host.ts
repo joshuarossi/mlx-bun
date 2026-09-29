@@ -10,7 +10,7 @@
 // streaming run) goes through the host's `exclusive` wrapper, so a host that
 // also generates keeps decoding from overlapping it on the GPU.
 import type {
-  AcquireOptions, CatalogEntry, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats,
+  AcquireOptions, CatalogEntry, EventBus, ModelUnloadReason, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats,
   ResidencyPlan, ResidencyPolicy, ResidentModel, TranscribeOptions, TranscriptionOperation,
 } from "@mlx-bun/app-core";
 import type { WhisperTranscribeOptions } from "@mlx-bun/inference/transcription";
@@ -37,6 +37,8 @@ export interface WhisperModelHostOptions {
   timers?: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
   /** Monotonic milliseconds for the reported load times. */
   now?: () => number;
+  /** Receives `model.load`, `model.unload` and `model.memory` events; publishing never waits for a subscriber. */
+  events?: Pick<EventBus, "publish">;
 }
 
 const realTimers: NonNullable<WhisperModelHostOptions["timers"]> = {
@@ -119,14 +121,19 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
     slot.timer = null;
   };
   /** Release the weights; a release at close is not an unload. */
-  const dispose = (slot: Slot, counted = true) => {
+  const dispose = (slot: Slot, reason: ModelUnloadReason | null = "idle") => {
     cancelTimer(slot);
     if (!slot.loaded) return false;
+    const started = now();
     slot.loaded.dispose();
     slot.loaded = null;
-    if (counted) slot.unloads++;
+    if (reason) {
+      slot.unloads++;
+      publish({ type: "model.unload", at: Date.now(), model: slot.id, reason, drainMs: now() - started, flushed: false });
+    }
     return true;
   };
+  const publish = (event: Parameters<EventBus["publish"]>[0]) => { try { options.events?.publish(event); } catch { /* the bus contract is never to throw; a stand-in must not break a decode */ } };
   const isPinned = (id: ModelId) => pinnedIds.has(id);
   const armIdle = (slot: Slot, keepAliveSec: number | undefined) => {
     cancelTimer(slot);
@@ -162,13 +169,20 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       slot.loading = (async () => {
         const t0 = now();
         let loaded: LoadedWhisper;
+        publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "started" });
         try { loaded = await backend.load(slot.directory); }
-        catch (error) { throw new ModelHostFailure("load-failed", error instanceof Error ? error.message : String(error), { cause: error }); }
+        catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "failed", error: message });
+          throw new ModelHostFailure("load-failed", message, { cause: error });
+        }
         if (closed) { loaded.dispose(); throw closedError(); }
         slot.loaded = loaded;
         slot.loads++;
         slot.lastLoadMs = now() - t0;
         log(`[transcription] ${slot.id} loaded in ${slot.lastLoadMs.toFixed(0)} ms`);
+        publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "finished", ms: slot.lastLoadMs, weightsBytes: slot.bytes });
+        publish({ type: "model.memory", at: Date.now(), model: slot.id, weightsBytes: slot.bytes, kvBytes: 0, prefixCacheBytes: 0 });
         return loaded;
       })().finally(() => { slot.loading = null; });
     }
@@ -226,7 +240,7 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       cancelTimer(slot);
       if (!slot.loaded) return;
       if (slot.leases > 0 && !unloadOptions.force) throw new ModelHostFailure("in-use", `${slot.id} is in use`);
-      if (dispose(slot)) log(`[transcription] ${slot.id} unloaded (idle)`);
+      if (dispose(slot, "requested")) log(`[transcription] ${slot.id} unloaded (idle)`);
     },
 
     pin(id) { pinnedIds.add(id); const slot = slots.get(id); if (slot) cancelTimer(slot); },
@@ -249,7 +263,7 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
       if (closing) return closing;
       closed = true;
       const all = [...new Set(slots.values())];
-      const release = () => { for (const slot of all) dispose(slot, false); };
+      const release = () => { for (const slot of all) dispose(slot, null); };
       const loading = all.flatMap(slot => slot.loading ? [slot.loading.catch(() => undefined)] : []);
       if (!loading.length) { release(); return closing = Promise.resolve(); }
       return closing = Promise.all(loading).then(release);

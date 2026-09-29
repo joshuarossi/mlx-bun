@@ -5,6 +5,7 @@
 import type { ModelCatalog } from "@mlx-bun/app-core";
 import type { ServiceBindings } from "@mlx-bun/app-host";
 import { createRegistryCatalog } from "./catalog";
+import { createEventHub, type EventHub } from "./events";
 import { createStorage } from "./storage";
 import type { WhisperBackend } from "./whisper-backend";
 import { createWhisperModelHost, type Exclusive, type WhisperModelHost } from "./whisper-model-host";
@@ -27,6 +28,8 @@ export interface HostServicesOptions {
   catalog?: ModelCatalog;
   /** Where declared storage entries live; default `MLX_BUN_HOME`. */
   storageRoot?: () => string;
+  /** The host's event bus, shared with whatever else publishes (the engine adapter); default a new one. */
+  events?: EventHub;
   /** Lifecycle lines of the model host (`[transcription] X loaded in 60 ms`); default the console, which a verb printing to stdout must silence. */
   log?: (line: string) => void;
 }
@@ -34,12 +37,14 @@ export interface HostServicesOptions {
 export interface HostServices {
   readonly whisper: WhisperModelHost;
   readonly catalog: ModelCatalog;
+  readonly events: EventHub;
   readonly bindings: ServiceBindings;
 }
 
-/** The core services a host that serves Whisper implements: `modelHost`, `catalog` and `storage`. */
+/** The core services a host that serves Whisper implements: `modelHost`, `catalog`, `storage` and `events`. */
 export function createHostServices(options: HostServicesOptions = {}): HostServices {
   const catalog = options.catalog ?? createRegistryCatalog();
+  const events = options.events ?? createEventHub();
   const policy = options.whisper;
   const whisper = createWhisperModelHost({
     catalog,
@@ -49,6 +54,8 @@ export function createHostServices(options: HostServicesOptions = {}): HostServi
     ...(options.exclusive ? { exclusive: options.exclusive } : {}),
     ...(options.backend ? { backend: options.backend } : {}),
     ...(options.log ? { log: options.log } : {}),
+    events,
   });
-  return { whisper, catalog, bindings: { modelHost: () => whisper, catalog: () => catalog, storage: createStorage(options.storageRoot) } };
+  return { whisper, catalog, events, bindings: { modelHost: () => whisper, catalog: () => catalog, storage: createStorage(options.storageRoot),
+    events: scope => events.scoped(scope) } };
 }
