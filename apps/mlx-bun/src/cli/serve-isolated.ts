@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { AppModule } from "@mlx-bun/app-core";
 import type { ModelRecord, Registry } from "@mlx-bun/hub/registry";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { createPiBackend } from "../chat/pi-backend";
@@ -30,8 +31,10 @@ import type { RunningApp, ServeOptions } from "./serve-options";
 import { createAppState, type RouteGroup } from "./serve-state";
 import { openRegistry } from "../storage/paths";
 
-/** Internal (tests): stand in for the worker entry, the restart policy, and the registry. */
+/** What the composition root supplies (`modules`: the installed modules that run in the persistent state)
+ * and, internally for tests, stand-ins for the worker entry, the restart policy, and the registry. */
 export interface IsolatedServeHooks {
+  modules?: readonly AppModule[];
   entry?: string;
   restarts?: Partial<WorkerRestartBudget>;
   env?: Record<string, string | undefined>;
@@ -108,7 +111,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     const snapshot = await locateTaskModel(MEMORY_TASK_MODEL);
     workers.retain(worker, [snapshot]);
     return { worker, snapshot };
-  }, signal) }, options.storagePaths ?? {});
+  }, signal) }, options.storagePaths ?? {}, hooks.modules);
   // Sockets live in a private directory (0700) this process removes, one per worker.
   const socketDir = mkdtempSync(join(tmpdir(), "mlx-worker-"));
   const removeSocketDir = () => rmSync(socketDir, { recursive: true, force: true });
@@ -154,7 +157,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
     // themselves; the proxy takes every remaining path to a worker.
     const routes: RouteGroup = { handle: async request => await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ??
       await management.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.quantize.handle(request) ?? await persistent.dataset.handle(request) ?? await persistent.finetune.handle(request) ??
+      await persistent.quantize.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ??
       await persistent.publishing.handle(request) ?? await proxy.handle(request) };
     let boundPort = options.port;
     // Pi lives here and reaches the model over loopback through the proxy, so
@@ -169,7 +172,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
       genDefaults: served.genDefaults, downloadsSnapshot: state.downloads.snapshot,
     });
     // Jobs lease every resident worker through the pool; loopback clients reach the workers through the proxy.
-    detachLink = state.attach({ get port() { return boundPort; },
+    detachLink = state.attach({ model: { id: modelId, bytes: model.sizeBytes }, get port() { return boundPort; },
       acquireExecutionLease: signal => workers.acquireExecutionLease(signal),
       invalidateLibrary: proxy.invalidateLibrary });
     // startServer owns engine cleanup on entry, including a bind failure.

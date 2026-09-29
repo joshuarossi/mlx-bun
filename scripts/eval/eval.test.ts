@@ -362,13 +362,13 @@ test("an unavailable verifier skips HumanEval: nothing executes, capability name
   // The verifier module is resolved from a checkout; without it there is no execution path at all.
   const empty = fresh("checkout");
   const missing = await resolveVerifier(empty, null);
-  expect(missing).toBe(`verifier unavailable: apps/mlx-bun/src/dataset/python-verifier.ts is not in ${empty}`);
+  expect(missing).toBe(`verifier unavailable: packages/module-datasets/src/python-verifier.ts is not in ${empty}`);
   // With the module present, its factory gets the plan's image; an unpinned image fails the probe.
-  const stub = join(fresh("checkout"), "apps/mlx-bun/src/dataset");
+  const stub = join(fresh("checkout"), "packages/module-datasets/src");
   mkdirSync(stub, { recursive: true });
   writeFileSync(join(stub, "python-verifier.ts"), `export const createPythonVerifier = (options) => async () =>
     ({ status: "unverified", reason: "image-unpinned", error: "image " + JSON.stringify(options.image ?? null) });`);
-  const resolved = await resolveVerifier(resolve(stub, "../../../.."), `python@sha256:${"b".repeat(64)}`);
+  const resolved = await resolveVerifier(resolve(stub, "../../.."), `python@sha256:${"b".repeat(64)}`);
   if (typeof resolved === "string") throw new Error(resolved);
   expect(resolved.image).toBe(`python@sha256:${"b".repeat(64)}`);
   expect(await probeVerifier(resolved.verify)).toContain(`probe unverified (image-unpinned): image "python@sha256:${"b".repeat(64)}"`);

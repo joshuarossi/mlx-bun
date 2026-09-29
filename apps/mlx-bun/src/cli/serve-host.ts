@@ -271,7 +271,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: state.storagePaths.artifactRoot });
     const persistent = state.routes;
     const modelRoutes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.quantize.handle(request) ?? await persistent.dataset.handle(request) ?? await persistent.finetune.handle(request) ?? await adapterArtifacts.handle(request) ?? await persistent.publishing.handle(request) ?? await completions.handle(request) };
+      await persistent.quantize.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ?? await adapterArtifacts.handle(request) ?? await persistent.publishing.handle(request) ?? await completions.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP
     // loopback, and for the link's URL placeholder (its clients use the socket).
@@ -289,8 +289,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
         topK: options.request.defaultTopK ?? context.genDefaults.topK ?? null,
       }, downloadsSnapshot: state.downloads.snapshot,
     });
-    // Jobs and loopback clients reach this host from the first served request.
-    detachLink = state.attach({ get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
+    // Jobs and modules leasing the served model reach this host from the first served request.
+    detachLink = state.attach({ model: { id: context.modelId, bytes: context.model.weightsBytes },
+      get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
       acquireExecutionLease: signal => engine.gateway.acquireExecutionLease(signal),
       invalidateLibrary: completions.invalidateLibrary });
     // startServer owns engine cleanup on entry, including a bind failure.

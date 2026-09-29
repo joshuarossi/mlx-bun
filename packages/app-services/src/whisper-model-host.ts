@@ -10,18 +10,12 @@
 // streaming run) goes through the host's `exclusive` wrapper, so a host that
 // also generates keeps decoding from overlapping it on the GPU.
 import type {
-  AcquireOptions, CatalogEntry, ModelCatalog, ModelHost, ModelHostError, ModelId, ModelLease, ModelOperation, ModelStats, ResidencyFailure,
+  AcquireOptions, CatalogEntry, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats,
   ResidencyPlan, ResidencyPolicy, ResidentModel, TranscribeOptions, TranscriptionOperation,
 } from "@mlx-bun/app-core";
 import type { WhisperTranscribeOptions } from "@mlx-bun/inference/transcription";
+import { ModelHostFailure } from "./failure";
 import { nativeWhisperBackend, type LoadedWhisper, type WhisperBackend } from "./whisper-backend";
-
-export class ModelHostFailure extends Error implements ModelHostError {
-  constructor(readonly code: ResidencyFailure, message: string, options?: { cause?: unknown }) {
-    super(message, options);
-    this.name = "ModelHostFailure";
-  }
-}
 
 export type Exclusive = <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 

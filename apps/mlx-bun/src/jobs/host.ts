@@ -28,6 +28,7 @@ export function createJobHost(options: SubprocessOpts & { createStore?: () => Jo
     submitTask(kind: JobKind, config: Record<string, unknown>, runner: JobRunner, outputPath?: string) {
       return tasks.submit(ensureStore(), kind, config, runner, outputPath);
     },
+    cancelTask(jobId: string) { tasks.cancel(jobId); },
     close() {
       if (closing) return closing;
       closed = true;

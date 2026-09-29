@@ -19,7 +19,7 @@ import { hostname } from "node:os";
 
 /** The verifier image: the linux/arm64 manifest of `python:3.14-slim`
  * (3.14.7-slim-trixie), pinned by digest. It is never pulled here; provisioning
- * is in the app README's Dataset jobs section. */
+ * is in the datasets module README. */
 export const PYTHON_VERIFIER_IMAGE = "python@sha256:67994a05c712036dbfc4385b4bceafc0ce20df950f54b9ea355582c153bf6157";
 
 /** Fixed limits. `runMs` bounds `docker start` (container start and program);
@@ -275,7 +275,7 @@ export function createPythonVerifier(options: PythonVerifierOptions = {}): Verif
 
   return async (source, signal) => {
     if (!PINNED_IMAGE.test(image))
-      return unverified("image-unpinned", `no digest-pinned verifier image is configured (${JSON.stringify(image)}); provision one as the app README's Dataset jobs section describes`);
+      return unverified("image-unpinned", `no digest-pinned verifier image is configured (${JSON.stringify(image)}); provision one as the datasets module README describes`);
     if (signal?.aborted) return unverified("cancelled", "cancelled before the container was created");
     if (!swept) await sweep();
     const name = `mlx-bun-python-verify-${crypto.randomUUID()}`;

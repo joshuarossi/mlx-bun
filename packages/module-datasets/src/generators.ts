@@ -9,7 +9,7 @@
 // Rows may carry extra keys (metadata, tools) to mirror the Python output.
 
 import { setTimeout as delay } from "node:timers/promises";
-import type { Emit } from "../jobs/protocol";
+import type { JobEmit as Emit } from "@mlx-bun/app-core";
 import type { ChatMessage, DatasetHttp, LlmClient } from "./llm";
 import { verifyPython, type VerifyPython } from "./python-verifier";
 

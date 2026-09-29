@@ -30,6 +30,7 @@
         "@mlx-bun/hub": "workspace:*",
         "@mlx-bun/inference": "workspace:*",
         "@mlx-bun/mlx": "workspace:*",
+        "@mlx-bun/module-datasets": "workspace:*",
         "@mlx-bun/module-transcription": "workspace:*",
         "@mlx-bun/quantize": "workspace:*",
         "@mlx-bun/training": "workspace:*",
@@ -106,6 +107,16 @@
     "packages/mlx": {
       "name": "@mlx-bun/mlx",
       "version": "0.0.0",
+    },
+    "packages/module-datasets": {
+      "name": "@mlx-bun/module-datasets",
+      "version": "0.0.0",
+      "dependencies": {
+        "@mlx-bun/app-core": "workspace:*",
+      },
+      "devDependencies": {
+        "@mlx-bun/app-host": "workspace:*",
+      },
     },
     "packages/module-transcription": {
       "name": "@mlx-bun/module-transcription",
@@ -390,6 +401,8 @@
     "@mlx-bun/inference": ["@mlx-bun/inference@workspace:packages/inference"],
 
     "@mlx-bun/mlx": ["@mlx-bun/mlx@workspace:packages/mlx"],
+
+    "@mlx-bun/module-datasets": ["@mlx-bun/module-datasets@workspace:packages/module-datasets"],
 
     "@mlx-bun/module-transcription": ["@mlx-bun/module-transcription@workspace:packages/module-transcription"],
 

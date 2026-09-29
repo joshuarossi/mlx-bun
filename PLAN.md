@@ -147,13 +147,15 @@ Migration gaps stay required work in the feature table.
     published and rendered from a recorded event stream in a test; a `bench-serve` profile launches
     through jobs and keeps history; on a named machine, paired runs show no throughput loss from
     publishing and the panel's numbers match `/stats` and the run's own output.
-  - [ ] (d) Remaining modules, one PR each: models, datasets, quantize, train, benchmarks, chat, memory
-    (last, moved as is: the memory feature stays deferred). Modules contribute to each other through the
+  - [ ] (d) Remaining modules, one PR each: models, quantize, train, benchmarks, chat, memory
+    (last, moved as is: the memory feature stays deferred). Datasets landed (its browser panel,
+    `web/browser/dataset.ts`, moves with the web shell). Modules contribute to each other through the
     `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
-    hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets and job
-    runners when the first module that declares them lands (they refuse them until then). Exit per module: its
-    domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and served-surface
-    inventories are unchanged.
+    hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets
+    when the first module that declares them lands (they refuse them until then); job runners are served
+    by any host that binds `jobs` (the app's job host runs `task` runners; `process` runners with quantize).
+    Exit per module: its domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and
+    served-surface inventories are unchanged.
   - [ ] (e) Model host residency and swapping. Today swapping needs `--isolate` (one worker per
     model), and the pool's spawn-overlap loads the new model while the old ones stay resident, so two
     models can be resident past any budget. Implement the `modelHost` contract: memory-fit residency,

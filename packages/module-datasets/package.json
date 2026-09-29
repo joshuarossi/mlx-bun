@@ -1,0 +1,36 @@
+{
+  "name": "@mlx-bun/module-datasets",
+  "version": "0.0.0",
+  "description": "Dataset-building module for mlx-bun applications: thirteen JSONL templates, an in-process generation job that calls the served model, and a Docker verifier for generated Python",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./manifest": "./src/manifest.ts",
+    "./python-verifier": "./src/python-verifier.ts"
+  },
+  "files": [
+    "src",
+    "scripts",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@mlx-bun/app-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@mlx-bun/app-host": "workspace:*"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ]
+}
