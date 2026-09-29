@@ -132,12 +132,10 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (a) Contracts landed (`AppModule`, `CoreServices`). Remaining: the `registry` service
-    contract, the host-side loader (validate manifests, mount routes, verbs, runners and
-    storage) and the gate rules in the architecture section. Exit: tests reject duplicate ids, routes, verbs, job kinds and storage
-    paths, an unmet `requires`, a module importing another module, an app or a service
-    implementation, and a host file other than `modules.ts` importing a module.
-  - [ ] (b) Pilot: `@mlx-bun/module-transcription` (Whisper service, `/v1/audio/*`, `transcribe`,
+  - [ ] (b) Pilot: the loader, `registry` and gate rules are in; `startApp` loads `src/modules.ts` but binds no
+    services and consumes nothing yet, which lands here (serve loaded routes and sockets, dispatch verbs
+    from `cli/main.ts`, hand runners to the job service, create storage entries).
+    `@mlx-bun/module-transcription` (Whisper service, `/v1/audio/*`, `transcribe`,
     `dictate`, voice panel) and a transcription-only host (`apps/transcribe`) that carries only
     the core-service implementations it needs, extracted from `apps/mlx-bun` as libraries.
     Exit: the host builds and runs with no other module in its import closure (gate-checked),
@@ -149,8 +147,8 @@ Migration gaps stay required work in the feature table.
     through jobs and keeps history; on a named machine, paired runs show no throughput loss from
     publishing and the panel's numbers match `/stats` and the run's own output.
   - [ ] (d) Remaining modules, one PR each: models, datasets, quantize, train, benchmarks, chat, memory
-    (last, moved as is: the memory feature stays deferred). Decide how modules contribute to each
-    other (memory tools into chat) through a core service before the chat PR. Exit per module: its
+    (last, moved as is: the memory feature stays deferred). Modules contribute to each other through the
+    `registry` service (memory tools into chat); chat's PR adds its consumer. Exit per module: its
     domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and served-surface
     inventories are unchanged.
   - [ ] (e) Model host residency and swapping. Today swapping needs `--isolate` (one worker per

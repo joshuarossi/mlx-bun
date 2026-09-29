@@ -4,9 +4,11 @@ import { CONVERT_DTYPES } from "./output-name";
 import type { quantizeModelDir, QuantizeOptions, ConvertDtype } from "@mlx-bun/quantize/quantizer";
 import type { convertModelDir } from "@mlx-bun/quantize/convert";
 import type { automaticRotationWeightTransform } from "@mlx-bun/quantize/weight-transform";
+import type { quantizeTrellisModelDir } from "@mlx-bun/quantize/trellis-quantizer";
 
 export function createQuantizeRunner(supplied: Partial<{
   quantize: typeof quantizeModelDir; rotation: typeof automaticRotationWeightTransform; convert: typeof convertModelDir;
+  trellis: typeof quantizeTrellisModelDir;
 }> = {}): JobRunner {
  return async (emit: Emit, config) => {
   const outDir = String(config.out_dir ?? "");
@@ -26,6 +28,28 @@ export function createQuantizeRunner(supplied: Partial<{
       (e) => emit({ type: "stage", stage: e.stage, progress: e.progress, message: e.message }));
     emit({ type: "stage", stage: "done", progress: 1,
       message: r.nDequantized ? `Dequantized ${r.nDequantized} modules` : "Converted", output_dir: r.outDir });
+    return { outputPath: r.outDir };
+  }
+
+  // Packed Trellis (TCQ) MLP tensors on the rotation-folded checkpoint: its own producer and options.
+  if (config.mode === "trellis") {
+    const srcDir = resolveSrcDir(config);
+    const seed = Number(config.rotation_seed ?? 42);
+    if (!Number.isInteger(seed)) throw new Error(`quantize job: rotation_seed must be an integer (got ${String(config.rotation_seed)})`);
+    const downAxis = config.trellis_down_axis === undefined ? "out" : String(config.trellis_down_axis);
+    if (downAxis !== "out" && downAxis !== "in") throw new Error(`quantize job: trellis_down_axis must be out or in (got ${downAxis})`);
+    emit({ type: "stage", stage: "starting", progress: 0.01, message: `Quantizing ${srcDir} → packed trellis (Viterbi encode, slow)` });
+    const trellis = supplied.trellis ?? (await import("@mlx-bun/quantize/trellis-quantizer")).quantizeTrellisModelDir;
+    const r = await trellis(srcDir, outDir, {
+      bits: Number(config.trellis_bits ?? 3), seed, downAxis,
+      ...(config.trellis_k_map ? { kMap: { path: String(config.trellis_k_map), ...(config.trellis_k_budget ? { budget: String(config.trellis_k_budget) } : {}) } } : {}),
+      ...(config.trellis_ldlq ? { ldlq: String(config.trellis_ldlq) } : {}),
+      ...(Array.isArray(config.trellis_reuse) ? { reuse: config.trellis_reuse.map(String) } : {}),
+      ...(config.trellis_interleave === true ? { interleave: true } : {}),
+      ...(config.trellis_layers != null ? { layers: Number(config.trellis_layers) } : {}),
+    }, (e) => emit({ type: "stage", stage: e.stage, progress: e.progress, message: e.message }));
+    emit({ type: "stage", stage: "done", progress: 1,
+      message: `Quantized ${r.nTrellis} trellis + ${r.nAffine} affine modules (${r.effectiveBpw.toFixed(2)} bpw)`, output_dir: r.outDir });
     return { outputPath: r.outDir };
   }
 

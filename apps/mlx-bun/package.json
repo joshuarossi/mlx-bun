@@ -38,6 +38,8 @@
     "build:native": "sh scripts/build-native.sh"
   },
   "dependencies": {
+    "@mlx-bun/app-core": "workspace:*",
+    "@mlx-bun/app-host": "workspace:*",
     "@mlx-bun/hub": "workspace:*",
     "@mlx-bun/inference": "workspace:*",
     "@mlx-bun/mlx": "workspace:*",

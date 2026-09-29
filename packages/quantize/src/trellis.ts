@@ -509,8 +509,6 @@ export class Trellis {
 export const TRELLIS_L = 12;
 export const TRELLIS_T = 256;
 
-/** Words per T-block for k bits/weight (T·k must be a multiple of 32). */
-
 /** Reorder k3/T256 codes into [two-block groups, rows, 48 words].
  *  The caller selects an axis0/1MAD/L12 tensor; no code values change. */
 export function interleaveTrellisCodes(codes: MlxArray): MlxArray {

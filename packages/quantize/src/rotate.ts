@@ -494,7 +494,7 @@ export class QwenFoldContext {
   readonly #eager: boolean;
 
   constructor(
-    weights: Weights,
+    weights: Pick<Weights, "tensor">,
     hiddenSize: number,
     seed: number,
     gammaNames: string[],

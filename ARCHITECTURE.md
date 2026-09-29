@@ -231,7 +231,17 @@ plus the implementations of the core services (extracted from `apps/mlx-bun` as
 libraries when a second host needs them). Installation is build-time; a user
 setting may disable an installed module at start.
 
-**Gate rules** (added with their first consumer, in the architecture test):
+`@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
+{ services })` validates the manifests before activating anything (unique ids,
+routes, verbs, job kinds and storage paths; every `requires` implemented by the
+host), activates the modules in order with only the services they required, built
+per module by the host's bindings, and returns what they declared: routes at
+`/api/<id>/...` or at their declared root paths (collisions with each other and
+the host's own routes are rejected), sockets, verbs, job runners and storage
+entries. It also implements `registry`. The host serves, dispatches and creates
+what it returns; `stop()` disposes the modules in reverse order.
+
+**Gate rules** (in `packages/inference/tests/architecture.test.ts`, each proven by a synthetic workspace):
 
 - `app-core` has no runtime exports and no workspace imports.
 - A module imports only `@mlx-bun/app-core`, declared domain libraries and its
@@ -239,11 +249,11 @@ setting may disable an installed module at start.
 - Libraries below the app never import `app-core`.
 - Only a host's `modules.ts` imports module packages, and the host's
   `package.json` lists exactly the modules it names; hosts never import hosts.
-- Module and host code obey the engine's model-identity rule: declared
+- Module, host-library and host code obey the engine's model-identity rule: declared
   operations only, no `instanceof <Model>` or model-type checks.
 - Panel code imports only panel files and its `protocol.ts`, which imports
   nothing; this generalizes the browser rule for `chat/` and `jobs/`.
-- Manifest checks in the host loader's tests: unique ids, routes, verbs, job
+- Manifest checks in `@mlx-bun/app-host`'s tests: unique ids, routes, verbs, job
   kinds and storage paths; every `requires` satisfied.
 
 ## Changing or replacing a piece

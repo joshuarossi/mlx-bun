@@ -1064,8 +1064,17 @@ and expert biases and SSM decay parameters keep their dtype, as mlx-lm's per-mod
 cast predicates do) and `-d`/`--dequantize` writes dense weights and drops the
 quantization block (`convertModelDir` in `@mlx-bun/quantize`); with `-q`, `--dtype`
 is the scales/biases dtype and the dtype of the unquantized tensors (bf16 scales
-and unchanged tensors without it). `--quant-predicate` and a non-affine `--q-mode`
-are refused, as are `-q` with `-d`. Each conversion owns a
+and unchanged tensors without it). `--q-mode trellis` (implies `-q` and the rotation fold,
+seed from `--rotation-seed`) runs `quantizeTrellisModelDir` on a full-precision
+`model.language_model.*` Qwen3.5-family checkpoint instead: MLP tensors become packed
+Trellis (`~/.mlx-bun/models/<model>-trellis-<k>bit`, or `-trellis-mixed` with a k-map, plus
+`-rot<seed>` only when the seed is given) that the engine serves and stock mlx-lm cannot
+load. Its options are `--trellis-bits`, `--trellis-k-map` with `--trellis-k-budget`,
+`--trellis-ldlq`, `--trellis-reuse`, `--trellis-down-axis`, `--trellis-interleave`, and
+`--trellis-layers`; they need `--q-mode trellis`, which refuses `--target-bpw`, `--q-bits`,
+`--q-group-size`, `--dtype`, and the calibration options. It codes with Viterbi and is
+slow on a full model. `--quant-predicate` and any other `--q-mode` are refused, as are
+`-q` with `-d`. Each conversion owns a
 private root beside the destination holding the child's result, staging, temp
 probes, and job store; only a complete result is published, by one rename.
 SIGINT/SIGTERM terminate and join the child immediately, even mid-sweep
@@ -1074,7 +1083,8 @@ cancellation the parent removes only that owned root, never anything inferred
 from a name. `cli/convert.ts` owns the verb. [Convert tests](tests/convert-cli.test.ts)
 cover validation, source resolution, the producer config, credential ordering,
 upload, cancellation, the child owner (complete-result publish, a SIGTERM-ignoring child, a failing child, an unrelated sibling left intact),
-and the spawned CLI with native MLX blocked; they do not quantize real weights.
+and the spawned CLI with native MLX blocked; they do not quantize real weights. The Trellis
+producer is exercised on a synthetic checkpoint in the quantize package.
 
 Composition injects the engine execution lease. A job drains active inference
 and holds that lease until its child's process group is gone and output streams
