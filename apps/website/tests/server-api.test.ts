@@ -29,8 +29,11 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   // Routes no serve composition mounts have no row: lease, drain and /engine are unknown paths (404) here.
   expect(serve.filter(row => /^\S+ \/(admin\/(lease|drain)|engine)\b/.test(row))).toEqual([]);
   const isolate = rows(baseline, "isolate");
-  for (const row of ["* /admin/lease served by parent", "* /admin/memory/complete served by parent", "GET /engine implemented", "POST /v1/responses routed by model id", "POST /v1/embeddings routed by model id",
+  for (const row of ["* /admin/lease served by parent", "* /admin/memory/complete served by parent", "GET /engine implemented", "POST /v1/responses implemented", "GET /downloads implemented",
     "* (any other path) forwarded to the worker"]) expect(isolate).toContain(row);
+  // The worker owns the models: the parent routes no request by model id and lists no model-scoped row of its own.
+  expect(isolate.some(row => row.includes("routed by model id"))).toBe(false);
+  expect(isolate.filter(row => /^\S+ \/(v1\/(chat\/completions|models|embeddings)|stats|health)\b/.test(row) && !row.includes("served by parent"))).toEqual(["GET /health implemented", "GET /stats implemented"]);
   expect(isolate).not.toContain("POST /v1/chat/completions implemented");
   const worker = rows(baseline, "worker");
   for (const row of ["GET /health implemented", "* /health 405 method not allowed", "POST /admin/lease implemented [served if options.acquireExecutionLease]",
@@ -42,7 +45,12 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   expect(worker.some(row => /^\S+ \/api\/(hub|jobs|memory|sessions|quantize|dataset)\b/.test(row))).toBe(false);
   // The app launch form: the Server app, web and chat included, with the same admin routes ahead of its groups.
   const appWorker = rows(baseline, "app-worker");
-  expect(appWorker).toEqual([...serve.slice(0, 13), ...worker.slice(1, 9), ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
+  // The admin rows are the worker's own: everything between its /health row and the first model route.
+  const admin = worker.slice(1, worker.indexOf("POST /v1/chat/completions routed by model id"));
+  expect(admin.length).toBeGreaterThan(8);
+  expect(admin).toContain("POST /admin/serve implemented [served if options.serve]");
+  expect(admin).toContain("GET /admin/served implemented [served if options.servedPaths]");
+  expect(appWorker).toEqual([...serve.slice(0, 13), ...admin, ...serve.slice(13).filter(row => !/^GET \/health/.test(row))]);
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
   const transcription = rows(baseline, "transcription");
   expect(transcription).toContain("GET /ws/chat WebSocket upgrade (no chat model)");

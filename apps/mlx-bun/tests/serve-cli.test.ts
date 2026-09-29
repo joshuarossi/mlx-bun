@@ -166,19 +166,18 @@ test("--isolate is a parent-only boolean that selects the isolated composition a
   expect(run.starts).toHaveLength(1);
 });
 
-test("--model-pool is a parent-only integer >= 1 that applies with --isolate; without it the flag warns and is ignored, as main", async () => {
+test("--isolate serves the models from one crash-isolated worker; the model pool flag is gone, and --model-budget is a positive number of GB", async () => {
+  expect(parse("--isolate")).toMatchObject({ isolate: true });
   expect(parse("--isolate")).not.toHaveProperty("modelPool");
-  expect(parse("--isolate", "--model-pool", "2").modelPool).toBe(2);
-  for (const value of ["0", "1.5", "x"]) expect(() => parse("--isolate", "--model-pool", value)).toThrow("--model-pool expects an integer in [1, 9007199254740991]");
-  const warnings: string[] = [], warn = console.warn;
-  console.warn = (message: string) => { warnings.push(message); };
-  try { expect(parse("--model-pool", "2")).not.toHaveProperty("modelPool"); }
-  finally { console.warn = warn; }
-  expect(warnings).toEqual(["--model-pool has no effect without --isolate (child-per-model pool) — ignored"]);
+  expect(() => parse("--isolate", "--model-pool", "2")).toThrow();
+  expect(parse("--model-budget", "12").modelBudgetBytes).toBe(12e9);
+  expect(parse("--model-budget", "0.5").modelBudgetBytes).toBe(0.5e9);
+  expect(parse()).not.toHaveProperty("modelBudgetBytes");
+  for (const value of ["0", "-1", "x"]) expect(() => parse("--model-budget", value)).toThrow("--model-budget");
   const run = runtime(false);
-  const app = await runServe(parseCommand("serve", ["--isolate", "--model-pool", "3", "--port", "0"]), run.dependencies);
-  expect(run.starts[0]).toMatchObject({ isolate: true, modelPool: 3 });
-  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in an isolated engine worker (model pool 3)");
+  const app = await runServe(parseCommand("serve", ["--isolate", "--model-budget", "9", "--port", "0"]), run.dependencies);
+  expect(run.starts[0]).toMatchObject({ isolate: true, modelBudgetBytes: 9e9 });
+  expect(run.logs.join("\n")).toContain("Serving example/model with continuous batching (capacity 8) in an isolated engine worker\n");
   await app.close();
 });
 

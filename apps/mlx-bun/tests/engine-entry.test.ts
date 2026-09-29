@@ -103,7 +103,7 @@ test("a blank model, a refused flag, or a bad argument rejects in the caller bef
     }
     await expect(openIsolatedHost(model, { command: ["/nonexistent/mlx-bun"], arguments: ["--isolate"] }))
       .rejects.toThrow("--isolate is not supported in a worker app launch");
-    await expect(openLibraryHost(model, { command, arguments: ["--model-pool", "2"] }, f.seams)).rejects.toThrow("--model-pool is not supported in a worker app launch");
+    await expect(openLibraryHost(model, { command, arguments: ["--model-pool", "2"] }, f.seams)).rejects.toThrow("Unknown option '--model-pool'");
     await expect(openLibraryHost(model, { command, arguments: ["--bogus"] }, f.seams)).rejects.toThrow("Unknown option '--bogus'");
     await expect(openLibraryHost(model, { command, arguments: ["--port"] }, f.seams)).rejects.toThrow("argument missing");
     // The arguments cannot swap the model for a blank one either.

@@ -124,6 +124,39 @@ test.skipIf(!native || !dirA || !dirB)("models stay resident by memory fit, swap
       log.push(`phase 3: Whisper resident through ${a.repoId} -> ${b.repoId} -> ${a.repoId}; peak active ${(peakMemory() / 2 ** 30).toFixed(2)} GiB, active now ${(activeMemory() / 2 ** 30).toFixed(2)} GiB`);
       await app.close(); app = undefined;
     }
+
+    // Phase 4: under --isolate one worker process holds the models: a hub switch through the parent and a request naming
+    // the other model swap them inside the worker, the saved state resumes, and a killed worker respawns serving what it started with.
+    // The worker is another process: it inherits the environment, not this process's runtime overrides.
+    const previousHome = process.env.MLX_BUN_HOME;
+    process.env.MLX_BUN_HOME = join(root, "home");
+    try {
+      app = await serve(["--isolate", "--model-budget", String(budget)]);
+      const base = `http://127.0.0.1:${app.port}`;
+      const engine = async () => await (await fetch(`${base}/engine`)).json() as { state: string; pid: number; restarts: number };
+      const workerPid = (await engine()).pid;
+      const isoA = talk("a", 4), isoB = talk("b", 4);
+      const turnA = await chat(app, a.repoId, isoA);
+      const switched = await (await fetch(`${base}/api/hub/serve`, { method: "POST", body: JSON.stringify({ model: b.repoId }) })).json();
+      expect(switched).toEqual({ ok: true, model: b.repoId });
+      expect((await chat(app, "local", isoB)).model).toBe(b.repoId);
+      const listed = await (await fetch(`${base}/v1/models`)).json() as { data: { id: string; resident?: boolean; current?: boolean }[] };
+      expect(listed.data.find(entry => entry.id === b.repoId)).toMatchObject({ resident: true, current: true });
+      expect(listed.data.find(entry => entry.id === a.repoId)).toMatchObject({ resident: false });
+      const resumed = await chat(app, a.repoId, follow(isoA, turnA));
+      expect(resumed.usage.prompt_tokens_details.cached_tokens).toBeGreaterThanOrEqual(turnA.usage.prompt_tokens - reopened);
+      expect((await engine()).pid).toBe(workerPid);
+      log.push(`phase 4 (--isolate, worker pid ${workerPid}): A turn 1 prompt ${turnA.usage.prompt_tokens}; after a hub switch to B and back, turn 2 prompt ${resumed.usage.prompt_tokens} cached ${resumed.usage.prompt_tokens_details.cached_tokens}`);
+      process.kill(workerPid, "SIGKILL");
+      for (let waited = 0; ; waited += 50) {
+        const report = await engine();
+        if (report.state === "ready" && report.pid !== workerPid) break;
+        if (waited > 60_000) throw new Error("the worker did not respawn");
+        await Bun.sleep(50);
+      }
+      expect((await chat(app, "local", talk("a", 5))).model).toBe(a.repoId);
+      await app.close(); app = undefined;
+    } finally { if (previousHome === undefined) delete process.env.MLX_BUN_HOME; else process.env.MLX_BUN_HOME = previousHome; }
   } finally {
     await app?.close();
     restore();

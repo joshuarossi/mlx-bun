@@ -111,6 +111,11 @@ test("the worker entry composes the model host alone over the parent's socket, s
     assert.equal((await (await get("/health")).json()).leases, 1);
     holder.abort();
     await until(() => gateway.held === 0, "the lease release");
+    // The parent asks the host it does not own to switch its served model and which snapshots it holds: both reach the attached link.
+    assert.deepEqual(await (await get("/admin/serve", { method: "POST", body: JSON.stringify({ model: "org/model" }) })).json(), { model: "org/model" });
+    const refused = await get("/admin/serve", { method: "POST", body: JSON.stringify({ model: "org/not-local" }) });
+    assert.deepEqual([refused.status, (await refused.json()).error.message], [404, "org/not-local is not a local model; download it first"]);
+    assert.deepEqual(await (await get("/admin/served")).json(), { paths: ["/unused"] });
     // The parent's synthesis calls run on the worker's task model under the same execution lease.
     events.length = 0;
     const memory = await get("/admin/memory/complete", { method: "POST", body: JSON.stringify({ call: "completeBatch", snapshot: "/hub/task/selected",
@@ -438,7 +443,7 @@ test("the app form refuses nested isolation, a missing model, arguments the CLI 
   const version = `${WORKER_PROTOCOL_VERSION}-other`;
   for (const [argv, launch, message] of [
     [["--model", "org/model", "--isolate"], {}, "--isolate is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket"],
-    [["--model", "org/model", "--model-pool", "2"], {}, "--model-pool is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket"],
+    [["--model", "org/model", "--model-pool", "2"], {}, "Unknown option '--model-pool'"],
     [["--model", ""], {}, "a worker app launch needs a non-empty --model: automatic selection may download the starter model"],
     [["--port", "0"], {}, "a worker app launch needs a non-empty --model: automatic selection may download the starter model"],
     [["--model", "org/model", "--bogus"], {}, "Unknown option '--bogus'"],

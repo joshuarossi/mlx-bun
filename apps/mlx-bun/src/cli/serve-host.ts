@@ -363,6 +363,7 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
       acquireExecutionLease: signal => residency.pauseAll(signal),
       invalidateLibrary,
+      servedPaths: () => residentUnits().map(unit => unit.artifactPath),
       ...(input.models ? { async serve(id: string, signal: AbortSignal) {
         if (id !== first.id && !await known(id)) throw new ServeRefused(404, `${id} is not a local model; download it first`);
         try { (await residency.acquire(id, { signal, need: ["generate"] })).release(); }

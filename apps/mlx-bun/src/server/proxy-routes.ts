@@ -1,16 +1,14 @@
-// The parent's model-scoped route group under --isolate: every request a
+// The parent's model-scoped route group under --isolate: every request the
 // worker serves is forwarded over its Unix socket with the body streaming
 // through (hop-by-hop headers stripped, a client abort aborting the proxied
-// fetch so the worker sees the disconnect). The five model-routed POSTs are
-// buffered to read `model` and go to that id's worker through the pool; every
-// other path rides the default worker, or the most recently used resident
-// while the default is evicted, without loading a model. The parent answers
-// only what it owns: `/engine`, `/health` and `/stats` with the worker's
-// contribution and the pool's state, `/downloads` from its own transfer
-// owner, `/v1/models` with residency flags, and `/v1/responses` through the
-// history client. The worker's private admin paths never forward.
+// fetch so the worker sees the disconnect). The worker owns the models: its
+// model router picks the model a request names, loads it beside the others or
+// in place of one, and answers `/v1/models` with what is resident. The parent
+// answers only what it owns: `/engine`, `/health` and `/stats` with the
+// worker's contribution, `/downloads` from its own transfer owner, and
+// `/v1/responses` through the history client. The worker's private admin paths
+// never forward.
 import { describeExit, EngineUnavailableError, type WorkerSupervisor, type WorkerSupervisorState } from "../jobs/worker-supervisor";
-import type { PoolReport, WorkerPool } from "../jobs/worker-pool";
 import type { createResponsesClient } from "./responses-client";
 
 const HOP_BY_HOP = new Set([
@@ -20,11 +18,9 @@ const HOP_BY_HOP = new Set([
 /** Never forwarded to a worker: its private socket surface (which only the
  * parent itself calls; unmatched here, the listener answers 404) and the
  * parent's own synthesis route (served by its earlier group). */
-const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/admin/memory/complete", "/v1/memory/synthesize"]);
-/** Generation endpoints whose JSON body carries the routing `model` field (main's list). */
-export const MODEL_ROUTED = new Set(["/v1/chat/completions", "/v1/completions", "/v1/messages", "/v1/responses", "/v1/embeddings"]);
+const PARENT_ONLY = new Set(["/admin/lease", "/admin/drain", "/admin/memory/complete", "/admin/serve", "/admin/served", "/v1/memory/synthesize"]);
 
-const encoder = new TextEncoder(), decoder = new TextDecoder();
+const encoder = new TextEncoder();
 /** A copy without the hop-by-hop headers and the ones `Connection` names
  * (also used by the library host, `cli/library-host.ts`). */
 export const stripHopByHop = (headers: Headers) => {
@@ -35,18 +31,9 @@ export const stripHopByHop = (headers: Headers) => {
   return out;
 };
 
-/** The routing key from a buffered JSON body. A body that is not a JSON
- * object with a string `model` routes to the default worker, which answers
- * a malformed body with its own 400; the bytes are forwarded unchanged. */
-export function modelField(body: Uint8Array): string | undefined {
-  try {
-    const value = JSON.parse(decoder.decode(body)) as { model?: unknown } | null;
-    return value && typeof value === "object" && typeof value.model === "string" ? value.model : undefined;
-  } catch { return undefined; }
-}
-
 export interface ProxyRoutesOptions {
-  pool: WorkerPool;
+  /** The one worker that owns the models. */
+  engine: WorkerSupervisor;
   responses: ReturnType<typeof createResponsesClient>;
   /** Progress rows for `GET /downloads`; the parent owns transfers. */
   downloads(): readonly unknown[];
@@ -54,17 +41,15 @@ export interface ProxyRoutesOptions {
   startedAt: number;
 }
 
-/** The default worker's fields are null while it is evicted (`state: "evicted"`). */
 export interface EngineReport {
   isolated: true;
-  state: WorkerSupervisorState | "evicted";
+  state: WorkerSupervisorState;
   pid: number | null;
-  restarts: number | null;
-  socket: string | null;
+  restarts: number;
+  socket: string;
   model: string;
   last_exit: { code: number | null; signal: string | null } | null;
   response_store: { entries: number; bytes: number; max_bytes: number; ttl_ms: number };
-  pool: PoolReport;
 }
 
 /** The SSE error frame each protocol's own error path emits, so a client
@@ -92,114 +77,50 @@ function guardEventStream(body: ReadableStream<Uint8Array>, failure: () => strin
   });
 }
 
-type Observe = (engine: WorkerSupervisor) => void;
-
 export function createProxyRoutes(options: ProxyRoutesOptions) {
-  const { pool, responses } = options;
-  const report = (): EngineReport => {
-    const engine = pool.default;
-    return {
-      isolated: true, state: engine?.state ?? "evicted", pid: engine?.pid ?? null, restarts: engine?.restarts ?? null,
-      socket: engine?.socketPath ?? null, model: engine?.modelId ?? options.modelId, last_exit: engine?.lastExit ?? null,
-      response_store: responses.stats, pool: pool.report(),
-    };
-  };
-  const summary = () => {
-    const { cap, default: defaultId, resident, loading } = pool.report();
-    return { cap, default: defaultId, resident: resident.map(worker => worker.id), loading };
-  };
+  const { engine, responses } = options;
+  const report = (): EngineReport => ({
+    isolated: true, state: engine.state, pid: engine.pid, restarts: engine.restarts, socket: engine.socketPath,
+    model: engine.modelId ?? options.modelId, last_exit: engine.lastExit, response_store: responses.stats,
+  });
   const unavailableMessage = (error: unknown) => {
     if (error instanceof EngineUnavailableError) return `inference engine unavailable: ${error.message}${error.state === "restarting" ? " — retry shortly" : ""}`;
     return "inference engine unavailable: the engine worker stopped mid-request; respawning — retry shortly";
   };
-  const unavailable = (error: unknown, target: WorkerSupervisor | undefined) => Response.json({ error: {
+  const unavailable = (error: unknown) => Response.json({ error: {
     message: unavailableMessage(error), type: "engine_unavailable",
-    state: error instanceof EngineUnavailableError ? error.state : target?.state ?? pool.default?.state ?? "evicted",
+    state: error instanceof EngineUnavailableError ? error.state : engine.state,
   } }, { status: 502 });
-  const streamFailure = (engine: WorkerSupervisor) => {
+  const streamFailure = () => {
     const exit = engine.lastExit;
     return `inference engine unavailable: the engine worker stopped while streaming this response${exit ? ` (${describeExit(exit)})` : ""}; it is being respawned`;
   };
 
-  /** `childFor`: the worker a request goes to. A model-routed POST is
-   * buffered so its `model` field can pick the worker, then forwarded byte
-   * for byte; everything else goes where inspection goes, never spawning. */
-  const forward = async (request: Request, observe?: Observe): Promise<Response> => {
+  /** The request goes to the worker as it came, its body streaming through. */
+  const forward = async (request: Request): Promise<Response> => {
     request.signal.throwIfAborted();
     const { pathname } = new URL(request.url);
-    let engine: WorkerSupervisor, body: BodyInit | null;
-    if (request.method === "POST" && MODEL_ROUTED.has(pathname)) {
-      const raw = new Uint8Array(await request.arrayBuffer());
-      engine = await pool.workerFor(modelField(raw), request.signal);
-      body = raw;
-    } else {
-      engine = pool.inspect() ?? await pool.workerFor(undefined, request.signal);
-      body = request.body;
-    }
-    observe?.(engine);
     const upstream = await engine.fetch(request.url, {
-      method: request.method, headers: stripHopByHop(request.headers), body,
+      method: request.method, headers: stripHopByHop(request.headers), body: request.body,
       signal: request.signal, redirect: "manual", duplex: "half",
     });
     const headers = stripHopByHop(upstream.headers);
     const stream = upstream.body && (upstream.headers.get("content-type") ?? "").startsWith("text/event-stream")
-      ? guardEventStream(upstream.body, () => unavailableFrame(pathname, streamFailure(engine)))
+      ? guardEventStream(upstream.body, () => unavailableFrame(pathname, streamFailure()))
       : upstream.body;
     return new Response(stream, { status: upstream.status, statusText: upstream.statusText, headers });
   };
-  const respond = async (request: Request, work: (observe: Observe) => Promise<Response>): Promise<Response> => {
-    let target: WorkerSupervisor | undefined;
-    try { return await work(engine => { target = engine; }); }
+  const respond = async (request: Request, work: () => Promise<Response>): Promise<Response> => {
+    try { return await work(); }
     catch (error) {
       if (request.signal.aborted) return new Response(null, { status: 499 });
-      return unavailable(error, target);
+      return unavailable(error);
     }
-  };
-
-  /** Keep the available-model listing and merge each resident's own metadata:
-   * a caller-resolved checkpoint need not exist in another worker's registry. */
-  const models = async (request: Request, observe: Observe): Promise<Response> => {
-    let inspected: WorkerSupervisor | undefined;
-    const upstream = await forward(request, engine => { inspected = engine; observe(engine); });
-    if (!upstream.ok || !(upstream.headers.get("content-type") ?? "").includes("json")) return upstream;
-    const body = await upstream.json() as { data?: unknown };
-    if (!Array.isArray(body.data)) return Response.json(body, { status: upstream.status, headers: upstream.headers });
-    const rows: unknown[] = [...body.data];
-    const ownRows = await Promise.all(pool.residents().filter(({ engine }) => engine !== inspected && engine.state === "ready")
-      .map(async ({ id, engine }) => {
-        try {
-          const response = await engine.fetch("http://engine/v1/models", { headers: stripHopByHop(request.headers),
-            signal: AbortSignal.any([request.signal, AbortSignal.timeout(2_000)]) });
-          if (!response.ok || !(response.headers.get("content-type") ?? "").includes("json")) {
-            await response.body?.cancel(); return undefined;
-          }
-          const listing = await response.json() as { data?: unknown };
-          return Array.isArray(listing.data) ? listing.data.find((row: unknown) =>
-            row !== null && typeof row === "object" && (row as { id?: unknown }).id === id) : undefined;
-        } catch { return undefined; } // A restarting peer must not hide the available listing.
-      }));
-    request.signal.throwIfAborted();
-    for (const own of ownRows) {
-      if (!own) continue;
-      const index = rows.findIndex(row => row !== null && typeof row === "object" && (row as { id?: unknown }).id === own.id);
-      if (index < 0) rows.push(own); else rows[index] = own;
-    }
-    const residentIds = new Set(pool.residents().map(worker => worker.id)), loading = new Set(pool.report().loading);
-    const data = rows.map((row: unknown) => {
-      if (!row || typeof row !== "object" || typeof (row as { id?: unknown }).id !== "string") return row;
-      const id = (row as { id: string }).id;
-      return { ...row, resident: residentIds.has(id), ...(loading.has(id) ? { loading: true } : {}) };
-    });
-    const headers = new Headers(upstream.headers);
-    headers.delete("content-length");
-    return Response.json({ ...body, data }, { status: upstream.status, headers });
   };
 
   const health = async (): Promise<Response> => {
-    const engineReport = report();
-    const engine = pool.default;
     let contribution: Record<string, unknown> = {};
-    if (engine?.state === "ready") {
+    if (engine.state === "ready") {
       try {
         const upstream = await engine.fetch("http://engine/health", { signal: AbortSignal.timeout(2_000) });
         const body = await upstream.json() as Record<string, unknown>;
@@ -207,14 +128,12 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
         else contribution = { state: "unreachable" };
       } catch { contribution = { state: "unreachable" }; }
     }
-    const { response_store: _store, isolated: _isolated, pool: _pool, ...worker } = engineReport;
-    return Response.json({ status: "ok", isolated: true, engine: { ...worker, ...contribution }, pool: summary() });
+    const { response_store: _store, isolated: _isolated, ...worker } = report();
+    return Response.json({ status: "ok", isolated: true, engine: { ...worker, ...contribution } });
   };
   const stats = async (request: Request): Promise<Response> => {
     const own = { response_store: responses.stats, engine: report() };
-    const engine = pool.inspect();
     try {
-      if (!engine) throw new EngineUnavailableError("closed", null, "no engine worker is resident");
       const upstream = await engine.fetch(request.url, { headers: stripHopByHop(request.headers), signal: request.signal });
       if (!upstream.ok) return new Response(upstream.body, { status: upstream.status, headers: stripHopByHop(upstream.headers) });
       const body = await upstream.json() as Record<string, unknown>;
@@ -229,8 +148,11 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
   return {
     report,
     forward,
-    /** A finished download or job changes the library every worker lists. */
-    invalidateLibrary: () => pool.invalidateLibrary(),
+    /** A finished download or job changes the library the worker lists. */
+    invalidateLibrary() {
+      if (engine.state !== "ready") return;
+      void engine.fetch("http://engine/library?refresh=1").then(response => response.arrayBuffer()).catch(() => {});
+    },
     async handle(request: Request): Promise<Response | null> {
       const { pathname } = new URL(request.url);
       if (PARENT_ONLY.has(pathname)) return null;
@@ -239,11 +161,10 @@ export function createProxyRoutes(options: ProxyRoutesOptions) {
         if (pathname === "/health") return health();
         if (pathname === "/stats") return stats(request);
         if (pathname === "/downloads") return Response.json({ downloads: options.downloads() });
-        if (pathname === "/v1/models" || pathname.startsWith("/v1/models/")) return respond(request, observe => models(request, observe));
       }
       if (pathname === "/v1/responses" && request.method === "POST")
-        return respond(request, observe => responses.forward(request, inner => forward(inner, observe)));
-      return respond(request, observe => forward(request, observe));
+        return respond(request, () => responses.forward(request, inner => forward(inner)));
+      return respond(request, () => forward(request));
     },
   };
 }

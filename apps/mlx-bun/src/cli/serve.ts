@@ -137,10 +137,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (!host.trim()) throw new Error("--host expects an address");
   const kvBudget = number("kv-budget");
   const maxTokens = number("max-tokens", 1, 10_000_000);
-  // Main's --model-pool: pool policy is the parent's and means nothing without a worker.
   const isolate = args.values.isolate === true;
-  const modelPool = number("model-pool", 1, Number.MAX_SAFE_INTEGER, true);
-  if (modelPool !== undefined && !isolate) console.warn("--model-pool has no effect without --isolate (child-per-model pool) — ignored");
   const profileLimit = profileContextLimit();
   return {
     query: value("model") ?? args.positionals[0] ?? value("query") ?? null,
@@ -160,7 +157,6 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     ...(mtpRaw !== undefined ? { mtp: ["on", "1", "true"].includes(mtpRaw) } : {}),
     ...(whisper ? { whisper } : {}),
     readOnly: false, noOpen: args.values["no-open"] === true, isolate,
-    ...(isolate && modelPool !== undefined ? { modelPool } : {}),
     cache, request, fusedSdpa: policy.fusedSdpa,
   };
 }
@@ -253,14 +249,12 @@ export function shutdownTimeoutMs(): number {
 /** Internal (the worker app form; a parent may call it to fail fast before
  * spawning): serve arguments parsed and validated exactly as the CLI does,
  * minus what cannot run behind a launch socket. `--host`, `--port`, and
- * `--no-open` are accepted and never steer the socket bind. `--isolate` and
- * `--model-pool` are refused: a nested isolated app binds TCP, never the
- * socket. A missing or empty model is refused: automatic selection may
+ * `--no-open` are accepted and never steer the socket bind. `--isolate` is
+ * refused: a nested isolated app binds TCP, never the socket. A missing or empty model is refused: automatic selection may
  * download the starter model. */
 export function validateAppLaunchArgv(argv: readonly string[]): CommandArgs {
   const args = parseCommand("serve", [...argv]);
-  for (const flag of ["isolate", "model-pool"])
-    if (args.values[flag] !== undefined) throw new Error(`--${flag} is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket`);
+  if (args.values.isolate !== undefined) throw new Error("--isolate is not supported in a worker app launch: nested isolation would bind TCP, never the launch socket");
   if (!parseServeOptions(args).query?.trim())
     throw new Error("a worker app launch needs a non-empty --model: automatic selection may download the starter model");
   return args;
@@ -390,7 +384,7 @@ export async function runServe(args: CommandArgs, supplied: Partial<ServeDepende
     deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity}) over the Unix socket`);
     return app;
   }
-  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? ` in an isolated engine worker (model pool ${options.modelPool ?? 1})` : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
+  deps.log(`Serving ${selection.m.repoId} with continuous batching (capacity ${options.capacity})${options.isolate ? " in an isolated engine worker" : ""}\nApp ${url}\nAPI ${url.replace("/#/chat", "/v1")}\nStop: Ctrl+C`);
   if (deps.interactive && !options.noOpen) {
     try { await deps.open(url); } catch (error) { deps.error(error); }
   }

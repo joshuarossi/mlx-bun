@@ -80,6 +80,19 @@ export function createWorkerState(options: ServeOptions, link: { current?: Model
   };
 }
 
+/** What the parent may ask of the host it does not own, through the admin surface: switch the served
+ * model and list the snapshots held resident. A host that serves one model refuses a switch (409). */
+function hostAdmin(link: { current?: ModelHostLink }) {
+  return {
+    async serve(model: string, signal: AbortSignal) {
+      const serve = link.current?.serve;
+      if (!serve) throw Object.assign(new Error("this worker serves one model; restart it to change models"), { status: 409 });
+      return serve(model, signal);
+    },
+    servedPaths: () => link.current?.servedPaths?.() ?? [],
+  };
+}
+
 /** What the app form composes with; `runServe`'s own defaults otherwise. */
 export interface AppWorkerDependencies {
   resolve: ServeDependencies["resolve"];
@@ -136,7 +149,7 @@ export async function runWorkerEntry(ports: WorkerEntryPorts = defaults): Promis
     acquireExecutionLease(signal) {
       if (!link.current) return Promise.reject(new Error("no model host is attached"));
       return link.current.acquireExecutionLease(signal);
-    }, memoryTaskModel: memory });
+    }, memoryTaskModel: memory, ...hostAdmin(link) });
   let host: Awaited<ReturnType<typeof startModelHost>>;
   try {
     host = await startModelHost(createWorkerState(launch.options, link), launch.model, launch.options,
@@ -204,7 +217,7 @@ async function runAppWorker(launch: AppWorkerLaunch, args: CommandArgs, ports: W
       acquireExecutionLease(signal: AbortSignal) {
         if (!link.current) return Promise.reject(new Error("no model host is attached"));
         return link.current.acquireExecutionLease(signal);
-      } } : {}) });
+      }, ...hostAdmin(link) } : {}) });
     return { unix: launch.socketPath, routes: (routes: RouteGroup) => admin.wrap(routes), beforeDrain: () => admin.close() };
   };
   try {
