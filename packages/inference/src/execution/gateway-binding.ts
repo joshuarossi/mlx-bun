@@ -133,11 +133,10 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   const delayedAffine = (options: GenerateOptions) => !options.turboQuant &&
     (options.kvBits !== undefined || !!options.kvConfig?.length) && affineQuantizedKvStart(options) > 0;
   // MiniCPM5's and encoded-KV graphs' delayed affine KV are qualified for ordinary
-  // continuous decoding only; main served those requests serially. Adapter
-  // requests ignore a configured draft and fill, as main did; actual delayed
-  // speculation and fill remain refused. Their direct grammar jump commits
-  // spans, as main's serial jump did. Generation checkpoints are qualified for
-  // both. Their adapters use the same row context.
+  // continuous decoding only. Adapter requests ignore a configured draft and
+  // fill, as main did; actual delayed speculation and fill remain refused.
+  // Their direct grammar jump commits spans. Generation checkpoints are
+  // qualified for both. Their adapters use the same row context.
   const ordinaryAffineRows = model instanceof MiniCPM5Model || encodedKvRows;
   const affineKv = (options: GenerateOptions) => !options.turboQuant && (options.kvBits !== undefined || !!options.kvConfig?.length);
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
@@ -150,12 +149,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // by placement rather than served ordinarily. Grammar proposals stay off softcap.
   const speculative = !denoising && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
-  // Committed spans serve the direct jump main ran serially, held to the
-  // graph's declared dense-read layers, as its ordinary rows are: every layer
-  // of a softcap graph; none of a graph whose delayed affine rows are
-  // ordinary-only, as it attends the encoded storage it holds.
+  // Committed spans serve the direct grammar jump, held to the graph's declared
+  // dense-read layers, as its ordinary rows are: every layer of a softcap
+  // graph; none of a graph whose delayed affine rows are ordinary-only, as it
+  // attends the encoded storage it holds.
   const grammarSpans = (plainSoftcap || ordinaryAffineRows) && storage
-    ? bindGrammarGroupRequests(model, storage.requiredDenseKvLayers) : undefined;
+    ? bindGrammarGroupRequests(model, storage.requiredDenseKvLayers, storage.convertible.length) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
@@ -240,13 +239,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
-        // Committed spans append after one maintenance call, as main's serial
-        // jump did, once the gateway has certified the scheme (kvBatchable).
-        // On a softcap graph TurboQuant storage decodes on read throughout; a
-        // row whose affine storage would no longer read plain at its next
-        // append is refused before that append. Elsewhere spans serve only the
-        // ordinary-only delayed affine requests main placed serially; main
-        // batched the others and verified grammar proposals.
+        // Committed spans append after one maintenance call, once the gateway
+        // has certified the scheme (kvBatchable). On a softcap graph TurboQuant
+        // storage decodes on read throughout; a row whose affine storage would
+        // no longer read plain at its next append is refused before that
+        // append. Elsewhere spans serve only ordinary-only delayed affine
+        // requests; other grammar requests keep verified proposals.
         sharedGrammarJump: !!grammarSpans && (plainSoftcap || ordinaryOnly) && !request.hasVision &&
           (!(request.kvQuant || request.turboQuant) || scheduling.quantizedBatch) && !options.pagedKv,
         // Main filled only through a committed append declaring the scheme's
