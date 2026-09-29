@@ -36,7 +36,8 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import * as ops from "@mlx-bun/mlx/ops";
 import { runtimeValue } from "../../runtime/config";
-import { Gemma4Model } from "../../models/gemma4/model";
+import type { Gemma4Model } from "../../models/gemma4/model";
+import { declaredGraph } from "../../models/capabilities";
 import { KVCache } from "../../state/kv";
 import { QuantizedKVCache } from "../../state/quantized-kv";
 import { RotatingKVCache } from "../../state/rotating-kv";
@@ -353,7 +354,7 @@ function makeSegmentTraceFn(
 
 // --- runner -----------------------------------------------------------------
 
-const runners = new WeakMap<Gemma4Model, CompiledDecode>();
+const runners = new WeakMap<object, CompiledDecode>();
 
 export class CompiledDecode {
   /** Total compiled steps executed (tests assert the compiled path ran
@@ -400,9 +401,15 @@ export class CompiledDecode {
     return r;
   }
 
+  /** The compiled step of a graph that declares one; null for every other graph. */
+  static bound(model: object): CompiledDecode | null {
+    return declaredGraph(model).graphCapabilities.compiledDecode ? CompiledDecode.for(model as Gemma4Model) : null;
+  }
+
   /** Release an existing model-owned runner without materializing constants or
-   * creating a new native closure. Call only after all borrowers have stopped. */
-  static release(model: Gemma4Model): void {
+   * creating a new native closure. Call only after all borrowers have stopped;
+   * a no-op for a graph that owns none. */
+  static release(model: object): void {
     const runner = runners.get(model);
     if (runner) runner.dispose();
   }

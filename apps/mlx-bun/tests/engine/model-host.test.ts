@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadContext, detectDraftKind, ownModelContext, getVisionTower, getAudioTower,
+import { loadContext, ownModelContext, getVisionTower, getAudioTower,
   type ModelContext, type ServedModelInfo } from "../../src/engine/model-host";
 import { createAppEngine } from "../../src/engine/index";
 import type { ModelBinding } from "../../src/engine/model-binding";
@@ -36,22 +36,6 @@ test("lazy towers are loaded once and owned by the model context", () => {
   expect(getVisionTower(host as ModelContext)).toBe(getVisionTower(host as ModelContext));
   expect(loads).toBe(1); host.dispose(); expect(disposed).toBe(1);
   expect(getVisionTower(host as ModelContext)).toBeNull();
-});
-
-test("draft detection preserves explicit artifact conventions without loading MLX", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "mlx-app-draft-"));
-  try {
-    for (const [config, expected] of [
-      [{ architectures: ["Gemma4DSparkModel"] }, "deepspec"],
-      [{ model_type: "gemma4_assistant" }, "assistant"],
-      [{ model_type: "qwen3_5_mtp" }, "mtp"],
-      [{ model_type: "qwen3" }, "two-model"],
-    ] as const) {
-      writeFileSync(join(dir, "config.json"), JSON.stringify(config));
-      expect(await detectDraftKind(dir)).toBe(expected);
-    }
-    writeFileSync(join(dir, "dspark.json"), "{}"); expect(await detectDraftKind(dir)).toBe("dspark");
-  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("an explicit replacement binding is used without inspecting a legacy model", async () => {

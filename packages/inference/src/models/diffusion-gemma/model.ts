@@ -33,13 +33,17 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { declareGraph } from "../capabilities";
+import type { PixelInput } from "../../contracts/mlx/media";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { RotatingKVCache } from "../../state/rotating-kv";
 import { type Cache } from "../../contracts/mlx/cache";
-import { DiffusionVisionTower } from "./vision";
+import { DiffusionVisionTower, spliceImageTokens } from "./vision";
 
 /** A mask in the shape ops.sdpa wants: a mode string + optional bool array.
  *  `null` array with mode "" means "no mask" (full attention). */
@@ -532,7 +536,7 @@ class DiffDecoderLayer {
   }
 }
 
-export class DiffusionGemmaModel {
+export class DiffusionGemmaModel implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly embed: QuantizedEmbedding;
@@ -549,6 +553,15 @@ export class DiffusionGemmaModel {
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; denoising takes no encoded KV scheme. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Denoising rows interleave through their own grouped method; images enter as
+   * the method's pixel prefill input. */
+  get graphCapabilities(): GraphCapabilities {
+    return declareGraph({ method: "denoising", media: { input: "pixels", video: false } });
+  }
+  pixelInput(): PixelInput | null {
+    const tower = this.visionTower;
+    return tower ? { preprocess: bytes => tower.preprocess(bytes), spliceTokens: (ids, softTokens, tokenIds) => spliceImageTokens(ids, [softTokens], tokenIds) } : null;
+  }
   /** Dedicated DiffusionGemma SigLIP vision tower (image-text-to-text). */
   readonly visionTower: DiffusionVisionTower | null;
   readonly imageTokenId: number;

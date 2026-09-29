@@ -7,13 +7,13 @@
 //
 // Sidecar weights stay bf16; features come out bf16 like text embeddings.
 
-import { tensorFingerprint } from "../artifacts/fingerprint";
+import { tensorFingerprint } from "../../artifacts/fingerprint";
 import { ptr, read } from "bun:ffi";
 import { MlxArray, cpuStream } from "@mlx-bun/mlx/array";
 import { C } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { PreprocessedImage } from "../input/vision/preprocess";
-import { NUM_SOFT_TOKENS, preprocessImage } from "../input/vision/preprocess";
+import type { PreprocessedImage } from "../../input/vision/preprocess";
+import { NUM_SOFT_TOKENS, preprocessImage } from "../../input/vision/preprocess";
 
 const cstr = (s: string) => Buffer.from(s + "\0", "utf8");
 

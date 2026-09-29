@@ -60,6 +60,19 @@ export interface ExecutionFeatures {
   readonly grammarJump?: boolean;
 }
 
+/** Why a request is refused or not served as asked. Refusals
+ * (`mechanism: "unsupported"`) name the capability the executor or graph lacks;
+ * the rest name a requested feature the request's other choices make incompatible. */
+export type ExecutionReason =
+  | "continuous-unavailable" | "media-batch-unsupported" | "adapter-batch-unsupported"
+  | "kv-scheme-batch-unsupported" | "turbo-kv-batch-unsupported" | "grammar-batch-unsupported"
+  | "paged-kv-batch-unsupported" | "method-batch-unsupported"
+  | "draft-method-unsupported" | "logprobs-method-unsupported" | "repetition-penalty-method-unsupported"
+  | "logits-extras-method-unsupported" | "fill-method-unsupported"
+  | "draft-incompatible-with-request" | "paged-kv-bypassed-for-media-or-adapters"
+  | "fill-incompatible-with-request" | "compiled-decode-unavailable-for-request"
+  | "grammar-jump-incompatible-with-request";
+
 /** Selected once; consumers execute/report these values without reselecting. */
 export interface ResolvedExecution {
   /** Implementation-owned method ID. The built-in planner retains its known
@@ -75,5 +88,5 @@ export interface ResolvedExecution {
    * every dynamic row/state shape supports replay. */
   readonly compiledDecode: boolean;
   readonly grammarJump: boolean;
-  readonly reasons: readonly string[];
+  readonly reasons: readonly ExecutionReason[];
 }

@@ -8,6 +8,7 @@ import { projectedDraftGroups } from "../../src/generation/speculative/bindings/
 import { deepspecGroups } from "../../src/generation/speculative/bindings/deepspec-rows";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { bindSpeculativeTargetModel } from "../../src/generation/speculative/bindings/binding";
+import { declareGraph } from "../../src/models/capabilities";
 
 test("an assistant uses an independent target's ports and releases each borrowed view", () => {
   const released: number[] = [];
@@ -78,7 +79,7 @@ test("the target binding taps its graph's layers and supplies an uncaptured post
   // A graph like Qwen3.5's ordinary forward: its hidden tap covers layers 0..N-1
   // and it returns the post-final-norm output without tapping it.
   const model = { config: { modelType: "fixture", eosTokenIds: [], text: { enableMoeBlock: false, numHiddenLayers: 2 } },
-    hiddenTap: null as { layers: Set<number>; captured: Map<number, MlxArray> } | null,
+    hiddenTap: null as { layers: Set<number>; captured: Map<number, MlxArray> } | null, graphCapabilities: declareGraph({ hiddenLayerTaps: true }),
     makeCache: () => [], logitsFromHidden: (hidden: MlxArray) => hidden,
     forwardHidden(this: { hiddenTap: { layers: Set<number>; captured: Map<number, MlxArray> } | null }) {
       for (let layer = 0; layer < 2; layer++)
@@ -96,8 +97,8 @@ test("the target binding taps its graph's layers and supplies an uncaptured post
     expect([...hidden.toFloat32()]).toEqual(new Array(L * H).fill(9)); // the caller keeps the forward output
     expect(model.hiddenTap).toBeNull();
   } finally { hidden.dispose(); ctxML?.dispose(); for (const array of created) array.dispose(); }
-  // Without a hidden-tap operation only an empty declaration is supported.
+  // A graph that declares no hidden-layer taps supports only an empty declaration.
   const { hiddenTap: _absent, ...untapped } = model;
-  const plain = bindSpeculativeTargetModel(untapped as never);
+  const plain = bindSpeculativeTargetModel({ ...untapped, graphCapabilities: declareGraph() } as never);
   expect([plain.supportsTapLayers([]), plain.supportsTapLayers([0])]).toEqual([true, false]);
 });

@@ -71,7 +71,7 @@ test.skipIf(!inputs)("Gemma4 assistant: donor attention and draft chains equal i
   const { plainRowStorage, quantizedRowStorage, temporalStorageView } = await import("../../src/state/batched-row-storage");
   const { captureKvDonorAttention } = await import("../../src/state/kv-attention-view");
   const { cloneKvCaches } = await import("../../src/state/persistence");
-  const { readAssistantDonors } = await import("../../src/generation/speculative/bindings/assistant-target");
+  const { readAssistantDonors } = await import("../../src/models/gemma4/assistant-target");
   const assistant = await import("../../src/models/gemma4/assistant");
   const { quantizedSdpa } = await import("../../src/layers/quantized-attention");
   type Triple = Ops.QuantizedTensor;

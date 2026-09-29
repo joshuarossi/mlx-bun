@@ -4,8 +4,9 @@
 // produce the SAME vectors — the ones verified bit-exact vs mlx-lm in
 // `02d723a:tests/parity/qwen3-embed-parity.test.ts`.
 
-import { Qwen3Model } from "../models/qwen/qwen3";
+import type { Qwen3Model } from "../models/qwen/qwen3";
 import type { RuntimeModel } from "../models/factory";
+import { declaredGraph } from "../models/capabilities";
 import type { LoadedTokenizer } from "../input/tokenizer";
 import * as ops from "@mlx-bun/mlx/ops";
 
@@ -13,10 +14,10 @@ import * as ops from "@mlx-bun/mlx/ops";
  *  pools the last position of. */
 export const EMBED_EOD = 151643;
 
-/** Only plain-Qwen3 (the Qwen3-Embedding backbone) exposes a pooled-embedding
- *  path today. Narrow the served RuntimeModel before embedding. */
+/** A graph declares the pooled-embedding path (today the Qwen3-Embedding
+ *  backbone). Narrow the served RuntimeModel before embedding. */
 export function isEmbeddingModel(model: RuntimeModel): model is Qwen3Model {
-  return model instanceof Qwen3Model;
+  return declaredGraph(model).graphCapabilities.embeddings;
 }
 
 /** Qwen3-Embedding query format: a task instruction steers WHICH similarity axis

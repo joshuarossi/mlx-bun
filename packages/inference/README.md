@@ -21,6 +21,22 @@ Paged attention accepts numerical storage; adapter mounting accepts named LoRA
 targets; prompt preparation accepts encoder interfaces. Callers can supply their
 own implementations without subclassing a concrete model or cache.
 
+Each graph declares what it can do (`GraphCapabilities`, portable; a model exposes
+it as `graphCapabilities`): its method, batched adapters, media input, paged
+attention, compiled decode, hidden-layer taps for drafts, which delayed affine KV
+levels its attention is qualified for, dense reads, and what its verifier qualifies
+(adapters, logprobs, affine and TurboQuant KV, external tokens, grammar proposals).
+`MlxDeclaredGraph` names the operations behind those promises (`bindMediaInput`,
+`mediaEncoders`, `pixelInput`, `draftTarget`, `expertResidency`), and
+`declaredGraph` in `models/capabilities` checks the pairing once when composition
+binds the graph: an undeclared graph, or a declaration without its operation, is
+refused. The gateway plans from the declarations, the request and dynamic state
+(batch membership, cache contents, cancellation), and
+`MlxGatewayBinding.capabilities` reports what it resolved. Supporting a new graph
+means declaring and implementing; `execution/` and the app engine need no edit.
+A model-level option stays with its graph: Qwen3.5 reads `MLX_BUN_QWEN_SPEC_KV4`
+(on by default) where it declares speculation over affine KV.
+
 ## Numerical and execution policy
 
 The inherited fidelity policy is L1 by default: bit-exact numerics against the
@@ -832,8 +848,8 @@ fill session and proposal interfaces.
 - `input/vision`: image decoding/preprocessing, multimodal prompt assembly,
   and video frames. Qwen preprocessing and prompt assembly have separate
   `input/vision/qwen3vl` and `input/vision/qwen3vl-prompt` imports.
-- `models/vision/siglip`, `models/vision/qwen3vl`, and `embeddings/vision`:
-  concrete vision encoders and embedding components.
+- `models/vision/siglip`, `models/vision/qwen3vl`, and `models/vision/unified`:
+  concrete vision encoders.
 
 The AVFoundation frame extractor is built by `build:native` and bundled beside
 expert I/O in `dist/native`. It needs no runtime download or compilation.

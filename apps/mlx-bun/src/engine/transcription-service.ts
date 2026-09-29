@@ -14,8 +14,7 @@
 // additionally wrapped in the generation gateway's exclusive lock
 // (`exclusive`) so decoding never overlaps chat generation on the GPU.
 
-import type { WhisperSegment, WhisperTranscribeOptions, WhisperTranscription } from "@mlx-bun/inference/transcription";
-import type { SpeechTimestampOptions, VadSegment, VadStreamState } from "@mlx-bun/inference/models/audio/silero-vad";
+import type { SpeechTimestampOptions, VadSegment, VadStreamState, WhisperSegment, WhisperTranscribeOptions, WhisperTranscription } from "@mlx-bun/inference/transcription";
 
 export interface TranscriptionParams {
   task?: "transcribe" | "translate";
@@ -132,7 +131,7 @@ export const nativeTranscriptionRuntime: TranscriptionRuntime = {
     };
   },
   async vad(modelPath) {
-    const { SileroVad } = await import("@mlx-bun/inference/models/audio/silero-vad");
+    const { SileroVad } = await import("@mlx-bun/inference/transcription");
     const gate = SileroVad.load(modelPath);
     return {
       detect: (samples, options) => gate.detect(samples, options),

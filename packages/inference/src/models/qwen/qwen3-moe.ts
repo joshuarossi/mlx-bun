@@ -27,6 +27,9 @@ import { disposing } from "../../layers/helpers";
 import { isCompiledTrace } from "../../runtime/compiled-trace";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { declareGraph } from "../capabilities";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
@@ -295,15 +298,16 @@ class Qwen3MoeDecoderLayer {
 }
 
 // ── qwen3_moe.py Qwen3MoeModel + Model ───────────────────────────────────────
-export class Qwen3MoeModel {
+export class Qwen3MoeModel implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
-  /** Every attention layer reads encoded (affine) KV views. */
-  readonly encodedKvAttention = true;
+  /** Attends the storage its caches hold: delayed affine rows convert per layer
+   * and serve ordinary decoding only. */
+  get graphCapabilities(): GraphCapabilities { return declareGraph({ kv: { delayedAffine: "ordinary" } }); }
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3MoeDecoderLayer[];
   readonly finalNorm: RMSNorm;

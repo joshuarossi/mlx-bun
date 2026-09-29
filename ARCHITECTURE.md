@@ -72,8 +72,11 @@ contracts. Bind required operations and reject genuinely missing capabilities
 at the composition boundary rather than maintaining model/flag combination
 allowlists. For example, a missing draft head is a missing component. Dynamic
 request data, batch membership, cancellation, and state transitions still need
-runtime handling. This is the target design and a review criterion for remaining
-migration work, not a claim that every existing path already satisfies it.
+runtime handling. Graphs declare their capabilities when constructed; the gateway
+plans from those declarations and the app engine binds media through graph
+operations. Elsewhere this remains the target design and a review criterion
+for remaining migration work, not a claim that every existing path already
+satisfies it.
 
 ## Ownership and dependency direction
 

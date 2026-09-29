@@ -14,7 +14,7 @@ describe("generationCheckpointKey", () => {
     const key = generationCheckpointKey([1], {}, "", execution);
     expect(key).not.toBe(generationCheckpointKey([1], {}, "", { ...execution, compiledDecode: true }));
     expect(key).not.toBe(generationCheckpointKey([1], {}, "", { ...execution, grammarJump: true }));
-    expect(key).toBe(generationCheckpointKey([1], {}, "", { ...execution, reasons: ["diagnostic-only"] }));
+    expect(key).toBe(generationCheckpointKey([1], {}, "", { ...execution, reasons: ["diagnostic-only" as never] }));
   });
   test("binding identity separates implementations and ignores object insertion order", () => {
     const key = (binding: unknown) => generationCheckpointKey([1], {}, "", undefined, binding);

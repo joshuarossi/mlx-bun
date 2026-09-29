@@ -13,7 +13,7 @@ import type { KvSchemeOptions } from "../../src/state/kv-scheme";
 import { leaseCacheStates } from "../../src/state/leases";
 import { PromptResponseTrace, type P2RTraceRecord } from "../../src/runtime/trace";
 import { withResource } from "../../src/runtime/resources";
-import { bindEmbeddingsInput } from "../../src/execution/prompt-input";
+import { bindEmbeddingsInput } from "../../src/models/media-input";
 
 const dispose = (cache: Cache[]) => { for (const layer of cache) layer.dispose(); };
 function row(id: number, length: number, chunkSize: number, signal?: AbortSignal): Row {

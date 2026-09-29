@@ -1,6 +1,5 @@
 // Own one loaded model, its draft and lazy media towers. Application entry
 // points supply the artifact and options; no HTTP or scheduling lives here.
-import { existsSync } from "node:fs";
 import type { KvQuantSpec, ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import type { Weights } from "@mlx-bun/inference/artifacts";
 import type { RuntimeModel, Glm52RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider } from "@mlx-bun/inference/models";
@@ -8,12 +7,16 @@ import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
 import type { ChatTemplate, LoadedTokenizer } from "@mlx-bun/inference/input";
 import type { AdapterManager } from "@mlx-bun/inference/adapters";
 import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "@mlx-bun/inference/input/vision";
-import type { AudioTower } from "@mlx-bun/inference/models/audio/conformer";
+import type { AudioEncoder } from "@mlx-bun/inference/contracts/mlx";
 import type { MediaPreparation } from "./media-preparation";
+
+/** An audio encoder the context owns; released with it. */
+export type LoadedAudioEncoder = AudioEncoder & { dispose?(): void };
 import { sidecarShipsAudioTower } from "@mlx-bun/hub/registry";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
 import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import { detectDraftKind, type DraftKind } from "@mlx-bun/inference/generation/speculative/draft-kind";
 
 export interface ServedModelInfo { readonly config: ModelConfig; readonly weightsBytes: number; }
 
@@ -44,11 +47,11 @@ export interface ModelContext<Model = RuntimeModel> {
    *  request (see `getAudioTower`). Same sidecar file as vision
    *  (optiq_vision.safetensors), separate tower; text-only sessions never
    *  pay for it. */
-  audio: AudioTower | null;
+  audio: LoadedAudioEncoder | null;
   /** Loads the audio tower on demand; null when the model can't do audio
    *  (no `audio_config` in config.json or no sidecar). No flags — audio
    *  auto-enables exactly like vision. */
-  loadAudio: (() => AudioTower) | null;
+  loadAudio: (() => LoadedAudioEncoder) | null;
   /** null when the model has no `audio_config` (audio-incapable). */
   audioTokenIds: AudioTokenIds | null;
   /** Family media preparation, bound once at load; borrows this context. */
@@ -109,36 +112,7 @@ export interface GenSamplingDefaults {
   repetitionPenalty?: number;
 }
 
-export type DraftKind = "dspark" | "deepspec" | "assistant" | "two-model" | "ngram" | "mtp";
-
-/** Detect the draft artifact's kind so the right provider is loaded. All
- *  providers share ONE serve loop (packages/inference/src/generation/speculative/run.ts).
- *  Exported so a bench harness reuses this one detection, as main's
- *  `02d723a:scripts/bench-matrix.ts` did — no drift.
- *  "ngram" is never detected — it has no artifact (model-free prompt lookup,
- *  packages/inference/src/generation/speculative/sources/ngram-source.ts) and
- *  mounts via an explicit `--draft-kind ngram`. */
-export async function detectDraftKind(dir: string): Promise<DraftKind> {
-  if (await Bun.file(`${dir}/dspark.json`).exists()) return "dspark"; // our trained module
-  try {
-    const cfg = (await Bun.file(`${dir}/config.json`).json()) as {
-      model_type?: string;
-      architectures?: string[];
-    };
-    // DeepSeek's released DSpark drafters (DeepSpec reference): no
-    // dspark.json, plain HF config stamped Gemma4DSparkModel.
-    if (cfg.architectures?.[0] === "Gemma4DSparkModel") return "deepspec";
-    if (String(cfg.model_type ?? "").includes("assistant")) return "assistant";
-    // Native MTP heads split from a qwen3_5-family release
-    // (mlx-community/Qwen3.8-27B-MTP-*): model_type "qwen3_5_mtp". The
-    // target's recurrent DeltaNet caches roll back via the serve loop's
-    // spec-round snapshot/replay contract (SSMCache.specRound*).
-    if (String(cfg.model_type ?? "").endsWith("_mtp")) return "mtp";
-  } catch {
-    // no/unreadable config → fall through to a full second model
-  }
-  return "two-model";
-}
+export { detectDraftKind, type DraftKind } from "@mlx-bun/inference/generation/speculative/draft-kind";
 
 /** Serving requires a template; one-shot consumers retain main's raw fallback. */
 export async function loadContextTemplate(modelDir: string, required: boolean,
@@ -191,10 +165,10 @@ export async function loadContext(
     const { implementations: _provider, ...options } = opts;
     return implementation.create({ modelDir, modelId, options }, config, profile);
   }
-  const [{ Weights }, { createModel, openGlm52RuntimeModel }, { Glm52Model },
+  const [{ Weights }, { createModel, declaredGraph, openGlm52RuntimeModel },
     { ChatTemplate, loadTokenizer }, { AdapterManager }, { bindLegacyDraftTarget }, { Glm52NativeMtpProvider }] = await Promise.all([
     import("@mlx-bun/inference/artifacts"), import("@mlx-bun/inference/models"),
-    import("@mlx-bun/inference/models/glm52"), import("@mlx-bun/inference/input"),
+    import("@mlx-bun/inference/input"),
     import("@mlx-bun/inference/adapters"), import("@mlx-bun/inference/generation/speculative/binding"),
     import("@mlx-bun/inference/generation/speculative"),
   ]);
@@ -225,6 +199,8 @@ export async function loadContext(
   try {
     let weights: Weights | null = null;
     let model!: RuntimeModel;
+    // The graph opened through the checkpoint-native loader, which owns its native draft head.
+    let glmModel: Awaited<ReturnType<typeof openGlm52RuntimeModel>>["model"] | null = null;
     let glmMemoryPlan: Glm52MemoryPlan | null = null;
     if (glm) {
       const enableNativeMtp = !externalDraft && opts.glm?.enableMtp !== false;
@@ -236,7 +212,7 @@ export async function loadContext(
         // An explicit alternate drafter replaces native MTP.
         enableMtp: enableNativeMtp,
       });
-      model = opened.model;
+      model = glmModel = opened.model;
       owned.add(opened.model);
       glmMemoryPlan = opened.plan;
     } else {
@@ -400,9 +376,9 @@ export async function loadContext(
     // GLM's checkpoint-native MTP row is the production default. It uses the
     // already-planned bounded auxiliary expert tier and the same tokenizer, so
     // there is no second artifact or compatibility probe to load.
-    if (!draft && model instanceof Glm52Model && glmMemoryPlan?.enableMtp) {
+    if (!draft && glmModel && glmMemoryPlan?.enableMtp) {
       draft = {
-        provider: new Glm52NativeMtpProvider(model),
+        provider: new Glm52NativeMtpProvider(glmModel),
         numDraftTokens: glmMemoryPlan.mtpDraftTokens,
       };
     }
@@ -412,12 +388,8 @@ export async function loadContext(
     owned.add({ dispose() { disposeResources(adapters.list().map(({ id }) => ({ dispose() { adapters.unmount(id); } }))); } });
     // Compiled runners borrow graph constants and weights. Retire them first,
     // after the owning engine has drained, including if later loading fails.
-    const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");
-    if (model instanceof Gemma4Model) {
-      const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
-      const gemma = model;
-      owned.add({ dispose() { CompiledDecode.release(gemma); } });
-    }
+    const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
+    owned.add({ dispose() { CompiledDecode.release(model); } });
     const template = await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => ChatTemplate.load(dir));
     const id = modelId ?? modelDir.split("/").filter(Boolean).at(-1)!;
     const visionTokenIds = {
@@ -433,6 +405,10 @@ export async function loadContext(
         }
       : null;
     const { bindMediaPreparation } = await import("./media-preparation");
+    // Encoders load lazily (getVisionTower/getAudioTower): text-only sessions
+    // never pay for a tower. The graph knows which its checkpoint ships.
+    const encoders = await declaredGraph(model).mediaEncoders?.(modelDir, { shipsAudioTower: sidecarShipsAudioTower })
+      ?? { vision: null, audio: null };
     const context: Omit<ModelContext, "dispose"> = {
       draft,
       model,
@@ -444,18 +420,13 @@ export async function loadContext(
       tokenizer,
       template,
       modelId: id,
-      // Vision is loaded lazily (getVisionTower) — text-only sessions never
-      // pay for the tower. The loader picks the encoder-free gemma4_unified
-      // (12B) tower vs the SigLIP encoder (e2b/e4b/26B/31B) by the sidecar's
-      // vision_config.model_type. Vision sidecars are a Gemma4 feature;
-      // MiniCPM5 never ships one.
       vision: null,
-      loadVision: await makeVisionLoader(modelDir, model, config),
+      loadVision: encoders.vision,
       visionTokenIds,
-      // Audio mirrors vision: lazy tower from the same sidecar, loaded on the
-      // first audio request only (`02d723a:docs/design/generic-model-support.md` §6.6).
+      // Audio mirrors vision: loaded on the first audio request only
+      // (`02d723a:docs/design/generic-model-support.md` §6.6).
       audio: null,
-      loadAudio: await makeAudioLoader(modelDir, model, config),
+      loadAudio: encoders.audio,
       audioTokenIds,
       // The family route is chosen once; it borrows the towers through this
       // context's lazy slots, so the context stays their only owner.
@@ -466,44 +437,6 @@ export async function loadContext(
     };
     return ownModelContext(context, [...owned].reverse());
   } catch (error) { return cleanupFailure(error, () => disposeResources([...owned].reverse())); }
-}
-
-/** Build the on-demand vision-tower loader, selecting the encoder-free
- *  (gemma4_unified, 12B) tower vs the SigLIP encoder (gemma4_vision:
- *  e2b/e4b/26B/31B) by the sidecar's vision_config.model_type. Returns null
- *  when the model has no usable vision sidecar. */
-export async function makeVisionLoader(
-  modelDir: string, model: RuntimeModel, config: ModelConfig,
-): Promise<(() => VisionEncoder) | null> {
-  const [{ Qwen35Model }, { Gemma4Model }] = await Promise.all([
-    import("@mlx-bun/inference/models/qwen3_5"), import("@mlx-bun/inference/models/gemma4"),
-  ]);
-  // Qwen3.5/3.8: the tower ships as optiq/optiq_vision.safetensors (the
-  // artifact's bf16 sidecar). The returned tower is a Qwen3VLVisionTower —
-  // it rides the same lazy slot/capability flags; the qwen chat branch is
-  // the only consumer and casts it back (the gemma branches are gated on
-  // `instanceof Gemma4Model`, so the union never crosses).
-  if (model instanceof Qwen35Model) {
-    // Vision weights arrive either as the OptiQ-convention sidecar OR in-main
-    // (mlx-vlm convention; our artifacts ship one copy in-main since
-    // 2026-08-18 — the tower loader handles both).
-    const hasSidecar = existsSync(`${modelDir}/optiq/optiq_vision.safetensors`);
-    const hasInMain = config.raw.vision_config !== undefined;
-    if (!hasSidecar && !hasInMain) return null;
-    const { Qwen3VLVisionTower } = await import("@mlx-bun/inference/models/vision/qwen3vl");
-    return () =>
-      Qwen3VLVisionTower.load(modelDir) as unknown as VisionEncoder;
-  }
-  if (!(config.hasVisionSidecar && model instanceof Gemma4Model)) return null;
-  const vc = config.raw.vision_config as Record<string, any> | undefined;
-  if (vc?.model_type === "gemma4_vision") {
-    const { SiglipVisionTower, parseSiglipConfig } = await import("@mlx-bun/inference/models/vision/siglip");
-    const sigCfg = parseSiglipConfig(vc);
-    return () => SiglipVisionTower.load(modelDir, sigCfg, model.embedScale);
-  }
-  // gemma4_unified_vision (or unlabelled): the encoder-free patch embedder.
-  const { VisionTower } = await import("@mlx-bun/inference/embeddings/vision");
-  return () => VisionTower.load(modelDir, model.embedScale, config.text.rmsNormEps);
 }
 
 /** Lazily load + cache the vision tower on first use. A sidecar that fails
@@ -523,36 +456,14 @@ export function getVisionTower(ctx: Pick<ModelContext<unknown>, "vision" | "load
   }
 }
 
-/** Build the on-demand audio-tower loader (gemma-4 Conformer,
- *  `02d723a:docs/design/generic-model-support.md` §6.6). Auto-enables — no flags — when
- *  config.json carries an `audio_config` AND the optiq_vision.safetensors
- *  sidecar exists (the audio tensors ship in the same sidecar as vision).
- *  Returns null when the model can't do audio (no audio_config: 26B-A4B,
- *  DiffusionGemma, bf16 assistants — architectural, not a porting gap). */
-export async function makeAudioLoader(
-  modelDir: string, model: RuntimeModel, config: ModelConfig,
-): Promise<(() => AudioTower) | null> {
-  const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");
-  if (!(config.hasVisionSidecar && config.raw.audio_config && model instanceof Gemma4Model))
-    return null;
-  // The sidecar header must actually name the Conformer tensors: the local
-  // 12B snapshot pairs audio_config with a STUB sidecar (embed_audio only),
-  // and a non-null loader here is what advertises `audio: true` on every
-  // capability surface (ws handshake, /v1/models). Header-only read.
-  if (!sidecarShipsAudioTower(`${modelDir}/optiq_vision.safetensors`)) return null;
-  const { AudioTower, parseAudioConfig } = await import("@mlx-bun/inference/models/audio/conformer");
-  const audioCfg = parseAudioConfig(config.raw.audio_config as Record<string, any>);
-  return () => AudioTower.load(modelDir, audioCfg, model.embedScale);
-}
-
 /** Lazily load + cache the audio tower on first use. Unlike vision's
  *  warn-and-continue (text-only degrade is correct for requests WITHOUT
  *  images), this is only ever consulted for requests WITH audio — the
  *  caller turns null into an explicit 400, never a silent text-only
  *  degrade. A failed load is not retried every request. (The stub-sidecar
- *  case — the local 12B state — never gets here: makeAudioLoader checks the
+ *  case — the local 12B state — never gets here: the graph checks the
  *  sidecar header and returns a null loader.) */
-export function getAudioTower(ctx: Pick<ModelContext<unknown>, "audio" | "loadAudio">): AudioTower | null {
+export function getAudioTower(ctx: Pick<ModelContext<unknown>, "audio" | "loadAudio">): LoadedAudioEncoder | null {
   if (ctx.audio) return ctx.audio;
   if (!ctx.loadAudio) return null;
   try {

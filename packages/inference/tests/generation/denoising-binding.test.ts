@@ -14,6 +14,7 @@ import type { RuntimeModel } from "../../src/models/factory";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { Dtype, activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
+import { declareGraph } from "../../src/models/capabilities";
 
 function fixture(onStep?: () => void) {
   const calls = { prefill: 0, steps: 0, closed: 0 };
@@ -170,7 +171,7 @@ describe("interleaved shared denoising", () => {
   }
 
   const groupModel = { config: { modelType: "diffusion_gemma", text: { enableMoeBlock: false }, eosTokenIds: [] },
-    makeCache: () => [], weightsBytes: 0, requiredDenseKvLayers: [] } as unknown as RuntimeModel;
+    makeCache: () => [], weightsBytes: 0, requiredDenseKvLayers: [], graphCapabilities: declareGraph({ method: "denoising" }) } as unknown as RuntimeModel;
 
   type Fixture = ReturnType<typeof interleaved>;
   type RowOptions = Pick<BatchRequest, "signal" | "onAdmitted"> & { onToken?: (token: number) => unknown };

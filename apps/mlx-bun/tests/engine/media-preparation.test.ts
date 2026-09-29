@@ -56,6 +56,7 @@ describe.skipIf(nativeMissing)("media preparation routes", () => {
     const { Qwen35Model } = await import("@mlx-bun/inference/models/qwen3_5");
     const { Qwen38TrellisTQ } = await import("@mlx-bun/inference/models/qwen38-27b-trellis-tq");
     const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");
+    const { Qwen3Model } = await import("@mlx-bun/inference/models/qwen3");
     const bind = (prototype: object) => media.bindMediaPreparation(source(), Object.create(prototype));
     const unreachable = user(image("http://127.0.0.1:9/never-fetched.png"));
 
@@ -72,13 +73,18 @@ describe.skipIf(nativeMissing)("media preparation routes", () => {
       expect(call.optionsRead()).toBe(0);
     }
 
-    for (const prototype of [Gemma4Model.prototype, Object.prototype]) {
+    // A graph without declared media takes the tower route, which refuses every media part.
+    for (const prototype of [Gemma4Model.prototype, Qwen3Model.prototype]) {
       const towers = await bind(prototype);
       expect(towers.video).toBe(false);
       expect(await towers.prepare(request(user(image())))).toEqual({ rejected: "vision-sidecar-unavailable" });
       const audio = request(user({ type: "input_audio", input_audio: { data: riff, format: "wav" } }));
       expect(await towers.prepare(audio)).toEqual({ rejected: "audio-tower-unavailable" });
     }
+  });
+
+  test("a graph that declares no capabilities is refused, never read as having none", () => {
+    expect(() => media.bindMediaPreparation(source(), Object.create(Object.prototype))).toThrow("must declare its capabilities");
   });
 
   test("tower routes extract media before consulting the tower, as the server did", async () => {
@@ -101,7 +107,9 @@ describe.skipIf(nativeMissing)("media preparation routes", () => {
 
   test("DiffusionGemma accepts exactly one image and returns owned pixels with spliced ids", async () => {
     let pixels: import("@mlx-bun/mlx").MlxArray | undefined;
-    const tower = { async preprocess() { pixels = mlx.ops.zeros([1, 3, 4, 4], mlx.Dtype.float32); return { pixels, softTokens: 2 }; } };
+    const tower = { async preprocess() { pixels = mlx.ops.zeros([1, 3, 4, 4], mlx.Dtype.float32); return { pixels, softTokens: 2 }; },
+      spliceTokens: (ids: number[], softTokens: number, t: { image: number; boi: number; eoi: number }) =>
+        ids.flatMap(id => id === t.image ? [t.boi, ...Array<number>(softTokens).fill(t.image), t.eoi] : [id]) };
     expect(await media.prepareDiffusionImage(source(), () => tower, request(user(image(), image()))))
       .toEqual({ rejected: "single-image-only" });
     expect(pixels).toBeUndefined();
@@ -115,7 +123,9 @@ describe.skipIf(nativeMissing)("media preparation routes", () => {
 
   test("a failure while splicing DiffusionGemma pixels disposes them before it propagates", async () => {
     let pixels: import("@mlx-bun/mlx").MlxArray | undefined;
-    const tower = { async preprocess() { pixels = mlx.ops.zeros([1, 3, 4, 4], mlx.Dtype.float32); return { pixels, softTokens: 2 }; } };
+    const tower = { async preprocess() { pixels = mlx.ops.zeros([1, 3, 4, 4], mlx.Dtype.float32); return { pixels, softTokens: 2 }; },
+      spliceTokens: (ids: number[], softTokens: number, t: { image: number; boi: number; eoi: number }) =>
+        ids.flatMap(id => id === t.image ? [t.boi, ...Array<number>(softTokens).fill(t.image), t.eoi] : [id]) };
     const failing = source({ visionTokenIds: { get imageTokenId(): number { throw new Error("token ids unavailable"); }, boiTokenId: 101, eoiTokenId: 102 } });
     await expect(media.prepareDiffusionImage(failing, () => tower, request(user(image())))).rejects.toThrow("token ids unavailable");
     expect(() => pixels!.eval()).toThrow("after dispose");

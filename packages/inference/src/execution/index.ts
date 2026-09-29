@@ -10,8 +10,6 @@ export * from "./methods";
 export * from "./batch-group";
 export * from "./gateway-binding";
 export * from "./row-sampling";
-export * from "./prompt-input";
-export * from "./qwen-prompt-input";
 export * from "./prefill-cohort";
 export * from "./prefill-rows";
 export * from "./continuation";

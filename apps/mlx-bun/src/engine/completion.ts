@@ -1,5 +1,5 @@
 import type { GenerateOptions, GenerateStats } from "@mlx-bun/inference/generation";
-import type { ExecutionRequirements, ResolvedExecution, OnToken } from "@mlx-bun/inference/contracts/portable";
+import type { ExecutionReason, ExecutionRequirements, ResolvedExecution, OnToken } from "@mlx-bun/inference/contracts/portable";
 import type { Vision } from "@mlx-bun/inference/contracts/mlx";
 import type { PromptResponseTrace } from "@mlx-bun/inference/runtime/trace";
 
@@ -12,19 +12,20 @@ export interface GenerationPlacement {
   readonly execution: ResolvedExecution;
 }
 
-const sharedExecutionExclusions = new Set([
+const sharedExecutionExclusions = new Set<ExecutionReason>([
   "continuous-unavailable", "media-batch-unsupported", "adapter-batch-unsupported",
   "kv-scheme-batch-unsupported", "turbo-kv-batch-unsupported", "grammar-batch-unsupported",
   "paged-kv-batch-unsupported", "method-batch-unsupported",
 ]);
 
-/** A migrated request shape whose shared executor is not available yet.
+/** A migrated request shape whose shared executor is not available yet. The
+ * message names the missing capabilities (`reasons`), never a model.
  * Transport layers can distinguish this capability gap from an execution failure. */
 export class UnsupportedExecutionError extends Error {
-  readonly reasons: readonly string[];
-  constructor(readonly modelType: string, readonly method: ResolvedExecution["method"], reasons: readonly string[]) {
+  readonly reasons: readonly ExecutionReason[];
+  constructor(readonly modelType: string, readonly method: ResolvedExecution["method"], reasons: readonly ExecutionReason[]) {
     const exclusions = reasons.filter(reason => sharedExecutionExclusions.has(reason));
-    super(`model ${modelType} method ${method} does not support shared execution${exclusions.length ? `: ${exclusions.join(", ")}` : ""}`);
+    super(`method ${method} does not support shared execution${exclusions.length ? `: ${exclusions.join(", ")}` : ""}`);
     this.name = "UnsupportedExecutionError";
     this.reasons = Object.freeze(exclusions);
   }

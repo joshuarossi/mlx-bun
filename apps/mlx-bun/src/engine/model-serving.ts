@@ -4,19 +4,21 @@ import type { ModelBinding } from "./model-binding";
  * supply a binding explicitly and need no forward/makeCache methods. */
 export async function modelServingBinding(context: LoadedModelContext, supplied?: ModelBinding): Promise<ModelBinding> {
   if (supplied) return supplied;
-  const [{ Glm52Model }, { embedMany, isEmbeddingModel }, { bindMlxGateway }, { MLX_VERSION, deviceArchitecture }] = await Promise.all([
-    import("@mlx-bun/inference/models/glm52"), import("@mlx-bun/inference/embeddings"),
+  const [{ declaredGraph }, { embedMany, isEmbeddingModel }, { bindMlxGateway }, { MLX_VERSION, deviceArchitecture }] = await Promise.all([
+    import("@mlx-bun/inference/models"), import("@mlx-bun/inference/embeddings"),
     import("@mlx-bun/inference/execution"), import("@mlx-bun/mlx/ffi"),
   ]);
   const ctx = context as ModelContext;
   const model = ctx.model;
   if (typeof model.makeCache !== "function" || typeof model.forward !== "function")
     throw new Error("model implementation must supply its serving binding");
-  const glm = model instanceof Glm52Model;
+  const graph = declaredGraph(model);
+  const gateway = bindMlxGateway(model, ctx.draft ?? undefined);
+  const capabilities = gateway.capabilities;
   const embedding = isEmbeddingModel(model);
   return {
     stateCompatibility: `mlx-${MLX_VERSION}-${deviceArchitecture()}`,
-    gateway: bindMlxGateway(model, ctx.draft ?? undefined),
+    gateway,
     restore: (store, entry) => store.restore(entry, model),
     restoreAsync: (store, entry) => store.restoreAsync(entry, model),
     async signal(ids, count, minimum) {
@@ -45,24 +47,21 @@ export async function modelServingBinding(context: LoadedModelContext, supplied?
         return { bins, vocab };
       } finally { for (const cache of caches) cache.dispose(); }
     },
-    discovery: { adapters: !glm, training: !glm, dsa: glm && model.capabilities.dsa, embeddings: embedding },
+    discovery: { adapters: capabilities.adapters.mountable, training: capabilities.adapters.mountable,
+      dsa: capabilities.sparseAttention, embeddings: embedding },
     ...(embedding ? { embed: (inputs: string[], instruction?: string) => embedMany(model, ctx.tokenizer, inputs, instruction) } : {}),
     diagnostics() {
       const plan = ctx.glmMemoryPlan;
       if (!plan) return {};
-      const runtime = glm ? model.expertRuntime : undefined;
       return { glm52: {
         preset: plan.preset, planned_process_bytes: plan.plannedProcessBytes,
         process_limit_bytes: plan.processLimitBytes, context_tokens: plan.contextTokens,
         max_generation_tokens: plan.maxGenerationTokens, batch_size: plan.batchSize,
-        dsa: glm && model.capabilities.dsa, mtp: ctx.draft?.provider.id === "glm52-native-mtp",
+        dsa: capabilities.sparseAttention, mtp: ctx.draft?.provider.id === "glm52-native-mtp",
         mtp_draft_tokens: plan.mtpDraftTokens, resident_weight_bytes: plan.lineItems.residentWeightsBytes,
         main_expert_slab_bytes: plan.lineItems.mainExpertSlabBytes,
         mtp_expert_slab_bytes: plan.lineItems.mtpExpertSlabBytes,
-        expert_runtime: runtime ? {
-          main_residency: runtime.manager.snapshot(), mtp_residency: runtime.mtp?.manager.snapshot() ?? null,
-          last_turn: runtime.lastTelemetry, last_repin: runtime.lastRepin,
-        } : null,
+        expert_runtime: graph.expertResidency?.() ?? null,
       } };
     },
   };

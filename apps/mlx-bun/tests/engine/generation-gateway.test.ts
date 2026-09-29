@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { GenerationGateway } from "../../src/engine/generation-gateway";
 import type { RequestShape, Vision } from "../../src/engine/completion";
+import { declareGraph } from "@mlx-bun/inference/models";
 import { UnsupportedExecutionError } from "../../src/engine/completion";
 import { runtimeConfig } from "@mlx-bun/inference/runtime/config";
 import type { MlxGatewayBinding, MlxBatchGroup, RowPromptCache } from "@mlx-bun/inference/execution";
@@ -21,7 +22,7 @@ function fake(options: { submit?: MlxBatchGroup["submit"]; plan?: MlxGatewayBind
     kvBudgetBytes: undefined, kick() {}, async close() { closed = true; },
     submit: options.submit ?? (async request => { await request.onToken(7); return result; }),
   };
-  const binding = { config: { modelType: "replacement", eosTokenIds: [2] } as MlxGatewayBinding["config"], runtime: runtimeConfig(),
+  const binding = { config: { modelType: "replacement", eosTokenIds: [2] } as MlxGatewayBinding["config"], runtime: runtimeConfig(), capabilities: declareGraph(),
     plan: options.plan ?? (() => execution), cachesBatchable: () => true, kvBatchable: () => true,
     continuationRequest(_execution, _options, _prompt, onToken) {
       if (options.failSetup) throw new Error("sampling setup failed");
@@ -129,7 +130,7 @@ test("unsupported methods report typed exclusion reasons without unrelated compi
   try { gateway.place(shape()); } catch (error) { failure = error; }
   expect(failure).toBeInstanceOf(UnsupportedExecutionError);
   expect(failure).toMatchObject({ modelType: "replacement", method: "denoising", reasons: ["method-batch-unsupported"],
-    message: "model replacement method denoising does not support shared execution: method-batch-unsupported" });
+    message: "method denoising does not support shared execution: method-batch-unsupported" });
   expect(f.created).toBe(0);
 });
 

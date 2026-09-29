@@ -17,6 +17,9 @@ import { argmaxLastPosition } from "../../kernels/logits";
 import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { declareGraph } from "../capabilities";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
@@ -147,15 +150,16 @@ export class Qwen3Layer {
   }
 }
 
-export class Qwen3Model {
+export class Qwen3Model implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
-  /** Every attention layer reads encoded (affine) KV views. */
-  readonly encodedKvAttention = true;
+  /** Attends the storage its caches hold: delayed affine rows convert per layer
+   * and serve ordinary decoding only. Exposes the pooled embedding path. */
+  get graphCapabilities(): GraphCapabilities { return declareGraph({ embeddings: true, kv: { delayedAffine: "ordinary" } }); }
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3Layer[];
   readonly finalNorm: RMSNorm;
