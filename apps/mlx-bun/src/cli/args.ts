@@ -94,6 +94,7 @@ const commands = {
     "ssd-demote-idle": { type: "string", description: "Idle seconds before SSD demotion; 0 disables [default: 300]" },
     "generation-checkpoint": { type: "string", description: "Checkpoint every N generated tokens into the saved state" },
     "memory-budget": { type: "string", description: "Admission-control memory budget, decimal GB; requests that cannot fit are rejected instead of crashing the GPU" },
+    "model-budget": { type: "string", description: "What all resident models may use together, decimal GB: a model that fits loads beside the others, otherwise the least recently used one is drained, its saved state flushed, and released first [default: 70% of the GPU's recommended working set]" },
     "context-length": { type: "string", description: "Context tokens a memory-planning runtime reserves [default: its preset]; models without a plan ignore it" },
     "force-wire": { type: "boolean", description: "Wire weights into memory at load" },
     "expert-offload": { type: "boolean", description: "MoE only: serve experts from a page-aligned file mmap built on first use" },

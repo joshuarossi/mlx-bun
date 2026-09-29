@@ -237,11 +237,13 @@ installs one; a native app installs what it wants. Each host has one composition
 file, `src/modules.ts`, the only file that names module packages, plus the
 implementations of the core services. The ones hosts share are the host library
 `@mlx-bun/app-services`: the Whisper model host over a catalog (lazy load, idle
-unload, pinning, the host's execution lock around decoding; no memory budget
-yet, that is residency by memory fit), the registry-backed catalog, storage
+unload, pinning, the host's execution lock around decoding, and a hook that
+lets a host that also generates make room first), the registry-backed catalog, storage
 entries under `MLX_BUN_HOME`, verb parsing and help from manifests, route
 mounting, module activation and verb running. A host adds only its own execution
-lock and serving. A module's manifest is also importable alone
+lock and serving; `apps/mlx-bun` also owns the generation side of `modelHost`
+(`src/engine/model-residency.ts`: residency by memory fit over serving units, with
+`src/server/model-routes.ts` routing requests by model id). A module's manifest is also importable alone
 (`@mlx-bun/module-<id>/manifest`, data only), so a host lists commands and
 `--help` and the documentation generators read verbs and routes without loading
 the module. A host refuses a module that declares sockets, and one that declares

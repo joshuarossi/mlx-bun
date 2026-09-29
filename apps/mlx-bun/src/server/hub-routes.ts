@@ -7,8 +7,16 @@ import { errorResponse } from "./http";
 import { DuplicateDownloadError, type DownloadOwner } from "../hub/downloads";
 import { openRegistry } from "../storage/paths";
 
+/** A serve request the host refused: `status` is the HTTP answer. */
+export class ServeRefused extends Error {
+  constructor(readonly status: number, message: string) { super(message); this.name = "ServeRefused"; }
+}
+
 export interface HubRouteOptions {
   hubDirectory?: string;
+  /** Makes the model the one the app serves now (loading it beside the others or in place of one). Without it, or when it resolves to
+   * nothing (no host attached, or a host that serves one model), the route answers that a restart is needed. Rejects with `ServeRefused`. */
+  serve?: (model: string, signal: AbortSignal) => Promise<{ model: string } | undefined>;
   /** Without an owner the download route is unmounted and answers 404. */
   downloads?: Pick<DownloadOwner, "start">;
   /** The handler owns and closes each registry returned by this factory. */
@@ -34,7 +42,7 @@ async function localRow(model: ModelRecord) {
 
 /** Web hub policy over public registry/fit APIs. Search belongs to the current
  * request; downloads are admitted to the composition's owner and outlive the
- * request; this handler never replaces the loaded model. */
+ * request; switching the served model is the attached host's (`serve`). */
 export function createHubRoutes(options: HubRouteOptions = {}) {
   const jsonError = (error: string, status = 400) => Response.json({ ok: false, error }, { status });
   return { async handle(request: Request): Promise<Response | null> {
@@ -76,6 +84,13 @@ export function createHubRoutes(options: HubRouteOptions = {}) {
         const body: unknown = await request.json().catch(() => undefined);
         const model = body && typeof body === "object" && !Array.isArray(body) && "model" in body ? body.model : undefined;
         if (typeof model !== "string" || !model.trim()) return jsonError('missing "model"');
+        try {
+          const served = await options.serve?.(model.trim(), request.signal);
+          if (served) return Response.json({ ok: true, model: served.model });
+        } catch (error) {
+          if (error instanceof ServeRefused) return jsonError(error.message, error.status);
+          throw error;
+        }
         return Response.json({ ok: false, restart_required: true, command: `mlx-bun serve ${model.trim()}` });
       }
       const query = url.searchParams.get("q")?.trim();

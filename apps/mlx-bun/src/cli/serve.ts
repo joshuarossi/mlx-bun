@@ -130,6 +130,8 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
   if (blockSize !== undefined && !pagedKv) throw new Error("--paged-kv-block-size requires --paged-kv");
   if (pagedKv) request.pagedKv = blockSize !== undefined ? { blockSize } : {};
   const memoryBudget = number("memory-budget");
+  const modelBudget = number("model-budget");
+  if (modelBudget !== undefined && modelBudget <= 0) throw new Error("--model-budget expects a number of GB above 0");
   const contextTokens = number("context-length", 1, Number.MAX_SAFE_INTEGER, true);
   const host = value("host") ?? "127.0.0.1";
   if (!host.trim()) throw new Error("--host expects an address");
@@ -149,6 +151,7 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     defaultGeneratedTokens: maxTokens === undefined ? undefined : Math.floor(maxTokens),
     ...(kvBudget ? { kvBudgetBytes: kvBudget * 1e9 } : {}),
     ...(memoryBudget ? { memoryBudgetBytes: memoryBudget * 1e9 } : {}),
+    ...(modelBudget ? { modelBudgetBytes: modelBudget * 1e9 } : {}),
     ...(contextTokens !== undefined ? { contextTokens } : {}),
     forceWire: args.values["force-wire"] === true, expertOffload: args.values["expert-offload"] === true,
     allowPrivateMedia: args.values["allow-private-media"] === true,

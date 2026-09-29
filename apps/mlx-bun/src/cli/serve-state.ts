@@ -61,6 +61,8 @@ export interface ModelHostLink extends ServedHostLink {
   acquireExecutionLease(signal: AbortSignal): Promise<DisposableResource>;
   /** A finished download or job changes the model library the host lists. */
   invalidateLibrary(): void;
+  /** Make the named local model the one served (`POST /api/hub/serve`): loaded beside the others when it fits, else in place of the least recently used one. Absent on a host that serves one model. */
+  serve?(model: string, signal: AbortSignal): Promise<{ model: string }>;
 }
 
 export interface RouteGroup { handle(request: Request): Promise<Response | null> }
@@ -154,7 +156,7 @@ export async function createAppState(options: AppStateOptions, storagePaths: App
     throw new Error("memory synthesis has no task model in this composition");
   } });
   const routes: AppState["routes"] = {
-    hub: createHubRoutes({ downloads }),
+    hub: createHubRoutes({ downloads, serve: async (model, signal) => host?.serve ? await host.serve(model, signal) : undefined }),
     sessions: createSessionRoutes(sessionDir),
     memory: createMemoryRoutes({ root: () => memoryPaths.vault, synthesize: synthesis.run }),
     jobs: createJobRoutes(jobs),

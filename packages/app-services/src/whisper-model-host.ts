@@ -2,13 +2,16 @@
 // first lease and is released right after the last one by default
 // (`idleUnloadSec` > 0 keeps it for that long; a pinned model stays). Weights
 // are mmap'd safetensors, so a reload after unload reads from the OS page
-// cache; the GPU memory is what an idle host gives back. There is no memory
-// budget here: only Whisper loads through this host, and residency by memory
-// fit arrives with the general model host.
+// cache; the GPU memory is what an idle host gives back. The memory budget is
+// the app's generation host's (apps/mlx-bun `engine/model-residency.ts`): this
+// host reports its bytes as resident and, given `admit`, asks that host to make
+// room (draining a chat model) before a checkpoint loads.
 //
 // Every decode call (a one-shot transcription, or each feed and finish of a
 // streaming run) goes through the host's `exclusive` wrapper, so a host that
 // also generates keeps decoding from overlapping it on the GPU.
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type {
   AcquireOptions, CatalogEntry, EventBus, ModelUnloadReason, ModelCatalog, ModelHost, ModelId, ModelLease, ModelOperation, ModelStats,
   ResidencyPlan, ResidencyPolicy, ResidentModel, TranscribeOptions, TranscriptionOperation,
@@ -16,6 +19,15 @@ import type {
 import type { WhisperTranscribeOptions } from "@mlx-bun/inference/transcription";
 import { ModelHostFailure } from "./failure";
 import { nativeWhisperBackend, type LoadedWhisper, type WhisperBackend } from "./whisper-backend";
+
+/** Bytes of the files in a checkpoint directory (symlinks followed), for a checkpoint the catalog did not size. */
+function directoryBytes(directory: string): number {
+  try {
+    return readdirSync(directory).reduce((sum, name) => {
+      try { const stat = statSync(join(directory, name)); return sum + (stat.isFile() ? stat.size : 0); } catch { return sum; }
+    }, 0);
+  } catch { return 0; }
+}
 
 export type Exclusive = <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 
@@ -30,6 +42,8 @@ export interface WhisperModelHostOptions {
   resident?: boolean;
   /** Wraps every decode call (the full server passes the generation gateway's exclusive lock). */
   exclusive?: Exclusive;
+  /** Called with the bytes a checkpoint needs before it loads, so a host that also generates can make room (drain a model) first. */
+  admit?: (bytes: number) => Promise<void>;
   /** Real weights by default. */
   backend?: WhisperBackend;
   log?: (line: string) => void;
@@ -147,7 +161,7 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
     const existing = slots.get(id);
     if (existing) return existing;
     const entry = options.configured?.id === id
-      ? { id, directory: options.configured.directory, bytes: 0, operations: ["transcribe"] as readonly ModelOperation[] }
+      ? { id, directory: options.configured.directory, bytes: directoryBytes(options.configured.directory), operations: ["transcribe"] as readonly ModelOperation[] }
       : listed.get(id) ?? await catalog.find(id);
     for (const operation of ["transcribe" as const, ...need])
       if (!entry.operations.includes(operation)) throw new ModelHostFailure("does-not-fit", `${entry.id} does not declare the ${operation} operation`);
@@ -170,7 +184,8 @@ export function createWhisperModelHost(options: WhisperModelHostOptions): Whispe
         const t0 = now();
         let loaded: LoadedWhisper;
         publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "started" });
-        try { loaded = await backend.load(slot.directory); }
+        // A host that also generates makes room first: it may drain a chat model to fit this checkpoint.
+        try { if (slot.bytes > 0) await options.admit?.(slot.bytes); loaded = await backend.load(slot.directory); }
         catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           publish({ type: "model.load", at: Date.now(), model: slot.id, phase: "failed", error: message });

@@ -587,7 +587,7 @@ describe("adapter routing table: renderAdaptersBodyHtml", () => {
 /* ────────────────────────────────────────────────────────────────────
    Model picker: fit-verdict thresholds and esc()
    discipline on repo ids (HF strings, user/model-controlled) interpolated
-   into the popover body and the copy-able restart command.
+   into the popover body and the Serve button.
    ──────────────────────────────────────────────────────────────────── */
 describe("model picker: fitVerdict", () => {
   it("is null with no assessment, red when it doesn't fit", () => {
@@ -612,25 +612,32 @@ describe("model picker: renderModelPopBodyHtml", () => {
     expect(renderModelPopBodyHtml([])).toContain("mlx-bun get");
   });
 
-  it("escapes a malicious repo id everywhere it's interpolated, including the copy command", () => {
+  it("escapes a malicious repo id everywhere it's interpolated, including the Serve button's data attribute", () => {
     const html = renderModelPopBodyHtml([row({ repo_id: '"><script>alert(1)</script>/model' })]);
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain('class="mp-serve" data-repo="&quot;&gt;&lt;script&gt;');
   });
 
-  it("puts the currently-serving model first and omits its restart command", () => {
+  it("puts the currently-serving model first, marks loaded ones, and offers Serve only for the others", () => {
     const html = renderModelPopBodyHtml([
       row({ repo_id: "org/a", serving: false }),
-      row({ repo_id: "org/b", serving: true }),
+      row({ repo_id: "org/b", serving: true, resident: true }),
+      row({ repo_id: "org/c", serving: false, resident: true }),
     ]);
     expect(html.indexOf("org/b")).toBeLessThan(html.indexOf("org/a"));
     const servingRowEnd = html.indexOf("org/a"); // everything before the second row is the serving row
-    expect(html.slice(0, servingRowEnd)).not.toContain("mp-cmd");
+    expect(html.slice(0, servingRowEnd)).not.toContain("mp-serve");
+    expect(html.slice(0, servingRowEnd)).toContain("currently serving");
+    expect(html.match(/class="mp-serve"/g)).toHaveLength(2);
+    // Only a model that is loaded but not served carries the loaded tag.
+    expect(html.match(/○ loaded/g)).toHaveLength(1);
+    expect(html.slice(html.indexOf("org/c"))).toContain("○ loaded");
   });
 
-  it("never offers a restart command for an unsupported model family", () => {
+  it("never offers Serve for an unsupported model family", () => {
     const html = renderModelPopBodyHtml([row({ supported: false, assessment: null })]);
-    expect(html).not.toContain("mp-cmd");
+    expect(html).not.toContain("mp-serve");
     expect(html).toContain("unsupported model family");
   });
 });

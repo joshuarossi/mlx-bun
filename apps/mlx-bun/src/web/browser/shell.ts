@@ -764,8 +764,15 @@ export async function pollIdentity(): Promise<void> {
       fetch("/v1/models").then((r) => r.json()),
       fetch("/downloads").then((r) => r.json()).catch(() => ({ downloads: [] })),
     ]);
-    activeModelId = models.data && models.data[0] ? models.data[0].id : null;
+    // The server marks the current model; a server that predates residency lists the served one first.
+    const listed: { id: string; current?: boolean }[] = models.data || [];
+    const served = listed.find((m) => m.current) || listed[0];
+    const next = served ? served.id : null;
+    const switched = activeModelId !== null && next !== null && next !== activeModelId;
+    activeModelId = next;
     $("nav-model").textContent = activeModelId || "no model";
+    // Chat reads the model's capabilities when it connects: an idle chat reconnects to pick them up.
+    if (switched) window.dispatchEvent(new CustomEvent("mlx-model-changed", { detail: next }));
     setConn("ok", "live · localhost");
     updateDownloadIndicator((dl && dl.downloads) || []);
   } catch {

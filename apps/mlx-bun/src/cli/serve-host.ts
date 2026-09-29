@@ -1,20 +1,28 @@
 // The model-scoped half of the serve composition. startModelHost is the CLI's
 // loader: runtime switches, expert offload, the model context and its startup
-// adapter. startContextHost serves one loaded context: the binding, caches,
-// engine, Whisper companion, model routes, chat backend, and the listener that
+// adapter. startContextHost serves one or more models from the model host
+// (engine/model-residency.ts): each loaded model is a serving unit (binding,
+// caches, engine, routes: serving-unit.ts), the Whisper companion, the model
+// router (server/model-routes.ts), the chat backend, and the listener that
 // serves them. Both borrow persistent services from the AppState they are
 // given, and one close releases everything they created in the app's order.
-import { releaseContext, requireChatTemplate, type ContextOwnership, type LoadedModelContext } from "../engine/model-host";
-import { createEngineTelemetry } from "../engine/telemetry";
-import type { ModelBinding } from "../engine/model-binding";
-import { fit } from "@mlx-bun/inference/execution/fit";
+import { totalmem } from "node:os";
+import { requireChatTemplate, releaseContext, type LoadedModelContext } from "../engine/model-host";
+import { createKvBudget, type KvBudget } from "../engine/kv-budget";
+import { createResidencyHost, type ResidencyEntry, type ResidencyHost, type ResidencySource } from "../engine/model-residency";
+import { servingReserveBytes } from "../engine/resident-estimate";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
-import type { ModelPromptBuilder } from "../server/prompt-contracts";
 import pkgJson from "../../package.json" with { type: "json" };
 import { loadInstalledModules } from "./module-host";
-import { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions } from "./serve-options";
+import { type RunningApp, type ServeOptions } from "./serve-options";
 import type { AppState, RouteGroup } from "./serve-state";
+import { createServingUnit, type ContextHost, type ContextHostOptions, type ServedModelFacts, type ServingUnit, type UnitShared } from "./serving-unit";
+import { ServeRefused } from "../server/hub-routes";
+import { openRegistry } from "../storage/paths";
+
+export type { ContextHost, ContextHostOptions } from "./serving-unit";
+export { resolveServingLimits, validatePagedServingOptions } from "./serve-options";
 
 export interface ModelHostHooks {
   /** Runs inside the listener's drain step, after cache demotion stops and
@@ -32,49 +40,45 @@ export interface ModelHostHooks {
 
 /** Worker mode: the listener is a Unix socket, so there is no port to report. */
 export interface RunningWorkerHost {
-  /** Drains the listener, releases the Whisper companion, engine, caches, and
-   * an owned model, then restores process-wide settings. One drain however
-   * often it is called; it resolves with the cache persistence result. */
+  /** Drains the listener, releases the Whisper companion and every resident
+   * model (draining, flushing its saved state, releasing it), and restores
+   * process-wide settings. One drain however often it is called; it resolves
+   * with the cache persistence result of the models resident at close. */
   close(): Promise<DurabilityFlushResult>;
-  /** Flush cache persistence while serving (`POST /admin/cache/flush`'s result). */
+  /** Flush cache persistence of every resident model while serving (`POST /admin/cache/flush`'s result). */
   flush(): Promise<DurabilityFlushResult>;
   /** Pending cache persistence counters, readable at any time. */
   stats(): DurabilitySnapshotStats;
 }
 export interface RunningModelHost extends RunningWorkerHost { port: number }
 
-/** The serving policy one context host applies: serve's options minus the
- * loader's and the CLI process's own. */
-export type ContextHostOptions = Pick<ServeOptions, "port" | "capacity" | "contextLimit" | "defaultGeneratedTokens" |
-  "kvBudgetBytes" | "memoryBudgetBytes" | "whisper" | "readOnly" | "cache" | "request"> & {
-  /** The interface to bind; null binds Bun's default, every interface. */
-  hostname: string | null;
-};
-
-/** What the host serves besides the context. Nothing here is loaded or looked up. */
-export interface ContextHost {
-  /** Who releases the context; see ContextOwnership. */
-  ownership: ContextOwnership;
-  /** Replacement numerics for the context; default binds the built-in model classes. */
-  binding?: ModelBinding;
-  /** Replacement chat prompt construction; default renders the context's
-   * template. With one, a context without a template serves; the builder then
-   * returns `probeStableLen: false`. */
-  buildPrompt?: ModelPromptBuilder;
-  /** Descriptive artifact metadata for `/fit`, `/stats`, and hub GC protection;
-   * each field defaults to main's unknown value (path: the config's model directory). */
-  artifact?: { path?: string; sizeBytes?: number; expertsBytes?: number };
-  /** An adapter id already mounted on the context, used when a request names none. */
-  defaultAdapter?: string;
-  /** `/stats`' `server.owner`; default "embedded". */
-  owner?: string;
-  /** Milliseconds the loader took to load the model, published with its `model.load` event; absent for a context this host did not load. */
-  loadMs?: number;
+/** The other local models a host may load beside (or instead of) its first, by exact id. */
+export interface ModelSource {
+  /** The local models this host can serve, as the registry knows them; never scans or downloads. */
+  records(): readonly ModelRecord[] | Promise<readonly ModelRecord[]>;
+  /** Load one model for serving; the host takes ownership of the context. */
+  load(record: ModelRecord): Promise<{ context: LoadedModelContext; defaultAdapter?: string; loadMs: number }>;
+  /** The model the host starts with, when it is not one `records` lists (a path given to `--model`). */
+  startup?: ModelRecord;
 }
+
+/** Fraction of the GPU's recommended working set all resident models may use together by default. */
+const DEFAULT_BUDGET_FRACTION = 0.7;
 
 /** Internal: process-wide settings the loader applied, restored once with the
  * host's own after the model is released, on close and on startup failure. */
 interface ContextHostHooks extends ModelHostHooks { restoreLoader?(): void }
+
+const idle = (): DurabilitySnapshotStats => ({ pendingSnapshots: 0, pendingSpills: 0, pendingSpillBytes: 0, droppedSpills: 0, failedSpills: 0 });
+function mergeStats(all: readonly DurabilitySnapshotStats[]): DurabilitySnapshotStats {
+  return all.reduce((sum, item) => ({ pendingSnapshots: sum.pendingSnapshots + item.pendingSnapshots, pendingSpills: sum.pendingSpills + item.pendingSpills,
+    pendingSpillBytes: sum.pendingSpillBytes + item.pendingSpillBytes, droppedSpills: sum.droppedSpills + item.droppedSpills,
+    failedSpills: sum.failedSpills + item.failedSpills }), idle());
+}
+function mergeDurability(all: readonly DurabilityFlushResult[]): DurabilityFlushResult {
+  return { ...mergeStats(all), durable: all.every(item => item.durable), flushedSnapshots: all.reduce((n, item) => n + item.flushedSnapshots, 0),
+    missingSnapshots: all.reduce((n, item) => n + item.missingSnapshots, 0), elapsedMs: all.reduce((n, item) => Math.max(n, item.elapsedMs), 0) };
+}
 
 /** Model composition owns resources until each explicit ownership transfer. */
 export function startModelHost(state: AppState, model: ModelRecord, options: ServeOptions, hooks?: ModelHostHooks & { unix?: undefined }): Promise<RunningModelHost>;
@@ -101,48 +105,60 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
         restoreOffload = activateExpertOffload(await ensureOffloadFile(model.path, message => console.log(`[serve] expert offload: ${message}`)));
       }
     }
-    const draft = options.draft ?? {};
-    const loadStarted = performance.now();
-    const context = await loadContext(model.path, model.repoId, {
-      ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
-      // Resource plan inputs for runtimes that plan memory up front; other models ignore this block.
-      runtime: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
+    /** One model, loaded for serving. `--draft-*` and `--adapter` belong to the model named at startup; the others load plain. */
+    const loadServed = async (record: ModelRecord): Promise<{ context: LoadedModelContext; defaultAdapter?: string; loadMs: number }> => {
+      const startup = record.repoId === model.repoId;
+      const draft = startup ? options.draft ?? {} : {};
+      const loadStarted = performance.now();
+      const context = await loadContext(record.path, record.repoId, {
         ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
-        ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
-        ...(options.mtp !== undefined ? { nativeDraft: options.mtp } : {}) },
-      // Main's gate: a draft model, or the model-free ngram kind, or mtp alone
-      // (the host resolves the bundled <model>/mtp/ companion).
-      ...(draft.modelDir || draft.kind === "ngram" || draft.kind === "mtp" ? {
-        ...(draft.modelDir ? { draftModelDir: draft.modelDir } : {}),
-        ...(draft.numTokens !== undefined ? { numDraftTokens: draft.numTokens } : {}),
-        ...(draft.kind ? { draftKind: draft.kind } : {}),
-        ...(draft.ngramMax !== undefined ? { ngramMax: draft.ngramMax } : {}),
-        ...(draft.ngramMin !== undefined ? { ngramMin: draft.ngramMin } : {}) } : {}),
-    });
-    const loadMs = performance.now() - loadStarted;
-    if (draft.modelDir) console.log(`[serve] draft: ${draft.modelDir.split("/").filter(Boolean).at(-1)}`);
-    else if (draft.kind === "ngram") console.log("[serve] draft: ngram (prompt lookup)");
-    cleanup = () => context.dispose();
-    requireChatTemplate(context);
-    // Main: a startup adapter mounts before any request and becomes the default
-    // for requests without an adapter field (an explicit adapter, including
-    // "none", still wins); a bad adapter fails startup and releases the model.
-    let defaultAdapter: string | undefined;
-    if (options.adapterDir) {
-      const directory = options.adapterDir.replace(/\/+$/, "");
+        // Resource plan inputs for runtimes that plan memory up front; other models ignore this block.
+        runtime: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
+          ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
+          ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
+          ...(options.mtp !== undefined ? { nativeDraft: options.mtp } : {}) },
+        // Main's gate: a draft model, or the model-free ngram kind, or mtp alone
+        // (the host resolves the bundled <model>/mtp/ companion).
+        ...(draft.modelDir || draft.kind === "ngram" || draft.kind === "mtp" ? {
+          ...(draft.modelDir ? { draftModelDir: draft.modelDir } : {}),
+          ...(draft.numTokens !== undefined ? { numDraftTokens: draft.numTokens } : {}),
+          ...(draft.kind ? { draftKind: draft.kind } : {}),
+          ...(draft.ngramMax !== undefined ? { ngramMax: draft.ngramMax } : {}),
+          ...(draft.ngramMin !== undefined ? { ngramMin: draft.ngramMin } : {}) } : {}),
+      });
       try {
-        const info = await context.adapters.mount(directory.split("/").pop()!, directory);
-        defaultAdapter = info.id;
-        console.log(`[serve] adapter ${info.id} mounted (${info.mountedLayers} layers) · default for requests (select others via \`adapter\`)`);
+        if (draft.modelDir) console.log(`[serve] draft: ${draft.modelDir.split("/").filter(Boolean).at(-1)}`);
+        else if (draft.kind === "ngram") console.log("[serve] draft: ngram (prompt lookup)");
+        requireChatTemplate(context);
+        // Main: a startup adapter mounts before any request and becomes the default
+        // for requests without an adapter field (an explicit adapter, including
+        // "none", still wins); a bad adapter fails startup and releases the model.
+        if (startup && options.adapterDir) {
+          const directory = options.adapterDir.replace(/\/+$/, "");
+          try {
+            const info = await context.adapters.mount(directory.split("/").pop()!, directory);
+            console.log(`[serve] adapter ${info.id} mounted (${info.mountedLayers} layers) · default for requests (select others via \`adapter\`)`);
+            return { context, defaultAdapter: info.id, loadMs: performance.now() - loadStarted };
+          } catch (error) {
+            throw new Error(`adapter mount failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        return { context, loadMs: performance.now() - loadStarted };
       } catch (error) {
-        throw new Error(`adapter mount failed: ${error instanceof Error ? error.message : String(error)}`);
+        try { context.dispose(); } catch (failure) { throw new AggregateError([error, failure], "startup and cleanup failed"); }
+        throw error;
       }
-    }
+    };
+    const first = await loadServed(model);
+    cleanup = () => first.context.dispose();
     // The context host takes the model and the loader's process settings on entry, including a failed start.
     const restore = restoreLoader;
     cleanup = undefined; restoreLoader = undefined;
-    return await startContextHost(state, context, options,
-      { ownership: "owned", artifact: model, owner: "serve", loadMs, ...(defaultAdapter ? { defaultAdapter } : {}) },
+    // Expert offload routes the process's loads through one file: that model is all this process serves.
+    const models: ModelSource | undefined = options.expertOffload ? undefined : { startup: model, load: loadServed, records: localRecords };
+    return await startContextHost(state, first.context, options,
+      { ownership: "owned", artifact: model, owner: "serve", loadMs: first.loadMs, ...(first.defaultAdapter ? { defaultAdapter: first.defaultAdapter } : {}),
+        ...(models ? { models } : {}) },
       { ...hooks, restoreLoader: restore });
   } catch (error) {
     try { cleanup?.(); }
@@ -152,17 +168,33 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
   }
 }
 
-/** Serve one loaded context with the app's routes, chat, and listener. The
- * context is released by `input.ownership` (createAppEngine's rule), on close
- * and on a failed start alike; everything else the host created is released
- * either way. It applies no runtime switches and activates no expert offload:
- * those belong to whoever loaded the context. A context without a chat
- * template is refused unless `input.buildPrompt` builds its prompts. */
-export function startContextHost(state: AppState, context: LoadedModelContext, options: ContextHostOptions, input: ContextHost,
+/** The models `/v1/models` may list and the host may load: supported generation checkpoints the registry knows. */
+async function localRecords(): Promise<readonly ModelRecord[]> {
+  const { declaredOperations } = await import("@mlx-bun/app-services");
+  const registry = openRegistry();
+  try {
+    // A fresh machine's index is empty until its first scan.
+    if (registry.list().length === 0) await registry.scan();
+    return registry.listCanonical().filter(record => declaredOperations(record.modelType, record.repoId).includes("generate"));
+  } finally { registry.close(); }
+}
+
+/** Serve one or more models with the app's routes, chat, and listener. The
+ * first context is resident from the start; it is released by
+ * `input.ownership`, on close and on a failed start alike. Without
+ * `input.models` it is the only model and is never evicted; with it, any other
+ * local model loads when a request names it and fits the memory budget (the
+ * least recently used unpinned, unleased model is drained, its saved state
+ * flushed, and released first), and the first can be evicted and reloaded like
+ * the rest. Everything else the host created is released either way. It
+ * applies no runtime switches and activates no expert offload: those belong to
+ * whoever loaded the context. A context without a chat template is refused
+ * unless `input.buildPrompt` builds its prompts. */
+export function startContextHost(state: AppState, context: LoadedModelContext, options: ContextHostOptions, input: ContextHost & { models?: ModelSource },
   hooks?: ContextHostHooks & { unix?: undefined }): Promise<RunningModelHost>;
-export function startContextHost(state: AppState, context: LoadedModelContext, options: ContextHostOptions, input: ContextHost,
+export function startContextHost(state: AppState, context: LoadedModelContext, options: ContextHostOptions, input: ContextHost & { models?: ModelSource },
   hooks: ContextHostHooks): Promise<RunningModelHost | RunningWorkerHost>;
-export async function startContextHost(state: AppState, context: LoadedModelContext, options: ContextHostOptions, input: ContextHost,
+export async function startContextHost(state: AppState, context: LoadedModelContext, options: ContextHostOptions, input: ContextHost & { models?: ModelSource },
   hooks: ContextHostHooks = {}): Promise<RunningModelHost | RunningWorkerHost> {
   // Process-wide settings (the loader's, then this host's allocator limit) are
   // restored only after the engine has released the model, on close and on
@@ -180,18 +212,11 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
   let detachLink = () => {};
   const detach = () => { const release = detachLink; detachLink = () => {}; release(); };
   try {
-    const [{ modelServingBinding, createCacheServices, createAppEngine },
-      { createCompletionRoutes }, { startServer }, { createPiBackend },
-      { GeneratedTokenHistory }, { createStatusRoutes }, { createManagementRoutes }, { createAdapterRoutes }, { createCacheRoutes },
-      { createHostServices, createModuleRoutes }, { createAdapterArtifactRoutes }] = await Promise.all([
-      import("../engine"), import("../server/routes"), import("../server/start"), import("../chat/pi-backend"),
-      import("../server/generated-token-history"), import("../server/status-routes"),
-      import("../server/management-routes"), import("../server/adapter-routes"), import("../server/cache-routes"),
-      import("@mlx-bun/app-services"), import("../server/adapter-artifact-routes"),
+    const [{ startServer }, { createPiBackend }, { createManagementRoutes }, { createModelRoutes },
+      { createHostServices, createModuleRoutes, declaredOperations }] = await Promise.all([
+      import("../server/start"), import("../chat/pi-backend"), import("../server/management-routes"), import("../server/model-routes"),
+      import("@mlx-bun/app-services"),
     ]);
-    // The default prompt path renders the context's template; a supplied builder replaces it.
-    if (!input.buildPrompt) requireChatTemplate(context);
-    const binding = await modelServingBinding(context, input.binding);
     // Main: the plan's allocator limit, else the explicit budget, caps the
     // allocator for the whole process and bounds optional cache residency.
     const allocatorLimitBytes = context.memoryPlan?.allocatorLimitBytes ?? options.memoryBudgetBytes;
@@ -200,49 +225,101 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       const previous = setMemoryLimit(allocatorLimitBytes);
       restoreAllocator = () => { setMemoryLimit(previous); };
     }
-    const caches = await createCacheServices(context, binding, { ...options.cache,
-      ...(allocatorLimitBytes ? { allocatorLimitBytes } : {}) });
-    // The persistence result of the final flush is the close's evidence.
-    let durability: DurabilityFlushResult | undefined;
-    const closeCaches = async () => {
-      const result = durability = await caches.close();
-      if (!result.durable) console.warn(`[server] cache flush incomplete: ${result.pendingSnapshots} snapshots, ${result.pendingSpills} spills, ${result.failedSpills} failed`);
-    };
-    cleanup = async () => { try { await closeCaches(); } finally { releaseContext(context, input.ownership); } };
-    validatePagedServingOptions(options.request.pagedKv, caches.kvScheme, !!context.draft);
-    binding.gateway.configureContinuation?.(caches.continuationServices);
-    // createAppEngine takes ownership even when its constructor rejects.
-    cleanup = undefined;
-    const engine = await createAppEngine(context, { capacity: options.capacity, binding, ownership: input.ownership,
-      gateway: { kvBudgetBytes: options.kvBudgetBytes,
-        checkpoints: !!(options.cache.generationCheckpointTokens && caches.checkpoints),
-        stateCodecs: caches.stateCodecs, kvScheme: caches.resolvedKvScheme,
-        promptCache: caches.promptCache, adapterNamespace: caches.adapterNamespace },
-      beforeModelDispose: closeCaches,
-    });
-    cleanup = () => engine.close();
-    const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
-    if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
-    caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
-    const admission = context.memoryPlan ?? fit(context.model.config, context.model.weightsBytes, 1,
-      undefined, undefined, 0, options.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
-    const limits = resolveServingLimits(options, context.memoryPlan, admission);
+    // One saved-state budget over every model's store in this process.
+    const ssdBudget: KvBudget | undefined = options.cache.ssdCacheDir
+      ? createKvBudget(options.cache.ssdCacheDir, options.cache.ssdCacheMaxBytes ?? Infinity) : undefined;
+    let residency!: ResidencyHost<ServingUnit>;
+    // Each closing model's saved-state result; the ones at host close are the close's evidence.
+    const finalResults: DurabilityFlushResult[] = [];
+    let closingHost = false;
     // Main's speech-to-text companion, served by the transcription module: an
     // explicit --whisper-model, else the first downloaded Whisper checkpoint,
     // resolved once on the first audio request (a later download needs a
     // restart, as in main). The weights load per take and release per the
-    // --whisper-* policy; every decode runs under the gateway's exclusive lock
-    // so it never overlaps chat generation.
-    let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
-    // The engine's events (request timings, batch and cache samples) come from one adapter around the completion engine.
-    const telemetry = createEngineTelemetry({ events: state.events, model: context.modelId, capacity: options.capacity,
-      weightsBytes: context.model.weightsBytes, gateway: engine.gateway, promptCache: caches.promptCache });
+    // --whisper-* policy; every decode runs with every resident model paused so
+    // it never overlaps generation, and a load first makes room in the budget.
     const moduleHost = createHostServices({ whisper: options.whisper, events: state.events,
-      exclusive: (fn, signal) => engine.gateway.runExclusive(fn, undefined, signal) });
-    // The modules stop first (admission stops, takes in flight are joined), then the weights release.
+      exclusive: async (fn, signal) => { const pause = await residency.pauseAll(signal); try { return await fn(); } finally { pause.dispose(); } },
+      admit: bytes => residency.makeRoom(bytes) });
+    const whisperInfo = async () => {
+      const id = await moduleHost.whisper.defaultFor("transcribe");
+      return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
+    };
+    const shared: UnitShared = { responses: state.responses, events: state.events, downloads: state.downloads.snapshot, transcription: whisperInfo,
+      ...(state.storagePaths.artifactRoot ? { artifactRoot: state.storagePaths.artifactRoot } : {}),
+      ...(ssdBudget ? { ssdBudget } : {}), ...(allocatorLimitBytes ? { allocatorLimitBytes } : {}),
+      onClosed: result => { if (closingHost) finalResults.push(result); } };
+    // The unit takes the context and releases it (by ownership) on close and on its own failed start.
+    cleanup = undefined;
+    const first = await createServingUnit(context, options, input, shared);
+    cleanup = () => first.close({ flush: true });
+    const facts = new Map<string, ServedModelFacts>([[first.id, first.facts]]);
+    const rememberFacts = (unit: ServingUnit) => { facts.set(unit.id, unit.facts); return unit; };
+    // The other local models, as the registry knows them: refreshed after a download or job, and at most every few seconds on a miss.
+    let index: { at: number; byId: Map<string, ModelRecord> } | undefined;
+    const known = async (id: string): Promise<ModelRecord | undefined> => {
+      if (!input.models) return undefined;
+      if (id === first.id && input.models.startup) return input.models.startup;
+      for (const fresh of [false, true]) {
+        if (!index || fresh && Date.now() - index.at > 5_000) {
+          index = { at: Date.now(), byId: new Map((await input.models.records()).map(record => [record.repoId, record])) };
+        }
+        const record = index.byId.get(id);
+        if (record) return record;
+      }
+      return undefined;
+    };
+    const machine = input.models ? (await import("@mlx-bun/inference/execution/fit")).thisMachine() : undefined;
+    const memory = input.models ? await import("@mlx-bun/mlx/ffi") : undefined;
+    // Every resident model together may use this much: by default a share of what the GPU can wire.
+    const budgetBytes = !input.models ? Infinity
+      : options.modelBudgetBytes ?? Math.floor((memory!.maxRecommendedWorkingSetSize() || totalmem() * 0.75) * DEFAULT_BUDGET_FRACTION);
+    /** What loading `record` would take: its weights and a typical context's KV and working set; a runtime that plans its own memory is served alone. */
+    const estimate = async (record: ModelRecord): Promise<number> => {
+      const [{ loadModelConfig }, { resolveModelProfile }, { plansMemory }, { resolveKvScheme }] = await Promise.all([
+        import("@mlx-bun/inference/artifacts/config"), import("@mlx-bun/inference/models/profile"), import("@mlx-bun/inference/models"),
+        import("@mlx-bun/inference/state/kv-scheme")]);
+      const config = await loadModelConfig(record.path);
+      if (plansMemory(resolveModelProfile(config))) return budgetBytes;
+      const kvScheme = resolveKvScheme({ override: options.cache.kvQuant, turboQuant: options.cache.turboQuant,
+        quantizedKvStart: options.cache.quantizedKvStart, config: config.kvQuant }).fitOptions;
+      return record.sizeBytes + servingReserveBytes(config, record.sizeBytes, { expertsBytes: record.expertsBytes, kvScheme, ...(machine ? { machine } : {}) });
+    };
+    const entryOf = (unit: ServingUnit): ResidencyEntry => ({ id: unit.id, bytes: unit.bytes(), operations: unit.operations });
+    const source: ResidencySource<ServingUnit> = {
+      async resolve(id) {
+        const record = await known(id);
+        if (!record) return undefined;
+        return { id: record.repoId, bytes: await estimate(record), operations: declaredOperations(record.modelType, record.repoId) };
+      },
+      async load(entry) {
+        const record = (await known(entry.id))!;
+        const loaded = await input.models!.load(record);
+        // A planned runtime's own allocator limit applies while it is resident.
+        const limit = loaded.context.memoryPlan?.allocatorLimitBytes;
+        const previous = limit ? (await import("@mlx-bun/mlx/ffi")).setMemoryLimit(limit) : undefined;
+        const unit = await createServingUnit(loaded.context, options,
+          { ownership: "owned", artifact: record, ...(input.owner ? { owner: input.owner } : {}), ...(loaded.defaultAdapter ? { defaultAdapter: loaded.defaultAdapter } : {}) },
+          { ...shared, ...(limit ? { allocatorLimitBytes: limit } : {}) });
+        if (previous === undefined) return rememberFacts(unit);
+        const close = unit.close.bind(unit);
+        return rememberFacts(Object.assign(unit, { close: async (options: { readonly flush: boolean }) => {
+          try { return await close(options); } finally { (await import("@mlx-bun/mlx/ffi")).setMemoryLimit(previous); }
+        } }));
+      },
+    };
+    let current = first.id;
+    residency = createResidencyHost<ServingUnit>({ source, budgetBytes, events: state.events,
+      ...(memory ? { measured: () => memory.activeMemory() } : {}),
+      external: () => moduleHost.whisper.resident().reduce((sum, model) => sum + model.bytes, 0),
+      defaultFor: async operation => operation === "generate" ? current : undefined,
+      log: line => console.log(line) });
+    // A context the caller supplied cannot be reloaded, so it is never evicted.
+    residency.adopt(entryOf(first), first, { pin: !input.models, ...(input.loadMs !== undefined ? { loadMs: input.loadMs } : {}) });
+    let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
+    // The modules stop first (admission stops, takes in flight are joined), then the models release.
     const closeModules = async () => {
       const errors: unknown[] = [];
-      telemetry.stop();
       try { await modules?.stop(); } catch (error) { errors.push(error); }
       try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "module cleanup failed");
@@ -252,71 +329,55 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
       // A request admitted before shutdown may lease the companion while
       // responses drain. Close again here; each owner joins/releases only once.
       try { await closeModules(); } catch (error) { errors.push(error); }
-      try { await engine.close(); } catch (error) { errors.push(error); }
+      closingHost = true;
+      try { await residency.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "application cleanup failed");
     };
     cleanup = closeApp;
     modules = await loadInstalledModules(moduleHost);
-    // Announce the model this host serves, then the first reading of it (the metrics module subscribed with the app state).
-    state.events.publish({ type: "model.load", at: Date.now(), model: context.modelId, phase: "finished",
-      ...(input.loadMs !== undefined ? { ms: input.loadMs } : {}), weightsBytes: context.model.weightsBytes });
-    telemetry.sample();
-    const whisperInfo = async () => {
-      const id = await moduleHost.whisper.defaultFor("transcribe");
-      return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
-    };
-    // Every request the routes run goes through the observed completion engine; the engine's own close still joins the original.
-    engine.completion = telemetry.observe(engine.completion);
-    const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
-      kvScheme: caches.kvScheme, ...limits, tokenHistory, responseHistory: state.responses, downloads: state.downloads.snapshot,
-      transcription: whisperInfo,
-      ...(input.buildPrompt ? { buildPrompt: input.buildPrompt } : {}),
-      ...(input.defaultAdapter ? { defaultAdapter: input.defaultAdapter } : {}) });
+    const models = createModelRoutes({ host: residency, current: () => current, serves: async id => id === first.id || !!await known(id) });
     const moduleRoutes = createModuleRoutes(modules.routes);
-    const status = createStatusRoutes({ ...(input.owner ? { owner: input.owner } : {}), context, caches, gateway: engine.gateway,
-      diagnostics: () => binding.diagnostics(), responseStats: completions.responseStats,
-      artifact: { expertsBytes: input.artifact?.expertsBytes ?? 0, sizeBytes: input.artifact?.sizeBytes ?? null },
-      capacity: options.capacity, contextLimit: limits.contextLimit, startedAt: Date.now(),
-      ssdCacheDir: options.cache.ssdCacheDir, memoryBudgetBytes: options.memoryBudgetBytes });
-    const cacheAdmin = createCacheRoutes(caches);
-    const adapters = createAdapterRoutes(context, engine.gateway);
-    // Settings share this group with hub GC, which must protect the served snapshot.
-    const management = createManagementRoutes({ invalidateLibrary: completions.invalidateLibrary,
-      toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPath: input.artifact?.path ?? context.model.config.modelDir });
-    const adapterArtifacts = createAdapterArtifactRoutes(engine.gateway, { outputRoot: state.storagePaths.artifactRoot });
+    const residentUnits = () => residency.resident().flatMap(model => { const unit = residency.peek(model.id); return unit ? [unit] : []; });
+    const invalidateLibrary = () => { index = undefined; for (const unit of residentUnits()) unit.invalidateLibrary(); };
+    // Settings share this group with hub GC, which must protect every resident snapshot.
+    const management = createManagementRoutes({ invalidateLibrary,
+      toolApprovalsFile: state.chatPaths?.toolApprovalsFile, servedModelPaths: () => residentUnits().map(unit => unit.artifactPath) });
     const persistent = state.routes;
-    const modelRoutes = { handle: async (request: Request) => await status.handle(request) ?? await cacheAdmin.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await adapters.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
-      await persistent.quantize.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ?? await adapterArtifacts.handle(request) ?? await persistent.publishing.handle(request) ?? await completions.handle(request) };
+    const modelRoutes = { handle: async (request: Request) => await models.handle(request) ?? await persistent.hub.handle(request) ?? await persistent.sessions.handle(request) ?? await management.handle(request) ?? await moduleRoutes.handle(request) ?? await persistent.memory.handle(request) ?? await persistent.jobs.handle(request) ??
+      await persistent.quantize.handle(request) ?? await persistent.appModules.handle(request) ?? await persistent.finetune.handle(request) ?? await persistent.publishing.handle(request) };
     const routes = hooks.routes?.(modelRoutes) ?? modelRoutes;
     // A Unix listener has no port: the requested one stands in for Pi's TCP
     // loopback, and for the link's URL placeholder (its clients use the socket).
     let boundPort = options.port;
-    const chat = createPiBackend({ port: () => boundPort, modelId: context.modelId,
+    // Chat describes the current model when a session connects; its `local` model id is whatever the host serves then.
+    const chat = createPiBackend({ port: () => boundPort, modelId: first.id, model: () => facts.get(current) ?? first.facts,
       memory: state.memorySurface,
       paths: { ...state.chatPaths, sessionDir: state.sessionDir },
-      contextWindow: limits.contextLimit ?? context.model.config.text.maxPositionEmbeddings,
-      readOnly: options.readOnly, vision: !!(context.vision || context.loadVision),
-      audio: !!(context.audio || context.loadAudio), thinking: context.template?.supportsThinking ?? false,
+      readOnly: options.readOnly,
       transcription: async () => (await moduleHost.whisper.defaultFor("transcribe")) !== undefined,
-      genDefaults: {
-        temperature: options.request.defaultTemperature ?? context.genDefaults.temperature ?? null,
-        topP: options.request.defaultTopP ?? context.genDefaults.topP ?? null,
-        topK: options.request.defaultTopK ?? context.genDefaults.topK ?? null,
-      }, downloadsSnapshot: state.downloads.snapshot,
+      downloadsSnapshot: state.downloads.snapshot,
     });
-    // Jobs and modules leasing the served model reach this host from the first served request.
-    detachLink = state.attach({ model: { id: context.modelId, bytes: context.model.weightsBytes },
+    // Jobs and loopback clients reach this host from the first served request. A job pauses every resident model.
+    // Modules leasing the served model reach it as the current one: the id and weights follow a switch.
+    detachLink = state.attach({ get model() { return { id: current, bytes: (residency.peek(current) ?? first).context.model.weightsBytes }; },
       get port() { return boundPort; }, ...(hooks.unix ? { unix: hooks.unix } : {}),
-      acquireExecutionLease: signal => engine.gateway.acquireExecutionLease(signal),
-      invalidateLibrary: completions.invalidateLibrary });
+      acquireExecutionLease: signal => residency.pauseAll(signal),
+      invalidateLibrary,
+      ...(input.models ? { async serve(id: string, signal: AbortSignal) {
+        if (id !== first.id && !await known(id)) throw new ServeRefused(404, `${id} is not a local model; download it first`);
+        try { (await residency.acquire(id, { signal, need: ["generate"] })).release(); }
+        catch (error) { throw new ServeRefused(error instanceof Error && "code" in error && error.code === "load-failed" ? 502 : 400, error instanceof Error ? error.message : String(error)); }
+        current = id;
+        return { model: id };
+      } } : {}) });
     // startServer owns engine cleanup on entry, including a bind failure.
     cleanup = undefined;
     const listener = await startServer({ routes, web: state.web, chat,
       beforeDrain: async () => {
         const errors: unknown[] = [];
-        try { caches.stopIdleDemotion(); } catch (error) { errors.push(error); }
+        try { for (const unit of residentUnits()) unit.stopBackground(); } catch (error) { errors.push(error); }
         // Whisper closes with the persistent owners before drain: admission stops,
-        // in-flight takes are joined, weights release ahead of the chat model.
+        // in-flight takes are joined, weights release ahead of the chat models.
         for (const result of await Promise.allSettled([hooks.beforeDrain?.(), closeModules()]))
           if (result.status === "rejected") errors.push(result.reason);
         if (errors.length === 1) throw errors[0];
@@ -327,9 +388,10 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     let closing: Promise<DurabilityFlushResult> | undefined;
     const close = () => closing ??= (async () => {
       try { await listener.close(); } finally { try { restoreProcess(); } finally { detach(); } }
-      return durability!;
+      return mergeDurability(finalResults);
     })();
-    const host = { close, flush: () => caches.flush(), stats: () => caches.stats() };
+    const host = { close, flush: async () => mergeDurability(await Promise.all(residentUnits().map(unit => unit.flush()))),
+      stats: () => mergeStats(residentUnits().map(unit => unit.stats())) };
     return hooks.unix ? host : { port: boundPort, ...host };
   } catch (error) {
     try { await cleanup?.(); }

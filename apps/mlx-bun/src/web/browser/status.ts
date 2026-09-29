@@ -60,7 +60,8 @@ export function createStatusController() {
         fetch("/stats").then((r) => r.json()),
         fetch("/v1/models").then((r) => r.json()),
       ]);
-      const m = models.data && models.data[0];
+      const listed: { id: string; context_window?: number; current?: boolean }[] = models.data || [];
+      const m = listed.find((x) => x.current) || listed[0];
       $("st-model-id").textContent = (m && m.id) || "—";
       const a = stats.admission || {};
       $("st-model-meta").textContent = num(m && m.context_window) + " token window · weights " + gb(a.weights_bytes);

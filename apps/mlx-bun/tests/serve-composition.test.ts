@@ -122,17 +122,18 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     const group = name => ({ async handle() { visited.push(name); return null; } });
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
-    const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
+    const cache = { promptCache: { totalBytes: 0 }, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() { events.push("timer stop"); }, async close() { events.push("cache close"); return { durable: true }; } };
     const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, async acquireExecutionLease(signal) { events.push("lease"); return { dispose() {} }; }, async runExclusive(fn) { return fn(); } };
     let engine;
     mock.module(app + "src/engine/index.ts", () => ({
-      loadContext: async () => context, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
+      loadContext: async () => context, modelServingBinding: async () => ({ discovery: { embeddings: false }, gateway: { configureContinuation() {} } }),
       createCacheServices: async () => cache,
       createAppEngine: async (_context, options) => engine = { gateway, async close() { events.push("engine close"); await options.beforeModelDispose(); context.dispose(); } },
     }));
     let limit = 77;
-    mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
+    mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; },
+      maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
     const lib = app + "../../packages/app-services/src/";
     // The Whisper model host records its close once used, as the real one releases only what it loaded; the module routes stand in as one group at the audio routes' place.
     mock.module(lib + "whisper-model-host.ts", () => ({ ModelHostFailure: class extends Error {},
@@ -191,12 +192,12 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     assert.equal(piOptions.memory, state.memorySurface); assert.equal(piOptions.downloadsSnapshot, snapshot);
     assert.deepEqual(piOptions.paths, { ...chatPaths, sessionDir: "/unused/sessions" });
     assert.equal(await piOptions.memory(), surface);
-    assert.equal(managementOptions.toolApprovalsFile, chatPaths.toolApprovalsFile); assert.equal(managementOptions.servedModelPath, "/unused");
+    assert.equal(managementOptions.toolApprovalsFile, chatPaths.toolApprovalsFile); assert.deepEqual(managementOptions.servedModelPaths(), ["/unused"]);
     assert.equal(artifactOptions.outputRoot, "/unused/artifacts");
     assert.equal(listenerInput.web, state.web);
     // The route table keeps the app's mount order across both halves.
     assert.equal(await listenerInput.routes.handle(new Request("http://127.0.0.1/unmounted")), null);
-    assert.deepEqual(visited, ["status", "cacheAdmin", "hub", "sessions", "adapters", "management", "modules", "memory", "jobs", "quantize", "appModules", "finetune", "adapterArtifacts", "publishing", "completions"]);
+    assert.deepEqual(visited, ["status", "cacheAdmin", "adapters", "adapterArtifacts", "completions", "hub", "sessions", "management", "modules", "memory", "jobs", "quantize", "appModules", "finetune", "publishing"]);
     // Close order recorded from the pre-split serve-cli examples: timer stop, background producers (the hook)
     // with Whisper alongside them before drain, chat and HTTP drain, Whisper again (idempotent, catches a
     // companion created by a request admitted during drain), engine, caches, model, process settings; then the link detaches.
@@ -224,13 +225,14 @@ test("two sequential model hosts share one persistent state; only the app closes
     const events = [], loads = [];
     const contextFor = path => ({ modelId: path, model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close " + path); } });
-    const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
+    const cache = { promptCache: { totalBytes: 0 }, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };
     mock.module(app + "src/engine/index.ts", () => ({
-      loadContext: async path => { loads.push(path); return contextFor(path); }, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
+      loadContext: async path => { loads.push(path); return contextFor(path); }, modelServingBinding: async () => ({ discovery: { embeddings: false }, gateway: { configureContinuation() {} } }),
       createCacheServices: async () => cache,
       createAppEngine: async context => ({ gateway: { activeRows: 0, kvBytes: { projected: 0, budget: null } }, async close() { events.push("engine close " + context.modelId); context.dispose(); } }),
     }));
+    mock.module("@mlx-bun/mlx/ffi", () => ({ maxRecommendedWorkingSetSize: () => 32e9, activeMemory: () => 0 }));
     const histories = [];
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) { histories.push(options.responseHistory);
       return { handle: async () => null, invalidateLibrary() {}, responseStats: () => ({}) }; } }));

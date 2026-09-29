@@ -278,3 +278,25 @@ test("unclassified tools and injected mutation names still pass through the appr
     await backend.dispose(); await readOnlyBackend.dispose(); rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a host that swaps models tells each chat which model it will answer: the facts are read when the chat connects, over the ones the backend was composed with", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-chat-facts-"));
+  const paths = { cwd: root, agentDir: join(root, "agent"), sessionDir: join(root, "sessions"), toolApprovalsFile: join(root, "approvals.json") };
+  type Facts = { modelId: string; contextWindow: number; vision: boolean; audio: boolean; thinking: boolean;
+    genDefaults: { temperature: number | null; topP: number | null; topK: number | null } };
+  let current: Facts = { modelId: "org/first", contextWindow: 4096, vision: false, audio: false, thinking: false, genDefaults: { temperature: null, topP: null, topK: null } };
+  let reads = 0;
+  const factory = createPiBackend({ port: 1, paths, modelId: "composed", vision: true, model: async () => { reads++; return current; } });
+  const connect = async () => {
+    const frames: ServerMessage[] = [];
+    const backend = factory(frame => frames.push(frame));
+    try { await backend.start(); } finally { await backend.dispose(); }
+    return frames.find(frame => frame.type === "ready") as Extract<ServerMessage, { type: "ready" }>;
+  };
+  try {
+    expect(await connect()).toMatchObject({ model: "org/first", vision: false, thinking: false });
+    current = { ...current, modelId: "org/second", vision: true, thinking: true, genDefaults: { temperature: 0.7, topP: null, topK: 20 } };
+    expect(await connect()).toMatchObject({ model: "org/second", vision: true, thinking: true, genDefaults: { temperature: 0.7, topP: null, topK: 20 } });
+    expect(reads).toBe(2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

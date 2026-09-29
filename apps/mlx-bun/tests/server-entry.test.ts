@@ -62,7 +62,8 @@ const prelude = (mocks = "") => `
       async close() { events.push("cache close"); if (caches.closeFails) throw new Error("cache close failed"); return result(); } };
   } }));
   mock.module(app + "src/chat/pi-backend.ts", () => ({ createPiBackend(options) { return send => ({
-    async start() { send({ type: "text_delta", delta: ["pi", options.modelId, options.port(), options.thinking].join(" ") }); },
+    // The served model's facts are read when a chat connects, as the real backend does.
+    async start() { const served = { ...options, ...options.model?.() }; send({ type: "text_delta", delta: ["pi", served.modelId, options.port(), served.thinking].join(" ") }); },
     async handle() {}, dispose() {} }); } }));
   ${mocks}
   const dir = join(scratch, "model");
