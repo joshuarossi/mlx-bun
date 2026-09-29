@@ -135,11 +135,12 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // MiniCPM5's and encoded-KV graphs' delayed affine KV are qualified for ordinary
   // continuous decoding only. Adapter requests ignore a configured draft and
   // fill, as main did; actual delayed speculation and fill remain refused.
-  // Grammar jump falls back to ordinary masking. Generation checkpoints are
+  // Their direct grammar jump commits spans. Generation checkpoints are
   // qualified for both. Their adapters use the same row context.
+  const ordinaryAffineRows = model instanceof MiniCPM5Model || encodedKvRows;
   const affineKv = (options: GenerateOptions) => !options.turboQuant && (options.kvBits !== undefined || !!options.kvConfig?.length);
   const delayedAffineOrdinaryOnly = (options: GenerateOptions) =>
-    ((model instanceof MiniCPM5Model || encodedKvRows) && delayedAffine(options)) || (plainSoftcap && affineKv(options));
+    (ordinaryAffineRows && delayedAffine(options)) || (plainSoftcap && affineKv(options));
   const cachesBatchable = () => storage?.batchable ?? true;
   const supportsTargetRows = () => storage?.targetRows ?? false;
   // Grouped speculation needs batchable caches, row layouts for verification and
@@ -148,9 +149,14 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
   // by placement rather than served ordinarily. Grammar proposals stay off softcap.
   const speculative = !denoising && draft?.provider.grouped && cachesBatchable() && supportsTargetRows()
     ? bindSpeculativeGroupRequests(model, draft.provider, draft.numDraftTokens) : undefined;
-  // Spans on a softcap graph are held to plain reads in every KV layer, as its
-  // ordinary rows are (the group's denseKvReads, below).
-  const grammarSpans = plainSoftcap && storage ? bindGrammarGroupRequests(model, storage.kvLayers, storage.convertible.length) : undefined;
+  // Committed spans serve the direct grammar jump. Spans on a softcap graph are
+  // held to plain reads in every KV layer, as its ordinary rows are (the
+  // group's denseKvReads, below). A graph whose delayed affine rows are
+  // ordinary-only attends the encoded storage it holds: it states no dense-read
+  // requirement.
+  const grammarSpans = !storage ? undefined
+    : plainSoftcap ? bindGrammarGroupRequests(model, storage.kvLayers, storage.convertible.length)
+    : ordinaryAffineRows ? bindGrammarGroupRequests(model, [], storage.convertible.length) : undefined;
   const grammarProvider = tokenMethods && runtime.flag("MLX_BUN_GRAMMAR_JUMP", false) && cachesBatchable() && supportsTargetRows()
     ? constraintDraftProvider() : undefined;
   const grammarProposals = grammarProvider ? bindSpeculativeGroupRequests(model, grammarProvider,
@@ -234,7 +240,7 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         quantizedBatch: !denoising && scheduling.quantizedBatch,
         // Paging is decided on the resolved plan, which never checkpoints a paged
         // row; an adapter row that bypasses paging checkpoints as main's serial path did.
-        sharedCheckpoints: (!ordinaryOnly || model instanceof MiniCPM5Model || encodedKvRows || plainSoftcap) && !!continuationServices?.checkpointPersistence &&
+        sharedCheckpoints: (!ordinaryOnly || ordinaryAffineRows || plainSoftcap) && !!continuationServices?.checkpointPersistence &&
           (!request.hasDraft || ignoredDraft) && !request.hasVision && !request.hasGrammar &&
           !request.wantsLogprobs && !options.fill,
         adapterBatch: !!adapterState, pagedBatch: model instanceof Gemma4Model,
@@ -242,12 +248,13 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
         mediaPrefixCache: runtime.flag("MLX_BUN_MEDIA_PREFIX_CACHE", true),
         groupedMethods: denoising ? ["denoising"] : sharedMethod ? ["autoregressive", "speculative"] : ["autoregressive"],
         sharedGrammarProposals: !!grammarProposals,
-        // Committed spans append through the graph's dense reads after one
-        // maintenance call, once the gateway has certified the scheme's dense
-        // reads (kvBatchable). TurboQuant storage decodes on read throughout; a
-        // row whose affine storage would no longer read plain at its next
-        // append is refused before that append.
-        sharedGrammarJump: !!grammarSpans && !request.hasVision &&
+        // Committed spans append after one maintenance call, once the gateway
+        // has certified the scheme (kvBatchable). On a softcap graph TurboQuant
+        // storage decodes on read throughout; a row whose affine storage would
+        // no longer read plain at its next append is refused before that
+        // append. Elsewhere spans serve only ordinary-only delayed affine
+        // requests; other grammar requests keep verified proposals.
+        sharedGrammarJump: !!grammarSpans && (plainSoftcap || ordinaryOnly) && !request.hasVision &&
           (!(request.kvQuant || request.turboQuant) || scheduling.quantizedBatch) && !options.pagedKv,
         // Main filled only through a committed append declaring the scheme's
         // formats (shouldUseFill); this graph declares none for TurboQuant, so

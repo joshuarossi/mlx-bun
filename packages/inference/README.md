@@ -392,7 +392,14 @@ remain outside Git.
 
 Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
-attention reads encoded KV. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
+attention reads encoded KV. On those graphs and on MiniCPM5, delayed affine
+rows stay ordinary-only, and their direct grammar jump commits spans through the
+same span method with no dense-read requirement, before and after conversion.
+The same opt-in real-weight spans test passed on cached MiniCPM5-1B-OptiQ-4bit
+`664aabae` and Qwen2.5-0.5B-Instruct-4bit `a5339a41` with KV4: B1 spans matched
+direct generation in tokens, matcher history and every projection's bytes, both
+below the transition and for a row converting three tokens into decode and
+continuing over converted layers; an interleaved peer matched its solo run. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8
 (not a published model) matched main's serial path at B1 in full logits and all
 valid cache planes for bf16, immediate affine, KV4 and KV8 converting in decode
