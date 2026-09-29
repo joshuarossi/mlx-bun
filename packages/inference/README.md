@@ -214,7 +214,10 @@ The opt-in [continuation test](tests/parity/ordinary-continuation.test.ts) takes
 and interrupted/restarted B1/B4 generation, including pending tokens, seeded
 sampling history, byte-identical checkpoint planes, and actual restored-row
 counts. `MLX_BUN_TEST_CONTINUATION_ADAPTER=/cached/adapter` adds adapter-context
-and cache-namespace isolation without bundled fixtures. The existing KV matrix
+and cache-namespace isolation without bundled fixtures; with it,
+`MLX_BUN_TEST_CONTINUATION_IGNORED_DRAFT=1` binds a two-model draft whose rows
+fail if opened and requires the adapter rows to match a draftless adapter
+control, tokens and checkpoint planes. The existing KV matrix
 uses `MLX_BUN_TEST_CONTINUATION_KV=bf16|4|8|per-layer|turbo`,
 `MLX_BUN_TEST_CONTINUATION_KV_START=0` (or `prompt+N`), and
 `MLX_BUN_TEST_CONTINUATION_INTERRUPT=6` (6–15).
@@ -243,13 +246,13 @@ restored the base. Actual paged rows remained checkpoint-ineligible. This covers
 one active row within the sliding window, not grouped rows, paged numerics,
 hard-kill durability, external-oracle parity or performance.
 
-On every graph, an adapter request whose configured draft provider cannot serve
-target adapters (the two-model provider) decodes ordinarily, ignores the draft
-and, without fill, grammar or logprobs, takes generation checkpoints. Main's
-serial path did this on the graphs it served serially (sliding and
-explicit-mask universal descriptors); on graphs main served continuously it
-adds checkpoints main did not take. Placement is covered by the native
-gateway-plan test; the checkpointed path is not yet qualified with real weights.
+An adapter request whose draft cannot serve target adapters (the two-model
+provider on any graph; any provider on a softcap graph, which never speculates
+with adapters) decodes ordinarily, ignores the draft and, without fill, grammar
+or logprobs, takes generation checkpoints like a draftless adapter request.
+The continuation test's ignored-draft opt-in passed with a synthetic nonzero
+q/v adapter on gemma-2-2b-it-4bit (with fresh-process restore) and on
+Llama-3.2-3B-Instruct-4bit with a custom 4-token window (M1 Max, bf16 KV).
 
 With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, every saved and restored checkpoint
 after conversion (immediately with a start of 0) must hold TurboQuant's exact
@@ -309,17 +312,16 @@ scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
 maintenance that owns it, probed when the binding or group is composed). Affine
 KV serves ordinary continuous decoding, with checkpoints, while each row's
-storage still reads plain; on a softcap graph a configured draft is ignored, as
-main's serial path did. At a row's actual transition its pending token
-publishes first, and the row may finish there; otherwise that row alone is
-rejected with `DenseKvReadError` before any shared append (HTTP 501
+storage still reads plain; on a softcap graph a drafted request ignores the
+draft. At a row's actual transition its pending token publishes first, and the
+row may finish there; otherwise that row alone is rejected with `DenseKvReadError` before any shared append (HTTP 501
 `unsupported_kv_transition`, or the stream's error event once it has opened).
 Main's serial path threw at that forward instead. TurboQuant storage decodes on
 read, so these graphs admit TurboQuant KV for ordinary continuous decoding
-throughout, with checkpoints; a configured draft is ignored, as main's serial
-path did. Supplied fill decodes ordinarily without fill, as in main, whose
-serial path filled only through a committed append declaring the scheme's
-formats (none for TurboQuant on this graph). Direct grammar jump commits its
+throughout, with checkpoints; a drafted request ignores the draft. Supplied
+fill decodes ordinarily without fill, as in main, whose serial path filled
+only through a committed append declaring the scheme's formats (none for
+TurboQuant on this graph). Direct grammar jump commits its
 spans over it through the shared span method, as main's serial jump did: one
 maintenance call, then one unsplit forward of the pending token and the forced
 span, once the gateway has certified the scheme. Affine KV, which stops reading
@@ -437,9 +439,7 @@ Its full-attention policy remains the pinned mlx-lm policy documented in the
 [architecture descriptor](src/models/universal/archs.ts).
 A plain-KV adapter request with a configured TwoModel or Ngram draft uses
 ordinary continuous decoding and ignores both draft and fill, as main did.
-This is an ordinary fallback, not adapter speculation support; without fill,
-grammar or logprobs it takes generation checkpoints, as main's serial lane did
-and as the affine and TurboQuant fallbacks already do. Paired B1 greedy
+This is an ordinary fallback, not adapter speculation support. Paired B1 greedy
 acceptance against main passed with a synthetic nonzero adapter on Gemma2-2B:
 full logits and valid KV match with either draft configured, with or without
 fill and logprobs; draft and fill stay unused, and physical unmount restores

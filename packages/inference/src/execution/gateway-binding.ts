@@ -207,19 +207,18 @@ export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftPro
     } } : {}),
     plan(request, options, scheduling) {
       const ordinaryOnly = delayedAffineOrdinaryOnly(options);
-      // TurboQuant on a graph reading dense KV: main served these serially,
-      // with speculation off (a configured draft is ignored).
+      // TurboQuant on a graph reading dense KV decodes ordinarily; a configured
+      // draft is ignored.
       const decodedDense = plainSoftcap && !!options.turboQuant;
       const sharedMethod = request.hasDraft ? speculative : grammarProposals;
       const provider = request.hasDraft ? draft?.provider : grammarProvider;
-      // Main served softcap adapters ordinarily even when a draft was configured.
+      // A softcap graph serves adapter requests ordinarily even when a draft is configured.
       const sharedSpeculativeAdapters = !plainSoftcap && scheduling.continuous && !!sharedMethod && !!adapterState &&
         provider?.grouped?.supportsTargetAdapters === true;
       // A drafted request placed ordinarily opens no draft provider and keeps the
-      // ordinary checkpoint rules, as main's serial path did: an adapter request
-      // the provider cannot serve (softcap adapters never speculate) or whose
-      // delayed affine KV keeps it ordinary, and, since main bound no grouped
-      // speculation on a softcap graph, a drafted request over its encoded KV.
+      // ordinary checkpoint rules: an adapter request the provider cannot serve
+      // (softcap adapters never speculate) or whose delayed affine KV keeps it
+      // ordinary, and a drafted request over encoded KV on a softcap graph.
       const ignoredDraft = request.hasDraft &&
         ((request.hasAdapters && (ordinaryOnly || !sharedSpeculativeAdapters)) || decodedDense ||
           (plainSoftcap && affineKv(options)));

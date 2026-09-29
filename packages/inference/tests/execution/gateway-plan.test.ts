@@ -501,8 +501,7 @@ test.each([["two-model", twoModelDraft, "gemma2-draft"], ["n-gram", () => new Ng
   expect(logprobs).toMatchObject({ method: "autoregressive", mechanism: "continuous" });
   expect(logprobs.reasons).toContain("draft-incompatible-with-request");
   // Over encoded KV, TurboQuant read decoded or affine until a row's transition,
-  // a drafted request decodes ordinarily as main's serial path did (main bound no
-  // grouped speculation on this graph): the draft is ignored, and so is supplied
+  // a drafted request decodes ordinarily: the draft is ignored, and so is supplied
   // fill, as for any drafted request; checkpoints follow the ordinary rules.
   const turbo = { turboQuant: { kBits: 8, vBits: 3 } } as GenerateOptions;
   const affine = { kvBits: 4, quantizedKvStart: 64 } as GenerateOptions;
@@ -595,8 +594,8 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
     for (const extra of [{}, { wantsLogprobs: true }, { userSeed: true }, { hasGrammar: true }]) {
       const options: GenerateOptions = { adapters: ["upper"], fill, ...(extra.userSeed ? { seed: 42 } : {}) };
       const plan = binding.plan({ ...request, ...extra }, options, scheduling);
-      // The ignored draft leaves the ordinary checkpoint rules, as main's serial
-      // lane checkpointed these requests: no fill, grammar or logprobs.
+      // The ignored draft leaves the ordinary checkpoint rules: no fill, grammar
+      // or logprobs.
       expect(plan).toMatchObject({ method: "autoregressive", mechanism: "continuous", fill: false,
         checkpoint: !fill && !("wantsLogprobs" in extra) && !("hasGrammar" in extra), promptCache: true, grammarJump: false });
       expect(refusals(plan)).toEqual([]);
@@ -633,8 +632,8 @@ test.each([["two-model", twoModelDraft], ["n-gram", () => new NgramProvider()], 
 });
 
 test("an adapter request its draft cannot serve decodes ordinarily with ordinary checkpoints on every graph", () => {
-  // Main served sliding and explicit-mask universal graphs serially, where such
-  // a request ignored its draft and checkpointed; the shared lane keeps both.
+  // Including sliding and explicit-mask universal graphs: the draft is ignored
+  // and the request checkpoints like a draftless adapter request.
   const graphs: [string, () => RuntimeModel][] = [...families,
     ["sliding universal", () => universal({ modelType: "llama", layerTypes: SLIDING, slidingWindow: 16 })],
     ["explicit-mask sliding universal", () => universal({ modelType: "llama", maskArray: true, layerTypes: SLIDING, slidingWindow: 16 })]];
@@ -656,7 +655,7 @@ test("an adapter request its draft cannot serve decodes ordinarily with ordinary
     expect({ name, plan: binding.plan({ ...shape, hasDraft: true }, {}, scheduling) })
       .toMatchObject({ name, plan: { method: "speculative", mechanism: "continuous", checkpoint: false } });
     // A provider that serves target adapters speculates with them, except on the
-    // softcap graph, where main served adapters ordinarily.
+    // softcap graph, which serves adapters ordinarily.
     const aware = bindMlxGateway(model(), { provider: new NgramProvider(), numDraftTokens: 3 });
     aware.configureContinuation!(services);
     const softcap = name === "gemma2 softcap";
