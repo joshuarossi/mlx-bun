@@ -27,7 +27,7 @@ attention, compiled decode, hidden-layer taps for drafts, which delayed affine K
 levels its attention is qualified for, dense reads, and what its verifier qualifies
 (adapters, logprobs, affine and TurboQuant KV, external tokens, grammar proposals).
 `MlxDeclaredGraph` names the operations behind those promises (`bindMediaInput`,
-`mediaEncoders`, `pixelInput`, `draftTarget`, `expertResidency`), and
+`mediaEncoders`, `pixelInput`, `draftTarget`, `trainable`, `expertResidency`), and
 `declaredGraph` in `models/capabilities` checks the pairing once when composition
 binds the graph: an undeclared graph, or a declaration without its operation, is
 refused. The gateway plans from the declarations, the request and dynamic state
@@ -35,7 +35,12 @@ refused. The gateway plans from the declarations, the request and dynamic state
 `MlxGatewayBinding.capabilities` reports what it resolved. Supporting a new graph
 means declaring and implementing; `execution/` and the app engine need no edit.
 The architecture gate rejects concrete model imports, model-class `instanceof`,
-model-type string checks and model-scoped flags there. A model-level option stays
+model-type string checks and model-scoped flags there and in `@mlx-bun/training`.
+`trainable` (`TrainableGraph`) declares what the trainer consumes: the quantized
+`lmHead` for fused linear-CE heads, `segmented` backward (how a range of layers
+runs and which reused K/V crosses segment boundaries), `prefixShared` forwards,
+`gradCheckpoint`, the `flashAttention` constraint, and the `denoising` objective.
+The trainer names the declaration a graph lacks. A model-level option stays
 with its graph: Qwen3.5 reads `MLX_BUN_QWEN_SPEC_KV4` (on by default) where it
 declares speculation over affine KV.
 

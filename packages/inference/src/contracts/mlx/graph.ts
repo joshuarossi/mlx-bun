@@ -1,6 +1,7 @@
 import type { GraphCapabilities } from "../portable/graph";
 import type { Cache } from "./cache";
 import type { TargetView } from "./draft-target";
+import type { TrainableGraph } from "./trainable";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, PixelInput, TextEmbeddingModel, Vision } from "./media";
 
 /** The operations behind a graph's declared capabilities. A graph implements
@@ -19,6 +20,10 @@ export interface MlxDeclaredGraph {
   pixelInput?(): PixelInput | null;
   /** Ports over this graph's live caches that draft sources may consume. */
   draftTarget?(caches: Cache[]): TargetView;
+  /** What the trainer consumes: the head, segmented backward, prefix sharing,
+   * gradient checkpointing, flash-attention constraint and denoising objective
+   * this graph implements. Undeclared parts make the trainer refuse. */
+  readonly trainable?: TrainableGraph;
   /** Snapshot of the streamed expert residency, for diagnostics; null when the graph streams none. */
   expertResidency?(): Record<string, unknown> | null;
 }
