@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Registry, type ModelRecord } from "@mlx-bun/hub/registry";
+import type { ModelRecord, Registry } from "@mlx-bun/hub/registry";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { createPiBackend } from "../chat/pi-backend";
 import { PI_LOCAL_MODEL_ID } from "../chat/provider";
@@ -28,6 +28,7 @@ import { createResponsesClient } from "../server/responses-client";
 import { startServer } from "../server/start";
 import type { RunningApp, ServeOptions } from "./serve-options";
 import { createAppState, type RouteGroup } from "./serve-state";
+import { openRegistry } from "../storage/paths";
 
 /** Internal (tests): stand in for the worker entry, the restart policy, and the registry. */
 export interface IsolatedServeHooks {
@@ -119,7 +120,7 @@ export async function startIsolatedServer(model: ModelRecord, options: ServeOpti
   try {
     const workers = createWorkerPool({
       cap: options.modelPool ?? 1, defaultModel: model, aliases: [PI_LOCAL_MODEL_ID],
-      resolve: id => exactModel(id, hooks.createRegistry ?? (() => new Registry())),
+      resolve: id => exactModel(id, hooks.createRegistry ?? (() => openRegistry())),
       socketFor: index => join(socketDir, index === 0 ? "engine.sock" : `engine-${index}.sock`),
       supervise: (record, socketPath) => superviseWorker({
         entry: hooks.entry ?? fileURLToPath(new URL("./worker-entry.ts", import.meta.url)),

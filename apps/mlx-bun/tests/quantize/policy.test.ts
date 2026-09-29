@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createQuantizeRunner } from "../../src/quantize/job";
@@ -49,18 +49,19 @@ test("CPU inspection reads local configuration without loading tensor bytes", as
   expect(await inspectModel(join(root, "missing"))).toMatchObject({ ok: false, support: false });
 });
 
-test("submit keeps main's output naming and forwards quantization policy to the host", async () => {
+test("submit names a plain model directory under the storage root and forwards quantization policy to the host", async () => {
   let captured: unknown[] = [];
-  const routes = createQuantizeRoutes({ submit(...args) { captured = args; return { jobId: "job_test" }; } });
+  const store = join(root, "store");
+  const routes = createQuantizeRoutes({ submit(...args) { captured = args; return { jobId: "job_test" }; } }, { outputRoot: store });
   const response = await routes.handle(new Request("http://x/api/quantize/submit", { method: "POST", body: JSON.stringify({
     model_id: "example/model", bits: 8, group_size: 32, target_bpw: 3.8, candidate_bits: [2, 4, 8], rotate_weights: true, rotation_seed: 21,
   }) }));
   const body = await response!.json();
   expect(body.ok).toBe(true); expect(body.job_id).toBe("job_test");
-  expect(body.output_dir).toStartWith(join(root, "models--example--model-OptiQ-mixed-3.8bpw-rot21", "snapshots"));
+  expect(body.output_dir).toBe(join(store, "models", "model-mixed-3.8bpw-rot21"));
   expect(captured[0]).toBe("quantize"); expect(captured[1]).toMatchObject({ model_id: "example/model", out_dir: body.output_dir,
     target_bpw: 3.8, candidate_bits: [2, 4, 8], rotate_weights: true, rotation_seed: 21 });
-  expect(readFileSync(join(root, "models--example--model-OptiQ-mixed-3.8bpw-rot21", "refs/main"), "utf8")).toMatch(/^[0-9a-f]{40}$/);
+  expect(readdirSync(root)).toEqual([]); // nothing is written into the hub cache
   expect(captured[2]).toBe(body.output_dir);
 });
 

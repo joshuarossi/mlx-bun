@@ -10,7 +10,6 @@
 // job runs (the executable identity captured at startup, never process.execPath),
 // and the prompt that asks before anything persistent. Tests inject all four.
 
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -19,6 +18,7 @@ import { help } from "./args";
 import { banner, boxLines, renderHelp, step, style } from "./terminal";
 import pkg from "../../package.json" with { type: "json" };
 import { executablePath } from "../jobs/executable";
+import { userHome } from "../storage/paths";
 import type { MemoryCompletionClient } from "../memory/model";
 import type { SynthesisEvent } from "../memory/events";
 import { createLoopbackMemoryClient } from "../server/memory-completion-client";
@@ -37,7 +37,7 @@ export interface MemoryDependencies {
   open(args: string[]): Promise<number>;
   /** The vault root every subcommand reads or initializes (main: `vaultRoot()`). */
   vault: string;
-  /** Home directory holding the launchd plist (Library/LaunchAgents) and its logs (.mlx-bun/logs). */
+  /** Home directory holding the launchd plist (Library/LaunchAgents); logs follow MLX_BUN_HOME. */
   home: string;
   /** Run `launchctl <args>`; true on exit 0. Undefined keeps the real launchctl. */
   launchctl?: (args: string[]) => Promise<boolean>;
@@ -65,7 +65,7 @@ function defaultDependencies(): MemoryDependencies {
     error: (line) => console.error(line),
     async open(args) { return await Bun.spawn(["open", ...args], { stdout: "ignore", stderr: "ignore" }).exited; },
     vault: vaultRoot(),
-    home: homedir(),
+    home: userHome(),
     program: synthesisProgram(),
     taskModel: () => createInProcessMemoryClient(),
     async ask(question, fallback) {

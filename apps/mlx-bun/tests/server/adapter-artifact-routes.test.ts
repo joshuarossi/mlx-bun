@@ -1,10 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GenerationGateway } from "../../src/engine/generation-gateway";
 import { createAdapterArtifactRoutes } from "../../src/server/adapter-artifact-routes";
 import { pendingRoute } from "../../src/server/start";
+import { storagePath } from "../../src/storage/paths";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -28,7 +29,7 @@ test("merge preserves source order, scales, generated path, and wire response un
   const body = await response!.json();
   expect(body).toEqual({ ok: true, merged_path: args[1], stats });
   expect(args[0]).toEqual(["/a", "/b"]); expect(args[2]).toEqual([1, -0.5]);
-  expect(String(args[1])).toStartWith(join(homedir(), ".cache/mlx-bun/adapters/merged-"));
+  expect(String(args[1])).toStartWith(join(storagePath("adapters"), "merged-"));
   expect(events).toEqual(["lock", "merge", "unlock"]);
   await routes.handle(post("merge", { adapter_a: "/a", adapter_b: "/b" }));
   expect(args[2]).toBeUndefined();
@@ -99,7 +100,7 @@ test("export preserves omitted method and generated default path, and reports wr
   } });
   const response = await routes.handle(post("export", { base_model: "org/base", adapter_path: "/trained" }));
   expect(await response!.json()).toEqual({ ok: false, error: "output is read-only" });
-  expect(args[0]![0]).toStartWith(join(homedir(), ".cache/mlx-bun/exports/export-"));
+  expect(args[0]![0]).toStartWith(join(storagePath("exports"), "export-"));
   expect(args[0]!.slice(1)).toEqual(["org/base", "/trained", undefined]);
   expect(events).toEqual([]);
 });

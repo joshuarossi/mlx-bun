@@ -20,14 +20,15 @@ if (launch.mode === "silent") await new Promise(() => {});
 await Bun.write(launch.socketPath, "");
 const socketPath = launch.mode === "wrong-socket" ? "/elsewhere.sock" : launch.socketPath;
 const version = launch.mode === "other-version" ? "9.9.9" : launch.mode === "unversioned" ? undefined : launch.version;
-console.log(${JSON.stringify(WORKER_MESSAGE_PREFIX)} + JSON.stringify({ type: "ready", socketPath, modelId: launch.model.repoId, pid: process.pid, version }));
-console.log("serving");
+// The SIGTERM handler is installed before the ready line: the parent may close as soon as it reads ready.
 if (launch.mode === "ignore-sigterm") process.on("SIGTERM", () => { console.error("ignoring SIGTERM"); });
 else if (launch.mode === "slow-stop") process.on("SIGTERM", async () => { console.error("stopping slowly"); await Bun.sleep(300); process.exit(0); });
 else {
   process.on("SIGTERM", () => { console.error("stopping"); process.exit(0); });
   void (async () => { for (;;) { const { done } = await reader.read(); if (done) { console.error("parent left"); process.exit(0); } } })();
 }
+console.log(${JSON.stringify(WORKER_MESSAGE_PREFIX)} + JSON.stringify({ type: "ready", socketPath, modelId: launch.model.repoId, pid: process.pid, version }));
+console.log("serving");
 await new Promise(() => {});
 `;
 

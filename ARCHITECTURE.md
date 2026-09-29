@@ -164,6 +164,16 @@ routes parse settings and push requests; CLI composition supplies a read-only
 job lookup. The hub library owns the upload protocol and receives an explicit
 token, without importing application storage or jobs.
 
+On disk, `storage/paths.ts` owns every default the app writes; explicit user
+paths win, and libraries take paths from their callers.
+
+| Location | Owner |
+| --- | --- |
+| `MLX_BUN_HOME` (default `~/.mlx-bun`): `models/`, `adapters/`, `exports/`, `datasets/`, `db/`, `jobs/`, chat, wiki, skills, logs, credentials | the app |
+| `~/.mlx-bun/app-install/` | the installer |
+| `MLX_BUN_HOME/cache/` | derived memos (inference artifact identities) |
+| Hugging Face hub cache (`hubCacheRoot()`) | `@mlx-bun/hub` downloads only |
+
 Extract a shared app-contract package only when the app consumers require it.
 
 ## Changing or replacing a piece

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
-const KEYS = ["MLX_BUN_PARITY_PLAN", "MLX_BUN_PARITY_REFERENCE", "MLX_BUN_PARITY_TIMEOUT_MS", "MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG"] as const;
+const KEYS = ["MLX_BUN_PARITY_PLAN", "MLX_BUN_PARITY_REFERENCE", "MLX_BUN_PARITY_TIMEOUT_MS", "MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG",
+  "MLX_BUN_PARITY_REFERENCE_SHA256"] as const;
 export const JOIN_TIMEOUT_MS = 5_000;
 export const TEST_OVERHEAD_MS = JOIN_TIMEOUT_MS + 30_000;
 // Leave room for kill/join before the test runner's own deadline, without timer overflow.
@@ -18,7 +19,12 @@ export function parityInputs(env: Record<string, string | undefined>) {
   const legacy = env.MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG;
   if (legacy !== undefined && legacy !== "0" && legacy !== "1")
     throw new Error("MLX_BUN_PARITY_ALLOW_UNRECORDED_CONFIG must be 0 or 1 when provided");
-  return { planPath: env.MLX_BUN_PARITY_PLAN!, referencePath: env.MLX_BUN_PARITY_REFERENCE!, timeoutMs, allowLegacy: legacy === "1" };
+  // A published reference revision is pinned by the SHA-256 of its report bytes.
+  const pin = env.MLX_BUN_PARITY_REFERENCE_SHA256;
+  if (pin !== undefined && !/^[0-9a-f]{64}$/.test(pin))
+    throw new Error("MLX_BUN_PARITY_REFERENCE_SHA256 must be a lowercase SHA-256 when provided");
+  return { planPath: env.MLX_BUN_PARITY_PLAN!, referencePath: env.MLX_BUN_PARITY_REFERENCE!, timeoutMs, allowLegacy: legacy === "1",
+    ...(pin ? { referenceSha256: pin } : {}) };
 }
 
 async function bounded<T>(promise: Promise<T>, milliseconds: number, label: string): Promise<T> {

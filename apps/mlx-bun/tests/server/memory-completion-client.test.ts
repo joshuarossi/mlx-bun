@@ -81,7 +81,7 @@ describe("loopback memory completion client", () => {
 
   test("the chunk stage mounts memory-chunk once through /v1/adapters and selects it per call", async () => {
     const home = temporaryHome();
-    const directory = join(home, ".cache", "mlx-bun", "adapters", "memory-chunk");
+    const directory = join(home, ".mlx-bun", "adapters", "memory-chunk");
     mkdirSync(directory, { recursive: true });
     const { seen, fetch } = fakeServer((s) => {
       if (s.path === "/v1/adapters" && s.method === "GET") return Response.json({ adapters: [] });
@@ -101,7 +101,7 @@ describe("loopback memory completion client", () => {
 
   test("an already-mounted memory-chunk adapter is reused without a second mount", async () => {
     const home = temporaryHome();
-    mkdirSync(join(home, ".cache", "mlx-bun", "adapters", "memory-chunk"), { recursive: true });
+    mkdirSync(join(home, ".mlx-bun", "adapters", "memory-chunk"), { recursive: true });
     const { seen, fetch } = fakeServer((s) => s.path === "/v1/adapters"
       ? Response.json({ adapters: [{ id: "memory-chunk" }] }) : completion("x"));
     const client = createLoopbackMemoryClient(base, { fetch });
@@ -157,7 +157,7 @@ describe("loopback memory completion client", () => {
 
   test("a failed adapter mount is retried on the next chunk call", async () => {
     const home = temporaryHome();
-    mkdirSync(join(home, ".cache", "mlx-bun", "adapters", "memory-chunk"), { recursive: true });
+    mkdirSync(join(home, ".mlx-bun", "adapters", "memory-chunk"), { recursive: true });
     let mounts = 0;
     const { seen, fetch } = fakeServer((s) => {
       if (s.path === "/v1/adapters" && s.method === "GET") return Response.json({ adapters: [] });

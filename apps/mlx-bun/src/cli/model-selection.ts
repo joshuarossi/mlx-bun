@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { Registry, scanSnapshot, type ModelRecord } from "@mlx-bun/hub/registry";
+import { scanSnapshot, type ModelRecord, type Registry } from "@mlx-bun/hub/registry";
 import { downloadModel } from "@mlx-bun/hub/download";
 import { fit, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
 import { chooseAutoModel, COEXIST_FRACTION, DEFAULT_REPO_ID, STARTER_REPO_ID } from "./model-choice";
+import { openRegistry } from "../storage/paths";
 
 type ModelRegistry = Pick<Registry, "list" | "resolve" | "scan" | "close">;
 export interface ModelSelectionDependencies {
@@ -17,7 +18,7 @@ export interface ModelSelectionDependencies {
   log(message: string): void;
 }
 const defaults: ModelSelectionDependencies = {
-  registry: () => new Registry(), scanSnapshot, download: downloadModel, machine: thisMachine,
+  registry: () => openRegistry(), scanSnapshot, download: downloadModel, machine: thisMachine,
   async assess(model, machine) {
     const config = await loadModelConfig(model.path);
     return {
@@ -85,7 +86,7 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
 /** The default Whisper companion: the first downloaded `whisper` checkpoint
  * (scanning an empty index), or null when none is on disk. Resolved lazily on
  * the first audio request, as in main, so a chat-only serve never scans for it. */
-export async function defaultWhisperModel(registry: () => Pick<Registry, "list" | "listCanonical" | "scan" | "close"> = () => new Registry()): Promise<ModelRecord | null> {
+export async function defaultWhisperModel(registry: () => Pick<Registry, "list" | "listCanonical" | "scan" | "close"> = () => openRegistry()): Promise<ModelRecord | null> {
   const open = registry();
   try {
     if (open.list().length === 0) await open.scan();
