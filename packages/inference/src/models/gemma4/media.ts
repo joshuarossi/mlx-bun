@@ -39,7 +39,7 @@ export function gemma4DraftTarget(model: Gemma4MediaGraph, caches: Cache[]): Tar
     hiddenSize: model.config.text.hiddenSize,
     embed(ids: MlxArray) { using embedded = model.embed.encode(ids); return ops.mulScalar(embedded, model.embedScale); },
     readDonors: () => readAssistantDonors(caches[sliding]!, caches[full]!),
-  } : undefined, gemmaTaps: Object.freeze({
+  } : undefined, hiddenLayerTaps: Object.freeze({
     layerCount: model.layers.length,
     projection: Object.freeze({ embed: model.embed, logitsFromHidden: model.logitsFromHidden.bind(model) }),
   }) });

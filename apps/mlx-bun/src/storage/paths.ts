@@ -7,6 +7,7 @@
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
+import { isDrafterModelType } from "@mlx-bun/inference/models/support";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 
 /** The layout under the root, one entry per owner. */
@@ -60,5 +61,6 @@ export function modelShortName(model: string): string {
 
 /** The model index over the hub cache and the app's own model directory. */
 export function openRegistry(root: string = mlxBunHome()): Registry {
-  return new Registry(storagePath("registryDb", root), { modelDirs: [storagePath("models", root)] });
+  return new Registry(storagePath("registryDb", root),
+    { modelDirs: [storagePath("models", root)], isCompanion: isDrafterModelType });
 }

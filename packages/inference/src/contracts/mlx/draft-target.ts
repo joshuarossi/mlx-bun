@@ -12,7 +12,10 @@ export interface AssistantRowsTarget {
   };
 }
 
-export interface QwenMtpTarget {
+/** What a recurrent multi-token-prediction head reads from its target: the
+ *  final hidden layer's output (tapped before the final norm), the token
+ *  embedding, and the output head. */
+export interface RecurrentMtpTarget {
   readonly hiddenSize: number;
   readonly layerCount: number;
   embed(ids: MlxArray): MlxArray;
@@ -26,14 +29,29 @@ export interface QwenMtpTarget {
   };
 }
 
-/** Graph-declared extensions over the target's live state. Sources request
- * only the ports they consume; they never inspect a concrete model or cache.
- * Absence refuses an unsupported pairing before draft-side allocation. */
+/** Multi-layer hidden-state taps and the embedding/head projection a drafter
+ *  conditions on. */
+export interface HiddenLayerTapsTarget {
+  readonly layerCount: number;
+  readonly projection: DraftProjection;
+}
+
+/** Graph-declared ports over the target's live state, named for what they
+ * provide. Sources request only the ports they consume and never inspect a
+ * concrete model or cache; a source refuses a target that lacks one with
+ * `targetLacks(port)` before any draft-side allocation. */
 export interface TargetView {
   /** Opaque identity for providers borrowing weights from one exact target. */
   readonly identity: object;
   readonly assistantRows?: AssistantRowsTarget;
-  readonly gemmaTaps?: { readonly layerCount: number; readonly projection: DraftProjection };
-  readonly qwenMtp?: QwenMtpTarget;
+  readonly hiddenLayerTaps?: HiddenLayerTapsTarget;
+  readonly recurrentMtp?: RecurrentMtpTarget;
+}
+
+export type TargetPort = "assistantRows" | "hiddenLayerTaps" | "recurrentMtp";
+
+/** The refusal for a target graph that does not provide a requested port. */
+export function targetLacks(port: TargetPort): Error {
+  return new Error(`target graph does not provide ${port}`);
 }
 

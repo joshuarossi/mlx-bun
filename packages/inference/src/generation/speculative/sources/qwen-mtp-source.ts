@@ -32,7 +32,8 @@ import { loadModelConfig, type ModelConfig } from "../../../artifacts/config";
 import { Weights } from "../../../artifacts/weights";
 import { KVCache } from "../../../state/kv";
 import { MtpModule } from "../../../models/qwen/mtp";
-import type { DraftProvider, DraftSource, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, QwenMtpTarget, TargetView } from "../source";
+import type { DraftProvider, DraftSource, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, RecurrentMtpTarget, TargetView } from "../source";
+import { targetLacks } from "../source";
 import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
 import { QwenMtpRows } from "../bindings/qwen-mtp-rows";
 import { type MtpRowState } from "../../../state/speculative/qwen-mtp-state";
@@ -48,7 +49,7 @@ type Sampler = (logprobs: MlxArray, step: number) => MlxArray;
 const DRAFT_PREFILL_CHUNK = 2048;
 
 /** MTP drafts from the target's last hidden layer, before its final norm. */
-const mtpTapLayers = (target: QwenMtpTarget): readonly number[] => Object.freeze([target.layerCount - 1]);
+const mtpTapLayers = (target: RecurrentMtpTarget): readonly number[] => Object.freeze([target.layerCount - 1]);
 
 export class QwenMtpProvider implements DraftProvider {
   readonly grouped: GroupedDraftProvider = {
@@ -77,8 +78,6 @@ export class QwenMtpProvider implements DraftProvider {
 
   static async load(dir: string): Promise<QwenMtpProvider> {
     const config = await loadModelConfig(dir);
-    if (config.modelType !== "qwen3_5_mtp")
-      throw new Error(`${dir}: not a qwen3_5_mtp drafter (model_type ${config.modelType})`);
     const weights = await Weights.open(dir);
     using resources = new DisposableStack();
     resources.defer(() => weights.dispose());
@@ -101,12 +100,11 @@ export class QwenMtpProvider implements DraftProvider {
     return new QwenMtpSource(this.#target(opts.target), this.#module, opts.sampler, this.#checkpointNamespace);
   }
 
-  #target(view: TargetView): QwenMtpTarget {
+  #target(view: TargetView): RecurrentMtpTarget {
     if (this.#resources.disposed)
       throw new Error("qwen MTP provider is disposed");
-    const target = view.qwenMtp;
-    if (!target)
-      throw new Error("qwen MTP drafting requires a qwen3_5-family target");
+    const target = view.recurrentMtp;
+    if (!target) throw targetLacks("recurrentMtp");
     if (target.hiddenSize !== this.#config.text.hiddenSize) {
       throw new Error(
         `qwen MTP drafter hidden ${this.#config.text.hiddenSize} != target ` +
@@ -171,7 +169,7 @@ export class QwenMtpSource implements DraftSource {
    *  The seam's anchorHidden is post-final-norm and is deliberately unused. */
   readonly tapLayers: number[];
 
-  readonly #target: QwenMtpTarget;
+  readonly #target: RecurrentMtpTarget;
   readonly #module: MtpModule;
   readonly #sampler: Sampler;
   #cache = new KVCache();
@@ -185,7 +183,7 @@ export class QwenMtpSource implements DraftSource {
   #roundAppended = 0;
   #closed = false;
 
-  constructor(target: QwenMtpTarget, module: MtpModule, sampler: Sampler,
+  constructor(target: RecurrentMtpTarget, module: MtpModule, sampler: Sampler,
     namespace = "qwen-mtp-v1") {
     this.#target = target;
     this.#module = module;

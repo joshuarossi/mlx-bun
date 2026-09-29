@@ -32,9 +32,6 @@ export interface RuntimeOpenOptions {
 export interface OpenedRuntime {
   readonly model: RuntimeModel & DisposableResource;
   readonly memoryPlan: MemoryPlan;
-  /** Draft tokens per round of the checkpoint-native draft head the runtime
-   * planned for, or null when none is enabled. */
-  readonly nativeDraftTokens: number | null;
   /** Runtime telemetry for status views: the plan's line items and live streaming state. */
   diagnostics(): Record<string, unknown>;
 }
@@ -56,7 +53,6 @@ export async function openPlannedRuntime(
   return {
     model,
     memoryPlan: plan,
-    nativeDraftTokens: plan.enableMtp ? plan.mtpDraftTokens : null,
     diagnostics: () => ({
       preset: plan.preset, planned_process_bytes: plan.plannedProcessBytes,
       process_limit_bytes: plan.processLimitBytes, context_tokens: plan.contextTokens,

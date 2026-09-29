@@ -25,6 +25,7 @@ import * as ops from "@mlx-bun/mlx/ops";
 import type { DflashDrafter } from "../../../models/speculative/dflash";
 import { loadDsparkDrafter } from "../dspark/loader";
 import type { DraftProvider, DraftSource, TargetView } from "../source";
+import { targetLacks } from "../source";
 import type { DraftProjection } from "../../../contracts/mlx/draft-projection";
 import { runtimeValue } from "../../../runtime/config";
 
@@ -48,8 +49,8 @@ export class DflashProvider implements DraftProvider {
     this.weightsBytes = weightsBytes;
     this.gamma = drafter.cfg.gamma;
     this.grouped = projectedDraftGroups(namespace, drafter.cfg.tapLayers, target => {
-      if (!target.gemmaTaps) throw new Error("DSpark drafter requires a Gemma4 target");
-      const projection = target.gemmaTaps.projection;
+      if (!target.hiddenLayerTaps) throw targetLacks("hiddenLayerTaps");
+      const projection = target.hiddenLayerTaps.projection;
       const minConf = runtimeValue("MLX_BUN_DSPARK_MINCONF");
       return {
         namespace, schema: "dflash-context-v1",
@@ -95,9 +96,8 @@ export class DflashSource implements DraftSource {
   private hCtx: MlxArray | null = null; // [1, L, m*H] — grows with the accepted stream
 
   constructor(private readonly drafter: Pick<DflashDrafter, "cfg" | "forwardInfer">, target: TargetView) {
-    if (!target.gemmaTaps)
-      throw new Error("DSpark drafter requires a Gemma4 target");
-    this.model = target.gemmaTaps.projection;
+    if (!target.hiddenLayerTaps) throw targetLacks("hiddenLayerTaps");
+    this.model = target.hiddenLayerTaps.projection;
     this.tapLayers = drafter.cfg.tapLayers;
   }
 
