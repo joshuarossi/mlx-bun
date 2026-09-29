@@ -119,7 +119,7 @@ test("Gemma4 adapter requests bypass server-wide paging and checkpoint exactly a
   const { reasons: bypassed, ...placedOn } = on, { reasons: plain, ...placedOff } = off;
   expect(placedOn).toEqual(placedOff);
   expect(bypassed).toContain(bypass);
-  expect(bypassed.filter(reason => reason !== bypass)).toEqual([...plain]);
+  expect(bypassed.filter((reason: string) => reason !== bypass)).toEqual([...plain]);
   expect(binding.prefixNamespace!(on, { ...adapters, ...paging }, "upper@a")).toBe("upper@a");
   expect(binding.prefixNamespace!(off, adapters, "upper@a")).toBe("upper@a");
   expect(binding.statePolicy!(on, { ...adapters, ...paging }, 64)).toBeUndefined();
@@ -150,7 +150,7 @@ test("Gemma4 adapter requests bypass server-wide paging and checkpoint exactly a
     const { reasons: withPaging, ...placed } = plan, { reasons: without, ...baseline } = unpaged;
     expect({ request, placed }).toEqual({ request, placed: baseline });
     expect(withPaging).toContain(bypass);
-    expect(withPaging.filter(reason => reason !== bypass)).toEqual([...without]);
+    expect(withPaging.filter((reason: string) => reason !== bypass)).toEqual([...without]);
     expect(binding.continuationRequest!(plan, { ...options, ...paging }, prompt, () => {})).toBeUndefined();
   }
   const qwen = bindMlxGateway(Object.assign(Object.create(Qwen35Model.prototype), {

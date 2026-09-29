@@ -3,6 +3,7 @@ import { diffusionGenerate } from "../../src/generation/diffusion";
 import type { DiffusionGemmaModel } from "../../src/models/diffusion-gemma/model";
 import { MlxArray, gpuStream } from "@mlx-bun/mlx/array";
 import { activeMemory, clearCache, synchronize } from "@mlx-bun/mlx/ffi";
+import { declareGraph } from "../../src/models/capabilities";
 
 const VOCAB = 4;
 const CANVAS = 2;
@@ -10,6 +11,7 @@ const HIDDEN = 7; // unique shape marker for self-conditioning tensors
 
 function stubModel(): DiffusionGemmaModel {
   return {
+    graphCapabilities: declareGraph({ method: "denoising" }),
     config: { text: { vocabSize: VOCAB } },
     canvasLength: CANVAS,
     embedScale: 1,

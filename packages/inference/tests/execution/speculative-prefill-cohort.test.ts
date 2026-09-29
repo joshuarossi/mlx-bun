@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { declareGraph } from "../../src/models/capabilities";
 
 /** Owned target state as stored: class, coverage, reuse floor and exact planes. */
 function encoded(caches: readonly Cache[]) {
@@ -38,7 +39,7 @@ function fixture(provider: Pick<DraftProvider, "id" | "grouped"> & { dispose(): 
   const snapshots: { tokens: number[]; history: number[]; offset: number }[] = [];
   const puts: { tokens: number[]; history: number[]; state: ReturnType<typeof encoded> }[] = [];
   const failures: { row: Row; error: unknown }[] = [], joined: Row[] = [];
-  const model = { config: { modelType: "fixture", eosTokenIds: [] }, makeCache: () => [new KVCache()],
+  const model = { config: { modelType: "fixture", eosTokenIds: [] }, makeCache: () => [new KVCache()], graphCapabilities: declareGraph(),
     forwardHidden(ids: MlxArray, caches: Cache[]) {
       shapes.push([...ids.shape]); inputs.push([...ids.toIntTokens()]);
       using kv = ops.reshape(ids, [ids.shape[0]!, 1, ids.shape[1]!, 1]);
@@ -192,7 +193,7 @@ test("rows that tap exactly the layers resolved for their target are admitted", 
   const declared = { id: "declared", dispose() {}, grouped: { checkpointNamespace: () => "declared",
     targetTapLayers: () => [0], open: () => { throw new Error("decode rows must not open"); }, openPrefill: () => rows } };
   // The graph offers the hidden-tap operation over one layer, so the binding admits the declaration.
-  const f = fixture(declared as never, { hiddenTap: null,
+  const f = fixture(declared as never, { hiddenTap: null, graphCapabilities: declareGraph({ hiddenLayerTaps: true }),
     config: { modelType: "fixture", eosTokenIds: [], text: { numHiddenLayers: 1 } } }), row = f.row([1, 2, 3, 4]);
   try {
     f.method.prepare(row);
@@ -207,7 +208,7 @@ test("the binding checks its own snapshot of the declared taps: a later change t
     append() {}, filterRows() {}, materialize() {}, dispose() { disposed++; } };
   const mutable = { id: "mutable", dispose() {}, grouped: { checkpointNamespace: () => "mutable",
     targetTapLayers: () => taps, open: () => { throw new Error("decode rows must not open"); }, openPrefill: () => rows } };
-  const f = fixture(mutable as never, { hiddenTap: null,
+  const f = fixture(mutable as never, { hiddenTap: null, graphCapabilities: declareGraph({ hiddenLayerTaps: true }),
     config: { modelType: "fixture", eosTokenIds: [], text: { numHiddenLayers: 1 } } }), row = f.row([1, 2, 3, 4]);
   // After the binding checked [0], the provider's shared list gains a layer this graph cannot capture.
   taps.push(5);

@@ -32,6 +32,12 @@ import { isExpertTracing,recordRouting } from "../../runtime/expert-trace";
 
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
 import { LoraState,type LoraWeights } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { TargetView } from "../../contracts/mlx/draft-target";
+import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, Vision } from "../../contracts/mlx/media";
+import { declareGraph } from "../capabilities";
+import { bindGemma4MediaInput, gemma4DraftTarget, gemma4MediaEncoders } from "./media";
 import { type Cache,type Mask,type SharedKv } from "../../contracts/mlx/cache";
 import { isCompiledTrace } from "../../runtime/compiled-trace";
 import { runtimeFlag } from "../../runtime/config";
@@ -664,7 +670,7 @@ export class DecoderLayer {
   }
 }
 
-export class Gemma4Model {
+export class Gemma4Model implements MlxDeclaredGraph {
   #disposed = false;
   readonly config: ModelConfig;
   /** Total weight-shard bytes (for the conditional wired-limit scope). */
@@ -675,6 +681,22 @@ export class Gemma4Model {
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Paged attention, prepared image/audio embeddings, layer taps for drafts,
+   * and a compiled decode step, except through experts: shapeless replay
+   * retraces their growing windows. Its caches convert delayed affine rows and
+   * every method is qualified over them. */
+  get graphCapabilities(): GraphCapabilities {
+    return declareGraph({
+      media: { input: "embeddings", video: false }, pagedAttention: true, hiddenLayerTaps: "hiddenTap" in this,
+      compiledDecode: this.config?.modelType?.startsWith("gemma4") === true && !this.config.text.enableMoeBlock,
+      kv: { delayedAffine: "all" },
+    });
+  }
+  bindMediaInput(input: Vision): MlxPromptInput { return bindGemma4MediaInput(this, input); }
+  mediaEncoders(modelDir: string, probes: MediaSidecarProbes): Promise<MediaEncoders> {
+    return gemma4MediaEncoders(this, modelDir, probes);
+  }
+  draftTarget(caches: Cache[]): TargetView { return gemma4DraftTarget(this, caches); }
   readonly embed: QuantizedEmbedding;
   readonly layers: DecoderLayer[];
   readonly finalNorm: RMSNorm;

@@ -4,17 +4,15 @@
 // lazily-loaded towers, and calls the existing numerical prompt builders.
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { ObjectCache, PromptNativeWork } from "@mlx-bun/inference/contracts/portable";
-import type { AudioEncoder, TextEmbeddingModel, Vision } from "@mlx-bun/inference/contracts/mlx";
+import type { AudioEncoder, PixelInput, TextEmbeddingModel, Vision } from "@mlx-bun/inference/contracts/mlx";
 import type { ChatMessage, ChatTemplate, LoadedTokenizer, RenderOptions, ToolDefinition } from "@mlx-bun/inference/input";
 import type { AudioTokenIds, MultimodalTowers, VisionEncoder, VisionTokenIds } from "@mlx-bun/inference/input/vision";
-import type { Qwen35Model } from "@mlx-bun/inference/models/qwen3_5";
-import type { Qwen3VLVisionTower } from "@mlx-bun/inference/models/vision/qwen3vl";
-import type { RuntimeModel } from "@mlx-bun/inference/models";
+import type { QwenVisionEncoder } from "@mlx-bun/inference/input/vision/qwen3vl-prompt";
+import { declaredGraph, type RuntimeModel } from "@mlx-bun/inference/models";
 import type { CheckpointAttachment } from "@mlx-bun/inference/state";
 import { ensureWav } from "@mlx-bun/inference/input/audio";
 import { buildMultimodalPrompt, buildVisionPrompt, extractAudio, extractImages, extractVideos } from "@mlx-bun/inference/input/vision";
 import { buildQwen3VLVisionPrompt } from "@mlx-bun/inference/input/vision/qwen3vl-prompt";
-import { spliceImageTokens } from "@mlx-bun/inference/models/diffusion-gemma/vision";
 import { EncoderCache } from "@mlx-bun/inference/state";
 
 /** What a route borrows from the loaded context. The context owns the towers;
@@ -56,20 +54,25 @@ export interface MediaPreparation {
 
 type Prepared = Promise<PreparedMedia | { readonly rejected: MediaRejection }>;
 
-/** Select the family route once, at load. Audio requests share one route for
- *  every family; its towers are only ever non-null for Gemma4 (loader gates). */
-export async function bindMediaPreparation(source: MediaSource, model: RuntimeModel): Promise<MediaPreparation> {
-  const [{ DiffusionGemmaModel }, { Qwen35Model }, { Gemma4Model }] = await Promise.all([
-    import("@mlx-bun/inference/models/diffusion-gemma"), import("@mlx-bun/inference/models/qwen3_5"),
-    import("@mlx-bun/inference/models/gemma4"),
-  ]);
-  const embeddings = model instanceof Gemma4Model ? model : null;
+/** Select the route the graph's declared media input calls for, once, at load.
+ *  Audio requests share one route for every graph; its towers are only ever
+ *  non-null for a graph that ships them. */
+export function bindMediaPreparation(source: MediaSource, model: RuntimeModel): MediaPreparation {
+  const graph = declaredGraph(model);
+  const media = graph.graphCapabilities.media;
+  // The graph's own token embeddings, read when a request splices them.
+  const tokens: TextEmbeddingModel & { readonly config: RuntimeModel["config"] } = {
+    get embed() { return graph.embed!; }, config: model.config,
+  };
+  const embeddings = media?.input === "embeddings" ? tokens : null;
   const withAudio = (images: (request: MediaRequest) => Prepared) => (request: MediaRequest) =>
     request.parts.audio ? prepareAudio(source, embeddings, request) : images(request);
-  if (model instanceof DiffusionGemmaModel)
-    return { video: false, prepare: withAudio(request => prepareDiffusionImage(source, () => model.visionTower, request)) };
-  if (model instanceof Qwen35Model) return { video: true, prepare: withAudio(request => prepareQwenMedia(source, model, request)) };
-  return { video: false, prepare: withAudio(request => prepareTowerImages(source, embeddings, request)) };
+  const video = media?.video ?? false;
+  if (media?.input === "pixels")
+    return { video, prepare: withAudio(request => prepareDiffusionImage(source, () => graph.pixelInput?.(), request)) };
+  if (media?.input === "embeddings+positions")
+    return { video, prepare: withAudio(request => prepareQwenMedia(source, tokens, request)) };
+  return { video, prepare: withAudio(request => prepareTowerImages(source, embeddings, request)) };
 }
 
 function template(source: MediaSource): ChatTemplate {
@@ -126,18 +129,14 @@ export async function prepareAudio(source: MediaSource, model: TextEmbeddingMode
   };
 }
 
-/** The DiffusionGemma vision tower's preprocessing: pixels the denoising engine owns once returned. */
-export interface DiffusionImageTower {
-  preprocess(bytes: Uint8Array): Promise<{ pixels: MlxArray; softTokens: number }>;
-}
-
-/** DiffusionGemma image-text-to-text: its OWN dedicated SigLIP tower +
- *  encoder vision merge feed the denoising engine (NOT the AR
- *  forwardEmbeddings path). v1 supports a single image. */
+/** Pixel-input image-text-to-text (the denoising graph): its own dedicated tower
+ *  and encoder vision merge feed the denoising engine, not the AR embeddings
+ *  path. Pixels are the denoising engine's once returned. v1 supports a single
+ *  image. */
 export async function prepareDiffusionImage(
-  source: MediaSource, visionTower: () => DiffusionImageTower | null | undefined, request: MediaRequest,
+  source: MediaSource, pixelInput: () => PixelInput | null | undefined, request: MediaRequest,
 ): Prepared {
-  const tower = visionTower();
+  const tower = pixelInput();
   if (!tower) return { rejected: "vision-tower-absent" };
   const { messages, images } = await extractImages(request.messages);
   if (images.length !== 1) return { rejected: "single-image-only" };
@@ -145,7 +144,7 @@ export async function prepareDiffusionImage(
   const rawIds = source.tokenizer.encode(rendered, /* addSpecialTokens */ false);
   const { pixels, softTokens } = await request.nativeWork(() => tower.preprocess(images[0]!));
   try {
-    const promptIds = spliceImageTokens(rawIds, [softTokens], {
+    const promptIds = tower.spliceTokens(rawIds, softTokens, {
       image: source.visionTokenIds.imageTokenId,
       boi: source.visionTokenIds.boiTokenId,
       eoi: source.visionTokenIds.eoiTokenId,
@@ -154,18 +153,20 @@ export async function prepareDiffusionImage(
   } catch (error) { pixels.dispose(); throw error; }
 }
 
-/** Qwen3.8 vision + video: the tower is a Qwen3VLVisionTower
- *  riding the shared lazy slot (makeVisionLoader's qwen branch);
- *  image/video spans splice into input embeddings and the request
- *  carries the mRoPE positions and delta that the Qwen media prompt
+/** Embeddings-with-positions vision + video: the encoder rides the shared lazy
+ *  slot; image/video spans splice into input embeddings and the request
+ *  carries the mRoPE positions and delta that the graph's media prompt
  *  input consumes. Videos decode to sampled frames via the
  *  AVFoundation sidecar. */
-export async function prepareQwenMedia(source: MediaSource, model: Qwen35Model, request: MediaRequest): Prepared {
+export async function prepareQwenMedia(
+  source: MediaSource, model: TextEmbeddingModel & { readonly config: { readonly raw: Record<string, unknown> } },
+  request: MediaRequest,
+): Prepared {
   const { objects, nativeWork } = request;
   const { messages: withVideos, images } = await extractImages(request.messages);
   const { messages, videos } = await extractVideos(withVideos);
   const towers = await nativeWork(async () => {
-    const tower = source.visionTower() as unknown as Qwen3VLVisionTower | null;
+    const tower = source.visionTower() as unknown as (QwenVisionEncoder & { readonly cacheIdentity: string }) | null;
     if (!tower) return null;
     return { tower, encoderCache: objects ? new EncoderCache(objects, tower.cacheIdentity) : undefined };
   });
@@ -185,8 +186,8 @@ export async function prepareQwenMedia(source: MediaSource, model: Qwen35Model, 
 }
 
 /** Loads (and caches) the tower on first image request — text-only
- *  sessions never pay for it. The tower is only ever non-null for Gemma4
- *  (sidecar gate in makeVisionLoader). */
+ *  sessions never pay for it. The tower is only ever non-null for a graph
+ *  that ships one (its mediaEncoders). */
 export async function prepareTowerImages(source: MediaSource, model: TextEmbeddingModel | null, request: MediaRequest): Prepared {
   const { objects, nativeWork } = request;
   const { messages, images } = await extractImages(request.messages);

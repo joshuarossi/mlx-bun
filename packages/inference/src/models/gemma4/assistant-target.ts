@@ -1,10 +1,10 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { Cache, KvDonorAttention } from "../../../contracts/mlx/cache";
-import { captureKvDonorAttention } from "../../../state/kv-attention-view";
-import type { AssistantAttention } from "../../../contracts/mlx/attention";
-import { disposeResources } from "../../../runtime/resources";
+import type { Cache, KvDonorAttention } from "../../contracts/mlx/cache";
+import { captureKvDonorAttention } from "../../state/kv-attention-view";
+import type { AssistantAttention } from "../../contracts/mlx/attention";
+import { disposeResources } from "../../runtime/resources";
 
 /** Bind captured cache validity to Q-only attention. Encoded layouts can
  * supply this same numerical port without changing the draft graph. */

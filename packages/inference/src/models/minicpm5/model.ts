@@ -4,6 +4,9 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { LoraState } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { declareGraph } from "../capabilities";
 import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
 import { type Cache,type Mask } from "../../contracts/mlx/cache";
@@ -234,13 +237,15 @@ export class LlamaLayer {
   }
 }
 
-export class MiniCPM5Model {
+export class MiniCPM5Model implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly prefixBase = "model";
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Delayed affine rows convert per layer and serve ordinary decoding only. */
+  get graphCapabilities(): GraphCapabilities { return declareGraph({ kv: { delayedAffine: "ordinary" } }); }
   readonly embed: QuantizedEmbedding;
   readonly layers: LlamaLayer[];
   readonly finalNorm: RMSNorm;

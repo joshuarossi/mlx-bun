@@ -1,7 +1,6 @@
 import type { AutoregressiveGraph } from "../../contracts/portable/graph";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "../../contracts/mlx/cache";
-import type { Gemma4Model } from "../../models/gemma4/model";
 import type { RuntimeModel } from "../../models/factory";
 import { CompiledDecode } from "./compiled-decode";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime/config";
@@ -9,11 +8,6 @@ import { bindMlxGraph } from "../../models/graph";
 import type { PrefillPolicy } from "../../contracts/portable/prefill";
 import { resolveMlxPrefillPolicy } from "./prefill-policy";
 import type { KvSchemeOptions } from "../../state/kv-scheme";
-
-/** One declaration shared by planning and both native execution lanes. */
-export function legacyCompiledDecodeAvailable(model: RuntimeModel): boolean {
-  return model.config?.modelType?.startsWith("gemma4") === true && !model.config.text.enableMoeBlock;
-}
 
 export interface MlxModelMemory {
   readonly weightsBytes: number;
@@ -96,12 +90,11 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
     forwardEmbeddings: model.forwardEmbeddings?.bind(model),
     createAppend: "createAppend" in model ? model.createAppend.bind(model) : undefined,
     createDecode(policy) {
-      // Preserve the existing Gemma path and exclusions. MoE shapeless replay
-      // retraces growing windows; adapters would bake residuals into the tape.
-      if (!runtime.flag("MLX_BUN_COMPILED_DECODE", true) || policy.hasAdapters || policy.pagedKv ||
-          !legacyCompiledDecodeAvailable(model))
-        return null;
-      let compiled: CompiledDecode | null = CompiledDecode.for(model as Gemma4Model);
+      // Only a graph that declares a compiled step has one. Adapters would bake
+      // residuals into the tape.
+      if (!runtime.flag("MLX_BUN_COMPILED_DECODE", true) || policy.hasAdapters || policy.pagedKv) return null;
+      let compiled: CompiledDecode | null = CompiledDecode.bound(model);
+      if (!compiled) return null;
       return {
         tryStep(token, state) {
           if (!compiled || !CompiledDecode.supports(state)) return null;

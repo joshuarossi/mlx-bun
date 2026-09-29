@@ -21,6 +21,9 @@ import { disposing } from "../../layers/helpers";
 import { FINFO_MIN } from "../../layers/quantized-attention";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { PLAIN_KV_VERIFICATION, declareGraph } from "../capabilities";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { RotatingKVCache } from "../../state/rotating-kv";
@@ -441,7 +444,7 @@ export class UniversalLayer {
   }
 }
 
-export class UniversalDenseModel {
+export class UniversalDenseModel implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly args: UniversalArgs;
   readonly weightsBytes: number;
@@ -460,6 +463,19 @@ export class UniversalDenseModel {
   readonly encodedKvAttention: boolean;
   /** Layers whose bound attention reads plain keys and values: the manual softcap layers. */
   readonly requiredDenseKvLayers: readonly number[];
+
+  /** Softcapped attention reads plain K/V in every layer it softcaps, so encoded
+   * storage decodes on read and verification qualifies plain-KV rounds only.
+   * Otherwise attention attends the storage its caches hold: delayed affine rows
+   * convert per layer and serve ordinary decoding only. Before the attention
+   * facts are bound, neither is declared. */
+  get graphCapabilities(): GraphCapabilities {
+    const denseReads = this.encodedKvAttention === false;
+    return declareGraph({
+      kv: { denseReads, delayedAffine: this.encodedKvAttention === true ? "ordinary" : "none" },
+      ...(denseReads ? { speculation: PLAIN_KV_VERIFICATION } : {}),
+    });
+  }
   readonly #cacheWindows: readonly (number | null)[];
 
   constructor(weights: Weights, config: ModelConfig, args?: UniversalArgs) {

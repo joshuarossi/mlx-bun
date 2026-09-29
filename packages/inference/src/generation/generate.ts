@@ -11,7 +11,7 @@ import {
 bindLegacyAutoregressiveModel
 } from "./bindings/autoregressive";
 import { bindLegacyDenoisingModel } from "./bindings/denoising";
-import { DiffusionGemmaModel } from "../models/diffusion-gemma/model";
+import { declaredGraph } from "../models/capabilities";
 import type { RuntimeModel } from "../models/factory";
 import { generateAutoregressive } from "./autoregressive";
 import { generateDenoising } from "./denoising";
@@ -35,7 +35,7 @@ export function bindGeneration(model: RuntimeModel): (
   // DiffusionGemma is non-autoregressive: route to the denoising engine instead
   // of the AR decode loop. Same Generation/GenerateStats contract so the CLI and
   // server stream it through the existing token machinery.
-  if (!(model instanceof DiffusionGemmaModel)) {
+  if (declaredGraph(model).graphCapabilities.method !== "denoising") {
     const binding = bindLegacyAutoregressiveModel(model);
     return (prompt, options, diagnostics) => generateAutoregressive(binding, prompt, options, diagnostics);
   }

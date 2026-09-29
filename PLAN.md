@@ -114,15 +114,6 @@ Migration gaps stay required work in the feature table.
   `input/media-fetch.ts` names the app's `--allow-private-media`, and
   `scripts/{bundle-files,build-binary,verify-binary}.ts` and
   `apps/mlx-bun/tests/compiled-consumer.ts` import non-exported `packages/mlx/src/native`.
-- [ ] Graphs declare their capabilities; the scheduler only schedules. Today
-  `execution/gateway-binding.ts` derives capabilities by inspecting the model (`instanceof`
-  checks, a Gemma2 softcap branch, model-scoped flags such as `MLX_BUN_QWEN_SPEC_KV4`), and
-  `apps/mlx-bun/src/engine/{model-host,media-preparation}.ts` do the same. Move that knowledge
-  behind the graph contract (batched adapters, media-input binding, paged attention, hidden-layer
-  taps, readable KV encodings, committed spans, fill) so planning reads only declarations and the
-  request, refusals name the missing capability, and a loaded model's capabilities are queryable.
-  Exit: no model classes or model-scoped flags in `execution/` or the app engine (enforced by the
-  architecture gate); `gateway-plan` decisions and parity unchanged.
 - [ ] Support the shapes under [Unsupported request shapes](#unsupported-request-shapes) as
   capabilities of the graphs that lack them. Exit: each runs on the shared scheduler, verified
   with real weights and cancellation/streaming coverage.

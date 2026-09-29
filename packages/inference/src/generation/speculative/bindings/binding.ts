@@ -2,6 +2,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Cache } from "../../../contracts/mlx/cache";
 import type { RuntimeModel } from "../../../models/factory";
+import { declaredGraph } from "../../../models/capabilities";
 import type { Sampler } from "../../../sampling/index";
 import type { DraftProvider, DraftSource } from "../source";
 import { runtimeConfig, type RuntimeConfig } from "../../../runtime/config";
@@ -54,7 +55,7 @@ export function bindSpeculativeTargetModel(model: RuntimeModel): MlxSpeculativeT
     forward: (ids, caches, tapLayers, work) => legacyForwardWithTaps(model, ids, caches, tapLayers, work),
     // legacyForwardWithTaps captures layers 0..nLayers-1 through the model's
     // hidden tap and the post-final-norm sentinel nLayers from the forward output.
-    supportsTapLayers: layers => !layers.length || ("hiddenTap" in model && layers.every(layer =>
+    supportsTapLayers: layers => !layers.length || (declaredGraph(model).graphCapabilities.hiddenLayerTaps && layers.every(layer =>
       Number.isInteger(layer) && layer >= 0 && layer <= model.config.text.numHiddenLayers)),
     projectLogits: model.logitsFromHidden.bind(model),
     ...("setSpecKernelPinned" in model ? {
@@ -104,8 +105,8 @@ async function legacyForwardWithTaps(
       : model.forwardHidden(ids, caches);
     return { hidden, ctxML: null };
   }
-  if (!("hiddenTap" in model)) throw new Error("target graph does not support hidden taps");
-  const m = model;
+  if (!declaredGraph(model).graphCapabilities.hiddenLayerTaps) throw new Error("target graph does not support hidden taps");
+  const m = model as Extract<RuntimeModel, { hiddenTap: unknown }>;
   const previousTap = m.hiddenTap;
   const cap = new Map<number, MlxArray>();
   const layers = new Set(tapLayers);

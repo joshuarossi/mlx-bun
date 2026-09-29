@@ -177,7 +177,7 @@ describe.skipIf(!native || !models.gemma4Unified)("Gemma4 unified vision", () =>
         expect(runs(built.promptIds, v.boiTokenId)).toBe(1);
         expect(built.vision!.imageMask!.shape).toEqual([built.promptIds.length]);
       });
-      const { VisionTower } = await import("@mlx-bun/inference/embeddings/vision");
+      const { VisionTower } = await import("@mlx-bun/inference/models/vision/unified");
       expect(f.ctx.vision).toBeInstanceOf(VisionTower);
     } finally { f.close(); }
   }, 600_000);

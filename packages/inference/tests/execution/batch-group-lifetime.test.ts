@@ -13,6 +13,7 @@ import { KVCache } from "../../src/state/kv";
 import type { RuntimeModel } from "../../src/models/factory";
 import type { PromptResponseTrace } from "../../src/runtime/trace";
 import { configureRuntime, createRuntimeConfig, runtimeValue } from "../../src/runtime/config";
+import { declareGraph } from "../../src/models/capabilities";
 
 function fixture() {
   const calls = { allocations: 0, disposals: 0, retains: 0 };
@@ -25,7 +26,7 @@ function fixture() {
       numGlobalKeyValueHeads: 1, globalHeadDim: 8, slidingWindow: 0 } },
     makeCache() { calls.allocations++; return [new TrackedCache()]; },
     // Its one layer's keys and values are read plain (updateAndFetch).
-    requiredDenseKvLayers: [0],
+    requiredDenseKvLayers: [0], graphCapabilities: declareGraph({ kv: { denseReads: true } }),
   } as unknown as RuntimeModel;
   const request: BatchRequest = { promptIds: [0, 1], maxTokens: 1, eosTokenIds: [],
     sample() { throw new Error("unexpected sampling"); }, onToken() { throw new Error("unexpected output"); } };

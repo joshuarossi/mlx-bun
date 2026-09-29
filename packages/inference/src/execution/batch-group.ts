@@ -69,12 +69,10 @@ import { activeMemory,cacheMemory,clearCache,Dtype,peakMemory } from "@mlx-bun/m
 import * as ops from "@mlx-bun/mlx/ops";
 import { type BatchableCache,type Cache } from "../contracts/mlx/cache";
 import type { PrefillPolicy } from "../contracts/portable/prefill";
-import { legacyCompiledDecodeAvailable } from "../generation/bindings/autoregressive";
 import { CompiledDecode } from "../generation/bindings/compiled-decode";
 import { resolveMlxPrefillPolicy } from "../generation/bindings/prefill-policy";
 import { acquireModelWiredLimit } from "../generation/index";
 import type { RuntimeModel } from "../models/factory";
-import type { Gemma4Model } from "../models/gemma4/model";
 import { runtimeConfig,withRuntimeConfig,type RuntimeConfig } from "../runtime/config";
 import type { PromptResponseTrace } from "../runtime/trace";
 import { independentGreedySampling } from "../sampling/index";
@@ -247,11 +245,9 @@ export class MlxBatchExecutionGroup {
       : null;
     this.#rotMaxSize = proto.map((c) => (isRotatingPlainCache(c) ? c.maxSize : 0));
     for (const c of proto) c.dispose();
-    this.#compiled =
-      this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true) &&
-      legacyCompiledDecodeAvailable(model)
-        ? withRuntimeConfig(this.#runtime, () => CompiledDecode.for(model as Gemma4Model))
-        : null;
+    this.#compiled = this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true)
+      ? withRuntimeConfig(this.#runtime, () => CompiledDecode.bound(model))
+      : null;
   }
 
   get activeRows(): number {

@@ -56,6 +56,49 @@ function appDomain(path: string, owner: Library): string {
   return domain;
 }
 
+// Scheduling (`execution/`) and the app's engine consume graphs through their
+// declared capabilities and bindings. They may name the graph handle, its
+// declaration, profiles and shared input helpers, never a concrete model, and
+// never branch on a model's class, type string, or family flag.
+const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
+  "models/implementation.ts", "models/graph.ts", "models/media-input.ts"]);
+const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
+
+function schedulingSide(file: string, owner: Library): boolean {
+  const name = relative(owner.source, file);
+  return (owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) || (owner.name === "mlx-bun" && name.startsWith("engine/"));
+}
+
+/** Model-identity branches: `instanceof <model class>`, comparing or pattern-matching
+ * a model type string, and model-scoped runtime flags. */
+function identityChecks(source: ts.SourceFile): { text: string; line: number }[] {
+  const found: { text: string; line: number }[] = [];
+  const add = (node: ts.Node, text: string) =>
+    found.push({ text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
+  const typeName = (node: ts.Node) => (ts.isPropertyAccessExpression(node) && /^model_?[tT]ype$/.test(node.name.text)) ||
+    (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && /^model_?[tT]ype$/.test(node.argumentExpression.text));
+  const visit = (node: ts.Node) => {
+    if (ts.isBinaryExpression(node)) {
+      const op = node.operatorToken.kind;
+      if (op === ts.SyntaxKind.InstanceOfKeyword && ts.isIdentifier(node.right) && (/Model$/.test(node.right.text) || familyWord.test(node.right.text)))
+        add(node, `instanceof ${node.right.text}`);
+      const compares = [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken,
+        ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(op);
+      if (compares && (typeName(node.left) || typeName(node.right))) add(node, "comparing a model type");
+    }
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+        ["startsWith", "endsWith", "includes", "match", "test"].includes(node.expression.name.text) &&
+        (typeName(node.expression.expression) || (ts.isCallExpression(node.expression.expression) &&
+          ts.isPropertyAccessExpression(node.expression.expression.expression) && typeName(node.expression.expression.expression.expression))))
+      add(node, "matching a model type");
+    if (ts.isStringLiteralLike(node) && /^MLX_BUN_(QWEN|GEMMA|MINICPM|LLAMA|GLM|DIFFUSION)/.test(node.text))
+      add(node, `model-scoped flag ${node.text}`);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 function references(source: ts.SourceFile): { specifier: string | undefined; line: number }[] {
   const found: { specifier: string | undefined; line: number }[] = [];
   const inspect = (node: ts.Node, literal: ts.Node | undefined) => found.push({
@@ -150,6 +193,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
+    if (schedulingSide(file, owner))
+      for (const { text, line } of identityChecks(source))
+        violations.push(`${name}:${line}: scheduling and engine code cannot branch on model identity (${text}); read a declared capability`);
     for (const { specifier, line } of references(source)) {
       const at = `${name}:${line}`;
       if (specifier === undefined) { violations.push(`${at}: nonliteral module reference`); continue; }
@@ -190,6 +236,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       }
       if (from !== undefined && (to === undefined || !mayImport(from, to)))
         violations.push(`${at}: ${from} -> ${to ?? targetOwner.name} (${specifier})`);
+      if (schedulingSide(file, owner) && targetOwner.name === "@mlx-bun/inference" &&
+          relative(targetOwner.source, actual).startsWith("models/") && !graphContracts.has(relative(targetOwner.source, actual)))
+        violations.push(`${at}: scheduling and engine code cannot import a concrete model (${specifier}); consume its declared capabilities`);
       edges.push(relative(root, actual));
     }
   }
@@ -334,5 +383,51 @@ test("browser code can consume data protocols but cannot reach backend modules o
     write(entry, 'import type { Message } from "../../chat/protocol";');
     write("apps/example/src/chat/protocol.ts", 'export type Message = string; import "./backend";');
     expect((await inspectWorkspaces(root)).some(item => item.includes("data protocols cannot import"))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("scheduling and engine code cannot import concrete models or branch on model identity", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-scheduling-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const inference = { name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts", "./models": "./src/models/index.ts",
+    "./models/gemma4": "./src/models/gemma4/model.ts" }, dependencies: { "@mlx-bun/mlx": "workspace:*",
+    "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" } };
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify(inference));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/models/index.ts", 'export * from "./factory"; export * from "./capabilities";');
+    write("packages/inference/src/models/factory.ts", 'import { Gemma4Model } from "./gemma4/model"; export type RuntimeModel = Gemma4Model;');
+    write("packages/inference/src/models/capabilities.ts", "export const declaredGraph = (model: object) => model;");
+    write("packages/inference/src/models/gemma4/model.ts", "export class Gemma4Model { modelType = 'gemma4'; }");
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
+    symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
+    const scheduler = "packages/inference/src/execution/plan.ts", engine = "apps/mlx-bun/src/engine/host.ts";
+    write(scheduler, 'import type { RuntimeModel } from "../models/factory"; import { declaredGraph } from "../models/capabilities"; export const plan = (m: RuntimeModel) => declaredGraph(m);');
+    write(engine, 'import { declaredGraph, type RuntimeModel } from "@mlx-bun/inference/models"; export const host = (m: RuntimeModel) => declaredGraph(m);');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(scheduler, 'import { Gemma4Model } from "../models/gemma4/model"; export const paged = (m: object) => m instanceof Gemma4Model;');
+    const scheduled = await inspectWorkspaces(root);
+    expect(scheduled.some(item => item.includes("cannot import a concrete model (../models/gemma4/model)"))).toBe(true);
+    expect(scheduled.some(item => item.includes("branch on model identity (instanceof Gemma4Model)"))).toBe(true);
+    write(engine, 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const kind = (m: object) => m instanceof Gemma4Model;');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("apps/mlx-bun/src/engine/host.ts:1: scheduling and engine code cannot import a concrete model"))).toBe(true);
+    write(scheduler, "export const plan = 1;");
+    write(engine, 'export const gemma = (m: { config: { modelType: string } }) => m.config.modelType.startsWith("gemma4") || m.config.modelType === "qwen3";');
+    const typed = await inspectWorkspaces(root);
+    expect(typed.filter(item => item.includes("matching a model type")).length).toBe(1);
+    expect(typed.filter(item => item.includes("comparing a model type")).length).toBe(1);
+    write(engine, 'export const flag = (r: { flag(name: string): boolean }) => r.flag("MLX_BUN_QWEN_SPEC_KV4");');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("model-scoped flag MLX_BUN_QWEN_SPEC_KV4"))).toBe(true);
+    // The same code outside scheduling and engine (a model's own binding) is unaffected.
+    write(engine, "export const engine = 1;");
+    write("packages/inference/src/models/gemma4/binding.ts", 'import { Gemma4Model } from "./model"; export const own = (m: object) => m instanceof Gemma4Model;');
+    expect(await inspectWorkspaces(root)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

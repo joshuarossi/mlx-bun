@@ -1670,13 +1670,13 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   };
 
   test("admission: affine KV binds as ordinary continuous decoding; the graph binds no compiled replay; TurboQuant binds through dense reads", async () => {
-    const { legacyCompiledDecodeAvailable } = await import("../../../src/generation/bindings/autoregressive");
     const env = await setup(64);
     try {
       expect(env.model.encodedKvAttention).toBe(false);
-      // Compiled B1 replay is bound only for non-MoE Gemma4 graphs; the group
-      // builds its replay from the same predicate, so no plain-read step replays.
-      expect(legacyCompiledDecodeAvailable(env.model)).toBe(false);
+      // Compiled B1 replay is bound only for graphs that declare it (non-MoE
+      // Gemma4); the group builds its replay from the same declaration, so no
+      // plain-read step replays.
+      expect(env.model.graphCapabilities.compiledDecode).toBe(false);
       expect(env.binding.kvBatchable(env.kvScheme!)).toBe(true);
       expect(env.binding.kvBatchable(resolveKvScheme({ turboQuant: { kBits: 8, vBits: 3 }, quantizedKvStart: 0 }))).toBe(true);
       const plan = env.binding.plan(shape, { maxTokens: 4, ...env.kvScheme!.generationOptions },

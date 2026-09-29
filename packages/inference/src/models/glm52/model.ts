@@ -19,6 +19,9 @@ import { ColibriGlm52Weights } from "../../artifacts/glm52/weights";
 import { type Cache } from "../../contracts/mlx/cache";
 import { argmaxLastPosition } from "../../kernels/logits";
 import { LoraState } from "../../layers/lora";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { declareGraph } from "../capabilities";
 import { type QuantizedLinear } from "../../layers/quantized-linear";
 import { MLACache } from "../../state/glm52-cache";
 import {
@@ -655,7 +658,7 @@ export class Glm52DecoderLayer {
   }
 }
 
-export class Glm52Model {
+export class Glm52Model implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly glmConfig: Glm52Config;
   readonly weights: Glm52WeightSource;
@@ -665,6 +668,16 @@ export class Glm52Model {
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; it attends its own compressed MLA storage, which no KV scheme converts. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Attends its own compressed MLA storage, which no KV scheme converts. Adapters
+   * are not offered on streamed experts. */
+  get graphCapabilities(): GraphCapabilities {
+    return declareGraph({ adapters: { mountable: false }, sparseAttention: this.capabilities?.dsa === true });
+  }
+  expertResidency(): Record<string, unknown> | null {
+    const runtime = this.expertRuntime;
+    return runtime ? { main_residency: runtime.manager.snapshot(), mtp_residency: runtime.mtp?.manager.snapshot() ?? null,
+      last_turn: runtime.lastTelemetry, last_repin: runtime.lastRepin } : null;
+  }
   readonly layers: Glm52DecoderLayer[];
   readonly finalNorm: MlxArray;
   readonly expertBackend: Glm52ExpertExecutionBackend | null;

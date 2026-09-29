@@ -23,6 +23,7 @@ import { configureRuntime, runtimeConfig } from "../../src/runtime/config";
 import { cloneKvCaches } from "../../src/state/persistence";
 import { specServeRun } from "../../src/generation/speculative/run";
 import type { DraftProvider, DraftSource } from "../../src/generation/speculative/source";
+import { declareGraph } from "../../src/models/capabilities";
 
 const VOCAB = 128;
 const EOS = 2;
@@ -54,6 +55,7 @@ class StubModel {
     text: { vocabSize: VOCAB, enableMoeBlock: false },
   };
   readonly weightsBytes = 1;
+  readonly graphCapabilities = declareGraph();
   /** Every id sequence pushed through forwardHidden, in order. */
   readonly forwards: number[][] = [];
   readonly headInputs: number[][] = [];

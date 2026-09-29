@@ -1,11 +1,11 @@
-import type { ExecutionCapabilities, ExecutionFeatures, ExecutionRequirements, ResolvedExecution } from "../contracts/portable/execution";
+import type { ExecutionCapabilities, ExecutionFeatures, ExecutionReason, ExecutionRequirements, ResolvedExecution } from "../contracts/portable/execution";
 
 /** Select the request method, then place it using executor capabilities. */
 export function resolveExecution(
   request: ExecutionRequirements, capabilities: ExecutionCapabilities,
   features: ExecutionFeatures = { pagedKv: false, fill: false },
 ): ResolvedExecution {
-  const reasons: string[] = [];
+  const reasons: ExecutionReason[] = [];
   const sharedRequestExclusions = [
     [!capabilities.continuous, "continuous-unavailable"],
     [request.hasVision && !capabilities.mediaBatch, "media-batch-unsupported"],

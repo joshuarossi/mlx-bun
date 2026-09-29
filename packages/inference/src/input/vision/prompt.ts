@@ -20,7 +20,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
-import type { AudioEncoder,TextEmbeddingModel } from "../../contracts/mlx/media";
+import type { AudioEncoder,TextEmbeddingModel,VisionEncoder } from "../../contracts/mlx/media";
 import type { PromptNativeWork } from "../../contracts/portable/prompt";
 import type { EncoderCache } from "../../state/encoder-cache";
 import type { ChatMessage,ChatTemplate,ToolDefinition } from "../chat-template";
@@ -30,18 +30,7 @@ import { audioSoftTokenCount,decodeAudio } from "../audio/decode";
 import { extractMelFeatures } from "../audio/features";
 import { fetchMediaBytes,videoMediaFetchPolicy } from "../media-fetch";
 
-/** Common contract for both vision towers (encoder-free gemma4_unified in
- *  ./embedder.ts and the SigLIP encoder in ./siglip.ts): preprocess image
- *  bytes into a tower-specific representation, then turn it into
- *  language-space soft tokens [1, softTokens, hidden] (pre-divided by
- *  embed_scale). The two own different preprocessing, so the tower carries
- *  its own. */
-export interface VisionEncoder<P extends { softTokens: number } = { softTokens: number }> {
-  readonly cacheIdentity?: string;
-  preprocess(bytes: Uint8Array): Promise<P>;
-  features(pre: P): MlxArray;
-  dispose?(): void;
-}
+export type { VisionEncoder } from "../../contracts/mlx/media";
 
 export interface VisionPrompt {
   ids: number[];

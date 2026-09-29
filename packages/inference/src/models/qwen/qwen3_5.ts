@@ -33,6 +33,12 @@ import { quantizedSdpa } from "../../layers/quantized-attention";
 import { RMSNorm } from "../../layers/normalization";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { qwen35WeightsView } from "./checkpoint";
+import type { GraphCapabilities } from "../../contracts/portable/graph";
+import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { TargetView } from "../../contracts/mlx/draft-target";
+import type { MediaEncoders, MlxPromptInput, Vision } from "../../contracts/mlx/media";
+import { declareGraph } from "../capabilities";
+import { bindQwenMediaInput, qwenDraftTarget, qwenMediaEncoders } from "./media-input";
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { gatedDeltaUpdate } from "../../kernels/delta/gated";
 import { SSMCache } from "../../state/ssm";
@@ -612,7 +618,7 @@ export class Qwen3Layer {
   }
 }
 
-export class Qwen35Model {
+export class Qwen35Model implements MlxDeclaredGraph {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   /** Base path for LoRA target keys (weights carry the language_model prefix). */
@@ -620,6 +626,21 @@ export class Qwen35Model {
   readonly loraState = new LoraState();
   /** Layers whose attention reads plain keys and values: none; it attends the storage its caches hold. */
   readonly requiredDenseKvLayers: readonly number[] = Object.freeze([]);
+  /** Prepared image and video embeddings with request-owned mRoPE positions,
+   * layer taps for drafts. Its caches convert delayed affine rows and every
+   * method is qualified over them. Speculation over affine KV is this graph's
+   * option `MLX_BUN_QWEN_SPEC_KV4`, read where the graph is bound; immediate
+   * 4-bit KV is qualified even without a grouped method. */
+  get graphCapabilities(): GraphCapabilities {
+    return declareGraph({
+      media: { input: "embeddings+positions", video: true }, hiddenLayerTaps: "hiddenTap" in this,
+      kv: { delayedAffine: "all" },
+      speculation: { affineKv: runtimeFlag("MLX_BUN_QWEN_SPEC_KV4", true), immediateAffine4: true },
+    });
+  }
+  bindMediaInput(input: Vision): MlxPromptInput { return bindQwenMediaInput(this, input.embeddings, input.mrope!); }
+  mediaEncoders(modelDir: string): Promise<MediaEncoders> { return qwenMediaEncoders(this, modelDir); }
+  draftTarget(_caches: Cache[]): TargetView { return qwenDraftTarget(this); }
   readonly embed: QuantizedEmbedding;
   readonly layers: Qwen3Layer[];
   readonly finalNorm: RMSNorm;

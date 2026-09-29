@@ -70,7 +70,7 @@ export type BatchRequest = BatchRequestFields & (
 
 export interface BatchRequestFields {
   /** Borrowed prepared input; its owner retains it through preparation. */
-  promptInput?: import("./prompt-input").MlxPromptInput;
+  promptInput?: import("../contracts/mlx/media").MlxPromptInput;
   cacheSessionId?: string;
   /** Optional ordinary continuation policy; owns persistence and sampler recovery. */
   continuation?: OrdinaryContinuation;
