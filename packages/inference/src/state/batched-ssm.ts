@@ -18,6 +18,8 @@ export class BatchedSSMCache extends SSMCache implements BatchableCache, PaddedP
   get rowOffsets(): readonly number[] { return this.offsets!; }
   get leftPad(): readonly number[] { return this.rowOffsets.map(() => 0); }
   makeEmptyBatch(): BatchedSSMCache { return new BatchedSSMCache(); }
+  /** Recurrent state cannot be trimmed: only a row whose own advance count is the key. */
+  canPublishRow(row: number, tokens: number): boolean { return !!this.conv && this.rowOffset(row) === tokens; }
   projectedBytes(_tokens: number): number {
     return this.batchSize ? this.state().reduce((bytes, array) => bytes + array.nbytes, 0) / this.batchSize : 0;
   }

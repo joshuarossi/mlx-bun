@@ -21,8 +21,10 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { QuantizedKVCache } from "./quantized-kv";
-import { type Mask } from "../contracts/mlx/cache";
+import { type BatchableCache, type Cache, type Mask, type QuantizedAttentionState } from "../contracts/mlx/cache";
 import { buildBatchedDecodeMask } from "./batched-mask";
+import { isQuantizedKvCache } from "./capabilities";
+import { runtimeValue } from "../runtime/config";
 
 export interface QuantRow {
   keys: ops.QuantizedTensor;
@@ -209,5 +211,130 @@ export class BatchedQuantDecodeMaskCache extends QuantizedKVCache {
   }
   override dispose(): void {
     this.inner.dispose();
+  }
+}
+
+/** The quantized twin of PaddedKVRows: a running batch's affine-quantized
+ *  full-attention KV as (packed, scales, biases) triples with right-aligned rows.
+ *  Its rows were converted by the serial per-layer maintenance before they
+ *  joined, so their quantized bytes are the serial cache's; this layout only
+ *  re-arranges them along the batch axis (`extendQuantRows`, or the re-merge
+ *  with MLX_BUN_BATCH_EXTEND=0) and, while any row is padded, supplies the
+ *  padding-aware mask and per-row RoPE positions. Sources are borrowed: a
+ *  running layout or one serial QuantizedKVCache, then one per joining row. */
+export class PaddedQuantKVRows implements BatchableCache {
+  #inner: QuantizedKVCache;
+  #leftPad: number[] = [];
+  #padded = false;
+  #view: BatchedQuantDecodeMaskCache | null = null;
+
+  constructor(readonly groupSize: number, readonly bits: number) { this.#inner = new QuantizedKVCache(groupSize, bits); }
+
+  signature(): string { return `kv:padded-rows-quant:${this.bits}:${this.groupSize}`; }
+  get batchSize(): number | null { return this.#leftPad.length || null; }
+  get leftPad(): readonly number[] { return this.#leftPad; }
+  get rowOffsets(): readonly number[] { return this.#leftPad.map((pad) => this.#inner.offset - pad); }
+  get offset(): number { return this.#inner.offset; }
+  /** Attention reads and appends the quantized planes directly. */
+  get quantizedAttention(): QuantizedAttentionState { return this.#inner; }
+  /** Present only while a row is padded: each row's own position. */
+  get ropeOffsetArr(): MlxArray | undefined { return this.#padded ? this.#step().ropeOffsetArr : undefined; }
+  makeEmptyBatch(): PaddedQuantKVRows { return new PaddedQuantKVRows(this.groupSize, this.bits); }
+
+  bytesPerToken(): number {
+    return this.#leftPad.length ? this.#inner.bytesPerToken() / this.#leftPad.length : 0;
+  }
+  projectedBytes(tokens: number): number { return this.bytesPerToken() * tokens; }
+
+  /** One wrapper per step: its RoPE positions are fixed at construction, before the step's writes. */
+  #step(): BatchedQuantDecodeMaskCache {
+    return this.#view ??= new BatchedQuantDecodeMaskCache(this.#inner, this.#leftPad.length, [...this.#leftPad]);
+  }
+  updateAndFetch(): [MlxArray, MlxArray] { return this.#inner.updateAndFetch(); }
+  makeMask(N: number, windowSize: number | null): Mask {
+    return this.#padded ? this.#step().makeMask(N, windowSize) : this.#inner.makeMask(N, windowSize);
+  }
+  /** Free this step's RoPE positions after the step's graph is built; the KV stays. */
+  releaseRopeArr(): void { this.#view?.releaseRopeArr(); this.#view = null; }
+  state(): MlxArray[] { return this.#inner.state(); }
+  isTrimmable(): boolean { return this.#inner.isTrimmable(); }
+  trim(n: number): void { this.#inner.trim(n); }
+
+  #set(inner: QuantizedKVCache, leftPad: number[]): void {
+    this.releaseRopeArr();
+    this.#inner = inner; this.#leftPad = leftPad; this.#padded = leftPad.some((pad) => pad !== 0);
+  }
+
+  mergeRows(rows: readonly Cache[]): void {
+    if (this.#leftPad.length) throw new Error("PaddedQuantKVRows.mergeRows needs an empty batch");
+    if (!rows.length) return;
+    const held: ops.QuantizedTensor[] = [];
+    const own = (triple: ops.QuantizedTensor): ops.QuantizedTensor => { held.push(triple); return triple; };
+    type Part = { row: QuantRow; pads: number[] };
+    const partOf = (cache: Cache): Part => {
+      if (cache instanceof PaddedQuantKVRows) {
+        const [keys, values] = cache.#inner.temporalView();
+        return { row: { keys: own(keys), values: own(values) }, pads: [...cache.#leftPad] };
+      }
+      if (!isQuantizedKvCache(cache)) throw new Error(`quantized full-attention batch cannot merge ${cache.signature()}`);
+      const [keys, values] = cache.temporalView();
+      return { row: { keys: own(keys), values: own(values) }, pads: [0] };
+    };
+    const cut = (triple: ops.QuantizedTensor, b: number, pad: number): ops.QuantizedTensor => own(tripleMap(triple, (a) =>
+      a.slice([b, 0, pad, 0], [b + 1, a.shape[1]!, a.shape[2]!, a.shape[3]!])));
+    const extend = runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0";
+    let final: { keys: ops.QuantizedTensor; values: ops.QuantizedTensor } | undefined;
+    try {
+      let acc = partOf(rows[0]!);
+      if (rows.length === 1) {
+        const single = mergeQuantRows(acc.pads.map((pad, b) => ({ keys: cut(acc.row.keys, b, pad), values: cut(acc.row.values, b, pad) })));
+        acc = { row: { keys: own(single.keys), values: own(single.values) }, pads: single.leftPad };
+      }
+      for (const source of rows.slice(1)) {
+        const next = partOf(source);
+        if (next.pads.length !== 1) throw new Error("PaddedQuantKVRows joins one solo row at a time");
+        let joined: { keys: ops.QuantizedTensor; values: ops.QuantizedTensor; leftPad: number[] };
+        if (extend) {
+          joined = extendQuantRows(acc.row.keys, acc.row.values, acc.pads, next.row);
+        } else {
+          const rowsOut = acc.pads.map((pad, b) => ({ keys: cut(acc.row.keys, b, pad), values: cut(acc.row.values, b, pad) }));
+          joined = mergeQuantRows([...rowsOut, next.row]);
+        }
+        acc = { row: { keys: own(joined.keys), values: own(joined.values) }, pads: joined.leftPad };
+      }
+      final = acc.row;
+      held.splice(held.indexOf(final.keys), 1); held.splice(held.indexOf(final.values), 1);
+      const cache = new QuantizedKVCache(this.groupSize, this.bits);
+      cache.restoreState(final.keys, final.values, final.keys.packed.shape[2]!);
+      final = undefined;
+      this.#set(cache, acc.pads);
+    } finally {
+      for (const triple of held) disposeTriple(triple);
+      if (final) { disposeTriple(final.keys); disposeTriple(final.values); }
+    }
+  }
+
+  extractRow(row: number): Cache {
+    return this.#inner.keys ? extractQuantRow(this.#inner, this.#leftPad[row]!, row)
+      : new QuantizedKVCache(this.groupSize, this.bits);
+  }
+
+  filterRows(keep: readonly number[]): void {
+    if (!keep.length) { this.dispose(); return; }
+    const kept = keep.map((row) => this.#leftPad[row]!);
+    const shared = Math.min(...kept); // padding every survivor shares
+    const [keys, values] = this.#inner.temporalView();
+    let filtered: { keys: ops.QuantizedTensor; values: ops.QuantizedTensor };
+    try { filtered = filterQuantRows(keys, values, [...keep], shared); }
+    finally { disposeTriple(keys); disposeTriple(values); }
+    const cache = new QuantizedKVCache(this.groupSize, this.bits);
+    cache.restoreState(filtered.keys, filtered.values, this.#inner.offset - shared);
+    this.#inner.dispose();
+    this.#set(cache, kept.map((pad) => pad - shared));
+  }
+
+  dispose(): void {
+    this.#inner.dispose();
+    this.#set(new QuantizedKVCache(this.groupSize, this.bits), []);
   }
 }

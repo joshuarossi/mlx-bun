@@ -98,6 +98,29 @@ const closedModelUnion: ReadonlySet<string> = new Set(["RuntimeModel"]);
 const isScheduling = (file: string, owner: Library) =>
   owner.name === "@mlx-bun/inference" && relative(owner.source, file).startsWith("execution/");
 
+/** Concrete cache modules: the files under `state/` that export a cache class, that
+ * is a class declaring `signature()` (the Cache contract's identity) or extending
+ * one. Scheduling moves rows through the row-layout port (`state/layout`) and
+ * never names a storage family. */
+function cacheModules(sources: ReadonlyMap<string, ts.SourceFile>, stateRoot: string): Set<string> {
+  const classes: { name: string; file: string; signature: boolean; base: string | undefined }[] = [];
+  for (const [file, source] of sources) {
+    if (!file.startsWith(stateRoot + "/")) continue;
+    for (const node of source.statements) {
+      if (!ts.isClassDeclaration(node) || !node.name) continue;
+      const base = node.heritageClauses?.find(clause => clause.token === ts.SyntaxKind.ExtendsKeyword)?.types[0]?.expression;
+      classes.push({ name: node.name.text, file, base: base && ts.isIdentifier(base) ? base.text : undefined,
+        signature: node.members.some(member => ts.isMethodDeclaration(member) && ts.isIdentifier(member.name) && member.name.text === "signature") });
+    }
+  }
+  const caches = new Set(classes.filter(item => item.signature).map(item => item.name));
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const item of classes) if (item.base && caches.has(item.base) && !caches.has(item.name)) { caches.add(item.name); grown = true; }
+  }
+  return new Set(classes.filter(item => caches.has(item.name)).map(item => item.file));
+}
+
 /** Anything in a types-only package that exists at runtime: values, `export *`, non-type exports, side-effect imports. */
 function runtimeCode(source: ts.SourceFile): { text: string; line: number }[] {
   const found: { text: string; line: number }[] = [];
@@ -277,6 +300,7 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (JSON.stringify(thirdParty) !== JSON.stringify(Object.keys(packageOwners).toSorted()))
       violations.push("Inference third-party dependencies need an explicit layer owner");
   }
+  const cacheFiles = inferencePackage ? cacheModules(sources, resolve(inferencePackage.source, "state")) : new Set<string>();
   const draftProviders = new Set<string>();
   for (const [file, source] of sources)
     if (inferencePackage && relative(inferencePackage.source, file).startsWith(draftProviderSources))
@@ -360,6 +384,8 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       }
       if (from !== undefined && (to === undefined || !mayImport(from, to)))
         violations.push(`${at}: ${from} -> ${to ?? targetOwner.name} (${specifier})`);
+      if (isScheduling(file, owner) && cacheFiles.has(actual))
+        violations.push(`${at}: scheduling reaches storage through the row-layout port (state/layout), not the concrete cache module (${specifier})`);
       if (consumer && targetOwner.name === "@mlx-bun/inference" &&
           relative(targetOwner.source, actual).startsWith("models/") && !graphContracts.has(relative(targetOwner.source, actual)))
         violations.push(`${at}: ${consumer} cannot import a concrete model (${specifier}); consume its declared capabilities`);
@@ -580,6 +606,16 @@ test("scheduling, engine, server, CLI and training code cannot import concrete m
     // Scheduling takes the structural graph interface, not the closed union of model classes.
     write(scheduler, 'import type { RuntimeModel } from "../models/factory"; export const plan = (m: RuntimeModel) => m;');
     expect((await inspectWorkspaces(root)).some(item => item.includes("execution/plan.ts:1: scheduling takes the structural graph interface (MlxTokenGraph), not the closed RuntimeModel union"))).toBe(true);
+    // Storage is reached through the row-layout port, never a concrete cache module (or its subclasses).
+    write("packages/inference/src/state/kv.ts", "export class KVCache { signature() { return 'kv'; } }");
+    write("packages/inference/src/state/batched.ts", 'import { KVCache } from "./kv"; export class Batched extends KVCache {}');
+    write("packages/inference/src/state/layout.ts", 'import { Batched } from "./batched"; export const layout = () => new Batched();');
+    write(scheduler, 'import { layout } from "../state/layout"; export const plan = () => layout();');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(scheduler, 'import { KVCache } from "../state/kv"; import { Batched } from "../state/batched"; export const plan = () => [KVCache, Batched];');
+    const stored = await inspectWorkspaces(root);
+    for (const module of ["../state/kv", "../state/batched"])
+      expect(stored.some(item => item.includes(`scheduling reaches storage through the row-layout port (state/layout), not the concrete cache module (${module})`))).toBe(true);
     write(scheduler, 'import { Gemma4Model } from "../models/gemma4/model"; export const paged = (m: object) => m instanceof Gemma4Model;');
     const scheduled = await inspectWorkspaces(root);
     expect(scheduled.some(item => item.includes("cannot import a concrete model (../models/gemma4/model)"))).toBe(true);

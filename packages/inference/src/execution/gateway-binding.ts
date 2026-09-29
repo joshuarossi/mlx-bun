@@ -7,11 +7,9 @@ import type { ModelConfig } from "../artifacts/config";
 import type { KvScheme } from "../state/kv-scheme";
 import type { MlxTokenGraph } from "../models/graph";
 import { declaredGraph } from "../models/capabilities";
-import { KVCache } from "../state/kv";
-import { RotatingKVCache } from "../state/rotating-kv";
-import { isBatchableCache, isPlainKvCache, isRotatingPlainCache } from "../state/capabilities";
+import { isPlainKvCache, isRecurrentCache, isRotatingPlainCache } from "../state/capabilities";
 import { bindRequiredDenseKvLayers } from "../state/dense-kv-reads";
-import { SSMCache } from "../state/ssm";
+import { ownedCacheLayoutFactory } from "../state/layout";
 import { affineQuantizedKvStart, createKvMaintenance } from "../state/kv-maintenance";
 import type { Cache } from "../contracts/mlx/cache";
 import { runtimeConfig, type RuntimeConfig } from "../runtime/config";
@@ -59,16 +57,15 @@ export interface MlxGatewayBinding {
   createBatchGroup(options: MlxBatchExecutionGroupOptions): MlxBatchGroup;
 }
 
-/** Which operations the graph's own caches provide: batch rows (plain and
- * rotating KV, batchable layouts, SSM under the binding's policy), target
+/** Which operations the graph's own caches provide: a batch row layout for
+ * every layer (recurrent state only under the binding's policy), target
  * transaction rows and per-layer quantized conversion; and the graph's declared
  * dense-read layers, bound against those caches. */
 function probeStorage(model: MlxTokenGraph, ssm: boolean) {
   const caches = model.makeCache();
   try {
     return Object.freeze({
-      batchable: caches.every(cache => cache instanceof KVCache || cache instanceof RotatingKVCache ||
-        isBatchableCache(cache) || (ssm && cache instanceof SSMCache)),
+      batchable: caches.every(cache => ownedCacheLayoutFactory(cache) !== undefined && (ssm || !isRecurrentCache(cache))),
       targetRows: caches.every(cache => targetRowLayoutFactory(cache) !== undefined),
       convertible: Object.freeze(caches.map(cache => isPlainKvCache(cache) || isRotatingPlainCache(cache))),
       requiredDenseKvLayers: bindRequiredDenseKvLayers(model.requiredDenseKvLayers, caches),

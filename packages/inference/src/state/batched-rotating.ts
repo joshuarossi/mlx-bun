@@ -23,7 +23,8 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { RotatingKVCache } from "./rotating-kv";
-import { type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { isRotatingPlainCache } from "./capabilities";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
 import { plainKvStorage } from "./dense-kv-reads";
 import {
@@ -87,11 +88,11 @@ export function buildBatchedRotatingMask(
 
 /** Port of mlx-lm BatchRotatingKVCache; padded singleton chunks use its
  * concat operation with the matching block mask until finalization. */
-export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
+export class BatchedRotatingCache implements BatchableCache, PaddedPrefillCache {
   readonly denseKvReads = plainKvStorage;
   keys: MlxArray | null = null;
   values: MlxArray | null = null;
-  readonly #rows: BatchedRotatingState;
+  #rows: BatchedRotatingState;
   #ropeArr: MlxArray | null = null;
   #ropeForOffset = -1;
   readonly maxSize: number;
@@ -134,8 +135,15 @@ export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
   }
 
   get offsetArr(): number[] { return this.#rows.offsets; }
+  get rowOffsets(): readonly number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
   get batchSize(): number { return this.#rows.batchSize; }
+  makeEmptyBatch(): BatchedRotatingCache { return new BatchedRotatingCache(this.maxSize, []); }
+  /** Bytes one row holds for `tokens` more positions, capped at the window. */
+  projectedBytes(tokens: number): number {
+    if (!this.keys || !this.values || !this.batchSize) return 0;
+    return (this.keys.nbytes + this.values.nbytes) / (this.batchSize * this.keys.shape[2]!) * Math.min(tokens, this.maxSize);
+  }
 
   /** Current batch size — tracks filter() (which shrinks the per-row arrays). */
   get #B(): number {
@@ -277,8 +285,8 @@ export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
    *  merge/decode/filter keep each row's ring bytes identical to the serial
    *  cache's (`02d723a:tests/unit/batched-rotating.test.ts`) and this is a pure
    *  slice+copy. */
-  extractRow(i: number, limit?: number): RotatingKVCache | null {
-    if (!this.keys || !this.values) return null;
+  extractRow(i: number, limit?: number): RotatingKVCache {
+    if (!this.keys || !this.values) return new RotatingKVCache(this.maxSize);
     const pad = Math.max(0, this.leftPad[i]!, limit === undefined ? 0 : this.#rows.activeLength - limit);
     const c = new RotatingKVCache(this.maxSize);
     const k = temporalStorageView(plainRowStorage, this.keys, this.#rows, {
@@ -322,6 +330,36 @@ export class BatchedRotatingCache implements Cache, PaddedPrefillCache {
     this.keys = this.values = null;
     this.#ropeArr?.dispose();
     this.#ropeArr = null;
+  }
+
+  /** Join rows into this empty ring: sources are running rings, whose rows are
+   *  cut out in temporal order, or serial RotatingKVCaches (an adopted lone row
+   *  or a joiner), in row order. Sources are borrowed. */
+  mergeRows(rows: readonly Cache[]): void {
+    if (this.#rows.batchSize) throw new Error("BatchedRotatingCache.mergeRows needs an empty batch");
+    const parts: { keys: MlxArray; values: MlxArray }[] = [], offsets: number[] = [], held: MlxArray[] = [];
+    const own = (array: MlxArray) => { held.push(array); return array; };
+    try {
+      for (const source of rows) {
+        if (source instanceof BatchedRotatingCache) {
+          const [k0, v0] = source.temporalView(); own(k0); own(v0);
+          const [, H, valid, D] = k0.shape as [number, number, number, number];
+          const vD = v0.shape[3]!;
+          for (let b = 0; b < source.batchSize; b++) {
+            const pad = Math.max(0, source.leftPad[b]!);
+            parts.push({ keys: own(k0.slice([b, 0, pad, 0], [b + 1, H, valid, D])),
+              values: own(v0.slice([b, 0, pad, 0], [b + 1, H, valid, vD])) });
+            offsets.push(source.offsetArr[b]!);
+          }
+        } else if (isRotatingPlainCache(source)) {
+          const [keys, values] = (source as RotatingKVCache).temporalView();
+          parts.push({ keys: own(keys), values: own(values) }); offsets.push(source.offset);
+        } else throw new Error(`sliding-window batch cannot merge ${source.signature()}`);
+      }
+      const merged = BatchedRotatingCache.merge(parts, offsets, this.maxSize);
+      this.#rows = merged.#rows; this.keys = merged.keys; this.values = merged.values;
+      merged.keys = merged.values = null;
+    } finally { for (const array of held) array.dispose(); }
   }
 
   /** Assemble a batch from per-row temporal KV slices (port of merge). Each row

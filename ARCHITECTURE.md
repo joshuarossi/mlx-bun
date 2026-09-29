@@ -81,8 +81,9 @@ the profile or the opened runtime, and consumed as data. The architecture gate
 rejects model classes, model-type and architecture checks, family predicates and
 model-identity checks in the engine, server and CLI.
 Scheduling (`execution/`) is written against the structural `MlxTokenGraph`, not
-the registry's closed `RuntimeModel` union of model classes, and the gate rejects
-the union there. Elsewhere this remains the target design and a review criterion
+the registry's closed `RuntimeModel` union of model classes, and moves cache rows
+through each layer's row layout (`state/layout`, the `BatchableCache` port) rather
+than a concrete cache class. The gate rejects both there. Elsewhere this remains the target design and a review criterion
 for remaining migration work, not a claim that every existing path already
 satisfies it.
 

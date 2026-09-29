@@ -15,12 +15,14 @@
 // thing the mask must encode is (a) causality, (b) each row's left padding,
 // and (c) the sliding window, if any.
 
-import { cacheSignature } from "./capabilities";
+import { cacheSignature, isPlainKvCache } from "./capabilities";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { createCausalMask } from "../kernels/attention/masks";
+import { runtimeValue } from "../runtime/config";
 import { KVCache } from "./kv";
-import { type Cache, type Mask } from "../contracts/mlx/cache";
+import { plainKvStorage } from "./dense-kv-reads";
+import { type BatchableCache, type Cache, type Mask } from "../contracts/mlx/cache";
 
 /** Padding-aware key-validity mask for batched DECODE with left-padded rows.
  *
@@ -278,4 +280,130 @@ export function filterKVRows(
   const v = take(values);
   idx.dispose();
   return { keys: k, values: v };
+}
+
+/** The layout of a running batch's plain full-attention KV: one [B,H,S,D] buffer
+ *  whose rows are right-aligned (left-padded), so every row appends into the same
+ *  column (mlx-lm BatchKVCache). It composes the primitives above: `mergeRows`
+ *  joins one solo row to a running batch (`extendKVRows`, or the O(B·S) re-merge
+ *  with MLX_BUN_BATCH_EXTEND=0), `filterRows` evicts rows and their shared
+ *  padding, `extractRow` pulls a row back out as an owned serial cache. While any
+ *  row is padded the layout gives attention the padding-aware decode mask and
+ *  per-row RoPE positions (BatchedDecodeMaskCache); while none is, it is exactly
+ *  the serial cache, so a batch of equal-length rows runs the serial graph.
+ *  Sources of `mergeRows` are borrowed: a running layout or one serial KVCache,
+ *  then one serial KVCache per joining row. */
+export class PaddedKVRows implements BatchableCache {
+  readonly denseKvReads = plainKvStorage;
+  #inner = new KVCache();
+  #leftPad: number[] = [];
+  #padded = false;
+  #view: BatchedDecodeMaskCache | null = null;
+
+  signature(): string { return "kv:padded-rows"; }
+  get batchSize(): number | null { return this.#leftPad.length || null; }
+  get leftPad(): readonly number[] { return this.#leftPad; }
+  get rowOffsets(): readonly number[] { return this.#leftPad.map((pad) => this.#inner.offset - pad); }
+  get offset(): number { return this.#inner.offset; }
+  /** Present only while a row is padded: each row's own position. */
+  get ropeOffsetArr(): MlxArray | undefined { return this.#padded ? this.#step().ropeOffsetArr : undefined; }
+  makeEmptyBatch(): PaddedKVRows { return new PaddedKVRows(); }
+
+  bytesPerToken(): number {
+    return this.#leftPad.length ? this.#inner.bytesPerToken() / this.#leftPad.length : 0;
+  }
+  projectedBytes(tokens: number): number { return this.bytesPerToken() * tokens; }
+
+  #step(): BatchedDecodeMaskCache {
+    return this.#view ??= new BatchedDecodeMaskCache(this.#inner, this.#leftPad.length, [...this.#leftPad], null);
+  }
+  updateAndFetch(k: MlxArray, v: MlxArray): [MlxArray, MlxArray] { return this.#inner.updateAndFetch(k, v); }
+  makeMask(N: number, windowSize: number | null): Mask {
+    return this.#padded ? this.#step().makeMask(N, windowSize) : this.#inner.makeMask(N, windowSize);
+  }
+  /** Free this step's RoPE positions after the step's graph is built; the KV stays. */
+  releaseRopeArr(): void { this.#view?.releaseRopeArr(); }
+  state(): MlxArray[] { return this.#inner.state(); }
+  isTrimmable(): boolean { return this.#inner.isTrimmable(); }
+  trim(n: number): void { this.#inner.trim(n); }
+
+  #set(inner: KVCache, leftPad: number[]): void {
+    this.#view?.releaseRopeArr(); this.#view = null;
+    this.#inner = inner; this.#leftPad = leftPad; this.#padded = leftPad.some((pad) => pad !== 0);
+  }
+
+  mergeRows(rows: readonly Cache[]): void {
+    if (this.#leftPad.length) throw new Error("PaddedKVRows.mergeRows needs an empty batch");
+    if (!rows.length) return;
+    const held = new Set<MlxArray>();
+    const own = (array: MlxArray): MlxArray => { held.add(array); return array; };
+    type Part = { keys: MlxArray; values: MlxArray; pads: number[] };
+    const partOf = (cache: Cache): Part => {
+      if (cache instanceof PaddedKVRows) {
+        const [keys, values] = cache.#inner.temporalView();
+        return { keys: own(keys), values: own(values), pads: [...cache.#leftPad] };
+      }
+      if (!isPlainKvCache(cache)) throw new Error(`full-attention batch cannot merge ${cache.signature()}`);
+      const [keys, values] = cache.temporalView();
+      return { keys: own(keys), values: own(values), pads: [0] };
+    };
+    const extend = runtimeValue("MLX_BUN_BATCH_EXTEND") !== "0";
+    try {
+      let acc = partOf(rows[0]!);
+      if (rows.length === 1) {
+        const single = mergeKVRows(acc.pads.map((pad, b) => ({
+          keys: own(acc.keys.slice([b, 0, pad, 0], [b + 1, acc.keys.shape[1]!, acc.keys.shape[2]!, acc.keys.shape[3]!])),
+          values: own(acc.values.slice([b, 0, pad, 0], [b + 1, acc.values.shape[1]!, acc.values.shape[2]!, acc.values.shape[3]!])),
+        })));
+        acc = { keys: own(single.keys), values: own(single.values), pads: single.leftPad };
+      }
+      for (const source of rows.slice(1)) {
+        const row = partOf(source);
+        if (row.pads.length !== 1) throw new Error("PaddedKVRows joins one solo row at a time");
+        let joined: { keys: MlxArray; values: MlxArray; leftPad: number[] };
+        if (extend) {
+          // mlx-lm BatchKVCache.extend: one pad and one concat; existing pads grow, never shrink.
+          joined = extendKVRows(acc.keys, acc.values, acc.pads, row);
+        } else {
+          // The O(B·S) re-merge re-normalizes every row's padding.
+          const [, H, off, D] = acc.keys.shape as [number, number, number, number];
+          const vD = acc.values.shape[3]!;
+          const rowsOut = acc.pads.map((pad, b) => ({
+            keys: own(acc.keys.slice([b, 0, pad, 0], [b + 1, H, off, D])),
+            values: own(acc.values.slice([b, 0, pad, 0], [b + 1, H, off, vD])),
+          }));
+          joined = mergeKVRows([...rowsOut, row]);
+        }
+        acc = { keys: own(joined.keys), values: own(joined.values), pads: joined.leftPad };
+      }
+      held.delete(acc.keys); held.delete(acc.values);
+      const cache = new KVCache();
+      cache.restoreState(acc.keys, acc.values, acc.keys.shape[2]!);
+      this.#set(cache, acc.pads);
+    } finally { for (const array of held) array.dispose(); }
+  }
+
+  extractRow(row: number): Cache {
+    return this.#inner.keys ? extractKVRow(this.#inner, this.#leftPad[row]!, row) : new KVCache();
+  }
+
+  filterRows(keep: readonly number[]): void {
+    if (!keep.length) { this.dispose(); return; }
+    const kept = keep.map((row) => this.#leftPad[row]!);
+    // mlx-lm BatchKVCache.filter removes the padding every survivor shares.
+    const shared = Math.min(...kept);
+    const [keys, values] = this.#inner.temporalView();
+    let filtered: { keys: MlxArray; values: MlxArray };
+    try { filtered = filterKVRows(keys, values, [...keep], shared); }
+    finally { keys.dispose(); values.dispose(); }
+    const cache = new KVCache();
+    cache.restoreState(filtered.keys, filtered.values, this.#inner.offset - shared);
+    this.#inner.dispose();
+    this.#set(cache, kept.map((pad) => pad - shared));
+  }
+
+  dispose(): void {
+    this.#inner.dispose();
+    this.#set(new KVCache(), []);
+  }
 }
