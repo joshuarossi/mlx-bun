@@ -2,9 +2,9 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { clearCache } from "@mlx-bun/mlx/ffi";
 import type { Cache } from "../contracts/mlx/cache";
-import type { RuntimeModel } from "../models/factory";
+import type { MlxTokenGraph } from "../models/graph";
 import type { GenerateOptions } from "../generation/index";
-import { bindLegacyAutoregressiveModel } from "../generation/bindings/autoregressive";
+import { bindMlxAutoregressiveGraph } from "../generation/bindings/autoregressive";
 import { appendGrammarSpan } from "../generation/grammar-step";
 import { makeStepSampler, type DeviceStepSampler } from "../sampling/index";
 import { createKvMaintenance, type KvMaintenance } from "../state/kv-maintenance";
@@ -29,7 +29,7 @@ interface RequestState {
  * plain keys and values, each an index into the graph's `cacheCount` caches.
  * It is copied once; a row whose next append would not be read plain there is
  * refused before any layer appends. */
-export function bindGrammarGroupRequests(model: RuntimeModel, denseKvReads: readonly number[], cacheCount: number) {
+export function bindGrammarGroupRequests(model: MlxTokenGraph, denseKvReads: readonly number[], cacheCount: number) {
   const layers = denseKvLayerList(denseKvReads, cacheCount);
   return (input: GenerateOptions): MlxGroupMethodRequest => ({
     key: "grammar-forced-span", data: snapshotGenerationPolicy(input),
@@ -42,9 +42,9 @@ class GrammarGroup implements MlxGroupedMethod {
   readonly #requests = new Map<Row, RequestState>();
   #next = 0;
 
-  constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel,
+  constructor(readonly host: MlxGroupMethodHost, readonly model: MlxTokenGraph,
     readonly denseKvReads: readonly number[]) {
-    this.#binding = bindLegacyAutoregressiveModel(model);
+    this.#binding = bindMlxAutoregressiveGraph(model);
   }
 
   prepare(row: Row): MlxGroupPreparation {

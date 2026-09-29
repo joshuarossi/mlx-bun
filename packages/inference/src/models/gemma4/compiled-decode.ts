@@ -36,14 +36,33 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import * as ops from "@mlx-bun/mlx/ops";
 import { runtimeValue } from "../../runtime/config";
-import type { Gemma4Model } from "../../models/gemma4/model";
-import { declaredGraph } from "../../models/capabilities";
+import { isRowBatchCache } from "../../state/capabilities";
 import { KVCache } from "../../state/kv";
 import { QuantizedKVCache } from "../../state/quantized-kv";
 import { RotatingKVCache } from "../../state/rotating-kv";
 import { RotatingQuantizedKVCache } from "../../state/rotating-quantized-kv";
 import { setCompiledTrace } from "../../runtime/compiled-trace";
-import { type Cache, type DecodeStepPlan, type SharedKv } from "../../contracts/mlx/cache";
+import { type Cache, type DecodeStepPlan, type Mask, type SharedKv } from "../../contracts/mlx/cache";
+import type { MlxCompiledDecodeStep } from "../../contracts/mlx/graph";
+
+/** What the runner reads of the Gemma graph it compiles (the graph passes
+ * itself; a structural type keeps the graph file and this one acyclic). */
+export interface CompiledGemmaTarget {
+  readonly config: { readonly text: { readonly numKvSharedLayers: number; readonly enableMoeBlock: boolean } };
+  readonly perLayerWidth: number;
+  readonly windowSize: number;
+  readonly embedScale: number;
+  readonly embed: { encode(ids: MlxArray): MlxArray };
+  readonly finalNorm: { forward(h: MlxArray): MlxArray };
+  readonly layers: readonly {
+    readonly layerType: string;
+    forward(x: MlxArray, mask: Mask, cache: Cache | null, sharedIn: SharedKv | null,
+      perLayerInput: MlxArray | null): { h: MlxArray; shared: SharedKv };
+  }[];
+  materializeGraphConstants(): void;
+  forwardHidden(ids: MlxArray, cache: Cache[]): MlxArray;
+  logitsFromHidden(hidden: MlxArray): MlxArray;
+}
 
 type AnyCache = KVCache | QuantizedKVCache | RotatingKVCache | RotatingQuantizedKVCache;
 
@@ -211,7 +230,7 @@ function closureKey(descs: SlotDesc[]): string {
   return descs.map((d) => `${d.kind}:${d.groupSize}:${d.bits}`).join(",") + "|" + flags;
 }
 
-function makeTraceFn(model: Gemma4Model, descs: SlotDesc[]) {
+function makeTraceFn(model: CompiledGemmaTarget, descs: SlotDesc[]) {
   return (inputs: MlxArray[]): MlxArray[] => {
     const ropeOff = inputs[1]!;
     let pos = 2;
@@ -293,7 +312,7 @@ function disposeShared(s: SharedKv): void {
  *  Input layout: [idsOrH, ropeOffset, ...ring slots in layer order].
  *  Output layout: [hOrLogits, ...ring buffer updates]. */
 function makeSegmentTraceFn(
-  model: Gemma4Model, descs: SlotDesc[], from: number, to: number,
+  model: CompiledGemmaTarget, descs: SlotDesc[], from: number, to: number,
   first: boolean, last: boolean,
 ) {
   return (inputs: MlxArray[]): MlxArray[] => {
@@ -356,7 +375,8 @@ function makeSegmentTraceFn(
 
 const runners = new WeakMap<object, CompiledDecode>();
 
-export class CompiledDecode {
+/** The Gemma graph's compiled decode step (its `compiledDecodeStep`). */
+export class CompiledDecode implements MlxCompiledDecodeStep {
   /** Total compiled steps executed (tests assert the compiled path ran
    *  rather than silently falling back). */
   static stepsExecuted = 0;
@@ -383,7 +403,7 @@ export class CompiledDecode {
    *  price of the sharing). */
   readonly #segmented: boolean;
 
-  private constructor(readonly model: Gemma4Model) {
+  private constructor(readonly model: CompiledGemmaTarget) {
     // A fresh resume has no prefill to evaluate lazy FP32 constants. Capture
     // their values, not their construction graph, in every compiled closure.
     model.materializeGraphConstants();
@@ -392,18 +412,13 @@ export class CompiledDecode {
       t.numKvSharedLayers === 0 && !t.enableMoeBlock && model.perLayerWidth === 0;
   }
 
-  static for(model: Gemma4Model): CompiledDecode {
+  static for(model: CompiledGemmaTarget): CompiledDecode {
     let r = runners.get(model);
     if (!r) {
       r = new CompiledDecode(model);
       runners.set(model, r);
     }
     return r;
-  }
-
-  /** The compiled step of a graph that declares one; null for every other graph. */
-  static bound(model: object): CompiledDecode | null {
-    return declaredGraph(model).graphCapabilities.compiledDecode ? CompiledDecode.for(model as Gemma4Model) : null;
   }
 
   /** Release an existing model-owned runner without materializing constants or
@@ -414,14 +429,18 @@ export class CompiledDecode {
     if (runner) runner.dispose();
   }
 
-  /** Compilable this step? (Cheap; checked per generation setup.) */
-  static supports(caches: Cache[]): boolean {
+  /** Compilable this step? (Cheap; checked per decode step.) Only the serial
+   *  classes: a batched layout, even one that subclasses a serial class
+   *  (a filtered-to-one rotating quantized ring), carries per-row state the
+   *  trace does not express. */
+  accepts(caches: readonly Cache[]): boolean {
     return caches.every(
       (c) =>
-        c instanceof KVCache ||
-        c instanceof QuantizedKVCache ||
-        c instanceof RotatingKVCache ||
-        c instanceof RotatingQuantizedKVCache,
+        !isRowBatchCache(c) &&
+        (c instanceof KVCache ||
+          c instanceof QuantizedKVCache ||
+          c instanceof RotatingKVCache ||
+          c instanceof RotatingQuantizedKVCache),
     );
   }
 

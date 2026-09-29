@@ -37,7 +37,7 @@ function spanGrammar(spans: readonly (readonly number[])[]) {
 test.skipIf(!target)("real-weight committed spans over delayed affine KV equal direct generation below and across the transition, and beside a peer", async () => {
   const { Weights, loadModelConfig, createModel, generateAutoregressive } = await import("../../src/index");
   const { bindMlxGateway, createRuntimeConfig, withRuntimeConfig } = await import("../../src/execution");
-  const { bindLegacyAutoregressiveModel } = await import("../../src/generation/bindings/autoregressive");
+  const { bindMlxAutoregressiveGraph } = await import("../../src/generation/bindings/autoregressive");
   const { resolveKvScheme } = await import("../../src/state/kv-scheme");
   const weights = await Weights.open(target!);
   try {
@@ -66,7 +66,7 @@ test.skipIf(!target)("real-weight committed spans over delayed affine KV equal d
       let outcome = "length";
       lane = seen; kinds = [];
       try {
-        const generation = generateAutoregressive(bindLegacyAutoregressiveModel(model), prompt,
+        const generation = generateAutoregressive(bindMlxAutoregressiveGraph(model), prompt,
           { ...options(scheme, maxTokens, grammar), decodePolicy: { compiledDecode: false, grammarJump: true } });
         for await (const { token } of generation) tokens.push(token);
       } catch (error) { outcome = (error as Error).name; } finally { lane = null; }

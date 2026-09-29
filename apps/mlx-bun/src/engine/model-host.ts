@@ -354,10 +354,9 @@ export async function loadContext(
     if (draft) owned.add(draft.provider);
     const adapters = new AdapterManager(model);
     owned.add({ dispose() { disposeResources(adapters.list().map(({ id }) => ({ dispose() { adapters.unmount(id); } }))); } });
-    // Compiled runners borrow graph constants and weights. Retire them first,
+    // A compiled decode step borrows graph constants and weights. Retire it first,
     // after the owning engine has drained, including if later loading fails.
-    const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
-    owned.add({ dispose() { CompiledDecode.release(model); } });
+    owned.add({ dispose() { declaredGraph(model).releaseCompiledDecode?.(); } });
     const template = await loadContextTemplate(modelDir, opts.requireChatTemplate ?? true, dir => loadModelChatTemplate(dir, profile));
     const id = modelId ?? modelDir.split("/").filter(Boolean).at(-1)!;
     // Soft-token ids: the checkpoint's config, else the token text the profile declares.

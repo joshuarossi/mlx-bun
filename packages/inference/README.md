@@ -25,16 +25,22 @@ Each graph declares what it can do (`GraphCapabilities`, portable; a model expos
 it as `graphCapabilities`): its method, batched adapters, media input, paged
 attention, compiled decode, hidden-layer taps for drafts, a draft head its
 checkpoint carries (`nativeDraft`), which delayed affine KV levels its attention is
-qualified for, dense reads, and what its verifier qualifies (adapters, logprobs,
-affine and TurboQuant KV, external tokens, grammar proposals).
+qualified for, dense reads, whether long prompts prefill in workspace-bounded
+chunks, and what its verifier qualifies (adapters, logprobs, affine and TurboQuant
+KV, external tokens, grammar proposals).
 `MlxDeclaredGraph` names the operations behind those promises (`bindMediaInput`,
-`mediaEncoders`, `pixelInput`, `draftTarget`, `trainable`, `expertResidency`), and
+`mediaEncoders`, `pixelInput`, `draftTarget`, `compiledDecodeStep` and
+`releaseCompiledDecode`, `trainable`, `expertResidency`), and
 `declaredGraph` in `models/capabilities` checks the pairing once when composition
 binds the graph: an undeclared graph, or a declaration without its operation, is
 refused. The gateway plans from the declarations, the request and dynamic state
 (batch membership, cache contents, cancellation), and
 `MlxGatewayBinding.capabilities` reports what it resolved. Supporting a new graph
 means declaring and implementing; `execution/` and the app engine need no edit.
+The batch group and the autoregressive binding take the structural `MlxTokenGraph`
+(`models/graph`: config, caches, forward and projection, and the declared ports), not
+the registry's `RuntimeModel` union. A graph's compiled decode step lives with that
+graph (`models/gemma4/compiled-decode`) and reaches them through `compiledDecodeStep`.
 The architecture gate rejects concrete model imports, model-class `instanceof`,
 model-type and `architectures` checks, family predicates and model-scoped flags there,
 in the app's engine, server and CLI, and in `@mlx-bun/training`. What those need to

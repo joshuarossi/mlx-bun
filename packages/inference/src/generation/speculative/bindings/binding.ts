@@ -1,7 +1,7 @@
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Cache } from "../../../contracts/mlx/cache";
-import type { RuntimeModel } from "../../../models/factory";
+import type { MlxTokenGraph } from "../../../models/graph";
 import { declaredGraph } from "../../../models/capabilities";
 import type { Sampler } from "../../../sampling/index";
 import type { DraftProvider, DraftSource } from "../source";
@@ -17,7 +17,7 @@ import { resolveMlxPrefillPolicy } from "../../bindings/prefill-policy";
 
 /** Bound target operations and draft construction for one speculative run.
  * A replacement graph supplies this entire port, including any hidden taps.
- * The verifier never needs a RuntimeModel or an artifact-family check. */
+ * The verifier never needs a MlxTokenGraph or an artifact-family check. */
 export interface MlxSpeculativeBinding {
   readonly runtime?: RuntimeConfig;
   readonly prefillPolicy?: PrefillPolicy;
@@ -40,11 +40,11 @@ export interface MlxSpeculativeBinding {
 export type MlxSpeculativeTargetBinding = Omit<MlxSpeculativeBinding, "openDraft">;
 
 /** Legacy mutable tap/kernel fields require the gateway's exclusive lease. */
-export function bindSpeculativeTargetModel(model: RuntimeModel): MlxSpeculativeTargetBinding {
+export function bindSpeculativeTargetModel(model: MlxTokenGraph): MlxSpeculativeTargetBinding {
   const runtime = runtimeConfig();
   return {
     runtime,
-    prefillPolicy: resolveMlxPrefillPolicy(model.config, runtime),
+    prefillPolicy: resolveMlxPrefillPolicy(model, runtime),
     memory: model,
     descriptor: Object.freeze({ id: `legacy-spec:${model.config.modelType}`, backend: "mlx",
       graphAbi: "mlx-hidden-bsh-v1", stateAbi: "legacy-cache-array-v1", artifact: "legacy-resident-model" }),
@@ -58,17 +58,17 @@ export function bindSpeculativeTargetModel(model: RuntimeModel): MlxSpeculativeT
     supportsTapLayers: layers => !layers.length || (declaredGraph(model).graphCapabilities.hiddenLayerTaps && layers.every(layer =>
       Number.isInteger(layer) && layer >= 0 && layer <= model.config.text.numHiddenLayers)),
     projectLogits: model.logitsFromHidden.bind(model),
-    ...("setSpecKernelPinned" in model ? {
+    ...(model.setSpecKernelPinned ? {
       pinVerify() {
-        model.setSpecKernelPinned(true);
-        return { close() { model.setSpecKernelPinned(false); } };
+        model.setSpecKernelPinned!(true);
+        return { close() { model.setSpecKernelPinned!(false); } };
       },
     } : {}),
   };
 }
 
 /** Serial compatibility binds draft construction separately from target work. */
-export function bindLegacySpeculativeModel(model: RuntimeModel, provider: DraftProvider): MlxSpeculativeBinding {
+export function bindLegacySpeculativeModel(model: MlxTokenGraph, provider: DraftProvider): MlxSpeculativeBinding {
   return { ...bindSpeculativeTargetModel(model),
     openDraft: (sampler, caches) => provider.open({ sampler, target: bindLegacyDraftTarget(model, caches) }) };
 }
@@ -86,7 +86,7 @@ export function assertMlxSpeculativeBinding(binding: MlxSpeculativeBinding): voi
  *  post-finalNorm sentinel). Non-tapping sources get ctxML=null and never
  *  touch model.hiddenTap. */
 async function legacyForwardWithTaps(
-  model: RuntimeModel,
+  model: MlxTokenGraph,
   ids: MlxArray,
   caches: Cache[],
   tapLayers: number[] | undefined,
@@ -94,7 +94,7 @@ async function legacyForwardWithTaps(
 ): Promise<{ hidden: MlxArray; ctxML: MlxArray | null }> {
   if (!tapLayers) {
     if (work) return { hidden: await work(ids, caches), ctxML: null };
-    const asyncModel = model as RuntimeModel & {
+    const asyncModel = model as MlxTokenGraph & {
       forwardHiddenAsync?: (
         ids: MlxArray,
         caches: Cache[],
@@ -106,7 +106,7 @@ async function legacyForwardWithTaps(
     return { hidden, ctxML: null };
   }
   if (!declaredGraph(model).graphCapabilities.hiddenLayerTaps) throw new Error("target graph does not support hidden taps");
-  const m = model as Extract<RuntimeModel, { hiddenTap: unknown }>;
+  const m = model;
   const previousTap = m.hiddenTap;
   const cap = new Map<number, MlxArray>();
   const layers = new Set(tapLayers);

@@ -77,6 +77,13 @@ export interface GraphCapabilities {
    * provider registry resolves it, so no consumer names the graph or its
    * provider. `numDraftTokens` is the head's round width. */
   readonly nativeDraft: { readonly kind: string; readonly numDraftTokens: number } | null;
+  /** How prefill is sized for this graph. */
+  readonly prefill: {
+    /** Long prompts prefill in smaller chunks so the attention score matrices
+     * a fallback (unfused) attention materializes stay within a fixed
+     * workspace. It changes work size, never admission. */
+    readonly boundedWorkspace: boolean;
+  };
   readonly kv: {
     /** Attention reads plain keys and values only (softcapped attention);
      * encoded storage must decode on read. The layers are the graph's

@@ -1,5 +1,5 @@
 import type { Cache } from "../contracts/mlx/cache";
-import type { RuntimeModel } from "../models/factory";
+import type { MlxTokenGraph } from "../models/graph";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { nextPrefillStep } from "../contracts/portable/prefill";
 import type { CacheCodecProvider } from "../state/persistence-types";
@@ -15,7 +15,7 @@ export interface PrefillState extends MlxPrefillState {
 }
 
 interface PrefillHost {
-  model: RuntimeModel;
+  model: Pick<MlxTokenGraph, "makeCache">;
   chunkSize: number;
   tailSplit: boolean;
   promptCache?: RowPromptCache;

@@ -10,7 +10,7 @@ import { Qwen3Model } from "@mlx-bun/inference/models/qwen3";
 import { generateSpeculative, TwoModelProvider } from "@mlx-bun/inference/generation/speculative";
 import { forwardSequence, klPerToken, evalPpl } from "@mlx-bun/inference/scoring";
 import { createInferenceEngine, createAutoregressiveMethod } from "@mlx-bun/inference/execution";
-import { bindLegacyAutoregressiveModel } from "@mlx-bun/inference/generation/bindings/autoregressive";
+import { bindMlxAutoregressiveGraph } from "@mlx-bun/inference/generation/bindings/autoregressive";
 import { generate } from "@mlx-bun/inference";
 import { bindMlxGraph } from "@mlx-bun/inference/models/graph";
 
@@ -111,7 +111,7 @@ test("a caller loads a graph, owns its state, selects logits and generates direc
         } finally { draft.dispose(); }
         const engine = createInferenceEngine({ async plan(prompt: number[]) {
           return { id: "caller-plan", outputTokenLimit: 4,
-            method: createAutoregressiveMethod(bindLegacyAutoregressiveModel(model), prompt,
+            method: createAutoregressiveMethod(bindMlxAutoregressiveGraph(model), prompt,
               { temperature: 0, maxTokens: 4, eosTokenIds: [] }) };
         } }, { timer: { after(ms, callback) { const id = setTimeout(callback, ms); return () => clearTimeout(id); } } });
         try {

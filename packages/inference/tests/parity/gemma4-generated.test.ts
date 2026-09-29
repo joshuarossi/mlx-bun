@@ -54,7 +54,7 @@ test.skipIf(!inputs)("generated Gemma4 graph equals the monolith under kv_config
   const { loadModelConfig, Weights, configFingerprint } = await import("@mlx-bun/inference/artifacts");
   const { createModel } = await import("@mlx-bun/inference/models");
   const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");
-  const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
+  const { CompiledDecode } = await import("@mlx-bun/inference/models/gemma4/compiled-decode");
   const { generate } = await import("@mlx-bun/inference/generation");
   const { loadTokenizer } = await import("@mlx-bun/inference/input");
   // The fast-path counters live in each generated module.

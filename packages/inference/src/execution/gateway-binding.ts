@@ -5,7 +5,7 @@ import { bindPagedRequestState, pagedPrefixNamespace, type MlxRequestStatePolicy
 import type { ExecutionContext } from "../contracts/portable/scheduling";
 import type { ModelConfig } from "../artifacts/config";
 import type { KvScheme } from "../state/kv-scheme";
-import type { RuntimeModel } from "../models/factory";
+import type { MlxTokenGraph } from "../models/graph";
 import { declaredGraph } from "../models/capabilities";
 import { KVCache } from "../state/kv";
 import { RotatingKVCache } from "../state/rotating-kv";
@@ -63,7 +63,7 @@ export interface MlxGatewayBinding {
  * rotating KV, batchable layouts, SSM under the binding's policy), target
  * transaction rows and per-layer quantized conversion; and the graph's declared
  * dense-read layers, bound against those caches. */
-function probeStorage(model: RuntimeModel, ssm: boolean) {
+function probeStorage(model: MlxTokenGraph, ssm: boolean) {
   const caches = model.makeCache();
   try {
     return Object.freeze({
@@ -81,7 +81,7 @@ function probeStorage(model: RuntimeModel, ssm: boolean) {
  * with that maintenance. Probed over fresh caches that hold no buffers, when a
  * binding or group is composed (never per request, never remembered: the
  * scheme is read as given each time); every probe cache is released. */
-function certifiesDenseKvReads(model: RuntimeModel, scheme: KvScheme): boolean {
+function certifiesDenseKvReads(model: MlxTokenGraph, scheme: KvScheme): boolean {
   const caches = model.makeCache() as Cache[];
   try {
     createKvMaintenance(scheme.generationOptions).preparePrefill?.(caches);
@@ -89,7 +89,7 @@ function certifiesDenseKvReads(model: RuntimeModel, scheme: KvScheme): boolean {
   } finally { disposeResources(caches); }
 }
 
-export function bindMlxGateway(model: RuntimeModel, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
+export function bindMlxGateway(model: MlxTokenGraph, draft?: { provider: DraftProvider; numDraftTokens: number }): MlxGatewayBinding {
   const runtime = runtimeConfig();
   let continuationServices: ContinuationServices | undefined;
   // The declarations are resolved once, when the graph is bound; planning reads

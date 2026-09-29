@@ -1,15 +1,16 @@
 import type { GraphCapabilities } from "../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../contracts/mlx/graph";
+import type { MlxCompiledDecodeStep, MlxDeclaredGraph } from "../contracts/mlx/graph";
 
-type Declaration = Partial<Omit<GraphCapabilities, "adapters" | "kv" | "speculation">> & {
+type Declaration = Partial<Omit<GraphCapabilities, "adapters" | "kv" | "prefill" | "speculation">> & {
   readonly adapters?: Partial<GraphCapabilities["adapters"]>;
+  readonly prefill?: Partial<GraphCapabilities["prefill"]>;
   readonly kv?: Partial<GraphCapabilities["kv"]>;
   readonly speculation?: Partial<GraphCapabilities["speculation"]>;
 };
 
 /** Build a graph's declaration from the defaults an ordinary autoregressive
  * graph has (batched and mountable adapters, verification qualified for every
- * request shape, no media, no paging, no compiled step, no delayed affine KV)
+ * request shape, no media, no paging, no compiled step, no delayed affine KV, unbounded prefill chunks)
  * and what the graph does differently. */
 export function declareGraph(declared: Declaration = {}): GraphCapabilities {
   return Object.freeze({
@@ -17,6 +18,7 @@ export function declareGraph(declared: Declaration = {}): GraphCapabilities {
     sparseAttention: false, embeddings: false, hiddenLayerTaps: false, nativeDraft: null,
     ...declared,
     adapters: Object.freeze({ batched: true, mountable: true, ...declared.adapters }),
+    prefill: Object.freeze({ boundedWorkspace: false, ...declared.prefill }),
     kv: Object.freeze({ denseReads: false, delayedAffine: "none", ...declared.kv }),
     speculation: Object.freeze({ adapters: true, logprobs: true, affineKv: true, turboKv: true,
       immediateAffine4: false, externalTokens: true, grammarProposals: true, ...declared.speculation }),
@@ -44,4 +46,15 @@ export function declaredGraph(model: object): MlxDeclaredGraph & { readonly grap
   if (media?.input === "pixels" && typeof graph.pixelInput !== "function")
     throw new TypeError("the graph declares pixel media input but provides no pixelInput");
   return graph as MlxDeclaredGraph;
+}
+
+/** The compiled decode step of a graph that declares one, created on first use
+ * and kept by the graph; null for every other graph. A graph that promises a
+ * step and provides none is refused where composition binds it. */
+export function compiledDecodeStepOf(model: object): MlxCompiledDecodeStep | null {
+  const graph = declaredGraph(model);
+  if (!graph.graphCapabilities.compiledDecode) return null;
+  if (typeof graph.compiledDecodeStep !== "function")
+    throw new TypeError("the graph declares a compiled decode step but provides no compiledDecodeStep");
+  return graph.compiledDecodeStep();
 }

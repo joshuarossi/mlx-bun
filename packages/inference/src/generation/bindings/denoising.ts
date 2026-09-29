@@ -3,7 +3,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "../../contracts/mlx/cache";
 import type { DiffusionGemmaModel } from "../../models/diffusion-gemma/model";
 import type { MlxModelMemory } from "./autoregressive";
-import type { RuntimeModel } from "../../models/factory";
+import type { MlxTokenGraph } from "../../models/graph";
 import { declaredGraph } from "../../models/capabilities";
 import { disposeResources } from "../../runtime/resources";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime/config";
@@ -16,7 +16,7 @@ export interface MlxDenoisingBinding<State = Cache[]> {
 }
 
 /** Only a graph that declares the denoising method binds here. */
-export function bindLegacyDenoisingModel(resident: RuntimeModel): MlxDenoisingBinding {
+export function bindLegacyDenoisingModel(resident: MlxTokenGraph): MlxDenoisingBinding {
   if (declaredGraph(resident).graphCapabilities.method !== "denoising")
     throw new TypeError("the graph does not declare the denoising method");
   const model = resident as DiffusionGemmaModel;

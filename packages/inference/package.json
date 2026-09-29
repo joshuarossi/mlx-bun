@@ -32,7 +32,7 @@
     "./models/graph": "./src/models/graph.ts",
     "./kernels/attention/flash": "./src/kernels/attention/flash.ts",
     "./scoring": "./src/scoring/index.ts",
-    "./generation/compiled-decode": "./src/generation/bindings/compiled-decode.ts",
+    "./models/gemma4/compiled-decode": "./src/models/gemma4/compiled-decode.ts",
     "./artifacts/experts": "./src/artifacts/experts/index.ts",
     "./models": "./src/models/index.ts",
     "./models/memory-plan": "./src/models/memory-plan.ts",

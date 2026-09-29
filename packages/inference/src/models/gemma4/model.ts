@@ -33,7 +33,8 @@ import { isExpertTracing,recordRouting } from "../../runtime/expert-trace";
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxCompiledDecodeStep, MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import { CompiledDecode } from "./compiled-decode";
 import type { TargetView } from "../../contracts/mlx/draft-target";
 import type { TrainableGraph } from "../../contracts/mlx/trainable";
 import { activePrefixLayout, ropeBlocks } from "../../layers/prefix-layout";
@@ -643,6 +644,10 @@ export class Gemma4Model implements MlxDeclaredGraph {
     return gemma4MediaEncoders(this, modelDir, probes);
   }
   draftTarget(caches: Cache[]): TargetView { return gemma4DraftTarget(this, caches); }
+  /** The compiled decode step declared above: the step records this graph's own
+   * forward, so it shares the graph's weights and constants. */
+  compiledDecodeStep(): MlxCompiledDecodeStep { return CompiledDecode.for(this); }
+  releaseCompiledDecode(): void { CompiledDecode.release(this); }
   readonly embed: QuantizedEmbedding;
   readonly layers: DecoderLayer[];
   readonly finalNorm: RMSNorm;

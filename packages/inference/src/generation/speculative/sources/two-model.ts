@@ -23,7 +23,7 @@ import { Weights } from "../../../artifacts/weights";
 import { createModel, type RuntimeModel } from "../../../models/factory";
 import type { DraftProvider, DraftSource, GroupedDraftProvider } from "../source";
 import { standaloneDraftGroups, openStandaloneDraftRows } from "../bindings/two-model-rows";
-import { bindLegacyAutoregressiveModel } from "../../bindings/autoregressive";
+import { bindMlxAutoregressiveGraph } from "../../bindings/autoregressive";
 import { artifactIdentity } from "../../../artifacts/identity";
 import { configFingerprint } from "../../../artifacts/fingerprint";
 
@@ -45,7 +45,7 @@ export class TwoModelProvider implements DraftProvider {
     private readonly namespace: string,
   ) {
     this.id = id;
-    this.grouped = standaloneDraftGroups(bindLegacyAutoregressiveModel(model), namespace);
+    this.grouped = standaloneDraftGroups(bindMlxAutoregressiveGraph(model), namespace);
     this.weightsBytes = [...weights.shards.files.values()].reduce(
       (a, f) => a + f.mmap.size,
       0,
@@ -91,7 +91,7 @@ class TwoModelSource implements DraftSource {
   private readonly rows: ReturnType<typeof openStandaloneDraftRows>;
   private processed = 0;
   constructor(model: RuntimeModel, sampler: (lp: MlxArray, step: number) => MlxArray, namespace: string) {
-    this.rows = openStandaloneDraftRows(bindLegacyAutoregressiveModel(model), namespace,
+    this.rows = openStandaloneDraftRows(bindMlxAutoregressiveGraph(model), namespace,
       { sample: (logprobs, steps) => sampler(logprobs, steps[0]!) }, [null]);
   }
   async prefill(promptIds: number[]): Promise<void> {
