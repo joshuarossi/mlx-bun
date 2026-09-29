@@ -214,7 +214,10 @@ The opt-in [continuation test](tests/parity/ordinary-continuation.test.ts) takes
 and interrupted/restarted B1/B4 generation, including pending tokens, seeded
 sampling history, byte-identical checkpoint planes, and actual restored-row
 counts. `MLX_BUN_TEST_CONTINUATION_ADAPTER=/cached/adapter` adds adapter-context
-and cache-namespace isolation without bundled fixtures. The existing KV matrix
+and cache-namespace isolation without bundled fixtures; with it,
+`MLX_BUN_TEST_CONTINUATION_IGNORED_DRAFT=1` binds a two-model draft whose rows
+fail if opened and requires the adapter rows to match a draftless adapter
+control, tokens and checkpoint planes. The existing KV matrix
 uses `MLX_BUN_TEST_CONTINUATION_KV=bf16|4|8|per-layer|turbo`,
 `MLX_BUN_TEST_CONTINUATION_KV_START=0` (or `prompt+N`), and
 `MLX_BUN_TEST_CONTINUATION_INTERRUPT=6` (6–15).
@@ -242,6 +245,14 @@ final norm matched by hash. The nonzero adapter changed logits and unmounting
 restored the base. Actual paged rows remained checkpoint-ineligible. This covers
 one active row within the sliding window, not grouped rows, paged numerics,
 hard-kill durability, external-oracle parity or performance.
+
+An adapter request whose draft cannot serve target adapters (the two-model
+provider on any graph; any provider on a softcap graph, which never speculates
+with adapters) decodes ordinarily, ignores the draft and, without fill, grammar
+or logprobs, takes generation checkpoints like a draftless adapter request.
+The continuation test's ignored-draft opt-in passed with a synthetic nonzero
+q/v adapter on gemma-2-2b-it-4bit (with fresh-process restore) and on
+Llama-3.2-3B-Instruct-4bit with a custom 4-token window (M1 Max, bf16 KV).
 
 With `MLX_BUN_TEST_CONTINUATION_KV=turbo`, every saved and restored checkpoint
 after conversion (immediately with a start of 0) must hold TurboQuant's exact
@@ -301,16 +312,16 @@ scheme when that scheme's own maintenance leaves every layer's storage certified
 for dense reads (`Cache.denseKvReads`, answered by the storage and the
 maintenance that owns it, probed when the binding or group is composed). Affine
 KV serves ordinary continuous decoding, with checkpoints, while each row's
-storage still reads plain. At a row's actual transition its pending token
-publishes first, and the row may finish there; otherwise that row alone is
-rejected with `DenseKvReadError` before any shared append (HTTP 501
+storage still reads plain; on a softcap graph a drafted request ignores the
+draft. At a row's actual transition its pending token publishes first, and the
+row may finish there; otherwise that row alone is rejected with `DenseKvReadError` before any shared append (HTTP 501
 `unsupported_kv_transition`, or the stream's error event once it has opened).
 Main's serial path threw at that forward instead. TurboQuant storage decodes on
 read, so these graphs admit TurboQuant KV for ordinary continuous decoding
-throughout, with checkpoints; a configured draft is ignored, as main's serial
-path did. Supplied fill decodes ordinarily without fill, as in main, whose
-serial path filled only through a committed append declaring the scheme's
-formats (none for TurboQuant on this graph). Direct grammar jump commits its
+throughout, with checkpoints; a drafted request ignores the draft. Supplied
+fill decodes ordinarily without fill, as in main, whose serial path filled
+only through a committed append declaring the scheme's formats (none for
+TurboQuant on this graph). Direct grammar jump commits its
 spans over it through the shared span method, as main's serial jump did: one
 maintenance call, then one unsplit forward of the pending token and the forced
 span, once the gateway has certified the scheme. Affine KV, which stops reading
