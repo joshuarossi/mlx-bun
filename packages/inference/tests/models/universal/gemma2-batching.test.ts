@@ -1403,13 +1403,20 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
   // quantization needs a head dimension divisible by its group size (64).
   const HEAD_DIM = 64;
   type End = { stopAfter?: number; cancelAfter?: number; eos?: number[] };
-  const setup = async (start: number | null, options: { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean;
+  type SetupOptions = { tailSplit?: boolean; chunk?: number; pipeline?: boolean; turbo?: boolean;
     promptCache?: import("../../../src/execution/batch-types").RowPromptCache; grammarJump?: boolean;
-    kvScheme?: ReturnType<typeof resolveKvScheme>; encoded?: boolean; direct?: boolean } = {}) => {
+    kvScheme?: ReturnType<typeof resolveKvScheme>; encoded?: boolean; direct?: boolean };
+  /** The Gemma2-style mixed graph; without manual softcap attention it reads encoded KV. */
+  const setup = async (start: number | null, options: SetupOptions = {}) => {
+    const f = mixedFixture(types, !options.encoded, HEAD_DIM);
+    return setupWith({ model: f.make(), dispose: () => f.dispose() }, start, options);
+  };
+  /** A group over `graph`, which the environment owns and releases on close. */
+  const setupWith = async <M extends SpanGraph & import("../../../src/models/factory").RuntimeModel>(
+    graph: { model: M; dispose(): void }, start: number | null, options: SetupOptions = {}) => {
     const { bindMlxGateway, createRuntimeConfig, createRowSampling, withRuntimeConfig, MlxBatchExecutionGroup } = await import("../../../src/execution");
     const { makeStepSampler } = await import("../../../src/sampling");
-    // Without manual softcap attention the same graph reads encoded KV.
-    const f = mixedFixture(types, !options.encoded, HEAD_DIM), model = f.make();
+    const f = graph, model = graph.model;
     const binding = options.grammarJump
       ? withRuntimeConfig(createRuntimeConfig({ MLX_BUN_GRAMMAR_JUMP: "1" }), () => bindMlxGateway(model))
       : bindMlxGateway(model);
@@ -1606,6 +1613,61 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
     return env.binding.methodRequest!(execution, options)!;
   };
   const spansA = [[11, 12], [13]], spansB = [[21], [22, 23]];
+
+  /** A small Llama-style graph over affine-quantized synthetic weights, as its
+   * artifacts ship; affine KV needs a head dimension of the group size.
+   * Deterministic: two instances are identical. */
+  const quantizedGraph = <M extends object>(Model: new (weights: Weights, config: ModelConfig) => M, modelType: string,
+    { layers = 2, qkNorm = false } = {}) => {
+    const hidden = 64, heads = 2, kvHeads = 1, intermediate = 128, vocab = 96;
+    const spec = { bits: 4, groupSize: 64, mode: "affine" };
+    const config = { modelType, raw: { model_type: modelType }, eosTokenIds: [],
+      quantization: { default: spec, perLayer: new Map() },
+      text: { numHiddenLayers: layers, numAttentionHeads: heads, numKeyValueHeads: kvHeads, headDim: HEAD_DIM,
+        globalHeadDim: HEAD_DIM, hiddenSize: hidden, rmsNormEps: 1e-6, vocabSize: vocab, tieWordEmbeddings: false,
+        enableMoeBlock: false, layerTypes: Array(layers).fill("full_attention"),
+        ropeParameters: { full_attention: { ropeTheta: 10000 } } } } as unknown as ModelConfig;
+    const arrays = new Map<string, MlxArray>();
+    const values = (name: string, shape: number[], base: number) => {
+      using raw = MlxArray.fromFloat32(Float32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
+        (_, index) => base + Math.sin(index * 0.61 + name.length * 1.7) * 0.08), shape);
+      return raw.astype(Dtype.bfloat16);
+    };
+    const linear = (name: string, shape: [number, number]) => {
+      using weight = values(name, shape, 0);
+      const q = ops.quantize(weight, spec.groupSize, spec.bits);
+      arrays.set(`${name}.weight`, q.packed); arrays.set(`${name}.scales`, q.scales); arrays.set(`${name}.biases`, q.biases);
+    };
+    linear("model.embed_tokens", [vocab, hidden]); linear("lm_head", [vocab, hidden]);
+    arrays.set("model.norm.weight", values("model.norm.weight", [hidden], 1));
+    for (let layer = 0; layer < layers; layer++) {
+      const prefix = `model.layers.${layer}`;
+      for (const [name, shape] of Object.entries({ "self_attn.q_proj": [heads * HEAD_DIM, hidden],
+        "self_attn.k_proj": [kvHeads * HEAD_DIM, hidden], "self_attn.v_proj": [kvHeads * HEAD_DIM, hidden],
+        "self_attn.o_proj": [hidden, heads * HEAD_DIM], "mlp.gate_proj": [intermediate, hidden],
+        "mlp.up_proj": [intermediate, hidden], "mlp.down_proj": [hidden, intermediate] }))
+        linear(`${prefix}.${name}`, shape as [number, number]);
+      for (const name of ["input_layernorm", "post_attention_layernorm"])
+        arrays.set(`${prefix}.${name}.weight`, values(`${prefix}.${name}`, [hidden], 1));
+      // Per-head query and key norms over the head dimension (Qwen3).
+      if (qkNorm) for (const name of ["self_attn.q_norm", "self_attn.k_norm"])
+        arrays.set(`${prefix}.${name}.weight`, values(`${prefix}.${name}`, [HEAD_DIM], 1));
+    }
+    const weights = { shards: { files: new Map() }, tensorNames: [...arrays.keys()],
+      has: (name: string) => arrays.has(name), tensor: (name: string) => arrays.get(name)! } as unknown as Weights;
+    const model = new Model(weights, config);
+    return { model, dispose() {
+      // The weights and any array the graph derived from them at construction.
+      const owned = new Set<MlxArray>(arrays.values()), seen = new Set<object>();
+      const visit = (value: unknown) => {
+        if (!value || typeof value !== "object" || seen.has(value)) return;
+        seen.add(value);
+        if (value instanceof MlxArray) { owned.add(value); return; }
+        for (const child of Object.values(value)) visit(child);
+      };
+      visit(model); for (const array of owned) array.dispose();
+    } };
+  };
 
   test("admission: affine KV binds as ordinary continuous decoding; the graph binds no compiled replay; TurboQuant binds through dense reads", async () => {
     const { legacyCompiledDecodeAvailable } = await import("../../../src/generation/bindings/autoregressive");
@@ -2410,56 +2472,10 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
       } finally { await env.close(); }
     });
 
-    /** A small MiniCPM5 graph over affine-quantized synthetic weights, as its
-     * artifacts ship. Its attention reads encoded KV; affine KV needs a head
-     * dimension of the group size. Deterministic: two instances are identical. */
-    const miniCpm = async (layers = 2) => {
+    /** A small MiniCPM5 graph over affine-quantized synthetic weights; its attention reads encoded KV. */
+    const miniCpm = async () => {
       const { MiniCPM5Model } = await import("../../../src/models/minicpm5/model");
-      const hidden = 64, heads = 2, kvHeads = 1, intermediate = 128, vocab = 96;
-      const spec = { bits: 4, groupSize: 64, mode: "affine" };
-      const config = { modelType: "minicpm5", raw: { model_type: "minicpm5" }, eosTokenIds: [],
-        quantization: { default: spec, perLayer: new Map() },
-        text: { numHiddenLayers: layers, numAttentionHeads: heads, numKeyValueHeads: kvHeads, headDim: HEAD_DIM,
-          globalHeadDim: HEAD_DIM, hiddenSize: hidden, rmsNormEps: 1e-6, vocabSize: vocab, tieWordEmbeddings: false,
-          enableMoeBlock: false, layerTypes: Array(layers).fill("full_attention"),
-          ropeParameters: { full_attention: { ropeTheta: 10000 } } } } as unknown as ModelConfig;
-      const arrays = new Map<string, MlxArray>();
-      const values = (name: string, shape: number[], base: number) => {
-        using raw = MlxArray.fromFloat32(Float32Array.from({ length: shape.reduce((a, b) => a * b, 1) },
-          (_, index) => base + Math.sin(index * 0.61 + name.length * 1.7) * 0.08), shape);
-        return raw.astype(Dtype.bfloat16);
-      };
-      const linear = (name: string, shape: [number, number]) => {
-        using weight = values(name, shape, 0);
-        const q = ops.quantize(weight, spec.groupSize, spec.bits);
-        arrays.set(`${name}.weight`, q.packed); arrays.set(`${name}.scales`, q.scales); arrays.set(`${name}.biases`, q.biases);
-      };
-      linear("model.embed_tokens", [vocab, hidden]); linear("lm_head", [vocab, hidden]);
-      arrays.set("model.norm.weight", values("model.norm.weight", [hidden], 1));
-      for (let layer = 0; layer < layers; layer++) {
-        const prefix = `model.layers.${layer}`;
-        for (const [name, shape] of Object.entries({ "self_attn.q_proj": [heads * HEAD_DIM, hidden],
-          "self_attn.k_proj": [kvHeads * HEAD_DIM, hidden], "self_attn.v_proj": [kvHeads * HEAD_DIM, hidden],
-          "self_attn.o_proj": [hidden, heads * HEAD_DIM], "mlp.gate_proj": [intermediate, hidden],
-          "mlp.up_proj": [intermediate, hidden], "mlp.down_proj": [hidden, intermediate] }))
-          linear(`${prefix}.${name}`, shape as [number, number]);
-        for (const name of ["input_layernorm", "post_attention_layernorm"])
-          arrays.set(`${prefix}.${name}.weight`, values(`${prefix}.${name}`, [hidden], 1));
-      }
-      const weights = { shards: { files: new Map() }, tensorNames: [...arrays.keys()],
-        has: (name: string) => arrays.has(name), tensor: (name: string) => arrays.get(name)! } as unknown as Weights;
-      const model = new MiniCPM5Model(weights, config);
-      return { model, dispose() {
-        // The weights and any array the graph derived from them at construction.
-        const owned = new Set<MlxArray>(arrays.values()), seen = new Set<object>();
-        const visit = (value: unknown) => {
-          if (!value || typeof value !== "object" || seen.has(value)) return;
-          seen.add(value);
-          if (value instanceof MlxArray) { owned.add(value); return; }
-          for (const child of Object.values(value)) visit(child);
-        };
-        visit(model); for (const array of owned) array.dispose();
-      } };
+      return quantizedGraph(MiniCPM5Model, "minicpm5");
     };
 
     test("a MiniCPM5 graph: spans before and after conversion equal the direct B1 jump in tokens, histories and every projection", async () => {
@@ -2591,6 +2607,72 @@ describe.skipIf(!native)("plain-KV graphs with delayed affine KV", () => {
         expect(seen).toEqual(reference.seen);
         expect(forwards).toContainEqual({ ids: [reference.tokens[3]!, 13], kinds: mixedKinds });
       } finally { await env.close(); }
+    });
+  });
+
+  // Qwen3 and Qwen3-MoE attend the storage their caches hold, plain or affine,
+  // as mlx-lm's scaled_dot_product_attention does: a delayed affine row
+  // converts at its start and continues over converted layers.
+  describe("Qwen3 graph with delayed affine KV", () => {
+    const qwen3Graph = async () => {
+      const { Qwen3Model } = await import("../../../src/models/qwen/qwen3");
+      return quantizedGraph(Qwen3Model, "qwen3", { qkNorm: true });
+    };
+    const qwen3 = async (start: number | null, options: SetupOptions = {}) => setupWith(await qwen3Graph(), start, options);
+    /** The direct B1 order over a separate, identical graph. */
+    const reference = async (prompt: number[], maxTokens: number, start: number, spans: number[][] = []) => {
+      const g = await qwen3Graph(), caches = g.model.makeCache();
+      try { return await directSpansFrom(g.model, caches, prompt, 0, maxTokens, affine(start), spans, { encoded: true }); }
+      finally { try { dispose(caches); } finally { g.dispose(); } }
+    };
+
+    test("below the transition, delayed affine rows equal plain rows at B1 and in a B2 co-prefill", async () => {
+      const plain = await qwen3(null), delayed = await qwen3(64);
+      try {
+        expect(delayed.model.requiredDenseKvLayers).toEqual([]);
+        const pl = projections(plain), dl = projections(delayed);
+        expect(await delayed.submit(A, 6)).toEqual(await plain.submit(A, 6));
+        expect(dl).toEqual(pl);
+        expect(await delayed.together([A, 6], [B, 5])).toEqual(await plain.together([A, 6], [B, 5]));
+        expect(dl.length).toBeGreaterThan(6);
+        expect(dl).toEqual(pl);   // every projection, B1 and the B2 co-prefill
+      } finally { await plain.close(); await delayed.close(); }
+    });
+
+    test("rows converting in decode and from the start continue over converted layers, equal to the direct B1 order; a peer and the group continue", async () => {
+      for (const start of [7, 0]) {
+        const expected = await reference(A, 8, start), peer = await reference(B, 5, start);
+        expect(expected.kinds, `start ${start}`).toEqual(["QuantizedKVCache", "QuantizedKVCache"]);
+        const env = await qwen3(start);
+        try {
+          const seen = projections(env);
+          expect(await env.submit(A, 8), `start ${start}`).toEqual({ tokens: expected.tokens, outcome: "length" });
+          expect(seen, `start ${start}`).toEqual(expected.seen);
+          const [a, b] = await Promise.all([env.submit(A, 8), env.submit(B, 5)]);
+          expect(a, `start ${start}`).toEqual({ tokens: expected.tokens, outcome: "length" });
+          expect(b, `start ${start}`).toEqual({ tokens: peer.tokens, outcome: "length" });
+          expect(await env.submit(B, 5), `start ${start}`).toEqual({ tokens: peer.tokens, outcome: "length" });
+        } finally { await env.close(); }
+      }
+    });
+
+    test("grammar spans before, across and after the transition equal the direct B1 jump", async () => {
+      const run = async (maxTokens: number, start: number, spans: number[][]) => {
+        const expected = await reference(A, maxTokens, start, spans);
+        expect(expected.refused).toBe(false);
+        const env = await qwen3(start, { grammarJump: true });
+        try {
+          const seen = projections(env);
+          expect(await submitSpans(env, A, maxTokens, spans, {}, undefined, gatewaySpans(env)))
+            .toEqual({ tokens: expected.tokens, outcome: "length", accepted: expected.accepted });
+          expect(seen).toEqual(expected.seen);
+        } finally { await env.close(); }
+        return expected;
+      };
+      expect((await run(9, 64, spansA)).tokens).toEqual(expect.arrayContaining([11, 12, 13]));
+      expect((await run(3, 7, [[11, 12]])).tokens.slice(1)).toEqual([11, 12]);
+      const continuing = await run(10, 7, spansA);
+      expect(continuing.kinds).toEqual(["QuantizedKVCache", "QuantizedKVCache"]);
     });
   });
 });
