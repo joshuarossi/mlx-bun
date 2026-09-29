@@ -191,10 +191,12 @@ export interface RowBatchCache extends Cache {
 
 /**
  * Capability contract for cache layouts that own their dynamic-row batching.
- * The scheduler uses this for non-K/V state families (for example GLM's
- * compressed MLA/DSA state) instead of teaching the scheduler their tensor
- * layout. `mergeRows` writes into an empty cache and does not consume inputs;
- * extracted rows are independent owned caches.
+ * The scheduler uses this for every storage family (plain and quantized KV,
+ * sliding windows, recurrent state, and layouts such as GLM's compressed MLA/DSA
+ * state) instead of teaching the scheduler their tensor layout. `mergeRows`
+ * writes into an empty cache and does not consume inputs: its sources are a
+ * running layout or one serial cache, then one serial cache per joining row.
+ * Extracted rows are independent owned serial caches.
  */
 export interface BatchableCache extends Cache {
   readonly batchSize: number | null;
@@ -206,6 +208,11 @@ export interface BatchableCache extends Cache {
   extractRow(row: number): Cache;
   filterRows(keep: readonly number[]): void;
   projectedBytes(tokens: number): number;
+  /** Whether `row` can be published as a cache covering exactly `tokens`
+   * positions. State that cannot be trimmed (recurrent) refuses a row whose own
+   * count differs: an entry keyed to other tokens would corrupt every later
+   * exact hit. Absent: any row can be published. */
+  canPublishRow?(row: number, tokens: number): boolean;
 }
 
 /** Padding is interpreted by cache geometry, independently of scheduling.

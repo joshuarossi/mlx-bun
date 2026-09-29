@@ -18,7 +18,7 @@ export async function rotatingRowReader() {
   const { RotatingKVCache } = await import("../../src/state/rotating-kv");
   const { KVCache } = await import("../../src/state/kv");
   const { BatchedRotatingCache } = await import("../../src/state/batched-rotating");
-  const { BatchedDecodeMaskCache } = await import("../../src/state/batched-mask");
+  const { BatchedDecodeMaskCache, PaddedKVRows } = await import("../../src/state/batched-mask");
   const { rotatingSourcePosition } = await import("../../src/state/rotating-kv-layout");
   const { plainRowStorage, temporalStorageView } = await import("../../src/state/batched-row-storage");
   const hash = (a: MlxArray) => { const c = ops.contiguous(a); try { return sha256(new Uint8Array(c.rawBytes())); } finally { c.dispose(); } };
@@ -51,7 +51,7 @@ export async function rotatingRowReader() {
           }
         } else {
           // Full layers: rows are right-aligned in the batched buffer; each holds its own offset.
-          assert(c instanceof KVCache || c instanceof BatchedDecodeMaskCache, `unsupported cache ${c.signature()}`);
+          assert(c instanceof KVCache || c instanceof BatchedDecodeMaskCache || c instanceof PaddedKVRows, `unsupported cache ${c.signature()}`);
           const [keys, values] = c.state(), width = c.offset;
           for (let r = 0; r < B; r++) {
             const valid = B === 1 ? width : batched!.offsetArr[r]!;

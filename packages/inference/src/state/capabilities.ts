@@ -26,6 +26,11 @@ export function isRowBatchCache(cache: Cache): cache is RowBatchCache {
     typeof candidate.extractRow === "function";
 }
 
+/** Recurrent state (gated DeltaNet): fixed-size, never trimmed. */
+export function isRecurrentCache(cache: Cache | undefined): boolean {
+  return cacheSignature(cache) === "ssm";
+}
+
 export function isPlainKvCache(cache: Cache | undefined): cache is KVCache {
   return cacheSignature(cache) === "kv:plain";
 }

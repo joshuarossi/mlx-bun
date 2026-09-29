@@ -132,7 +132,7 @@ test.skipIf(!artifact || !reportPath)("padded prompt batches and continuation ma
           start+=count;
         }
         for(const c of caches)c.finalizePrefill();
-        expect(caches.map(c=>'rowOffsets' in c?c.rowOffsets:c.offsetArr)).toEqual(expected.offsets);
+        expect(caches.map(c=>c.rowOffsets)).toEqual(expected.offsets);
         for(let step=1;step<4;step++) {
           using ids=MlxArray.fromInt32(Int32Array.from(prompts.map((_,row)=>70+step+row)),[B,1]);
           using hidden=model.forwardHidden(ids,caches), logits=model.logitsFromHidden(hidden);

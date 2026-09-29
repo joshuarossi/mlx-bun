@@ -30,8 +30,9 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { RotatingQuantizedKVCache } from "./rotating-quantized-kv";
-import { type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
+import { type BatchableCache, type Cache, type Mask, type PaddedPrefillCache, type PrefillPadding } from "../contracts/mlx/cache";
 import { buildBatchedRotatingMask } from "./batched-rotating";
+import { isRotatingQuantizedCache } from "./capabilities";
 import type { QuantRow } from "./batched-quant";
 import { BatchedRotatingState, type RotatingPositionSnapshot } from "./batched-rotating-state";
 import {
@@ -57,8 +58,8 @@ const mapTriple = (
  *  mechanics (see batched-rotating.ts) with RotatingQuantizedKVCache
  *  storage. Scalar ring state (`ringIdx`/`offset` reuse the base fields);
  *  per-row `offsetArr` (absolute positions → RoPE) and `leftPad`. */
-export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implements PaddedPrefillCache {
-  readonly #rows: BatchedRotatingState;
+export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implements BatchableCache, PaddedPrefillCache {
+  #rows: BatchedRotatingState;
   /** Per-row RoPE positions. STABLE ACROSS A STEP — refreshed only at
    *  releaseRopeArr() (the scheduler's post-dispatch hook), never inside
    *  the update: the monolith CAPTURES it pre-update and ropes Q after
@@ -106,8 +107,19 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
   }
 
   get offsetArr(): number[] { return this.#rows.offsets; }
+  get rowOffsets(): readonly number[] { return this.#rows.offsets; }
   get leftPad(): number[] { return this.#rows.leftPad; }
   get batchSize(): number { return this.#rows.batchSize; }
+  makeEmptyBatch(): BatchedRotatingQuantCache {
+    return BatchedRotatingQuantCache.empty(this.maxSize, this.groupSize, this.bits, []);
+  }
+  /** Bytes one row holds for `tokens` more positions, capped at the window. */
+  projectedBytes(tokens: number): number {
+    const perRow = this.keys && this.values && this.batchSize
+      ? [this.keys.packed, this.keys.scales, this.keys.biases, this.values.packed, this.values.scales, this.values.biases]
+        .reduce((bytes, array) => bytes + array.nbytes, 0) / (this.batchSize * this.keys.packed.shape[2]!) : 0;
+    return perRow * Math.min(tokens, this.maxSize);
+  }
 
   get #B(): number {
     return this.#rows.batchSize;
@@ -285,8 +297,8 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
    *  identity vs the serial oracle is the class invariant
    *  (packages/inference/tests/state/batched-rotating-quant.test.ts), extraction
    *  is a pure slice+copy. */
-  extractRow(i: number, limit = Infinity): RotatingQuantizedKVCache | null {
-    if (!this.keys || !this.values) return null;
+  extractRow(i: number, limit = Infinity): RotatingQuantizedKVCache {
+    if (!this.keys || !this.values) return new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
     const pad = Math.max(0, this.leftPad[i]!, this.#rows.activeLength - limit);
     const c = new RotatingQuantizedKVCache(this.maxSize, this.groupSize, this.bits);
     const k = temporalStorageView(quantizedRowStorage, this.keys, this.#rows, {
@@ -328,6 +340,39 @@ export class BatchedRotatingQuantCache extends RotatingQuantizedKVCache implemen
     super.dispose();
     this.releaseRopeArr();
     this.ropeOffsetArr?.dispose();
+  }
+
+  /** Join rows into this empty ring: sources are running rings, whose rows are
+   *  cut out in temporal order, or serial RotatingQuantizedKVCaches (an adopted
+   *  lone row or a joiner), in row order. Sources are borrowed. */
+  mergeRows(rows: readonly Cache[]): void {
+    if (this.#rows.batchSize) throw new Error("BatchedRotatingQuantCache.mergeRows needs an empty batch");
+    const parts: QuantRow[] = [], offsets: number[] = [], held: ops.QuantizedTensor[] = [];
+    const own = (triple: ops.QuantizedTensor) => { held.push(triple); return triple; };
+    try {
+      for (const source of rows) {
+        if (source instanceof BatchedRotatingQuantCache) {
+          const [k0, v0] = source.temporalView(); own(k0); own(v0);
+          const valid = k0.packed.shape[2]!;
+          for (let b = 0; b < source.batchSize; b++) {
+            const pad = Math.max(0, source.leftPad[b]!);
+            const cutRow = (t: ops.QuantizedTensor) => own(mapTriple(t, (a) =>
+              a.slice([b, 0, pad, 0], [b + 1, a.shape[1]!, valid, a.shape[3]!])));
+            parts.push({ keys: cutRow(k0), values: cutRow(v0) });
+            offsets.push(source.offsetArr[b]!);
+          }
+        } else if (isRotatingQuantizedCache(source)) {
+          const [keys, values] = (source as RotatingQuantizedKVCache).temporalView();
+          parts.push({ keys: own(keys), values: own(values) }); offsets.push(source.offset);
+        } else throw new Error(`quantized sliding-window batch cannot merge ${source.signature()}`);
+      }
+      const merged = BatchedRotatingQuantCache.merge(parts, offsets, this.maxSize, this.groupSize, this.bits);
+      this.#rows = merged.#rows; this.keys = merged.keys; this.values = merged.values;
+      this.offset = merged.offset; this.ringIdx = merged.ringIdx;
+      merged.keys = merged.values = null;
+      merged.dispose();
+      this.releaseRopeArr();
+    } finally { for (const triple of held) disposeTriple(triple); }
   }
 
   /** Assemble a batch from per-row temporal quantized slices (the bf16

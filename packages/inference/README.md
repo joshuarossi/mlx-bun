@@ -862,6 +862,13 @@ checks below.
 
 - `state/`: storage layout, positions, row membership, precision transitions,
   snapshots, and persistence. `persistence.worker.js` performs CPU disk I/O.
+  Every storage a graph's caches (or their precision maintenance) produce has a row
+  layout implementing the `BatchableCache` port (`state/layout`: `ownedCacheLayout`
+  for ordinary continuous decoding, `targetCacheLayout` for verification rows). The
+  batch group only calls `mergeRows`, `filterRows` and `extractRow` on it and names no
+  storage family; the gate rejects `execution/` importing a concrete cache module.
+  A serial cache is a row source for its layout, not a batch: an adopted lone row is the
+  first source of the layout's first `mergeRows`.
 - `layers/quantized-attention.ts`: existing fused/unfused attention dispatch.
 - `kernels/turboquant/`: packing, rotation, codebooks, and packed decode kernels.
 - `kernels/delta/gated.ts`: DeltaNet kernels; recurrent storage lives in
