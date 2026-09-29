@@ -697,7 +697,13 @@ The direct graph imports currently include `models/gemma4`,
 `models/glm52`, `models/diffusion-gemma`, and `models/whisper` provide the other
 existing graph families. These retain the dedicated and specialized implementations.
 `@mlx-bun/inference/models` exposes the existing profile/implementation registry
-and model construction helpers. Direct graph constructors remain available.
+and model construction helpers. Direct graph constructors remain available. Runtimes
+that plan memory before opening weights (streamed experts) are opened with
+`openPlannedRuntime` from generic `RuntimeOpenOptions` and return a generic
+`MemoryPlan`, whether a checkpoint-native draft head is planned, and telemetry;
+`planRuntimeMemory` (`models/memory-plan`, native-free) returns the plan from
+artifact headers, or null for models without one. `nativeDraftProvider` builds
+the draft provider over such a model.
 
 For explicit state and tensor operations, use `graph.makeCache()`,
 `graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
@@ -811,8 +817,10 @@ using the existing xgrammar dependency. Await `ready()`, apply the mask to logit
 accept the sampled token, and dispose the controller when finished. The normalized
 argmax and token-bitmask kernels are exposed through `kernels/sampling`.
 
-`embeddings` provides the existing Qwen3 embedding helpers: `embedOne`, `embedMany`,
-and `withInstruction`. Supply the graph and tokenizer explicitly. `adapters`
+`embeddings` provides the pooled-embedding helpers: `embedOne`, `embedMany`,
+`embeddingTerminatorId` and `withInstruction`. Any graph declaring `embeddings` and
+providing `embedPooled` works; the pooling token comes from the graph's profile
+(`embeddingDeclarationFor`, resolved with the tokenizer). Supply the graph and tokenizer explicitly. `adapters`
 provides `AdapterManager` for loading and applying existing mlx-lm and PEFT LoRA
 artifacts to a caller-owned graph; adapter weight/state types are also exported.
 

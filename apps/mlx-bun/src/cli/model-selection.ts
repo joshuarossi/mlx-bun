@@ -4,7 +4,7 @@ import { scanSnapshot, type ModelRecord, type Registry } from "@mlx-bun/hub/regi
 import { downloadModel } from "@mlx-bun/hub/download";
 import { fit, thisMachine, type MachineSpec } from "@mlx-bun/inference/execution/fit";
 import { loadModelConfig } from "@mlx-bun/inference/artifacts/config";
-import { isSupportedModelRecord } from "@mlx-bun/inference/models/support";
+import { isSupportedModelRecord, isTranscriptionModelType } from "@mlx-bun/inference/models/support";
 import { chooseAutoModel, COEXIST_FRACTION, DEFAULT_REPO_ID, STARTER_REPO_ID } from "./model-choice";
 import { openRegistry } from "../storage/paths";
 
@@ -90,7 +90,7 @@ export async function defaultWhisperModel(registry: () => Pick<Registry, "list" 
   const open = registry();
   try {
     if (open.list().length === 0) await open.scan();
-    return open.listCanonical().find(model => model.modelType === "whisper") ?? null;
+    return open.listCanonical().find(model => isTranscriptionModelType(model.modelType)) ?? null;
   } catch {
     return null;
   } finally { open.close(); }

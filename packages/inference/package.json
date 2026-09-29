@@ -35,6 +35,7 @@
     "./generation/compiled-decode": "./src/generation/bindings/compiled-decode.ts",
     "./artifacts/experts": "./src/artifacts/experts/index.ts",
     "./models": "./src/models/index.ts",
+    "./models/memory-plan": "./src/models/memory-plan.ts",
     "./models/glm52": "./src/models/glm52/model.ts",
     "./models/diffusion-gemma": "./src/models/diffusion-gemma/model.ts",
     "./models/whisper": "./src/models/whisper/model.ts",

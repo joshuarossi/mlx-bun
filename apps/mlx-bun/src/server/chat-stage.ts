@@ -24,7 +24,7 @@ export class ChatStage {
     private readonly ctx: ModelContext,
     private readonly prep: RequestPrep,
     private readonly promptCache: Pick<PromptCache, "peekPrefixLen"> & Partial<Pick<PromptCache, "objects">>,
-    /** Admission ceiling (fit() / the GLM memory plan), resolved once. */
+    /** Admission ceiling (fit() / a runtime memory plan), resolved once. */
     private readonly contextLimit: number | null,
     /** `serve --adapter <dir>` startup default; a request's explicit
      *  `adapter` (incl. "none") wins. */

@@ -111,7 +111,7 @@ const prelude = (mocks = "") => `
         template: { render: () => "<rendered>", supportsThinking: false, thinkingFormat: "none" },
         adapters: { resolveSpec: () => [], cacheNamespace: () => "", list: () => [], get: () => undefined,
           async mount() { throw new Error("unsupported"); }, unmount: () => 0 },
-        kvConfig: null, genDefaults: {}, draft: null, glmMemoryPlan: null, vision: null, loadVision: null, audio: null, loadAudio: null,
+        kvConfig: null, genDefaults: {}, draft: null, memoryPlan: null, vision: null, loadVision: null, audio: null, loadAudio: null,
         audioTokenIds: null, visionTokenIds: { imageTokenId: 1, boiTokenId: 2, eoiTokenId: 3 },
         dispose() { context.disposals++; events.push("model dispose"); } };
       return context;

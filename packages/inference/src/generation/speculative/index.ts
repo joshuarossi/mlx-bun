@@ -9,6 +9,7 @@ export * from "./sources/assistant-source";
 export * from "./sources/two-model";
 export * from "./sources/qwen-mtp-source";
 export * from "./sources/glm52-mtp-source";
+export * from "./native-draft";
 export * from "./sources/deepspec-source";
 export * from "./sources/dflash-source";
 export * from "./sources/ngram-source";

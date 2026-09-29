@@ -95,7 +95,7 @@ export function createInProcessMemoryClient(deps: MemoryEngineDependencies = def
       { encode: text => tokenizer.encode(text), bosTokenId: tokenizer.bosTokenId ?? -1 }, context.template);
     const plan = planRequest({ promptIds,
       options: { maxTokens: request.maxTokens, temperature: 0, ...rt.scheme.generationOptions, stopSequences: [] },
-      requestedMaxTokens: request.maxTokens, contextLimit: context.glmMemoryPlan?.contextTokens ?? null,
+      requestedMaxTokens: request.maxTokens, contextLimit: context.memoryPlan?.contextTokens ?? null,
       stream: false, wantLogprobs: false, topLogprobs: 0,
       adapterIds: request.stage === "chunk" && rt.chunkAdapter ? [CHUNK_ADAPTER] : [],
       hasVision: false, userSeed: false, hasGrammar: false, hasDraft: false, ownership: new RequestOwnership() });

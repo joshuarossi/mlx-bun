@@ -17,7 +17,7 @@ export class TextCompletionStage {
     private readonly ctx: ModelContext,
     private readonly prep: RequestPrep,
     private readonly contextLimit: number | null,
-    /** `--max-tokens` / the GLM plan's reservation. No invented fallback:
+    /** `--max-tokens` / a runtime plan's reservation. No invented fallback:
      *  unset runs to EOS or the admitted context (with no template an EOS
      *  may never come — that run is bounded by admission, the real limit). */
     private readonly defaultGeneratedTokens: number | undefined,

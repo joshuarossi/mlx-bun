@@ -13,6 +13,7 @@ import { planRequest, RequestOwnership } from "../server/request-plan";
 import { textPrompt } from "../server/text-prompt";
 import type { CommandArgs } from "./args";
 import { numericalPolicy } from "./numerical-policy";
+import { isEmbeddingModelType } from "@mlx-bun/inference/models/support";
 import { openRegistry } from "../storage/paths";
 
 type InferenceCommand = "generate" | "embed";
@@ -32,7 +33,7 @@ export async function resolveInferenceModel(command: InferenceCommand, query: st
     if (command === "generate") return reg.resolve(query);
     if (reg.list().length === 0) await reg.scan();
     if (query) return reg.resolve(query);
-    const model = reg.list().find(model => model.modelType === "qwen3");
+    const model = reg.list().find(model => isEmbeddingModelType(model.modelType));
     if (!model) throw new Error("no embedding model downloaded — try: mlx-bun get mlx-community/Qwen3-Embedding-4B-4bit-DWQ");
     return model;
   } finally { reg.close(); }
@@ -59,7 +60,7 @@ const defaults: InferenceDependencies = {
   async load(model, maxTokens) {
     const { loadContext } = await import("../engine/model-host");
     return loadContext(model.path, model.repoId, { requireChatTemplate: false,
-      glm: { enableMtp: false, maxGenerationTokens: maxTokens } });
+      runtime: { nativeDraft: false, maxGenerationTokens: maxTokens } });
   },
   async engine(context, scheme) {
     const { createAppEngine } = await import("../engine");
@@ -180,7 +181,7 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
           adapterIds.push(id);
         }
         const plan = planRequest({ promptIds: ids, options: { ...generation.options, ...xtc, ...scheme.generationOptions, stopSequences: [] },
-          requestedMaxTokens: generation.options.maxTokens!, contextLimit: context.glmMemoryPlan?.contextTokens ?? null,
+          requestedMaxTokens: generation.options.maxTokens!, contextLimit: context.memoryPlan?.contextTokens ?? null,
           stream: false, wantLogprobs: false, topLogprobs: 0, adapterIds, hasVision: false,
           userSeed: generation.options.seed !== undefined, hasGrammar: false, hasDraft: false, ownership: new RequestOwnership() });
         if (!plan.ok) { plan.dispose(); throw new Error(plan.error.message); }
@@ -196,7 +197,7 @@ export async function runInference(command: InferenceCommand, args: CommandArgs,
         } finally { plan.dispose(); }
       } else {
         const embed = engine.binding.embed?.bind(engine.binding);
-        if (!embed) throw new Error(`"${model.repoId}" is not an embedding model (need plain Qwen3, e.g. Qwen3-Embedding).`);
+        if (!embed) throw new Error(`"${model.repoId}" is not an embedding model (its graph declares no pooled embeddings; serve an embedding model, e.g. Qwen3-Embedding).`);
         const results = await engine.gateway.runExclusive(async () => embed(texts, option(args, "instruct")), undefined, signal);
         signal?.throwIfAborted();
         if (args.values.json === true) {

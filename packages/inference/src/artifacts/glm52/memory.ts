@@ -419,6 +419,10 @@ export function planGlm52Memory(
     usableBytes: processLimitBytes,
     predictedDecodeTps: null,
     allocatorLimitBytes: lineItems.allocatorReserveBytes,
+    streamedWeights: {
+      "main expert slab": lineItems.mainExpertSlabBytes,
+      "MTP expert slab": lineItems.mtpExpertSlabBytes,
+    },
     runtimeReserveBytes,
     plannedProcessBytes,
     processHeadroomBytes: processLimitBytes - plannedProcessBytes,

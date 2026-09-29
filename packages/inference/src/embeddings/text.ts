@@ -1,23 +1,27 @@
-// Text-embedding entry point. Wraps Qwen3Model.embedPooled (last-token hidden →
-// L2-normalized vector) with the Qwen3-Embedding input convention so the CLI
-// (`mlx-bun embed`), the server (`/v1/embeddings`), and in-repo experiments all
-// produce the SAME vectors — the ones verified bit-exact vs mlx-lm in
-// `02d723a:tests/parity/qwen3-embed-parity.test.ts`.
+// Text-embedding entry point. Wraps a graph's `embedPooled` (last-token hidden,
+// L2-normalized vector) with the input convention its profile declares, so the
+// CLI (`mlx-bun embed`), the server (`/v1/embeddings`), and in-repo experiments
+// all produce the SAME vectors — the ones verified bit-exact vs mlx-lm in
+// `02d723a:tests/parity/qwen3-embed-parity.test.ts` for the Qwen3-Embedding backbone.
 
-import type { Qwen3Model } from "../models/qwen/qwen3";
-import type { RuntimeModel } from "../models/factory";
+import type { MlxArray } from "@mlx-bun/mlx/array";
 import { declaredGraph } from "../models/capabilities";
 import type { LoadedTokenizer } from "../input/tokenizer";
 import * as ops from "@mlx-bun/mlx/ops";
 
-/** <|endoftext|> — the token Qwen3-Embedding terminates every input with and
- *  pools the last position of. */
-export const EMBED_EOD = 151643;
+/** The operation behind a graph's `embeddings` capability. */
+export interface EmbeddingGraph { embedPooled(ids: MlxArray): MlxArray }
 
-/** A graph declares the pooled-embedding path (today the Qwen3-Embedding
- *  backbone). Narrow the served RuntimeModel before embedding. */
-export function isEmbeddingModel(model: RuntimeModel): model is Qwen3Model {
+/** A graph declares the pooled-embedding path. */
+export function isEmbeddingModel(model: object): model is EmbeddingGraph {
   return declaredGraph(model).graphCapabilities.embeddings;
+}
+
+/** The token id of the profile's declared pooling terminator in this tokenizer. */
+export function embeddingTerminatorId(tok: Pick<LoadedTokenizer, "encode">, terminator: string): number {
+  const ids = tok.encode(terminator, false);
+  if (ids.length !== 1) throw new Error(`embedding terminator ${JSON.stringify(terminator)} is not a single token in this tokenizer`);
+  return ids[0]!;
 }
 
 /** Qwen3-Embedding query format: a task instruction steers WHICH similarity axis
@@ -44,21 +48,23 @@ export function getEmbedCounter(): number {
 export interface EmbedResult {
   /** L2-normalized embedding (length = model hidden size). */
   vector: Float32Array;
-  /** Token count of the embedded input (incl. the EOD pooling token). */
+  /** Token count of the embedded input (incl. the pooling token). */
   tokens: number;
 }
 
-/** Embed one text. `instruction` (optional) applies the query format. */
+/** Embed one text. `terminator` is the pooling token id from
+ * `embeddingTerminatorId`; `instruction` (optional) applies the query format. */
 export function embedOne(
-  model: Qwen3Model,
+  model: EmbeddingGraph,
   tok: LoadedTokenizer,
+  terminator: number,
   text: string,
   instruction?: string,
 ): EmbedResult {
   embedCallCount++;
-  // addSpecialTokens=false matches the bit-exact parity path (Qwen3 has no BOS;
-  // we append the EOD pooling token ourselves).
-  const ids = [...tok.encode(withInstruction(text, instruction), false), EMBED_EOD];
+  // addSpecialTokens=false matches the bit-exact parity path (no BOS;
+  // we append the pooling token ourselves).
+  const ids = [...tok.encode(withInstruction(text, instruction), false), terminator];
   const idArr = ops.fromInt32(ids, [1, ids.length]);
   const vec = model.embedPooled(idArr);
   idArr.dispose();
@@ -69,10 +75,11 @@ export function embedOne(
 
 /** Embed many texts (one forward each — the runtime is single-sequence). */
 export function embedMany(
-  model: Qwen3Model,
+  model: EmbeddingGraph,
   tok: LoadedTokenizer,
+  terminator: number,
   texts: string[],
   instruction?: string,
 ): EmbedResult[] {
-  return texts.map((t) => embedOne(model, tok, t, instruction));
+  return texts.map((t) => embedOne(model, tok, terminator, t, instruction));
 }

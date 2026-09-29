@@ -86,19 +86,20 @@ test("a negative fit estimate stays advisory and never invents an enforced conte
   expect(input.contextLimit).toBeNull();
 });
 
-test("GLM status preserves plan accounting and identifies unavailable historical throughput as null", async () => {
+test("a planned runtime's status preserves its plan accounting and identifies unavailable historical throughput as null", async () => {
   const input = fixture(); input.contextLimit = 1024;
-  input.context.glmMemoryPlan = { contextTokens: 4096, maxSafeContext: 4096, maxGenerationTokens: 128,
-    processLimitBytes: 10000, usableBytes: 10000, plannedProcessBytes: 9000,
-    lineItems: { residentWeightsBytes: 1000, mainExpertSlabBytes: 2000, mtpExpertSlabBytes: 500,
-      targetKvBytes: 100, mtpKvBytes: 50 } } as NonNullable<Input["context"]["glmMemoryPlan"]>;
+  input.context.memoryPlan = { schemaVersion: 1, strategy: "test-runtime", fits: true, contextTokens: 4096, maxSafeContext: 4096,
+    maxGenerationTokens: 128, weightsBytes: 3500, kvBytes: 150, transientBytes: 350, reserveBytes: 5000,
+    totalBytes: 9000, usableBytes: 10000, predictedDecodeTps: null,
+    streamedWeights: { "main expert slab": 2000, "MTP expert slab": 500 } };
   const routes = createStatusRoutes(input), body = await get(routes, "/fit");
   expect(body.report).toEqual({ fits: true, weights_bytes: 1000, kv_bytes: 150, transient_bytes: 5350,
     total_bytes: 9000, usable_bytes: 10000, max_safe_context: 4096, predicted_decode_tps: null });
   expect(body.context_tokens).toBe(4096); expect(body.typical_context_tokens).toBe(4096);
   expect(body.measured_decode_tps).toBeNull(); expect(body.measured_at).toBeNull(); expect(body.typical_decode_tps).toBeNull();
-  expect(body.glm52).toEqual({ artifact_disk_bytes: 2.5e9, main_expert_slab_bytes: 2000,
-    mtp_expert_slab_bytes: 500, max_generation_tokens: 128, direct_oracle_warm_decode_tps: null, aspirational_decode_tps: null });
+  expect(body.plan).toEqual({ artifact_disk_bytes: 2.5e9, streamed_weights: { "main expert slab": 2000, "MTP expert slab": 500 },
+    max_generation_tokens: 128 });
+  expect(body.glm52).toBeUndefined();
   expect(body.sku_matrix).toEqual([{ sku: "test-chip", ram_gb: 16, fits: true, max_context: 4096, decode_tps: null }]);
   expect((await get(routes, "/stats")).admission).toEqual({ max_safe_context: 4096, enforced_context_tokens: 1024,
     memory_budget_bytes: 10000, usable_bytes: 10000, weights_bytes: 2e9 });

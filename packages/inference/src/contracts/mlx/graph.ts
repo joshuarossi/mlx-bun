@@ -1,4 +1,5 @@
 import type { GraphCapabilities } from "../portable/graph";
+import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "./cache";
 import type { TargetView } from "./draft-target";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, PixelInput, TextEmbeddingModel, Vision } from "./media";
@@ -13,6 +14,10 @@ export interface MlxDeclaredGraph {
   /** media `embeddings`/`embeddings+positions`: bind one request's prepared
    * embeddings into an input whose prefill is indivisible. */
   bindMediaInput?(input: Vision): MlxPromptInput;
+  /** embeddings: the pooled, L2-normalized sentence vector of one sequence,
+   * ids [1, L] to [1, hidden]. The caller appends the pooling token the
+   * profile declares and owns the result. */
+  embedPooled?(ids: MlxArray): MlxArray;
   /** media: the lazy encoders this graph loads from the checkpoint at `modelDir`. */
   mediaEncoders?(modelDir: string, probes: MediaSidecarProbes): Promise<MediaEncoders>;
   /** media `pixels`: the pixel input a denoising method consumes; null when the checkpoint has none. */

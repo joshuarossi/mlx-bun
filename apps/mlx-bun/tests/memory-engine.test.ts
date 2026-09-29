@@ -34,7 +34,7 @@ function harness(options: { adapterDir?: string; run?: RunImpl; locate?: () => P
   const calls: Call[] = [];
   let scheme: KvScheme | undefined, capacity = 0;
   const context = () => ({
-    tokenizer, template, kvConfig: null, glmMemoryPlan: null,
+    tokenizer, template, kvConfig: null, memoryPlan: null,
     adapters: { async mount(id: string, dir: string) { events.push(`mount ${id} ${dir}`); } },
     dispose() { events.push("dispose"); },
   }) as unknown as LoadedModelContext;

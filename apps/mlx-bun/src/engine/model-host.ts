@@ -2,8 +2,7 @@
 // points supply the artifact and options; no HTTP or scheduling lives here.
 import type { KvQuantSpec, ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import type { Weights } from "@mlx-bun/inference/artifacts";
-import type { RuntimeModel, Glm52RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider } from "@mlx-bun/inference/models";
-import type { Glm52MemoryPlan } from "@mlx-bun/inference/artifacts/glm52";
+import type { RuntimeModel, RuntimeOpenOptions, ResolvedModelProfile, ModelImplementationProvider } from "@mlx-bun/inference/models";
 import type { ChatTemplate, LoadedTokenizer } from "@mlx-bun/inference/input";
 import type { AdapterManager } from "@mlx-bun/inference/adapters";
 import type { AudioTokenIds, VisionTokenIds, VisionEncoder } from "@mlx-bun/inference/input/vision";
@@ -15,7 +14,7 @@ export type LoadedAudioEncoder = AudioEncoder & { dispose?(): void };
 import { sidecarShipsAudioTower } from "@mlx-bun/hub/registry";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import { cleanupFailure, disposeResources } from "@mlx-bun/inference/runtime/resources";
-import type { DisposableResource } from "@mlx-bun/inference/contracts/portable";
+import type { DisposableResource, MemoryPlan } from "@mlx-bun/inference/contracts/portable";
 import { detectDraftKind, type DraftKind } from "@mlx-bun/inference/generation/speculative/draft-kind";
 
 export interface ServedModelInfo { readonly config: ModelConfig; readonly weightsBytes: number; }
@@ -69,10 +68,14 @@ export interface ModelContext<Model = RuntimeModel> {
   draft?: {
     provider: import("@mlx-bun/inference/generation/speculative").DraftProvider;
     numDraftTokens: number;
+    /** The provider is the checkpoint's own draft head, not a configured drafter. */
+    native?: true;
   } | null;
-  /** Present only for the direct Colibri GLM runtime. This is the exact
-   * header-derived process equation used before opening resident state. */
-  glmMemoryPlan?: Glm52MemoryPlan | null;
+  /** Present only for a runtime that plans its memory before opening weights:
+   * the exact header-derived process equation it runs under. */
+  memoryPlan?: MemoryPlan | null;
+  /** Live telemetry of such a runtime, surfaced by `/stats`. */
+  runtimeDiagnostics?(): Record<string, unknown>;
 }
 
 export type LoadedModelContext = ModelContext<ServedModelInfo>;
@@ -91,8 +94,9 @@ export interface LoadContextOptions<Model extends ServedModelInfo = RuntimeModel
   implementations?: ModelImplementationProvider<ModelHostSource, Promise<ModelContext<Model>>>;
   profiles?: import("@mlx-bun/inference/models").ResolveModelProfileOptions;
   memoryBudgetBytes?: number;
-  /** Direct Colibri runtime/resource overrides. Ignored by other models. */
-  glm?: Glm52RuntimeOpenOptions;
+  /** Resource overrides for runtimes that plan memory up front; models
+   * without one ignore them. */
+  runtime?: RuntimeOpenOptions;
   /** Snapshot dir of a draft model for speculative decoding
    * (`--draft-model`). Loaded alongside the target; the pair must share
    * a tokenizer family. */
@@ -165,14 +169,14 @@ export async function loadContext(
     const { implementations: _provider, ...options } = opts;
     return implementation.create({ modelDir, modelId, options }, config, profile);
   }
-  const [{ Weights }, { createModel, declaredGraph, openGlm52RuntimeModel },
-    { ChatTemplate, loadTokenizer }, { AdapterManager }, { bindLegacyDraftTarget }, { Glm52NativeMtpProvider }] = await Promise.all([
+  const [{ Weights }, { createModel, declaredGraph, openPlannedRuntime, plansMemory },
+    { ChatTemplate, loadTokenizer }, { AdapterManager }, { bindLegacyDraftTarget }, { nativeDraftProvider }] = await Promise.all([
     import("@mlx-bun/inference/artifacts"), import("@mlx-bun/inference/models"),
     import("@mlx-bun/inference/input"),
     import("@mlx-bun/inference/adapters"), import("@mlx-bun/inference/generation/speculative/binding"),
     import("@mlx-bun/inference/generation/speculative"),
   ]);
-  const glm = profile.profile.execution.loader === "colibri";
+  const planned = plansMemory(profile);
   // Bundled MTP companion: `--draft-kind mtp` with no --draft-model resolves
   // to the artifact's own mtp/ subfolder (single-repo packaging — the
   // companion is a complete model dir the provider already loads). Explicit
@@ -192,29 +196,27 @@ export async function loadContext(
   const resolvedDraftKind = opts.draftModelDir
     ? opts.draftKind ?? await detectDraftKind(opts.draftModelDir)
     : opts.draftKind;
-  if (glm && externalDraft && opts.glm?.enableMtp === true)
-    throw new Error("native GLM MTP and --draft-model/--draft-kind are mutually exclusive");
+  if (planned && externalDraft && opts.runtime?.nativeDraft === true)
+    throw new Error("the checkpoint-native draft head and --draft-model/--draft-kind are mutually exclusive");
   const owned = new Set<DisposableResource>();
   const release = (resource: DisposableResource) => { owned.delete(resource); resource.dispose(); };
   try {
     let weights: Weights | null = null;
     let model!: RuntimeModel;
-    // The graph opened through the checkpoint-native loader, which owns its native draft head.
-    let glmModel: Awaited<ReturnType<typeof openGlm52RuntimeModel>>["model"] | null = null;
-    let glmMemoryPlan: Glm52MemoryPlan | null = null;
-    if (glm) {
-      const enableNativeMtp = !externalDraft && opts.glm?.enableMtp !== false;
-      const opened = await openGlm52RuntimeModel(modelDir, {
-        ...opts.glm,
-        memoryBudgetBytes: opts.memoryBudgetBytes ?? opts.glm?.memoryBudgetBytes,
+    // A runtime that plans memory opens its own graph and owns its native draft head.
+    let runtime: Awaited<ReturnType<typeof openPlannedRuntime>> | null = null;
+    if (planned) {
+      const nativeDraft = !externalDraft && opts.runtime?.nativeDraft !== false;
+      runtime = await openPlannedRuntime(modelDir, profile, {
+        ...opts.runtime,
+        memoryBudgetBytes: opts.memoryBudgetBytes ?? opts.runtime?.memoryBudgetBytes,
         // Preserve the existing loader's draft residency equation.
-        batchSize: enableNativeMtp || externalDraft ? 1 : opts.glm?.batchSize,
-        // An explicit alternate drafter replaces native MTP.
-        enableMtp: enableNativeMtp,
+        batchSize: nativeDraft || externalDraft ? 1 : opts.runtime?.batchSize,
+        // An explicit alternate drafter replaces the native head.
+        nativeDraft,
       });
-      model = glmModel = opened.model;
-      owned.add(opened.model);
-      glmMemoryPlan = opened.plan;
+      model = runtime.model;
+      owned.add(runtime.model);
     } else {
       weights = await Weights.open(modelDir);
       owned.add(weights);
@@ -223,7 +225,7 @@ export async function loadContext(
     // (no GPU allocation yet), so a model whose weights can never serve
     // within the budget is refused HERE — before any unified-memory
     // commitment — with an actionable error instead of a Metal OOM later.
-    if (!glm && opts.memoryBudgetBytes) {
+    if (!planned && opts.memoryBudgetBytes) {
       const weightsBytes = [...weights!.shards.files.values()]
         .reduce((a, f) => a + f.mmap.size, 0);
       const report = fit(config, weightsBytes, 1, undefined, undefined, 0, opts.memoryBudgetBytes);
@@ -234,7 +236,7 @@ export async function loadContext(
           `${(opts.memoryBudgetBytes / 1e9).toFixed(2)} GB`,
         );
     }
-    if (!glm) {
+    if (!planned) {
       model = createModel(weights!, config, profile);
       if ("dispose" in model && typeof model.dispose === "function") owned.add(model);
     }
@@ -373,13 +375,14 @@ export async function loadContext(
       throw new Error(`--draft-kind ${opts.draftKind} requires --draft-model`);
     }
 
-    // GLM's checkpoint-native MTP row is the production default. It uses the
-    // already-planned bounded auxiliary expert tier and the same tokenizer, so
-    // there is no second artifact or compatibility probe to load.
-    if (!draft && glmModel && glmMemoryPlan?.enableMtp) {
+    // A planned runtime's checkpoint-native draft head is the production default.
+    // It uses the already-planned bounded auxiliary tier and the same tokenizer,
+    // so there is no second artifact or compatibility probe to load.
+    if (!draft && runtime?.nativeDraftTokens != null) {
       draft = {
-        provider: new Glm52NativeMtpProvider(glmModel),
-        numDraftTokens: glmMemoryPlan.mtpDraftTokens,
+        provider: nativeDraftProvider(runtime.model),
+        numDraftTokens: runtime.nativeDraftTokens,
+        native: true,
       };
     }
 
@@ -413,7 +416,8 @@ export async function loadContext(
       draft,
       model,
       profile,
-      glmMemoryPlan,
+      memoryPlan: runtime?.memoryPlan ?? null,
+      ...(runtime ? { runtimeDiagnostics: runtime.diagnostics } : {}),
       adapters,
       kvConfig: config.kvQuant,
       genDefaults: await loadGenSamplingDefaults(modelDir),
