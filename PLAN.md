@@ -219,3 +219,15 @@ logprobs+draft rows.
   installed and compiled artifacts, existing user data) are accepted with real
   weights; documentation follows ARCHITECTURE (generated inventories, handwritten
   explanations, no ledgers); no capability main shipped is retired silently.
+
+## Ideas and research
+
+One line per idea: the question and the domains it touches. Picking one up makes it an item
+above with an exit; an answered one moves its finding to the owning documentation and is deleted.
+
+- **SkillOpt skill optimization** (chat, memory, a new optimization domain; [research](PRLINK)):
+  can SkillOpt's gated skill-edit loop (Microsoft, MIT, arXiv:2605.23904) improve the default
+  assistant's prompt and skills and the memory stages' `Meta` policies with local models as target
+  and optimizer, and should the loop run inside mlx-bun? First experiment: a `scripts/` runner using
+  SkillOpt's `openai_compatible` backend against `mlx-bun serve` on one verifier-scored task set,
+  measuring the optimizer's edit-JSON parse rate and the held-out gain with a 4B–27B optimizer.

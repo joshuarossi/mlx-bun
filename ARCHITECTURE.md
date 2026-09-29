@@ -263,7 +263,9 @@ scripts with `--help`. Add that tooling with its actual consumer.
 
 Documentation changes follow a code change, decision, measurement, or misleading
 guide. Update it with that change. Open work lives only in PLAN; delete completed
-blocks. No STATUS file, parallel issue backlog for this refactor, or scheduled
+blocks. Unplanned ideas and research questions live in PLAN's Ideas section, one
+line each; picking one up makes it a PLAN item with an exit, and an answered one
+moves its finding to the owning documentation and is deleted. No STATUS file, parallel issue backlog for this refactor, or scheduled
 documentation passes. Mechanical rules get gates and pointers; policy rules,
 including approval before adding documentation files, remain binding without a gate. A future
 agent entry file should stay short: navigation and those policy rules.
