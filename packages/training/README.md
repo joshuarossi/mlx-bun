@@ -21,10 +21,23 @@ Opt-in native checks over a caller-supplied cached snapshot (`MLX_BUN_TEST_NATIV
 | `dataset`, `rank` | Tokenized SFT/preference batches and adapter rank assignment |
 | `lora` (`lora-params.ts`) | Trainable A/B leaves, attachment, warm start, save, and disposal |
 | `optimizer`, `loss` | AdamW, schedules, and differentiable training objectives |
-| `prefix-shared`, `segmented` | Specialized shared-prefix forwards and bounded backward passes |
+| `declared` | The graph's declared training operations the other modules consume |
+| `prefix-shared`, `segmented` | Shared-prefix losses and bounded backward drivers, generic over the graph's declaration |
 | `kernels/flash-cce` | Callable fused cross-entropy Metal forward/backward kernels |
 | `diffusion` (`diffusion-lora.ts`) | DiffusionGemma's denoising training objective |
 | `merge`, `fuse`, `export` | Adapter combination, checkpoint fusion, and export manifests |
+
+Training consumes a graph only through the `trainable` declaration
+(`TrainableGraph` in `@mlx-bun/inference/contracts`), never a model class:
+`lmHead`, `segmented`, `prefixShared`, `gradCheckpoint`, `flashAttention` and
+`denoising`. The graph owns how its layers run in segments, its prefix-shared
+mask and RoPE, its checkpointing, and which reused K/V crosses segment boundaries;
+the drivers here own the autograd. A run that needs an operation the graph does not
+declare fails with "the graph does not declare ...". Gradient checkpointing is a
+memory-for-compute hint, so a graph without it trains without and reports that in a
+setup stage. Gemma 4 and MiniCPM5 declare the parts above they implement, and
+DiffusionGemma the denoising objective; the architecture gate rejects concrete
+model imports and model-class `instanceof` in this package.
 
 These module subpaths are available for composition. The Steel Metal header is
 an implementation detail of flash CCE. Full-sequence forward operations remain

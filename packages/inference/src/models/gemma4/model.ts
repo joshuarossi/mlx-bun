@@ -31,10 +31,13 @@ import { isExpertTracing,recordRouting } from "../../runtime/expert-trace";
 // Re-export the base so existing importers keep one entry point.
 
 import { Checkpoint } from "@mlx-bun/mlx/checkpoint";
-import { LoraState,type LoraWeights } from "../../layers/lora";
+import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
 import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
 import type { TargetView } from "../../contracts/mlx/draft-target";
+import type { PrefixLayout, TrainableGraph } from "../../contracts/mlx/trainable";
+import { activePrefixLayout } from "../../layers/prefix-layout";
+import { gemma4Trainable, type GradCheckpointCtx, type LayerLoras } from "./trainable";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, Vision } from "../../contracts/mlx/media";
 import { declareGraph } from "../capabilities";
 import { bindGemma4MediaInput, gemma4DraftTarget, gemma4MediaEncoders } from "./media";
@@ -58,44 +61,6 @@ import { compiledLogitSoftcap } from "../../kernels/softcap";
 import { captureRopeOffsets } from "../../state/capabilities";
 import { KVCache } from "../../state/kv";
 import { RotatingKVCache } from "../../state/rotating-kv";
-
-/** Optional gradient-checkpointing context for the training forward. When set,
- *  forwardLayers wraps each layer in a Checkpoint so its interior activations
- *  are recomputed in the backward pass. `byLayer` maps a layer index to that
- *  layer's trainable LoRA weights, partitioned into the attention sub-block
- *  (q/k/v/o_proj) and the MLP sub-block (gate/up/down_proj + per-layer gate/
- *  projection) — re-swapped inside the closure so they are explicit checkpoint
- *  inputs (required because the autograd primals are disposed before the
- *  recompute). When `splitMlp` is set, the layer is wrapped in TWO checkpoints
- *  (attn sub-block + MLP sub-block) with the post-attn residual `hMid` as the
- *  boundary, so the backward recompute holds `max(attn,MLP)+hMid` instead of the
- *  whole layer (the intra-layer MLP split, lever 4). `keepAlive` collects the
- *  Checkpoint objects; the trainer disposes them after value_and_grad. */
-export interface LayerLoras {
-  attn: LoraWeights[];
-  mlp: LoraWeights[];
-}
-export interface GradCheckpointCtx {
-  byLayer: Map<number, LayerLoras>;
-  splitMlp: boolean;
-  keepAlive: Checkpoint[];
-}
-
-// Shared prompt-prefix plan (lever 7, e4b — `02d723a:docs/design/orpo-training.md` §5.4). When
-// set, Attention ropes the concatenated [prompt(P); chosenResp(Rc); rejectedResp(Rr)]
-// sequence BLOCK-WISE — prompt at offset 0, EACH response reset to logical offset
-// P — instead of the uniform cache.offset, so ONE forward over the concat is
-// bit-exact with the two separate [prompt;resp] forwards (each response sees the
-// prompt's RoPE positions, not shifted-by-the-other-response). The matching
-// block-sparse + LOGICAL-window attention mask rides in via the prefix cache's
-// makeMask (packages/training/src/prefix-shared.ts). Set around the single forward
-// (single-threaded), cleared after; null → the normal uniform-offset rope (every
-// other forward is untouched).
-export interface GemmaPrefixPlan { P: number; Rc: number; Rr: number }
-let _gemmaPrefixPlan: GemmaPrefixPlan | null = null;
-export function setGemmaPrefixPlan(p: GemmaPrefixPlan | null): void {
-  _gemmaPrefixPlan = p;
-}
 
 class Attention {
   readonly isSliding: boolean;
@@ -198,7 +163,7 @@ class Attention {
    *  [0..P-1, P..P+Rc-1, P..P+Rr-1]. Uses this.rope per block so the layer's
    *  proportional/ropeFreqs + sliding-vs-full geometry applies identically to the
    *  two-forward path. Caller disposes the input. */
-  ropeBlocks(x: MlxArray, plan: GemmaPrefixPlan): MlxArray {
+  ropeBlocks(x: MlxArray, plan: PrefixLayout): MlxArray {
     const { P, Rc, Rr } = plan;
     const [B, H, , D] = x.shape as [number, number, number, number];
     const blocks = [
@@ -255,8 +220,9 @@ class Attention {
       const kNormed = this.kNorm!.forward(k);
       const kT = ops.transposeAxes(kNormed, [0, 2, 1, 3]);
       kNormed.dispose();
-      const kRoped = _gemmaPrefixPlan
-        ? this.ropeBlocks(kT, _gemmaPrefixPlan)
+      const prefixLayout = activePrefixLayout();
+      const kRoped = prefixLayout
+        ? this.ropeBlocks(kT, prefixLayout)
         : this.rope(kT, offsetArr ?? offset);
       kT.dispose();
 
@@ -298,8 +264,9 @@ class Attention {
     }
 
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
-    q = disposing(q, _gemmaPrefixPlan
-      ? this.ropeBlocks(q, _gemmaPrefixPlan)
+    const prefixLayoutQ = activePrefixLayout();
+    q = disposing(q, prefixLayoutQ
+      ? this.ropeBlocks(q, prefixLayoutQ)
       : this.rope(q, shared.offsetArr ?? shared.offset));
 
     let attn: MlxArray;
@@ -692,6 +659,11 @@ export class Gemma4Model implements MlxDeclaredGraph {
       kv: { delayedAffine: "all" },
     });
   }
+  #trainable: TrainableGraph | undefined;
+  /** Segmented backward with KV-shared donor threading, prefix-shared ORPO,
+   * gradient checkpointing, and the quantized tied head. Flash training
+   * attention is refused: e4b crashes natively on it at long sequences. */
+  get trainable(): TrainableGraph { return this.#trainable ??= gemma4Trainable(this); }
   bindMediaInput(input: Vision): MlxPromptInput { return bindGemma4MediaInput(this, input); }
   mediaEncoders(modelDir: string, probes: MediaSidecarProbes): Promise<MediaEncoders> {
     return gemma4MediaEncoders(this, modelDir, probes);

@@ -56,9 +56,9 @@ function appDomain(path: string, owner: Library): string {
   return domain;
 }
 
-// Scheduling (`execution/`), every host app (engine, server, CLI, composition), host
-// libraries and module packages consume graphs
-// through their declared capabilities, bindings and profiles. They may name the
+// Scheduling (`execution/`), the app's engine, server and CLI, the training package,
+// and module, host-library and host-app code consume graphs through their declared
+// capabilities, bindings, profiles and training operations. They may name the
 // graph handle, its declaration, profiles, the registry-level role predicates
 // (`models/support.ts`) and shared input helpers, never a concrete model, and
 // never branch on a model's class, type string, architecture list or family flag.
@@ -82,11 +82,14 @@ const isCompositionFile = (file: string, owner: Library) => owner.app && relativ
 const inModulePanel = (file: string, owner: Library) => isModulePackage(owner.name) && relative(owner.source, file).startsWith("panel/");
 const isModuleProtocol = (file: string, owner: Library) => isModulePackage(owner.name) && relative(owner.source, file) === "protocol.ts";
 
-function schedulingSide(file: string, owner: Library): boolean {
+function graphConsumer(file: string, owner: Library): string | undefined {
   const name = relative(owner.source, file);
-  return (owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) ||
-    (owner.app && owner.name !== "mlx-bun-website") ||
-    isModulePackage(owner.name) || isHostLibrary(owner.name);
+  if ((owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) ||
+      (owner.name === "mlx-bun" && (name.startsWith("engine/") || name.startsWith("server/") || name.startsWith("cli/"))))
+    return "scheduling, engine, server and CLI code";
+  if (owner.name === "@mlx-bun/training") return "training code";
+  return isModulePackage(owner.name) || isHostLibrary(owner.name) || (owner.app && owner.name !== "mlx-bun-website")
+    ? "module and host code" : undefined;
 }
 
 /** Anything in a types-only package that exists at runtime: values, `export *`, non-type exports, side-effect imports. */
@@ -260,9 +263,10 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       violations.push(`${relative(root, file)}: browser-shared data protocols cannot import modules`);
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
-    if (schedulingSide(file, owner))
+    const consumer = graphConsumer(file, owner);
+    if (consumer)
       for (const { text, line } of identityChecks(source))
-        violations.push(`${name}:${line}: scheduling, engine, server and CLI code cannot branch on model identity (${text}); read a declared capability`);
+        violations.push(`${name}:${line}: ${consumer} cannot branch on model identity (${text}); read a declared capability`);
     for (const { specifier, line } of references(source)) {
       const at = `${name}:${line}`;
       if (specifier === undefined) { violations.push(`${at}: nonliteral module reference`); continue; }
@@ -319,9 +323,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
       }
       if (from !== undefined && (to === undefined || !mayImport(from, to)))
         violations.push(`${at}: ${from} -> ${to ?? targetOwner.name} (${specifier})`);
-      if (schedulingSide(file, owner) && targetOwner.name === "@mlx-bun/inference" &&
+      if (consumer && targetOwner.name === "@mlx-bun/inference" &&
           relative(targetOwner.source, actual).startsWith("models/") && !graphContracts.has(relative(targetOwner.source, actual)))
-        violations.push(`${at}: scheduling, engine, server and CLI code cannot import a concrete model (${specifier}); consume its declared capabilities`);
+        violations.push(`${at}: ${consumer} cannot import a concrete model (${specifier}); consume its declared capabilities`);
       edges.push(relative(root, actual));
     }
   }
@@ -474,7 +478,7 @@ test("browser code can consume data protocols but cannot reach backend modules o
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scheduling, engine, server and CLI code cannot import concrete models or branch on model identity", async () => {
+test("scheduling, engine, server, CLI and training code cannot import concrete models or branch on model identity", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-scheduling-boundaries-"));
   const write = (path: string, text: string) => {
     const target = resolve(root, path);
@@ -493,6 +497,9 @@ test("scheduling, engine, server and CLI code cannot import concrete models or b
     write("packages/inference/src/models/capabilities.ts", "export const declaredGraph = (model: object) => model;");
     write("packages/inference/src/models/gemma4/model.ts", "export class Gemma4Model { modelType = 'gemma4'; }");
     write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("packages/training/package.json", JSON.stringify({ name: "@mlx-bun/training", type: "module", exports: { ".": "./src/index.ts" },
+      dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    write("packages/training/src/index.ts", "export const training = true;");
     mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
     symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
     symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
@@ -513,8 +520,18 @@ test("scheduling, engine, server and CLI code cannot import concrete models or b
     expect(typed.filter(item => item.includes("comparing a model type")).length).toBe(1);
     write(engine, 'export const flag = (r: { flag(name: string): boolean }) => r.flag("MLX_BUN_QWEN_SPEC_KV4");');
     expect((await inspectWorkspaces(root)).some(item => item.includes("model-scoped flag MLX_BUN_QWEN_SPEC_KV4"))).toBe(true);
-    // The same code outside scheduling and engine (a model's own binding) is unaffected.
+    // Training consumes a graph's declared training operations the same way.
     write(engine, "export const engine = 1;");
+    const trainer = "packages/training/src/trainer.ts";
+    write(trainer, 'import type { RuntimeModel } from "@mlx-bun/inference/models"; export const train = (m: RuntimeModel) => m;');
+    write("packages/training/src/index.ts", 'export * from "./trainer";');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(trainer, 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const segmented = (m: object) => m instanceof Gemma4Model;');
+    const trained = await inspectWorkspaces(root);
+    expect(trained.some(item => item.includes("packages/training/src/trainer.ts:1: training code cannot import a concrete model (@mlx-bun/inference/models/gemma4)"))).toBe(true);
+    expect(trained.some(item => item.includes("training code cannot branch on model identity (instanceof Gemma4Model)"))).toBe(true);
+    write(trainer, "export const train = 1;");
+    // The same code outside scheduling, engine and training (a model's own binding) is unaffected.
     write("packages/inference/src/models/gemma4/binding.ts", 'import { Gemma4Model } from "./model"; export const own = (m: object) => m instanceof Gemma4Model;');
     expect(await inspectWorkspaces(root)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -723,10 +740,10 @@ test("module, host-library and host code cannot branch on model identity or impo
       if (path === "apps/example") manifest(path, name, { ...deps, "@mlx-bun/module-a": "" });
       write(file, identity);
       const branched = await inspectWorkspaces(root);
-      expect(mentions(branched, `${file}:1: scheduling, engine, server and CLI code cannot branch on model identity (comparing a model type)`)).toBe(true);
+      expect(mentions(branched, `${file}:1: module and host code cannot branch on model identity (comparing a model type)`)).toBe(true);
       write(file, concrete);
       const imported = await inspectWorkspaces(root);
-      expect(mentions(imported, `${file}:1: scheduling, engine, server and CLI code cannot import a concrete model`)).toBe(true);
+      expect(mentions(imported, `${file}:1: module and host code cannot import a concrete model`)).toBe(true);
       expect(mentions(imported, "instanceof Gemma4Model")).toBe(true);
       // Restore the fixture file.
       write(file, "export const restored = 1;");
