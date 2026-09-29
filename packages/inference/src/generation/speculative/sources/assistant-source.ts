@@ -25,6 +25,7 @@ import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import { GemmaAssistantDrafter } from "../../../models/gemma4/assistant";
 import type { DraftProvider, DraftSource, TargetView, AssistantRowsTarget } from "../source";
+import { targetLacks } from "../source";
 
 /** Sum of the drafter's on-disk safetensors — admission accounting only. */
 function safetensorsBytes(dir: string): number {
@@ -74,8 +75,7 @@ export class AssistantSource implements DraftSource {
   private readonly target: AssistantRowsTarget;
 
   constructor(private readonly drafter: Pick<GemmaAssistantDrafter, "forwardRows">, target: TargetView) {
-    if (!target.assistantRows)
-      throw new Error("assistant drafter requires a Gemma4 target with donor views");
+    if (!target.assistantRows) throw targetLacks("assistantRows");
     this.target = target.assistantRows;
   }
 

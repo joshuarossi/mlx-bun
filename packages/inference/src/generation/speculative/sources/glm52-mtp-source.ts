@@ -41,6 +41,8 @@ export class Glm52NativeMtpProvider implements DraftProvider {
   readonly #layer: Glm52DecoderLayer;
 
   constructor(readonly model: Glm52Model) {
+    if (!(model instanceof Glm52Model))
+      throw new Error("native GLM-5.2 MTP binds only to the GLM-5.2 graph that declares it");
     if (!model.capabilities.mtpMetadata)
       throw new Error("GLM-5.2 artifact does not contain a complete MTP row");
     if (model.capabilities.mtpEnabled === false)

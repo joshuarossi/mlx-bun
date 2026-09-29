@@ -75,12 +75,17 @@ describe("Registry drafters", () => {
       snapshot("gemma-e2b", "gemma4");
       snapshot("gemma-e2b-assistant", "gemma4_assistant");
       snapshot("gemma-12b-assistant", "gemma4_unified_assistant");
-      const reg = new Registry(":memory:");
+      const reg = new Registry(":memory:", { isCompanion: type => type.endsWith("_assistant") });
       expect(await reg.scan(hub)).toBe(3);
       expect(reg.list()).toHaveLength(3);
       expect(reg.resolve("gemma").repoId).toBe("test/gemma-e2b");
       expect(() => reg.resolve("assistant")).toThrow(/no model/);
       reg.close();
+      // The registry holds no model facts: without a companion predicate nothing is excluded.
+      const open = new Registry(":memory:");
+      await open.scan(hub);
+      expect(open.resolve("e2b-assistant").repoId).toBe("test/gemma-e2b-assistant");
+      open.close();
     } finally {
       rmSync(hub, { recursive: true, force: true });
     }

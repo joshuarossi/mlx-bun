@@ -34,7 +34,7 @@ import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { PreparedStateChange } from "../../contracts/portable/resources";
 import type { MlxDraftRows } from "./round";
 
-export type { AssistantRowsTarget, QwenMtpTarget, TargetView } from "../../contracts/mlx/draft-target";
+export { targetLacks, type AssistantRowsTarget, type HiddenLayerTapsTarget, type RecurrentMtpTarget, type TargetPort, type TargetView } from "../../contracts/mlx/draft-target";
 import type { TargetView } from "../../contracts/mlx/draft-target";
 
 /** A per-request draft-token producer. Created per generation (owns its own

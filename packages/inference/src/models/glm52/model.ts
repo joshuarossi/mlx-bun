@@ -42,6 +42,7 @@ Glm52ExpertRuntime,
 type Glm52ExpertRuntimeOptions,
 } from "./residency";
 import type { Glm52ExpertExecutionBackend } from "./streamed-experts";
+import { NATIVE_MTP_DRAFT } from "../drafters";
 
 export interface Glm52ModelCapabilities {
   readonly dsa: boolean;
@@ -49,6 +50,8 @@ export interface Glm52ModelCapabilities {
   readonly mtpMetadata: boolean;
   /** The native MTP weights/tier are loaded for this model instance. */
   readonly mtpEnabled?: boolean;
+  /** Draft tokens per round the loaded MTP tier was planned for. */
+  readonly mtpDraftTokens?: number;
 }
 
 export interface Glm52StreamedOpenOptions
@@ -671,7 +674,11 @@ export class Glm52Model implements MlxDeclaredGraph {
   /** Attends its own compressed MLA storage, which no KV scheme converts. Adapters
    * are not offered on streamed experts. */
   get graphCapabilities(): GraphCapabilities {
-    return declareGraph({ adapters: { mountable: false }, sparseAttention: this.capabilities?.dsa === true });
+    return declareGraph({
+      adapters: { mountable: false }, sparseAttention: this.capabilities?.dsa === true,
+      nativeDraft: this.capabilities?.mtpEnabled === true
+        ? { kind: NATIVE_MTP_DRAFT, numDraftTokens: this.capabilities.mtpDraftTokens ?? 3 } : null,
+    });
   }
   expertResidency(): Record<string, unknown> | null {
     const runtime = this.expertRuntime;
@@ -801,6 +808,7 @@ export class Glm52Model implements MlxDeclaredGraph {
           dsa: detected.hasDsa && options.enableDsa !== false,
           mtpMetadata: detected.hasMtp,
           mtpEnabled: detected.hasMtp && options.enableMtp !== false,
+          mtpDraftTokens: options.mtpDraftTokens ?? 3,
         },
         runtime.executor,
         runtime,

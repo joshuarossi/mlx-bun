@@ -23,9 +23,10 @@ own implementations without subclassing a concrete model or cache.
 
 Each graph declares what it can do (`GraphCapabilities`, portable; a model exposes
 it as `graphCapabilities`): its method, batched adapters, media input, paged
-attention, compiled decode, hidden-layer taps for drafts, which delayed affine KV
-levels its attention is qualified for, dense reads, and what its verifier qualifies
-(adapters, logprobs, affine and TurboQuant KV, external tokens, grammar proposals).
+attention, compiled decode, hidden-layer taps for drafts, a draft head its
+checkpoint carries (`nativeDraft`), which delayed affine KV levels its attention is
+qualified for, dense reads, and what its verifier qualifies (adapters, logprobs,
+affine and TurboQuant KV, external tokens, grammar proposals).
 `MlxDeclaredGraph` names the operations behind those promises (`bindMediaInput`,
 `mediaEncoders`, `pixelInput`, `draftTarget`, `trainable`, `expertResidency`), and
 `declaredGraph` in `models/capabilities` checks the pairing once when composition
@@ -726,10 +727,10 @@ existing graph families. These retain the dedicated and specialized implementati
 and model construction helpers. Direct graph constructors remain available. Runtimes
 that plan memory before opening weights (streamed experts) are opened with
 `openPlannedRuntime` from generic `RuntimeOpenOptions` and return a generic
-`MemoryPlan`, whether a checkpoint-native draft head is planned, and telemetry;
-`planRuntimeMemory` (`models/memory-plan`, native-free) returns the plan from
-artifact headers, or null for models without one. `nativeDraftProvider` builds
-the draft provider over such a model.
+`MemoryPlan` and telemetry; `planRuntimeMemory` (`models/memory-plan`, native-free)
+returns the plan from artifact headers, or null for models without one. A graph
+that carries its own draft head declares it (`GraphCapabilities.nativeDraft`), and
+`DraftProviderRegistry.native(graph)` builds the provider.
 
 For explicit state and tensor operations, use `graph.makeCache()`,
 `graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
@@ -901,6 +902,19 @@ Supply the target graph, draft provider, token budget, and token callback yourse
 `specRun` accepts an explicit binding from `generation/speculative/binding`; it does not
 require a concrete model class. The former `specServeRun` name remains available.
 
+`DraftProviderRegistry` (`generation/speculative/draft-registry`) is how a server
+selects and loads a draft: each provider kind registers `detect(artifact)` (files
+only, never MLX) and `load(request)`, and `defaultDraftProviders()` registers the
+built-in kinds (`dspark`, `deepspec`, `assistant`, `mtp`, `two-model` as the
+catch-all, `ngram` by name only). An application uses the default, extends a copy
+with `register`, or hands `loadContext` a ready provider (`draftProvider`); it never
+names a provider class, and the architecture gate rejects one there. A graph whose
+checkpoint carries its own draft head declares it as `GraphCapabilities.nativeDraft`
+(GLM-5.2's MTP row); `registry.native(graph)` binds the registered provider.
+Providers read the target through capability-named ports on `TargetView`
+(`assistantRows`, `hiddenLayerTaps`, `recurrentMtp`) and refuse a target lacking
+one with `target graph does not provide <port>`.
+
 Draft graphs live in `models/gemma4/assistant`, `models/qwen/mtp`, `models/glm52/mtp`,
 and `models/speculative/*`. Proposal sources live in `generation/speculative/sources`;
 verification and acceptance belong to `generation/speculative`; batched draft work
@@ -942,7 +956,8 @@ per-layer KV. It takes `MLX_BUN_TEST_SPEC_TARGET`, `MLX_BUN_TEST_SPEC_KIND`
 `MLX_BUN_TEST_SPEC_KV` (`bf16|4|8|turbo|config`),
 `MLX_BUN_TEST_SPEC_KV_START`, `MLX_BUN_TEST_SPEC_DEPTH`, `MLX_BUN_TEST_SPEC_WINDOW`
 (the custom sliding-window graph over a Llama-family target) and
-`MLX_BUN_TEST_SPEC_ADAPTER`. Requests go through placement, `methodRequest` and
+`MLX_BUN_TEST_SPEC_ADAPTER`. Providers load through `defaultDraftProviders()`, as
+the app's model host loads them. Requests go through placement, `methodRequest` and
 the binding's group: B1 equal to the serial `specServeRun` producer where that
 producer serves the KV settings, B4 cohorts that prefill together and repeat,
 stop/failure/abort retirement at exact counts, late and prefill joins, prompt
@@ -958,8 +973,8 @@ For example:
 
 `glm-mtp` selects GLM-5.2's checkpoint-native MTP (`--mtp on`), mounted as the
 app's model host mounts it: the Colibri runtime opened with the MTP tier planned
-for one drafting lane, and `Glm52NativeMtpProvider` at the plan's draft depth
-unless `MLX_BUN_TEST_SPEC_DEPTH` overrides it. The same checks run as for the
+for one drafting lane, and the provider the graph declares
+(`GraphCapabilities.nativeDraft`) at the plan's draft depth unless `MLX_BUN_TEST_SPEC_DEPTH` overrides it. The same checks run as for the
 other providers, except the KV matrix: GLM's compressed MLA cache has no affine
 or TurboQuant conversion, so this kind takes plain KV only and no custom window:
 `MLX_BUN_TEST_SPEC_TARGET=/GLM-5.2 MLX_BUN_TEST_SPEC_KIND=glm-mtp bun --no-env-file test packages/inference/tests/parity/speculative-group.test.ts`.
