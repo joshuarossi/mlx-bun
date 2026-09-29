@@ -9,6 +9,7 @@
 // the full per-head K/V history is never materialized.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { positiveInteger } from "../../runtime/integers";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { Glm52Config } from "../../artifacts/glm52-config";
@@ -43,11 +44,6 @@ function isBatchedSelection(
     !(value instanceof MlxArray) &&
     !Array.isArray(value) &&
     "rows" in value;
-}
-
-function positiveInteger(name: string, value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new Error(`${name} must be a positive safe integer`);
 }
 
 function sameShape(actual: readonly number[], expected: readonly number[]): boolean {
@@ -279,12 +275,12 @@ export class Glm52Mla {
     }
     if (!config.ropeInterleave)
       throw new Error("GLM-5.2 MLA requires pair-interleaved RoPE");
-    positiveInteger("attention heads", config.numAttentionHeads);
-    positiveInteger("q LoRA rank", config.qLoraRank);
-    positiveInteger("kv LoRA rank", config.kvLoraRank);
-    positiveInteger("no-PE head dimension", config.qkNopeHeadDim);
-    positiveInteger("RoPE head dimension", config.qkRopeHeadDim);
-    positiveInteger("value head dimension", config.vHeadDim);
+    positiveInteger(config.numAttentionHeads, "attention heads");
+    positiveInteger(config.qLoraRank, "q LoRA rank");
+    positiveInteger(config.kvLoraRank, "kv LoRA rank");
+    positiveInteger(config.qkNopeHeadDim, "no-PE head dimension");
+    positiveInteger(config.qkRopeHeadDim, "RoPE head dimension");
+    positiveInteger(config.vHeadDim, "value head dimension");
     this.config = config;
     this.weights = weights;
     this.prefix = `model.layers.${layerIndex}.self_attn`;
@@ -302,8 +298,8 @@ export class Glm52Mla {
     if (shape.length !== 3)
       throw new Error(`GLM-5.2 MLA input must have rank 3 (got ${shape.length})`);
     const [batch, tokens, hidden] = shape as [number, number, number];
-    positiveInteger("MLA batch", batch);
-    positiveInteger("MLA tokens", tokens);
+    positiveInteger(batch, "MLA batch");
+    positiveInteger(tokens, "MLA tokens");
     if (hidden !== this.config.hiddenSize)
       throw new Error(`MLA hidden width ${hidden} != ${this.config.hiddenSize}`);
 

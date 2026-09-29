@@ -25,6 +25,7 @@ import { TrellisLinear, fusedGateUpEligible, fusedGateUpSwiglu, TRELLIS_MATVEC_M
 import { argmaxLastPosition } from "../../kernels/logits";
 import { disposeTriple } from "../../state/quantized-tensor";
 import { disposing } from "../../layers/helpers";
+import { compiledSwiglu } from "../../layers/swiglu";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
 import { QuantizedEmbedding } from "../../layers/quantized-embedding";
@@ -54,24 +55,7 @@ const PREFIX = "language_model";
 // the conv `nn.silu`) runs through a compiled closure unconditionally, so the
 // dispatched kernel set matches the oracle op-for-op (= mlx-lm, bit-exact). Traced
 // once (shapeless), replayed thereafter; autograd-safe (mx.compile threads VJP
-// through the traced graph). `compiledSwiglu` is exported so the parity test can
-// assert the closure exists and the MLP actually uses it.
-
-/** activations.py: `@mx.compile def swiglu(gate, x): return nn.silu(gate) * x`.
- *  nn.silu(g) == g * sigmoid(g); mx.compile fuses sigmoid+mul+mul → one kernel. */
-let _swigluClosure: CompiledFunction | null = null;
-export function compiledSwiglu(gate: MlxArray, up: MlxArray): MlxArray {
-  if (!_swigluClosure) {
-    _swigluClosure = new CompiledFunction((inputs) => {
-      const g = inputs[0]!, u = inputs[1]!;
-      const sig = ops.sigmoid(g);
-      const silu = ops.mul(g, sig); sig.dispose();
-      const out = ops.mul(silu, u); silu.dispose();
-      return [out];
-    });
-  }
-  return _swigluClosure.apply([gate, up])[0]!;
-}
+// through the traced graph). `compiledSwiglu` lives in layers/swiglu.
 
 /** qwen3_next.py `_precise_swiglu(h, gate, x)`:
  *    gate = nn.silu(gate.astype(f32)); x = x.astype(f32); (gate*x).astype(h.dtype)
@@ -374,12 +358,19 @@ export class GatedDeltaNet {
   }
 }
 
-/** Full (softmax) attention with output gate + q/k norm + partial RoPE. */
-export class Qwen3Attention {
-  readonly qProj: QuantizedLinear;
-  readonly kProj: QuantizedLinear;
-  readonly vProj: QuantizedLinear;
-  readonly oProj: QuantizedLinear;
+/** A projection the attention block can run: affine-quantized here, dense or
+ *  quantized in the MTP companion. Only QuantizedLinear reads `independentRows`. */
+export interface AttentionLinear { forward(x: MlxArray, independentRows?: boolean): MlxArray }
+export type AttentionLinearLoader<L extends AttentionLinear> = (weights: Weights, path: string, config: ModelConfig) => L;
+
+/** Full (softmax) attention with output gate + q/k norm + partial RoPE.
+ *  `loadLinear` chooses the projection type (the MTP companion loads dense or
+ *  quantized heads); the graph itself is the same. */
+export class Qwen3Attention<L extends AttentionLinear = QuantizedLinear> {
+  readonly qProj: L;
+  readonly kProj: L;
+  readonly vProj: L;
+  readonly oProj: L;
   readonly qNorm: RMSNorm;
   readonly kNorm: RMSNorm;
   readonly nHeads: number;
@@ -389,7 +380,9 @@ export class Qwen3Attention {
   readonly ropeDims: number;
   readonly ropeBase: number;
 
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+  constructor(weights: Weights, config: ModelConfig, prefix: string,
+    // The default projection type L is QuantizedLinear (the loader's own type).
+    loadLinear: AttentionLinearLoader<L> = QuantizedLinear.load as unknown as AttentionLinearLoader<L>) {
     const t = config.text;
     this.nHeads = t.numAttentionHeads;
     this.nKvHeads = t.numKeyValueHeads;
@@ -397,10 +390,10 @@ export class Qwen3Attention {
     this.scale = Math.pow(this.headDim, -0.5);
     this.ropeDims = Math.trunc(this.headDim * t.partialRotaryFactor);
     this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
-    this.qProj = QuantizedLinear.load(weights, `${prefix}.q_proj`, config);
-    this.kProj = QuantizedLinear.load(weights, `${prefix}.k_proj`, config);
-    this.vProj = QuantizedLinear.load(weights, `${prefix}.v_proj`, config);
-    this.oProj = QuantizedLinear.load(weights, `${prefix}.o_proj`, config);
+    this.qProj = loadLinear(weights, `${prefix}.q_proj`, config);
+    this.kProj = loadLinear(weights, `${prefix}.k_proj`, config);
+    this.vProj = loadLinear(weights, `${prefix}.v_proj`, config);
+    this.oProj = loadLinear(weights, `${prefix}.o_proj`, config);
     this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
     this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
   }

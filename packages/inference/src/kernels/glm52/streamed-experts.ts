@@ -1,8 +1,10 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
-import { GLM52_EXPERT_SLOT_ALIGNMENT } from "./layout";
+import { positiveInteger } from "../../runtime/integers";
+import { GLM52_EXPERT_SLOT_ALIGNMENT, validateRange, type Glm52CanonicalMetalLayout } from "./layout";
 export { GLM52_EXPERT_SLOT_ALIGNMENT } from "./layout";
+export type { Glm52CanonicalMetalLayout, Glm52CanonicalQ4MetalLayout, Glm52CanonicalQ8MetalLayout } from "./layout";
 
 const SIMD_WIDTH = 32;
 const SIMD_GROUPS = 4;
@@ -17,7 +19,7 @@ const ROWS_PER_THREADGROUP = SIMD_GROUPS;
  */
 export function glm52CanonicalQ4SlotView(
   pointer: number,
-  layout: Glm52CanonicalQ4MetalLayout | Glm52CanonicalQ8MetalLayout,
+  layout: Glm52CanonicalMetalLayout,
 ): MlxArray {
   if (!Number.isSafeInteger(pointer) || pointer <= 0)
     throw new Error("expert slot pointer must be a positive safe integer");
@@ -30,57 +32,6 @@ export function glm52CanonicalQ4SlotView(
 }
 
 export const glm52CanonicalQ8SlotView = glm52CanonicalQ4SlotView;
-
-function validateCall(
-  input: MlxArray,
-  slot: MlxArray,
-  layout: Glm52CanonicalQ4MetalLayout,
-): void {
-  const hidden = positiveInteger(layout.hiddenSize, "hidden size");
-  const intermediate = positiveInteger(
-    layout.intermediateSize,
-    "intermediate size",
-  );
-  positiveInteger(layout.slotBytes, "expert slot bytes");
-  if (hidden % 8 !== 0 || intermediate % 8 !== 0)
-    throw new Error("Q4 expert dimensions must be divisible by 8");
-  if (hidden % ROWS_PER_THREADGROUP !== 0 ||
-      intermediate % ROWS_PER_THREADGROUP !== 0) {
-    throw new Error(
-      `Q4 expert output dimensions must be divisible by ${ROWS_PER_THREADGROUP}`,
-    );
-  }
-  if (
-    input.shape.length !== 2 ||
-    !Number.isSafeInteger(input.shape[0]) ||
-    input.shape[0]! < 1 ||
-    input.shape[1] !== hidden
-  ) {
-    throw new Error(
-      `GLM Metal streamed expert decode requires input [M,${hidden}]`,
-    );
-  }
-  if (input.dtype !== Dtype.bfloat16 && input.dtype !== Dtype.float32) {
-    throw new Error(
-      "GLM Metal streamed expert decode requires bfloat16 or float32 input",
-    );
-  }
-  if (slot.dtype !== Dtype.uint8 || slot.shape.length !== 1)
-    throw new Error("canonical expert slot must be a flat uint8 array");
-  if (slot.size < layout.slotBytes)
-    throw new Error("canonical expert slot array is shorter than its layout");
-
-  const ranges = [
-    [layout.downWeightOffset, hidden * intermediate / 2, "down weights"],
-    [layout.gateWeightOffset, intermediate * hidden / 2, "gate weights"],
-    [layout.upWeightOffset, intermediate * hidden / 2, "up weights"],
-    [layout.downScaleOffset, hidden * 4, "down scales"],
-    [layout.gateScaleOffset, intermediate * 4, "gate scales"],
-    [layout.upScaleOffset, intermediate * 4, "up scales"],
-  ] as const;
-  for (const [offset, length, label] of ranges)
-    validateRange(offset, length, layout.slotBytes, label);
-}
 
 // One simdgroup owns one output row. The packed Q4 byte stream and F32 row
 // scales are read straight from the canonical residency slot. Every product is
@@ -161,94 +112,6 @@ const DOWN_SOURCE = String.raw`
     out[(ulong)sample * (ulong)H + row] = T(value);
 `;
 
-/**
- * Row-independent routed-SwiGLU kernel for the GLM-5.2 production geometry.
- * M=1 decode and a pinned speculative verify batch use the identical source
- * and dispatch geometry; only grid.z changes.
- */
-export class Glm52CanonicalQ4MetalExecutor {
-  readonly #gateUp = new MetalKernel({
-    name: "mlx_bun_glm52_q4_slot_gate_up",
-    inputNames: ["x", "slot"],
-    outputNames: ["mid"],
-    source: GATE_UP_SOURCE,
-    ensureRowContiguous: true,
-  });
-  readonly #down = new MetalKernel({
-    name: "mlx_bun_glm52_q4_slot_down",
-    inputNames: ["mid", "slot"],
-    outputNames: ["out"],
-    source: DOWN_SOURCE,
-    ensureRowContiguous: true,
-  });
-  #disposed = false;
-
-  execute(
-    input: MlxArray,
-    slot: MlxArray,
-    layout: Glm52CanonicalQ4MetalLayout,
-  ): MlxArray {
-    if (this.#disposed)
-      throw new Error("GLM Metal streamed expert executor used after dispose");
-    validateCall(input, slot, layout);
-    const samples = input.shape[0]!;
-    const templateInts = {
-      M: samples,
-      H: layout.hiddenSize,
-      I: layout.intermediateSize,
-      DOWN_W: layout.downWeightOffset,
-      GATE_W: layout.gateWeightOffset,
-      UP_W: layout.upWeightOffset,
-      DOWN_S: layout.downScaleOffset,
-      GATE_S: layout.gateScaleOffset,
-      UP_S: layout.upScaleOffset,
-      ROWS_TG: ROWS_PER_THREADGROUP,
-    };
-    const [mid] = this.#gateUp.apply([input, slot], {
-      outputs: [{
-        shape: [samples, layout.intermediateSize],
-        dtype: input.dtype,
-      }],
-      grid: [
-        THREADS,
-        layout.intermediateSize / ROWS_PER_THREADGROUP,
-        samples,
-      ],
-      threadGroup: [THREADS, 1, 1],
-      templateDtypes: { T: input.dtype },
-      templateInts,
-    });
-    if (!mid) throw new Error("GLM Metal gate/up kernel returned no output");
-    try {
-      const [output] = this.#down.apply([mid, slot], {
-        outputs: [{
-          shape: [samples, layout.hiddenSize],
-          dtype: input.dtype,
-        }],
-        grid: [
-          THREADS,
-          layout.hiddenSize / ROWS_PER_THREADGROUP,
-          samples,
-        ],
-        threadGroup: [THREADS, 1, 1],
-        templateDtypes: { T: input.dtype },
-        templateInts,
-      });
-      if (!output) throw new Error("GLM Metal down kernel returned no output");
-      return output;
-    } finally {
-      mid.dispose();
-    }
-  }
-
-  dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    this.#gateUp.dispose();
-    this.#down.dispose();
-  }
-}
-
 const Q8_GATE_UP_SOURCE = String.raw`
   const uint lane = thread_index_in_simdgroup;
   const uint sg = simdgroup_index_in_threadgroup;
@@ -302,76 +165,114 @@ const Q8_DOWN_SOURCE = String.raw`
   if (lane == 0u) out[(ulong)sample * (ulong)H + row] = T(value);
 `;
 
+/** What differs between the Q4 and Q8 kernel families: the Metal sources, the
+ *  weight packing the validators check, and the error wording. */
+interface CanonicalExecutorSpec {
+  readonly label: "Q4" | "Q8";
+  readonly kernelPrefix: string;
+  readonly gateUpSource: string;
+  readonly downSource: string;
+  /** Weights stored per byte (Q4 packs two, Q8 one). */
+  readonly weightsPerByte: 1 | 2;
+  /** Output dimensions must divide by this many packed weights (Q4: one uint32 word). */
+  readonly dimensionMultiple: number;
+  readonly subject: string;
+}
+
+function validateCall(
+  input: MlxArray,
+  slot: MlxArray,
+  layout: Glm52CanonicalMetalLayout,
+  spec: CanonicalExecutorSpec,
+): void {
+  const hidden = positiveInteger(layout.hiddenSize, "hidden size");
+  const intermediate = positiveInteger(
+    layout.intermediateSize,
+    "intermediate size",
+  );
+  positiveInteger(layout.slotBytes, "expert slot bytes");
+  if (hidden % spec.dimensionMultiple !== 0 || intermediate % spec.dimensionMultiple !== 0) {
+    throw new Error(
+      `${spec.label} expert dimensions must be divisible by ${spec.dimensionMultiple}`,
+    );
+  }
+  if (hidden % ROWS_PER_THREADGROUP !== 0 ||
+      intermediate % ROWS_PER_THREADGROUP !== 0) {
+    throw new Error(
+      `${spec.label} expert output dimensions must be divisible by ${ROWS_PER_THREADGROUP}`,
+    );
+  }
+  if (
+    input.shape.length !== 2 ||
+    !Number.isSafeInteger(input.shape[0]) ||
+    input.shape[0]! < 1 ||
+    input.shape[1] !== hidden
+  ) {
+    throw new Error(`${spec.subject} requires input [M,${hidden}]`);
+  }
+  if (input.dtype !== Dtype.bfloat16 && input.dtype !== Dtype.float32)
+    throw new Error(`${spec.subject} requires bfloat16 or float32 input`);
+  if (slot.dtype !== Dtype.uint8 || slot.shape.length !== 1)
+    throw new Error("canonical expert slot must be a flat uint8 array");
+  if (slot.size < layout.slotBytes)
+    throw new Error("canonical expert slot array is shorter than its layout");
+
+  const perByte = spec.weightsPerByte;
+  const ranges = [
+    [layout.downWeightOffset, hidden * intermediate / perByte, "down weights"],
+    [layout.gateWeightOffset, intermediate * hidden / perByte, "gate weights"],
+    [layout.upWeightOffset, intermediate * hidden / perByte, "up weights"],
+    [layout.downScaleOffset, hidden * 4, "down scales"],
+    [layout.gateScaleOffset, intermediate * 4, "gate scales"],
+    [layout.upScaleOffset, intermediate * 4, "up scales"],
+  ] as const;
+  for (const [offset, length, label] of ranges)
+    validateRange(offset, length, layout.slotBytes, label);
+}
+
 /**
- * Fixed M=1..gamma signed-Q8 kernel family for native MTP draft and accepted
- * token absorption. The row dot-product and materialization boundaries are
- * identical for every batch width; only grid.z changes.
+ * Row-independent routed-SwiGLU kernel pair (gate/up, then down) that reads a
+ * canonical residency slot directly. M=1 decode and a pinned speculative
+ * verify batch use the identical source and dispatch geometry; only grid.z
+ * changes. The Q4 and Q8 families below differ only in their spec.
  */
-export class Glm52CanonicalQ8MetalExecutor {
-  readonly #gateUp = new MetalKernel({
-    name: "mlx_bun_glm52_q8_slot_gate_up",
-    inputNames: ["x", "slot"],
-    outputNames: ["mid"],
-    source: Q8_GATE_UP_SOURCE,
-    ensureRowContiguous: true,
-  });
-  readonly #down = new MetalKernel({
-    name: "mlx_bun_glm52_q8_slot_down",
-    inputNames: ["mid", "slot"],
-    outputNames: ["out"],
-    source: Q8_DOWN_SOURCE,
-    ensureRowContiguous: true,
-  });
+class Glm52CanonicalMetalExecutor {
+  readonly #gateUp: MetalKernel;
+  readonly #down: MetalKernel;
+  readonly #spec: CanonicalExecutorSpec;
   #disposed = false;
+
+  constructor(spec: CanonicalExecutorSpec) {
+    this.#spec = spec;
+    this.#gateUp = new MetalKernel({
+      name: `${spec.kernelPrefix}_gate_up`,
+      inputNames: ["x", "slot"],
+      outputNames: ["mid"],
+      source: spec.gateUpSource,
+      ensureRowContiguous: true,
+    });
+    this.#down = new MetalKernel({
+      name: `${spec.kernelPrefix}_down`,
+      inputNames: ["mid", "slot"],
+      outputNames: ["out"],
+      source: spec.downSource,
+      ensureRowContiguous: true,
+    });
+  }
 
   execute(
     input: MlxArray,
     slot: MlxArray,
-    layout: Glm52CanonicalQ8MetalLayout,
+    layout: Glm52CanonicalMetalLayout,
   ): MlxArray {
     if (this.#disposed)
-      throw new Error("GLM MTP Metal expert executor used after dispose");
-    const hidden = positiveInteger(layout.hiddenSize, "hidden size");
-    const intermediate = positiveInteger(
-      layout.intermediateSize,
-      "intermediate size",
-    );
-    const [rows, width] = input.shape;
-    if (
-      input.shape.length !== 2 ||
-      !rows ||
-      width !== hidden ||
-      (input.dtype !== Dtype.bfloat16 && input.dtype !== Dtype.float32)
-    ) {
-      throw new Error(
-        `GLM MTP Metal streamed expert requires [M,${hidden}] bf16/f32 input`,
-      );
-    }
-    if (hidden % ROWS_PER_THREADGROUP !== 0 ||
-        intermediate % ROWS_PER_THREADGROUP !== 0) {
-      throw new Error(
-        `Q8 expert dimensions must be divisible by ${ROWS_PER_THREADGROUP}`,
-      );
-    }
-    if (slot.dtype !== Dtype.uint8 || slot.shape.length !== 1 ||
-        slot.size < layout.slotBytes) {
-      throw new Error("canonical Q8 expert slot is invalid");
-    }
-    const ranges = [
-      [layout.downWeightOffset, hidden * intermediate, "down weights"],
-      [layout.gateWeightOffset, intermediate * hidden, "gate weights"],
-      [layout.upWeightOffset, intermediate * hidden, "up weights"],
-      [layout.downScaleOffset, hidden * 4, "down scales"],
-      [layout.gateScaleOffset, intermediate * 4, "gate scales"],
-      [layout.upScaleOffset, intermediate * 4, "up scales"],
-    ] as const;
-    for (const [offset, length, label] of ranges)
-      validateRange(offset, length, layout.slotBytes, label);
-
+      throw new Error(`${this.#spec.subject} executor used after dispose`);
+    validateCall(input, slot, layout, this.#spec);
+    const samples = input.shape[0]!;
     const templateInts = {
-      M: rows,
-      H: hidden,
-      I: intermediate,
+      M: samples,
+      H: layout.hiddenSize,
+      I: layout.intermediateSize,
       DOWN_W: layout.downWeightOffset,
       GATE_W: layout.gateWeightOffset,
       UP_W: layout.upWeightOffset,
@@ -381,22 +282,36 @@ export class Glm52CanonicalQ8MetalExecutor {
       ROWS_TG: ROWS_PER_THREADGROUP,
     };
     const [mid] = this.#gateUp.apply([input, slot], {
-      outputs: [{ shape: [rows, intermediate], dtype: input.dtype }],
-      grid: [THREADS, intermediate / ROWS_PER_THREADGROUP, rows],
+      outputs: [{
+        shape: [samples, layout.intermediateSize],
+        dtype: input.dtype,
+      }],
+      grid: [
+        THREADS,
+        layout.intermediateSize / ROWS_PER_THREADGROUP,
+        samples,
+      ],
       threadGroup: [THREADS, 1, 1],
       templateDtypes: { T: input.dtype },
       templateInts,
     });
-    if (!mid) throw new Error("GLM MTP Metal gate/up kernel returned no output");
+    if (!mid) throw new Error(`${this.#spec.subject} gate/up kernel returned no output`);
     try {
       const [output] = this.#down.apply([mid, slot], {
-        outputs: [{ shape: [rows, hidden], dtype: input.dtype }],
-        grid: [THREADS, hidden / ROWS_PER_THREADGROUP, rows],
+        outputs: [{
+          shape: [samples, layout.hiddenSize],
+          dtype: input.dtype,
+        }],
+        grid: [
+          THREADS,
+          layout.hiddenSize / ROWS_PER_THREADGROUP,
+          samples,
+        ],
         threadGroup: [THREADS, 1, 1],
         templateDtypes: { T: input.dtype },
         templateInts,
       });
-      if (!output) throw new Error("GLM MTP Metal down kernel returned no output");
+      if (!output) throw new Error(`${this.#spec.subject} down kernel returned no output`);
       return output;
     } finally {
       mid.dispose();
@@ -411,6 +326,35 @@ export class Glm52CanonicalQ8MetalExecutor {
   }
 }
 
+/** Q4 (packed nibbles, affine zero-point 8) kernel family for the GLM-5.2
+ *  production geometry. */
+export class Glm52CanonicalQ4MetalExecutor extends Glm52CanonicalMetalExecutor {
+  constructor() {
+    super({
+      label: "Q4",
+      kernelPrefix: "mlx_bun_glm52_q4_slot",
+      gateUpSource: GATE_UP_SOURCE,
+      downSource: DOWN_SOURCE,
+      weightsPerByte: 2,
+      dimensionMultiple: 8,
+      subject: "GLM Metal streamed expert decode",
+    });
+  }
+}
 
-import { Glm52CanonicalQ4MetalLayout, Glm52CanonicalQ8MetalLayout, positiveInteger, validateRange } from "./layout";
-export { type Glm52CanonicalQ4MetalLayout, type Glm52CanonicalQ8MetalLayout, positiveInteger, validateRange } from "./layout";
+/** Fixed M=1..gamma signed-Q8 kernel family for native MTP draft and accepted
+ *  token absorption. The row dot-product and materialization boundaries are
+ *  identical for every batch width; only grid.z changes. */
+export class Glm52CanonicalQ8MetalExecutor extends Glm52CanonicalMetalExecutor {
+  constructor() {
+    super({
+      label: "Q8",
+      kernelPrefix: "mlx_bun_glm52_q8_slot",
+      gateUpSource: Q8_GATE_UP_SOURCE,
+      downSource: Q8_DOWN_SOURCE,
+      weightsPerByte: 1,
+      dimensionMultiple: 1,
+      subject: "GLM MTP Metal streamed expert",
+    });
+  }
+}

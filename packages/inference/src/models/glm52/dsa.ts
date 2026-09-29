@@ -5,6 +5,7 @@
 // discrete threshold/tie decision, which Colibri itself performs on the CPU.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { positiveInteger } from "../../runtime/integers";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -81,12 +82,6 @@ export type Glm52DsaSelectionObserver = (
 
 function f32(value: number): number {
   return Math.fround(value);
-}
-
-function positiveInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1)
-    throw new Error(`${label} must be a positive integer`);
-  return value;
 }
 
 function nonNegativeInteger(value: number, label: string): number {

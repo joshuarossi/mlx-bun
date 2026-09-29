@@ -35,8 +35,8 @@ import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
 import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
 import type { TargetView } from "../../contracts/mlx/draft-target";
-import type { PrefixLayout, TrainableGraph } from "../../contracts/mlx/trainable";
-import { activePrefixLayout } from "../../layers/prefix-layout";
+import type { TrainableGraph } from "../../contracts/mlx/trainable";
+import { activePrefixLayout, ropeBlocks } from "../../layers/prefix-layout";
 import { gemma4Trainable, type GradCheckpointCtx, type LayerLoras } from "./trainable";
 import type { MediaEncoders, MediaSidecarProbes, MlxPromptInput, Vision } from "../../contracts/mlx/media";
 import { declareGraph } from "../capabilities";
@@ -156,32 +156,6 @@ class Attention {
       : ops.ropeDynamic(x, this.headDim, this.ropeBase, offset, this.ropeFreqs);
   }
 
-  /** Block-wise RoPE for the prefix-shared concat [prompt; chosen; rejected] along
-   *  the sequence axis (axis 2 of [B,H,T,D]): prompt at offset 0, EACH response
-   *  reset to logical offset P. RoPE is per-token, so roping each contiguous block
-   *  at its scalar offset and concatenating == roping with per-token position-ids
-   *  [0..P-1, P..P+Rc-1, P..P+Rr-1]. Uses this.rope per block so the layer's
-   *  proportional/ropeFreqs + sliding-vs-full geometry applies identically to the
-   *  two-forward path. Caller disposes the input. */
-  ropeBlocks(x: MlxArray, plan: PrefixLayout): MlxArray {
-    const { P, Rc, Rr } = plan;
-    const [B, H, , D] = x.shape as [number, number, number, number];
-    const blocks = [
-      { start: 0, len: P, off: 0 },
-      { start: P, len: Rc, off: P },
-      { start: P + Rc, len: Rr, off: P },
-    ].filter((b) => b.len > 0);
-    const parts = blocks.map((b) => {
-      const sl = x.slice([0, 0, b.start, 0], [B, H, b.start + b.len, D]);
-      const r = this.rope(sl, b.off);
-      sl.dispose();
-      return r;
-    });
-    const out = ops.concatAxis(parts, 2);
-    for (const p of parts) p.dispose();
-    return out;
-  }
-
   /** Returns the attention output plus the fetched KV (for KV-shared
    *  sharer layers and the speculative drafter). The SharedKv arrays are
    *  owned by the caller (forwardLayers) and disposed after the pass. */
@@ -222,7 +196,7 @@ class Attention {
       kNormed.dispose();
       const prefixLayout = activePrefixLayout();
       const kRoped = prefixLayout
-        ? this.ropeBlocks(kT, prefixLayout)
+        ? ropeBlocks(kT, prefixLayout, (block, offset) => this.rope(block, offset))
         : this.rope(kT, offsetArr ?? offset);
       kT.dispose();
 
@@ -266,7 +240,7 @@ class Attention {
     q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
     const prefixLayoutQ = activePrefixLayout();
     q = disposing(q, prefixLayoutQ
-      ? this.ropeBlocks(q, prefixLayoutQ)
+      ? ropeBlocks(q, prefixLayoutQ, (block, offset) => this.rope(block, offset))
       : this.rope(q, shared.offsetArr ?? shared.offset));
 
     let attn: MlxArray;

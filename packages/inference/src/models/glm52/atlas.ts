@@ -6,6 +6,7 @@
 // this module feeds residency, routing, or prefetch policy.
 
 import type { Glm52RouteTraceRecord } from "./coupling";
+import { positiveInteger } from "../../runtime/integers";
 
 export interface Glm52AtlasProbeSet {
   readonly schemaVersion: 1;
@@ -90,11 +91,6 @@ const CATEGORY = /^[a-z0-9][a-z0-9_]*$/;
 function finiteUnit(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0 || value > 1)
     throw new RangeError(`${label} must be in [0, 1]`);
-}
-
-function positiveInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new RangeError(`${label} must be a positive safe integer`);
 }
 
 function round(value: number, digits = 6): number {

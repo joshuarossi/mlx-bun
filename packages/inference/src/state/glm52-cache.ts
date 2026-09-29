@@ -11,6 +11,7 @@
 // row's logical position without reconstructing per-head K/V.
 
 import { MlxArray } from "@mlx-bun/mlx/array";
+import { positiveInteger } from "../runtime/integers";
 import { FullPrefillPadding } from "./full-prefill-padding";
 import type { PrefillPadding } from "../contracts/mlx/cache";
 import { Dtype } from "@mlx-bun/mlx/ffi";
@@ -39,11 +40,6 @@ export interface MLACompressedState {
   rope: MlxArray;
   /** Caller-owned view [B, T, index_head_dim], when enabled. */
   dsa: MlxArray | null;
-}
-
-function positiveInteger(name: string, value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new Error(`${name} must be a positive safe integer`);
 }
 
 function safeProduct(label: string, values: readonly number[]): number {
@@ -114,7 +110,7 @@ export class DSAIndexCache {
   batchSize: number | null = null;
 
   constructor(geometry: DSAIndexGeometry) {
-    positiveInteger("DSA headDim", geometry.headDim);
+    positiveInteger(geometry.headDim, "DSA headDim");
     this.headDim = geometry.headDim;
   }
 
@@ -160,9 +156,9 @@ export class DSAIndexCache {
 
   /** Adopt persisted compressed index-key state after validating it. */
   restoreState(data: MlxArray, offset: number): void {
-    positiveInteger("DSA restored offset", offset);
+    positiveInteger(offset, "DSA restored offset");
     const [batch, tokens] = data.shape;
-    positiveInteger("DSA restored batch size", batch!);
+    positiveInteger(batch!, "DSA restored batch size");
     if (tokens !== offset)
       throw new Error(`DSA restored token length ${tokens} != offset ${offset}`);
     validateF32("DSA restored index state", data, [batch!, offset, this.headDim]);
@@ -212,10 +208,10 @@ export class Glm52Cache implements BatchableCache {
   readonly #padding = new FullPrefillPadding(1);
 
   constructor(geometry: MLACacheGeometry) {
-    positiveInteger("MLA kvLoraRank", geometry.kvLoraRank);
-    positiveInteger("MLA ropeHeadDim", geometry.ropeHeadDim);
+    positiveInteger(geometry.kvLoraRank, "MLA kvLoraRank");
+    positiveInteger(geometry.ropeHeadDim, "MLA ropeHeadDim");
     if (geometry.maxTokens !== undefined)
-      positiveInteger("MLA maxTokens", geometry.maxTokens);
+      positiveInteger(geometry.maxTokens, "MLA maxTokens");
     this.kvLoraRank = geometry.kvLoraRank;
     this.ropeHeadDim = geometry.ropeHeadDim;
     this.maxTokens = geometry.maxTokens ?? Number.MAX_SAFE_INTEGER;
@@ -240,8 +236,8 @@ export class Glm52Cache implements BatchableCache {
     if (latentShape.length !== 3)
       throw new Error(`MLA latent must have rank 3 (got ${latentShape.length})`);
     const [batch, tokens] = latentShape as [number, number, number];
-    positiveInteger("MLA batch size", batch);
-    positiveInteger("MLA token count", tokens);
+    positiveInteger(batch, "MLA batch size");
+    positiveInteger(tokens, "MLA token count");
     validateF32("MLA latent", latent, [batch, tokens, this.kvLoraRank]);
     validateF32("MLA RoPE state", rope, [batch, tokens, this.ropeHeadDim]);
     if (this.batchSize !== null && batch !== this.batchSize)
@@ -381,7 +377,7 @@ export class Glm52Cache implements BatchableCache {
   }
 
   makeMask(tokens: number, windowSize: number | null): Mask {
-    positiveInteger("MLA mask token count", tokens);
+    positiveInteger(tokens, "MLA mask token count");
     if (
       windowSize !== null &&
       (!Number.isSafeInteger(windowSize) || windowSize <= 0)
@@ -414,13 +410,13 @@ export class Glm52Cache implements BatchableCache {
     dsa: MlxArray | null,
     offset: number,
   ): void {
-    positiveInteger("MLA restored offset", offset);
+    positiveInteger(offset, "MLA restored offset");
     if (offset > this.maxTokens)
       throw new RangeError(
         `MLA restored offset ${offset} exceeds maxTokens ${this.maxTokens}`,
       );
     const [batch, tokens] = latent.shape;
-    positiveInteger("MLA restored batch size", batch!);
+    positiveInteger(batch!, "MLA restored batch size");
     if (tokens !== offset)
       throw new Error(`MLA restored token length ${tokens} != offset ${offset}`);
     validateF32(
@@ -752,11 +748,11 @@ export class Glm52Cache implements BatchableCache {
     batchSize: number,
     tokens: number,
   ): number {
-    positiveInteger("MLA projected batch size", batchSize);
+    positiveInteger(batchSize, "MLA projected batch size");
     if (!Number.isSafeInteger(tokens) || tokens < 0)
       throw new Error("MLA projected token count must be a non-negative safe integer");
-    positiveInteger("MLA projected kvLoraRank", geometry.kvLoraRank);
-    positiveInteger("MLA projected ropeHeadDim", geometry.ropeHeadDim);
+    positiveInteger(geometry.kvLoraRank, "MLA projected kvLoraRank");
+    positiveInteger(geometry.ropeHeadDim, "MLA projected ropeHeadDim");
     const dsaWidth = geometry.dsa?.headDim ?? 0;
     return safeProduct(
       "MLA projected byte length",

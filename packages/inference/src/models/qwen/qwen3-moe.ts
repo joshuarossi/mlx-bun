@@ -21,9 +21,9 @@ import type { ModelConfig } from "../../artifacts/config";
 import type { Weights } from "../../artifacts/weights";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
-import { CompiledFunction } from "@mlx-bun/mlx/compile";
 import { argmaxLastPosition } from "../../kernels/logits";
 import { disposing } from "../../layers/helpers";
+import { compiledSwiglu } from "../../layers/swiglu";
 import { isCompiledTrace } from "../../runtime/compiled-trace";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
@@ -35,84 +35,10 @@ import { QuantizedLinear } from "../../layers/quantized-linear";
 import { QuantizedSwitchLinear } from "../../layers/quantized-switch-linear";
 import { RMSNorm } from "../../layers/normalization";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
-import { captureKvAttention } from "../../state/kv-attention-view";
+import { Qwen3Attention } from "./qwen3";
 
-// ── activations.py swiglu (mx.compile) ───────────────────────────────────────
-// `@partial(mx.compile, shapeless=True) def swiglu(gate, x): return nn.silu(gate) * x`
-// nn.silu(g) == g * sigmoid(g); mx.compile fuses sigmoid + mul + mul into ONE
-// kernel. Traced once (shapeless), replayed thereafter. Autograd-safe (mx.compile
-// threads the VJP through the traced graph). Exported so the parity test can
-// assert the closure exists and the expert path actually uses it.
-let _swigluClosure: CompiledFunction | null = null;
-export function compiledSwiglu(gate: MlxArray, up: MlxArray): MlxArray {
-  if (!_swigluClosure) {
-    _swigluClosure = new CompiledFunction((inputs) => {
-      const g = inputs[0]!, u = inputs[1]!;              // nn.silu(gate) * x
-      const sig = ops.sigmoid(g);
-      const silu = ops.mul(g, sig); sig.dispose();
-      const out = ops.mul(silu, u); silu.dispose();
-      return [out];
-    });
-  }
-  return _swigluClosure.apply([gate, up])[0]!;
-}
-
-// ── qwen3_moe.py Attention (== plain qwen3) ──────────────────────────────────
-class Attention {
-  readonly qProj: QuantizedLinear;
-  readonly kProj: QuantizedLinear;
-  readonly vProj: QuantizedLinear;
-  readonly oProj: QuantizedLinear;
-  readonly qNorm: RMSNorm;
-  readonly kNorm: RMSNorm;
-  readonly nHeads: number;
-  readonly nKvHeads: number;
-  readonly headDim: number;
-  readonly scale: number;
-  readonly ropeBase: number;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
-    const t = config.text;
-    this.nHeads = t.numAttentionHeads;                                  // self.n_heads
-    this.nKvHeads = t.numKeyValueHeads;                                 // self.n_kv_heads
-    this.headDim = t.headDim;                                           // head_dim
-    this.scale = Math.pow(this.headDim, -0.5);                          // self.scale = head_dim**-0.5
-    this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000000; // args.rope_theta
-    this.qProj = QuantizedLinear.load(weights, `${prefix}.q_proj`, config); // nn.Linear(dim, n_heads*head_dim, bias=False)
-    this.kProj = QuantizedLinear.load(weights, `${prefix}.k_proj`, config);
-    this.vProj = QuantizedLinear.load(weights, `${prefix}.v_proj`, config);
-    this.oProj = QuantizedLinear.load(weights, `${prefix}.o_proj`, config);
-    this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps); // nn.RMSNorm(head_dim)
-    this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
-  }
-
-  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
-    const [B, L] = x.shape as [number, number, number];                // B, L, D = x.shape
-    let q = this.qProj.forward(x);                                     // queries = self.q_proj(x)
-    let k = this.kProj.forward(x);                                     // keys = self.k_proj(x)
-    let v = this.vProj.forward(x);                                     // values = self.v_proj(x)
-    // queries = self.q_norm(queries.reshape(B,L,n_heads,-1)).transpose(0,2,1,3)
-    q = disposing(q, ops.reshape(q, [B, L, this.nHeads, this.headDim]));
-    k = disposing(k, ops.reshape(k, [B, L, this.nKvHeads, this.headDim]));
-    v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
-    q = disposing(q, this.qNorm.forward(q));                           // self.q_norm(...)
-    k = disposing(k, this.kNorm.forward(k));                           // self.k_norm(...)
-    q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));              //   .transpose(0,2,1,3)
-    k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
-    v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));              // values.reshape(...).transpose(0,2,1,3)
-    q = disposing(q, ops.rope(q, this.headDim, this.ropeBase, cache.offset, null)); // self.rope(queries, offset=cache.offset)
-    k = disposing(k, ops.rope(k, this.headDim, this.ropeBase, cache.offset, null)); // self.rope(keys, offset=cache.offset)
-    let out: MlxArray;                                                 // cache.update_and_fetch(keys, values)
-    try {                                                              // scaled_dot_product_attention(..., cache=cache)
-      const view = captureKvAttention(cache, k, v);
-      try { out = view.attend(q, this.scale, mask); } finally { view.dispose(); }
-    } finally { k.dispose(); v.dispose(); q.dispose(); }
-    out = disposing(out, ops.transposeAxes(out, [0, 2, 1, 3]));        // output.transpose(0,2,1,3)
-    out = disposing(out, ops.reshape(out, [B, L, -1]));                //   .reshape(B, L, -1)
-    const y = this.oProj.forward(out); out.dispose();                 // self.o_proj(output)
-    return y;
-  }
-}
+// ── qwen3_moe.py Attention (== plain qwen3, rope_theta default 1e7) ───────────
+const MOE_ROPE_THETA = 10000000;                                        // args.rope_theta
 
 // ── qwen3_moe.py MLP (dense-layer FFN) ───────────────────────────────────────
 // def __call__(self, x): return self.down_proj(swiglu(self.gate_proj(x), self.up_proj(x)))
@@ -264,14 +190,14 @@ class Qwen3MoeSparseMoeBlock {
 
 // ── qwen3_moe.py Qwen3MoeDecoderLayer ────────────────────────────────────────
 class Qwen3MoeDecoderLayer {
-  readonly selfAttn: Attention;
+  readonly selfAttn: Qwen3Attention;
   readonly mlp: Qwen3MoeSparseMoeBlock | MLP;
   readonly inputLayernorm: RMSNorm;
   readonly postAttentionLayernorm: RMSNorm;
 
   constructor(weights: Weights, config: ModelConfig, prefix: string, layerIdx: number) {
     const t = config.text;
-    this.selfAttn = new Attention(weights, config, `${prefix}.self_attn`);
+    this.selfAttn = new Qwen3Attention(weights, config, `${prefix}.self_attn`, MOE_ROPE_THETA);
     this.inputLayernorm = new RMSNorm(weights.tensor(`${prefix}.input_layernorm.weight`), t.rmsNormEps);
     this.postAttentionLayernorm = new RMSNorm(weights.tensor(`${prefix}.post_attention_layernorm.weight`), t.rmsNormEps);
     // if (layer_idx not in mlp_only_layers) and (num_experts > 0 and
