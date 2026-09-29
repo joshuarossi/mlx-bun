@@ -192,7 +192,7 @@ test("compiled runner retirement is idempotent and never allocates an absent run
       ["rotating-kv", "RotatingKVCache"], ["rotating-quantized-kv", "RotatingQuantizedKVCache"]]) {
       mock.module(join(source, "state", file + ".ts"), () => ({ [name]: class {} }));
     }
-    const { CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode");
+    const { CompiledDecode } = await import("@mlx-bun/inference/models/gemma4/compiled-decode");
     const model = { config: { text: { numKvSharedLayers: 1, enableMoeBlock: false } }, perLayerWidth: 0,
       materializeGraphConstants() { materializations++; } };
     CompiledDecode.release(model);

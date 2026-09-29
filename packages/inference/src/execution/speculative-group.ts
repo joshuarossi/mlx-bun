@@ -1,5 +1,5 @@
 import {captureSpeculativeOptions, speculativePrefixNamespace} from "../generation/speculative/cache-identity";
-import type { RuntimeModel } from "../models/factory";
+import type { MlxTokenGraph } from "../models/graph";
 import type { GenerateOptions } from "../generation/index";
 import type { FillSession, Proposal } from "../generation/fill/session";
 import type { DraftProvider, DraftRowGroup, DraftPrefillGroup } from "../generation/speculative/source";
@@ -44,7 +44,7 @@ interface RequestState {
 /** Binding owns graph/layout selection. The executor receives only the method
  * key and lifecycle; sampling, checkpoints and numerical state remain ports.
  * Undefined when the target cannot capture the hidden layers the provider taps. */
-export function bindSpeculativeGroupRequests(model: RuntimeModel, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
+export function bindSpeculativeGroupRequests(model: MlxTokenGraph, provider: Pick<DraftProvider, "id" | "grouped">, depth: number) {
   const binding = bindSpeculativeTargetModel(model);
   // Resolved once for this target into a snapshot the binding owns: the checked
   // list cannot change afterwards, and prefill and decode rows must tap exactly it.
@@ -78,7 +78,7 @@ class SpeculativeGroup implements MlxGroupedMethod {
   readonly #requests = new Map<Row, RequestState>();
   #steps = 0;
 
-  constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel,
+  constructor(readonly host: MlxGroupMethodHost, readonly model: MlxTokenGraph,
     readonly provider: Pick<DraftProvider, "id" | "grouped">, readonly binding: MlxSpeculativeTargetBinding, readonly depth: number,
     readonly taps: readonly number[]) {}
 

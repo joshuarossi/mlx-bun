@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { generateAutoregressive } from "../../src/generation/index";
-import { bindLegacyAutoregressiveModel } from "../../src/generation/bindings/autoregressive";
+import { bindMlxAutoregressiveGraph } from "../../src/generation/bindings/autoregressive";
 import { stepKey } from "../../src/sampling/sampler";
 import { bindGrammarGroupRequests } from "../../src/execution/grammar-group";
 import { MlxBatchExecutionGroup } from "../../src/execution/batch-group";
@@ -626,7 +626,7 @@ test("shared nonterminal grammar preserves seeded draw positions and committed p
   });
   const group = new MlxBatchExecutionGroup(f.model, { maxBatch: 2, prefillChunkSize: 1 });
   try {
-    const generation = generateAutoregressive(bindLegacyAutoregressiveModel(f.model), direct.input.promptIds, direct.options);
+    const generation = generateAutoregressive(bindMlxAutoregressiveGraph(f.model), direct.input.promptIds, direct.options);
     for await (const { token } of generation) direct.tokens.push(token);
     const directForwards = f.forwards.splice(0).map(call => call.ids);
     lane = "grouped";

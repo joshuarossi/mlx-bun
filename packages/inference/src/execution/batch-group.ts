@@ -1,5 +1,4 @@
 import { type MlxForwardWork,type MlxPreparationWork } from "../contracts/mlx/forward-work";
-import type { MixedTokenModel } from "../contracts/mlx/token-work";
 import type { DisposableResource } from "../contracts/portable/resources";
 import type { ExecutionGroup } from "../contracts/portable/scheduling";
 import { disposeResources,withResource } from "../runtime/resources";
@@ -70,10 +69,11 @@ import { activeMemory,cacheMemory,clearCache,Dtype,peakMemory } from "@mlx-bun/m
 import * as ops from "@mlx-bun/mlx/ops";
 import { type BatchableCache,type Cache } from "../contracts/mlx/cache";
 import type { PrefillPolicy } from "../contracts/portable/prefill";
-import { CompiledDecode } from "../generation/bindings/compiled-decode";
+import type { MlxCompiledDecodeStep } from "../contracts/mlx/graph";
 import { resolveMlxPrefillPolicy } from "../generation/bindings/prefill-policy";
 import { acquireModelWiredLimit } from "../generation/index";
-import type { RuntimeModel } from "../models/factory";
+import { compiledDecodeStepOf } from "../models/capabilities";
+import type { MlxTokenGraph } from "../models/graph";
 import { runtimeConfig,withRuntimeConfig,type RuntimeConfig } from "../runtime/config";
 import type { PromptResponseTrace } from "../runtime/trace";
 import { independentGreedySampling } from "../sampling/index";
@@ -185,14 +185,14 @@ export class MlxBatchExecutionGroup {
   readonly #batchCacheMaxTokens: number | null;
   readonly #kvScheme: KvScheme | undefined;
   readonly #maintainKv: KvMaintenance | null;
-  /** Compiled decode runner for the B=1 serial-class case —
-   *  same eligibility gate as generate.ts (gemma dense, kill switch
-   *  MLX_BUN_COMPILED_DECODE); adapter requests disable replay in their plan. Set
-   *  to null permanently on a failed step (serial disables per
-   *  generation; the scheduler is one long-lived "generation"). */
-  #compiled: CompiledDecode | null;
+  /** The graph's declared compiled decode step, for the B=1 case whose state
+   *  layout it accepts (kill switch MLX_BUN_COMPILED_DECODE; adapter requests
+   *  disable replay in their plan). Set to null permanently on a failed step
+   *  (a direct generation disables per generation; the scheduler is one
+   *  long-lived "generation"). */
+  #compiled: MlxCompiledDecodeStep | null;
 
-  constructor(private readonly model: RuntimeModel, opts: MlxBatchExecutionGroupOptions) {
+  constructor(private readonly model: MlxTokenGraph, opts: MlxBatchExecutionGroupOptions) {
     this.#runtime = opts.runtime ?? runtimeConfig();
     this.#noPipeline = this.#runtime.value("MLX_BUN_BATCH_NO_PIPELINE") === "1";
     this.#stepTrace = this.#runtime.value("MLX_BUN_BATCH_STEP_TRACE") === "1";
@@ -202,7 +202,7 @@ export class MlxBatchExecutionGroup {
     this.#maxBatch = Math.max(1, Math.floor(opts.maxBatch));
     this.#lock = opts.lock;
     this.#admissionHeld = opts.admissionHeld;
-    this.#prefillPolicy = resolveMlxPrefillPolicy(model.config, this.#runtime, opts.prefillChunkSize);
+    this.#prefillPolicy = resolveMlxPrefillPolicy(model, this.#runtime, opts.prefillChunkSize);
     this.#prefillChunkSize = this.#prefillPolicy.chunkSize(0);
     this.#prefillBatchTokenLimit = opts.prefillBatchTokenLimit ?? 2048;
     this.#prefillTailSplit = this.#runtime.flag("MLX_BUN_PREFILL_TAIL_SPLIT", true);
@@ -247,7 +247,7 @@ export class MlxBatchExecutionGroup {
     this.#rotMaxSize = proto.map((c) => (isRotatingPlainCache(c) ? c.maxSize : 0));
     for (const c of proto) c.dispose();
     this.#compiled = this.#runtime.flag("MLX_BUN_COMPILED_DECODE", true)
-      ? withRuntimeConfig(this.#runtime, () => CompiledDecode.bound(model))
+      ? withRuntimeConfig(this.#runtime, () => compiledDecodeStepOf(model))
       : null;
   }
 
@@ -276,11 +276,8 @@ export class MlxBatchExecutionGroup {
   }
 
   async #forwardHidden(ids: MlxArray, cache: Cache[]): Promise<MlxArray> {
-    const asyncModel = this.model as RuntimeModel & {
-      forwardHiddenAsync?: (ids: MlxArray, cache: Cache[]) => Promise<MlxArray>;
-    };
-    return typeof asyncModel.forwardHiddenAsync === "function"
-      ? await asyncModel.forwardHiddenAsync(ids, cache)
+    return typeof this.model.forwardHiddenAsync === "function"
+      ? await this.model.forwardHiddenAsync(ids, cache)
       : this.model.forwardHidden(ids, cache);
   }
 
@@ -425,7 +422,7 @@ export class MlxBatchExecutionGroup {
       get mixedPreparation() {
         return scheduler.#decodeStateKey === undefined && scheduler.#prefill?.supportsMixedWork !== false && scheduler.#runtime.flag("MLX_BUN_MIXED_PREFILL", false) &&
           (!scheduler.#method || scheduler.#method.runningTokens !== undefined) &&
-          typeof (scheduler.model as RuntimeModel & Partial<MixedTokenModel>).forwardHiddenMixed === "function"
+          typeof scheduler.model.forwardHiddenMixed === "function"
           ? { runningTokens: scheduler.#method?.runningTokens ?? scheduler.#running.length,
             minimumPreparationTokens: scheduler.#prefill?.rows.length ?? 0 }
           : undefined;
@@ -438,7 +435,7 @@ export class MlxBatchExecutionGroup {
             maxTokens: tokenBudget - (this.#method?.runningTokens ?? this.#running.length) }),
           decode: forward => this.#method ? this.#method.advance(forward) : this.#step(forward),
           forward: async (ids, cache, options) => options?.captureLayer
-            ? (this.model as RuntimeModel & MixedTokenModel).forwardHiddenMixed([{ ids, cache, ...options }])[0]!
+            ? this.model.forwardHiddenMixed!([{ ids, cache, ...options }])[0]!
             : this.#forwardHidden(ids, cache),
           mixed: groups => {
             const workId = `mixed:${++nextMixedWorkId}`;
@@ -446,7 +443,7 @@ export class MlxBatchExecutionGroup {
             const closes = [...this.#running, ...(this.#prefill?.rows ?? [])].map(row =>
               row.req.trace?.begin("engine.mixed_forward", { workId,
                 decodeTokens: tokens[0]!, prefillTokens: tokens[1]!, packedTokens: tokens[0]! + tokens[1]! }));
-            try { return (this.model as RuntimeModel & MixedTokenModel).forwardHiddenMixed(groups); }
+            try { return this.model.forwardHiddenMixed!(groups); }
             finally { for (const close of closes) close?.(); }
           },
         });
@@ -1062,24 +1059,20 @@ export class MlxBatchExecutionGroup {
       // otherwise costs a host mask build + ~8 device nodes PER FULL LAYER
       // PER TOKEN (the constant ~4–6 ms/step host tax at B=1).
       const unpadded = this.#fullLeftPad.every((p) => p === 0);
-      // Compiled decode at B=1: after adopt-don't-copy, a lone
-      // row's caches are SERIAL-CLASS, so the serial engine's compiled step
-      // replays the same C++ graph here — closing the batch lane's last
-      // B=1 host-tax gap (e4b's ~7%). Guards: gemma dense (constructor),
-      // serial-class caches (supports — a merged batch's BatchedRotating
-      // layers fail it), unpadded, and a uint32 pipeline register (the
-      // trace signature; per-row int32 samplers take the graph path).
+      // Compiled decode at B=1: after adopt-don't-copy, a lone row's caches
+      // are the caches the graph itself made, so a graph that declares a
+      // compiled step replays its recorded graph here — closing the batch
+      // lane's last B=1 host-tax gap (e4b's ~7%). Guards: a declared step
+      // (constructor), state the step accepts (a merged batch's layouts do
+      // not), unpadded, and a uint32 pipeline register (the trace signature;
+      // per-row int32 samplers take the graph path).
       // Grammar batches use #stepGrammar and stay on the graph path.
       let lg: MlxArray | null = null;
       let evalWith: MlxArray[] = [];
       if (
         !forward && this.#compiled && B === 1 && unpadded && this.#running[0]!.req.compiledDecode !== false &&
         (!this.#pendingToks || this.#pendingToks.dtype === Dtype.uint32) &&
-        // A filtered-to-one BATCHED rot-quant cache subclasses the serial
-        // class (so supports() passes) but carries batched ring state —
-        // exclude it; only truly-adopted serial caches replay compiled.
-        !inners.some((c) => isRowBatchCache(c) && isRotatingQuantizedCache(c)) &&
-        CompiledDecode.supports(inners as Cache[])
+        this.#compiled.accepts(inners as Cache[])
       ) {
         let cur = this.#pendingToks;
         let owned = false;

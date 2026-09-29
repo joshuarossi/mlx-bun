@@ -92,6 +92,12 @@ function graphConsumer(file: string, owner: Library): string | undefined {
     ? "module and host code" : undefined;
 }
 
+/** Scheduling in `execution/` is written against the structural graph interface
+ * (`MlxTokenGraph`); the model registry's closed union of classes stays out of it. */
+const closedModelUnion: ReadonlySet<string> = new Set(["RuntimeModel"]);
+const isScheduling = (file: string, owner: Library) =>
+  owner.name === "@mlx-bun/inference" && relative(owner.source, file).startsWith("execution/");
+
 /** Anything in a types-only package that exists at runtime: values, `export *`, non-type exports, side-effect imports. */
 function runtimeCode(source: ts.SourceFile): { text: string; line: number }[] {
   const found: { text: string; line: number }[] = [];
@@ -292,6 +298,9 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     const from = layer(file, owner), name = relative(root, file), edges: string[] = [];
     dependencies.set(name, edges);
     const consumer = graphConsumer(file, owner);
+    if (isScheduling(file, owner))
+      for (const { text, line } of namedIdentifiers(source, closedModelUnion))
+        violations.push(`${name}:${line}: scheduling takes the structural graph interface (MlxTokenGraph), not the closed ${text} union of concrete models`);
     if (consumer)
       for (const { text, line } of identityChecks(source))
         violations.push(`${name}:${line}: ${consumer} cannot branch on model identity (${text}); read a declared capability`);
@@ -565,9 +574,12 @@ test("scheduling, engine, server, CLI and training code cannot import concrete m
     symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
     symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
     const scheduler = "packages/inference/src/execution/plan.ts", engine = "apps/mlx-bun/src/engine/host.ts";
-    write(scheduler, 'import type { RuntimeModel } from "../models/factory"; import { declaredGraph } from "../models/capabilities"; export const plan = (m: RuntimeModel) => declaredGraph(m);');
+    write(scheduler, 'import { declaredGraph } from "../models/capabilities"; export const plan = (m: object) => declaredGraph(m);');
     write(engine, 'import { declaredGraph, type RuntimeModel } from "@mlx-bun/inference/models"; export const host = (m: RuntimeModel) => declaredGraph(m);');
     expect(await inspectWorkspaces(root)).toEqual([]);
+    // Scheduling takes the structural graph interface, not the closed union of model classes.
+    write(scheduler, 'import type { RuntimeModel } from "../models/factory"; export const plan = (m: RuntimeModel) => m;');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("execution/plan.ts:1: scheduling takes the structural graph interface (MlxTokenGraph), not the closed RuntimeModel union"))).toBe(true);
     write(scheduler, 'import { Gemma4Model } from "../models/gemma4/model"; export const paged = (m: object) => m instanceof Gemma4Model;');
     const scheduled = await inspectWorkspaces(root);
     expect(scheduled.some(item => item.includes("cannot import a concrete model (../models/gemma4/model)"))).toBe(true);

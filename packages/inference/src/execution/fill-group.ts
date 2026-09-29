@@ -1,5 +1,5 @@
 import type { GenerateOptions } from "../generation/index";
-import type { RuntimeModel } from "../models/factory";
+import type { MlxTokenGraph } from "../models/graph";
 import type { Cache } from "../contracts/mlx/cache";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
@@ -13,7 +13,7 @@ import { MlxStateRows } from "../state/rows";
 import { targetCacheLayout } from "../state/layout";
 import { leaseCacheStates } from "../state/leases";
 import { createKvMaintenance, type KvMaintenance } from "../state/kv-maintenance";
-import { bindLegacyAutoregressiveModel, supportsCommittedAppendCache, type MlxAutoregressiveBinding, type MlxTokenAppend } from "../generation/bindings/autoregressive";
+import { bindMlxAutoregressiveGraph, supportsCommittedAppendCache, type MlxAutoregressiveBinding, type MlxTokenAppend } from "../generation/bindings/autoregressive";
 import { appendHiddenRows } from "../generation/fill-append";
 import { advanceSpeculativeOutputs } from "../generation/speculative/round";
 import { bindRowCacheRollback } from "../state/rollback";
@@ -30,7 +30,7 @@ interface RequestState {
 /** Strict continuations share preparation, row layouts and queueing with other
  * methods. Sampled tokens remain pipelined; committed tokens bypass sampling.
  * This binding is qualified independently before serving advertises it. */
-export function bindFillGroupRequests(model: RuntimeModel) {
+export function bindFillGroupRequests(model: MlxTokenGraph) {
   return (input: GenerateOptions): MlxGroupMethodRequest => {
     const options = snapshotGenerationPolicy(input);
     return {
@@ -54,8 +54,8 @@ class FillGroup implements MlxGroupedMethod {
   #real: boolean[] = [];
   #steps = 0;
 
-  constructor(readonly host: MlxGroupMethodHost, readonly model: RuntimeModel, options: GenerateOptions) {
-    this.#binding = bindLegacyAutoregressiveModel(model);
+  constructor(readonly host: MlxGroupMethodHost, readonly model: MlxTokenGraph, options: GenerateOptions) {
+    this.#binding = bindMlxAutoregressiveGraph(model);
     this.#verify = bindSpeculativeTargetModel(model);
     this.#maintain = createKvMaintenance(options);
     const append = this.#binding.createAppend?.({ hasAdapters: !!this.#binding.adapters?.active.length, pagedKv: false });

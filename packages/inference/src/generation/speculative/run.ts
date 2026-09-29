@@ -43,7 +43,7 @@ import { clearCache } from "@mlx-bun/mlx/ffi";
 import { cleanupFailure, disposeResources } from "../../runtime/resources";
 import type { DisposableResource } from "../../contracts/portable/resources";
 import { assertMlxSpeculativeBinding, bindLegacySpeculativeModel, type MlxSpeculativeBinding } from "./bindings/binding";
-import type { RuntimeModel } from "../../models/factory";
+import type { MlxTokenGraph } from "../../models/graph";
 import { cloneKvCaches } from "../../state/persistence";
 import { disposeAttachments } from "../../state/checkpoint";
 import { type CheckpointAttachment } from "../../contracts/mlx/checkpoint";
@@ -83,7 +83,7 @@ export interface SpecRunServices {
 }
 
 export async function specServeRun(
-  model: RuntimeModel,
+  model: MlxTokenGraph,
   provider: DraftProvider,
   numDraftTokens: number,
   promptIds: number[],

@@ -33,7 +33,7 @@ describe("every graph declares its capabilities", () => {
     for (const prototype of [Qwen35Model.prototype, Qwen38TrellisTQ.prototype]) {
       const declared = graph(prototype, { hiddenTap: null }).graphCapabilities;
       expect(declared).toEqual(declareGraph({ media: { input: "embeddings+positions", video: true }, hiddenLayerTaps: true,
-        kv: { delayedAffine: "all" }, speculation: { immediateAffine4: true } }));
+        kv: { delayedAffine: "all" }, prefill: { boundedWorkspace: true }, speculation: { immediateAffine4: true } }));
       const off = withRuntimeConfig(createRuntimeConfig({ MLX_BUN_QWEN_SPEC_KV4: "0" }), () => graph(prototype, { hiddenTap: null }).graphCapabilities);
       expect(off.speculation).toEqual({ ...declared.speculation, affineKv: false });
     }

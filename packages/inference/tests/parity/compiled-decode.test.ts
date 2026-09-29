@@ -17,7 +17,7 @@ for (const [family, checkpoint] of [
   describe.skipIf(!checkpoint)(`compiled decode parity (${family})`, () => {
     let mlx: typeof import("@mlx-bun/mlx");
     let state: typeof import("@mlx-bun/inference/state");
-    let CompiledDecode: typeof import("@mlx-bun/inference/generation/compiled-decode").CompiledDecode;
+    let CompiledDecode: typeof import("@mlx-bun/inference/models/gemma4/compiled-decode").CompiledDecode;
     let generate: typeof import("@mlx-bun/inference/generation").generate;
     let weights: import("@mlx-bun/inference/artifacts").Weights | undefined;
     let model: import("@mlx-bun/inference/models/gemma4").Gemma4Model;
@@ -30,7 +30,7 @@ for (const [family, checkpoint] of [
       expect(await Bun.file(`${checkpoint}/config.json`).exists()).toBe(true);
       mlx = await import("@mlx-bun/mlx");
       state = await import("@mlx-bun/inference/state");
-      ({ CompiledDecode } = await import("@mlx-bun/inference/generation/compiled-decode"));
+      ({ CompiledDecode } = await import("@mlx-bun/inference/models/gemma4/compiled-decode"));
       ({ generate } = await import("@mlx-bun/inference/generation"));
       const { loadModelConfig, Weights } = await import("@mlx-bun/inference/artifacts");
       const { Gemma4Model } = await import("@mlx-bun/inference/models/gemma4");

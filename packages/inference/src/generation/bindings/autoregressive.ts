@@ -1,22 +1,15 @@
 import type { AutoregressiveGraph } from "../../contracts/portable/graph";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { Cache } from "../../contracts/mlx/cache";
-import type { RuntimeModel } from "../../models/factory";
-import { CompiledDecode } from "./compiled-decode";
+import type { MlxCompiledDecodeStep, MlxModelMemory, MlxTokenAppend } from "../../contracts/mlx/graph";
+import { compiledDecodeStepOf } from "../../models/capabilities";
 import { runtimeConfig, type RuntimeConfig } from "../../runtime/config";
-import { bindMlxGraph } from "../../models/graph";
+import { bindMlxGraph, type MlxTokenGraph } from "../../models/graph";
 import type { PrefillPolicy } from "../../contracts/portable/prefill";
 import { resolveMlxPrefillPolicy } from "./prefill-policy";
 import type { KvSchemeOptions } from "../../state/kv-scheme";
 
-export interface MlxModelMemory {
-  readonly weightsBytes: number;
-  readonly expertRuntime?: {
-    readonly plan: { readonly plannedBytes: number };
-    flushUsage?: () => void;
-    finishUsage?: () => Promise<void>;
-  } | null;
-}
+export type { MlxModelMemory, MlxTokenAppend };
 
 export interface MlxDecodeStep {
   /** Consume one pending token and advance state once. Returned arrays belong
@@ -26,17 +19,6 @@ export interface MlxDecodeStep {
   /** Release per-run workspaces after pending outputs are dropped and before
    * cache disposal. Wait for native work if releasing requires completion. */
   close(): void | Promise<void>;
-}
-
-/** Model-owned execution for committed tokens. Recheck the chunk limit after
- * each forward: native arithmetic can change at a cache-length boundary. */
-export interface MlxTokenAppend {
-  /** Affine formats whose committed append retains one-token arithmetic. */
-  readonly affineKvBits?: readonly number[];
-  readonly turboQuantFormats?: readonly { readonly kBits: number; readonly vBits: number }[];
-  /** Maximum positions per row at this cohort size; omitted rows means B=1. */
-  maxChunkSize(state: readonly Cache[], rows?: number): number;
-  forwardHidden(ids: MlxArray, state: Cache[]): MlxArray | Promise<MlxArray>;
 }
 
 /** The model declares which codecs retain its committed-span arithmetic. */
@@ -73,12 +55,14 @@ export interface MlxAutoregressiveBinding {
   createAppend?(policy: { hasAdapters: boolean; pagedKv: boolean }): MlxTokenAppend | null;
 }
 
-/** Keep concrete model and compiled-decode decisions at the legacy boundary. */
-export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregressiveBinding {
+/** Bind a resident graph to the autoregressive method: its forward, caches and
+ * memory, and the compiled decode step it declares. Nothing here reads which
+ * model the graph is. */
+export function bindMlxAutoregressiveGraph(model: MlxTokenGraph): MlxAutoregressiveBinding {
   const runtime = runtimeConfig();
   return {
     runtime,
-    prefillPolicy: resolveMlxPrefillPolicy(model.config, runtime),
+    prefillPolicy: resolveMlxPrefillPolicy(model, runtime),
     graph: bindMlxGraph<Cache[]>(model, {
       id: `legacy:${model.config.modelType}`, artifact: "legacy-resident-model",
       stateAbi: "legacy-cache-array-v1", // not a persistence identity
@@ -88,19 +72,19 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
     adapters: model.loraState,
     makeCache: model.makeCache.bind(model),
     forwardEmbeddings: model.forwardEmbeddings?.bind(model),
-    createAppend: "createAppend" in model ? model.createAppend.bind(model) : undefined,
+    createAppend: model.createAppend?.bind(model),
     createDecode(policy) {
       // Only a graph that declares a compiled step has one. Adapters would bake
       // residuals into the tape.
       if (!runtime.flag("MLX_BUN_COMPILED_DECODE", true) || policy.hasAdapters || policy.pagedKv) return null;
-      let compiled: CompiledDecode | null = CompiledDecode.bound(model);
+      let compiled: MlxCompiledDecodeStep | null = compiledDecodeStepOf(model);
       if (!compiled) return null;
       return {
         tryStep(token, state) {
-          if (!compiled || !CompiledDecode.supports(state)) return null;
+          if (!compiled || !compiled.accepts(state)) return null;
           try { return compiled.step(token, state); }
           catch (error) {
-            // CompiledDecode restores committed writes on failure, so retrying
+            // A compiled step restores committed writes on failure, so retrying
             // this token through the ordinary graph is safe. Other decoders
             // must establish that guarantee themselves before returning null.
             compiled = null;
@@ -108,7 +92,7 @@ export function bindLegacyAutoregressiveModel(model: RuntimeModel): MlxAutoregre
             return null;
           }
         },
-        // Compiled closures belong to the model's existing unload lifecycle.
+        // The graph owns the compiled closures; its unload releases them.
         close() { compiled = null; },
       };
     },

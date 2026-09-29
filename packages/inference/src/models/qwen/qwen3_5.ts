@@ -617,11 +617,13 @@ export class Qwen35Model implements MlxDeclaredGraph {
    * layer taps for drafts. Its caches convert delayed affine rows and every
    * method is qualified over them. Speculation over affine KV is this graph's
    * option `MLX_BUN_QWEN_SPEC_KV4`, read where the graph is bound; immediate
-   * 4-bit KV is qualified even without a grouped method. */
+   * 4-bit KV is qualified even without a grouped method. Its few
+   * full-attention layers materialize their scores at long context, so prefill
+   * chunks shrink to bound that workspace. */
   get graphCapabilities(): GraphCapabilities {
     return declareGraph({
       media: { input: "embeddings+positions", video: true }, hiddenLayerTaps: "hiddenTap" in this,
-      kv: { delayedAffine: "all" },
+      kv: { delayedAffine: "all" }, prefill: { boundedWorkspace: true },
       speculation: { affineKv: runtimeFlag("MLX_BUN_QWEN_SPEC_KV4", true), immediateAffine4: true },
     });
   }
