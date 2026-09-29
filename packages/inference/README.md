@@ -29,8 +29,8 @@ qualified for, dense reads, whether long prompts prefill in workspace-bounded
 chunks, and what its verifier qualifies (adapters, logprobs, affine and TurboQuant
 KV, external tokens, grammar proposals).
 `MlxDeclaredGraph` names the operations behind those promises (`bindMediaInput`,
-`mediaEncoders`, `pixelInput`, `draftTarget`, `nativeDraftHead`, `denoisingGraph`,
-`compiledDecodeStep` and `releaseCompiledDecode`, `trainable`, `expertResidency`), and
+`mediaEncoders`, `pixelInput`, `draftTarget`, `nativeDraftHead`, `compiledDecodeStep` and
+`releaseCompiledDecode`, `trainable`, `expertResidency`), and
 `declaredGraph` in `models/capabilities` checks the pairing once when composition
 binds the graph: an undeclared graph, or a declaration without its operation, is
 refused. The gateway plans from the declarations, the request and dynamic state
@@ -1026,7 +1026,7 @@ one with `target graph does not provide <port>`.
 
 Draft graphs live in `models/gemma4/assistant`, `models/qwen/mtp`, `models/glm52/mtp`,
 and `models/speculative/*`. Drafters are models: `models/drafters` holds their artifact
-conventions and lazy loaders (`loadAssistantDrafter`, `loadDeepspecDrafter`,
+conventions and `models/drafter-loaders` their lazy loaders (`loadAssistantDrafter`, `loadDeepspecDrafter`,
 `loadDsparkDrafter`, `loadQwenMtpModule`), and hands the sources the ports of
 `contracts/mlx/drafter`; a graph that declares `nativeDraft` also provides
 `nativeDraftHead()`. Sources and the packages above (quantization included) never name

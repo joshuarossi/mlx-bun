@@ -29,7 +29,7 @@ import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { ContextKV, DeepspecDrafterModel } from "../../../contracts/mlx/drafter";
-import { loadDeepspecDrafter } from "../../../models/drafters";
+import { loadDeepspecDrafter } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, TargetView } from "../source";
 
 function safetensorsBytes(dir: string): number {

@@ -12,7 +12,7 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { toLogprobs } from "../../../sampling/index";
 import type { NativeMtpHead } from "../../../contracts/mlx/drafter";
-import { nativeMtpHeadOf } from "../../../models/drafters";
+import { nativeMtpHeadOf } from "../../../models/drafter-loaders";
 import { MLACache } from "../../../state/glm52-cache";
 import type { DraftProvider, DraftSource, GroupedDraftProvider, TargetView, DraftRowSampling, DraftRowGroup, DraftPrefillGroup } from "../source";
 import { DRAFT_CHECKPOINT_SCHEMA, type DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";

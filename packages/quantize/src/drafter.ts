@@ -18,7 +18,8 @@
 // here is the drafter acceptance A/B (`scripts/drafter-ab.ts`), not a KL battery.
 
 import { quantizeModelDir, type QuantizeResult } from "./quantizer";
-import { isDeepspecDrafterConfig, loadDeepspecDrafter } from "@mlx-bun/inference/models/drafters";
+import { isDeepspecDrafterConfig } from "@mlx-bun/inference/models/drafters";
+import { loadDeepspecDrafter } from "@mlx-bun/inference/models/drafter-loaders";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 

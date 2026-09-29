@@ -34,8 +34,7 @@ import { disposing } from "../../layers/helpers";
 import { KVCache } from "../../state/kv";
 import { LoraState } from "../../layers/lora";
 import type { GraphCapabilities } from "../../contracts/portable/graph";
-import type { DenoisingGraph } from "../../contracts/portable/denoising";
-import type { MlxDeclaredGraph } from "../../contracts/mlx/graph";
+import type { MlxDeclaredGraph, MlxDenoisingOperations } from "../../contracts/mlx/graph";
 import type { TrainableGraph } from "../../contracts/mlx/trainable";
 import { declareGraph } from "../capabilities";
 import type { PixelInput } from "../../contracts/mlx/media";
@@ -538,7 +537,7 @@ class DiffDecoderLayer {
   }
 }
 
-export class DiffusionGemmaModel implements MlxDeclaredGraph {
+export class DiffusionGemmaModel implements MlxDeclaredGraph, MlxDenoisingOperations {
   readonly config: ModelConfig;
   readonly weightsBytes: number;
   readonly embed: QuantizedEmbedding;
@@ -931,22 +930,6 @@ export class DiffusionGemmaModel implements MlxDeclaredGraph {
   }
 
   // ---- D2 denoising-engine surface ----
-
-  /** The operations the denoising method drives (`GraphCapabilities.method`), over this graph's
-   *  weights and a cache-array prefill state. */
-  denoisingGraph(): DenoisingGraph<MlxArray, Cache[]> {
-    return {
-      descriptor: Object.freeze({ id: "legacy-diffusion-gemma", backend: "mlx",
-        graphAbi: "mlx-denoising-v1", stateAbi: "legacy-cache-array-v1", artifact: "legacy-resident-model" }),
-      vocabSize: this.config.text.vocabSize, canvasLength: this.canvasLength, embedScale: this.embedScale,
-      prefill: (ids, vision) => vision ? this.prefillVision(ids, vision) : this.prefill(ids),
-      extendPrefill: this.extendPrefill.bind(this),
-      decoderLogits: this.decoderLogits.bind(this),
-      dequantEmbedWeight: this.dequantEmbedWeight.bind(this),
-      softEmbeddings: this.softEmbeddings.bind(this),
-      closeState: disposeResources,
-    };
-  }
 
   /** Encoder prefill over the prompt -> a fresh populated cache (the denoising
    *  loop reuses it across all steps of a canvas block). */

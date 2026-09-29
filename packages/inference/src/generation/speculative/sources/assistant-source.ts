@@ -25,7 +25,7 @@ import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import type { AssistantDrafterModel } from "../../../contracts/mlx/drafter";
 import { DRAFT_CHECKPOINT_SCHEMA } from "../../../contracts/mlx/draft-checkpoint";
-import { loadAssistantDrafter } from "../../../models/drafters";
+import { loadAssistantDrafter } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, TargetView, AssistantRowsTarget } from "../source";
 import { targetLacks } from "../source";
 

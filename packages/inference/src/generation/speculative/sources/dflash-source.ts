@@ -23,7 +23,7 @@ import { join } from "node:path";
 import type { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import type { DsparkDrafterModel } from "../../../contracts/mlx/drafter";
-import { loadDsparkDrafter } from "../../../models/drafters";
+import { loadDsparkDrafter } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, TargetView } from "../source";
 import { targetLacks } from "../source";
 import type { DraftProjection } from "../../../contracts/mlx/draft-projection";

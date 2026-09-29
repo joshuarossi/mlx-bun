@@ -62,12 +62,12 @@ function appDomain(path: string, owner: Library): string {
 // graph handle, its declaration, profiles, the registry-level role predicates
 // (`models/support.ts`) and shared input helpers, never a concrete model, and
 // never branch on a model's class, type string, architecture list or family flag.
-// Drafters are models too, reached through `models/drafters.ts` (their conventions and lazy
-// loaders, which hand the draft sources ports from `contracts/mlx/drafter`); the DSpark
+// Drafters are models too, reached through `models/drafters.ts` (their conventions) and
+// `models/drafter-loaders.ts` (their lazy loaders, which hand the draft sources ports from `contracts/mlx/drafter`); the DSpark
 // producer (training) builds its module through `models/speculative/loader.ts`.
 const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
   "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
-  "models/chat-template.ts", "models/support.ts", "models/drafters.ts", "models/speculative/loader.ts"]);
+  "models/chat-template.ts", "models/support.ts", "models/drafters.ts", "models/drafter-loaders.ts", "models/speculative/loader.ts"]);
 /** The family registry lists one record per family (`models/families.ts`); the role predicates of
  * `models/support.ts` (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only
  * ones consumers may use, and a per-family structural predicate must not reappear as an export. */

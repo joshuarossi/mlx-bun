@@ -33,7 +33,7 @@ import { Weights } from "../../../artifacts/weights";
 import { KVCache } from "../../../state/kv";
 import type { RecurrentMtpModule } from "../../../contracts/mlx/drafter";
 import { DRAFT_CHECKPOINT_SCHEMA } from "../../../contracts/mlx/draft-checkpoint";
-import { loadQwenMtpModule } from "../../../models/drafters";
+import { loadQwenMtpModule } from "../../../models/drafter-loaders";
 import type { DraftProvider, DraftSource, DraftRowGroup, DraftPrefillGroup, DraftRowSampling, GroupedDraftProvider, RecurrentMtpTarget, TargetView } from "../source";
 import { targetLacks } from "../source";
 import type { DraftRowCheckpoint } from "../../../contracts/mlx/draft-checkpoint";
