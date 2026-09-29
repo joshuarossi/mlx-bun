@@ -73,7 +73,10 @@ function spark(series: MetricsSnapshot["series"]): SVGElement {
   return svg;
 }
 
-class MetricsPanel extends HTMLElement {
+// Importing the entry outside a browser (package verification, a server-side inventory) loads without defining the element.
+const Base: typeof HTMLElement = (globalThis as { HTMLElement?: typeof HTMLElement }).HTMLElement ?? (class {} as unknown as typeof HTMLElement);
+
+class MetricsPanel extends Base {
   #connection: PanelConnection | undefined;
   #shadow: ShadowRoot;
   /** The live sections redraw on every snapshot; the benchmark section only when its data changes, so an open menu survives. */
@@ -214,6 +217,6 @@ class MetricsPanel extends HTMLElement {
   }
 }
 
-if (!customElements.get(TAG)) customElements.define(TAG, MetricsPanel);
+if (typeof customElements !== "undefined" && !customElements.get(TAG)) customElements.define(TAG, MetricsPanel);
 
 export { MetricsPanel };

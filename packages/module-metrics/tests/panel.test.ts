@@ -155,3 +155,10 @@ test("removing the element closes the stream, and changing the connection reconn
   panel.remove();
   expect(FakeEventSource.instances[1]!.closed).toBe(true);
 });
+
+test("the entry imports without a DOM, defining nothing", async () => {
+  const child = Bun.spawnSync([process.execPath, "-e", 'const m = await import("@mlx-bun/module-metrics/panel"); if (typeof customElements !== "undefined" || typeof m.MetricsPanel !== "function") throw new Error("unexpected")'],
+    { cwd: import.meta.dir, stdout: "pipe", stderr: "pipe" });
+  expect(child.stderr.toString()).toBe("");
+  expect(child.exitCode).toBe(0);
+});
