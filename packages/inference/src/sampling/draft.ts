@@ -7,6 +7,7 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 import { applyTopP, applyTopK, toLogprobs } from "./index";
+import { stepKey } from "./sampler";
 
 export interface DSparkSampleConfig {
   /** temperature > 0 enables sampling; 0 ⇒ greedy (handled by the caller). */
@@ -16,18 +17,14 @@ export interface DSparkSampleConfig {
   seed?: number;
 }
 
-const GOLDEN = 0x9e3779b97f4a7c15n;
-const U64 = 0xffffffffffffffffn;
-
 /** Seeded stream of mlx random keys — reproducible draws without sharing global
- *  RNG state (same derivation as sampler.ts stepKey). */
+ *  RNG state: draw n is `stepKey(seed >>> 0, n)`. */
 export class KeyStream {
-  #seed: bigint;
+  #seed: number;
   #ctr = 0;
-  constructor(seed = 0) { this.#seed = BigInt(seed >>> 0); }
+  constructor(seed = 0) { this.#seed = seed >>> 0; }
   next(): MlxArray {
-    const mixed = (this.#seed ^ ((BigInt(this.#ctr++) + 1n) * GOLDEN)) & U64;
-    return ops.randomKey(mixed);
+    return stepKey(this.#seed, this.#ctr++);
   }
 }
 

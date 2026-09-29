@@ -7,9 +7,10 @@ import type { Weights } from "../../artifacts/weights";
 import { disposing } from "../../layers/helpers";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { RMSNorm } from "../../layers/normalization";
-import { type Cache, type Mask } from "../../contracts/mlx/cache";
+import { type Cache } from "../../contracts/mlx/cache";
 import { DenseLinear } from "../../layers/dense-linear";
-import { compiledSwiglu } from "./qwen3_5";
+import { compiledSwiglu } from "../../layers/swiglu";
+import { Qwen3Attention } from "./qwen3_5";
 
 type MtpLinear = DenseLinear | QuantizedLinear;
 
@@ -24,95 +25,12 @@ function loadMtpLinear(
   return layer;
 }
 
-/** Qwen3Attention.forward with the companion's dense or quantized projections.
- *  Attention operations follow packages/inference/src/models/qwen/qwen3_5.ts verbatim. */
-class MtpAttention {
-  readonly qProj: MtpLinear;
-  readonly kProj: MtpLinear;
-  readonly vProj: MtpLinear;
-  readonly oProj: MtpLinear;
-  readonly qNorm: RMSNorm;
-  readonly kNorm: RMSNorm;
-  readonly nHeads: number;
-  readonly nKvHeads: number;
-  readonly headDim: number;
-  readonly scale: number;
-  readonly ropeDims: number;
-  readonly ropeBase: number;
-
-  constructor(weights: Weights, config: ModelConfig, prefix: string, resources: DisposableStack) {
-    const t = config.text;
-    this.nHeads = t.numAttentionHeads;
-    this.nKvHeads = t.numKeyValueHeads;
-    this.headDim = t.headDim;
-    this.scale = Math.pow(this.headDim, -0.5);
-    this.ropeDims = Math.trunc(this.headDim * t.partialRotaryFactor);
-    this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 10000;
-    this.qProj = loadMtpLinear(weights, `${prefix}.q_proj`, config, resources);
-    this.kProj = loadMtpLinear(weights, `${prefix}.k_proj`, config, resources);
-    this.vProj = loadMtpLinear(weights, `${prefix}.v_proj`, config, resources);
-    this.oProj = loadMtpLinear(weights, `${prefix}.o_proj`, config, resources);
-    this.qNorm = new RMSNorm(weights.tensor(`${prefix}.q_norm.weight`), t.rmsNormEps);
-    this.kNorm = new RMSNorm(weights.tensor(`${prefix}.k_norm.weight`), t.rmsNormEps);
-  }
-
-  forward(x: MlxArray, mask: Mask, cache: Cache): MlxArray {
-    const [B, L] = x.shape as [number, number, number];
-    const qp = this.qProj.forward(x);
-    const qpr = disposing(qp, ops.reshape(qp, [B, L, this.nHeads, this.headDim * 2]));
-    const [qHeads, gateHeads] = ops.split(qpr, [this.headDim], -1) as [MlxArray, MlxArray];
-    qpr.dispose();
-    const gate = disposing(gateHeads, ops.reshape(gateHeads, [B, L, this.nHeads * this.headDim]));
-
-    let k = this.kProj.forward(x);
-    let v = this.vProj.forward(x);
-
-    let q = this.qNorm.forward(qHeads);
-    qHeads.dispose();
-    q = disposing(q, ops.transposeAxes(q, [0, 2, 1, 3]));
-    k = disposing(k, ops.reshape(k, [B, L, this.nKvHeads, this.headDim]));
-    k = disposing(k, this.kNorm.forward(k));
-    k = disposing(k, ops.transposeAxes(k, [0, 2, 1, 3]));
-    v = disposing(v, ops.reshape(v, [B, L, this.nKvHeads, this.headDim]));
-    v = disposing(v, ops.transposeAxes(v, [0, 2, 1, 3]));
-
-    const offsets = cache.ropeOffsetArr;
-    q = disposing(q, offsets
-      ? ops.ropeDynamic(q, this.ropeDims, this.ropeBase, offsets, null)
-      : ops.rope(q, this.ropeDims, this.ropeBase, cache.offset, null));
-    k = disposing(k, offsets
-      ? ops.ropeDynamic(k, this.ropeDims, this.ropeBase, offsets, null)
-      : ops.rope(k, this.ropeDims, this.ropeBase, cache.offset, null));
-
-    const [keys, values] = cache.updateAndFetch(k, v);
-    k.dispose();
-    v.dispose();
-    const attn = ops.sdpa(q, keys, values, this.scale, mask.mode, mask.arr);
-    keys.dispose();
-    values.dispose();
-    q.dispose();
-
-    const attnT = ops.transposeAxes(attn, [0, 2, 1, 3]);
-    attn.dispose();
-    const merged = ops.reshape(attnT, [B, L, -1]);
-    attnT.dispose();
-    const sig = ops.sigmoid(gate);
-    gate.dispose();
-    const gated = ops.mul(merged, sig);
-    merged.dispose();
-    sig.dispose();
-    const out = this.oProj.forward(gated);
-    gated.dispose();
-    return out;
-  }
-}
-
 /** The one MTP decoder block: fc-merge → attention → swiglu MLP → norm. */
 export class MtpModule {
   readonly fc: MtpLinear;
   readonly preFcNormEmbedding: RMSNorm;
   readonly preFcNormHidden: RMSNorm;
-  readonly attn: MtpAttention;
+  readonly attn: Qwen3Attention<MtpLinear>;
   readonly mlpGate: MtpLinear;
   readonly mlpUp: MtpLinear;
   readonly mlpDown: MtpLinear;
@@ -125,7 +43,9 @@ export class MtpModule {
     this.fc = loadMtpLinear(weights, "fc", config, resources);
     this.preFcNormEmbedding = new RMSNorm(weights.tensor("pre_fc_norm_embedding.weight"), eps);
     this.preFcNormHidden = new RMSNorm(weights.tensor("pre_fc_norm_hidden.weight"), eps);
-    this.attn = new MtpAttention(weights, config, "layers.0.self_attn", resources);
+    // The target's attention block (qwen3_5.ts) with the companion's dense or quantized heads.
+    this.attn = new Qwen3Attention<MtpLinear>(weights, config, "layers.0.self_attn",
+      (w, path, c) => loadMtpLinear(w, path, c, resources));
     this.mlpGate = loadMtpLinear(weights, "layers.0.mlp.gate_proj", config, resources);
     this.mlpUp = loadMtpLinear(weights, "layers.0.mlp.up_proj", config, resources);
     this.mlpDown = loadMtpLinear(weights, "layers.0.mlp.down_proj", config, resources);

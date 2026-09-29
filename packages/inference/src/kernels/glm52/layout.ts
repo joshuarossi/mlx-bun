@@ -2,9 +2,10 @@
 
 /**
  * The subset of the canonical expert-slot layout consumed by the decode
- * kernel. Offsets are bytes from the beginning of one aligned residency slot.
+ * kernels. Offsets are bytes from the beginning of one aligned residency slot.
+ * Q4 (packed nibbles) and Q8 (int8) slots share this shape.
  */
-export interface Glm52CanonicalQ4MetalLayout {
+export interface Glm52CanonicalMetalLayout {
   readonly hiddenSize: number;
   readonly intermediateSize: number;
   readonly slotBytes: number;
@@ -16,17 +17,8 @@ export interface Glm52CanonicalQ4MetalLayout {
   readonly upScaleOffset: number;
 }
 
-
-export interface Glm52CanonicalQ8MetalLayout
-extends Glm52CanonicalQ4MetalLayout {}
-
-
-export function positiveInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new Error(`${label} must be a positive safe integer`);
-  return value;
-}
-
+export type Glm52CanonicalQ4MetalLayout = Glm52CanonicalMetalLayout;
+export type Glm52CanonicalQ8MetalLayout = Glm52CanonicalMetalLayout;
 
 export function validateRange(
   offset: number,

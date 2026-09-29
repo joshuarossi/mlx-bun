@@ -2,7 +2,10 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import * as ops from "@mlx-bun/mlx/ops";
 
 
-/** tanh(x / cap) * cap with weak-scalar semantics. */
+/** tanh(x / cap) * cap with weak-scalar semantics, UNFUSED (standalone div, tanh,
+ *  mul), as plain-Python oracle sites compose it. The mx.compile'd one
+ *  (gemma4_text.py) is `compiledLogitSoftcap` in softcap.ts; the two are
+ *  separate on purpose so each site dispatches the same kernels as its oracle. */
 export function logitSoftcap(logits: MlxArray, cap: number): MlxArray {
   const capArr = ops.scalarLike(cap, logits);
   const scaled = ops.div(logits, capArr);

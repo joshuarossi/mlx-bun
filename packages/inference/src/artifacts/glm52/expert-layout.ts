@@ -4,6 +4,7 @@ import type {
   ColibriTensorInfo,
 } from "./container";
 import type { Glm52Config } from "../glm52-config";
+import { positiveInteger } from "../../runtime/integers";
 
 import { GLM52_EXPERT_SLOT_ALIGNMENT } from "../../kernels/glm52/layout";
 export { GLM52_EXPERT_SLOT_ALIGNMENT };
@@ -56,12 +57,6 @@ type ExpertGeometry = Pick<
 interface PrimitiveRead {
   readonly tensor: ColibriTensorInfo;
   readonly destinationOffset: number;
-}
-
-function positiveInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new Error(`${label} must be a positive safe integer`);
-  return value;
 }
 
 function alignUp(value: number, alignment: number): number {

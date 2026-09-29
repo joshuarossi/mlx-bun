@@ -17,6 +17,8 @@ import { Sampler,SamplerOptions } from "./types";
 
 const GOLDEN = 0x9e3779b97f4a7c15n;
 
+/** The seeded per-step key: (seed, step) mixed by the golden-ratio constant. Also
+ *  the derivation behind KeyStream (draft.ts). */
 export function stepKey(seed: number, step: number): MlxArray {
   const mixed = (BigInt(seed) ^ ((BigInt(step) + 1n) * GOLDEN)) & 0xffffffffffffffffn;
   return ops.randomKey(mixed);

@@ -27,6 +27,9 @@ import { type Cache, type Mask } from "../../contracts/mlx/cache";
 import { compiledSwiglu } from "../../layers/swiglu";
 import { captureKvAttention } from "../../state/kv-attention-view";
 
+/** Qwen3 attention (per-head q/k RMSNorm over head_dim before full-head RoPE,
+ *  GQA). qwen3 and qwen3_moe share it; they differ only in the `rope_theta`
+ *  default used when the config omits one. */
 export class Qwen3Attention {
   readonly qProj: QuantizedLinear;
   readonly kProj: QuantizedLinear;
@@ -40,13 +43,13 @@ export class Qwen3Attention {
   readonly scale: number;
   readonly ropeBase: number;
 
-  constructor(weights: Weights, config: ModelConfig, prefix: string) {
+  constructor(weights: Weights, config: ModelConfig, prefix: string, defaultRopeBase = 1000000) {
     const t = config.text;
     this.nHeads = t.numAttentionHeads;
     this.nKvHeads = t.numKeyValueHeads;
     this.headDim = t.headDim;
     this.scale = Math.pow(this.headDim, -0.5);
-    this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? 1000000;
+    this.ropeBase = t.ropeParameters.full_attention?.ropeTheta ?? defaultRopeBase;
     this.qProj = QuantizedLinear.load(weights, `${prefix}.q_proj`, config);
     this.kProj = QuantizedLinear.load(weights, `${prefix}.k_proj`, config);
     this.vProj = QuantizedLinear.load(weights, `${prefix}.v_proj`, config);

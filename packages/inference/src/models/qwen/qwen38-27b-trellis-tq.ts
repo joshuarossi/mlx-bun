@@ -34,7 +34,8 @@ import { quantFor, type ModelConfig } from "../../artifacts/config";
 import { runtimeFlag, runtimeValue } from "../../runtime/config";
 import { QuantizedLinear } from "../../layers/quantized-linear";
 import { type Cache, type Mask } from "../../contracts/mlx/cache";
-import { Qwen35Model, compiledSwiglu, type Qwen3Layer } from "./qwen3_5";
+import { compiledSwiglu } from "../../layers/swiglu";
+import { Qwen35Model, type Qwen3Layer } from "./qwen3_5";
 import type { SSMCache } from "../../state/ssm";
 import {
   TrellisLinear, TRELLIS_MATVEC_MAX_M, fusedGateUpEligible, fusedGateUpSwiglu,

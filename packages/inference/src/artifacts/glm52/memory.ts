@@ -1,4 +1,5 @@
 import { buildGlm52ExpertSlotLayout } from "./expert-layout";
+import { positiveInteger } from "../../runtime/integers";
 import {
   loadGlm52Config,
   type Glm52Config,
@@ -108,11 +109,6 @@ function nonNegativeSafeInteger(value: number, label: string): void {
     throw new RangeError(`${label} must be a non-negative safe integer`);
 }
 
-function positiveSafeInteger(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0)
-    throw new RangeError(`${label} must be a positive safe integer`);
-}
-
 function sum(label: string, values: readonly number[]): number {
   let result = 0;
   for (const value of values) {
@@ -207,7 +203,7 @@ export function planGlm52Memory(
     ["GLM numRoutedExperts", geometry.numRoutedExperts],
     ["GLM numExpertsPerToken", geometry.numExpertsPerToken],
   ] as const) {
-    positiveSafeInteger(value, label);
+    positiveInteger(value, label);
   }
   for (const [label, value] of [
     ["GLM pinnedExpertSlots", pinnedExpertSlots],
