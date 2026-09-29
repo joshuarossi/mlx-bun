@@ -5,11 +5,14 @@
 set -eu
 
 fail() { echo "mlx-bun: $*" >&2; exit 1; }
+# mlx-lm commands mlx-bun implements, linked as mlx-bun.<cmd> (apps/mlx-bun/src/cli/mlx-lm-aliases.ts).
+ALIASES="server generate convert fuse lora upload"
 if [ "${1:-}" = "--help" ]; then
   echo "Usage: sh install.sh"
   echo "MLX_BUN_INSTALL_DIR: installation root (default ~/.mlx-bun)"
   echo "MLX_BUN_VERSION: latest or a release tag such as v0.5.0"
-  echo "Installs the complete bundle under app-install/ and links ~/.local/bin/mlx-bun."
+  echo "Installs the complete bundle under app-install/ and links ~/.local/bin/mlx-bun,"
+  echo "plus mlx-bun.<cmd> beside it for each mlx-lm command mlx-bun implements ($ALIASES)."
   exit 0
 fi
 [ "$#" = 0 ] || fail "use --help for usage"
@@ -35,7 +38,7 @@ if ! mkdir "$APP_ROOT/lock" 2>/dev/null; then
   fail "$APP_ROOT/lock exists (installer PID $OWNER); remove this lock directory only after confirming that installer is no longer running"
 fi
 printf '%s\n' "$$" > "$APP_ROOT/lock/pid"
-STAGE=""; LINK=""; SWITCHED=0; COMPLETE=0; PREVIOUS=""
+STAGE=""; LINK=""; BIN_DIR=""; SWITCHED=0; COMPLETE=0; PREVIOUS=""
 cleanup() {
   if [ "$SWITCHED" = 1 ] && [ "$COMPLETE" = 0 ]; then
     if [ -n "$PREVIOUS" ]; then
@@ -46,6 +49,7 @@ cleanup() {
     fi
   fi
   [ -z "$LINK" ] || rm -f "$LINK"
+  if [ -n "$BIN_DIR" ]; then for name in $ALIASES; do rm -f "$BIN_DIR/.mlx-bun-install-$$.$name"; done; fi
   rm -f "$APP_ROOT/next" "$APP_ROOT/rollback"
   if [ "$COMPLETE" = 0 ] && [ -n "$STAGE" ]; then rm -rf "$STAGE"; fi
   rm -f "$APP_ROOT/lock/pid" "$APP_ROOT/lock/inspection-error"
@@ -88,15 +92,21 @@ printf '%s\n' "$ACTUAL" | grep -Eq '^mlx-bun [0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.
 
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
-[ ! -d "$BIN_DIR/mlx-bun" ] || [ -L "$BIN_DIR/mlx-bun" ] || fail "command destination is a directory"
+for name in mlx-bun $(for alias in $ALIASES; do echo "mlx-bun.$alias"; done); do
+  [ ! -d "$BIN_DIR/$name" ] || [ -L "$BIN_DIR/$name" ] || fail "command destination is a directory: $BIN_DIR/$name"
+done
 LINK="$BIN_DIR/.mlx-bun-install-$$"
 ln -s "$APP_ROOT/current/mlx-bun" "$LINK"
+# Every alias is another name for the same executable, which dispatches on the name it was started as.
+for name in $ALIASES; do ln -s "$APP_ROOT/current/mlx-bun" "$BIN_DIR/.mlx-bun-install-$$.$name"; done
 ln -s "${STAGE##*/}" "$APP_ROOT/next"
 # macOS mv -h replaces the destination symlink itself, never its directory.
 mv -fh "$APP_ROOT/next" "$APP_ROOT/current"
 SWITCHED=1
 mv -fh "$LINK" "$BIN_DIR/mlx-bun"
-LINK=""; COMPLETE=1
+LINK=""
+for name in $ALIASES; do mv -fh "$BIN_DIR/.mlx-bun-install-$$.$name" "$BIN_DIR/mlx-bun.$name"; done
+COMPLETE=1
 
 # Keep executable files available to running apps and their children. Inspect vnodes,
 # not argv[0]: users launch through PATH or the command symlink. lsof's exit 1
@@ -123,7 +133,7 @@ for old in "$APP_ROOT"/bundle.*; do
     fi
   fi
 done
-echo "Installed $ACTUAL at $BIN_DIR/mlx-bun"
+echo "Installed $ACTUAL at $BIN_DIR/mlx-bun (and mlx-bun.<cmd> aliases: $ALIASES)"
 RESOLVED="$(command -v mlx-bun || true)"
 if [ "$RESOLVED" = "$BIN_DIR/mlx-bun" ]; then
   echo "Run: mlx-bun"

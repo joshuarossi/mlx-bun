@@ -7,6 +7,7 @@ import { buildBinary, bundleNotices, compileApp, compileBundle } from "./build-b
 import { archiveCommand } from "./bundle-files";
 import { NATIVE_DIR as MLX_DIR, resolveLibmlxc } from "../packages/mlx/src/native";
 import { NATIVE_DIR as INFERENCE_DIR, resolveInferenceNative } from "../packages/inference/src/runtime/native";
+import { ALIASES } from "../apps/mlx-bun/src/cli/mlx-lm-aliases";
 
 const root = resolve(import.meta.dir, "..");
 
@@ -140,6 +141,18 @@ export async function verifyBundle({ archive, version, model }: { archive: strin
     assert.equal(await run([executable, "--version"]), `mlx-bun ${version}\n`);
     assert((await run([executable, "--help"])).includes("Usage: mlx-bun"));
     console.log(await run([join(relocated, "verify-consumer"), scratch]));
+    // The mlx-lm aliases are names of the same executable: it dispatches on the name it was started as.
+    async function checkAliases(directory: string, label: string): Promise<void> {
+      for (const [name, alias] of Object.entries(ALIASES)) {
+        const shown = await run([join(directory, `mlx-bun.${name}`), "--help"]);
+        assert.equal(shown.split("\n")[0], `mlx-bun.${name} — mlx_lm.${name}-compatible alias of \`mlx-bun ${alias.verb}\``, `${label} mlx-bun.${name}`);
+      }
+      const refused = Bun.spawnSync([join(directory, "mlx-bun.generate"), "--max-kv-size", "1"], { cwd: scratch, env });
+      assert.equal(refused.exitCode, 1);
+      assert(refused.stderr.toString().includes("mlx-bun.generate: --max-kv-size is an mlx_lm.generate option mlx-bun does not support"), `${label} refusal`);
+    }
+    for (const name of Object.keys(ALIASES)) await symlink("mlx-bun", join(relocated, `mlx-bun.${name}`));
+    await checkAliases(relocated, "Relocated");
     // Exercise the same real binaries through the installer's directory and
     // command symlinks. The curl stub supplies the given archive, never a network.
     const installHome = join(temporary, "install home"), transport = join(temporary, "transport");
@@ -159,6 +172,7 @@ cp "$MLX_BUN_TEST_ARCHIVE" "$output"
       MLX_BUN_VERSION: `v${version}`, MLX_BUN_TEST_ARCHIVE: archive };
     await run(["/bin/sh", join(root, "scripts/install.sh")], installEnvironment);
     assert.equal(await run([join(installHome, ".local/bin/mlx-bun"), "--version"]), `mlx-bun ${version}\n`);
+    await checkAliases(join(installHome, ".local/bin"), "Installed");
     const installed = join(installHome, ".mlx-bun/app-install"), current = join(installed, "current");
     await copyFile(join(relocated, "verify-consumer"), join(current, "verify-consumer"));
     await checkNotices(current, "Installed current", sections);

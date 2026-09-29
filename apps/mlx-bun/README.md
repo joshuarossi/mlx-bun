@@ -388,6 +388,54 @@ Both commands close the owned engine after success, failure, or cancellation.
 run against the installed artifact in `verify-packages --app-only`;
 real-weight correctness and speed remain separate verification.
 
+## mlx-lm compatibility (`mlx-bun.<cmd>`)
+
+mlx-bun is a superset of mlx-lm's command line under its own names. Each alias
+runs the matching verb with `mlx_lm.<cmd>`'s argument spellings translated, and
+still accepts the verb's own options; `mlx-bun.<cmd> --help` lists what it maps,
+accepts without effect, and refuses. An explicit path behaves as in mlx-lm; a
+default output path does not use the working directory (`mlx_model`,
+`fused_model`, `adapters`) but stays under `~/.mlx-bun`, and every other default
+is the verb's, not mlx-lm's (for example `generate` stops at 256 tokens, not 100).
+
+| Alias | Verb | mlx_lm flags translated |
+| --- | --- | --- |
+| `mlx-bun.server` | `serve` | `--model --adapter-path --host --port --decode-concurrency --max-tokens --temp --top-p --top-k --draft-model --num-draft-tokens`; headless (`--no-open`) unless told otherwise |
+| `mlx-bun.generate` | `generate` | `--model --prompt/-p (- reads stdin) --max-tokens/-m --temp --top-p --top-k --min-p --min-tokens-to-keep --xtc-probability --xtc-threshold --seed --system-prompt --adapter-path --ignore-chat-template --kv-bits (4 or 8, from token 5000) --trust-remote-code --verbose` |
+| `mlx-bun.convert` | `convert` | `--hf-path/--model --mlx-path -q --q-bits --q-group-size --dtype -d/--dequantize --upload-repo --trust-remote-code` (4/8-bit, group 32/64, affine) |
+| `mlx-bun.fuse` | `fuse` | `--model --adapter-path --save-path --dequantize --upload-repo` |
+| `mlx-bun.lora` | `train` (SFT) | `--model --train --data --fine-tune-type lora --optimizer adam/adamw --num-layers --batch-size --iters --val-batches --learning-rate --steps-per-report --steps-per-eval --grad-accumulation-steps --resume-adapter-file --adapter-path --save-every --max-seq-length --grad-checkpoint --seed --mask-prompt -c/--config` (YAML) |
+| `mlx-bun.upload` | `upload` | `--path --upload-repo` |
+
+Not supported, each an error naming the mlx_lm flag: `generate` `--extra-eos-token
+--prefill-response --use-default-chat-template --chat-template-config
+--max-kv-size --prompt-cache-file --quantize-activations --draft-model
+--num-draft-tokens`, `--kv-bits` other than 4/8, `--kv-group-size` other than 64;
+`server` `--allowed-origins --log-level --chat-template --use-default-chat-template
+--chat-template-args --min-p --prompt-concurrency --prefill-step-size
+--prompt-cache-size --prompt-cache-bytes --pipeline`; `convert` `--quant-predicate`
+and `--q-mode` other than affine, `--q-bits` other than 4/8, `--q-group-size` other
+than 32/64; `fuse` `--export-gguf --gguf-path`; `lora` `--test --test-batches`,
+`--fine-tune-type dora|full`, optimizers other than adam/adamw, `--clear-cache-threshold
+--report-to --project-name`, and the YAML keys `lr_schedule` and `lora_parameters.keys`.
+argparse's unique-prefix abbreviations (`--max-tok`) are not accepted. Two behaviors differ without an error: `mlx-bun.lora` always masks the prompt in the
+loss (mlx-lm does so only with `--mask-prompt`), and `--trust-remote-code` is
+accepted because mlx-bun never runs code from a model repository.
+
+mlx-lm's other console scripts have no counterpart and get no alias: `chat` (no
+terminal chat; use the web app), `benchmark`, `cache_prompt`, `evaluate`,
+`perplexity`, `manage`, `share`, and the quantizers `awq`, `dwq`, `dynamic_quant`
+and `gptq` (`convert --target-bpw` is the mixed-precision path).
+
+Delivery: the package's `bin` links `mlx-bun.<cmd>` to `bin/mlx-bun.<cmd>.mjs`, a
+one-line file that runs the shared launcher (npm and Bun resolve a bin to its real
+file, so the file's name is the invoked name); the standalone executable
+dispatches on the name it was started as; `scripts/install.sh` links each alias
+to the same executable beside `~/.local/bin/mlx-bun`, and `bun run link-cli`
+links them into `~/.bun/bin`. [Alias tests](tests/mlx-lm-aliases.test.ts) run
+mlx_lm's own argument forms through each alias and the launcher files;
+[installer tests](tests/install.test.ts) cover the links.
+
 ## Engine
 
 `src/engine/` owns loaded model lifetimes, preparation admission and the shared
@@ -1357,7 +1405,10 @@ This is a local build artifact, not signing/notarization or release publishing.
 
 [`scripts/install.sh`](../../scripts/install.sh) installs a complete release
 bundle under `${MLX_BUN_INSTALL_DIR:-$HOME/.mlx-bun}/app-install/` and links
-`~/.local/bin/mlx-bun`. `MLX_BUN_VERSION` selects `latest` or a pinned tag.
+`~/.local/bin/mlx-bun` and, beside it, `mlx-bun.<cmd>` for each
+[mlx-lm alias](#mlx-lm-compatibility-mlx-buncmd) (each a link to the same
+executable; all are refused where a directory stands and switch with the app).
+`MLX_BUN_VERSION` selects `latest` or a pinned tag.
 The installer validates the files and version before switching its `current`
 symlink and retains the old app on failure. Successful updates keep the current
 and immediate previous bundles, plus any older bundle used by a running app.
