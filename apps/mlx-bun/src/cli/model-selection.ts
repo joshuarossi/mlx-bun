@@ -48,7 +48,7 @@ export async function resolveModelAuto(query: string | null, supplied: Partial<M
   try {
     if (registry.list().length === 0) await registry.scan();
     if (query) return { m: registry.resolve(query), picked: false };
-    const supported = () => registry.list().filter(model => isSupportedModelRecord(model.modelType, model.repoId));
+    const supported = () => registry.list().filter(model => isSupportedModelRecord(model.modelType));
     let candidates = supported();
     let recommended: string | undefined;
     if (candidates.length === 0) {

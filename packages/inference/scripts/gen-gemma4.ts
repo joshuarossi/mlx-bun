@@ -20,7 +20,7 @@ import { parseArgs } from "node:util";
 import { loadModelConfig } from "../src/artifacts/config";
 import type { ModelConfig } from "../src/artifacts/config";
 import { configFingerprint } from "../src/artifacts/fingerprint";
-import { GENERATED_GEMMA_FINGERPRINTS } from "../src/models/profile";
+import { GENERATED_GEMMA_FINGERPRINTS } from "../src/models/gemma4/family";
 
 /** Registered generated graphs: output stem -> key in GENERATED_GEMMA_FINGERPRINTS. */
 export const GEMMA4_GRAPHS = Object.freeze({
@@ -57,7 +57,7 @@ export function emitGemma4Graph({ config, tensorNames }: GraphSource, outStem: G
   const t = config.text;
   const fingerprint = configFingerprint(config);
   if (fingerprint !== GENERATED_GEMMA_FINGERPRINTS[key])
-    throw new Error(`${outStem}: config fingerprint ${fingerprint} is not the registered ${GENERATED_GEMMA_FINGERPRINTS[key]} (models/profile.ts)`);
+    throw new Error(`${outStem}: config fingerprint ${fingerprint} is not the registered ${GENERATED_GEMMA_FINGERPRINTS[key]} (models/gemma4/family.ts)`);
   const prefixBase = tensorNames.has("language_model.model.embed_tokens.weight")
     ? "language_model.model" : "model";
 
@@ -368,7 +368,7 @@ import { RotatingQuantizedKVCache } from "../../../state/rotating-quantized-kv";
 import { type Cache, type Mask, type SharedKv } from "../../../contracts/mlx/cache";
 import { Gemma4Model, type DecoderLayer } from "../model";
 ${hasPerLayer ? `import { isCompiledTrace } from "../../../runtime/compiled-trace";\n` : ""}
-import { GENERATED_GEMMA_FINGERPRINTS } from "../../profile";
+import { GENERATED_GEMMA_FINGERPRINTS } from "../family";
 export const FINGERPRINT = GENERATED_GEMMA_FINGERPRINTS["${key}"];
 
 /** Forward passes served by the generated fast path (vs monolith
@@ -453,7 +453,7 @@ if (import.meta.main) {
 Compile a Gemma4 artifact (config.json, kv_config.json, model.safetensors.index.json) into its
 generated graph module. Reads no weights and needs no native library. The default output
 directory is src/models/gemma4/generated; the config fingerprint must equal the one registered
-for the stem in src/models/profile.ts.`;
+for the stem in src/models/gemma4/family.ts.`;
   if (values.help) { console.log(usage); process.exit(0); }
   const [modelDir, stem] = positionals;
   if (!modelDir || !stem || positionals.length !== 2 || !(stem in GEMMA4_GRAPHS)) {

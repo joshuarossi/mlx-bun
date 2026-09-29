@@ -59,13 +59,13 @@ export function createDiscoveryRoutes(
           if (url.searchParams.get("refresh") === "1" || !libraryCache || Date.now() - libraryCache.at > 30_000) {
             const { visionCapable, audioCapable } = await import("@mlx-bun/hub/registry");
             const { loadModelConfig } = await import("@mlx-bun/inference/artifacts/config");
-            const { supportTier } = await import("@mlx-bun/inference/models/support");
+            const { listedSupportTier } = await import("@mlx-bun/inference/models/support");
             const registry = createRegistry();
             try {
             await registry.scan();
             const rows = [];
             for (const model of registry.listCanonical()) {
-              const tier = supportTier(model.modelType, model.repoId);
+              const tier = listedSupportTier(model);
               const supported = tier !== null;
               let assessment = null;
               try {
@@ -192,13 +192,13 @@ export function createDiscoveryRoutes(
             });
           try {
             const { visionCapable } = await import("@mlx-bun/hub/registry");
-            const { supportTier } = await import("@mlx-bun/inference/models/support");
+            const { listedSupportTier } = await import("@mlx-bun/inference/models/support");
             const registry = createRegistry();
             try {
               if (registry.listCanonical().length === 0) await registry.scan();
               for (const model of registry.listCanonical()) {
                 if (model.repoId === ctx.modelId || model.repoId === stt?.id) continue;
-                const tier = supportTier(model.modelType, model.repoId);
+                const tier = listedSupportTier(model);
                 if (tier === null) continue;
                 data.push({
                   id: model.repoId,

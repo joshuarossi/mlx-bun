@@ -25,7 +25,7 @@ function registry(rows: ModelRecord[], events: string[] = []) {
 
 test("models declare operations from their type, never from a family name", () => {
   expect(declaredOperations("whisper")).toEqual(["transcribe"]);
-  expect(declaredOperations("gemma4", "org/gemma-4")).toEqual(["generate"]);
+  expect(declaredOperations("gemma4")).toEqual(["generate"]);
   expect(declaredOperations("qwen3")).toEqual(["generate", "embed"]);
   expect(declaredOperations("nonsense")).toEqual([]);
 });

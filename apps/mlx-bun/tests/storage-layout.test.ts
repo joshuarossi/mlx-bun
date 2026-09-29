@@ -135,7 +135,7 @@ test("a web quantize job writes a plain model directory that the registry, `serv
     await registry.scan();
     const record = registry.listCanonical().find(model => model.path === output);
     expect(record).toMatchObject({ repoId: "tiny-qwen3-4bit", modelType: "qwen3", quantBits: 4, quantGroupSize: 64 });
-    expect(isSupportedModelRecord(record!.modelType, record!.repoId)).toBe(true);
+    expect(isSupportedModelRecord(record!.modelType)).toBe(true);
   } finally { registry.close(); }
   // `serve <path>`, `serve <name>` and the web folder picker resolve the same directory under the same id.
   expect(await resolveModelAuto(output)).toMatchObject({ picked: false, m: { repoId: "tiny-qwen3-4bit", path: output } });

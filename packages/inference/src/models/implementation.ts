@@ -2,6 +2,7 @@ import type { ModelConfig } from "../artifacts/config";
 import {
   assertResolvedModelProfile,
   type GenerationLoop,
+  type ModelExecutionComposition,
   type ModelGraph,
   type ModelLoader,
   type ResolvedModelProfile,
@@ -22,6 +23,13 @@ export interface ModelImplementationProvider<Source, Model> {
   /** Validate identity and composition, then return one compatible binding.
    * A declared implementation must never silently fall back to another. */
   select(config: ModelConfig, profile: ResolvedModelProfile): ModelImplementation<Source, Model>;
+}
+
+/** The implementation a composition runs: the one it names, else the graph's own
+ * (a generated specialization registers as `<graph>-generated`). */
+export function implementationIdFor(execution: ModelExecutionComposition): string {
+  return execution.implementation ?? (execution.specialization === "generated"
+    ? `${execution.graph}-generated` : execution.graph);
 }
 
 /** Immutable composition, with identity matching delegated to model profiles.
@@ -55,9 +63,7 @@ export class ModelImplementationRegistry<Source, Model> implements ModelImplemen
   select(config: ModelConfig, profile: ResolvedModelProfile): ModelImplementation<Source, Model> {
     assertResolvedModelProfile(config, profile);
     const execution = profile.profile.execution;
-    // These default IDs preserve the existing dedicated/generated/family choice.
-    const id = execution.implementation ?? (execution.specialization === "generated"
-      ? `${execution.graph}-generated` : execution.graph);
+    const id = implementationIdFor(execution);
     const implementation = this.entries.get(id);
     if (!implementation)
       throw new Error(`model profile ${profile.profile.id} requires unavailable implementation ${id}; refusing to fall back`);

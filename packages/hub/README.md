@@ -6,7 +6,7 @@ and fetches them.
 
 | Module | Owns |
 | --- | --- |
-| `registry` | A `bun:sqlite` index over the Hugging Face cache (`hubCacheRoot()`: `HF_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, `~/.cache/huggingface/hub`) and any plain model directories the caller names: canonical revisions, vision/audio capability, garbage-collection plans. The caller chooses the index file. Reads headers, never tensor bytes, and never loads MLX. |
+| `registry` | A `bun:sqlite` index over the Hugging Face cache (`hubCacheRoot()`: `HF_HUB_CACHE`, `HF_HOME/hub`, `XDG_CACHE_HOME/huggingface/hub`, `~/.cache/huggingface/hub`) and any plain model directories the caller names: canonical revisions, vision/audio capability, garbage-collection plans. The caller chooses the index file, and may supply `isCompanion` and a `supportTier` classifier (run once per snapshot at scan, stored on the record) because the registry holds no model facts. Reads headers, never tensor bytes, and never loads MLX. |
 | `download` | Resumable Hugging Face snapshot downloads with disk-space planning, a filename safety check, and caller-owned cancellation that keeps partials resumable. |
 | `upload` | Repository creation, preupload classification, basic LFS transfer, and NDJSON commits for model or dataset folders. Callers supply an explicit token or null. |
 

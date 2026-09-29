@@ -22,7 +22,7 @@ import { RotatingQuantizedKVCache } from "../../../state/rotating-quantized-kv";
 import { type Cache, type Mask, type SharedKv } from "../../../contracts/mlx/cache";
 import { Gemma4Model, type DecoderLayer } from "../model";
 
-import { GENERATED_GEMMA_FINGERPRINTS } from "../../profile";
+import { GENERATED_GEMMA_FINGERPRINTS } from "../family";
 export const FINGERPRINT = GENERATED_GEMMA_FINGERPRINTS["12b"];
 
 /** Forward passes served by the generated fast path (vs monolith

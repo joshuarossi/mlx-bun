@@ -16,14 +16,14 @@ export interface RegistryCatalogOptions {
 }
 
 /** What a model declares, from its `model_type`: consumers ask for these, never for a family. */
-export function declaredOperations(modelType: string, repoId = ""): ModelOperation[] {
+export function declaredOperations(modelType: string): ModelOperation[] {
   if (isTranscriptionModelType(modelType)) return ["transcribe"];
   if (isDrafterModelType(modelType)) return [];
-  return [...(isSupportedModelRecord(modelType, repoId) ? ["generate" as const] : []), ...(isEmbeddingModelType(modelType) ? ["embed" as const] : [])];
+  return [...(isSupportedModelRecord(modelType) ? ["generate" as const] : []), ...(isEmbeddingModelType(modelType) ? ["embed" as const] : [])];
 }
 
 const entryOf = (record: Pick<ModelRecord, "repoId" | "path" | "sizeBytes" | "modelType">): CatalogEntry =>
-  ({ id: record.repoId, kind: "model", directory: record.path, bytes: record.sizeBytes, operations: declaredOperations(record.modelType, record.repoId) });
+  ({ id: record.repoId, kind: "model", directory: record.path, bytes: record.sizeBytes, operations: declaredOperations(record.modelType) });
 
 export function createRegistryCatalog(options: RegistryCatalogOptions = {}): ModelCatalog {
   const open = options.registry ?? (() => openModelRegistry());
@@ -48,7 +48,7 @@ export function createRegistryCatalog(options: RegistryCatalogOptions = {}): Mod
       if (existsSync(join(query, "config.json"))) {
         let modelType = "";
         try { modelType = String((JSON.parse(readFileSync(join(query, "config.json"), "utf8")) as { model_type?: unknown }).model_type ?? ""); } catch { /* unreadable: declares nothing */ }
-        return { id: query, kind: "model", directory: query, bytes: 0, operations: declaredOperations(modelType, query) };
+        return { id: query, kind: "model", directory: query, bytes: 0, operations: declaredOperations(modelType) };
       }
       return withRegistry(registry => entryOf(registry.resolve(query)));
     },

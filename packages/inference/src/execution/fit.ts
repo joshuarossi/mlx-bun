@@ -10,6 +10,7 @@
 import { totalmem } from "node:os";
 import type { ModelConfig } from "../artifacts/config";
 import type { MemoryPlan } from "../contracts/portable/memory-plan";
+import { moeOf } from "../models/support";
 import { kvBytesAt, sdpaFallbackBytes, type KvSchemeOptions } from "../state/kv-scheme";
 
 /** Decode-efficiency vs theoretical bandwidth ceiling, measured on the
@@ -132,11 +133,9 @@ export function fit(
 
   // decode reads all weights + the KV cache once per token — except MoE
   // expert weights, where only top_k of num_experts are touched per token
-  const t = config.text;
-  const isMoe = t.enableMoeBlock && t.numExperts > 0;
-  const expertsSkipped = isMoe
-    ? expertsBytes * (1 - t.topKExperts / t.numExperts)
-    : 0;
+  const moe = moeOf(config);
+  const isMoe = moe !== null;
+  const expertsSkipped = moe ? expertsBytes * (1 - moe.topK / moe.experts) : 0;
   const bytesPerToken = weightsBytes - expertsSkipped + kv;
   const predictedDecodeTps =
     ((machine.bandwidthGBs * 1e9) / bytesPerToken) *
