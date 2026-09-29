@@ -14,6 +14,7 @@ const LAYOUT = {
   ...MODEL_LAYOUT, // models: convert, web quantize and fuse outputs (plain model directories); registryDb: the derived index, rebuilt by scan
   adapters: "adapters", // train, web fine-tune, merge, memory-stage adapters
   exports: "exports", // adapter export manifests
+  kv: "kv", // saved prompt/KV state, one directory per model identity; one byte budget across them (engine/kv-budget.ts)
   datasets: "datasets",
   jobsDb: "db/jobs.sqlite",
   memoryDb: "db/memory.sqlite",

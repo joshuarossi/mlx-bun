@@ -3,6 +3,7 @@ import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import { isTranscriptionModelType } from "@mlx-bun/inference/models/support";
 import { parseCommand, type CommandArgs } from "./args";
 import { numericalPolicy } from "./numerical-policy";
+import { storagePath } from "../storage/paths";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
@@ -19,6 +20,9 @@ import { resolveServingLimits, validatePagedServingOptions, type RunningApp, typ
 // imported only by the composition that runs it, so an isolated parent
 // (serve-isolated.ts) never loads the engine.
 export { resolveServingLimits, validatePagedServingOptions, type RunningApp, type ServeOptions };
+
+/** The saved-state root's default byte budget, across every model's directory (`--ssd-cache-max` overrides). */
+export const DEFAULT_SAVED_STATE_BYTES = 20 * 2 ** 30;
 
 /** Validate before opening a registry, loading a model, or creating a listener. */
 export function parseServeOptions(args: CommandArgs): ServeOptions {
@@ -45,15 +49,19 @@ export function parseServeOptions(args: CommandArgs): ServeOptions {
     : { kvQuant: kv === "4" || kv === "8" ? Number(kv) : kv as "off" | "config" };
   const promptCache = number("prompt-cache");
   if (promptCache !== undefined) cache.promptCacheBytes = promptCache * 2 ** 30;
-  const ssd = value("ssd-cache");
-  if (ssd !== undefined && !ssd.trim()) throw new Error("--ssd-cache expects a directory");
+  // Saved prompt/KV state is on by default: under MLX_BUN_HOME/kv, one byte budget across every model's
+  // directory. `--ssd-cache <dir>` moves it and `--ssd-cache off` disables it. A model swap resumes from it.
+  const ssdRaw = value("ssd-cache");
+  if (ssdRaw !== undefined && !ssdRaw.trim()) throw new Error("--ssd-cache expects a directory or off");
+  const ssdOff = ssdRaw === "off";
+  if (ssdRaw !== undefined && !ssdOff && promptCache === 0) throw new Error("SSD cache requires a nonzero RAM prompt cache");
+  const ssd = ssdOff ? undefined : ssdRaw ?? (promptCache === 0 ? undefined : storagePath("kv"));
   if (!ssd && ["ssd-cache-max", "ssd-demote-idle", "generation-checkpoint", "ssd-cache-verify"].some(name => args.values[name] !== undefined))
-    throw new Error("SSD cache options require --ssd-cache");
+    throw new Error(ssdOff ? "SSD cache options need saved state, and --ssd-cache off disables it" : "SSD cache options require a nonzero RAM prompt cache");
   if (ssd) {
-    if (promptCache === 0) throw new Error("SSD cache requires a nonzero RAM prompt cache");
     cache.ssdCacheDir = ssd;
     const max = number("ssd-cache-max"), idle = number("ssd-demote-idle"), checkpoint = number("generation-checkpoint", 1, Number.MAX_SAFE_INTEGER, true);
-    if (max !== undefined) cache.ssdCacheMaxBytes = max === 0 ? Infinity : max * 2 ** 30;
+    cache.ssdCacheMaxBytes = max === undefined ? DEFAULT_SAVED_STATE_BYTES : max === 0 ? Infinity : max * 2 ** 30;
     if (idle !== undefined) cache.ssdDemoteIdleSec = idle;
     if (checkpoint !== undefined) cache.generationCheckpointTokens = checkpoint;
     cache.ssdCacheVerify = args.values["ssd-cache-verify"] === true;

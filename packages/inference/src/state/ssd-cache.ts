@@ -50,6 +50,9 @@ export interface SsdStoreOptions {
   codecs?: CacheCodecProvider;
   dir: string;
   maxBytes: number;
+  /** A live byte cap that replaces `maxBytes` when set: a caller sharing one
+   *  budget across several stores answers with what this store may hold now. */
+  limit?: () => number;
   /** Server identity — written into every file, enforced on scan/load. */
   configFingerprint: string;
   tokenizerHash: string;
@@ -113,7 +116,7 @@ export class SsdCacheStore {
   }
 
   get maxBytes(): number {
-    return this.#opts.maxBytes;
+    return this.#opts.limit?.() ?? this.#opts.maxBytes;
   }
 
   /** Longest token prefix whose atomic cache file is present in the index. */
@@ -365,9 +368,9 @@ export class SsdCacheStore {
     const blocks = [...header.caches, ...(header.attachments ?? [])].flatMap(e => e.tensors.flatMap(t => t.blocks ?? []));
     const unique = new Map(blocks.map(block => [block.hash, block.bytes]));
     const entryBytes = st.size + [...unique.values()].reduce((a, b) => a + b, 0);
-    if (entryBytes > this.#opts.maxBytes) {
+    if (entryBytes > this.maxBytes) {
       this.remove(path);
-      console.warn(`[ssd-cache] entry not stored: ${entryBytes} bytes exceeds the ${this.#opts.maxBytes}-byte cap`);
+      console.warn(`[ssd-cache] entry not stored: ${entryBytes} bytes exceeds the ${this.maxBytes}-byte cap`);
       return false;
     }
     const trimmable = !attachments?.length && caches.every((c) => c.isTrimmable());
@@ -411,7 +414,7 @@ export class SsdCacheStore {
 
   /** Enforce the byte cap: unlink oldest-mtime entries until under it. */
   evictToCap(): void {
-    while (this.totalBytes > this.#opts.maxBytes && this.#index.length > 0) {
+    while (this.totalBytes > this.maxBytes && this.#index.length > 0) {
       let oldest = 0;
       for (let i = 1; i < this.#index.length; i++)
         if (this.#index[i]!.mtimeMs < this.#index[oldest]!.mtimeMs) oldest = i;

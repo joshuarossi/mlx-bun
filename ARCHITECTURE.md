@@ -184,6 +184,7 @@ paths win, and libraries take paths from their callers.
 | `MLX_BUN_HOME` (default `~/.mlx-bun`): `models/`, `adapters/`, `exports/`, `datasets/`, `db/`, `jobs/`, chat, wiki, skills, logs, credentials | the app |
 | `~/.mlx-bun/app-install/` | the installer |
 | `MLX_BUN_HOME/cache/` | derived memos (inference artifact identities) |
+| `MLX_BUN_HOME/kv/` | saved prompt/KV state, one directory per model identity, one byte budget across them (`--ssd-cache-max`) |
 | Hugging Face hub cache (`hubCacheRoot()`) | `@mlx-bun/hub` downloads only |
 
 Application features are moving into modules; see the next section. Until a domain moves, the rules above apply to it.
