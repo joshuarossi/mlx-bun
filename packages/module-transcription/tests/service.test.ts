@@ -1,10 +1,13 @@
 // Residency policy and request ordering of the Whisper service with a fake
-// runtime and a fake clock: no weights, no native MLX, no timers.
+// runtime and a fake clock: no weights, no native MLX, no timers. The service
+// leases the model from the real Whisper model host (`@mlx-bun/app-services`)
+// over the fake backend, so residency is exercised through the same
+// `modelHost` the module uses; `service()` below presents both as one object.
 import { expect, test } from "bun:test";
-import type { WhisperSegment, WhisperTranscribeOptions, WhisperTranscription } from "@mlx-bun/inference/transcription";
-import {
-  TranscriptionError, TranscriptionService, type TranscriptionRuntime, type VadGate, type WhisperRun, type WhisperRuntime,
-} from "../../src/engine/transcription-service";
+import type { WhisperSegment, WhisperTranscribeOptions } from "@mlx-bun/inference/transcription";
+import type { Exclusive } from "@mlx-bun/app-services";
+import { TranscriptionError, TranscriptionService, type VadGate } from "../src/service";
+import { stack, type LoadedWhisper as WhisperRuntime, type TranscriptionRuntime, type WhisperRun } from "./support";
 
 const segment = (id: number, text: string, start = 0, end = 1): WhisperSegment =>
   ({ id, seek: 0, start, end, text, tokens: [id], temperature: 0, avgLogprob: -0.1, compressionRatio: 1, noSpeechProb: 0 });
@@ -22,6 +25,8 @@ interface Harness {
   vadSegments: { start: number; end: number }[];
   clock: { now: number };
   timers: { scheduled: { id: number; ms: number; fn: () => void }[]; fire(): void };
+  /** The most recently loaded checkpoint. */
+  lastLoaded?: WhisperRuntime;
 }
 
 function harness(): Harness {
@@ -66,6 +71,7 @@ function harness(): Harness {
           },
           dispose() { events.push("dispose"); },
         };
+        h.lastLoaded = loaded;
         return loaded;
       },
       async vad() {
@@ -85,11 +91,21 @@ function harness(): Harness {
   return h;
 }
 
-function service(h: Harness, options: Partial<ConstructorParameters<typeof TranscriptionService>[0]> = {}) {
-  return new TranscriptionService({ modelDir: "/whisper", modelId: "org/whisper", runtime: h.runtime, log() {},
+/** The service and its model host as one object, with the surface the service had when it owned residency. */
+function service(h: Harness, options: { idleUnloadSec?: number; resident?: boolean; exclusive?: Exclusive; runtime?: TranscriptionRuntime } = {}) {
+  const { host, service: whisper } = stack(options.runtime ?? h.runtime, { idleUnloadSec: options.idleUnloadSec, resident: options.resident, exclusive: options.exclusive,
     timers: { setTimeout: (fn, ms) => { const id = h.timers.scheduled.length + 1 + Math.random(); h.timers.scheduled.push({ id, ms, fn }); return id; },
       clearTimeout: handle => { const at = h.timers.scheduled.findIndex(t => t.id === handle); if (at >= 0) h.timers.scheduled.splice(at, 1); } },
-    now: () => h.clock.now, ...options });
+    now: () => h.clock.now });
+  return {
+    transcribe: whisper.transcribe.bind(whisper), createSession: whisper.createSession.bind(whisper), session: (id: string) => whisper.session(id),
+    vad: () => whisper.vad(), unload: () => whisper.unload(),
+    get resident() { return whisper.resident; }, get stats() { return whisper.stats; }, get sessionCount() { return whisper.sessionCount; },
+    /** Load the weights now without holding them, as `--preload` does. */
+    async ensureLoaded() { await host.preload(); return { loaded: h.lastLoaded! }; },
+    /** The module stops first, then the host releases the weights. */
+    async close() { await whisper.close(); await host.close(); },
+  };
 }
 const take = new Float32Array(16_000);
 
@@ -123,12 +139,12 @@ test("an idle timeout keeps the weights for that long; a new take re-arms it and
   h.timers.fire();
   expect(whisper.resident).toBe(false); expect(whisper.stats.unloads).toBe(1);
   await whisper.transcribe(take);
-  expect(whisper.unload()).toBe(true);
+  expect(await whisper.unload()).toBe(true);
   expect(h.timers.scheduled).toEqual([]);
-  expect(whisper.unload()).toBe(false);
+  expect(await whisper.unload()).toBe(false);
   await whisper.transcribe(take);
   expect(h.timers.scheduled).toHaveLength(1);
-  whisper.close(); whisper.close();
+  await whisper.close(); await whisper.close();
   expect(h.timers.scheduled).toEqual([]);
   expect(whisper.resident).toBe(false);
   expect(h.events.filter(e => e === "dispose")).toHaveLength(3);
@@ -141,12 +157,12 @@ test("resident pins the weights across takes while an explicit unload still rele
   expect(whisper.resident).toBe(true);
   expect(h.timers.scheduled).toEqual([]);
   expect(whisper.stats).toMatchObject({ loads: 1, unloads: 0, requests: 2, idle_unload_sec: null });
-  expect(whisper.unload()).toBe(true);
+  expect(await whisper.unload()).toBe(true);
   expect(whisper.resident).toBe(false);
   await whisper.transcribe(take);
   expect(whisper.stats.loads).toBe(2);
   expect(whisper.resident).toBe(true);
-  whisper.close();
+  await whisper.close();
 });
 
 test("takes serialize FIFO, share one load, run inside the host's exclusive wrapper, and refuse unload while active", async () => {
@@ -160,7 +176,7 @@ test("takes serialize FIFO, share one load, run inside the host's exclusive wrap
   const second = whisper.transcribe(new Float32Array(32_000));
   await Bun.sleep(1);
   expect(h.events).toEqual(["load /whisper"]);
-  expect(whisper.unload()).toBe(false);
+  expect(await whisper.unload()).toBe(false);
   gate.resolve(); h.gate = null; h.loadGate = null;
   await Promise.all([first, second]);
   expect(h.events).toEqual(["load /whisper", "transcribe 16000", "transcribe 32000"]);
@@ -169,7 +185,7 @@ test("takes serialize FIFO, share one load, run inside the host's exclusive wrap
   // A failed take does not block the queue behind it.
   await expect(whisper.transcribe(new Float32Array(10))).rejects.toMatchObject({ status: 400 });
   expect((await whisper.transcribe(take)).result.text).toBe(" hello");
-  whisper.close();
+  await whisper.close();
 });
 
 test("closing during a load releases the weights on arrival and the waiting take fails cleanly", async () => {
@@ -178,9 +194,10 @@ test("closing during a load releases the weights on arrival and the waiting take
   h.loadGate = gate;
   const pending = whisper.transcribe(take);
   await Bun.sleep(1);
-  whisper.close();
+  const closing = whisper.close();
   gate.resolve();
   await expect(pending).rejects.toBeInstanceOf(TranscriptionError);
+  await closing;
   expect(h.events).toEqual(["load /whisper", "dispose"]);
   expect(whisper.resident).toBe(false);
 });
@@ -192,7 +209,7 @@ test("sessions feed windows in order under the exclusive queue, finish returns t
   const session = await whisper.createSession({ language: "de", vocabulary: ["Sotto", "Metal"] });
   expect(whisper.resident).toBe(true); expect(whisper.sessionCount).toBe(1);
   expect(session.vocabulary).toEqual({ included: ["Sotto", "Metal"], omitted: [], token_count: 2, token_budget: 3 });
-  expect(whisper.unload()).toBe(false);
+  expect(await whisper.unload()).toBe(false);
   const a = session.append(new Float32Array(1000)), b = session.append(new Float32Array(2000));
   expect((await a).segments.map(s => s.text)).toEqual([" chunk0"]);
   expect((await b).segments.map(s => s.text)).toEqual([" chunk0", " chunk1"]);
@@ -219,7 +236,7 @@ test("a deleted session releases the service, at most 64 stay open, and close di
   expect(whisper.sessionCount).toBe(63);
   const replacement = await whisper.createSession();
   expect(whisper.session(replacement.id)).toBe(replacement);
-  whisper.close();
+  await whisper.close();
   expect(whisper.sessionCount).toBe(0);
   expect(replacement.closed).toBe(true);
   expect(h.events.filter(e => e === "dispose")).toHaveLength(1);
@@ -237,8 +254,9 @@ test("a streaming session with VAD stays silent until speech and finishes empty 
   expect((await voiced.append(new Float32Array(1024))).speech).toBe(true);
   expect((await voiced.finish()).vad?.speech).toBe(true);
   expect(h.events.slice(3)).toEqual(["feed 1024", "finish 1024"]);
-  whisper.close();
-  expect(h.events.at(-2)).toBe("dispose"); expect(h.events.at(-1)).toBe("vad dispose");
+  await whisper.close();
+  // The module stops first and releases its speech gate; the host then releases the weights.
+  expect(h.events.at(-2)).toBe("vad dispose"); expect(h.events.at(-1)).toBe("dispose");
 });
 
 test("the VAD gate skips Whisper on silence and trims to the speech span with clip-relative timestamps", async () => {
@@ -253,7 +271,7 @@ test("the VAD gate skips Whisper on silence and trims to the speech span with cl
   expect(trimmed.result.segments[0]).toMatchObject({ start: 0.5, end: 1.5 });
   expect(trimmed.durationSeconds).toBe(1.5);
   expect(h.events).toEqual(["vad load", "load /whisper", "transcribe 24000", "dispose"]);
-  whisper.close();
+  await whisper.close();
 });
 
 test("vocabulary hints fit whole terms into the prompt budget in order after the prompt", () => {
@@ -273,7 +291,7 @@ test("a session reserves the weights before its VAD gate resolves, so unload is 
   const creating = whisper.createSession({ vad: {} });
   await Bun.sleep(0);
   expect(whisper.resident).toBe(true);
-  expect(whisper.unload()).toBe(false);
+  expect(await whisper.unload()).toBe(false);
   releaseVad();
   const session = await creating;
   expect(whisper.sessionCount).toBe(1); expect(whisper.resident).toBe(true);
@@ -323,7 +341,7 @@ test("deleting a session during an in-flight feed joins the feed before the weig
   await Bun.sleep(0);
   expect(closed).toBe(false);
   expect(whisper.sessionCount).toBe(1); expect(whisper.resident).toBe(true);
-  expect(whisper.unload()).toBe(false);
+  expect(await whisper.unload()).toBe(false);
   expect(() => session.append(take)).toThrow(TranscriptionError);
   release();
   await closing; await fed;
@@ -393,6 +411,6 @@ test("a session creation aborted by its request after the load releases the rese
   releaseVad();
   await expect(creating).rejects.toThrow("client gone");
   expect(whisper.sessionCount).toBe(0); expect(whisper.resident).toBe(false);
-  expect(whisper.unload()).toBe(false);
+  expect(await whisper.unload()).toBe(false);
   expect(h.events).toEqual(["load /whisper", "vad load", "dispose"]);
 });

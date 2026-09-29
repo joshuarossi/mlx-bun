@@ -720,26 +720,26 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
   const script = `
     import { mock } from "bun:test";
     import { strict as assert } from "node:assert";
-    const app = ${JSON.stringify(app)};
-    const events = [], created = [];
-    let defaultWhisper = null, discovery, audioHost, piProbe, drain;
+    const app = ${JSON.stringify(app)}, lib = app + "../../packages/app-services/src/";
+    const events = [], loads = [];
+    let found = null, discovery, piProbe, listenerInput, drain;
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
       adapterNamespace() {}, checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };
     const gateway = { async runExclusive(fn, _trace, signal) { events.push("lock"); signal?.throwIfAborted(); return fn(); } };
-    mock.module(app + "src/cli/model-selection.ts", () => ({ resolveModelAuto: async () => { throw new Error("unused"); },
-      defaultWhisperModel: async () => { events.push("registry lookup"); return defaultWhisper; } }));
+    // The Whisper checkpoint and the local catalog are the only seams behind the model host; everything else is the real composition.
+    mock.module(lib + "whisper-backend.ts", () => ({ nativeWhisperBackend: { async load(dir) { events.push("load " + dir); return { promptTokenBudget: 3, encode: () => [],
+      async transcribe(samples, options) { events.push("decode " + samples.length + " " + options.language); return { text: " hi", segments: [], language: options.language ?? "en" }; },
+      start() { throw new Error("no sessions here"); }, dispose() { events.push("whisper close " + dir); } }; } } }));
+    mock.module(lib + "catalog.ts", () => ({ declaredOperations: () => [], createRegistryCatalog: () => ({ list: async () => { events.push("registry lookup"); return found ? [found] : []; },
+      find: async query => { throw new Error("unused " + query); }, resolve: async () => undefined, estimate: async () => undefined, register: async () => {}, download: async () => {} }) }));
+    mock.module("@mlx-bun/inference/input/audio", () => ({ isRiffWave: () => true, decodeWav: () => ({ samples: new Float32Array(16000), sampleRate: 16000 }), resampleTo16k: samples => samples }));
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async () => context, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
       createCacheServices: async () => cache,
       createAppEngine: async () => ({ gateway, async close() { events.push("engine close"); context.dispose(); } }),
     }));
-    mock.module(app + "src/engine/transcription-service.ts", () => ({ TranscriptionService: class {
-      constructor(options) { created.push(options); this.modelId = options.modelId; this.resident = false; }
-      close() { return this.closing ??= (async () => { await Promise.resolve(); events.push("whisper close " + this.modelId); })(); }
-    } }));
-    mock.module(app + "src/server/audio-routes.ts", () => ({ createAudioRoutes(host) { audioHost = host; return { handle: async () => null }; } }));
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) {
       discovery = options.transcription; return { handle: async () => null, invalidateLibrary() {} };
     } }));
@@ -751,55 +751,81 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     mock.module(app + "src/server/memory-routes.ts", () => ({ createMemoryRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/server/session-routes.ts", () => ({ createSessionRoutes: () => ({ handle: async () => null }) }));
     mock.module(app + "src/web/assets.ts", () => ({ createWebHandler: async () => () => null }));
-    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing;
+    mock.module(app + "src/server/start.ts", () => ({ startServer: async input => { let closing; listenerInput = input;
       return { server: { port: 1234 }, close: () => closing ??= (async () => { await input.beforeDrain(); await drain?.(); await input.closeEngine(); })() }; } }));
     const { startModelServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
+    const take = async () => {
+      const form = new FormData(); form.set("file", new Blob([new Uint8Array(64)], { type: "audio/wav" }), "clip.wav"); form.set("language", "en");
+      return await listenerInput.routes.handle(new Request("http://127.0.0.1/v1/audio/transcriptions", { method: "POST", body: form }));
+    };
+    const unload = async () => await (await listenerInput.routes.handle(new Request("http://127.0.0.1/admin/transcription/unload", { method: "POST" }))).json();
     const options = parseServeOptions(parseCommand("serve", ["--whisper-model", "large-v3-turbo", "--whisper-idle-unload", "30", "--whisper-resident", "--no-open"]));
     // runServe resolves the query into the directory before composition.
     options.whisper = { ...options.whisper, modelDir: "/unused/whisper", modelId: "mlx-community/whisper-large-v3-turbo" };
     options.chatPaths = { cwd: "/unused", sessionDir: "/unused/sessions" }; options.memoryPaths = { vault: "/unused/vault", skills: "/unused/skills" };
     const running = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
-    // Lazy: nothing is created until a surface asks; then every surface shares the one instance.
-    assert.deepEqual(created, []);
+    // Lazy: nothing loads until a take asks; the discovery and chat probes share the one companion without loading it.
+    assert.deepEqual(events, []);
     assert.deepEqual(await discovery(), { id: "mlx-community/whisper-large-v3-turbo", resident: false });
-    assert.equal(created.length, 1);
-    assert.deepEqual([created[0].modelDir, created[0].modelId, created[0].idleUnloadSec, created[0].resident],
-      ["/unused/whisper", "mlx-community/whisper-large-v3-turbo", 30, true]);
-    const instance = await audioHost.service();
-    assert.equal(instance.modelId, "mlx-community/whisper-large-v3-turbo");
     assert.equal(await piProbe(), true);
-    assert.equal(created.length, 1);
     assert.ok(!events.includes("registry lookup"), "an explicit checkpoint never scans the registry");
-    // Takes run under the gateway's exclusive lock and honour the request signal.
-    assert.equal(await created[0].exclusive(async () => "ran"), "ran");
-    assert.deepEqual(events, ["lock"]);
-    const aborted = new AbortController(); aborted.abort(new Error("gone"));
-    await assert.rejects(created[0].exclusive(async () => "never", aborted.signal), /gone/);
+    // Takes run under the gateway's exclusive lock, on the explicit checkpoint, and the parsed policy applies: resident stays loaded.
+    const first = await take();
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).mlx_bun.model, "mlx-community/whisper-large-v3-turbo");
+    assert.deepEqual(events, ["load /unused/whisper", "lock", "decode 16000 en"]);
+    assert.deepEqual(await discovery(), { id: "mlx-community/whisper-large-v3-turbo", resident: true });
+    assert.equal(await piProbe(), true);
+    assert.deepEqual({ ...await unload(), last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 1, last_load_ms: 0, idle_unload_sec: null });
     events.length = 0;
     await running.close();
-    assert.deepEqual(events, ["whisper close mlx-community/whisper-large-v3-turbo", "engine close", "model close"]);
+    assert.deepEqual(events, ["engine close", "model close"]);
+    // The idle policy without --whisper-resident: the weights stay for that long and the route reports it.
+    events.length = 0;
+    const idle = parseServeOptions(parseCommand("serve", ["--whisper-idle-unload", "30", "--no-open"]));
+    idle.whisper = { ...idle.whisper, modelDir: "/unused/whisper", modelId: "org/whisper" };
+    idle.chatPaths = options.chatPaths; idle.memoryPaths = options.memoryPaths;
+    const timed = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, idle);
+    await take();
+    assert.equal((await unload()).idle_unload_sec, 30);
+    events.length = 0;
+    await timed.close();
+    assert.deepEqual(events, ["engine close", "model close"]);
+    // A resident companion is released by the close, before the engine and the model.
+    events.length = 0;
+    const kept = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
+    await take();
+    events.length = 0;
+    await kept.close();
+    assert.deepEqual(events, ["whisper close /unused/whisper", "engine close", "model close"]);
     // Without a flag the first downloaded Whisper checkpoint is looked up once; none on disk means no companion.
-    events.length = 0; created.length = 0;
+    events.length = 0;
     delete options.whisper;
     const bare = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
-    assert.equal(await discovery(), null); assert.equal(await audioHost.service(), null); assert.equal(await piProbe(), false);
+    assert.equal(await discovery(), null); assert.equal(await piProbe(), false);
+    const unavailable = await take();
+    assert.equal(unavailable.status, 503); assert.equal((await unavailable.json()).error.type, "model_unavailable");
     assert.deepEqual(events, ["registry lookup"]);
     await bare.close();
     assert.deepEqual(events, ["registry lookup", "engine close", "model close"]);
-    events.length = 0; defaultWhisper = { path: "/cache/whisper", repoId: "mlx-community/whisper-tiny" };
-    const found = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
+    events.length = 0; found = { id: "mlx-community/whisper-tiny", kind: "model", directory: "/cache/whisper", bytes: 1, operations: ["transcribe"] };
+    const foundApp = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
     assert.deepEqual(await discovery(), { id: "mlx-community/whisper-tiny", resident: false });
-    assert.deepEqual([created[0].modelDir, created[0].idleUnloadSec, created[0].resident], ["/cache/whisper", undefined, undefined]);
-    await found.close();
-    assert.deepEqual(events, ["registry lookup", "whisper close mlx-community/whisper-tiny", "engine close", "model close"]);
-    // An admitted route can reach the lazy owner after beforeDrain captured no service.
-    events.length = 0; created.length = 0;
+    assert.equal((await take()).status, 200);
+    // The default policy releases the weights right after the take.
+    assert.deepEqual(events, ["registry lookup", "load /cache/whisper", "lock", "decode 16000 en", "whisper close /cache/whisper"]);
+    events.length = 0;
+    await foundApp.close();
+    assert.deepEqual(events, ["engine close", "model close"]);
+    // An admitted route reaches the stopped module during drain: it answers 503 and never loads the weights.
+    events.length = 0;
     const late = await startModelServer({ path: "/unused", repoId: "test", expertsBytes: 0 }, options);
-    assert.equal(created.length, 0);
-    drain = async () => { const service = await audioHost.service(); assert.equal(service.modelId, "mlx-community/whisper-tiny"); };
+    let lateStatus;
+    drain = async () => { lateStatus = (await take()).status; };
     await late.close();
-    assert.deepEqual(events, ["registry lookup", "whisper close mlx-community/whisper-tiny", "engine close", "model close"]);
+    assert.equal(lateStatus, 503);
+    assert.deepEqual(events, ["registry lookup", "engine close", "model close"]);
     drain = undefined;
   `;
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
@@ -813,56 +839,40 @@ test("the transcription-only server preloads on request, serves audio and discov
   const script = `
     import { mock } from "bun:test";
     import { strict as assert } from "node:assert";
-    const app = ${JSON.stringify(app)};
-    const events = [], created = [];
-    let failLoad = false, deferClose = null;
-    mock.module(app + "src/engine/transcription-service.ts", () => ({
-      TranscriptionError: class extends Error { constructor(message, status) { super(message); this.status = status; } },
-      TranscriptionService: class {
-        constructor(options) { created.push(options); this.modelId = options.modelId; this.resident = false; this.sessionCount = 0; }
-        get stats() { return { resident: this.resident, loads: this.resident ? 1 : 0, unloads: 0, requests: 0, last_load_ms: 0, idle_unload_sec: 0 }; }
-        async ensureLoaded() { events.push("load"); if (failLoad) throw new Error("no tokenizer"); this.resident = true; return { loadMs: 1, loaded: {} }; }
-        unload() { const was = this.resident; this.resident = false; events.push("unload"); return was; }
-        close() { return this.closing ??= (async () => { await Promise.resolve(); if (deferClose) await deferClose; events.push("close"); })(); }
-      },
-    }));
+    const app = ${JSON.stringify(app)}, lib = app + "../../packages/app-services/src/";
+    const events = [];
+    let failLoad = false;
+    mock.module(lib + "whisper-backend.ts", () => ({ nativeWhisperBackend: { async load(dir) { events.push("load " + dir); if (failLoad) throw new Error("no tokenizer");
+      return { promptTokenBudget: 3, encode: () => [], transcribe: async () => ({ text: "", segments: [], language: "en" }),
+        start() { throw new Error("unused"); }, dispose() { events.push("close " + dir); } }; } } }));
     const { startTranscriptionServer, parseServeOptions } = await import(app + "src/cli/serve.ts");
     const { parseCommand } = await import(app + "src/cli/args.ts");
     const options = parseServeOptions(parseCommand("serve", ["--port", "0", "--preload", "--whisper-idle-unload", "5"]));
     const running = await startTranscriptionServer({ path: "/unused/whisper", repoId: "org/whisper" }, options);
     try {
-      assert.deepEqual(events, ["load"]);
-      assert.deepEqual([created[0].modelDir, created[0].modelId, created[0].idleUnloadSec], ["/unused/whisper", "org/whisper", 5]);
+      assert.deepEqual(events, ["load /unused/whisper"]);
       const base = "http://127.0.0.1:" + running.port;
       const models = await (await fetch(base + "/v1/models")).json();
       assert.deepEqual(models.data.map(m => [m.id, m.transcription, m.resident]), [["org/whisper", true, true]]);
       assert.equal((await (await fetch(base + "/health")).json()).transcription.sessions, 0);
-      assert.equal((await (await fetch(base + "/v1")).json()).mode, "transcription");
-      assert.deepEqual(await (await fetch(base + "/admin/transcription/unload", { method: "POST" })).json(),
-        { unloaded: true, resident: false, loads: 0, unloads: 0, requests: 0, last_load_ms: 0, idle_unload_sec: 0 });
+      const index = await (await fetch(base + "/v1")).json();
+      assert.equal(index.mode, "transcription");
+      assert.deepEqual(index.endpoints, ["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /admin/transcription/unload", "POST /v1/audio/sessions",
+        "POST /v1/audio/sessions/:id/audio", "POST /v1/audio/sessions/:id/finish", "DELETE /v1/audio/sessions/:id", "GET /v1/models", "GET /health", "GET /stats"]);
+      const unloaded = await (await fetch(base + "/admin/transcription/unload", { method: "POST" })).json();
+      assert.deepEqual({ ...unloaded, last_load_ms: 0 }, { unloaded: true, resident: false, loads: 1, unloads: 1, requests: 0, last_load_ms: 0, idle_unload_sec: 5 });
       // No chat model, no web app, no chat completions: 404s, never a placeholder.
       for (const path of ["/", "/v1/chat/completions", "/api/hub/local"]) assert.equal((await fetch(base + path, { method: path === "/" ? "GET" : "POST" })).status, 404);
       assert.equal((await fetch(base + "/ws/chat")).status, 426);
       assert.throws(() => running.downloads.start("org/x"), /owns no downloads/);
     } finally { await running.close(); }
-    assert.deepEqual(events, ["load", "unload", "close"]);
+    assert.deepEqual(events, ["load /unused/whisper", "close /unused/whisper"]);
     await running.close();
-    assert.deepEqual(events, ["load", "unload", "close"]);
-    // A failed preload releases the service before any listener exists.
+    assert.deepEqual(events, ["load /unused/whisper", "close /unused/whisper"]);
+    // A failed preload rejects with the library's message before any listener exists, and holds no weights.
     events.length = 0; failLoad = true;
     await assert.rejects(startTranscriptionServer({ path: "/unused/whisper", repoId: "org/whisper" }, options), /no tokenizer/);
-    assert.deepEqual(events, ["load", "close"]);
-    // The service's close joins in-flight work; startup must not reject before that join finishes.
-    events.length = 0;
-    let finishClose; deferClose = new Promise(resolve => { finishClose = resolve; });
-    let settled = false;
-    const failing = startTranscriptionServer({ path: "/unused/whisper", repoId: "org/whisper" }, options).catch(error => { settled = true; return error; });
-    await new Promise(resolve => setTimeout(resolve, 25));
-    assert.equal(settled, false);
-    assert.deepEqual(events, ["load"]);
-    finishClose();
-    assert.match(String(await failing), /no tokenizer/);
-    assert.deepEqual(events, ["load", "close"]);
+    assert.deepEqual(events, ["load /unused/whisper"]);
   `;
   const child = Bun.spawn([process.execPath, "--eval", script], { stdout: "pipe", stderr: "pipe",
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent" } });

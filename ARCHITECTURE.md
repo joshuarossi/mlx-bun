@@ -224,12 +224,21 @@ theme, panel mounting) is its own package, `@mlx-bun/web-shell`, reused by every
 host's UI, native webviews included. Modules start as private workspace
 packages; publishing them is a separate licensing decision.
 
-**Hosts** compose. `apps/mlx-bun` installs every module; a transcription-only
-host installs one; a native app installs what it wants. Each host has one
-composition file, `src/modules.ts`, the only file that names module packages,
-plus the implementations of the core services (extracted from `apps/mlx-bun` as
-libraries when a second host needs them). Installation is build-time; a user
-setting may disable an installed module at start.
+**Hosts** compose. `apps/mlx-bun` installs every module; `apps/transcribe`
+installs one; a native app installs what it wants. Each host has one composition
+file, `src/modules.ts`, the only file that names module packages, plus the
+implementations of the core services. The ones hosts share are the host library
+`@mlx-bun/app-services`: the Whisper model host over a catalog (lazy load, idle
+unload, pinning, the host's execution lock around decoding; no memory budget
+yet, that is residency by memory fit), the registry-backed catalog, storage
+entries under `MLX_BUN_HOME`, verb parsing and help from manifests, route
+mounting, module activation and verb running. A host adds only its own execution
+lock and serving. A module's manifest is also importable alone
+(`@mlx-bun/module-<id>/manifest`, data only), so a host lists commands and
+`--help` and the documentation generators read verbs and routes without loading
+the module. A host refuses a module that declares sockets or job runners until
+it serves them. Installation is build-time; a user setting may disable an
+installed module at start.
 
 `@mlx-bun/app-host` is the loader every host shares. `loadModules(modules,
 { services })` validates the manifests before activating anything (unique ids,
@@ -238,8 +247,12 @@ host), activates the modules in order with only the services they required, buil
 per module by the host's bindings, and returns what they declared: routes at
 `/api/<id>/...` or at their declared root paths (collisions with each other and
 the host's own routes are rejected), sockets, verbs, job runners and storage
-entries. It also implements `registry`. The host serves, dispatches and creates
-what it returns; `stop()` disposes the modules in reverse order.
+entries. It also implements `registry`, and answers `status(moduleId)` with the
+counters a module reports for the host's health and stats surfaces. The host
+serves, dispatches and creates what it returns; `stop()` disposes the modules in
+reverse order. The mlx-bun app activates them in its serve composition, next to
+the engine's execution lock, and stops them first in its drain, then releases
+the weights they leased.
 
 **Gate rules** (in `packages/inference/tests/architecture.test.ts`, each proven by a synthetic workspace):
 
@@ -249,6 +262,8 @@ what it returns; `stop()` disposes the modules in reverse order.
 - Libraries below the app never import `app-core`.
 - Only a host's `modules.ts` imports module packages, and the host's
   `package.json` lists exactly the modules it names; hosts never import hosts.
+- A host's import closure holds exactly the modules it names (`apps/transcribe`'s
+  test walks it); no rule above lets a library or another host add one.
 - Module, host-library and host code obey the engine's model-identity rule: declared
   operations only, no `instanceof <Model>` or model-type checks.
 - Panel code imports only panel files and its `protocol.ts`, which imports

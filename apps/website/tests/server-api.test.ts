@@ -6,12 +6,13 @@ import { SERVER_API_PAGE, expandRoutePattern, generateServerApi, renderServerApi
 
 const root = resolve(import.meta.dir, "../../..");
 const APP = "apps/mlx-bun/src/", sources = await serverSources(), baseline = serverApiReference(sources);
-/** The real sources with one exact edit, which must apply. */
+/** The real sources with one exact edit, which must apply. A path outside the app's source is given whole. */
 function mutate(file: string, from: string, to: string): Map<string, string> {
-  const text = sources.get(`${APP}${file}`)!;
+  const path = file.startsWith("packages/") ? file : `${APP}${file}`, text = sources.get(path)!;
   expect(text).toContain(from);
-  return new Map(sources).set(`${APP}${file}`, text.replace(from, to));
+  return new Map(sources).set(path, text.replace(from, to));
 }
+const MANIFEST = "packages/module-transcription/src/manifest.ts";
 const rows = (api: ServerApi, id: string) => api.modes.find(mode => mode.id === id)!.routes
   .map(r => `${r.method} ${r.path} ${r.status}${r.conds.map(c => ` [${c.served ? "served" : "falls through"} if ${c.text}]`).join("")}`);
 
@@ -21,7 +22,7 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   for (const row of ["GET /ws/chat WebSocket upgrade (Pi chat)", "GET / implemented", "GET /status 302 redirect", "POST /v1/chat/completions implemented",
     "GET /v1/models/{id} implemented", "DELETE /v1/adapters/{id} implemented", "GET /api/jobs/{id}/stream implemented", "POST /api/dataset/push implemented",
     "POST /api/hub/download implemented [falls through if !options.downloads]", "GET /v1/memory/synthesize implemented [served if options.synthesize]",
-    "POST /v1/audio/sessions/{id}/finish implemented [falls through if !host]"]) expect(serve).toContain(row);
+    "POST /v1/audio/sessions/{id}/finish implemented"]) expect(serve).toContain(row);
   // Routes no serve composition mounts have no row: lease, drain and /engine are unknown paths (404) here.
   expect(serve.filter(row => /^\S+ \/(admin\/(lease|drain)|engine)\b/.test(row))).toEqual([]);
   const isolate = rows(baseline, "isolate");
@@ -42,9 +43,9 @@ test("each server mode lists its composed routes, statuses, and conditions", () 
   expect(baseline.modes.find(mode => mode.id === "app-worker")!.intro).toContain("A Whisper checkpoint gets the transcription-only routes behind the same admin routes, without the execution lease.");
   const transcription = rows(baseline, "transcription");
   expect(transcription).toContain("GET /ws/chat WebSocket upgrade (no chat model)");
-  expect(transcription).toContain("DELETE /v1/audio/sessions/{id} implemented [falls through if !host]");
+  expect(transcription).toContain("DELETE /v1/audio/sessions/{id} implemented");
   expect(transcription.some(row => row.startsWith("GET / "))).toBe(false);
-  for (const mode of baseline.modes) for (const route of mode.routes) expect(route.file.startsWith(APP) && route.line > 0).toBe(true);
+  for (const mode of baseline.modes) for (const route of mode.routes) expect((route.file.startsWith(APP) || route.file.startsWith("packages/")) && route.line > 0).toBe(true);
 });
 
 test("generation writes a build-owned page with source links at the revision", async () => {
@@ -57,7 +58,9 @@ test("generation writes a build-owned page with source links at the revision", a
     for (const title of ["## Server", "## Isolated server (`--isolate`)", "## Isolation worker socket", "## App worker socket (`openIsolatedHost`)", "## Transcription-only server"])
       expect(page).toContain(`\n${title}\n`);
     expect(page).toMatch(/\| GET \| `\/v1\/models` \| implemented \| \[server\/discovery-routes\.ts:\d+\]\(https:\/\/github\.com\/joshuarossi\/mlx-bun\/blob\/a{40}\/apps\/mlx-bun\/src\/server\/discovery-routes\.ts#L\d+\) \|/);
-    expect(page).toMatch(/conditional: falls through if \[`!host`\]\(https:\/\/github\.com\/joshuarossi\/mlx-bun\/blob\/a{40}\/apps\/mlx-bun\/src\/server\/audio-routes\.ts#L\d+\)/);
+    // A module's routes cite its manifest, and the shared discovery routes their library file.
+    expect(page).toMatch(/\| POST \| `\/v1\/audio\/transcriptions` \| implemented \| \[module-transcription\/src\/manifest\.ts:\d+\]\(https:\/\/github\.com\/joshuarossi\/mlx-bun\/blob\/a{40}\/packages\/module-transcription\/src\/manifest\.ts#L\d+\) \|/);
+    expect(page).toMatch(/\| GET \| `\/health` \| implemented \| \[app-services\/src\/companion-info-routes\.ts:\d+\]/);
   } finally { await rm(destination, { recursive: true, force: true }); }
   expect(await readFile(resolve(root, "apps/website/.gitignore"), "utf8")).toContain(SERVER_API_PAGE);
 });
@@ -98,11 +101,32 @@ test("removing a route removes exactly its row", () => {
   }
 });
 
-test("each listed transcription session endpoint needs its sub-route guard, and each guard a listed endpoint", () => {
-  expect(() => serverApiReference(mutate("server/audio-routes.ts", '    if (method === "POST" && rest[1] === "finish" && rest.length === 2) return { kind: "session-finish", id };\n', "")))
-    .toThrow(/^server\/transcription-server\.ts:\d+: TRANSCRIPTION_SERVER_ENDPOINTS entry "POST \/v1\/audio\/sessions\/\{id\}\/finish" has no matching sub-route guard/);
-  expect(() => serverApiReference(mutate("server/audio-routes.ts", 'rest[1] === "finish"', 'rest[1] === "close"')))
-    .toThrow(/^server\/audio-routes\.ts:\d+: sub-route guard for "POST \/v1\/audio\/sessions\/\{id\}\/close" matches no TRANSCRIPTION_SERVER_ENDPOINTS entry/);
+test("an installed module's routes come from its manifest at their mounted paths, in manifest order, wherever the composition mounts modules", () => {
+  const audio = (id: string) => rows(baseline, id).filter(row => /^\S+ \/(v1\/audio|admin\/transcription)\//.test(row));
+  for (const id of ["serve", "isolate", "worker", "app-worker", "transcription"].filter(id => id !== "isolate")) {
+    expect(audio(id).map(row => row.split(" ")[0] + " " + row.split(" ")[1])).toEqual(["POST /v1/audio/transcriptions", "POST /v1/audio/translations", "POST /admin/transcription/unload",
+      "POST /v1/audio/sessions", "POST /v1/audio/sessions/{id}/audio", "POST /v1/audio/sessions/{id}/finish", "DELETE /v1/audio/sessions/{id}"]);
+  }
+  // The isolated parent forwards them to its worker instead of serving them.
+  expect(audio("isolate")).toEqual([]);
+  // Removing a manifest route removes exactly its row in every mode that mounts modules.
+  const removed = serverApiReference(mutate(MANIFEST, '    { id: "unload", method: "POST", path: "/admin/transcription/unload", summary: "Page the Whisper weights out now; reports the residency counters", response: "json", mount: "root" },\n', ""));
+  for (const id of ["serve", "worker", "app-worker", "transcription"])
+    expect(rows(removed, id)).toEqual(rows(baseline, id).filter(row => !row.startsWith("POST /admin/transcription/unload")));
+  // A route without `mount: "root"` is served under its module's `/api/<id>`, so the path the /v1 index advertises is no longer served.
+  const unmounted = 'path: "/v1/audio/translations", summary: "Translate an uploaded clip to English", response: "json"';
+  expect(() => serverApiReference(mutate(MANIFEST, `${unmounted}, mount: "root"`, unmounted)))
+    .toThrow('advertised endpoint "POST /v1/audio/translations" is not an extracted serve route');
+  const status = serverApiReference(mutate(MANIFEST, '    { id: "session-delete"', '    { id: "status", method: "GET", path: "/status", summary: "State", response: "json" },\n    { id: "session-delete"'));
+  expect(rows(status, "serve")).toContain("GET /api/transcription/status implemented");
+});
+
+test("a changed module manifest shape or module route group fails instead of omitting routes", () => {
+  expect(() => serverApiReference(mutate(MANIFEST, "  routes: [", "  routes: buildRoutes(["))).toThrow(/^packages\/module-transcription\/src\/manifest\.ts:\d+: manifest routes must be a literal array/);
+  expect(() => serverApiReference(mutate(MANIFEST, 'method: "POST", path: "/v1/audio/sessions", summary', 'method: verb, path: "/v1/audio/sessions", summary')))
+    .toThrow(/^packages\/module-transcription\/src\/manifest\.ts:\d+: a route method must be a string literal/);
+  expect(() => serverApiReference(mutate("cli/serve-host.ts", "createModuleRoutes(modules.routes)", "createMountedRoutes(modules.routes)")))
+    .toThrow(/^cli\/serve-host\.ts:\d+: unrecognized composition shape: `createMountedRoutes\(modules\.routes\)` is not an exported route factory call/);
 });
 
 test("a changed or removed allowlisted non-route site fails", () => {

@@ -2,6 +2,7 @@
 import "../jobs/executable";
 import { commandInvocation, help, isCommand, parseCommand } from "./args";
 import { invokedAlias, translateAlias, type AliasResult } from "./mlx-lm-aliases";
+import { installedVerbs, runInstalledVerb } from "./module-verbs";
 import { renderHelp } from "./terminal";
 import pkg from "../../package.json" with { type: "json" };
 
@@ -24,6 +25,10 @@ try {
     console.log(`mlx-bun ${pkg.version}`);
   } else if (command === "help" || command === "--help" || command === "-h") {
     console.log(renderHelp(help(args[0])));
+  } else if (installedVerbs().has(command)) {
+    // A verb an installed module declares (`src/modules.ts`).
+    if (args.includes("--help") || args.includes("-h")) console.log(renderHelp(help(command)));
+    else process.exitCode = await runInstalledVerb(command, args);
   } else if (!isCommand(command)) {
     throw new Error(`Unknown command: ${command}. Use mlx-bun --help.`);
   } else if (args.includes("--help") || args.includes("-h")) {
@@ -36,15 +41,6 @@ try {
     process.on("SIGINT", stop); process.on("SIGTERM", stop);
     try { await runConvert(parsed, {}, cancellation.signal); }
     finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
-  } else if (command === "transcribe" || command === "dictate") {
-    // SIGINT/SIGTERM abort the signal: transcribe rejects and exits 1; dictate stops the take, joins the sidecar, and exits 0 as main did.
-    const cancellation = new AbortController();
-    const stop = () => cancellation.abort(new Error(`${command === "transcribe" ? "transcription" : "dictation"} cancelled`));
-    process.on("SIGINT", stop); process.on("SIGTERM", stop);
-    try {
-      if (command === "transcribe") { const { parseTranscribeArgs, runTranscribe } = await import("./transcribe"); await runTranscribe(parseTranscribeArgs(args), {}, cancellation.signal); }
-      else { const { parseDictateArgs, runDictate } = await import("./dictate"); await runDictate(parseDictateArgs(args), {}, cancellation.signal); }
-    } finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
   } else {
     const parsed = parsedArgs ?? parseCommand(command, args);
     if (command === "serve") {

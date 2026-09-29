@@ -7,6 +7,8 @@ import { CLI_SOURCE, commandReference } from "./generate-reference";
 const root = resolve(import.meta.dir, "../../..");
 export const SERVER_CONFIG_PAGE = "src/content/docs/reference/server-config.md";
 const APP = "apps/mlx-bun/src/", SERVE = `${APP}cli/serve.ts`, RUNTIME = "packages/inference/src/runtime/config.ts";
+/** The app is its own source, the installed modules and the host libraries (`@mlx-bun/app-*`, `@mlx-bun/module-*`): their keys are app keys, not library tuning. */
+const inApp = (file: string) => file.startsWith(APP) || /^packages\/(app|module)-[^/]+\/src\//.test(file);
 const GLOBS = [`${APP}**/*.ts`, "packages/*/src/**/*.ts"], KEY = /^MLX_BUN_[A-Z0-9_]+$/, K = ts.SyntaxKind;
 const READERS = new Map<string, How>([["runtimeValue", "value"], ["runtimeFlag", "flag"], ["runtimeNumber", "number"]]);
 /** Receivers of the RuntimeConfig methods, by name: a non-literal key there fails. */
@@ -173,7 +175,7 @@ export async function configSources(repository = root): Promise<Map<string, stri
 }
 
 export function renderServerConfig(inventory: ConfigInventory, revision: string): string {
-  const link = (file: string, line: number) => `[${file.replace(/^(apps\/mlx-bun|packages\/[^/]+)\/src\//, "")}:${line}](https://github.com/joshuarossi/mlx-bun/blob/${revision}/${file}#L${line})`;
+  const link = (file: string, line: number) => `[${inApp(file) && !file.startsWith(APP) ? file.replace(/^packages\//, "") : file.replace(/^(apps\/mlx-bun|packages\/[^/]+)\/src\//, "")}:${line}](https://github.com/joshuarossi/mlx-bun/blob/${revision}/${file}#L${line})`;
   const noted = new Set(NOTES.flatMap(n => n.names)), set = new Map<string, string>();
   for (const w of inventory.writes) set.set(w.key, [set.get(w.key), w.flag ? `set by \`serve\` from \`--${w.flag}\` (${link(w.file, w.line)})` : `set at ${link(w.file, w.line)}`].filter(Boolean).join("; "));
   const table = (reads: ReadSite[]) => {
@@ -185,7 +187,7 @@ export function renderServerConfig(inventory: ConfigInventory, revision: string)
     return `| Key | Read | Default | Source |\n| --- | --- | --- | --- |\n` + [...rows.values()].map(({ read, label, links }) =>
       `| \`${read.key}\`${noted.has(read.key) ? " ([note](#notes))" : ""} | ${read.how} | ${label} | ${links.join(", ")} |`).join("\n") + "\n";
   };
-  const packages = [...new Set(inventory.reads.filter(r => !r.file.startsWith(APP)).map(r => r.file.split("/")[1]!))].sort();
+  const packages = [...new Set(inventory.reads.filter(r => !inApp(r.file)).map(r => r.file.split("/")[1]!))].sort();
   const page = `---\ntitle: Configuration reference\ndescription: Serve option checks and MLX_BUN_* runtime keys, generated from the application and library sources.\n---\n\n` +
     `Generated at build time from \`apps/mlx-bun/src\` and \`packages/*/src\` without running them; tests and scripts are not scanned. ` +
     `These are the refactor's current settings; released versions can differ.\n\n` +
@@ -197,7 +199,7 @@ export function renderServerConfig(inventory: ConfigInventory, revision: string)
     inventory.serve.map(f => `| \`--${f.flag}\`${noted.has(`--${f.flag}`) ? " ([note](#notes))" : ""} | ${f.fallback === undefined ? "" : `\`${f.fallback}\``} | ${f.accepts ?? ""} | ${link(f.file, f.line)} |`).join("\n") + "\n\n" +
     `### Keys set by \`serve\`\n\nWhen \`serve\` starts a model host it writes these keys from its flags; a written value replaces the environment's.\n\n| Key | From | Source |\n| --- | --- | --- |\n` +
     inventory.writes.filter(w => w.flag).map(w => `| \`${w.key}\`${noted.has(w.key) ? " ([note](#notes))" : ""} | \`--${w.flag}\` | ${link(w.file, w.line)} |`).join("\n") + "\n\n" +
-    `### App keys\n\n\`MLX_BUN_*\` keys read under \`apps/mlx-bun/src\`, including environment mirrors of flags.\n\n${table(inventory.reads.filter(r => r.file.startsWith(APP)))}\n` +
+    `### App keys\n\n\`MLX_BUN_*\` keys read under \`apps/mlx-bun/src\` and in the module and host-library packages it installs (\`packages/module-*\`, \`packages/app-*\`), including environment mirrors of flags.\n\n${table(inventory.reads.filter(r => inApp(r.file)))}\n` +
     `## Library tuning\n\nThese keys are library tuning and diagnostics, not app options; none is promoted to a flag. Grouped by the package that reads them.\n\n` +
     packages.map(name => `### @mlx-bun/${name}\n\n${table(inventory.reads.filter(r => r.file.startsWith(`packages/${name}/`)))}`).join("\n") +
     `\n## Notes\n\n${NOTES.map(n => `- ${n.names.map(name => `**\`${name}\`**`).join(", ")}: ${n.text}`).join("\n")}\n`;
@@ -216,7 +218,7 @@ export async function generateServerConfig(options: { repository?: string; desti
 if (import.meta.main) {
   if (process.argv.includes("--help")) console.log(`Usage: bun scripts/generate-server-config.ts\nGenerate the configuration inventory from ${SERVE} and the MLX_BUN_* reads under ${GLOBS.join(" and ")} without running them.`);
   else {
-    const { serve, reads } = await generateServerConfig(), keys = (app: boolean) => new Set(reads.filter(r => r.file.startsWith(APP) === app).map(r => r.key)).size;
+    const { serve, reads } = await generateServerConfig(), keys = (app: boolean) => new Set(reads.filter(r => inApp(r.file) === app).map(r => r.key)).size;
     console.log(`Verified ${serve.length} serve options, ${keys(true)} app keys, and ${keys(false)} library keys.`);
   }
 }

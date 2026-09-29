@@ -1,10 +1,10 @@
 #!/bin/sh
-# Build the microphone capture sidecar for `mlx-bun dictate`
+# Build the microphone capture sidecar for the `dictate` verb
 # (native/mic-capture.swift → dist/native/mlx-bun-mic-capture). A source
 # checkout builds explicitly; packages ship the staged binary.
 set -eu
 if [ "${1:-}" = "--help" ]; then
-  echo "Usage: sh apps/mlx-bun/scripts/build-native.sh [output-file]"
+  echo "Usage: sh packages/module-transcription/scripts/build-native.sh [output-file]"
   echo "Compile the microphone helper with swiftc; no microphone access or downloads."
   exit 0
 fi

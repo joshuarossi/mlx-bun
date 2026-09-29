@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { CLI_SOURCE, INSTALLER_SOURCE, commandReference, generateReference, helpReference, renderCommandReference } from "../scripts/generate-reference";
+import { manifest as transcription } from "../../../packages/module-transcription/src/manifest";
+import { CLI_SOURCE, INSTALLER_SOURCE, commandReference, generateReference, helpReference, installedCommandReference, moduleCommandReference, renderCommandReference } from "../scripts/generate-reference";
 
 const root = resolve(import.meta.dir, "../../..");
 
@@ -36,7 +37,7 @@ async function liveHelp(command?: string): Promise<string> {
 
 test("generated CLI covers the real help's complete command and option sets", async () => {
   const source = await readFile(resolve(root, CLI_SOURCE), "utf8");
-  const commands = commandReference(source), common = helpReference(source);
+  const commands = [...commandReference(source), ...await installedCommandReference(root)], common = helpReference(source);
   // An independent consumer of the live table: CLI help, not the generator's
   // AST traversal. A newly parsed verb/flag must appear in both references.
   const globalHelp = await liveHelp();
@@ -54,6 +55,31 @@ test("generated CLI covers the real help's complete command and option sets", as
     const ownSection = rendered.split(`## ${command.name}\n`)[1]!.split("\n## ")[0]!;
     for (const flag of flags) expect(ownSection).toContain(`\`${flag}`);
   }
+});
+
+test("the installed modules' verbs are read from their manifests, matching the manifest values", async () => {
+  const installed = await installedCommandReference(root);
+  expect(installed.map(command => command.name)).toEqual(transcription.verbs.map(verb => verb.name));
+  for (const [index, verb] of transcription.verbs.entries()) {
+    const command = installed[index]!;
+    expect(command.description).toBe(verb.summary);
+    expect(command.positional).toBe(verb.positional.map(item => "required" in item ? `<${item.name}>` : `[${item.name}]`).join(" "));
+    expect(command.options.map(option => [option.name, option.description])).toEqual(verb.options.map(option => [option.name, option.summary]));
+    // Options that take a value render with one, `number` included.
+    expect(command.options.map(option => option.type)).toEqual(verb.options.map(option => option.type === "boolean" ? "boolean" : "string"));
+  }
+  expect(installed.map(command => command.name)).toContain("transcribe");
+  const rendered = renderCommandReference([...commandReference(await readFile(resolve(root, CLI_SOURCE), "utf8")), ...installed], helpReference(await readFile(resolve(root, CLI_SOURCE), "utf8")));
+  expect(rendered).toContain("Usage: `mlx-bun transcribe <audio-file> [query] [options]`");
+  expect(rendered).toContain("| `--beam-size <value>` | Beam search width [default: greedy] |");
+  expect(rendered).toContain("| `--hotkey <value>` |");
+});
+
+test("a changed module manifest shape fails instead of publishing an incomplete inventory", () => {
+  expect(() => moduleCommandReference("export const other = {};", "m.ts")).toThrow("module manifest was not found");
+  expect(() => moduleCommandReference("export const manifest = { verbs: makeVerbs() };", "m.ts")).toThrow("manifest verbs must be a literal array");
+  expect(() => moduleCommandReference('export const manifest = { verbs: [{ name: "x", summary: describe(), options: [] }] };', "m.ts")).toThrow("string summary");
+  expect(moduleCommandReference("export const manifest = { id: 'a' };", "m.ts")).toEqual([]);
 });
 
 test("every documented global flag runs without native libraries", async () => {

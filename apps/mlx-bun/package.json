@@ -27,22 +27,22 @@
     "bin",
     "src",
     "dist/web",
-    "dist/native",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --project tsconfig.browser.json",
     "test": "bun test",
     "build:web": "bun scripts/build-web.ts",
-    "prepack": "bun run build:web && bun run build:native",
-    "build:native": "sh scripts/build-native.sh"
+    "prepack": "bun run build:web"
   },
   "dependencies": {
     "@mlx-bun/app-core": "workspace:*",
     "@mlx-bun/app-host": "workspace:*",
+    "@mlx-bun/app-services": "workspace:*",
     "@mlx-bun/hub": "workspace:*",
     "@mlx-bun/inference": "workspace:*",
     "@mlx-bun/mlx": "workspace:*",
+    "@mlx-bun/module-transcription": "workspace:*",
     "@earendil-works/pi-ai": "0.80.3",
     "@earendil-works/pi-coding-agent": "0.80.3",
     "typebox": "1.1.38",

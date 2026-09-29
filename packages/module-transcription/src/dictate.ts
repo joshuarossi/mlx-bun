@@ -1,16 +1,22 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { startMicCapture, type MicCapture } from "../engine/mic-capture";
-import { TranscriptionService, type TranscriptionParams, type TranscriptionRuntime } from "../engine/transcription-service";
-import { parseCommand } from "./args";
-import { resolveWhisperModel } from "./model-selection";
-import { style } from "./terminal";
+import type { CliInvocation } from "@mlx-bun/app-core";
+import { startMicCapture, type MicCapture } from "./mic-capture";
+import { nativeMedia, TranscriptionService, type MediaRuntime, type ModelHold, type TranscriptionParams } from "./service";
+import { resolveWhisperModel, type VoiceServices } from "./transcribe";
 
-// `mlx-bun dictate`: push-to-talk dictation from the microphone. Main's loop:
+/** Terminal styling for the verb's notes: plain when stdout is not a terminal or NO_COLOR is set. */
+const styled = () => Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const style = {
+  dim: (text: string) => styled() ? `\x1b[2m${text}\x1b[0m` : text,
+  bold: (text: string) => styled() ? `\x1b[1m${text}\x1b[0m` : text,
+};
+
+// The `dictate` verb: push-to-talk dictation from the microphone. Main's loop:
 // the sidecar streams 16 kHz PCM; a take (Enter toggling, or a held key)
 // feeds a transcription session while you speak, so every finished 30 s
 // window is transcribed during capture; on finish the text prints, copies
 // (pbcopy), or types (System Events). The backend is the in-process
-// TranscriptionService (serve's seam) or a running server's /v1/audio/sessions.
+// TranscriptionService or a running server's /v1/audio/sessions.
 // Capture, the runtime, stdin, the clipboard, and typing are injected so the
 // loop runs in tests without a microphone. Stopping (q, SIGINT, the signal)
 // joins the sidecar before the weights are released.
@@ -35,49 +41,41 @@ export interface DictateArgs {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export function parseDictateArgs(argv: string[]): DictateArgs {
-  // --hotkey [keycode]: the value is optional. Main read the next token and
-  // fell back to 61 (Right Option) for anything that is not a keycode.
-  const rest = [...argv];
-  let hotkey: number | null = null;
-  const at = rest.findIndex(arg => arg === "--hotkey" || arg.startsWith("--hotkey="));
-  if (at >= 0) {
-    const flag = rest.splice(at, 1)[0]!;
-    let value = flag.includes("=") ? flag.slice("--hotkey=".length) : undefined;
-    if (value === undefined && rest[at] !== undefined && !rest[at]!.startsWith("-")) value = rest.splice(at, 1)[0];
-    hotkey = Number(value ?? 61) || 61;
-  }
-  const parsed = parseCommand("dictate", rest);
-  const value = (name: string) => { const v = parsed.values[name]; return typeof v === "string" ? v : undefined; };
+/** The verb's arguments from what the host parsed against the manifest. */
+export function parseDictateArgs(invocation: Pick<CliInvocation, "values" | "positionals">): DictateArgs {
+  const { values, positionals } = invocation;
+  const value = (name: string) => { const v = values[name]; return typeof v === "string" ? v : undefined; };
   const numeric = (name: string, fallback: number, input: { integer?: boolean; minimum?: number } = {}) => {
-    const raw = value(name);
-    if (raw === undefined) return fallback;
-    const n = Number(raw);
-    if (!raw.trim() || !Number.isFinite(n) || (input.integer && !Number.isSafeInteger(n)) || n < (input.minimum ?? 0)) throw new Error(`invalid --${name}: ${raw}`);
+    const n = values[name];
+    if (n === undefined) return fallback;
+    if (typeof n !== "number" || !Number.isFinite(n) || (input.integer && !Number.isSafeInteger(n)) || n < (input.minimum ?? 0)) throw new Error(`invalid --${name}: ${n}`);
     return n;
   };
+  // --hotkey [keycode]: the value is optional and the flag alone means Right Option (61).
+  const hotkey = typeof values.hotkey === "number" ? values.hotkey : null;
   const language = value("language") ?? "en";
   return {
-    query: value("model") ?? parsed.positionals[0] ?? value("query"),
+    query: value("model") ?? positionals[0] ?? value("query"),
     server: value("server")?.replace(/\/$/, ""),
     hotkey,
     language: language === "auto" ? null : language,
-    beamSize: value("beam-size") !== undefined ? numeric("beam-size", 0, { integer: true, minimum: 1 }) : null,
+    beamSize: values["beam-size"] !== undefined ? numeric("beam-size", 0, { integer: true, minimum: 1 }) : null,
     prompt: value("prompt"),
     vocabulary: value("vocabulary")?.split(",").map(term => term.trim()).filter(Boolean),
-    vad: parsed.values["no-vad"] !== true,
+    vad: values["no-vad"] !== true,
     idleUnloadSec: numeric("idle-unload", 30),
-    resident: parsed.values.resident === true,
-    copy: parsed.values.copy === true,
-    type: parsed.values.type === true,
+    resident: values.resident === true,
+    copy: values.copy === true,
+    type: values.type === true,
     typeDelaySec: numeric("type-delay", hotkey ? 0 : 1),
   };
 }
 
 export interface DictateDependencies {
-  resolveModel: typeof resolveWhisperModel;
-  /** Model loading, the VAD gate, and audio decoding; undefined = real weights. */
-  runtime?: TranscriptionRuntime;
+  /** The checkpoint id for the verb's query; default: `resolveWhisperModel` over the host's services. */
+  resolveModel?(query: string | undefined): Promise<string>;
+  /** The VAD gate and audio decoding; undefined = the library's. */
+  media?: MediaRuntime;
   capture(options: { hotkey: number | null }): Promise<MicCapture>;
   /** --server sessions. */
   fetch(input: string, init?: RequestInit): Promise<Response>;
@@ -93,8 +91,7 @@ export interface DictateDependencies {
   note(text: string): void;
   now(): number;
 }
-const defaults: DictateDependencies = {
-  resolveModel: resolveWhisperModel,
+const defaults: Omit<DictateDependencies, "resolveModel" | "media"> = {
   capture: options => startMicCapture(options),
   fetch: (input, init) => fetch(input, init),
   async *lines(signal) {
@@ -143,7 +140,7 @@ interface Take { feed(pcm: Float32Array): Promise<void>; finish(): Promise<{ tex
 
 /** Resolves when dictation ends: `q`, the signal (main exited 0 on Ctrl-C),
  * or the sidecar closing; rejects on a sidecar error. */
-export async function runDictate(args: DictateArgs, supplied: Partial<DictateDependencies> = {}, signal?: AbortSignal): Promise<void> {
+export async function runDictate(services: VoiceServices, args: DictateArgs, supplied: Partial<DictateDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...defaults, ...supplied };
   const lifetime = new AbortController();
   const runSignal = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
@@ -153,16 +150,18 @@ export async function runDictate(args: DictateArgs, supplied: Partial<DictateDep
   };
   signal?.throwIfAborted();
   let service: TranscriptionService | null = null;
+  // The weights stay loaded from `ready` until the first take's session holds them itself, then follow the idle policy.
+  let warm: ModelHold | null = null;
   if (!args.server) {
-    const model = await deps.resolveModel(args.query);
+    const modelId = await (deps.resolveModel ?? (query => resolveWhisperModel(services, query)))(args.query);
     signal?.throwIfAborted();
-    service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId, idleUnloadSec: args.idleUnloadSec,
-      resident: args.resident, log() {}, ...(deps.runtime ? { runtime: deps.runtime } : {}) });
+    if (args.resident) services.modelHost.pin(modelId);
+    service = new TranscriptionService({ models: services.modelHost, modelId, keepAliveSec: args.idleUnloadSec, ...(deps.media ? { media: deps.media } : {}) });
   }
   try {
     if (service) {
       deps.note(style.dim("loading whisper… "));
-      await service.ensureLoaded();
+      warm = await service.lease();
       // Warm the gate before the first take; --no-vad never needs its weights.
       if (args.vad) await service.vad();
       deps.note(style.dim("ready\n"));
@@ -172,6 +171,7 @@ export async function runDictate(args: DictateArgs, supplied: Partial<DictateDep
       runSignal.throwIfAborted();
       if (service) {
         const session = await service.createSession(params);
+        warm?.release(); warm = null;
         return {
           close: async () => { await session.close(); },
           feed: async pcm => { await session.append(pcm); },
@@ -296,5 +296,5 @@ export async function runDictate(args: DictateArgs, supplied: Partial<DictateDep
     if (failure !== null) throw new Error(failure);
   } catch (error) {
     if (!signal?.aborted) throw error;
-  } finally { await service?.close(); }
+  } finally { warm?.release(); await service?.close(); }
 }

@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { sourceRevision } from "./generate-library-api";
+import { installedManifests } from "./generate-reference";
 
 const root = resolve(import.meta.dir, "../../..");
 const APP = "apps/mlx-bun/src/", ANY = "(any other path)", K = ts.SyntaxKind;
@@ -9,8 +10,11 @@ export const SERVER_API_PAGE = "src/content/docs/reference/server-api.md";
 const cli = (name: string) => `${APP}cli/${name}`, server = (name: string) => `${APP}server/${name}`;
 /** The composition sites the server modes are read from. */
 export const COMPOSITION_SOURCES = ["serve-host.ts", "serve-isolated.ts", "serve-state.ts", "worker-entry.ts"].map(cli);
+/** The transcription-only discovery routes live in the host library both hosts share. */
+export const COMPANION_SOURCE = "packages/app-services/src/companion-info-routes.ts";
 const ROUTE_GLOB = `${APP}server/*.ts`, WEB_SOURCE = `${APP}web/assets.ts`, FACTORY = /^create\w*Routes$|^createWebHandler$/;
-const ENDPOINTS = { file: server("transcription-server.ts"), name: "TRANSCRIPTION_SERVER_ENDPOINTS" };
+/** `createModuleRoutes(loaded.routes)`: the installed modules' routes, read from their manifests. */
+const MODULE_ROUTES = "createModuleRoutes", MANIFEST = /^packages\/module-[^/]+\/src\/manifest\.ts$/;
 
 /** Real comparisons on the request path or method that pick behavior after a
  * route matched, never a route. Each entry matches exactly one expression in
@@ -28,11 +32,13 @@ export const NON_ROUTE_SITES: readonly { file: string; fn: string; code: string;
 ];
 
 type Kind = "req" | "url" | "method" | "path" | "route" | "segments" | "tainted";
-type Groups = ReadonlyMap<string, ts.FunctionDeclaration | undefined>;
+/** A route factory, or the installed modules' routes (`MODULE_ROUTES`), which come from their manifests. */
+type Group = ts.FunctionDeclaration | "modules";
+type Groups = ReadonlyMap<string, Group | undefined>;
 interface Frame { from: ts.Node; stop: ts.Node; params: Set<ts.Node> }
 interface Cond { text: string; served: boolean; node: ts.Node }
 interface Fact { method: string; path: string; status: string; conds: Cond[]; node: ts.Node; declined?: boolean; except?: Set<string> }
-interface Test { methods?: string[]; routes?: { method: string; path: string; node: ts.Node }[]; segment?: boolean }
+interface Test { methods?: string[]; routes?: { method: string; path: string; node: ts.Node }[] }
 export interface Route { method: string; path: string; status: string; file: string; line: number; conds: { text: string; served: boolean; file: string; line: number }[] }
 export interface ServerMode { id: string; title: string; intro: string; composed: { file: string; line: number }; routes: Route[] }
 export interface ServerApi { modes: ServerMode[] }
@@ -213,7 +219,7 @@ class Inventory {
     for (const [path, text] of sources) {
       const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
       this.files.set(path, file);
-      if (path !== WEB_SOURCE && !/^apps\/mlx-bun\/src\/server\/[^/]+\.ts$/.test(path)) continue;
+      if (path !== WEB_SOURCE && path !== COMPANION_SOURCE && !/^apps\/mlx-bun\/src\/server\/[^/]+\.ts$/.test(path)) continue;
       this.scans.set(file, scan(file));
       for (const s of file.statements) if (ts.isFunctionDeclaration(s) && s.name && FACTORY.test(s.name.text) && s.modifiers?.some(m => m.kind === K.ExportKeyword))
         this.factories.set(s.name.text, s);
@@ -233,7 +239,7 @@ class Inventory {
       ?? (() => { throw new Error(`${path.slice(APP.length)}: composition function ${name} was not found`); })();
   }
   private where(node: ts.Node) { const file = node.getSourceFile(); return { file: file.fileName, line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1 }; }
-  private fail(node: ts.Node, message: string): never { const { file, line } = this.where(node); throw new Error(`${file.slice(APP.length)}:${line}: ${message}`); }
+  private fail(node: ts.Node, message: string): never { const { file, line } = this.where(node); throw new Error(`${file.startsWith(APP) ? file.slice(APP.length) : file}:${line}: ${message}`); }
   private sitesIn(scope: ts.Node): ts.Node[] { return this.scans.get(scope.getSourceFile())?.sites.filter(site => within(site, scope)) ?? []; }
   private value(e: ts.Expression) { return this.scans.get(e.getSourceFile())?.kind(e); }
   private constant(e: ts.Expression): ts.Expression | undefined {
@@ -261,8 +267,6 @@ class Inventory {
       if (site.operatorToken.kind !== K.EqualsEqualsEqualsToken && site.operatorToken.kind !== K.ExclamationEqualsEqualsToken) return unsupported();
       const [subject, other] = this.value(site.left) ? [skip(site.left), skip(site.right)] : [skip(site.right), skip(site.left)];
       if (this.value(other)) return unsupported("comparison between two request values");
-      const segment = (ts.isElementAccessExpression(subject) || (ts.isPropertyAccessExpression(subject) && subject.name.text === "length")) && this.value(subject.expression) === "segments";
-      if (segment && (ts.isStringLiteralLike(other) || ts.isNumericLiteral(other))) return { segment: true };
       return ts.isStringLiteralLike(other) ? literals([[other.text, site]], this.value(subject)) : unsupported("routing comparison needs a string literal in");
     }
     if (!ts.isCallExpression(site)) return unsupported();
@@ -278,12 +282,8 @@ class Inventory {
       const set = this.constant(receiver);
       return set && ts.isNewExpression(set) && set.expression.getText() === "Set" ? literals(strings(set.arguments?.[0]), this.value(first!)) : unsupported("set membership needs a literal Set in");
     }
-    if (name === "startsWith" && this.value(receiver) === "path" && first && ts.isStringLiteralLike(first) && first.text.endsWith("/")) {
-      // `if (path.startsWith(prefix)) { const rest = path.slice(…).split("/"); … }`: sub-routes from the endpoint list.
-      const block = ts.isIfStatement(site.parent) && site.parent.expression === site ? site.parent.thenStatement : undefined;
-      const split = block && find(block, ts.isVariableDeclaration).some(d => d.initializer && this.value(d.initializer) === "segments");
-      return { routes: split ? this.segmentRoutes(first.text, block!) : [{ method: "", path: `${first.text}{id}`, node: site }] };
-    }
+    if (name === "startsWith" && this.value(receiver) === "path" && first && ts.isStringLiteralLike(first) && first.text.endsWith("/"))
+      return { routes: [{ method: "", path: `${first.text}{id}`, node: site }] };
     const regex = name === "match" && this.value(receiver) === "path" ? first : (name === "test" || name === "exec") && first && this.value(first) === "path" ? receiver : undefined;
     const patterns = regex && ts.isRegularExpressionLiteral(regex) ? [regex] : regex && ts.isIdentifier(regex) ? this.regexList(regex) : undefined;
     if (!patterns) return unsupported();
@@ -296,28 +296,6 @@ class Inventory {
     const list = this.constant(call.expression.expression);
     return list && ts.isArrayLiteralExpression(list) && list.elements.every(ts.isRegularExpressionLiteral) ? list.elements as unknown as ts.RegularExpressionLiteral[] : undefined;
   }
-  /** `method === "POST" && rest[1] === "audio" && rest.length === 2` per listed endpoint under the prefix, and a listed endpoint per guard. */
-  private segmentRoutes(prefix: string, block: ts.Statement): { method: string; path: string; node: ts.Node }[] {
-    const entries = this.endpoints().filter(([text]) => text.split(" ")[1]!.startsWith(prefix));
-    const routes = find(block, ts.isIfStatement).filter(s => this.sitesIn(s.expression).length).map(guard => {
-      const segments = ["{id}"];
-      let method = "";
-      for (const op of chainOf(this.sitesIn(guard.expression)[0]!).ops) {
-        const x = skip(op), test = this.sitesIn(x)[0] === x ? this.classify(x) : {};
-        if (!(test.methods || test.segment) || (ts.isBinaryExpression(x) && x.operatorToken.kind !== K.EqualsEqualsEqualsToken)) return this.fail(op, "unsupported sub-route guard");
-        this.consumed.add(x);
-        const [subject, other] = ts.isBinaryExpression(x) ? (this.value(x.left) ? [skip(x.left), skip(x.right)] : [skip(x.right), skip(x.left)]) : [];
-        if (test.methods) method = test.methods[0]!;
-        else if (ts.isPropertyAccessExpression(subject!)) segments.length = Math.max(segments.length, Number(other!.getText()));
-        else segments[Number((subject as ts.ElementAccessExpression).argumentExpression.getText())] = (other as ts.StringLiteral).text;
-      }
-      const path = prefix + [...segments].map(s => s ?? "?").join("/");
-      return entries.some(([text]) => text === `${method} ${path}`) ? { method, path, node: guard } : this.fail(guard, `sub-route guard for "${method} ${path}" matches no ${ENDPOINTS.name} entry`);
-    });
-    for (const [text, node] of entries) if (!routes.some(r => `${r.method} ${r.path}` === text)) this.fail(node, `${ENDPOINTS.name} entry "${text}" has no matching sub-route guard under "${prefix}"`);
-    return routes;
-  }
-  private endpoints() { return this.list(find(this.file(ENDPOINTS.file), ts.isVariableDeclaration).find(d => d.name.getText() === ENDPOINTS.name)?.initializer, ENDPOINTS.name); }
   private list(e: ts.Expression | undefined, name: string): [string, ts.Node][] {
     return (stringList(e) ?? (() => { throw new Error(`${name} must be a literal string list`); })()).map(([text, node]) =>
       /^[A-Z]+ \/\S*$/.test(text) ? [text.replace(/:(\w+)/g, "{id}"), node] : this.fail(node, `${name} entry must be "METHOD /path"`));
@@ -427,6 +405,22 @@ class Inventory {
     return { ws };
   }
 
+  /** The installed modules' routes in manifest order: each `routes` entry of a `manifest` literal, at its mounted path. */
+  private moduleFacts(): Fact[] {
+    const string = (e: ts.Expression | undefined, what: string, at: ts.Node): string => { const x = e && skip(e); return x && ts.isStringLiteralLike(x) ? x.text : this.fail(at, `${what} must be a string literal`); };
+    return [...this.files.keys()].filter(path => MANIFEST.test(path)).flatMap(path => {
+      const file = this.file(path), manifest = find(file, ts.isVariableDeclaration).find(d => d.name.getText() === "manifest")?.initializer;
+      if (!manifest) return this.fail(file, "the module manifest was not found");
+      const fields = props(manifest), id = string(fields.get("id"), "the module id", manifest), list = fields.get("routes") && skip(fields.get("routes")!);
+      if (list && !ts.isArrayLiteralExpression(list)) return this.fail(list, "manifest routes must be a literal array");
+      return (list?.elements ?? []).map(route => {
+        const parts = props(route), method = string(parts.get("method"), "a route method", route), declared = string(parts.get("path"), "a route path", route);
+        const path = parts.has("mount") && string(parts.get("mount"), "a route mount", route) === "root" ? declared : `/api/${id}${declared === "/" ? "" : declared}`;
+        return { method, path: path.replace(/:(\w+)/g, "{id}"), status: "implemented", conds: [], node: route } satisfies Fact;
+      });
+    });
+  }
+
   // ---- composition: literal route group membership per mode ----
   private local(e: ts.Expression): ts.Expression {
     const x = skip(e);
@@ -447,7 +441,10 @@ class Inventory {
     flat(arrow.body);
     const groups = operands.flatMap(operand => {
       const receiver = ts.isCallExpression(operand) && ts.isPropertyAccessExpression(operand.expression) && operand.expression.name.text === "handle" ? skip(operand.expression.expression) : undefined;
-      if (receiver && ts.isIdentifier(receiver)) return [this.factoryOf(this.local(receiver))];
+      if (receiver && ts.isIdentifier(receiver)) {
+        const made = this.local(receiver);
+        return [ts.isCallExpression(made) && made.expression.getText() === MODULE_ROUTES ? "modules" as const : this.factoryOf(made)];
+      }
       if (receiver && ts.isPropertyAccessExpression(receiver) && code(this.local(receiver.expression)).endsWith(".routes") && state.has(receiver.name.text))
         return [state.get(receiver.name.text)].filter(group => !!group);
       return this.fail(operand, "unrecognized composition shape; expected `await group.handle(request)` over a route factory or state group");
@@ -516,7 +513,7 @@ class Inventory {
     const { ws } = this.listener();
     const modes = this.modes().map(spec => {
       const facts = [...ws.map(f => ({ ...f, status: `WebSocket upgrade (${spec.chat})` })), ...(spec.web ? this.groupFacts(spec.web) : []),
-        ...spec.groups.flatMap(group => this.groupFacts(group))];
+        ...spec.groups.flatMap(group => group === "modules" ? this.moduleFacts() : this.groupFacts(group))];
       // The first unconditional match answers; the proxy's forward takes every path it did not name.
       const kept: Fact[] = [];
       for (const f of facts) if (!kept.some(k => !k.declined && !k.conds.length && (k.method === "*" || k.method === f.method) &&
@@ -528,7 +525,7 @@ class Inventory {
       this.fail(site, `unsupported routing predicate \`${code(site).slice(0, 120)}\`; extend the server API generator or allowlist a non-route site`);
     // The advertised endpoint lists are independent claims about the served surface.
     const advertised = find(this.file(server("discovery-routes.ts")), ts.isPropertyAssignment).find(p => p.name.getText() === "endpoints");
-    for (const [id, entries] of [["serve", this.list(advertised?.initializer, "server/discovery-routes.ts: the /v1 endpoint list")], ["transcription", this.endpoints()]] as const) {
+    for (const [id, entries] of [["serve", this.list(advertised?.initializer, "server/discovery-routes.ts: the /v1 endpoint list")]] as const) {
       const { facts } = modes.find(m => m.spec.id === id)!;
       for (const [entry, node] of entries) {
         const [method, path] = entry.split(" ");
@@ -545,13 +542,16 @@ class Inventory {
 export function serverApiReference(sources: ReadonlyMap<string, string>): ServerApi { return new Inventory(sources).evaluate(); }
 
 export async function serverSources(repository = root): Promise<Map<string, string>> {
-  const paths = [...COMPOSITION_SOURCES, WEB_SOURCE];
+  const paths = [...COMPOSITION_SOURCES, WEB_SOURCE, COMPANION_SOURCE];
   for await (const path of new Bun.Glob(ROUTE_GLOB).scan(repository)) paths.push(path);
-  return new Map(await Promise.all(paths.sort().map(async path => [path, await readFile(resolve(repository, path), "utf8")] as const)));
+  const sources = new Map(await Promise.all(paths.sort().map(async path => [path, await readFile(resolve(repository, path), "utf8")] as const)));
+  for (const { path, source } of await installedManifests(repository)) sources.set(path, source);
+  return sources;
 }
 
 export function renderServerApi(api: ServerApi, revision: string): string {
-  const link = (file: string, line: number, text = `${file.slice(APP.length)}:${line}`) => `[${text}](https://github.com/joshuarossi/mlx-bun/blob/${revision}/${file}#L${line})`;
+  const short = (file: string) => file.startsWith(APP) ? file.slice(APP.length) : file.replace(/^packages\//, "");
+  const link = (file: string, line: number, text = `${short(file)}:${line}`) => `[${text}](https://github.com/joshuarossi/mlx-bun/blob/${revision}/${file}#L${line})`;
   const status = (r: Route) => !r.conds.length ? r.status : `${r.status === "implemented" ? "" : `${r.status}; `}conditional: ${r.conds
     .map(c => `${c.served ? "served" : "falls through"} if ${link(c.file, c.line, `\`${c.text}\``)}`).join("; ")}`;
   const order = ["GET", "POST", "PUT", "PATCH", "DELETE", "*"], table = (routes: Route[]) => {
@@ -564,7 +564,7 @@ export function renderServerApi(api: ServerApi, revision: string): string {
       `${status.replaceAll("|", "\\|")} | ${link(route.file, route.line)} |`).join("\n");
   };
   return `---\ntitle: HTTP API reference\ndescription: Routes each server mode answers, generated from the application's route handlers.\n---\n\n` +
-    `Generated at build time from the route handlers in \`apps/mlx-bun/src/server\` and their composition in \`apps/mlx-bun/src/cli\`, without running the app. ` +
+    `Generated at build time from the route handlers in \`apps/mlx-bun/src/server\` and their composition in \`apps/mlx-bun/src/cli\`, and from the manifests of the modules the app installs, without running the app. ` +
     `These are the refactor's current routes; released versions can differ.\n\n` +
     `Each table lists what one kind of server process answers, in dispatch order: the first matching row answers, and a request no row matches gets 404. ` +
     `\`*\` means every method not listed in an earlier row for the same path; path parameters appear as \`{id}\`. The source link is the check that selects the route.\n\n` +

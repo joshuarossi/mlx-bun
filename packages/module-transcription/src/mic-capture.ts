@@ -1,8 +1,8 @@
-// Microphone capture for `mlx-bun dictate`: spawns the AVAudioEngine sidecar
+// Microphone capture for the `dictate` verb: spawns the AVAudioEngine sidecar
 // (native/mic-capture.swift → `mlx-bun-mic-capture`), yields 16 kHz float32
 // PCM chunks and hotkey down/up events. Main's `02d723a:src/audio/mic-capture.ts`.
 // Resolution mirrors the library's frame extractor: env override → beside the
-// standalone executable → the app's staged dist/native. Stopping ends the
+// standalone executable → this package's staged dist/native. Stopping ends the
 // sidecar's stdin, terminates it, and joins it, so no capture process outlives
 // the verb.
 
@@ -11,8 +11,8 @@ import { dirname, join } from "node:path";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 
 export const MIC_CAPTURE_BINARY = "mlx-bun-mic-capture";
-const APP_ROOT = join(import.meta.dir, "..", "..");
-export const MIC_CAPTURE_STAGED = join(APP_ROOT, "dist", "native", MIC_CAPTURE_BINARY);
+const PACKAGE_ROOT = join(import.meta.dir, "..");
+export const MIC_CAPTURE_STAGED = join(PACKAGE_ROOT, "dist", "native", MIC_CAPTURE_BINARY);
 
 export interface MicCaptureCandidates {
   /** MLX_BUN_MIC_CAPTURE: used as given, like the library's native overrides. */

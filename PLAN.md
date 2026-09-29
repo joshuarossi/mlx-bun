@@ -142,15 +142,6 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (b) Pilot: the loader, `registry` and gate rules are in; `startApp` loads `src/modules.ts` but binds no
-    services and consumes nothing yet, which lands here (serve loaded routes and sockets, dispatch verbs
-    from `cli/main.ts`, hand runners to the job service, create storage entries).
-    `@mlx-bun/module-transcription` (Whisper service, `/v1/audio/*`, `transcribe`,
-    `dictate`, voice panel) and a transcription-only host (`apps/transcribe`) that carries only
-    the core-service implementations it needs, extracted from `apps/mlx-bun` as libraries.
-    Exit: the host builds and runs with no other module in its import closure (gate-checked),
-    transcribes with `whisper-large-v3-turbo`, and `apps/mlx-bun` serves the same module with its
-    existing transcription tests unchanged.
   - [ ] (c) `events` service and the metrics and performance module. The model host and a scheduler
     adapter publish; inference gains no dependency on the bus. Exit: every metric named above is
     published and rendered from a recorded event stream in a test; a `bench-serve` profile launches
@@ -158,7 +149,9 @@ Migration gaps stay required work in the feature table.
     publishing and the panel's numbers match `/stats` and the run's own output.
   - [ ] (d) Remaining modules, one PR each: models, datasets, quantize, train, benchmarks, chat, memory
     (last, moved as is: the memory feature stays deferred). Modules contribute to each other through the
-    `registry` service (memory tools into chat); chat's PR adds its consumer. Exit per module: its
+    `registry` service (memory tools into chat); chat's PR adds its consumer and takes over the browser's
+    hold-to-talk mic (`web/browser/voice.ts`) into transcription's panel. Hosts serve module sockets and job
+    runners when the first module that declares them lands (they refuse them until then). Exit per module: its
     domain leaves `apps/mlx-bun/src`, the app's domain map shrinks accordingly, and served-surface
     inventories are unchanged.
   - [ ] (e) Model host residency and swapping. Today swapping needs `--isolate` (one worker per
@@ -183,7 +176,7 @@ experiments and benchmarks live outside it. Package READMEs hold the evidence de
 
 | Feature | Library | Engine / host | Server | CLI | Web | Evidence | Open work or decision |
 |---|---|---|---|---|---|---|---|
-| Audio: Whisper transcription, Gemma4 audio input, voice sessions | done | done (lazy Whisper companion, exclusive-lock takes) | done (`/v1/audio/*`, `/admin/transcription/unload`) | done (`transcribe`, `dictate`, `--whisper-*`) | done (hold-to-talk composer dictation; no upload or translate controls, as main) | partial: Whisper large-v3-turbo and Silero VAD match the external oracle and main ([speech parity](packages/inference/README.md#speech-and-embedding-parity)); Gemma4 e4b audio-only HTTP (B1/B2) matches main; real-weight voice, companion and mixed-media consumers pass; [details](apps/mlx-bun/README.md#audio-transcription) | Open: physical-microphone `dictate` (mic, key tap, clipboard, typing); Gemma4 audio with KV quantization and other variants; main parity for mixed image+audio and e2b (app-behavior runs only); Gemma4 audio external-oracle parity; other Whisper checkpoints; performance |
+| Audio: Whisper transcription, Gemma4 audio input, voice sessions | done | done (lazy Whisper companion, exclusive-lock takes) | done (`/v1/audio/*`, `/admin/transcription/unload`, served by `@mlx-bun/module-transcription`) | done (`transcribe`, `dictate` from the module; `--whisper-*` on serve; `apps/transcribe` hosts the module alone) | done (hold-to-talk composer dictation; no upload or translate controls, as main) | partial: Whisper large-v3-turbo and Silero VAD match the external oracle and main ([speech parity](packages/inference/README.md#speech-and-embedding-parity)); Gemma4 e4b audio-only HTTP (B1/B2) matches main; real-weight voice, companion and mixed-media consumers pass; [details](packages/module-transcription/README.md#audio-transcription) | Open: physical-microphone `dictate` (mic, key tap, clipboard, typing); Gemma4 audio with KV quantization and other variants; main parity for mixed image+audio and e2b (app-behavior runs only); Gemma4 audio external-oracle parity; other Whisper checkpoints; performance |
 | Memory synthesis (nightly pipeline) | n/a (app-owned; pipeline ported op-for-op) | done (task model on the continuous gateway under the engine's execution lease; `--isolate`: default worker's `/admin/memory/complete`) | done (`GET /v1/memory/synthesize`, `schedule` in `/api/memory/status`) | done (`memory` verbs incl. `init`/`setup`, `schedule`) | read panel done; no synthesize control (as main) | partial: stages match main token for token and in full logits, width-3 batch, `--isolate` synthesis; [details](apps/mlx-bun/README.md#memory-synthesis) | Decision: the memory feature is incomplete and deferred; the ingest source is unchanged (Pi's global sessions directory, as main) |
 | Live model switching, isolation, model pool | n/a | done (worker mode, parent proxy, exact-id LRU pool) | done (worker socket: `/health`, `/admin/lease`, `/admin/drain`, `/admin/memory/complete`; `--isolate` parent: `/engine`, `/health`, `/stats`, routing) | done (`--isolate`, `--model-pool`) | hub panel done | partial: `--isolate` (MiniCPM5-1B) and `--model-pool` (MiniCPM5-1B, Qwen3.5-0.8B) lifecycle in CLI and browser (#133, #134); no performance or oracle parity; [details](apps/mlx-bun/README.md#runtime-isolation---isolate) | Decisions (Josh): isolation and pooling stay optional, off by default, pool cap 1, and web chat works under isolation. Residency by memory fit replaces the pool's spawn-overlap under [Split the app into modules](#split-the-app-into-modules) (e). Internal worker routes on TCP (`/admin/lease`, `/admin/drain`, `/admin/memory/complete`) and `/engine` outside `--isolate` answer 404, not 501. Small items: Improvements |
 | Speculative decoding: draft models, n-gram, MTP, DSpark/DFlash | done | partial (grouped draft required; ungrouped shapes get the typed error) | rides completions | done (`--draft-model`, `--draft-kind`, `--num-draft-tokens`, `--ngram-*`, `--mtp`; `draft regen|train|calibrate|quantize` produce drafters) | n/a | partial: B1 main preservation for n-gram (MiniCPM), Gemma4 two-model and Qwen3.8 Trellis MTP; [grouped consumer](packages/inference/README.md#speculative-generation) ran for n-gram, two-model and assistant | Open: the grouped consumer for MTP, DSpark, DeepSpec (no local drafts fit 32 GB) and GLM-5.2 native MTP (no local weights); other main-supported provider/target/cache combinations; equality with main or an oracle; HTTP; performance |

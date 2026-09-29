@@ -7,7 +7,7 @@ import { buildWeb, OUTFILE } from "../apps/mlx-bun/src/web/build";
 import { BUNDLE_FILES } from "./bundle-files";
 import { checkCurated, packageNotices, retainedInputs, retainedPackages } from "./bundle-notices";
 
-import { MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY } from "../apps/mlx-bun/src/engine/mic-capture";
+import { MIC_CAPTURE_STAGED, MIC_CAPTURE_BINARY } from "../packages/module-transcription/src/mic-capture";
 
 const root = resolve(import.meta.dir, "..");
 const app = join(root, "apps/mlx-bun");

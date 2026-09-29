@@ -1,9 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
 
 const root = resolve(import.meta.dir, "../../..");
 export const CLI_SOURCE = "apps/mlx-bun/src/cli/args.ts";
+/** The one file that names the app's installed modules; their manifests declare their verbs. */
+export const MODULES_SOURCE = "apps/mlx-bun/src/modules.ts";
 export const INSTALLER_SOURCE = "scripts/install.sh";
 export interface CommandReference {
   name: string;
@@ -51,6 +53,73 @@ export function commandReference(source: string): CommandReference[] {
           ...(fields.has("short") ? { short: literal(fields, "short") } : {}) };
       }) };
   });
+}
+
+/** A manifest's verbs as command entries. `number` options render like `string` ones: both take a value. */
+export function moduleCommandReference(source: string, path: string): CommandReference[] {
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true);
+  let manifest: ts.Expression | undefined;
+  for (const statement of file.statements) if (ts.isVariableStatement(statement)) {
+    for (const declaration of statement.declarationList.declarations)
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === "manifest") manifest = declaration.initializer;
+  }
+  if (!manifest) throw new Error(`${path}: the module manifest was not found`);
+  const list = (fields: Map<string, ts.Expression>, key: string): ts.Expression[] => {
+    let value = fields.get(key);
+    if (!value) return [];
+    while (ts.isSatisfiesExpression(value) || ts.isAsExpression(value) || ts.isParenthesizedExpression(value)) value = value.expression;
+    if (!ts.isArrayLiteralExpression(value)) throw new Error(`${path}: manifest ${key} must be a literal array`);
+    return [...value.elements];
+  };
+  return list(properties(manifest), "verbs").map(verb => {
+    const fields = properties(verb), name = literal(fields, "name");
+    const positional = list(fields, "positional").map(item => { const parts = properties(item); return { name: literal(parts, "name"), required: parts.get("required")?.getText() === "true" }; });
+    return { name, description: literal(fields, "summary"), positional: positional.map(item => item.required ? `<${item.name}>` : `[${item.name}]`).join(" "),
+      options: list(fields, "options").map(option => {
+        const parts = properties(option), type = literal(parts, "type");
+        return { name: literal(parts, "name"), type: type === "number" ? "string" : type, description: literal(parts, "summary") };
+      }) };
+  });
+}
+
+/** The manifest source of each module the app installs: `modules.ts` names each imported manifest, each package exports it. */
+export async function installedManifests(repository = root): Promise<{ path: string; source: string }[]> {
+  const modulesSource = await readFile(resolve(repository, MODULES_SOURCE), "utf8");
+  const file = ts.createSourceFile(MODULES_SOURCE, modulesSource, ts.ScriptTarget.Latest, true);
+  const imports = new Map<string, string>();
+  for (const statement of file.statements) if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+    const named = statement.importClause?.namedBindings;
+    if (named && ts.isNamedImports(named)) for (const item of named.elements) imports.set(item.name.text, statement.moduleSpecifier.text);
+  }
+  let manifests: ts.Expression | undefined;
+  for (const statement of file.statements) if (ts.isVariableStatement(statement)) {
+    for (const declaration of statement.declarationList.declarations)
+      if (ts.isIdentifier(declaration.name) && declaration.name.text === "manifests") manifests = declaration.initializer;
+  }
+  while (manifests && (ts.isSatisfiesExpression(manifests) || ts.isAsExpression(manifests))) manifests = manifests.expression;
+  const elements = manifests && ts.isArrayLiteralExpression(manifests) ? [...manifests.elements] : undefined;
+  if (!elements || !elements.every(ts.isIdentifier))
+    throw new Error(`${MODULES_SOURCE}: manifests must be a literal list of imported manifests`);
+  const packages = new Map<string, { directory: string; exports: Record<string, string> }>();
+  for await (const path of new Bun.Glob("packages/*/package.json").scan(repository)) {
+    const manifest = JSON.parse(await readFile(resolve(repository, path), "utf8"));
+    packages.set(manifest.name, { directory: dirname(path), exports: manifest.exports ?? {} });
+  }
+  const found: { path: string; source: string }[] = [];
+  for (const element of elements as ts.Identifier[]) {
+    const specifier = imports.get(element.text);
+    const match = specifier ? /^(@mlx-bun\/module-[a-z0-9-]+)(\/[\w-]+)?$/.exec(specifier) : null;
+    const owner = match ? packages.get(match[1]!) : undefined, target = match ? owner?.exports[`.${match[2] ?? ""}`] : undefined;
+    if (!owner || !target) throw new Error(`${MODULES_SOURCE}: ${element.text} must be imported from a module package's manifest export`);
+    const path = join(owner.directory, target);
+    found.push({ path, source: await readFile(resolve(repository, path), "utf8") });
+  }
+  return found;
+}
+
+/** The verbs of the modules the app installs. */
+export async function installedCommandReference(repository = root): Promise<CommandReference[]> {
+  return (await installedManifests(repository)).flatMap(({ path, source }) => moduleCommandReference(source, path));
 }
 
 export interface HelpOption { flags: string[]; description: string }
@@ -102,7 +171,7 @@ export function renderCommandReference(commands: CommandReference[], help: HelpR
 export async function generateReference(options: { repository?: string; destination?: string } = {}): Promise<void> {
   const repository = options.repository ?? root, destination = options.destination ?? resolve(import.meta.dir, "..");
   const source = await readFile(resolve(repository, CLI_SOURCE), "utf8");
-  const commands = commandReference(source), help = helpReference(source);
+  const commands = [...commandReference(source), ...await installedCommandReference(repository)], help = helpReference(source);
   // Read both required inputs before writing any generated output.
   const installer = await readFile(resolve(repository, INSTALLER_SOURCE));
   const cli = resolve(destination, "src/content/docs/reference/cli.md"), install = resolve(destination, "public/install.sh");

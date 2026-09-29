@@ -1,13 +1,12 @@
+import type { CliInvocation, CoreServices } from "@mlx-bun/app-core";
 import { formatTimestamp, formatTranscription, TRANSCRIPTION_FORMATS, type TranscriptionFormat } from "@mlx-bun/inference/transcription/format";
-import { nativeTranscriptionRuntime, TranscriptionService, type TranscriptionRuntime } from "../engine/transcription-service";
-import { parseCommand } from "./args";
-import { resolveWhisperModel } from "./model-selection";
+import { nativeMedia, TranscriptionService, type MediaRuntime } from "./service";
 
-// `mlx-bun transcribe`: one audio file → Whisper → the chosen format, no
-// server. Main's handler over the engine's TranscriptionService (the same
-// runtime seam serve composes), so residency, VAD, and vocabulary policy have
-// one owner. Main's order is kept: the clip is read and decoded before any
-// model is resolved, so a bad file never opens the registry.
+// The `transcribe` verb: one audio file → Whisper → the chosen format, no
+// server. Main's handler over the same TranscriptionService the routes use, so
+// VAD and vocabulary policy have one owner and the host owns residency. Main's
+// order is kept: the clip is read and decoded before any model is resolved, so
+// a bad file never opens the registry.
 
 export interface TranscribeArgs {
   file: string;
@@ -29,24 +28,25 @@ export interface TranscribeArgs {
   verbose: boolean;
 }
 
-function numeric(raw: string, name: string, input: { integer?: boolean; minimum?: number } = {}): number {
-  const value = Number(raw);
-  if (!raw.trim() || !Number.isFinite(value) || (input.integer && !Number.isSafeInteger(value)) || value < (input.minimum ?? -Infinity))
-    throw new Error(`invalid --${name}: ${raw}`);
+function numeric(value: number, name: string, input: { integer?: boolean; minimum?: number } = {}): number {
+  if (!Number.isFinite(value) || (input.integer && !Number.isSafeInteger(value)) || value < (input.minimum ?? -Infinity))
+    throw new Error(`invalid --${name}: ${value}`);
   return value;
 }
 
-export function parseTranscribeArgs(argv: string[]): TranscribeArgs {
-  const parsed = parseCommand("transcribe", argv);
-  const value = (name: string) => { const v = parsed.values[name]; return typeof v === "string" ? v : undefined; };
-  const flag = (name: string) => parsed.values[name] === true;
+/** The verb's arguments from what the host parsed against the manifest. */
+export function parseTranscribeArgs(invocation: Pick<CliInvocation, "values" | "positionals">): TranscribeArgs {
+  const { values, positionals } = invocation;
+  const value = (name: string) => { const v = values[name]; return typeof v === "string" ? v : undefined; };
+  const number = (name: string) => { const v = values[name]; return typeof v === "number" ? v : undefined; };
+  const flag = (name: string) => values[name] === true;
   const format = (value("format") ?? "text") as TranscriptionFormat;
   if (!TRANSCRIPTION_FORMATS.includes(format)) throw new Error(`--format must be one of ${TRANSCRIPTION_FORMATS.join(", ")}`);
-  const language = value("language"), beam = value("beam-size"), temperature = value("temperature"), audioCtx = value("audio-ctx");
-  const threshold = value("vad-threshold");
+  const language = value("language"), beam = number("beam-size"), temperature = number("temperature"), audioCtx = number("audio-ctx");
+  const threshold = number("vad-threshold");
   return {
-    file: parsed.positionals[0]!,
-    query: value("model") ?? parsed.positionals[1] ?? value("query"),
+    file: positionals[0]!,
+    query: value("model") ?? positionals[1] ?? value("query"),
     language: !language || language === "auto" ? null : language,
     task: value("task") === "translate" ? "translate" : "transcribe",
     beamSize: beam !== undefined ? numeric(beam, "beam-size", { integer: true, minimum: 1 }) : null,
@@ -64,40 +64,50 @@ export function parseTranscribeArgs(argv: string[]): TranscribeArgs {
   };
 }
 
+export type VoiceServices = Pick<CoreServices, "modelHost" | "catalog">;
+
+/** The checkpoint for `transcribe` and `dictate`, main's order: a query names it (a model directory is used as given, else the registry resolves it), and nothing falls back to the host's default with main's `get` hint when none is on disk. */
+export async function resolveWhisperModel(services: VoiceServices, query: string | undefined): Promise<string> {
+  if (query) return (await services.catalog.find(query)).id;
+  const id = await services.modelHost.defaultFor("transcribe");
+  if (!id) throw new Error("no Whisper model downloaded — try: mlx-bun get mlx-community/whisper-large-v3-turbo");
+  return id;
+}
+
 export interface TranscribeDependencies {
   read(path: string): Promise<Uint8Array>;
-  resolveModel: typeof resolveWhisperModel;
-  /** Model loading, the VAD gate, and audio decoding; undefined = real weights. */
-  runtime?: TranscriptionRuntime;
+  /** The checkpoint id for the verb's query; default: `resolveWhisperModel` over the host's services. */
+  resolveModel?(query: string | undefined): Promise<string>;
+  /** The VAD gate and audio decoding; undefined = the library's. */
+  media?: MediaRuntime;
   write(text: string): void;
   /** One stderr line (main's --verbose diagnostics). */
   note(line: string): void;
 }
-const defaults: TranscribeDependencies = {
+const defaults: Pick<TranscribeDependencies, "read" | "write" | "note"> = {
   async read(path) {
     const file = Bun.file(path);
     if (!(await file.exists())) throw new Error(`audio file not found: ${path}`);
     return new Uint8Array(await file.arrayBuffer());
   },
-  resolveModel: resolveWhisperModel,
   write: text => { process.stdout.write(text); },
   note: line => { console.error(line); },
 };
 
-export async function runTranscribe(args: TranscribeArgs, supplied: Partial<TranscribeDependencies> = {}, signal?: AbortSignal): Promise<void> {
+export async function runTranscribe(services: VoiceServices, args: TranscribeArgs, supplied: Partial<TranscribeDependencies> = {}, signal?: AbortSignal): Promise<void> {
   const deps = { ...defaults, ...supplied };
-  const runtime = deps.runtime ?? nativeTranscriptionRuntime;
+  const media = deps.media ?? nativeMedia;
   signal?.throwIfAborted();
   const bytes = await deps.read(args.file);
   signal?.throwIfAborted();
-  const samples = await runtime.decodeAudio(bytes);
+  const samples = await media.decodeAudio(bytes);
   signal?.throwIfAborted();
   const durationSeconds = samples.length / 16_000;
-  const model = await deps.resolveModel(args.query);
+  const modelId = await (deps.resolveModel ?? (query => resolveWhisperModel(services, query)))(args.query);
   signal?.throwIfAborted();
-  // The verb owns the weights' lifetime: resident until close releases them.
-  const service = new TranscriptionService({ modelDir: model.path, modelId: model.repoId, resident: true, minimumAudioSeconds: 0,
-    vadModelPath: args.vad?.modelPath ?? null, log() {}, runtime });
+  // The verb owns the weights' lifetime: released right after the take, whatever the host's idle policy.
+  const service = new TranscriptionService({ models: services.modelHost, modelId, minimumAudioSeconds: 0, keepAliveSec: 0,
+    vadModelPath: args.vad?.modelPath ?? null, media });
   try {
     const outcome = await service.transcribe(samples, {
       task: args.task, language: args.language, prompt: args.prompt, beamSize: args.beamSize,

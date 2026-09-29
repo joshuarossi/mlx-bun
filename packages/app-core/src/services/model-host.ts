@@ -27,6 +27,8 @@ export interface ResidencyPolicy {
   readonly budgetBytes: number;
   /** Never evicted. */
   readonly pinned: readonly ModelId[];
+  /** Seconds an unpinned model stays loaded after its last lease is released; 0 releases it at once. */
+  readonly idleUnloadSec: number;
 }
 
 /** What acquiring a model would do, for previews. */
@@ -42,27 +44,82 @@ export interface AcquireOptions {
   /** Rejected with `does-not-fit` unless the model declares all of these. */
   readonly need?: readonly ModelOperation[];
   readonly role?: ModelRole;
+  /** Seconds the model stays loaded after this lease is released, overriding the policy's `idleUnloadSec`; 0 releases it at once. */
+  readonly keepAliveSec?: number;
   readonly signal?: AbortSignal;
 }
 
-export interface TranscribeRequest {
-  /** 16 kHz mono PCM. */
-  readonly samples: Float32Array;
-  readonly language?: string | null;
-  readonly task?: "transcribe" | "translate";
-  readonly prompt?: string | null;
-  readonly wordTimestamps?: boolean;
-  readonly signal?: AbortSignal;
-  readonly onSegment?: (segment: TranscriptSegment) => void;
-}
+export interface TranscriptWord { word: string; start: number; end: number; readonly probability: number }
 
-export interface TranscriptSegment { readonly start: number; readonly end: number; readonly text: string }
+export interface TranscriptSegment {
+  readonly id: number;
+  readonly seek: number;
+  /** Seconds from the start of the audio. */
+  start: number;
+  end: number;
+  readonly text: string;
+  readonly tokens: number[];
+  readonly temperature: number;
+  readonly avgLogprob: number;
+  readonly compressionRatio: number;
+  readonly noSpeechProb: number;
+  /** With `wordTimestamps`. */
+  words?: TranscriptWord[];
+}
 
 export interface Transcript {
   readonly text: string;
-  readonly language: string | null;
+  readonly segments: TranscriptSegment[];
+  readonly language: string;
+}
+
+/** How one transcription decodes. Nothing here names a model family. */
+export interface TranscribeOptions {
+  readonly task?: "transcribe" | "translate";
+  /** ISO code or name; null detects it from the first window. */
+  readonly language?: string | null;
+  /** Text the decoder is primed with: vocabulary hints, style. */
+  readonly prompt?: string | null;
+  /** Beam search width; null is greedy. */
+  readonly beamSize?: number | null;
+  /** One sampling temperature; omitted runs the model's fallback ladder. */
+  readonly temperature?: number;
+  readonly conditionOnPreviousText?: boolean;
+  readonly noSpeechThreshold?: number | null;
+  /** Decode text only, no timestamp tokens. */
+  readonly withoutTimestamps?: boolean;
+  readonly wordTimestamps?: boolean;
+  /** The reference-faithful graph instead of the fast path. */
+  readonly faithful?: boolean;
+  /** Lab: encoder positions kept (at most 1500). */
+  readonly audioCtx?: number | null;
+  /** Called with each finalized segment. */
+  readonly onSegment?: (segment: TranscriptSegment) => void;
+  /** Seeked frames out of the total. */
+  readonly onProgress?: (done: number, total: number) => void;
+  /** An aborted signal rejects the transcription. */
+  readonly signal?: AbortSignal;
+}
+
+/** A transcription over audio that is still arriving: complete windows decode as they fill. */
+export interface TranscriptionRun {
   readonly segments: readonly TranscriptSegment[];
-  readonly durationSeconds: number;
+  /** Append audio without decoding (no speech seen yet). */
+  feedSilent(samples: Float32Array): void;
+  /** Append audio; every complete window decodes. `signal` cancels the wait for the model. */
+  feed(samples: Float32Array, signal?: AbortSignal): Promise<unknown>;
+  /** Decode the remainder; the run is finished afterwards. */
+  finish(signal?: AbortSignal): Promise<Transcript>;
+}
+
+/** The `transcribe` operation. Each decode call takes the host's execution lease, so it never overlaps generation. */
+export interface TranscriptionOperation {
+  /** Tokens a prompt may hold; vocabulary hints are fitted into it. */
+  readonly promptTokenBudget: number;
+  encode(text: string): number[];
+  /** 16 kHz mono PCM. */
+  transcribe(samples: Float32Array, options?: TranscribeOptions): Promise<Transcript>;
+  start(options?: TranscribeOptions): TranscriptionRun;
 }
 
 /** The operations a lease may expose, keyed by `ModelOperation`. */
@@ -70,18 +127,31 @@ export interface ModelOperations {
   /** An OpenAI, Anthropic or Responses wire request already bound to this model. */
   generate(request: Request): Promise<Response>;
   embed(inputs: readonly string[], instruction?: string): Promise<readonly { readonly vector: Float32Array; readonly tokens: number }[]>;
-  transcribe(request: TranscribeRequest): Promise<Transcript>;
+  transcribe: TranscriptionOperation;
 }
 
 /** Holding a lease keeps the model resident; the holder must release it. */
 export interface ModelLease {
   readonly model: ResidentModel;
+  /** Milliseconds this acquire waited for the model to load; 0 when it was already resident. */
+  readonly loadMs: number;
   /** Only the operations the model declared. */
   readonly operations: Partial<ModelOperations>;
   release(): void;
 }
 
-export type ResidencyFailure = "does-not-fit" | "no-evictable-model" | "load-failed" | "aborted";
+/** Counters for one model id since the host started. */
+export interface ModelStats {
+  readonly resident: boolean;
+  readonly loads: number;
+  readonly unloads: number;
+  /** Time of the most recent load, 0 before the first. */
+  readonly lastLoadMs: number;
+  /** Seconds the model stays loaded after its last lease; null when pinned. */
+  readonly idleUnloadSec: number | null;
+}
+
+export type ResidencyFailure = "does-not-fit" | "no-evictable-model" | "load-failed" | "aborted" | "in-use" | "closed";
 export interface ModelHostError extends Error { readonly code: ResidencyFailure }
 
 /**
@@ -97,10 +167,13 @@ export interface ModelHostError extends Error { readonly code: ResidencyFailure 
 export interface ModelHost {
   readonly policy: ResidencyPolicy;
   acquire(id: ModelId, options?: AcquireOptions): Promise<ModelLease>;
+  /** The model the host serves an operation with when the caller names none: the one the user configured, else the first local model that declares it. */
+  defaultFor(operation: ModelOperation): Promise<ModelId | undefined>;
   plan(id: ModelId): Promise<ResidencyPlan>;
-  /** Drains, optionally flushes state (default true), then releases. Rejects while a lease is held unless `force`. */
+  /** Drains, optionally flushes state (default true), then releases. Rejects with `in-use` while a lease is held unless `force`; a model that is not resident resolves. */
   unload(id: ModelId, options?: { readonly flush?: boolean; readonly force?: boolean }): Promise<void>;
   pin(id: ModelId): void;
   unpin(id: ModelId): void;
   resident(): readonly ResidentModel[];
+  stats(id: ModelId): ModelStats;
 }
