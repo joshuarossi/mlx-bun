@@ -3,15 +3,11 @@ import type { ChatBackendFactory, ChatSocketData } from "../chat/backend";
 import { makeChatWebSocketHandler } from "../chat/backend";
 import type { createCompletionRoutes } from "./routes";
 
-// Temporary migration responses for known surfaces. Remove each entry when its
-// owning handler is mounted; unknown routes remain 404. Main's lab pages
-// (/generate, /signal, /curves, /curve-terrain, /dag) are not product surface
-// and answer 404. Lease, drain, and /engine wait on the isolation decision.
-const pending = [
-  /^\/admin\/(?:lease|drain)$/,
-  /^\/engine$/,
-];
-export function pendingRoute(path: string): boolean { return pending.some(pattern => pattern.test(path)); }
+// A path no mounted handler owns answers 404. That includes the worker's
+// private admin routes (`/admin/lease`, `/admin/drain`, `/admin/memory/complete`)
+// and `/engine` outside `--isolate`, which exist only on the surface that
+// mounts them, and main's lab pages (/generate, /signal, /curves,
+// /curve-terrain, /dag), which are not product surface.
 
 /** Bind the app's HTTP/WebSocket surfaces. Ownership transfers on entry: a
  * failed bind or close releases chat first, then the caller's engine resources.
@@ -61,9 +57,6 @@ export async function startServer(input: {
         if (page) return page;
         const response = await input.routes.handle(request);
         if (response) return response;
-        if (pendingRoute(url.pathname)) return Response.json({ error: {
-          message: "This feature has not migrated yet.", type: "not_implemented", path: url.pathname,
-        } }, { status: 501 });
         return Response.json({ error: { message: "Not found" } }, { status: 404 });
       },
     };

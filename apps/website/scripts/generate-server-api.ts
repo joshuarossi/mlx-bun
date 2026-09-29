@@ -337,7 +337,7 @@ class Inventory {
   }
   private status(e: ts.Expression | undefined): string | undefined {
     const n = e && statusOf(e);
-    return n === undefined ? undefined : n < 300 ? "implemented" : n === 302 ? "302 redirect" : n === 405 ? "405 method not allowed" : n === 501 ? "501 not migrated" : String(n);
+    return n === undefined ? undefined : n < 300 ? "implemented" : n === 302 ? "302 redirect" : n === 405 ? "405 method not allowed" : String(n);
   }
 
   /** One site's facts. Methods come from its `&&`/`||` chain, the uses of the
@@ -414,18 +414,17 @@ class Inventory {
     return [...merge([...facts, ...routed.map(({ path, node }) => ({ method: "POST", path, node, status: "routed by model id", conds: [] }))]),
       { method: "*", path: ANY, status: "forwarded to the worker", conds: [], node: last, except: new Set(facts.map(f => f.path)) }];
   }
-  /** start.ts's fixed dispatch: the WebSocket, web assets, route groups, the 501 migration list, then 404. */
-  private listener(): { ws: Fact[]; pending: Fact[] } {
+  /** start.ts's fixed dispatch: the WebSocket, web assets, route groups, then 404. */
+  private listener(): { ws: Fact[] } {
     const start = this.fn(server("start.ts"), "startServer"), fetch = find(start, ts.isMethodDeclaration).find(m => m.name.getText() === "fetch");
     const order = (fetch?.body?.statements ?? []).map(s => {
-      const condition = ts.isIfStatement(s) ? skip(s.expression) : undefined, text = code(s);
-      const helper = condition && ts.isCallExpression(condition) && ts.isIdentifier(condition.expression) ? localFunction(condition.expression) : undefined;
-      return text.includes("input.web(") ? "web" : text.includes("input.routes.handle(") ? "routes" : helper && this.sitesIn(helper).length ? "pending"
+      const text = code(s);
+      return text.includes("input.web(") ? "web" : text.includes("input.routes.handle(") ? "routes"
         : this.sitesIn(s).length ? "ws" : ts.isReturnStatement(s) && s.expression && statusOf(s.expression) === 404 ? "404" : "";
     }).filter(Boolean);
     const facts = this.groupFacts(start), ws = facts.filter(f => f.path === "/ws/chat");
-    if (order.join() !== "ws,web,routes,pending,404" || ws.length !== 1) this.fail(fetch ?? start, `the listener's dispatch changed (${order.join(", ")}); update the server API generator`);
-    return { ws, pending: facts.filter(f => f !== ws[0]) };
+    if (order.join() !== "ws,web,routes,404" || ws.length !== 1 || facts.length !== 1) this.fail(fetch ?? start, `the listener's dispatch changed (${order.join(", ")}); update the server API generator`);
+    return { ws };
   }
 
   // ---- composition: literal route group membership per mode ----
@@ -514,10 +513,10 @@ class Inventory {
   }
 
   evaluate(): ServerApi {
-    const { ws, pending } = this.listener();
+    const { ws } = this.listener();
     const modes = this.modes().map(spec => {
       const facts = [...ws.map(f => ({ ...f, status: `WebSocket upgrade (${spec.chat})` })), ...(spec.web ? this.groupFacts(spec.web) : []),
-        ...spec.groups.flatMap(group => this.groupFacts(group)), ...pending];
+        ...spec.groups.flatMap(group => this.groupFacts(group))];
       // The first unconditional match answers; the proxy's forward takes every path it did not name.
       const kept: Fact[] = [];
       for (const f of facts) if (!kept.some(k => !k.declined && !k.conds.length && (k.method === "*" || k.method === f.method) &&
@@ -533,7 +532,7 @@ class Inventory {
       const { facts } = modes.find(m => m.spec.id === id)!;
       for (const [entry, node] of entries) {
         const [method, path] = entry.split(" ");
-        if (!facts.some(f => f.path === path && (f.method === "*" || f.method === method) && f.status !== "501 not migrated")) this.fail(node, `advertised endpoint "${entry}" is not an extracted ${id} route`);
+        if (!facts.some(f => f.path === path && (f.method === "*" || f.method === method))) this.fail(node, `advertised endpoint "${entry}" is not an extracted ${id} route`);
       }
     }
     return { modes: modes.map(({ spec, facts }) => ({ id: spec.id, title: spec.title, intro: spec.intro, composed: this.where(spec.node),
@@ -571,7 +570,6 @@ export function renderServerApi(api: ServerApi, revision: string): string {
     `\`*\` means every method not listed in an earlier row for the same path; path parameters appear as \`{id}\`. The source link is the check that selects the route.\n\n` +
     `- **implemented**: the handler answers.\n` +
     `- **conditional**: the row depends on the quoted composition input; when it does not apply, the request falls through to later rows.\n` +
-    `- **501 not migrated**: a surface of the previous app that has not migrated yet. It answers \`{"error":{"type":"not_implemented"}}\`.\n` +
     `- **WebSocket upgrade**: \`GET /ws/chat\` opens the browser's chat session with the Pi agent; without a chat model the session fails to start and closes.\n` +
     `- Under \`--isolate\`: **served by parent** paths are never forwarded; **routed by model id** requests go to the worker serving the JSON body's \`model\`, else the default worker; ` +
     `**forwarded to the worker** requests stream to the default worker unchanged.\n\n` +

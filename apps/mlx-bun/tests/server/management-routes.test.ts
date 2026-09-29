@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { Registry } from "@mlx-bun/hub/registry";
 import { isToolAlwaysAllowed, setToolAlwaysAllowed } from "../../src/chat/tool-approvals";
 import { createManagementRoutes } from "../../src/server/management-routes";
-import { pendingRoute } from "../../src/server/start";
 
 const roots: string[] = [];
 function temporary() {
@@ -136,8 +135,4 @@ test("management matches only its owned methods and leaves HF credentials and up
   for (const [path, method] of [["/api/settings/tool-approvals", "POST"], ["/api/gc/plan", "POST"],
     ["/api/gc/execute", "GET"], ["/api/settings/hf-token", "GET"], ["/api/quantize/push", "POST"]])
     expect(await routes.handle(request(path!, method))).toBeNull();
-  expect(pendingRoute("/api/settings/hf-token")).toBe(false);
-  expect(pendingRoute("/api/quantize/push")).toBe(false);
-  expect(pendingRoute("/api/settings/tool-approvals")).toBe(false);
-  expect(pendingRoute("/api/gc/execute")).toBe(false);
 });

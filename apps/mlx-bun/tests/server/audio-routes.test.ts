@@ -5,7 +5,6 @@ import { describe, expect, test } from "bun:test";
 import type { WhisperSegment, WhisperTranscription } from "@mlx-bun/inference/transcription";
 import { createAudioRoutes, matchAudioRoute, parseAudioRequest, type AudioService } from "../../src/server/audio-routes";
 import { createTranscriptionServerRoutes } from "../../src/server/transcription-server";
-import { pendingRoute } from "../../src/server/start";
 import { TranscriptionService, type TranscriptionOutcome, type TranscriptionParams, type TranscriptionRuntime } from "../../src/engine/transcription-service";
 
 const WAV = (() => {
@@ -81,12 +80,7 @@ describe("audio route dispatch", () => {
     expect(matchAudioRoute("POST", "/v1/audio/speech")).toBeNull();
   });
 
-  test("the audio surface is owned: no migration placeholder remains and an unmounted group stays composable", async () => {
-    for (const path of ["/v1/audio/transcriptions", "/v1/audio/translations", "/v1/audio/sessions", "/v1/audio/sessions/x/audio",
-      "/v1/audio/sessions/x/finish", "/admin/transcription/unload"]) expect(pendingRoute(path)).toBe(false);
-    // Memory synthesis is owned by its composition now, so it is no placeholder either.
-    expect(pendingRoute("/v1/memory/synthesize")).toBe(false);
-    for (const path of ["/admin/lease", "/admin/drain", "/engine"]) expect(pendingRoute(path)).toBe(true);
+  test("an unmounted audio group stays composable", async () => {
     const unmounted = createAudioRoutes();
     expect(await unmounted.handle(multipart({}))).toBeNull();
     expect(await unmounted.handle(post("/admin/transcription/unload"))).toBeNull();

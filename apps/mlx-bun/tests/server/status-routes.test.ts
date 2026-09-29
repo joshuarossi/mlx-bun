@@ -3,7 +3,6 @@ import { fit, skuMatrix } from "@mlx-bun/inference/execution/fit";
 import { KvScheme } from "@mlx-bun/inference/state/kv-scheme";
 import type { ModelConfig } from "@mlx-bun/inference/artifacts/config";
 import { createStatusRoutes } from "../../src/server/status-routes";
-import { pendingRoute } from "../../src/server/start";
 
 type Input = Parameters<typeof createStatusRoutes>[0];
 function fixture(): Input {
@@ -105,10 +104,9 @@ test("GLM status preserves plan accounting and identifies unavailable historical
     memory_budget_bytes: 10000, usable_bytes: 10000, weights_bytes: 2e9 });
 });
 
-test("status owns only GET stats and fit, with their migration placeholders removed", async () => {
+test("status owns only GET stats and fit", async () => {
   const routes = createStatusRoutes(fixture());
   for (const path of ["/stats", "/fit"]) {
-    expect(pendingRoute(path)).toBe(false);
     expect(await routes.handle(new Request(`http://local${path}`, { method: "POST" }))).toBeNull();
   }
   expect(await routes.handle(new Request("http://local/other"))).toBeNull();

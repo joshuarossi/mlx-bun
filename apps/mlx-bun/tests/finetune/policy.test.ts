@@ -8,7 +8,6 @@ import { parseFinetuneConfig } from "../../src/finetune/config";
 import { createFinetuneRunner, type FinetuneRuntime } from "../../src/finetune/job";
 import { inspectDataset } from "../../src/finetune/inspect";
 import { createFinetuneRoutes } from "../../src/server/finetune-routes";
-import { pendingRoute } from "../../src/server/start";
 
 // Deliberately distinctive supplied library defaults: app policy must not
 // silently replace them with a second copy of DEFAULT_TRAIN_CONFIG.
@@ -184,9 +183,6 @@ test("submit forwards caller model and all policy to the host, independently of 
   expect(calls[0]).toEqual(["finetune", { ...body, adapter_path: "/default/adapter" }, "/default/adapter"]);
   await routes.handle(post("submit", { ...body, adapter_path: "/chosen" }));
   expect(calls[1]?.[2]).toBe("/chosen");
-  expect(pendingRoute("/api/finetune/submit")).toBe(false);
-  expect(pendingRoute("/api/finetune/inspect-dataset")).toBe(false);
-  expect(pendingRoute("/api/finetune/push")).toBe(false);
   expect(await routes.handle(post("push", {}))).toBeNull();
 });
 

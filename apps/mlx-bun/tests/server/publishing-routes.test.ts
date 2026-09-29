@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { createHfCredentials } from "../../src/publishing/credentials";
 import { createPublisher } from "../../src/publishing/upload";
 import { createPublishingRoutes } from "../../src/server/publishing-routes";
-import { pendingRoute } from "../../src/server/start";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -102,7 +101,6 @@ test("each push kind forwards its source, repo, privacy and resolved token using
     expect(response!.status).toBe(200);
     expect(await response!.json()).toEqual({ ok: true, url: "https://huggingface.co/org/result" });
     expect(calls.at(-1)).toEqual(["/explicit", "org/result", { repoType: kind === "dataset" ? "dataset" : "model", private: true, token: "write-secret", signal: expect.any(AbortSignal) }]);
-    expect(pendingRoute(`/api/${kind}/push`)).toBe(false);
   }
   expect(lookups).toEqual([]);
   await routes.handle(post("/api/finetune/push", { repo_id: "org/result", job_id: "job-1" }));
@@ -156,5 +154,4 @@ test("malformed and cancelled HTTP inputs never read credentials, jobs or start 
   expect(accessed).toBe(false);
   expect(await routes.handle(new Request("http://local/api/dataset/push"))).toBeNull();
   expect(await routes.handle(post("/api/unknown/push", {}))).toBeNull();
-  expect(pendingRoute("/api/settings/hf-token")).toBe(false);
 });

@@ -102,7 +102,7 @@ test("the worker entry composes the model host alone over the parent's socket, s
     // Persistent surfaces are the parent's: no web app, no hub, jobs, sessions, memory, or publishing routes.
     for (const path of ["/", "/index.html", "/api/hub/local", "/api/jobs", "/api/sessions/search?q=x", "/api/memory/status", "/api/settings/hf-token", "/api/quantize/anything"])
       assert.equal((await get(path)).status, 404, path);
-    assert.equal((await get("/engine")).status, 501, "/engine stays the parent's, unmigrated");
+    assert.equal((await get("/engine")).status, 404, "/engine is the parent's, not the worker's");
     // A lease runs through the attached link to the engine's gateway and is owned by the connection.
     const holder = new AbortController();
     const leased = await get("/admin/lease", { method: "POST", signal: holder.signal });
@@ -479,8 +479,7 @@ test("a Whisper checkpoint in the app form hands the socket hooks to the transcr
     expect(run.logs).toEqual(["Serving org/whisper as a transcription-only server", "POST /v1/audio/transcriptions over the Unix socket (released after every take; loads on first request)"]);
     expect(await (await run.get("/health")).json()).toMatchObject({ status: "ok", state: "ready", model: "org/whisper" });
     const lease = await run.get("/admin/lease", { method: "POST" });
-    expect(lease.status).toBe(501);
-    expect(await lease.json()).toEqual({ error: { message: "this worker has no execution lease", type: "not_implemented", path: "/admin/lease" } });
+    expect([lease.status, await lease.json()]).toEqual([404, { error: { message: "Not found" } }]);
     const report = await (await run.get("/admin/drain", { method: "POST" })).json() as Record<string, unknown>;
     expect([report.drained, report.state]).toEqual([true, "draining"]);
     expect(events).not.toContain("lease");
@@ -632,7 +631,7 @@ test("the app form composes the real app over the socket with private storage: p
     assert.equal(JSON.parse(whisper.written[0].slice(WORKER_MESSAGE_PREFIX.length)).modelId, "org/whisper");
     assert.deepEqual((await (await whisper.get("/v1/models")).json()).data.map(row => [row.id, row.transcription]), [["org/whisper", true]]);
     assert.equal((await (await whisper.get("/health")).json()).status, "ok");
-    assert.equal((await whisper.get("/admin/lease", { method: "POST" })).status, 501);
+    assert.equal((await whisper.get("/admin/lease", { method: "POST" })).status, 404);
     assert.equal((await whisper.get("/", {})).status, 404);
     whisper.signals.emit("SIGTERM");
     assert.equal(await whisper.exited, 0);
