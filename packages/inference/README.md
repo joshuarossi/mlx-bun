@@ -136,7 +136,22 @@ generated forwards), and the monolith fallback under plain caches. This is
 specialization identity within this tree, not an oracle claim. On 2026-09-28 it
 passed on the M1 Max for mlx-community gemma-4-e4b-it-OptiQ-4bit (`98d7dc6a`; 24
 generated forwards uncompiled, 2 compiled) and gemma-4-12B-it-OptiQ-4bit
-(`5b110106`; 24 uncompiled, 1 compiled). The 26B-A4B cell was not run.
+(`5b110106`; 24 uncompiled, 1 compiled). The 26B-A4B cell was not run. A final
+cell runs two different rows through one forward over `kv_config` caches and
+requires bytes equal to the monolith's; it caught the committed e4b graph slicing
+its per-layer inputs for one row, and passes on e4b and 12B after regeneration
+(2026-09-29, M1 Max).
+
+The generated files are compiled from the model description by
+`bun packages/inference/scripts/gen-gemma4.ts <model-dir> <stem> --help`
+(`gemma4-12b`, `gemma4-e4b`, `gemma4-26b`), which reads `config.json`,
+`kv_config.json` and the index's tensor names, never weights. A change to
+`Gemma4Model`, its layers or the generator is a regeneration, not a hand edit.
+[`tests/models/gemma4-generated-sync.test.ts`](tests/models/gemma4-generated-sync.test.ts)
+regenerates all three from the committed inputs in `tests/fixtures/gemma4-graphs`
+(stripped hub-layout copies of the three snapshots) and fails when a committed
+file differs; it does not say the regenerated graph is numerically right, which
+is the real-weight test above.
 
 On 2026-09-27 UTC, the rotating live-window correction (source `5ec1f4ae`) was
 checked on the same M1 Max (MLX 0.32.2, pinned native library) against selections
