@@ -101,7 +101,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
     const app = ${JSON.stringify(app)};
     const events = [], visited = [];
     const group = name => ({ async handle() { visited.push(name); return null; } });
-    const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, glmMemoryPlan: null, tokenizer: {},
+    const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() { events.push("timer stop"); }, async close() { events.push("cache close"); return { durable: true }; } };
@@ -199,7 +199,7 @@ test("two sequential model hosts share one persistent state; only the app closes
     import { strict as assert } from "node:assert";
     const app = ${JSON.stringify(app)};
     const events = [], loads = [];
-    const contextFor = path => ({ modelId: path, model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, glmMemoryPlan: null, tokenizer: {},
+    const contextFor = path => ({ modelId: path, model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close " + path); } });
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };

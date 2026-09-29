@@ -16,7 +16,7 @@ type DiskCounters = Pick<NonNullable<CacheServices["checkpoints"]>, "entries" | 
 /** Read-only HTTP views borrow counters and metadata. They neither open model
  * storage nor acquire execution leases, and fit estimates never set admission. */
 export function createStatusRoutes(input: {
-  context: Pick<LoadedModelContext, "modelId" | "glmMemoryPlan"> & {
+  context: Pick<LoadedModelContext, "modelId" | "memoryPlan"> & {
     model: Pick<LoadedModelContext["model"], "config" | "weightsBytes">;
   };
   caches: Pick<CacheServices, "stats"> & {
@@ -42,7 +42,7 @@ export function createStatusRoutes(input: {
   const { context: ctx, caches, gateway } = input;
   const machine = input.machine ?? thisMachine();
   const chip = input.chip === undefined ? detectChip().name : input.chip;
-  const plan = ctx.glmMemoryPlan;
+  const plan = ctx.memoryPlan;
   const admission = plan ?? fit(ctx.model.config, ctx.model.weightsBytes, 1,
     machine, undefined, 0, input.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
 
@@ -66,7 +66,7 @@ export function createStatusRoutes(input: {
         response_store: input.responseStats(),
         kv_quant: caches.resolvedKvScheme.describe(ctx.model.config),
         admission: { max_safe_context: admission.maxSafeContext, enforced_context_tokens: input.contextLimit,
-          memory_budget_bytes: plan?.processLimitBytes ?? input.memoryBudgetBytes ?? null, usable_bytes: admission.usableBytes, weights_bytes: ctx.model.weightsBytes },
+          memory_budget_bytes: plan?.usableBytes ?? input.memoryBudgetBytes ?? null, usable_bytes: admission.usableBytes, weights_bytes: ctx.model.weightsBytes },
         ...input.diagnostics(),
         batch: { configured: input.capacity, mode: "batch", batched: true,
           active_rows: gateway.activeRows, pending_rows: gateway.pendingRows, submitted_rows: gateway.submittedRows,
@@ -76,18 +76,19 @@ export function createStatusRoutes(input: {
     if (path !== "/fit") return null;
     const machineWire = { chip, ram_bytes: machine.ramBytes, bandwidth_gbs: machine.bandwidthGBs };
     if (plan) {
-      const li = plan.lineItems, kvBytes = li.targetKvBytes + li.mtpKvBytes;
+      // A runtime that plans its own memory: the plan's own accounting, with
+      // its streamed tiers reported apart from resident weights.
+      const streamed = plan.streamedWeights ?? {};
+      const streamedBytes = Object.values(streamed).reduce((sum, bytes) => sum + bytes, 0);
       return Response.json({ machine: machineWire, context_tokens: plan.contextTokens,
         typical_context_tokens: plan.contextTokens, typical_decode_tps: null,
         measured_decode_tps: null, measured_at: null,
-        report: { fits: true, weights_bytes: li.residentWeightsBytes, kv_bytes: kvBytes,
-          transient_bytes: plan.plannedProcessBytes - li.residentWeightsBytes - li.mainExpertSlabBytes - li.mtpExpertSlabBytes - kvBytes,
-          total_bytes: plan.plannedProcessBytes, usable_bytes: plan.processLimitBytes,
+        report: { fits: true, weights_bytes: plan.weightsBytes - streamedBytes, kv_bytes: plan.kvBytes,
+          transient_bytes: plan.transientBytes + plan.reserveBytes,
+          total_bytes: plan.totalBytes, usable_bytes: plan.usableBytes,
           max_safe_context: plan.contextTokens, predicted_decode_tps: null },
-        glm52: { artifact_disk_bytes: input.artifact.sizeBytes,
-          main_expert_slab_bytes: li.mainExpertSlabBytes, mtp_expert_slab_bytes: li.mtpExpertSlabBytes,
-          max_generation_tokens: plan.maxGenerationTokens,
-          direct_oracle_warm_decode_tps: null, aspirational_decode_tps: null },
+        plan: { artifact_disk_bytes: input.artifact.sizeBytes, streamed_weights: streamed,
+          max_generation_tokens: plan.maxGenerationTokens ?? null },
         sku_matrix_ctx: plan.contextTokens,
         sku_matrix: [{ sku: chip, ram_gb: Math.round(machine.ramBytes / 2 ** 30), fits: true,
           max_context: plan.contextTokens, decode_tps: null }],
@@ -100,7 +101,7 @@ export function createStatusRoutes(input: {
       typical_context_tokens: typicalContext,
       typical_decode_tps: fit(ctx.model.config, ctx.model.weightsBytes, typicalContext,
         machine, undefined, input.artifact.expertsBytes, input.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions).predictedDecodeTps,
-      // The old EvalDB and machine-specific historical GLM measurements are not
+      // The old EvalDB and machine-specific historical measurements are not
       // live evidence for this server. Preserve the fields without inventing data.
       measured_decode_tps: null, measured_at: null,
       report: { fits: report.fits, weights_bytes: report.weightsBytes, kv_bytes: report.kvBytes,

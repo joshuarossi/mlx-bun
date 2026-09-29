@@ -10,6 +10,8 @@ import {
   isWhisperConfig,
 } from "./support";
 import { GENERIC_MODEL_TYPES, genericArgsFor, remapModelType } from "./universal/archs";
+import { renderGlm52Chat, type TemplateFallback } from "../input/chat-template";
+import type { MediaTokenTexts, SentinelTokenTexts } from "../input/special-tokens";
 
 /** Construction identities are metadata; inspecting a profile never loads native graphs. */
 export const GENERATED_GEMMA_FINGERPRINTS = Object.freeze({
@@ -313,10 +315,47 @@ export interface TrainingDefaults {
 export const GENERIC_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 4096 });
 const GEMMA_TRAINING_DEFAULTS: TrainingDefaults = Object.freeze({ maxSeqLength: 8192 });
 
+/** Request defaults a graph declares for chat generation. The server applies
+ * them under explicit request and server settings; nothing outside the model
+ * decides them by name. */
+export interface GenerationDefaults {
+  /** `enable_thinking` when neither the request nor the server chose; absent leaves the template's own default. */
+  readonly enableThinking?: boolean;
+  /** Upper bound on the configured sampling temperature for replies with thinking off
+   * (model authors publish one think-mode temperature and recommend a cooler one for direct replies). */
+  readonly noThinkTemperatureCap: number;
+}
+
+/** Applies to every graph that declares nothing of its own. */
+export const GENERIC_GENERATION_DEFAULTS: GenerationDefaults = Object.freeze({ noThinkTemperatureCap: 0.7 });
+
+const GEMMA_SENTINELS: SentinelTokenTexts = Object.freeze({
+  toolCallStart: "<|tool_call>", toolCallEnd: "<tool_call|>", channelStart: "<|channel>", channelEnd: "<channel|>",
+});
+const GEMMA_MEDIA_TOKENS: MediaTokenTexts = Object.freeze({
+  vision: Object.freeze({ image: "<|image|>", begin: "<|image>", end: "<image|>" }),
+  audio: Object.freeze({ audio: "<|audio|>", begin: "<|audio>", end: "<audio|>" }),
+});
+
+/** How a graph's pooled text embedding is formed from tokenized input. */
+export interface EmbeddingDeclaration {
+  /** Special token appended to every input; its final hidden state is the vector. */
+  readonly terminator: string;
+}
+
 interface GraphMetadata {
   readonly accepts: (config: ModelConfig) => boolean;
   readonly capabilities: readonly EngineCapability[];
   readonly trainingDefaults?: TrainingDefaults;
+  /** Present when the graph declares `GraphCapabilities.embeddings`. */
+  readonly embedding?: EmbeddingDeclaration;
+  /** Present when generated text delimits tool calls and reasoning with special tokens. */
+  readonly sentinels?: SentinelTokenTexts;
+  /** Soft-token markers of the graph's tower prompts. */
+  readonly mediaTokens?: MediaTokenTexts;
+  readonly generationDefaults?: GenerationDefaults;
+  /** Renders chats for artifacts that ship no template of their own. */
+  readonly chatTemplateFallback?: TemplateFallback;
 }
 
 const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freeze({
@@ -324,22 +363,35 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
     accepts: (config) => config.modelType.startsWith("gemma4"),
     capabilities: ["gemma4-graph"],
     trainingDefaults: GEMMA_TRAINING_DEFAULTS,
+    sentinels: GEMMA_SENTINELS,
+    mediaTokens: GEMMA_MEDIA_TOKENS,
   },
-  "minicpm5": { accepts: isMiniCPM5Config, capabilities: ["minicpm5-graph"] },
+  "minicpm5": {
+    accepts: isMiniCPM5Config,
+    capabilities: ["minicpm5-graph"],
+    // The model card recommends direct replies unless thinking is asked for.
+    generationDefaults: { ...GENERIC_GENERATION_DEFAULTS, enableThinking: false },
+  },
   "qwen3.5": {
     accepts: isQwen35Config,
     capabilities: ["qwen3.5-graph", "recurrent-state"],
   },
-  "qwen3": { accepts: isQwen3Config, capabilities: ["qwen3-graph"] },
+  "qwen3": {
+    accepts: isQwen3Config,
+    capabilities: ["qwen3-graph"],
+    embedding: { terminator: "<|endoftext|>" },
+  },
   "qwen3-moe": { accepts: isQwen3MoeConfig, capabilities: ["qwen3-moe-graph"] },
   "diffusion-gemma": {
     accepts: isDiffusionGemmaConfig,
     capabilities: ["diffusion-gemma-graph"],
     trainingDefaults: GEMMA_TRAINING_DEFAULTS,
+    mediaTokens: GEMMA_MEDIA_TOKENS,
   },
   "glm5.2": {
     accepts: isGlm52Config,
     capabilities: ["glm5.2-graph", "streamed-experts"],
+    chatTemplateFallback: { render: renderGlm52Chat, thinkingFormat: "think-tag" },
   },
   "whisper": { accepts: isWhisperConfig, capabilities: ["whisper-graph"] },
   "universal-dense": {
@@ -354,6 +406,31 @@ const GRAPH_METADATA: Readonly<Record<ModelGraph, GraphMetadata>> = Object.freez
  * generic ones. */
 export function trainingDefaultsFor(resolved: ResolvedModelProfile): TrainingDefaults {
   return GRAPH_METADATA[resolved.profile.execution.graph].trainingDefaults ?? GENERIC_TRAINING_DEFAULTS;
+}
+
+/** The tool-call and reasoning-channel marker tokens the resolved model's graph declares, or null. */
+export function sentinelDeclarationFor(resolved: ResolvedModelProfile): SentinelTokenTexts | null {
+  return GRAPH_METADATA[resolved.profile.execution.graph].sentinels ?? null;
+}
+
+/** The tower-prompt soft-token markers the resolved model's graph declares, or null. */
+export function mediaTokenDeclarationFor(resolved: ResolvedModelProfile): MediaTokenTexts | null {
+  return GRAPH_METADATA[resolved.profile.execution.graph].mediaTokens ?? null;
+}
+
+/** The chat-generation defaults the resolved model's graph declares, else the generic ones. */
+export function generationDefaultsFor(resolved: ResolvedModelProfile): GenerationDefaults {
+  return GRAPH_METADATA[resolved.profile.execution.graph].generationDefaults ?? GENERIC_GENERATION_DEFAULTS;
+}
+
+/** The renderer for artifacts that ship no chat template, or null when they must ship one. */
+export function chatTemplateFallbackFor(resolved: ResolvedModelProfile): TemplateFallback | null {
+  return GRAPH_METADATA[resolved.profile.execution.graph].chatTemplateFallback ?? null;
+}
+
+/** The pooled-embedding recipe the resolved model's graph declares, or null. */
+export function embeddingDeclarationFor(resolved: ResolvedModelProfile): EmbeddingDeclaration | null {
+  return GRAPH_METADATA[resolved.profile.execution.graph].embedding ?? null;
 }
 
 function graphAccepts(profile: ModelProfile, config: ModelConfig): boolean {

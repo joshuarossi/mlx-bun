@@ -56,19 +56,25 @@ function appDomain(path: string, owner: Library): string {
   return domain;
 }
 
-// Scheduling (`execution/`), the app's engine and the training package consume
-// graphs through their declared capabilities, bindings and training operations.
-// They may name the graph handle, its declaration, profiles and shared input
-// helpers, never a concrete model, and never branch on a model's class, type
-// string, or family flag.
+// Scheduling (`execution/`), the app's engine, server and CLI, and the training
+// package consume graphs through their declared capabilities, bindings, profiles
+// and training operations. They may name the graph handle, its declaration,
+// profiles, the registry-level role predicates (`models/support.ts`) and shared
+// input helpers, never a concrete model, and never branch on a model's class, type
+// string, architecture list or family flag.
 const graphContracts = new Set(["models/index.ts", "models/factory.ts", "models/capabilities.ts", "models/profile.ts",
-  "models/implementation.ts", "models/graph.ts", "models/media-input.ts"]);
+  "models/implementation.ts", "models/graph.ts", "models/media-input.ts", "models/runtime.ts", "models/memory-plan.ts",
+  "models/chat-template.ts", "models/support.ts"]);
+/** `models/support.ts` also exports one structural predicate per family; the role predicates
+ * (`supportTier`, `isSupportedModelRecord`, `is<Role>ModelType`) are the only ones consumers may use. */
+const familyPredicate = /^is(Gemma|Qwen|MiniCPM|Llama|Glm|Diffusion|Whisper|Universal)\w*Config$/i;
 const familyWord = /(gemma|qwen|minicpm|llama|glm|diffusion|universal)/i;
 
 function graphConsumer(file: string, owner: Library): string | undefined {
   const name = relative(owner.source, file);
-  if ((owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) || (owner.name === "mlx-bun" && name.startsWith("engine/")))
-    return "scheduling and engine code";
+  if ((owner.name === "@mlx-bun/inference" && name.startsWith("execution/")) ||
+      (owner.name === "mlx-bun" && (name.startsWith("engine/") || name.startsWith("server/") || name.startsWith("cli/"))))
+    return "scheduling, engine, server and CLI code";
   return owner.name === "@mlx-bun/training" ? "training code" : undefined;
 }
 
@@ -78,8 +84,11 @@ function identityChecks(source: ts.SourceFile): { text: string; line: number }[]
   const found: { text: string; line: number }[] = [];
   const add = (node: ts.Node, text: string) =>
     found.push({ text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
-  const typeName = (node: ts.Node) => (ts.isPropertyAccessExpression(node) && /^model_?[tT]ype$/.test(node.name.text)) ||
-    (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && /^model_?[tT]ype$/.test(node.argumentExpression.text));
+  const typeKey = /^(model_?[tT]ype|architectures)$/;
+  const typeName = (node: ts.Node): boolean => (ts.isPropertyAccessExpression(node) && typeKey.test(node.name.text)) ||
+    (ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) && typeKey.test(node.argumentExpression.text)) ||
+    // architectures[0]
+    (ts.isElementAccessExpression(node) && typeName(node.expression));
   const visit = (node: ts.Node) => {
     if (ts.isBinaryExpression(node)) {
       const op = node.operatorToken.kind;
@@ -96,6 +105,8 @@ function identityChecks(source: ts.SourceFile): { text: string; line: number }[]
       add(node, "matching a model type");
     if (ts.isStringLiteralLike(node) && /^MLX_BUN_(QWEN|GEMMA|MINICPM|LLAMA|GLM|DIFFUSION)/.test(node.text))
       add(node, `model-scoped flag ${node.text}`);
+    if (ts.isImportSpecifier(node) && familyPredicate.test((node.propertyName ?? node.name).text))
+      add(node, `family predicate ${(node.propertyName ?? node.name).text}`);
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -390,7 +401,7 @@ test("browser code can consume data protocols but cannot reach backend modules o
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("scheduling, engine and training code cannot import concrete models or branch on model identity", async () => {
+test("scheduling, engine, server, CLI and training code cannot import concrete models or branch on model identity", async () => {
   const root = mkdtempSync(join(tmpdir(), "mlx-scheduling-boundaries-"));
   const write = (path: string, text: string) => {
     const target = resolve(root, path);
@@ -424,7 +435,7 @@ test("scheduling, engine and training code cannot import concrete models or bran
     expect(scheduled.some(item => item.includes("cannot import a concrete model (../models/gemma4/model)"))).toBe(true);
     expect(scheduled.some(item => item.includes("branch on model identity (instanceof Gemma4Model)"))).toBe(true);
     write(engine, 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const kind = (m: object) => m instanceof Gemma4Model;');
-    expect((await inspectWorkspaces(root)).some(item => item.includes("apps/mlx-bun/src/engine/host.ts:1: scheduling and engine code cannot import a concrete model"))).toBe(true);
+    expect((await inspectWorkspaces(root)).some(item => item.includes("apps/mlx-bun/src/engine/host.ts:1: scheduling, engine, server and CLI code cannot import a concrete model"))).toBe(true);
     write(scheduler, "export const plan = 1;");
     write(engine, 'export const gemma = (m: { config: { modelType: string } }) => m.config.modelType.startsWith("gemma4") || m.config.modelType === "qwen3";');
     const typed = await inspectWorkspaces(root);
@@ -446,5 +457,48 @@ test("scheduling, engine and training code cannot import concrete models or bran
     // The same code outside scheduling, engine and training (a model's own binding) is unaffected.
     write("packages/inference/src/models/gemma4/binding.ts", 'import { Gemma4Model } from "./model"; export const own = (m: object) => m instanceof Gemma4Model;');
     expect(await inspectWorkspaces(root)).toEqual([]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the server and CLI read declared facts: no model type, architecture, family predicate or concrete model", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-app-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  const inference = { name: "@mlx-bun/inference", type: "module", exports: { ".": "./src/index.ts", "./models": "./src/models/index.ts",
+    "./models/support": "./src/models/support.ts", "./models/gemma4": "./src/models/gemma4/model.ts" },
+  dependencies: { "@mlx-bun/mlx": "workspace:*", "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" } };
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify(inference));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/models/index.ts", 'export * from "./support";');
+    write("packages/inference/src/models/support.ts",
+      "export const supportTier = (type: string) => type; export const isMiniCPM5Config = (config: object) => !!config; export const isTranscriptionModelType = (type: string) => !!type;");
+    write("packages/inference/src/models/gemma4/model.ts", "export class Gemma4Model { modelType = 'gemma4'; }");
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
+    symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
+    const server = "apps/mlx-bun/src/server/prep.ts", cli = "apps/mlx-bun/src/cli/pick.ts";
+    write(server, 'import { supportTier, isTranscriptionModelType } from "@mlx-bun/inference/models/support"; export const tier = (t: string) => supportTier(t) && isTranscriptionModelType(t);');
+    write(cli, "export const cli = 1;");
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(server, 'export const tools = (m: { config: { modelType: string } }) => m.config.modelType.startsWith("gemma4");');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("apps/mlx-bun/src/server/prep.ts:1: scheduling, engine, server and CLI code cannot branch on model identity (matching a model type)"))).toBe(true);
+    write(cli, 'export const speech = (m: { modelType: string }) => m.modelType === "whisper";');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("apps/mlx-bun/src/cli/pick.ts:1:") && item.includes("comparing a model type"))).toBe(true);
+    write(cli, 'export const first = (c: { architectures: string[] }) => c.architectures[0] === "X" || c.architectures.includes("Y");');
+    const architectures = (await inspectWorkspaces(root)).filter(item => item.includes("apps/mlx-bun/src/cli/pick.ts:1:"));
+    expect(architectures.some(item => item.includes("comparing a model type"))).toBe(true);
+    expect(architectures.some(item => item.includes("matching a model type"))).toBe(true);
+    write(server, 'import { isMiniCPM5Config } from "@mlx-bun/inference/models/support"; export const off = isMiniCPM5Config;');
+    expect((await inspectWorkspaces(root)).some(item => item.includes("family predicate isMiniCPM5Config"))).toBe(true);
+    write(server, 'import { Gemma4Model } from "@mlx-bun/inference/models/gemma4"; export const kind = (m: object) => m instanceof Gemma4Model;');
+    const concrete = await inspectWorkspaces(root);
+    expect(concrete.some(item => item.includes("cannot import a concrete model"))).toBe(true);
+    expect(concrete.some(item => item.includes("instanceof Gemma4Model"))).toBe(true);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

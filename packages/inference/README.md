@@ -35,8 +35,14 @@ refused. The gateway plans from the declarations, the request and dynamic state
 `MlxGatewayBinding.capabilities` reports what it resolved. Supporting a new graph
 means declaring and implementing; `execution/` and the app engine need no edit.
 The architecture gate rejects concrete model imports, model-class `instanceof`,
-model-type string checks and model-scoped flags there and in `@mlx-bun/training`.
-`trainable` (`TrainableGraph`) declares what the trainer consumes: the quantized
+model-type and `architectures` checks, family predicates and model-scoped flags there,
+in the app's engine, server and CLI, and in `@mlx-bun/training`. What those need to
+know about a model is declared in its profile (`models/profile`:
+`embeddingDeclarationFor`, `sentinelDeclarationFor`, `mediaTokenDeclarationFor`,
+`generationDefaultsFor`, `chatTemplateFallbackFor`, `trainingDefaultsFor`) or returned
+by its opened runtime (`models/runtime`, `models/memory-plan`); token text resolves to
+ids against the tokenizer in use (`input/special-tokens`). `trainable`
+(`TrainableGraph`) declares what the trainer consumes: the quantized
 `lmHead` for fused linear-CE heads, `segmented` backward (how a range of layers
 runs and which reused K/V crosses segment boundaries), `prefixShared` forwards,
 `gradCheckpoint`, the `flashAttention` constraint, and the `denoising` objective.
@@ -702,7 +708,13 @@ The direct graph imports currently include `models/gemma4`,
 `models/glm52`, `models/diffusion-gemma`, and `models/whisper` provide the other
 existing graph families. These retain the dedicated and specialized implementations.
 `@mlx-bun/inference/models` exposes the existing profile/implementation registry
-and model construction helpers. Direct graph constructors remain available.
+and model construction helpers. Direct graph constructors remain available. Runtimes
+that plan memory before opening weights (streamed experts) are opened with
+`openPlannedRuntime` from generic `RuntimeOpenOptions` and return a generic
+`MemoryPlan`, whether a checkpoint-native draft head is planned, and telemetry;
+`planRuntimeMemory` (`models/memory-plan`, native-free) returns the plan from
+artifact headers, or null for models without one. `nativeDraftProvider` builds
+the draft provider over such a model.
 
 For explicit state and tensor operations, use `graph.makeCache()`,
 `graph.forwardHidden(ids, state)`, and `graph.logitsFromHidden(hidden)`.
@@ -816,8 +828,10 @@ using the existing xgrammar dependency. Await `ready()`, apply the mask to logit
 accept the sampled token, and dispose the controller when finished. The normalized
 argmax and token-bitmask kernels are exposed through `kernels/sampling`.
 
-`embeddings` provides the existing Qwen3 embedding helpers: `embedOne`, `embedMany`,
-and `withInstruction`. Supply the graph and tokenizer explicitly. `adapters`
+`embeddings` provides the pooled-embedding helpers: `embedOne`, `embedMany`,
+`embeddingTerminatorId` and `withInstruction`. Any graph declaring `embeddings` and
+providing `embedPooled` works; the pooling token comes from the graph's profile
+(`embeddingDeclarationFor`, resolved with the tokenizer). Supply the graph and tokenizer explicitly. `adapters`
 provides `AdapterManager` for loading and applying existing mlx-lm and PEFT LoRA
 artifacts to a caller-owned graph; adapter weight/state types are also exported.
 
@@ -991,7 +1005,13 @@ runnable [fit example](examples/fit-model.ts):
 `SsdDurabilityCoordinator` for caller-configured persistence. Execution continuation
 helpers retain the existing sampler, pending-token, adapter, and cache identities
 when saving or restoring a generation. Applications choose their own storage paths,
-capacity, scheduler settings, and shutdown lifecycle.
+capacity, scheduler settings, and shutdown lifecycle. A store's directory is
+`<dir>/<configFingerprint>/`; the app's fingerprint joins architecture, KV scheme,
+binding compatibility and a content digest of the weights (`modelWeightsIdentity`),
+so same-shape models and revised weights never share entries. `scan()` skips, and
+never deletes, files whose header names another identity; only its own corrupt
+files and `.tmp` orphans are removed. Entries written under the earlier directory
+name (no weights digest) are ignored, not migrated or deleted.
 
 ## Scoring
 

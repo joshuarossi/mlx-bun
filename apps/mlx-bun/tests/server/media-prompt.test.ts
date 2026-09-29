@@ -74,6 +74,7 @@ test("each family refusal answers with the server's 400 text", async () => {
     "vision-sidecar-unavailable": "model has no vision sidecar",
     "vision-tower-absent": "this checkpoint has no vision tower",
     "single-image-only": "DiffusionGemma image input supports exactly one image",
+    "vision-tokens-undeclared": "model fake/model declares no image soft tokens",
   };
   for (const [rejected, message] of Object.entries(expected)) {
     const f = fixture({ async prepare() { return { rejected: rejected as MediaRejection }; } });

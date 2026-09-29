@@ -61,8 +61,8 @@ export interface CacheHeaderEntry {
 export interface KvSaveMeta {
   attachments?: CheckpointAttachment[];
   modelId?: string;
-  /** configFingerprint(config) — covers every graph-shaping field incl.
-   *  the kv-quant scheme, so a scheme flip invalidates naturally. */
+  /** Store identity: architecture, kv-quant scheme, binding compatibility and
+   *  the weights digest, so a scheme flip or new weights invalidate naturally. */
   configFingerprint?: string;
   /** Adapter namespace (PromptCache ns — adapters joined with "+"). */
   ns?: string;

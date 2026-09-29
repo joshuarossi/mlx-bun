@@ -26,7 +26,7 @@ product surface. A request shape the engine cannot run returns a typed 501
 Main's admission and runtime flags keep their units and semantics: `--memory-budget`
 (decimal GB) is the usable envelope for model load, request admission, the process
 allocator limit, optional cache residency, and `/stats.admission.memory_budget_bytes`;
-`--context-length` feeds the GLM-5.2 resource plan and other families ignore it;
+`--context-length` feeds the context reservation of runtimes that plan memory up front and other models ignore it;
 `--force-wire` and `--allow-private-media` set their library runtime switches for
 the serving process; `--expert-offload` builds `<model>/.mlx-bun-offload` on first
 use and activates it before construction for MoE models, while dense models log
@@ -58,7 +58,7 @@ Main's speculative flags are restored with its validation: `--draft-model`
 resolves like the main model (a query never downloads) and its kind is
 auto-detected, `--draft-kind` overrides it (`ngram` is model-free; `mtp` alone
 mounts the bundled companion), `--num-draft-tokens`, `--ngram-max`/`--ngram-min`
-(ngram only; otherwise a warning), and `--mtp on|off` for GLM-5.2.
+(ngram only; otherwise a warning), and `--mtp on|off` for checkpoints that carry their own draft head.
 The opt-in [draft flags test](tests/engine/draft-flags.test.ts) serves with
 ngram drafting and checks the speculation telemetry and exactness against a
 plain run.
@@ -87,7 +87,7 @@ with a 120-second deadline; cleanup failures or deadline expiry exit with code 1
 (main exited 0 on timeout). SSD sub-options without `--ssd-cache` now fail before
 model loading instead of warning and being ignored. The existing
 `MLX_BUN_RD_CONTEXT_LIMIT` cap remains supported and is intersected with a loaded
-GLM memory plan; this draft adds no serving context or read-only CLI flags.
+loaded runtime memory plan; this draft adds no serving context or read-only CLI flags.
 Programmatic composition still accepts explicit context and read-only policy.
 
 `src/cli/main.ts` dispatches commands; `args.ts` owns accepted options and help;
@@ -557,12 +557,14 @@ the RAM prompt cache so every compared request prefills cold. Run with
 `server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
 Responses-history counters for `GET /stats`; `GET /fit` uses the public inference
 fit functions (`@mlx-bun/inference/execution/fit`) and the served artifact metadata. Predictions remain advisory and do
-not impose an admission limit. GLM admission accounting uses its actual explicit
-memory plan rather than the generic resident-weight estimate. Batch mode remains
+not impose an admission limit. A runtime that plans its own memory reports that
+plan (`/fit`'s `plan` object lists its streamed tiers and generation allowance;
+`/stats.runtime` carries the runtime's own telemetry) instead of the generic
+resident-weight estimate. Batch mode remains
 continuous even at capacity one. Pending SSD counters include the generation
 checkpoint queue as well as prompt-cache persistence work.
 Historical EvalDB measurements have no migrated owner, so measurement fields
-remain null; old machine-specific GLM throughput constants are not reported as
+remain null; old machine-specific throughput constants are not reported as
 measurements for the current server or CLI fit output. The library retains those
 historical constants. The dashboard shows an unavailable marker
 when no estimate exists. [Status tests](tests/server/status-routes.test.ts) use
@@ -727,7 +729,7 @@ try {
   flushes cache persistence while serving.
 - Process-wide state: the server applies no runtime switches and activates no
   expert offload; those stay with the process's runtime configuration and the
-  CLI's loader. It sets the MLX allocator limit from a GLM plan or
+  CLI's loader. It sets the MLX allocator limit from a runtime memory plan or
   `memoryBudgetBytes` and restores the value it found on close and on a failed
   start. The limit is one per process: servers running at the same time share
   it and the last applied wins. Sequential servers over one context are

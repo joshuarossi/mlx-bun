@@ -38,6 +38,21 @@ test("model discovery preserves batch vocabulary and binding capabilities and cl
   }
 });
 
+test("model discovery reports the native draft head only when the loaded draft is the checkpoint's own, and the planned context as the window", async () => {
+  const served = async (draft: unknown, memoryPlan: unknown) => {
+    const context = { modelId: "test/model", model: { config: { modelType: "llama", text: { maxPositionEmbeddings: 8192 } } },
+      template: { supportsThinking: false }, genDefaults: {}, draft, memoryPlan } as unknown as LoadedModelContext;
+    const routes = createDiscoveryRoutes(context, { discovery: { adapters: true, training: true, dsa: false, embeddings: false } },
+      123000, undefined, () => ({ scan: async () => 0, listCanonical: () => [], close() {} }));
+    const request = new Request("http://local/v1/models/test/model");
+    return (await (await routes.handle(new URL(request.url), request))!.json()).data[0];
+  };
+  expect(await served(null, null)).toMatchObject({ mtp: false, context_window: 8192 });
+  expect(await served({ provider: { id: "qwen-mtp" }, numDraftTokens: 2 }, null)).toMatchObject({ mtp: false });
+  expect(await served({ provider: { id: "any-provider-id" }, numDraftTokens: 2, native: true }, { contextTokens: 4096 }))
+    .toMatchObject({ mtp: true, context_window: 4096 });
+});
+
 test("library discovery closes each registry and refreshes only when its cache is invalidated", async () => {
   const run = discovery("qwen3", true, true);
   expect(await (await run.get("/library"))!.json()).toEqual({ models: [] });

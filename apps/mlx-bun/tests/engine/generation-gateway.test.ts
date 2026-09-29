@@ -7,6 +7,7 @@ import { runtimeConfig } from "@mlx-bun/inference/runtime/config";
 import type { MlxGatewayBinding, MlxBatchGroup, RowPromptCache } from "@mlx-bun/inference/execution";
 import type { GenerateOptions } from "@mlx-bun/inference/generation";
 import type { ResolvedExecution } from "@mlx-bun/inference/contracts/portable";
+import type { DeviceStepSampler, DeviceStepSamplerConfig } from "@mlx-bun/inference/sampling";
 
 const shape = (): RequestShape => ({ hasVision: false, hasAdapters: false,
   hasRepetitionPenalty: false, userSeed: false, kvQuant: false, turboQuant: false,
@@ -349,4 +350,45 @@ test("a requested KV scheme the model cannot serve is refused at startup; a miss
   expect(absent.kind).toBe("bf16");
   await new GenerationGateway(refusing, 1, { kvScheme: absent }).close();
   await new GenerationGateway(f.binding, 1, { kvScheme: resolveKvScheme({ override: 4 }) }).close();
+});
+
+/** A binding with no method/continuation hooks, so ordinary rows sample through the step sampler. */
+function ordinaryFake(submit: MlxBatchGroup["submit"]) {
+  const f = fake({ submit });
+  delete (f.binding as { continuationRequest?: unknown }).continuationRequest;
+  return f;
+}
+
+test("a supplied sampler factory builds the ordinary row's sampler and is disposed with the row", async () => {
+  const calls: { options: GenerateOptions; config: DeviceStepSamplerConfig }[] = [];
+  let disposed = 0, sampled = 0, plainGreedy: boolean | undefined;
+  const supplied = { isPlainGreedy: false, capturesLogprobs: false, needsHistory: false,
+    sample() { sampled++; return { token: "supplied-token", extras: null }; },
+    seedHistory() {}, commitDevice() {}, commitNumbers() {}, dispose() { disposed++; } } as unknown as DeviceStepSampler;
+  const f = ordinaryFake(async request => {
+    plainGreedy = request.plainGreedy;
+    expect(request.sample!(null as never, 0)).toBe("supplied-token" as never);
+    await request.onToken(7); return result;
+  });
+  const gateway = new GenerationGateway(f.binding, 1, { samplerFactory: (options, config) => {
+    calls.push({ options, config }); return supplied;
+  } });
+  const s = shape(), options: GenerateOptions = { maxTokens: 1, temperature: 0, logprobs: true, topLogprobs: 2 };
+  await gateway.run([5, 6], options, () => {}, undefined, s, gateway.place(s));
+  expect(calls).toHaveLength(1); expect(calls[0]!.options).toBe(options);
+  expect(calls[0]!.config).toMatchObject({ tokenRepresentation: "device", grammarWait: "external",
+    historyUpdate: "after-sample", initialHistory: [5, 6], captureSelectedLogprob: true, captureTopLogprobs: 2 });
+  expect(sampled).toBe(1); expect(plainGreedy).toBe(false); expect(disposed).toBe(1);
+  await gateway.close();
+});
+
+test("without a sampler factory ordinary rows use makeStepSampler", async () => {
+  let plainGreedy: boolean | undefined, sampler: unknown;
+  const f = ordinaryFake(async request => { plainGreedy = request.plainGreedy; sampler = request.sample; return result; });
+  const gateway = new GenerationGateway(f.binding, 1);
+  const s = shape();
+  await gateway.run([1], { maxTokens: 1, temperature: 0 }, () => {}, undefined, s, gateway.place(s));
+  expect(typeof sampler).toBe("function");
+  expect(plainGreedy).toBe(true); // makeStepSampler reports plain greedy for temperature 0 without processors
+  await gateway.close();
 });

@@ -49,10 +49,19 @@ export interface RenderOptions {
   preserveThinking?: boolean;
 }
 
-type ChatRenderer = (
+export type ChatRenderer = (
   messages: ChatMessage[],
   options: RenderOptions,
 ) => string;
+
+/** Reasoning markup a template's `enable_thinking` channel uses. */
+export type ThinkingFormat = "think-tag" | "channel-tokens";
+
+/** How to render chats for an artifact that ships no template source. */
+export interface TemplateFallback {
+  readonly render: ChatRenderer;
+  readonly thinkingFormat: ThinkingFormat | null;
+}
 
 function glm52ContentText(content: ChatMessage["content"], label: string): string {
   if (typeof content === "string") return content;
@@ -259,11 +268,11 @@ export class ChatTemplate {
    *  null if the model has no switchable reasoning:
    *   - "think-tag": `<think>…</think>` text markers (Qwen3.5, MiniCPM5) — split
    *     from decoded text by ThinkingTagSplitter.
-   *   - "gemma-channel": `<|channel>thought\n…<channel|>` (Gemma 4) — the markers
+   *   - "channel-tokens": `<|channel>thought\n…<channel|>` (Gemma 4) — the markers
    *     are SPECIAL TOKENS stripped at decode, so reasoning is split at the token
-   *     level in ToolAwareStream (gemma-sentinel mode), not from decoded text.
+   *     level in ToolAwareStream (sentinel-tokens mode), not from decoded text.
    *  Drives both the parser path and the reasoning capability advertised to Pi. */
-  readonly thinkingFormat: "think-tag" | "gemma-channel" | null;
+  readonly thinkingFormat: ThinkingFormat | null;
   /** True when the model has a switchable reasoning channel we can parse. */
   readonly supportsThinking: boolean;
 
@@ -273,7 +282,7 @@ export class ChatTemplate {
     eosToken: string | null,
     forceNoThinking = false,
     renderer: ChatRenderer | null = null,
-    explicitThinkingFormat: "think-tag" | "gemma-channel" | null = null,
+    explicitThinkingFormat: ThinkingFormat | null = null,
   ) {
     if (source === null && renderer === null)
       throw new Error("ChatTemplate needs a Jinja source or renderer");
@@ -297,14 +306,17 @@ export class ChatTemplate {
       : gatesThinking && source!.includes("<think>")
         ? "think-tag"
         : gatesThinking && source!.includes("<|channel>")
-          ? "gemma-channel"
+          ? "channel-tokens"
           : null);
     this.supportsThinking = this.thinkingFormat !== null;
   }
 
+  /** Loads the artifact's template. `fallback` renders artifacts that ship none
+   *  (the model layer supplies it from the profile); without one, a missing
+   *  template is an error. */
   static async load(
     modelDir: string,
-    opts: { disableThinking?: boolean } = {},
+    opts: { disableThinking?: boolean; fallback?: TemplateFallback } = {},
   ): Promise<ChatTemplate> {
     const config = (await Bun.file(`${modelDir}/tokenizer_config.json`).json()) as Record<string, any>;
     let source: string | undefined = config.chat_template;
@@ -313,11 +325,7 @@ export class ChatTemplate {
       if (await jinjaFile.exists()) source = await jinjaFile.text();
     }
     if (!source) {
-      const modelConfigFile = Bun.file(`${modelDir}/config.json`);
-      const modelConfig = await modelConfigFile.exists()
-        ? await modelConfigFile.json() as Record<string, unknown>
-        : null;
-      if (modelConfig?.model_type === "glm_moe_dsa") {
+      if (opts.fallback) {
         const tokenText = (t: unknown): string | null =>
           t == null ? null : typeof t === "string" ? t : (t as any).content;
         return new ChatTemplate(
@@ -325,8 +333,8 @@ export class ChatTemplate {
           tokenText(config.bos_token),
           tokenText(config.eos_token),
           false,
-          renderGlm52Chat,
-          "think-tag",
+          opts.fallback.render,
+          opts.fallback.thinkingFormat,
         );
       }
       throw new Error(`${modelDir}: no chat template found`);

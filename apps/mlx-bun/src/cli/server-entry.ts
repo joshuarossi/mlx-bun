@@ -68,7 +68,7 @@ export interface RunningServer {
  *
  * The server applies no runtime switches and activates no expert offload; the
  * process's runtime configuration and whatever loaded the context own those.
- * It sets the MLX allocator limit from the context's GLM plan or
+ * It sets the MLX allocator limit from the context's runtime memory plan or
  * `memoryBudgetBytes` and restores the previous limit after close. That limit
  * is process-wide: servers running at the same time in one process share it,
  * the last applied wins, and each close restores the value it found. Sequential

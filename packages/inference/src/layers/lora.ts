@@ -12,9 +12,11 @@ export interface LoraWeights {
 }
 
 /** Active-adapter state, shared by every mounted linear of one model.
- *  A plain field, NOT a ContextVar port: our generation queue is
- *  serialized, so exactly one request's adapters are active at a time
- *  Set/restored by generate(). */
+ *  A plain field, NOT a ContextVar port: under continuous batching requests
+ *  interleave, so the field is only valid for the forward being built. Each
+ *  execution group binds its rows' adapter list (`bindAdapterContext`) and
+ *  sets/restores it around every forward; `adapterScoped` does the same for a
+ *  single generation. */
 export class LoraState {
   active: string[] = [];
   /** Training-only LoRA-input dropout. `rate` is the drop probability; `seed` is

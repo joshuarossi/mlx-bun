@@ -300,7 +300,7 @@ test("production CLI composition requests optional templates and a continuous en
         decode: (ids, special) => { assert.deepEqual(ids, [2]); assert.equal(special, true); return "answer"; } } };
     mock.module(app + "src/engine/model-host.ts", () => ({ loadContext: async (path, id, options) => {
       loaded++; assert.equal(path, "/unused"); assert.equal(id, "test");
-      assert.deepEqual(options, { requireChatTemplate: false, glm: { enableMtp: false, maxGenerationTokens: loaded === 1 ? 256 : undefined } });
+      assert.deepEqual(options, { requireChatTemplate: false, runtime: { nativeDraft: false, maxGenerationTokens: loaded === 1 ? 256 : undefined } });
       return context;
     } }));
     mock.module(app + "src/engine/index.ts", () => ({ createAppEngine: async (supplied, options) => {

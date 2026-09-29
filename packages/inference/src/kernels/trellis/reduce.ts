@@ -2,14 +2,14 @@ import { MlxArray } from "@mlx-bun/mlx/array";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisGeometry } from "./geometry";
 import { HEADER, lutFor, decoderVariant } from "./codebook";
+import { TRELLIS_THREADS, TRELLIS_SG_PER_TG } from "./launch";
 
-const THREADS = 128, SG_PER_TG = 4;
 export const TRELLIS_MATVEC_MAX_M = 4;
 
 const REDUCE_SOURCE = String.raw`
   threadgroup float lutTG[4096];
   if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -62,7 +62,7 @@ const REDUCE_SOURCE = String.raw`
 const REDUCE_SHARED_M_SOURCE = String.raw`
   threadgroup float lutTG[4096];
   if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -141,10 +141,10 @@ export function trellisReduce(x2: MlxArray, codes: MlxArray, scales: MlxArray, g
   const kernel = shared ? sharedKernel() : reduceKernel();
   const [out] = kernel.apply([x2, codes, scales, lutFor(g.L)], {
     outputs: [{ shape: [M, g.rows], dtype: x2.dtype }],
-    grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), shared ? 1 : M],
-    threadGroup: [THREADS, 1, 1],
+    grid: [TRELLIS_THREADS, Math.ceil(g.rows / TRELLIS_SG_PER_TG), shared ? 1 : M],
+    threadGroup: [TRELLIS_THREADS, 1, 1],
     templateDtypes: { T: x2.dtype },
-    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT: decoderVariant(selected) },
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: TRELLIS_SG_PER_TG, VARIANT: decoderVariant(selected) },
   });
   return out!;
 }

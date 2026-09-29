@@ -45,6 +45,18 @@ export function isGlm52Config(config: ModelConfig): boolean {
   return config.modelType === "glm_moe_dsa";
 }
 
+/** Registry-level role of a `model_type` before any weights are read: a
+ *  speech-to-text checkpoint, served by the transcription engine. */
+export function isTranscriptionModelType(modelType: string): boolean {
+  return modelType === "whisper";
+}
+
+/** Registry-level role of a `model_type` before any weights are read: its
+ *  graph declares the pooled-embedding path (`embeddingDeclarationFor`). */
+export function isEmbeddingModelType(modelType: string): boolean {
+  return modelType === "qwen3";
+}
+
 /** Speculative-decoding drafters (e.g. `gemma4_assistant`) are companion
  *  artifacts to a target model — Q-only, centroid-head, no standalone LM
  *  head. They are never servable/selectable on their own (the spec path

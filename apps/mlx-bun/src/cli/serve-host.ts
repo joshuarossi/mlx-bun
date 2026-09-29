@@ -101,11 +101,11 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
     const draft = options.draft ?? {};
     const context = await loadContext(model.path, model.repoId, {
       ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
-      // Main's GLM resource plan inputs; other families ignore this block.
-      glm: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
+      // Resource plan inputs for runtimes that plan memory up front; other models ignore this block.
+      runtime: { batchSize: options.capacity, maxGenerationTokens: options.defaultGeneratedTokens ?? 128,
         ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
         ...(options.contextTokens !== undefined ? { contextTokens: options.contextTokens } : {}),
-        ...(options.mtp !== undefined ? { enableMtp: options.mtp } : {}) },
+        ...(options.mtp !== undefined ? { nativeDraft: options.mtp } : {}) },
       // Main's gate: a draft model, or the model-free ngram kind, or mtp alone
       // (the host resolves the bundled <model>/mtp/ companion).
       ...(draft.modelDir || draft.kind === "ngram" || draft.kind === "mtp" ? {
@@ -187,9 +187,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     // The default prompt path renders the context's template; a supplied builder replaces it.
     if (!input.buildPrompt) requireChatTemplate(context);
     const binding = await modelServingBinding(context, input.binding);
-    // Main: the plan's allocator reserve, else the explicit budget, caps the
+    // Main: the plan's allocator limit, else the explicit budget, caps the
     // allocator for the whole process and bounds optional cache residency.
-    const allocatorLimitBytes = context.glmMemoryPlan?.lineItems?.allocatorReserveBytes ?? options.memoryBudgetBytes;
+    const allocatorLimitBytes = context.memoryPlan?.allocatorLimitBytes ?? options.memoryBudgetBytes;
     if (allocatorLimitBytes) {
       const { setMemoryLimit } = await import("@mlx-bun/mlx/ffi");
       const previous = setMemoryLimit(allocatorLimitBytes);
@@ -219,9 +219,9 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     const tokenHistory = new GeneratedTokenHistory(context.tokenizer);
     if (caches.checkpoints) for (const tokens of caches.checkpoints.tokenPrefixes()) tokenHistory.remember(tokens);
     caches.promptCache.onPut = tokens => tokenHistory.remember(tokens);
-    const admission = context.glmMemoryPlan ?? fit(context.model.config, context.model.weightsBytes, 1,
+    const admission = context.memoryPlan ?? fit(context.model.config, context.model.weightsBytes, 1,
       undefined, undefined, 0, options.memoryBudgetBytes, caches.resolvedKvScheme.fitOptions);
-    const limits = resolveServingLimits(options, context.glmMemoryPlan, admission);
+    const limits = resolveServingLimits(options, context.memoryPlan, admission);
     // Main's speech-to-text companion: an explicit --whisper-model, else the
     // first downloaded Whisper checkpoint, resolved once on the first audio
     // request (a later download needs a restart, as in main). The weights load

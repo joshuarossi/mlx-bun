@@ -39,7 +39,7 @@ const preamble = `
   const app = ${JSON.stringify(app)};
   const events = [];
   const until = async (check, what) => { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(5); } };
-  const context = { modelId: "org/model", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, glmMemoryPlan: null, tokenizer: {},
+  const context = { modelId: "org/model", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
     template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
   const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
     checkpoints: null, continuationServices: {}, stopIdleDemotion() { events.push("timer stop"); }, async close() { events.push("cache close"); return { durable: true }; } };
@@ -502,7 +502,7 @@ test("the app form composes the real app over the socket with private storage: p
     const until = async (check, what) => { const end = Date.now() + 10000; while (!await check()) { if (Date.now() > end) throw new Error("timed out waiting for " + what); await Bun.sleep(10); } };
     const events = [], seen = [];
     mock.module("@mlx-bun/mlx/ffi", () => { throw new Error("native library loaded"); });
-    const context = { modelId: "org/model", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, glmMemoryPlan: null, tokenizer: {},
+    const context = { modelId: "org/model", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };

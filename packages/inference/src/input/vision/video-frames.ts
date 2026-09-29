@@ -30,7 +30,8 @@ export async function extractVideoFrames(
     throw new Error(
       "video input needs the frame-extraction sidecar (mlx-bun-frame-extract) " +
       "— ships beside the release binary and in the native pack; from a " +
-      "source tree it compiles on first use via the Xcode CLT (swiftc)",
+      "source tree build it with `bun run --cwd packages/inference build:native` " +
+      "(Xcode CLT swiftc) or point MLX_BUN_FRAME_EXTRACT at it",
     );
   const base = join(tmpdir(), `mlx-bun-video-${randomUUID()}`);
   // AVFoundation infers the container from the path EXTENSION — sniff the

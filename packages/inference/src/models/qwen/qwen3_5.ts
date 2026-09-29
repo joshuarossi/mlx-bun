@@ -42,7 +42,6 @@ import { bindQwenMediaInput, qwenDraftTarget, qwenMediaEncoders } from "./media-
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { gatedDeltaUpdate } from "../../kernels/delta/gated";
 import { SSMCache } from "../../state/ssm";
-import type { QwenConvolution } from "../../layers/qwen-conv";
 import { applyInterleavedRope, buildMropePositions, mropeInvFreq } from "../../layers/qwen-mrope";
 import { type MropeRequestState, type MropeForwardState } from "../../contracts/mlx/positions";
 
@@ -118,10 +117,6 @@ export function compiledSilu(x: MlxArray): MlxArray {
 
 /** Gated-DeltaNet linear-attention layer (mlx-lm GatedDeltaNet). */
 export class GatedDeltaNet {
-  /** Per-model experiment seam; null retains the oracle graph. The same
-   * implementation advances speculative rollback prefixes. Borrowed inputs,
-   * owned activation and independent state tail; no global runtime mutation. */
-  convolution: QwenConvolution | null = null;
   /** Per-model seam; null retains the oracle graph (weightless rms_norm, then a
    *  scalar multiply). When set, the scale rides in as the norm's weight: MLX's
    *  kernel writes `w * T(x * inv)`, the same bf16 product, in one kernel. bf16 only. */
@@ -166,14 +161,6 @@ export class GatedDeltaNet {
   }
 
   #convolve(qkv: MlxArray, state: MlxArray, rowLengths?: readonly number[]): [MlxArray, MlxArray] {
-    if (this.convolution) {
-      const result = this.convolution(qkv, state, this.convWeight);
-      if (!rowLengths) return result;
-      using input = ops.concatAxis([state, qkv], 1);
-      const tail = this.#convTail(input, qkv.shape[1]!, rowLengths);
-      result[1].dispose();
-      return [result[0], tail];
-    }
     const [, S, D] = qkv.shape as [number, number, number];
     const input = ops.concatAxis([state, qkv], 1);
     // MLX copy and contiguous can both alias the whole prefill buffer.

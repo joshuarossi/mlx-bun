@@ -69,7 +69,7 @@ test("the existing runtime context cap is validated without adding serve flags",
   }
 });
 
-test("loaded GLM plans supply context/output defaults and intersect explicit or profile context caps", () => {
+test("loaded runtime plans supply context/output defaults and intersect explicit or profile context caps", () => {
   const plan = { contextTokens: 8192, maxGenerationTokens: 2048 };
   expect(resolveServingLimits(parse(), plan)).toEqual({ contextLimit: 8192, defaultGeneratedTokens: 2048 });
   expect(resolveServingLimits({ ...parse(), contextLimit: 16384 }, plan)).toEqual({ contextLimit: 8192, defaultGeneratedTokens: 2048 });
@@ -82,7 +82,7 @@ test("loaded GLM plans supply context/output defaults and intersect explicit or 
   finally { restore(); }
 });
 
-test("ordinary models receive no inferred context or generation cap from GLM composition", () => {
+test("ordinary models receive no inferred context or generation cap from plan composition", () => {
   expect(resolveServingLimits(parse())).toEqual({ contextLimit: null, defaultGeneratedTokens: undefined });
   expect(resolveServingLimits({ ...parse("--max-tokens", "512"), contextLimit: 4096 }, null))
     .toEqual({ contextLimit: 4096, defaultGeneratedTokens: 512 });
@@ -316,7 +316,7 @@ for (const [sessionDir, jobPaths, expectedStore] of [
     const { defaultSessionDir } = await import(app + "src/chat/session-files.ts");
     let sessionsDirectory;
     const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 65536 } } },
-      glmMemoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048 }, tokenizer: {},
+      memoryPlan: { contextTokens: 8192, maxGenerationTokens: 2048 }, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off" }, kvScheme: {}, stateCodecs: {},
       adapterNamespace() {}, checkpoints: { tokenPrefixes: () => [[1, 2]] }, continuationServices: {},
@@ -418,7 +418,7 @@ test("restored admission, wiring, media, sampling, and context flags keep main's
     expect(() => parse(...args)).toThrow();
 });
 
-test("a memory budget enforces the admission estimate's safe context; otherwise GLM plans and profile caps apply as before", () => {
+test("a memory budget enforces the admission estimate's safe context; otherwise runtime plans and profile caps apply as before", () => {
   const budget = { ...parse("--memory-budget", "8"), contextLimit: null };
   expect(resolveServingLimits(budget, null, { maxSafeContext: 6000 })).toEqual({ contextLimit: 6000, defaultGeneratedTokens: undefined });
   expect(resolveServingLimits({ ...budget, contextLimit: 4096 }, null, { maxSafeContext: 6000 }).contextLimit).toBe(4096);
@@ -452,7 +452,7 @@ test("MLX_BUN_SHUTDOWN_TIMEOUT_MS bounds serve's shutdown deadline; unusable val
   }
 });
 
-test("startup wires the memory budget, GLM context, allocator limit, expert offload, and force-wire through composition", async () => {
+test("startup wires the memory budget, runtime context, allocator limit, expert offload, and force-wire through composition", async () => {
   const app = new URL("../", import.meta.url).pathname;
   const script = `
     import { mock } from "bun:test";
@@ -465,7 +465,7 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
       numGlobalKeyValueHeads: 2, attentionKEqV: false, layerTypes: ["full_attention", "sliding_attention"], slidingWindow: 1024,
       maxPositionEmbeddings: 32768, enableMoeBlock: false } };
     let mountFails = false;
-    const context = { modelId: "test", model: { config, weightsBytes: 2e9 }, glmMemoryPlan: null, tokenizer: {},
+    const context = { modelId: "test", model: { config, weightsBytes: 2e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); },
       adapters: { async mount(id, dir) { events.push("mount " + id + " " + dir); if (mountFails) throw new Error("adapter_config.json missing"); return { id, mountedLayers: 3 }; } } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
@@ -514,7 +514,7 @@ test("startup wires the memory budget, GLM context, allocator limit, expert offl
     // The adapter mounts right after the model loads, before the allocator, caches, or engine exist.
     assert.deepEqual(events, ["offload /unused", "activate /offload", "load wire=1 media=1", "mount my-lora /unused/adapters/my-lora", "allocator 8000000000"]);
     assert.equal(defaultAdapter, "my-lora");
-    assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, glm: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096, enableMtp: false },
+    assert.deepEqual(loadOptions, { memoryBudgetBytes: 8e9, runtime: { batchSize: 2, maxGenerationTokens: 128, memoryBudgetBytes: 8e9, contextTokens: 4096, nativeDraft: false },
       draftKind: "ngram", numDraftTokens: 4, ngramMax: 5, ngramMin: 2 });
     assert.equal(cacheOptions.allocatorLimitBytes, 8e9);
     assert.equal(statusBudget, 8e9);
@@ -723,7 +723,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
     const app = ${JSON.stringify(app)};
     const events = [], created = [];
     let defaultWhisper = null, discovery, audioHost, piProbe, drain;
-    const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, glmMemoryPlan: null, tokenizer: {},
+    const context = { modelId: "test", model: { config: { text: { maxPositionEmbeddings: 4096 } }, weightsBytes: 1e9 }, memoryPlan: null, tokenizer: {},
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
       adapterNamespace() {}, checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };

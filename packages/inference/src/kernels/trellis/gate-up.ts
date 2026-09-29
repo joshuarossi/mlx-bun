@@ -3,14 +3,14 @@ import * as ops from "@mlx-bun/mlx/ops";
 import { MetalKernel } from "@mlx-bun/mlx/metal-kernel";
 import type { TrellisWeights } from "./geometry";
 import { HEADER, lutFor, decoderVariant } from "./codebook";
+import { TRELLIS_THREADS, TRELLIS_SG_PER_TG } from "./launch";
 
 import { TRELLIS_MATVEC_MAX_M as MATVEC_MAX_M } from "./reduce";
-const THREADS = 128, SG_PER_TG = 4;
 
 const GATEUP_SOURCE = String.raw`
   threadgroup float lutTG[4096];
   if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -82,7 +82,7 @@ const GATEUP_SOURCE = String.raw`
 const GATEUP_SHARED_M_SOURCE = String.raw`
   threadgroup float lutTG[4096];
   if ((VARIANT) == 2) {
-    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += 128u) lutTG[i] = lut[i];
+    for (uint i = thread_position_in_threadgroup.x; i < 4096u; i += ${TRELLIS_THREADS}u) lutTG[i] = lut[i];
     threadgroup_barrier(metal::mem_flags::mem_threadgroup);
   }
   const uint lane = thread_index_in_simdgroup;
@@ -185,10 +185,10 @@ export function fusedGateUpSwiglu(x: MlxArray, gate: TrellisWeights, up: Trellis
   const x2 = ops.reshape(x, [M, g.inFeatures]);
   const [mid] = kernel.apply([x2, gate.codes, gate.scales, up.codes, up.scales, lutFor(g.L)], {
     outputs: [{ shape: [M, g.rows], dtype: x.dtype }],
-    grid: [THREADS, Math.ceil(g.rows / SG_PER_TG), shared ? 1 : M],
-    threadGroup: [THREADS, 1, 1],
+    grid: [TRELLIS_THREADS, Math.ceil(g.rows / TRELLIS_SG_PER_TG), shared ? 1 : M],
+    threadGroup: [TRELLIS_THREADS, 1, 1],
     templateDtypes: { T: x.dtype },
-    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: SG_PER_TG, VARIANT: decoderVariant(selected) },
+    templateInts: { M, R: g.rows, C: g.cols, BT: g.T, K: g.k, L: g.L, ROWS_TG: TRELLIS_SG_PER_TG, VARIANT: decoderVariant(selected) },
   });
   x2.dispose();
   const out = ops.reshape(mid!, [...lead, g.rows]);
