@@ -1,10 +1,8 @@
-// Faithful DFlash drafter (DSpark paper §3.1, Eq 2–3) — the REAL KV-injection
-// architecture, in a parallel file so the v1 single-vector module stays intact
-// as the baseline. Selected by variant="dflash" in the checkpoint metadata.
-//
-// vs v1 (packages/inference/src/models/speculative/dspark.ts): v1 collapsed the
-// target context to ONE vector fused as a
-// sequence token before layer 0. This builds the paper's mechanism:
+// Faithful DFlash drafter (DSpark paper §3.1, Eq 2–3) — the KV-injection
+// architecture. Selected by variant="dspark" (or legacy "dflash") in the
+// checkpoint metadata. The superseded v1 single-vector module (target context
+// collapsed to ONE vector fused as a sequence token before layer 0) is deleted;
+// this builds the paper's mechanism:
 //   Eq 2:  H_ctx = RMSNorm(W_c · [H^{l1};…;H^{lm}])   — m tapped target layers,
 //          over the FULL context, projected into the draft width.
 //   Eq 3:  every draft layer i forms K_i=[W_i^K H_ctx; W_i^K H_d],
@@ -537,7 +535,7 @@ tokens: sizes.map((length, row) => Array.from({ length }, (_, step) => values[st
       variant?: string; config: DflashConfig; dims: TargetDims; target_id: string;
     };
     if (meta.variant !== "dspark" && meta.variant !== "dflash")
-      throw new Error(`${dir} is not a dspark drafter (variant=${meta.variant ?? "none — a v1 single-vector checkpoint?"})`);
+      throw new Error(`${dir} is not a dspark drafter (variant=${meta.variant ?? "none — a superseded v1 single-vector checkpoint?"})`);
     const d = new DflashDrafter(meta.config, meta.dims, meta.target_id);
     const tensors = loadAdapterTensors(join(dir, "model.safetensors"));
     try {

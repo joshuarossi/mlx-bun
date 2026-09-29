@@ -1,11 +1,9 @@
-// Streaming generation — port of mlx-lm's generate_step:
-// - prefill in chunks; cache state evaluated per chunk (bounded transient
-//   memory), logits never computed for non-final prefill positions
-// - decode pipelining via mx.async_eval: step n+1's graph is built and
-//   dispatched before step n's token is read back, so the GPU never idles
-//   on the JS round-trip
-// - opt-in early token-zero yield reduces latency before that pipeline starts
-// - sampling stays on-device; only the chosen token id crosses to JS
+// Denoising generation: adapts a non-autoregressive denoising graph to the
+// Generation contract. The denoising engine runs its own prefill and canvas
+// loop to completion (`denoiseAsync`); only then are the finished canvas's
+// tokens yielded one by one, so nothing streams while it runs. There is no
+// chunked prefill, decode pipelining or early token-zero yield here (those are
+// the autoregressive path), and prefill/cache stats are zero.
 
 import { runtimeConfig } from "../runtime/config";
 import { type MlxDenoisingBinding } from "./bindings/denoising";

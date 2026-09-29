@@ -14,5 +14,4 @@ export * from "./loading";
 export * from "./geglu";
 export * from "./swiglu";
 export * from "./qwen-mrope";
-export * from "./qwen-conv";
 export * from "./rope";
