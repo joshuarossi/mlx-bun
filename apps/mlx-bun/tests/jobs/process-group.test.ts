@@ -2,7 +2,7 @@
 // group, and the job host joins that whole group (not only the child) on
 // shutdown, on the child's own exit, and when the host disappears.
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { JobStore } from "../../src/jobs/db";
@@ -25,6 +25,16 @@ async function until(check: () => boolean, ms = 5_000) {
   const end = Date.now() + ms;
   while (!check()) { if (Date.now() > end) throw new Error("timed out"); await Bun.sleep(10); }
 }
+/** The JSON a child wrote, once complete: the file can exist before its write finishes. */
+function written<T>(path: string): T | undefined {
+  try { return JSON.parse(readFileSync(path, "utf8")) as T; } catch { return undefined; }
+}
+/** Waits for a child's complete JSON write. */
+async function awaitWritten<T>(path: string): Promise<T> {
+  let value: T | undefined;
+  await until(() => (value = written<T>(path)) !== undefined);
+  return value!;
+}
 /** A stand-in job child: it starts `sleep 60` sharing its stdout and stderr
  * (a descendant holding the job's log pipes), records both pids, then either
  * stays up or exits at once. */
@@ -35,8 +45,8 @@ function childEntry(root: string, exitAtOnce: boolean) {
     require("node:fs").writeFileSync(${JSON.stringify(pids)}, JSON.stringify({ leader: process.pid, descendant: descendant.pid }));
     ${exitAtOnce ? "process.exit(0);" : "setInterval(() => {}, 1000);"}`);
   const read = () => {
-    if (!existsSync(pids)) return undefined;
-    const value = JSON.parse(readFileSync(pids, "utf8")) as { leader: number; descendant: number };
+    const value = written<{ leader: number; descendant: number }>(pids);
+    if (!value) return undefined;
     strays.push(value.leader, value.descendant);
     return value;
   };
@@ -81,8 +91,7 @@ test("a descendant ignoring SIGTERM is killed after the grace period before the 
     await Bun.sleep(100); process.exit(0);`);
   const released = Promise.withResolvers<void>();
   submitSubprocess(store, "quantize", {}, undefined, { entry, graceMs: 200, acquire: async () => ({ dispose() { released.resolve(); } }) });
-  await until(() => existsSync(pids));
-  const { descendant } = JSON.parse(readFileSync(pids, "utf8")) as { descendant: number };
+  const { descendant } = await awaitWritten<{ descendant: number }>(pids);
   strays.push(descendant);
   const started = Date.now();
   await released.promise;
@@ -116,8 +125,7 @@ test("a job child whose host is gone stops itself and its descendants", async ()
     setInterval(() => {}, 1000);`], { detached: true, stdin: "pipe", stdout: "ignore", stderr: "inherit",
     env: { ...process.env, MLX_BUN_LIBMLXC: "/nonexistent/libmlxc.dylib" } });
   strays.push(child.pid);
-  await until(() => existsSync(pids));
-  const { descendant } = JSON.parse(readFileSync(pids, "utf8")) as { descendant: number };
+  const { descendant } = await awaitWritten<{ descendant: number }>(pids);
   strays.push(descendant);
   expect(alive(child.pid)).toBe(true);
   child.stdin.end(); // what the kernel does when the host exits
@@ -186,8 +194,7 @@ test("a process that left the group holding the child's output does not hold the
   try {
     const released = Promise.withResolvers<void>();
     submitSubprocess(store, "quantize", {}, undefined, { entry, graceMs: 200, acquire: async () => ({ dispose() { released.resolve(); } }) });
-    await until(() => existsSync(pids));
-    strays.push((JSON.parse(readFileSync(pids, "utf8")) as { escaped: number }).escaped);
+    strays.push((await awaitWritten<{ escaped: number }>(pids)).escaped);
     await within(released.promise, 5_000, "the lease waited on output held outside the group");
     expect(errorSpy.mock.calls.flat().join(" ")).toContain("outlived SIGKILL or its output");
   } finally { errorSpy.mockRestore(); }
