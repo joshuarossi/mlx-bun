@@ -7,21 +7,28 @@ export const plainKvStorage: DenseKvReads = Object.freeze({ appendable: () => tr
  * dequantized window, so every append is read dense. */
 export const decodedKvStorage: DenseKvReads = Object.freeze({ appendable: () => true });
 
-/** A graph's declared requirement: the layers its attention reads as plain
- * keys and values. Bound once against the graph's own fresh caches and copied:
- * an absent or malformed declaration is refused, never read as no requirement,
- * and each declared layer's storage must read dense. */
-export function bindRequiredDenseKvLayers(declared: unknown, caches: readonly Cache[]): readonly number[] {
+/** A copied, frozen list of dense-read layers: distinct indices into a
+ * graph's `count` caches. An absent or malformed list is refused, never read as
+ * no requirement. */
+export function denseKvLayerList(declared: unknown, count: number): readonly number[] {
   if (!Array.isArray(declared))
     throw new TypeError("the graph must declare the layers its attention reads as plain KV (requiredDenseKvLayers)");
   const layers = Object.freeze([...declared as unknown[]]);
-  if (layers.some(layer => !Number.isSafeInteger(layer) || (layer as number) < 0 || (layer as number) >= caches.length) ||
+  if (layers.some(layer => !Number.isSafeInteger(layer) || (layer as number) < 0 || (layer as number) >= count) ||
       new Set(layers).size !== layers.length)
-    throw new RangeError(`requiredDenseKvLayers must be distinct layer indices below ${caches.length}`);
-  const unreadable = layers.filter(layer => caches[layer as number]!.denseKvReads === undefined);
+    throw new RangeError(`dense KV read layers must be distinct layer indices below ${count}`);
+  return layers as readonly number[];
+}
+
+/** A graph's declared requirement: the layers its attention reads as plain
+ * keys and values. Bound once against the graph's own fresh caches and copied;
+ * each declared layer's storage must read dense. */
+export function bindRequiredDenseKvLayers(declared: unknown, caches: readonly Cache[]): readonly number[] {
+  const layers = denseKvLayerList(declared, caches.length);
+  const unreadable = layers.filter(layer => caches[layer]!.denseKvReads === undefined);
   if (unreadable.length)
     throw new RangeError(`requiredDenseKvLayers names layers whose storage does not read dense: ${unreadable.join(", ")}`);
-  return layers as readonly number[];
+  return layers;
 }
 
 /** Rows (of `rows`) whose next append is not certified plain-readable in

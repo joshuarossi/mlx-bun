@@ -325,9 +325,15 @@ span, once the gateway has certified the scheme. Affine KV commits spans the
 same way while a row's storage still reads plain: a span whose maintenance ran
 before the transition appends unsplit even across it, and a row whose next
 append would no longer read plain is refused with `DenseKvReadError` before any
-layer appends, where main threw in that forward. The span method binds the
-graph's dense-read layers explicitly; the gateway supplies the graph's own
-declaration. Affine grammar spans are not yet qualified with real weights.
+layer appends, where direct generation fails in that forward. The span method
+binds the graph's dense-read layers explicitly; the gateway supplies the
+graph's own declaration. On 2026-09-28 UTC (M1 Max, MLX 0.32.2) the opt-in
+`tests/parity/affine-grammar-spans.test.ts` (`MLX_BUN_TEST_AFFINE_SPANS_MODEL`)
+passed on cached Gemma2-2B-4bit `2c715097` with KV4: below the transition, B1
+spans matched direct jump-forward generation in tokens, matcher history and
+every projection's bytes; a row crossing it was refused with the same published
+tokens and matcher history; an interleaved peer matched its solo run and the
+group served again.
 
 On 2026-09-28 UTC, cached Gemma2-2B-4bit snapshot `2c715097` (26 full-attention
 layers) passed bounded TurboQuant k8v3 acceptance on an M1 Max, MLX 0.32.2 and
@@ -346,18 +352,29 @@ remain outside Git.
 
 Universal graphs
 with sliding layers take the same ordinary delayed path when their bound
-attention reads encoded KV. On Qwen3 and Qwen3-MoE, delayed affine requests
-with an explicit positive start take the same dense-read path as Gemma2: main
-served them serially until a row's transition. Ordinary decoding, generation
-checkpoints and committed grammar spans run while a row reads plain; a
-configured draft is refused (main's serial speculation failed on it) unless an
-adapter request ignores it, and supplied fill decodes ordinarily (main had no
-affine committed append on these graphs). Nothing is claimed for a start of 0
-or for attention after conversion; not yet qualified with real weights.
+attention reads encoded KV. On Qwen3 and Qwen3-MoE, affine requests take the
+same dense-read path as Gemma2: ordinary decoding, generation checkpoints and
+committed grammar spans run while a row reads plain, and a row whose next
+append would read a converted layer is refused with `DenseKvReadError`, so
+immediate affine KV (start 0) is refused before its first append. Their
+attention reads keys and values through `updateAndFetch`, which quantized
+storage does not serve. A configured draft is refused (`continuous-unavailable`)
+unless an adapter request ignores it, and supplied fill decodes ordinarily (no
+affine committed-append format on these graphs). On 2026-09-28 UTC (M1 Max, MLX 0.32.2) the opt-in spans test above passed on
+cached Qwen3-4B-Instruct-2507-4bit `50d42775` with KV4 (B1 spans equal to direct
+generation below the transition, the crossing row refused with the same
+published tokens, an interleaved peer equal to its solo run), and the opt-in
+ordinary-continuation test passed on it with KV4 starting at prompt+20 (rows
+stay plain; B1 and B4 restored exactly from interrupted checkpoints). No
+Qwen3-MoE artifact was run.
 On those encoded graphs and on MiniCPM5, delayed affine
-rows stay ordinary-only, as main served them serially, and their direct grammar
-jump commits spans through the same span method with no dense-read requirement,
-before and after conversion; not yet qualified with real weights. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
+rows stay ordinary-only, and their direct grammar jump commits spans through the
+same span method with no dense-read requirement, before and after conversion.
+The same opt-in real-weight spans test passed on cached MiniCPM5-1B-OptiQ-4bit
+`664aabae` and Qwen2.5-0.5B-Instruct-4bit `a5339a41` with KV4: B1 spans matched
+direct generation in tokens, matcher history and every projection's bytes, both
+below the transition and for a row converting three tokens into decode and
+continuing over converted layers; an interleaved peer matched its solo run. On 2026-09-27 UTC (M1 Max, MLX 0.32.2) at `a9b60646`,
 a custom graph over unchanged Llama-3.2-3B-Instruct-4bit weights with window 8
 (not a published model) matched main's serial path at B1 in full logits and all
 valid cache planes for bf16, immediate affine, KV4 and KV8 converting in decode

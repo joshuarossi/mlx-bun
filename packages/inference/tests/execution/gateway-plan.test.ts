@@ -352,11 +352,11 @@ function dense(layers = 4): UniversalDenseModel {
   });
 }
 
-// Qwen3 and Qwen3-MoE read every layer plain. Main served their delayed affine
-// requests serially: ordinary rows until the transition, generation
-// checkpoints, the direct grammar jump, and adapter requests ignoring a
-// configured draft; a true draft failed in main's serial speculation and fill
-// was disabled in generation (no affine committed-append formats on these graphs).
+// Qwen3 and Qwen3-MoE read every layer plain. Their delayed affine requests
+// serve ordinary rows until the transition, generation checkpoints, the direct
+// grammar jump, and adapter requests ignoring a configured draft; a true draft
+// is refused and supplied fill decodes ordinarily (no affine committed-append
+// formats on these graphs).
 for (const [name, prototype, modelType] of [["qwen3", Qwen3Model.prototype, "qwen3"],
   ["qwen3-moe", Qwen3MoeModel.prototype, "qwen3_moe"]] as const)
 test(`${name} reads dense KV: delayed affine serves ordinary decoding, checkpoints and committed grammar spans; drafts, fill and proposals follow main`, () => {
