@@ -114,10 +114,18 @@ Migration gaps stay required work in the feature table.
   `input/media-fetch.ts` names the app's `--allow-private-media`, and
   `scripts/{bundle-files,build-binary,verify-binary}.ts` and
   `apps/mlx-bun/tests/compiled-consumer.ts` import non-exported `packages/mlx/src/native`.
-- [ ] Complete shared-execution support for the shapes under
-  [Unsupported request shapes](#unsupported-request-shapes) and the remaining speculative
-  target/cache combinations. Exit: each uses the shared scheduler and is verified with real
-  weights and cancellation/streaming coverage; unsupported shapes keep the typed capability error.
+- [ ] Graphs declare their capabilities; the scheduler only schedules. Today
+  `execution/gateway-binding.ts` derives capabilities by inspecting the model (`instanceof`
+  checks, a Gemma2 softcap branch, model-scoped flags such as `MLX_BUN_QWEN_SPEC_KV4`), and
+  `apps/mlx-bun/src/engine/{model-host,media-preparation}.ts` do the same. Move that knowledge
+  behind the graph contract (batched adapters, media-input binding, paged attention, hidden-layer
+  taps, readable KV encodings, committed spans, fill) so planning reads only declarations and the
+  request, refusals name the missing capability, and a loaded model's capabilities are queryable.
+  Exit: no model classes or model-scoped flags in `execution/` or the app engine (enforced by the
+  architecture gate); `gateway-plan` decisions and parity unchanged.
+- [ ] Support the shapes under [Unsupported request shapes](#unsupported-request-shapes) as
+  capabilities of the graphs that lack them. Exit: each runs on the shared scheduler, verified
+  with real weights and cancellation/streaming coverage.
 - [ ] Preserve continuous batching as the serving default, including single requests. Keep
   compilation choices inside graph layers, without compilation switches on the app surface.
   Exit: the full draft preserves the cancellation/streaming contracts and, where the contract
@@ -151,32 +159,25 @@ experiments and benchmarks live outside it. Package READMEs hold the evidence de
 
 ### Unsupported request shapes
 
-Each shape below reports the typed capability error until it runs on the shared scheduler with
-real-weight, cancellation and streaming coverage. What already works, with evidence, is in the
-[inference README](packages/inference/README.md#scheduler-continuation-and-specialized-path-checks).
+Refused with a typed error today (`execution/plan.ts`):
 
-- **Gemma2 (softcap) graphs.** Still unsupported: draft providers whose rows tap target hidden
-  layers (the graph has no tap operation) and paging. Unqualified: multi-row adapter/draft
-  requests, B>1 for adapter-free draft or fill requests, stacked-B2 grammar over encoded KV, and
-  main-terminal parity of the speculative terminal commit.
-- **Sliding-attention Universal graphs** (admitted through bound cache operations and per-group
-  masks). Real-weight evidence is a custom window-8 Llama-3.2-3B graph, where gateway and direct
-  execution match at B1/B2 for ordinary, delayed-encoded, grammar (verified proposals) and applied
-  supplied fill (late join included). Open: real-weight acceptance on a published sliding model,
-  and speculation and encoded paths there. Decisions: on rotating-cache graphs a grammar jump keeps
-  verified proposals (no committed spans) and supplied fill is applied; sliding graphs speculate for
-  adapter+n-gram, encoded KV+draft and logprobs+draft rows (accepted).
-- **Encoded (quantized or TurboQuant) KV.** Delayed affine KV batches ordinary decoding, checkpoints
-  and committed grammar spans on MiniCPM5 and encoded-read universal graphs (Qwen3 and Qwen3-MoE
-  included). Open: delayed speculation stays excluded; Qwen3-MoE never ran on real weights; Gemma4
-  TurboQuant and full-logit qualification beyond the Gemma2 scope; the Turbo batch and paging refusals
-  are unchanged; supplied fill falls back to ordinary decoding and keeps checkpoints ineligible; a
-  restored wrapped ring's continuation can differ from the live one (also in main).
-- **Adapter rows whose configured draft cannot serve adapters** decode ordinarily, ignore draft and
-  fill, and keep generation checkpoints on every graph (decided, #229). Unqualified: multi-row
-  configured-draft requests and combinations beyond the linked scenarios; HTTP.
-- **No batched binding:** model caches without batch conversion, media without a batched input
-  binding, adapters without batched adapter support.
+- Delayed affine KV with a draft that would speculate.
+- Draft providers that tap target hidden layers on Gemma2 (softcap) graphs: the graph has no tap
+  operation.
+- Paged KV on graphs other than Gemma4 (as in main; broader paging is under Improvements).
+- A KV scheme the model's cache cannot read (refused at startup).
+
+Runs, not yet verified on real weights (evidence so far is in the
+[inference README](packages/inference/README.md#scheduler-continuation-and-specialized-path-checks)):
+multi-row adapter/draft requests; B>1 adapter-free draft or fill requests and stacked-B2 grammar
+over encoded KV on Gemma2; a published sliding-window model (evidence is a custom window-8
+Llama-3.2-3B graph), including speculation and encoded paths there; Qwen3-MoE affine KV; Gemma4
+TurboQuant beyond the Gemma2 scope.
+
+Decided: adapter rows whose draft cannot serve adapters decode ordinarily and keep generation
+checkpoints on every graph; on rotating-cache graphs a grammar jump keeps verified proposals and
+supplied fill is applied; sliding graphs speculate for adapter+n-gram, encoded KV+draft and
+logprobs+draft rows.
 
 ## Release acceptance
 
