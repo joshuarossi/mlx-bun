@@ -1013,6 +1013,11 @@ this producer on each submit record main's producer ran, for any family or
 training path, and requires main's metrics, config files, adapter and checkpoint
 tensors, fresh-reload logits, and optionally its `fuse` output exactly; its
 header gives the commands that produce the references outside the repository.
+On 2026-09-28 it passed on the M1 Max against main `02d723a` run from source with
+this tree's staged native library, for mlx-community MiniCPM5-1B-OptiQ-4bit
+(`664aabae`). The records were SFT (8 iterations, batch 2, accumulation 2, dropout,
+rsLoRA, checkpoints, fused output), ORPO (default L3 heads, grad checkpointing)
+and DPO (LoRA+). A reference with a changed seed failed as expected.
 
 Composition takes `storagePaths` (job store, saved token file, artifact root)
 like `chatPaths` and `memoryPaths`, so embedded and test servers never touch
