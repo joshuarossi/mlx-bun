@@ -486,6 +486,19 @@ It never downloads weights; missing native libraries or an invalid supplied
 checkpoint fail. This checks HTTP/Pi behavior, not quantize jobs, a compiled-binary
 lifecycle, numerical parity, or performance.
 
+The opt-in [paged KV test](tests/engine/paged-kv.test.ts) also covers Gemma4
+HTTP cancellation for each paged reader: the gathered reader and the direct
+reader that `MLX_BUN_PAGED_ATTN=1` selects (read, like every `MLX_BUN_` switch,
+into the runtime snapshot from the environment). A client leaves a greedy
+`/v1/completions` stream mid-generation; the server observes the disconnect, the
+row stops storing tokens before its natural end, and the scheduler drains. The
+same server then answers another prompt and the abandoned one exactly as a fresh
+paged server with the same reader does, and the frames the client received equal
+a control stopped (`max_tokens`) at the token that published the last of them.
+Every paged cache in the case uses the selected reader; both servers run without
+the RAM prompt cache so every compared request prefills cold. Run with
+`cd apps/mlx-bun && MLX_BUN_COMPILED_GEMMA_E4B=<cached Gemma4 snapshot directory> bun test tests/engine/paged-kv.test.ts -t "reader"`.
+
 `server/status-routes.ts` borrows live cache, scheduler, model diagnostic and
 Responses-history counters for `GET /stats`; `GET /fit` uses the public inference
 fit functions (`@mlx-bun/inference/execution/fit`) and the served artifact metadata. Predictions remain advisory and do
@@ -1020,6 +1033,23 @@ boundary, and, with a cached bf16 snapshot named by
 `MLX_BUN_APP_TEST_BF16_MODEL`, a `convert` interrupted after its durable job log
 reaches the Probing/Sensitivity stage and a complete uniform conversion whose
 output reloads and generates. It downloads nothing.
+
+A further case in the same file consumes finished fine-tune outputs as
+artifacts, with the RAM prompt cache off so every compared request prefills
+cold. Two SFT jobs train on sentences written at run time. Each finished
+adapter (not a checkpoint), and their merge through `POST /api/finetune/merge`,
+is mounted with `POST /v1/adapters` and selected per request. A selected
+adapter changes the greedy `/v1/completions` text; requests without one, and
+requests after `DELETE /v1/adapters/<id>`, return the base choice exactly, text
+and per-token logprobs, and an unmounted id is refused. A fresh process mounting
+the same two directories reproduces both adapters' choices exactly.
+`mlx-bun fuse` then folds one adapter into the base. The output keeps
+`config.json`, the tokenizer files, the tensor inventory (names, dtypes, shapes)
+and every tensor outside the folded modules byte-identical, changes only folded
+modules, and loads with `serve` and generates. Its output is not compared with
+the mounted adapter: `fuse` re-quantizes folded modules with their source spec,
+so the fused model and the adapter are not bit-exact by contract. Run with
+`cd apps/mlx-bun && MLX_BUN_APP_TEST_MODEL=<cached snapshot directory> bun test tests/engine/managed-jobs.test.ts -t "finished fine-tune outputs"`.
 
 ## Dataset jobs
 
