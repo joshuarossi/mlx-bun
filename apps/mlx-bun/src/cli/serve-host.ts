@@ -5,6 +5,7 @@
 // serves them. Both borrow persistent services from the AppState they are
 // given, and one close releases everything they created in the app's order.
 import { releaseContext, requireChatTemplate, type ContextOwnership, type LoadedModelContext } from "../engine/model-host";
+import { createEngineTelemetry } from "../engine/telemetry";
 import type { ModelBinding } from "../engine/model-binding";
 import { fit } from "@mlx-bun/inference/execution/fit";
 import type { DurabilityFlushResult, DurabilitySnapshotStats } from "@mlx-bun/inference/state";
@@ -67,6 +68,8 @@ export interface ContextHost {
   defaultAdapter?: string;
   /** `/stats`' `server.owner`; default "embedded". */
   owner?: string;
+  /** Milliseconds the loader took to load the model, published with its `model.load` event; absent for a context this host did not load. */
+  loadMs?: number;
 }
 
 /** Internal: process-wide settings the loader applied, restored once with the
@@ -99,6 +102,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
       }
     }
     const draft = options.draft ?? {};
+    const loadStarted = performance.now();
     const context = await loadContext(model.path, model.repoId, {
       ...(options.memoryBudgetBytes !== undefined ? { memoryBudgetBytes: options.memoryBudgetBytes } : {}),
       // Resource plan inputs for runtimes that plan memory up front; other models ignore this block.
@@ -115,6 +119,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
         ...(draft.ngramMax !== undefined ? { ngramMax: draft.ngramMax } : {}),
         ...(draft.ngramMin !== undefined ? { ngramMin: draft.ngramMin } : {}) } : {}),
     });
+    const loadMs = performance.now() - loadStarted;
     if (draft.modelDir) console.log(`[serve] draft: ${draft.modelDir.split("/").filter(Boolean).at(-1)}`);
     else if (draft.kind === "ngram") console.log("[serve] draft: ngram (prompt lookup)");
     cleanup = () => context.dispose();
@@ -137,7 +142,7 @@ export async function startModelHost(state: AppState, model: ModelRecord, option
     const restore = restoreLoader;
     cleanup = undefined; restoreLoader = undefined;
     return await startContextHost(state, context, options,
-      { ownership: "owned", artifact: model, owner: "serve", ...(defaultAdapter ? { defaultAdapter } : {}) },
+      { ownership: "owned", artifact: model, owner: "serve", loadMs, ...(defaultAdapter ? { defaultAdapter } : {}) },
       { ...hooks, restoreLoader: restore });
   } catch (error) {
     try { cleanup?.(); }
@@ -228,12 +233,16 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     // restart, as in main). The weights load per take and release per the
     // --whisper-* policy; every decode runs under the gateway's exclusive lock
     // so it never overlaps chat generation.
-    const moduleHost = createHostServices({ whisper: options.whisper,
-      exclusive: (fn, signal) => engine.gateway.runExclusive(fn, undefined, signal) });
     let modules: Awaited<ReturnType<typeof loadInstalledModules>> | undefined;
+    // The engine's events (request timings, batch and cache samples) come from one adapter around the completion engine.
+    const telemetry = createEngineTelemetry({ events: state.events, model: context.modelId, capacity: options.capacity,
+      weightsBytes: context.model.weightsBytes, gateway: engine.gateway, promptCache: caches.promptCache });
+    const moduleHost = createHostServices({ whisper: options.whisper, events: state.events,
+      exclusive: (fn, signal) => engine.gateway.runExclusive(fn, undefined, signal) });
     // The modules stop first (admission stops, takes in flight are joined), then the weights release.
     const closeModules = async () => {
       const errors: unknown[] = [];
+      telemetry.stop();
       try { await modules?.stop(); } catch (error) { errors.push(error); }
       try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
       if (errors.length) throw new AggregateError(errors, "module cleanup failed");
@@ -248,10 +257,16 @@ export async function startContextHost(state: AppState, context: LoadedModelCont
     };
     cleanup = closeApp;
     modules = await loadInstalledModules(moduleHost);
+    // Announce the model this host serves, then the first reading of it (the metrics module subscribed with the app state).
+    state.events.publish({ type: "model.load", at: Date.now(), model: context.modelId, phase: "finished",
+      ...(input.loadMs !== undefined ? { ms: input.loadMs } : {}), weightsBytes: context.model.weightsBytes });
+    telemetry.sample();
     const whisperInfo = async () => {
       const id = await moduleHost.whisper.defaultFor("transcribe");
       return id === undefined ? null : { id, resident: moduleHost.whisper.stats(id).resident };
     };
+    // Every request the routes run goes through the observed completion engine; the engine's own close still joins the original.
+    engine.completion = telemetry.observe(engine.completion);
     const completions = createCompletionRoutes(engine, { ...options.request, promptCache: caches.promptCache,
       kvScheme: caches.kvScheme, ...limits, tokenHistory, responseHistory: state.responses, downloads: state.downloads.snapshot,
       transcription: whisperInfo,
@@ -344,6 +359,7 @@ export async function startTranscriptionHost(model: ModelRecord, options: ServeO
     const errors: unknown[] = [];
     try { await modules?.stop(); } catch (error) { errors.push(error); }
     try { await moduleHost.whisper.close(); } catch (error) { errors.push(error); }
+    moduleHost.events.close();
     if (errors.length) throw new AggregateError(errors, "transcription cleanup failed");
   };
   let cleanup: (() => Promise<void>) | undefined = close;

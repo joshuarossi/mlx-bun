@@ -142,11 +142,6 @@ Migration gaps stay required work in the feature table.
   times; launching `bench-serve` profiles with history). An agentic workflow engine is a later module,
   not planned here. Every step keeps existing paths, verbs and behavior: moved tests keep their
   expectations, and steps that move an execution path rerun real weights before and after.
-  - [ ] (c) `events` service and the metrics and performance module. The model host and a scheduler
-    adapter publish; inference gains no dependency on the bus. Exit: every metric named above is
-    published and rendered from a recorded event stream in a test; a `bench-serve` profile launches
-    through jobs and keeps history; on a named machine, paired runs show no throughput loss from
-    publishing and the panel's numbers match `/stats` and the run's own output.
   - [ ] (d) Remaining modules, one PR each: models, quantize, train, benchmarks, chat, memory
     (last, moved as is: the memory feature stays deferred). Datasets landed (its browser panel,
     `web/browser/dataset.ts`, moves with the web shell). Modules contribute to each other through the
@@ -165,7 +160,10 @@ Migration gaps stay required work in the feature table.
     then. Exit: swap between two models without `--isolate` never exceeds the budget (resident bytes
     from events), the returning model resumes its state (prefix hit), a pinned companion survives
     swaps, and a request for a non-resident model waits instead of thrashing; verified with real
-    weights (MiniCPM5-1B and Qwen3.5-0.8B, Whisper as companion).
+    weights (MiniCPM5-1B and Qwen3.5-0.8B, Whisper as companion). The host publishes `model.unload` with
+    reason `evicted` and `model.load` with `resumed`, which the metrics module already renders as swap times;
+    the chat model's own unload is not published until it can be evicted, and under `--isolate` the workers'
+    events reach the parent's bus (the metrics view there is empty until they do).
 
 ## Remaining features by layer
 

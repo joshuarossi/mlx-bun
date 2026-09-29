@@ -1289,6 +1289,25 @@ test](tests/engine/transcription.test.ts) run real weights through this app, and
 opt-in [transcription parity test](tests/engine/transcription-parity.test.ts) checks the
 served transcripts against the oracle.
 
+## Metrics and performance
+
+The live view is the metrics module's ([`@mlx-bun/module-metrics`](../../packages/module-metrics/README.md):
+`/api/metrics/snapshot`, `/stream`, bench-serve runs and history). This app installs it and supplies what it
+subscribes to. `AppState.events` is the `events` bus; `startModelHost` measures the model load and
+`startContextHost` publishes it once the modules are active; `src/engine/telemetry.ts` wraps the completion engine
+(`engine.completion` is replaced by the observed one, so every route runs through it) to publish each request's
+queue wait, time to first token, prefill and decode rates and total time from the run's own stats, and samples the
+gateway and prompt cache every second (batch rows of capacity, queue depth, tokens per second, projected KV bytes
+against `--kv-budget`, prompt-cache bytes, hits and misses, per-model memory), quiet while idle and unchanged.
+Publishing only appends to bounded queues, so a slow subscriber never delays generation; nothing under the engine
+imports the bus. The module requires `jobs`, so it activates in the persistent state (`serve-state.ts`) with the state's bus;
+`jobs/service.ts` runs its `bench-serve` runner as a managed task (rows and logs in the job store, listed by
+`/api/jobs`), under the engine's execution lease because the runner declares `gpu: "exclusive"`. Under `--isolate`
+the workers' events do not reach the parent yet, so the view there is empty. `/stats`, `/health` and `/fit` are unchanged. The status page loads the
+module's panel element while it is visible (`web/browser/status.ts`). The opt-in [real-weights
+test](tests/engine/metrics-native.test.ts) (`MLX_BUN_APP_TEST_MODEL=<snapshot directory>`) serves a model and requires
+the module's numbers to equal each response's `usage` and `/stats`.
+
 ## Standalone bundle
 
 After staging the root native setup and the microphone helper with

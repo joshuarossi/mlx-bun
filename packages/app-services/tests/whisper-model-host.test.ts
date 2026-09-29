@@ -1,7 +1,7 @@
 // The Whisper model host's contract: leases, lazy load, idle policy, pinning,
 // the execution lock around decode calls, and the failures a consumer sees.
 import { expect, test } from "bun:test";
-import type { CatalogEntry, ModelCatalog, ModelHostError } from "@mlx-bun/app-core";
+import type { CatalogEntry, CoreEvent, ModelCatalog, ModelHostError } from "@mlx-bun/app-core";
 import { createWhisperModelHost, type LoadedWhisper, type WhisperBackend } from "../src";
 
 const entry = (id: string, directory = `/models/${id}`, operations: CatalogEntry["operations"] = ["transcribe"]): CatalogEntry =>
@@ -158,4 +158,25 @@ test("plan reports the model's size and no eviction, since this host has no memo
   const { host } = setup();
   expect(await host.plan("org/whisper")).toEqual({ fits: true, requiredBytes: 100, freeBytes: Number.POSITIVE_INFINITY, evict: [] });
   expect(host.policy.budgetBytes).toBe(Number.POSITIVE_INFINITY);
+});
+
+test("loads, unloads and memory are published with their durations, and a bus that throws never reaches a decode", async () => {
+  const published: CoreEvent[] = [];
+  const { host } = setup({ events: { publish: event => { published.push(event as CoreEvent); } } });
+  const lease = await host.acquire("org/whisper");
+  lease.release();
+  await (await host.acquire("org/whisper")).operations.transcribe!.transcribe(new Float32Array(1));
+  await host.unload("org/whisper", { force: true });
+  await host.close();
+  const summary = published.map(event => event.type === "model.load" ? `load ${event.phase}${event.ms !== undefined ? ` ${event.ms}` : ""}`
+    : event.type === "model.unload" ? `unload ${event.reason}` : event.type === "model.memory" ? `memory ${event.weightsBytes}` : event.type);
+  expect(summary).toEqual(["load started", "load finished 250", "memory 100", "unload idle", "load started", "load finished 250", "memory 100", "unload requested"]);
+  expect(published.find(event => event.type === "model.load" && event.phase === "finished")).toMatchObject({ model: "org/whisper", weightsBytes: 100 });
+  const failing = setup({ backend: { load: async () => { throw new Error("no tokenizer"); } }, events: { publish: event => { published.push(event as CoreEvent); } } });
+  published.length = 0;
+  await expect(failing.host.acquire("org/whisper")).rejects.toMatchObject({ code: "load-failed" });
+  expect(published.map(event => event.type === "model.load" ? event.phase : event.type)).toEqual(["started", "failed"]);
+  expect(published[1]).toMatchObject({ error: "no tokenizer" });
+  const throwing = setup({ events: { publish() { throw new Error("bus down"); } } });
+  expect((await throwing.host.acquire("org/whisper")).loadMs).toBe(250);
 });

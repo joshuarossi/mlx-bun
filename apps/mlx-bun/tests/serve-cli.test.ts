@@ -335,7 +335,7 @@ for (const [sessionDir, jobPaths, expectedStore] of [
         assert.equal(options.gateway.adapterNamespace, cache.adapterNamespace);
         assert.equal(options.gateway.checkpoints, true);
         assert.deepEqual(events, ["continuation"]); events.push("engine");
-        return engine = { async close() { await options.beforeModelDispose(); context.dispose(); } };
+        return engine = { gateway: { activeRows: 0, kvBytes: { projected: 0, budget: null } }, async close() { await options.beforeModelDispose(); context.dispose(); } };
       }
     }));
     mock.module(app + "src/server/generated-token-history.ts", () => ({ GeneratedTokenHistory: class {
@@ -479,7 +479,7 @@ test("startup wires the memory budget, runtime context, allocator limit, expert 
       loadContext: async (path, id, options) => { loadOptions = options; route("load"); events.push("load wire=" + runtimeValue("MLX_BUN_FORCE_WIRE") + " media=" + runtimeValue("MLX_BUN_ALLOW_PRIVATE_MEDIA")); return context; },
       modelServingBinding: async () => { route("binding"); return { gateway: { configureContinuation() {} } }; },
       createCacheServices: async (_context, _binding, options) => { cacheOptions = options; route("cache"); return cache; },
-      createAppEngine: async () => { route("engine"); return { gateway: {}, async close() { route("close"); context.dispose(); } }; },
+      createAppEngine: async () => { route("engine"); return { gateway: { activeRows: 0, kvBytes: { projected: 0, budget: null } }, async close() { route("close"); context.dispose(); } }; },
     }));
     let limit = 77;
     mock.module("@mlx-bun/mlx/ffi", () => ({ setMemoryLimit(bytes) { events.push("allocator " + bytes); const previous = limit; limit = bytes; return previous; } }));
@@ -727,7 +727,7 @@ test("startup composes the lazy Whisper companion with the parsed policy, shares
       template: { supportsThinking: false }, genDefaults: {}, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {},
       adapterNamespace() {}, checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };
-    const gateway = { async runExclusive(fn, _trace, signal) { events.push("lock"); signal?.throwIfAborted(); return fn(); } };
+    const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, async runExclusive(fn, _trace, signal) { events.push("lock"); signal?.throwIfAborted(); return fn(); } };
     // The Whisper checkpoint and the local catalog are the only seams behind the model host; everything else is the real composition.
     mock.module(lib + "whisper-backend.ts", () => ({ nativeWhisperBackend: { async load(dir) { events.push("load " + dir); return { promptTokenBudget: 3, encode: () => [],
       async transcribe(samples, options) { events.push("decode " + samples.length + " " + options.language); return { text: " hi", segments: [], language: options.language ?? "en" }; },

@@ -43,7 +43,7 @@ const preamble = `
     template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
   const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
     checkpoints: null, continuationServices: {}, stopIdleDemotion() { events.push("timer stop"); }, async close() { events.push("cache close"); return { durable: true }; } };
-  const gateway = { held: 0, async acquireExecutionLease(signal) { signal.throwIfAborted(); gateway.held++; events.push("lease");
+  const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, held: 0, async acquireExecutionLease(signal) { signal.throwIfAborted(); gateway.held++; events.push("lease");
     return { dispose() { gateway.held--; events.push("release"); } }; }, async runExclusive(fn) { return fn(); } };
   mock.module("@mlx-bun/mlx/ffi", () => { throw new Error("native library loaded"); });
   mock.module(app + "src/engine/index.ts", () => ({
@@ -504,7 +504,7 @@ test("the app form composes the real app over the socket with private storage: p
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() {}, async close() { return { durable: true }; } };
-    const gateway = { async acquireExecutionLease(signal) { signal.throwIfAborted(); events.push("lease"); return { dispose() { events.push("release"); } }; }, async runExclusive(fn) { return fn(); } };
+    const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, async acquireExecutionLease(signal) { signal.throwIfAborted(); events.push("lease"); return { dispose() { events.push("release"); } }; }, async runExclusive(fn) { return fn(); } };
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async () => context, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
       createCacheServices: async () => cache,

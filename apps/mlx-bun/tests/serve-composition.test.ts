@@ -64,7 +64,7 @@ test("the persistent state composes and serves its routes with fakes, without th
     const { installedModules } = await import(app + "src/modules.ts");
     // The state runs the modules that need job runners; Whisper's module belongs to the model host.
     const stateModules = await installedModules("state");
-    assert.deepEqual(stateModules.map(module => module.id), ["datasets"]);
+    assert.deepEqual(stateModules.map(module => module.id), ["datasets", "metrics"]);
     assert.deepEqual((await installedModules("model")).map(module => module.id), ["transcription"]);
     const state = await createAppState({ port: 0, memoryPaths, chatPaths }, storagePaths, stateModules);
     assert.equal(state.sessionDir, chatPaths.sessionDir);
@@ -116,6 +116,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
   const script = `
     import { mock } from "bun:test";
     import { strict as assert } from "node:assert";
+    import { createEventHub } from "@mlx-bun/app-services/portable";
     const app = ${JSON.stringify(app)};
     const events = [], visited = [];
     const group = name => ({ async handle() { visited.push(name); return null; } });
@@ -123,7 +124,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
       template: { supportsThinking: false }, genDefaults: {}, draft: null, dispose() { events.push("model close"); } };
     const cache = { promptCache: {}, resolvedKvScheme: { mode: "off", fitOptions: undefined }, kvScheme: {}, stateCodecs: {}, adapterNamespace() {},
       checkpoints: null, continuationServices: {}, stopIdleDemotion() { events.push("timer stop"); }, async close() { events.push("cache close"); return { durable: true }; } };
-    const gateway = { async acquireExecutionLease(signal) { events.push("lease"); return { dispose() {} }; }, async runExclusive(fn) { return fn(); } };
+    const gateway = { activeRows: 0, kvBytes: { projected: 0, budget: null }, async acquireExecutionLease(signal) { events.push("lease"); return { dispose() {} }; }, async runExclusive(fn) { return fn(); } };
     let engine;
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async () => context, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
@@ -167,6 +168,7 @@ test("the model host takes persistent services by parameter, mounts the app's ro
       web: () => null, downloads: { snapshot, active: [], start() {}, async close() {} }, responses: { size: 0 },
       memoryPaths: { vault: "/unused/vault", skills: "/unused/skills" }, chatPaths, sessionDir: "/unused/sessions",
       storagePaths: { artifactRoot: "/unused/artifacts" }, memorySurface: async () => surface,
+      events: createEventHub(),
       routes: Object.fromEntries(["hub", "sessions", "memory", "jobs", "quantize", "appModules", "finetune", "publishing"].map(name => [name, group(name)])),
       attach(supplied) { link = supplied; events.push("attach"); return () => { detaches++; events.push("detach"); }; },
       async close() { stateCloses++; },
@@ -227,7 +229,7 @@ test("two sequential model hosts share one persistent state; only the app closes
     mock.module(app + "src/engine/index.ts", () => ({
       loadContext: async path => { loads.push(path); return contextFor(path); }, modelServingBinding: async () => ({ gateway: { configureContinuation() {} } }),
       createCacheServices: async () => cache,
-      createAppEngine: async context => ({ gateway: {}, async close() { events.push("engine close " + context.modelId); context.dispose(); } }),
+      createAppEngine: async context => ({ gateway: { activeRows: 0, kvBytes: { projected: 0, budget: null } }, async close() { events.push("engine close " + context.modelId); context.dispose(); } }),
     }));
     const histories = [];
     mock.module(app + "src/server/routes.ts", () => ({ createCompletionRoutes(_engine, options) { histories.push(options.responseHistory);
