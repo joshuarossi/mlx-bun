@@ -1,5 +1,6 @@
 import { MlxArray } from "@mlx-bun/mlx/array";
 
+/** The only definition of the 1MAD decode arithmetic; every kernel header includes it. */
 export const HEADER = String.raw`
 static inline float trellis_bf16(float v) {
   uint u = as_type<uint>(v);
@@ -20,13 +21,20 @@ static inline float trellis_val(uint s) {
 }
 // y × (1/d) refined by one residual step: q' = fma(fma(-q, d, y), 1/d, q).
 // Correctly rounded for every y in [-510, 510] (checked host-side against
-// the LUT), 3 FMA-class ops instead of a precise divide.
-static inline float trellis_val_rcp(uint s) {
-  const float y = (float)trellis_y(s);
+// the LUT), 3 FMA-class ops instead of a precise divide. Every expansion and
+// prefill kernel that reproduces the host LUT decodes through this.
+static inline float trellis_refined_y(int y) {
+  const float yf = (float)y;
   const float r = 1.0f / 147.800537109375f;
-  const float q = y * r;
-  const float e = metal::fma(-q, 147.800537109375f, y);
+  const float q = yf * r;
+  const float e = metal::fma(-q, 147.800537109375f, yf);
   return metal::fma(e, r, q);
+}
+static inline float trellis_val_rcp(uint s) { return trellis_refined_y(trellis_y(s)); }
+// Unrefined y × (1/d) (≤1 ulp f32): the packed matvec/scatter weight is this
+// f32 code value, a different numerical contract from the LUT-exact decode above.
+static inline float trellis_unrefined_y(int y) {
+  return (float)y * (1.0f / 147.800537109375f);
 }
 // VARIANT: 0 = inline 1MAD + precise divide; 1 = inline 1MAD × reciprocal
 // (1 ulp risk vs the host LUT); 2 = 4096-entry f32 LUT in threadgroup memory;
@@ -37,7 +45,7 @@ static inline float trellis_val_rcp(uint s) {
 #define TRELLIS_DECODE(win, lutTG, lut) \
   ((VARIANT) == 0 ? trellis_val(win) : \
    (VARIANT) == 1 || (VARIANT) == 5 ? trellis_val_rcp(win) : \
-   (VARIANT) == 6 ? (float)trellis_y(win) * (1.0f / 147.800537109375f) : \
+   (VARIANT) == 6 ? trellis_unrefined_y(trellis_y(win)) : \
    (VARIANT) == 2 ? lutTG[win] : \
    (VARIANT) == 4 ? (float)(win) : lut[win])
 #define TRELLIS_ROUND(v) ((VARIANT) >= 4 ? (v) : trellis_bf16(v))
