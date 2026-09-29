@@ -1,7 +1,7 @@
-import { numericalPolicy } from "./numerical-policy";
 import { runtimeValue } from "@mlx-bun/inference/runtime/config";
 import { parseTurboQuantScheme } from "@mlx-bun/inference/artifacts/config";
 import { parseCommand, type CommandArgs } from "./args";
+import { numericalPolicy } from "./numerical-policy";
 import { resolveModelAuto } from "./model-selection";
 import type { ModelRecord } from "@mlx-bun/hub/registry";
 import type { CacheServiceOptions } from "../engine/cache-services";
