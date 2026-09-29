@@ -28,13 +28,16 @@
 // view; raw toFloat32() byte-scrambles it) and use a NON-UNIFORM cotangent (a
 // mean/uniform dO shrinks grads with T and inflates relative error).
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { MlxArray } from "@mlx-bun/mlx/array";
 import { Dtype } from "@mlx-bun/mlx/ffi";
 import * as ops from "@mlx-bun/mlx/ops";
 import { Vjp } from "@mlx-bun/mlx/autograd";
 import { flashAttention, flashSupported } from "../../src/kernels/attention/flash";
 import { createCausalMask } from "../../src/kernels/attention/masks";
+
+// D=256 forward and backward sweeps are slower on CI runners than the 5 s default.
+setDefaultTimeout(60_000);
 
 const rand = (shape: number[], seed: number) =>
   ops.randomNormal(shape, Dtype.float32, 0, 1, ops.randomKey(BigInt(seed))).astype(Dtype.float16);
