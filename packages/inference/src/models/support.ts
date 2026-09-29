@@ -1,4 +1,5 @@
 import type { ModelConfig } from "../artifacts/config";
+import { isUnservableDrafterModelType } from "./drafters";
 import { GENERIC_MODEL_TYPES, genericArgsFor, remapModelType } from "./universal/archs";
 
 export function isMiniCPM5Config(config: ModelConfig): boolean {
@@ -64,7 +65,7 @@ export function isEmbeddingModelType(modelType: string): boolean {
  *  resolution and the supported-model lists. See
  *  packages/inference/src/models/gemma4/assistant.ts. */
 export function isDrafterModelType(modelType: string): boolean {
-  return modelType.endsWith("_assistant");
+  return isUnservableDrafterModelType(modelType);
 }
 
 /** DiffusionGemma (model_type `diffusion_gemma`): block/masked-diffusion canvas

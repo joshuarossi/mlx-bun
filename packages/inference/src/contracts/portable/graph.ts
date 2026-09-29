@@ -72,6 +72,11 @@ export interface GraphCapabilities {
   readonly embeddings: boolean;
   /** Hidden-layer outputs can be tapped for drafts that read them. */
   readonly hiddenLayerTaps: boolean;
+  /** A draft head the graph's own checkpoint carries and has loaded, or null.
+   * `kind` names the native draft provider that binds to this graph; the
+   * provider registry resolves it, so no consumer names the graph or its
+   * provider. `numDraftTokens` is the head's round width. */
+  readonly nativeDraft: { readonly kind: string; readonly numDraftTokens: number } | null;
   readonly kv: {
     /** Attention reads plain keys and values only (softcapped attention);
      * encoded storage must decode on read. The layers are the graph's

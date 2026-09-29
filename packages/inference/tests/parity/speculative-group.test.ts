@@ -35,8 +35,9 @@
 // KIND=glm-mtp is GLM-5.2's checkpoint-native MTP (`--mtp on`), mounted as
 // the app's model host mounts it (`apps/mlx-bun/src/engine/model-host.ts`): the
 // Colibri runtime opened with the MTP tier planned for one drafting lane, and
-// Glm52NativeMtpProvider over that target at the plan's draft depth (the default
-// depth here). It takes no draft artifact and only plain KV (see optIn).
+// the provider the graph declares (`GraphCapabilities.nativeDraft`) at the
+// plan's draft depth (the default depth here). It takes no draft artifact and
+// only plain KV (see optIn).
 // Observers wrap the target forward the bindings call, forwardHiddenAsync where
 // the graph provides one (the streamed GLM target), otherwise forwardHidden.
 // Opt in with all of
@@ -156,16 +157,14 @@ async function load(inputs: Inputs) {
   }
   if (inputs.window !== undefined) expect({ layerTypes: model.args?.layerTypes, slidingWindow: model.args?.slidingWindow })
     .toEqual({ layerTypes: config.text.layerTypes, slidingWindow: config.text.slidingWindow });
+  // Providers come from the library's registry, as the app's model host loads them;
+  // glm-mtp is the draft the GLM graph declares it carries.
   const loadProvider = async (): Promise<A> => {
-    switch (inputs.kind) {
-      case "ngram": return new speculative.NgramProvider();
-      case "two-model": return speculative.TwoModelProvider.load(inputs.draft!, config.text.vocabSize);
-      case "assistant": return speculative.AssistantProvider.load(inputs.draft!);
-      case "mtp": return speculative.QwenMtpProvider.load(inputs.draft!);
-      case "dspark": return speculative.DflashProvider.load(inputs.draft!);
-      case "deepspec": return speculative.DeepspecProvider.load(inputs.draft!);
-      case "glm-mtp": return new speculative.Glm52NativeMtpProvider(model);
-    }
+    const registry = speculative.defaultDraftProviders();
+    if (inputs.kind === "glm-mtp") return (await registry.native(model))!.provider;
+    const { loadTokenizer } = await import("@mlx-bun/inference/input");
+    return (await registry.load(inputs.kind, { dir: inputs.draft,
+      target: { vocabSize: config.text.vocabSize, tokenizer: await loadTokenizer(inputs.target) } })).provider;
   };
   const turboQuant = { kBits: 8, vBits: 3 };
   const kv = inputs.kv === "bf16" ? { options: {}, scheme: undefined }

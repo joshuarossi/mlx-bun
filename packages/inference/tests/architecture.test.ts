@@ -151,6 +151,27 @@ function identityChecks(source: ts.SourceFile): { text: string; line: number }[]
   return found;
 }
 
+// Draft providers are selected, detected and loaded through the library's
+// registry; the app never names a concrete provider class. The classes are
+// whatever the provider sources export, so a new provider is covered on arrival.
+const draftProviderSources = "generation/speculative/sources/";
+
+function exportedProviderClasses(source: ts.SourceFile): string[] {
+  return source.statements.filter(ts.isClassDeclaration).filter(node => node.name && /Provider$/.test(node.name.text) &&
+    node.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword)).map(node => node.name!.text);
+}
+
+function namedIdentifiers(source: ts.SourceFile, names: ReadonlySet<string>): { text: string; line: number }[] {
+  const found: { text: string; line: number }[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isIdentifier(node) && names.has(node.text))
+      found.push({ text: node.text, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 });
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
+
 function references(source: ts.SourceFile): { specifier: string | undefined; line: number }[] {
   const found: { specifier: string | undefined; line: number }[] = [];
   const inspect = (node: ts.Node, literal: ts.Node | undefined) => found.push({
@@ -250,10 +271,17 @@ async function inspectWorkspaces(root: string): Promise<string[]> {
     if (JSON.stringify(thirdParty) !== JSON.stringify(Object.keys(packageOwners).toSorted()))
       violations.push("Inference third-party dependencies need an explicit layer owner");
   }
+  const draftProviders = new Set<string>();
+  for (const [file, source] of sources)
+    if (inferencePackage && relative(inferencePackage.source, file).startsWith(draftProviderSources))
+      for (const name of exportedProviderClasses(source)) draftProviders.add(name);
   const named = new Map<Library, Set<string>>(libraries.map(item => [item, new Set()]));
   for (const [file, source] of sources) {
     const owner = ownerOf(file)!;
     if (owner.app) appDomain(file, owner);
+    if (owner.app)
+      for (const { text, line } of namedIdentifiers(source, draftProviders))
+        violations.push(`${relative(root, file)}:${line}: the app cannot name a concrete draft provider (${text}); select and load through the draft provider registry`);
     if (owner.name === coreName)
       for (const { text, line } of runtimeCode(source))
         violations.push(`${relative(root, file)}:${line}: app-core has no runtime exports (${text})`);
@@ -475,6 +503,39 @@ test("browser code can consume data protocols but cannot reach backend modules o
     write(entry, 'import type { Message } from "../../chat/protocol";');
     write("apps/example/src/chat/protocol.ts", 'export type Message = string; import "./backend";');
     expect((await inspectWorkspaces(root)).some(item => item.includes("data protocols cannot import"))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the app cannot name concrete draft providers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "mlx-draft-provider-boundaries-"));
+  const write = (path: string, text: string) => {
+    const target = resolve(root, path);
+    mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, text);
+  };
+  try {
+    write("packages/mlx/package.json", JSON.stringify({ name: "@mlx-bun/mlx", type: "module", exports: { ".": "./src/index.ts" } }));
+    write("packages/mlx/src/index.ts", "export const mlx = true;");
+    write("packages/inference/package.json", JSON.stringify({ name: "@mlx-bun/inference", type: "module", dependencies: { "@mlx-bun/mlx": "workspace:*",
+      "@huggingface/tokenizers": "1", "@huggingface/jinja": "1", "fast-png": "1", "@mlc-ai/web-xgrammar": "1" },
+    exports: { ".": "./src/index.ts", "./generation/speculative": "./src/generation/speculative/index.ts" } }));
+    write("packages/inference/src/index.ts", "export const api = true;");
+    write("packages/inference/src/generation/speculative/index.ts",
+      'export * from "./sources/example-source"; export * from "./draft-registry";');
+    write("packages/inference/src/generation/speculative/sources/example-source.ts", "export class ExampleProvider { static load() { return new ExampleProvider(); } }");
+    write("packages/inference/src/generation/speculative/draft-registry.ts", "export class DraftProviderRegistry {}");
+    write("apps/mlx-bun/package.json", JSON.stringify({ name: "mlx-bun", type: "module", dependencies: { "@mlx-bun/inference": "workspace:*" } }));
+    mkdirSync(resolve(root, "node_modules/@mlx-bun"), { recursive: true });
+    symlinkSync(resolve(root, "packages/inference"), resolve(root, "node_modules/@mlx-bun/inference"));
+    symlinkSync(resolve(root, "packages/mlx"), resolve(root, "node_modules/@mlx-bun/mlx"));
+    const engine = "apps/mlx-bun/src/engine/host.ts";
+    write(engine, 'import { DraftProviderRegistry } from "@mlx-bun/inference/generation/speculative"; export const registry = new DraftProviderRegistry();');
+    expect(await inspectWorkspaces(root)).toEqual([]);
+    write(engine, 'export const load = async () => { const { ExampleProvider } = await import("@mlx-bun/inference/generation/speculative"); return ExampleProvider.load(); };');
+    const named = await inspectWorkspaces(root);
+    expect(named.filter(item => item.includes("the app cannot name a concrete draft provider (ExampleProvider)")).length).toBe(2);
+    // The library's own modules, and the registry class, are unaffected.
+    write(engine, "export const engine = 1;");
+    expect(await inspectWorkspaces(root)).toEqual([]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

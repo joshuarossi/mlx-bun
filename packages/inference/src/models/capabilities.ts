@@ -14,7 +14,7 @@ type Declaration = Partial<Omit<GraphCapabilities, "adapters" | "kv" | "speculat
 export function declareGraph(declared: Declaration = {}): GraphCapabilities {
   return Object.freeze({
     method: "autoregressive", media: null, pagedAttention: false, compiledDecode: false,
-    sparseAttention: false, embeddings: false, hiddenLayerTaps: false,
+    sparseAttention: false, embeddings: false, hiddenLayerTaps: false, nativeDraft: null,
     ...declared,
     adapters: Object.freeze({ batched: true, mountable: true, ...declared.adapters }),
     kv: Object.freeze({ denseReads: false, delayedAffine: "none", ...declared.kv }),

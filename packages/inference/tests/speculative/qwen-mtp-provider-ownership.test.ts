@@ -94,7 +94,7 @@ test("checkpoint identity survives provider reload and changes with draft bytes"
   const namespace = async () => {
     const provider = await QwenMtpProvider.load(directory);
     const unused = () => { throw new Error("identity inspection must not execute the model"); };
-    const source = provider.open({ sampler: unused, target: { identity: {}, qwenMtp: {
+    const source = provider.open({ sampler: unused, target: { identity: {}, recurrentMtp: {
       hiddenSize: 8, layerCount: 1, embed: unused, logitsFromHidden: unused,
     } } });
     try { return source.checkpoint!.namespace; }
@@ -104,6 +104,14 @@ test("checkpoint identity survives provider reload and changes with draft bytes"
   expect(await namespace()).toBe(original);
   writeFileSync(join(directory, "tiny.safetensors"), new Uint8Array(4096).fill(1));
   expect(await namespace()).not.toBe(original);
+});
+
+test("a target without the recurrent MTP port is refused by port, not by family", async () => {
+  const provider = await QwenMtpProvider.load(directory);
+  try {
+    expect(() => provider.open({ sampler: () => { throw new Error("unused"); }, target: { identity: {} } }))
+      .toThrow("target graph does not provide recurrentMtp");
+  } finally { provider.dispose(); }
 });
 
 test("a late module-construction failure releases weights and earlier views", async () => {
@@ -127,7 +135,7 @@ test("a quantized projection without metadata releases earlier dense views", asy
 test("group membership borrows committed checkpoints and survives reorder, drain and rejoin", async () => {
   const provider = await QwenMtpProvider.load(directory);
   const unused = () => { throw new Error("membership must not execute the model"); };
-  const target = { identity: {}, qwenMtp: {
+  const target = { identity: {}, recurrentMtp: {
     hiddenSize: 8, layerCount: 1, embed: unused, logitsFromHidden: unused,
   } };
   const checkpoint = (tokens: number, value: number): DraftRowCheckpoint => ({
@@ -190,7 +198,7 @@ test("target and draft admission publish together after every state owner prepar
   const baseline = liveBytes();
   const provider = await QwenMtpProvider.load(directory);
   const unused = () => { throw new Error("admission must not execute the model"); };
-  const draft = provider.grouped.open({ target: { identity: {}, qwenMtp: {
+  const draft = provider.grouped.open({ target: { identity: {}, recurrentMtp: {
     hiddenSize: 8, layerCount: 1, embed: unused, logitsFromHidden: unused,
   } }, sampling: { sample: unused }, checkpoints: [] });
   const target = new MlxStateRows([new BatchedKVCache()]);
@@ -229,7 +237,7 @@ test("target and draft admission publish together after every state owner prepar
 test("prefill membership borrows the same checkpoints without constructing a sampler", async () => {
   const provider = await QwenMtpProvider.load(directory);
   const unused = () => { throw new Error("prefill membership must not execute the model"); };
-  const target = { identity: {}, qwenMtp: { hiddenSize: 8, layerCount: 1,
+  const target = { identity: {}, recurrentMtp: { hiddenSize: 8, layerCount: 1,
     embed: unused, logitsFromHidden: unused } };
   const hidden = MlxArray.fromFloat32(new Float32Array(8).fill(7), [1, 1, 8]);
   const checkpoint: DraftRowCheckpoint = { processedTokens: 1,
@@ -266,7 +274,7 @@ test("Qwen MTP declares the target tap its grouped rows consume, resolved from t
   const provider = await QwenMtpProvider.load(directory);
   const unused = () => { throw new Error("declaration must not execute the model"); };
   try {
-    const target = { identity: {}, qwenMtp: { hiddenSize: 8, layerCount: 3, embed: unused, logitsFromHidden: unused } };
+    const target = { identity: {}, recurrentMtp: { hiddenSize: 8, layerCount: 3, embed: unused, logitsFromHidden: unused } };
     const declared = provider.grouped.targetTapLayers!(target);
     expect(declared).toEqual([2]);
     for (const open of [() => provider.grouped.open({ target, sampling: { sample: unused }, checkpoints: [] }),
