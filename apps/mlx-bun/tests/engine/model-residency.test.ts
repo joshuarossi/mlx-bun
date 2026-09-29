@@ -11,6 +11,7 @@ function fixture(sizes: Record<string, number>, options: { budget: number; pinne
   let resident = 0, peak = 0;
   class FakeUnit implements ResidentUnit {
     readonly operations = ["generate" as const];
+    resumed = false;
     paused = 0;
     closeGate: Promise<void> = Promise.resolve();
     flushed = true;
@@ -30,6 +31,7 @@ function fixture(sizes: Record<string, number>, options: { budget: number; pinne
     }
   }
   const loadGate = new Map<string, Promise<void>>();
+  const resumes = new Set<string>();
   const loads: string[] = [];
   const host = createResidencyHost<FakeUnit>({
     budgetBytes: options.budget, pinned: options.pinned, measured: options.measured, external: options.external,
@@ -42,13 +44,14 @@ function fixture(sizes: Record<string, number>, options: { budget: number; pinne
         if (options.failLoad?.has(entry.id)) throw new Error(`cannot load ${entry.id}`);
         resident += entry.bytes; peak = Math.max(peak, resident);
         const unit = new FakeUnit(entry.id, entry.bytes);
+        unit.resumed = resumes.has(entry.id);
         units.set(entry.id, unit);
         log.push(`load ${entry.id}`);
         return unit;
       },
     },
   });
-  return { host, log, events, units, loads, loadGate, get peak() { return peak; }, get resident() { return resident; } };
+  return { host, log, events, units, loads, loadGate, resumes, get peak() { return peak; }, get resident() { return resident; } };
 }
 const ids = (host: ResidencyHost<ResidentUnit>) => host.resident().map(model => model.id).sort();
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 5));
@@ -79,6 +82,28 @@ test("a model that does not fit evicts the least recently used one: drain, flush
   const unload = f.events.find(event => event.type === "model.unload");
   expect(unload).toMatchObject({ type: "model.unload", model: "b", reason: "evicted", flushed: true });
   expect(f.events.filter(event => event.type === "model.load" && event.phase === "finished").map(event => (event as { model: string }).model)).toEqual(["a", "b", "c"]);
+});
+
+test("loads announce whether saved state was found, adoption announces the loader's time, and a failed load carries its reason", async () => {
+  const f = fixture({ a: 4 * GB, b: 4 * GB, c: 4 * GB }, { budget: 6 * GB, failLoad: new Set(["c"]) });
+  f.resumes.add("b");
+  (await f.host.acquire("a")).release();
+  (await f.host.acquire("b")).release();
+  await f.host.acquire("c").catch(() => undefined);
+  const loads = f.events.filter(event => event.type === "model.load");
+  expect(loads.map(event => `${(event as { model: string }).model} ${(event as { phase: string }).phase}${(event as { resumed?: boolean }).resumed ? " resumed" : ""}${(event as { error?: string }).error ? ` ${(event as { error?: string }).error}` : ""}`))
+    .toEqual(["a started", "a finished", "b started", "b finished resumed", "c started", "c failed cannot load c"]);
+  expect(loads.filter(event => (event as { phase: string }).phase === "finished").every(event => typeof (event as { ms?: number }).ms === "number")).toBe(true);
+});
+
+test("a model the loader already loaded is announced as resident with the time it took, and may be pinned", async () => {
+  const f = fixture({ a: 4 * GB }, { budget: 10 * GB });
+  const unit = { id: "a", operations: ["generate" as const], resumed: true, bytes: () => 4 * GB, memory: () => ({ weightsBytes: 4 * GB, kvBytes: 0, prefixCacheBytes: 0 }),
+    operationsFor: () => ({}), pause: async () => ({ dispose() {} }), close: async () => ({ flushed: true }) };
+  f.host.adopt({ id: "a", bytes: 4 * GB, operations: ["generate"] }, unit as never, { pin: true, loadMs: 321 });
+  expect(f.events).toEqual([expect.objectContaining({ type: "model.load", model: "a", phase: "finished", ms: 321, weightsBytes: 4 * GB, resumed: true })]);
+  expect(f.host.resident().map(model => [model.id, model.pinned])).toEqual([["a", true]]);
+  expect(() => f.host.adopt({ id: "a", bytes: 4 * GB, operations: ["generate"] }, unit as never)).toThrow("already resident");
 });
 
 test("acquiring an evicted model reloads it, and it is not lent out while it drains", async () => {
