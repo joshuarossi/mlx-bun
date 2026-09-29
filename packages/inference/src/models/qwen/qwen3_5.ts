@@ -43,6 +43,7 @@ import { bindQwenMediaInput, qwenDraftTarget, qwenMediaEncoders } from "./media-
 import { materializeCopy } from "@mlx-bun/mlx/materialize";
 import { gatedDeltaUpdate } from "../../kernels/delta/gated";
 import { SSMCache } from "../../state/ssm";
+import { TrainingSSMCache } from "../../state/training-cache";
 import { applyInterleavedRope, buildMropePositions, mropeInvFreq } from "../../layers/qwen-mrope";
 import { type MropeRequestState, type MropeForwardState } from "../../contracts/mlx/positions";
 
@@ -243,7 +244,7 @@ export class GatedDeltaNet {
     const tk = prof ? performance.now() : 0;
 
     const [out, newState] = gatedDeltaUpdate(
-      q, k, v, a, b, this.aLog, this.dtBias, cache.recurrent, ssmMask,
+      q, k, v, a, b, this.aLog, this.dtBias, cache.recurrent, ssmMask, cache instanceof TrainingSSMCache,
     );
     if (prof) { ops.evalAll([out]); prof.kernel = (prof.kernel ?? 0) + performance.now() - tk; }
     const to = prof ? performance.now() : 0;

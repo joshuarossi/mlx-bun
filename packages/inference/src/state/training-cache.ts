@@ -42,6 +42,42 @@ export class TrainingCache implements Cache {
   }
 }
 
+/** Stateless DeltaNet stand-in (same re-runnability contract as
+ *  TrainingCache): state WRITES are discarded immediately, so a gradient-
+ *  checkpoint recompute re-enters with the identical null-state conditions;
+ *  reads always yield null (zeros inside the kernel) — a full-sequence
+ *  forward from t=0, exactly the training/perplexity semantics. Before this
+ *  existed, qwen3_5 routed its DeltaNet layers into plain TrainingCache and
+ *  threw on the missing conv/recurrent/advance surface (the recorded
+ *  "mlx-bun perplexity cannot score qwen3_5" gap).
+ *
+ *  It also marks the forward as a training forward: a DeltaNet layer reading it
+ *  runs its recurrence with a backward attached (`gatedDeltaUpdate`'s
+ *  `differentiable`), since the
+ *  inference kernel has no gradient. */
+export class TrainingSSMCache implements Cache {
+  /** Training-only adapter; never admitted, merged, or persisted. */
+  signature(): string { return "train:training-ssm"; }
+  offset = 0;
+  specRound: null = null;
+  get conv(): MlxArray | null { return null; }
+  set conv(v: MlxArray | null) { v?.dispose(); }
+  get recurrent(): MlxArray | null { return null; }
+  set recurrent(v: MlxArray | null) { v?.dispose(); }
+  advance(_n: number): void { /* offset pinned at 0 */ }
+  rowOffset(_i: number): number { return 0; }
+  updateAndFetch(): [MlxArray, MlxArray] {
+    throw new Error("TrainingSSMCache: DeltaNet layers do not use the KV path");
+  }
+  makeMask(_N: number, _w: number | null): Mask {
+    return { mode: "", arr: null }; // ssm_mask is None at B=1 (SSMCache parity)
+  }
+  state(): MlxArray[] { return []; }
+  isTrimmable(): boolean { return true; }
+  trim(_n: number): void { /* stateless */ }
+  dispose(): void { /* owns no arrays */ }
+}
+
 /** Block-sparse attention mask [T,T] (bool, true = attend) for the prefix-shared
  *  concat [prompt(P); chosen(Rc); rejected(Rr)]: physical causal AND NOT
  *  (rejected row -> chosen col). Chosen rows already can't see rejected cols

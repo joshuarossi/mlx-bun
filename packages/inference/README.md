@@ -859,7 +859,9 @@ checks below.
 - `layers/quantized-attention.ts`: existing fused/unfused attention dispatch.
 - `kernels/turboquant/`: packing, rotation, codebooks, and packed decode kernels.
 - `kernels/delta/gated.ts`: DeltaNet kernels; recurrent storage lives in
-  `state/ssm.ts`.
+  `state/ssm.ts`. A layer driven by a `TrainingSSMCache` (the training forward)
+  runs the same kernel with a backward attached that differentiates an ops
+  recomputation of the recurrence.
 - `state/paged/`: existing opt-in paged state and its persistence codec.
   The numerical attention implementation lives in `kernels/attention/paged.ts`.
 

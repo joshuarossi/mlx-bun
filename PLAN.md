@@ -40,7 +40,10 @@ Decisions that govern all work:
   unchanged during this refactor and do not imply blanket OptiQ serve compatibility.
 - [ ] Extend training preservation. MiniCPM5 SFT, ORPO and DPO match main exactly
   through the app's [fine-tune preservation test](apps/mlx-bun/tests/engine/finetune-preservation.test.ts),
-  as do short Qwen3.5 and Gemma4 e4b SFT pairs; DiffusionGemma save, reload and seeded
+  as do short Gemma4 e4b SFT pairs and Qwen3.5-0.8B SFT with one LoRA layer (main trains
+  Qwen3.5 only when no DeltaNet layer is on the gradient path; here the DeltaNet recurrence
+  has a backward, so more layers, DPO and batches train with no main reference);
+  DiffusionGemma save, reload and seeded
   generation and its HTTP adapter serving are consistent within this tree (not parity).
   Open: other model families and main-only paths (by_bits/by_kl, warm start); synthetic
   native tests do not close this.
