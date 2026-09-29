@@ -777,18 +777,19 @@ SDK's session entries, as before.
 
 The [existing-user data test](tests/existing-user-data.test.ts) opens data a
 prior version left under HOME (sessions, Pi settings, approvals, the saved
-token, jobs and logs, the vault and its Reference links, the memory and
-registry databases, adapter stores, the nightly schedule) through the app with
-HOME set to a clone and native MLX blocked, and requires nothing lost: the
-supplied directory and its link targets unchanged, no deletion, a
-byte-identical vault, and only the app's databases, its bundled skill, and
-append-only or message-preserving session rewrites. Its default case builds
-main's formats in-test; `MLX_BUN_APP_TEST_USER_DATA=<isolated copy laid out as
-a HOME>` (with `MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME=<its original HOME>`
-to follow recorded job paths into the copy) runs it on real data and prints what
-to preserve before an old checkout is deleted. It refuses a copy holding, at any
-depth, a link that resolves into a live store (`~/.mlx-bun`, `MLX_BUN_HOME`,
-`~/.cache`, `~/.pi`, `~/Library`) or a directory link leaving the copy.
+token, the vault and its Reference links, adapter stores, the nightly schedule)
+through the app with HOME set to a clone and native MLX blocked, and requires
+nothing lost: the supplied directory and its link targets unchanged, no
+deletion, a byte-identical vault, and only the app's own databases
+(`.mlx-bun/db`), its bundled skill, and append-only or message-preserving
+session rewrites. The earlier `~/.cache/mlx-bun` jobs, memory and registry
+databases are not carried over and must stay byte-identical; its adapter stores
+must appear in the picker's catalog. Its default case builds main's formats
+in-test; `MLX_BUN_APP_TEST_USER_DATA=<isolated copy laid out as a HOME>` runs it
+on real data and prints what to preserve before an old checkout is deleted. It
+refuses a copy holding, at any depth, a link that resolves into a live store
+(`~/.mlx-bun`, `MLX_BUN_HOME`, `~/.cache`, `~/.pi`, `~/Library`) or a directory
+link leaving the copy.
 
 ## Browser app
 

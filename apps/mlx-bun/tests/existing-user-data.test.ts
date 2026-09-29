@@ -1,30 +1,31 @@
 // Existing-user data acceptance: the app opens data a prior version left under
 // HOME (web chat sessions, Pi settings, tool approvals, the saved HF token,
-// jobs and their logs, the memory vault with its Reference links, the memory
-// and registry databases, adapter stores, the nightly schedule) without
-// losing or rewriting user content. The data is never used in place:
+// the memory vault with its Reference links, adapter stores, the nightly
+// schedule) without losing or rewriting user content. The app's jobs, memory
+// and registry databases live under MLX_BUN_HOME/db; an earlier version's
+// ~/.cache/mlx-bun databases are not carried over and must stay untouched,
+// while its adapter stores are listed read-only. The data is never used in place:
 // `acceptUserData` fingerprints the supplied directory, clones it (APFS clone,
 // symlinks kept as links), runs tests/support/user-data-probe.ts and two
 // read-only CLI verbs with HOME set to the clone and native MLX blocked, then
 // requires the supplied directory and every symlink target outside it to be
 // unchanged, no file deleted from the clone, the vault byte-identical, and
-// every other rewrite limited to the app's own databases, its bundled memory
+// every other rewrite limited to the app's own databases (.mlx-bun/db), its bundled memory
 // skill, and session files whose messages survive the Pi SDK's version
 // migration.
 //
 // The first test builds main's formats in-test under a temporary HOME and runs
 // on CPU in the default suite. The second is opt-in acceptance on real data:
 //   MLX_BUN_APP_TEST_USER_DATA=<an isolated copy laid out as a HOME directory> \
-//   [MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME=<the HOME the data was copied from>] \
 //     bun test tests/existing-user-data.test.ts
 // The copy must hold .mlx-bun and/or .cache/mlx-bun (and Library/LaunchAgents
 // for the schedule); make it with `cp -c -R -P -p`. A copy holding, at any
-// depth, a link into a live store or a directory link out of the copy is refused. Job logs and outputs recorded under the original HOME are read
-// from their copies; nothing outside the copy is read except the targets of
-// its symlinks, which are only fingerprinted. It needs no weights or GPU and
+// depth, a link into a live store or a directory link out of the copy is
+// refused. Nothing outside the copy is read except the targets of its
+// symlinks, which are only fingerprinted. It needs no weights or GPU and
 // prints a summary: counts, sidebar and per-cwd listings, broken and external
 // Reference links (the targets to preserve before deleting an old checkout),
-// adapter directories, external job paths, and the schedule's command.
+// the adapter catalog, the stores not carried over, and the schedule's command.
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync,
@@ -110,7 +111,7 @@ const messages = (path: string) => sessionEntries(readFileSync(path, "utf8"))
  * chat appends the SDK's session entries; opening a pre-v3 chat rewrites it in
  * the current version with the same messages. */
 function rewriteKind(path: string, source: string, work: string): "database" | "bundled skill" | "session append" | "session migration" | null {
-  if (/^\.cache\/mlx-bun\/[^/]+\.sqlite(-wal|-shm)?$/.test(path)) return "database";
+  if (/^\.mlx-bun\/db\/[^/]+\.sqlite(-wal|-shm)?$/.test(path)) return "database";
   if (path === ".mlx-bun/skills/memory/SKILL.md") return "bundled skill";
   if (/^\.mlx-bun\/sessions\/[^/]+\.jsonl$/.test(path)) {
     if (readFileSync(join(work, path), "utf8").startsWith(readFileSync(join(source, path), "utf8"))) return "session append";
@@ -133,7 +134,7 @@ export interface Acceptance {
 }
 
 /** Clone `source`, open it through the app with HOME set to the clone, and verify nothing was lost. */
-async function acceptUserData(source: string, originalHome?: string): Promise<Acceptance> {
+async function acceptUserData(source: string): Promise<Acceptance> {
   const before = fingerprint(source), targets = externalTargets(source, before);
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "mlx-user-data-"))), work = join(scratch, "home");
   try {
@@ -145,8 +146,7 @@ async function acceptUserData(source: string, originalHome?: string): Promise<Ac
     const env = { PATH: process.env.PATH ?? "", HOME: work, TMPDIR: join(work, ".tmp"),
       MLX_BUN_LIBMLXC: join(scratch, "native-blocked", "libmlxc.dylib") };
     const reportFile = join(scratch, "report.json");
-    const probe = await run([process.execPath, "--no-env-file", PROBE, "--report", reportFile,
-      ...(originalHome ? ["--original-home", originalHome] : [])], env, APP);
+    const probe = await run([process.execPath, "--no-env-file", PROBE, "--report", reportFile], env, APP);
     expect(probe.code, probe.stderr).toBe(0);
     const report = JSON.parse(readFileSync(reportFile, "utf8")) as UserDataReport;
     const cli: Acceptance["cli"] = {};
@@ -186,12 +186,7 @@ function expectAccepted(result: Acceptance) {
   expect(Object.keys(sessions.opened).length).toBe(sessions.files);
   for (const count of Object.values(sessions.exported)) expect(count).toBeGreaterThanOrEqual(0);
   for (const count of Object.values(sessions.history)) expect(count).toBeGreaterThanOrEqual(0);
-  if (report.jobs && !("error" in report.jobs)) {
-    expect(report.jobs.listed).toBe(report.jobs.rows);
-    expect(report.jobs.badConfig).toEqual([]);
-    expect(report.jobs.logs.unreadable).toEqual([]);
-    for (const change of Object.keys(report.jobs.statusChanges)) expect(["queued->zombie", "running->zombie"]).toContain(change);
-  }
+  if (!("error" in report.jobs)) expect(report.jobs.listed).toBe(report.jobs.rows);
   const vault = report.vault as Exclude<UserDataReport["vault"], { error: string }>;
   if (vault.enabled) {
     // Only Reference documents whose link is already dangling may be unreadable.
@@ -341,7 +336,7 @@ test("main's user data under HOME opens through the app without loss", async () 
       for (const args of [["init", "-q"], ["add", "-A"], ["-c", "user.name=prior", "-c", "user.email=prior@example.invalid", "commit", "-q", "-m", "prior vault"]])
         expect((await run([git, ...args], { PATH: process.env.PATH ?? "", HOME: root }, vault)).code).toBe(0);
     }
-    const result = await acceptUserData(home, ORIGINAL_HOME);
+    const result = await acceptUserData(home);
     expectAccepted(result);
     const { report } = result;
 
@@ -363,10 +358,11 @@ test("main's user data under HOME opens through the app without loss", async () 
     expect(Object.keys(result.rewritten).some(path => path.startsWith(".mlx-bun/wiki/"))).toBe(false);
     expect(result.added.filter(path => path.startsWith(".mlx-bun/sessions/") || path.startsWith(".mlx-bun/wiki/"))).toEqual([]);
 
-    const jobs = report.jobs as Exclude<NonNullable<UserDataReport["jobs"]>, { error: string }>;
-    expect(jobs).toMatchObject({ rows: 5, listed: 5, statusChanges: { "queued->zombie": 1, "running->zombie": 1 } });
-    expect(jobs.logs).toMatchObject({ inside: 0, translated: 4, external: ["/Volumes/elsewhere/job_5.log"], missing: [] });
-    expect(jobs.outputs).toMatchObject({ translated: 4, external: [], missing: [] });
+    // main's jobs, memory and registry databases are not carried over: the app opens its own
+    // under .mlx-bun/db and leaves the old files (and job logs) byte-identical.
+    expect(report.jobs).toEqual({ db: ".mlx-bun/db/jobs.sqlite", rows: 0, listed: 0, legacy: [".cache/mlx-bun/jobs.sqlite", ".cache/mlx-bun/jobs"] });
+    expect(Object.keys(result.rewritten).filter(path => path.startsWith(".cache/"))).toEqual([]);
+    expect(Object.entries(result.rewritten).filter(([path]) => path.startsWith(".mlx-bun/db/")).every(([, kind]) => kind === "database")).toBe(true);
 
     const vault = report.vault as Extract<UserDataReport["vault"], { articles: number }>;
     expect(vault).toMatchObject({ enabled: true, articles: 2, reference: 2, git: !!git, unreadable: ["Reference/deleted"], linkFailures: 0 });
@@ -374,13 +370,14 @@ test("main's user data under HOME opens through the app without loss", async () 
       { path: "Reference/architecture.md", target: join(checkout, "docs", "architecture.md"), state: "external" },
       { path: "Reference/deleted.md", target: join(checkout, "docs", "deleted.md"), state: "broken" },
     ]);
-    expect(vault.memoryDb.before).toMatchObject({ conversations: 1 });
+    expect(vault.memoryDb).toMatchObject({ path: ".mlx-bun/db/memory.sqlite", before: null, after: { conversations: 0 }, legacy: true });
 
     const settings = report.settings as Exclude<UserDataReport["settings"], { error: string }>;
     expect(settings.credentials).toEqual({ saved: true, mode: "600" });
     expect(settings.toolApprovals).toEqual({ version: 1, allowed: 1 });
     expect(settings.schedule).toMatchObject({ installed: true, at: { hour: 3, minute: 0 } });
     expect(settings.schedule.command).toBe(`exec 'bun' '${checkout}/src/cli.ts' memory synthesize`);
+    // The picker lists main's adapter stores read-only.
     expect(settings.adapters.map(a => [a.store, a.id, a.config])).toEqual([
       [".cache/mlx-bun/adapters", "prior-lora", "ok"], [".cache/mlx-bun/mlx-bun-finetunes", "orpo-cpm5", "ok"]]);
     expect(result.cli["memory list"]!.stdout).toContain("Apple Silicon");
@@ -424,7 +421,7 @@ test.skipIf(!supplied)("an isolated copy of real user data opens through the app
   if (!roots.length) throw new Error(`MLX_BUN_APP_TEST_USER_DATA has neither .mlx-bun nor .cache/mlx-bun: ${copy}`);
   const unsafe = unsafeLinks(copy, live);
   if (unsafe.length) throw new Error(`MLX_BUN_APP_TEST_USER_DATA links into a live store or out of the copy by directory:\n${unsafe.join("\n")}`);
-  const result = await acceptUserData(copy, process.env.MLX_BUN_APP_TEST_USER_DATA_ORIGINAL_HOME);
+  const result = await acceptUserData(copy);
   const { report } = result;
   const vault = report.vault as { symlinks?: { path: string; target: string; state: string }[] };
   console.log(JSON.stringify({

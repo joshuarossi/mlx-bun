@@ -3,33 +3,24 @@
 // so every default the app derives from HOME at import or call time resolves
 // inside the clone and nothing reaches the GPU. It opens each store through
 // the app's own modules, as the app would on first use, and writes one JSON
-// report to the path given by --report. Absolute paths recorded in the data
-// (job logs and outputs) are followed only inside HOME, or after replacing
-// the --original-home prefix with HOME; nothing outside the clone is read.
+// report to the path given by --report. Stores earlier versions kept under
+// ~/.cache/mlx-bun (jobs, memory and registry databases) are not read by the
+// app; the probe only lists which are present. Nothing outside the clone is read.
 //
-//   bun tests/support/user-data-probe.ts --report <file> [--original-home <path>]
+//   bun tests/support/user-data-probe.ts --report <file>
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { parseArgs } from "node:util";
 
-const { values } = parseArgs({ options: { report: { type: "string" }, "original-home": { type: "string" } } });
+const { values } = parseArgs({ options: { report: { type: "string" } } });
 if (!values.report) throw new Error("--report <file> is required");
 const home = realpathSync(process.env.HOME ?? "");
 if (realpathSync(homedir()) !== home) throw new Error("the probe must run with HOME set to the scratch clone");
-const originalHome = values["original-home"]?.replace(/\/+$/, "");
 
 const inside = (path: string, root: string) => path === root || path.startsWith(root + sep);
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
-type Located = { kind: "inside" | "translated"; path: string } | { kind: "external"; path: string };
-/** A recorded absolute path, readable only when it lies in the clone (directly or by the original-home prefix). */
-function localPath(path: string | null | undefined): Located | null {
-  if (!path) return null;
-  if (inside(resolve(path), home)) return { kind: "inside", path: resolve(path) };
-  if (originalHome && inside(path, originalHome)) return { kind: "translated", path: join(home, relative(originalHome, path)) };
-  return { kind: "external", path };
-}
 /** Row counts per table, read before the app opens (and may migrate) a database. */
 function tableCounts(path: string): Record<string, number> | null {
   if (!existsSync(path)) return null;
@@ -107,51 +98,20 @@ async function sessions() {
 }
 
 // ---- managed jobs ----------------------------------------------------------
+// The app's job store (MLX_BUN_HOME/db/jobs.sqlite) through its host and routes.
+// An earlier version's ~/.cache/mlx-bun/jobs.sqlite is not carried over.
 async function jobs() {
-  const { DEFAULT_JOBS_DB, DEFAULT_JOBS_DIR, JobStore } = await import("../../src/jobs/db");
   const { createJobHost } = await import("../../src/jobs/host");
   const { createJobRoutes } = await import("../../src/server/job-routes");
-  if (!existsSync(DEFAULT_JOBS_DB)) return null;
-  const before = new Database(DEFAULT_JOBS_DB, { readonly: true });
-  let prior: { id: string; status: string }[];
-  try { prior = before.query("SELECT id, status FROM jobs").all() as typeof prior; } finally { before.close(); }
-  const host = createJobHost({ entry: "unused", acquire: async () => { throw new Error("the probe never runs jobs"); },
-    createStore: () => new JobStore(DEFAULT_JOBS_DB, DEFAULT_JOBS_DIR) });
-  const routes = createJobRoutes(host);
+  const { storagePath } = await import("../../src/storage/paths");
+  const db = storagePath("jobsDb");
+  const prior = tableCounts(db)?.jobs ?? 0;
+  const host = createJobHost({ entry: "unused", acquire: async () => { throw new Error("the probe never runs jobs"); } });
   try {
-    const listing = await (await routes.handle(new Request(`http://local/api/jobs?limit=${prior.length + 1}`)))!.json() as { jobs: import("../../src/jobs/protocol").JobRow[] };
-    const after = new Map(listing.jobs.map(job => [job.id, job]));
-    const badConfig: string[] = [], logs = { inside: 0, translated: 0, external: [] as string[], missing: [] as string[], replayed: 0, unreadable: [] as string[] };
-    const outputs = { inside: 0, translated: 0, external: [] as string[], missing: [] as string[] };
-    const statusChanges: Record<string, number> = {};
-    for (const { id, status } of prior) {
-      const job = after.get(id);
-      if (!job) { badConfig.push(`${id}: not listed`); continue; }
-      if (job.status !== status) statusChanges[`${status}->${job.status}`] = (statusChanges[`${status}->${job.status}`] ?? 0) + 1;
-      try { JSON.parse(job.config_json); } catch { badConfig.push(id); }
-      const log = localPath(job.log_path);
-      if (log?.kind === "external") logs.external.push(job.log_path);
-      else if (log && !existsSync(log.path)) logs.missing.push(relative(home, log.path));
-      else if (log) {
-        logs[log.kind]++;
-        try {
-          const events = ndjson(readFileSync(log.path, "utf8"));
-          // Terminal rows replay through the job stream route when the app can read the recorded path itself.
-          if (log.kind === "inside" && (job.status === "done" || job.status === "failed")) {
-            const stream = await routes.handle(new Request(`http://local/api/jobs/${id}/stream`, { signal: AbortSignal.timeout(10_000) }));
-            const replay = (await stream!.text()).split("\n").filter(line => line.startsWith("data: "));
-            if (replay.length >= events.filter(event => event.type !== "done" && event.type !== "failed").length) logs.replayed++;
-            else logs.unreadable.push(id);
-          }
-        } catch (error) { logs.unreadable.push(`${id}: ${message(error)}`); }
-      }
-      const output = localPath(job.output_path);
-      if (output?.kind === "external") outputs.external.push(job.output_path!);
-      else if (output) (existsSync(output.path) ? outputs[output.kind]++ : outputs.missing.push(relative(home, output.path)));
-    }
-    return { rows: prior.length, listed: listing.jobs.length,
-      byStatus: prior.reduce<Record<string, number>>((out, { status }) => ({ ...out, [status]: (out[status] ?? 0) + 1 }), {}),
-      statusChanges, badConfig, logs, outputs };
+    const response = await createJobRoutes(host).handle(new Request(`http://local/api/jobs?limit=${prior + 1}`));
+    const listing = await response!.json() as { jobs: import("../../src/jobs/protocol").JobRow[] };
+    return { db: relative(home, db), rows: prior, listed: listing.jobs.length,
+      legacy: [".cache/mlx-bun/jobs.sqlite", ".cache/mlx-bun/jobs"].filter(path => existsSync(join(home, path))) };
   } finally { await host.close(); }
 }
 
@@ -188,16 +148,16 @@ async function vault() {
   }
   let linkFailures = 0;
   for (const name of list.articles) if ((await get(`/api/memory/links?name=${encodeURIComponent(name)}`)).status !== 200) linkFailures++;
-  const memoryDb = join(home, ".cache", "mlx-bun", "memory.sqlite");
+  // The app's memory database; an earlier version's ~/.cache/mlx-bun/memory.sqlite is not carried over.
+  const { storagePath } = await import("../../src/storage/paths");
+  const { MemoryStore } = await import("../../src/memory/db");
+  const memoryDb = storagePath("memoryDb");
   const dbBefore = tableCounts(memoryDb);
-  let dbAfter: Record<string, number> | null = null;
-  if (dbBefore) {
-    const { MemoryStore } = await import("../../src/memory/db");
-    new MemoryStore(memoryDb).close();
-    dbAfter = tableCounts(memoryDb);
-  }
+  new MemoryStore().close();
+  const dbAfter = tableCounts(memoryDb);
   return { root: relative(home, root), enabled: true, articles: list.articles.length, reference: list.reference.length,
-    git: status.status?.isGitRepo ?? false, unreadable, linkFailures, symlinks, memoryDb: { before: dbBefore, after: dbAfter } };
+    git: status.status?.isGitRepo ?? false, unreadable, linkFailures, symlinks,
+    memoryDb: { path: relative(home, memoryDb), before: dbBefore, after: dbAfter, legacy: existsSync(join(home, ".cache", "mlx-bun", "memory.sqlite")) } };
 }
 
 // ---- settings, credentials, registry, adapters, schedule -------------------
@@ -214,21 +174,18 @@ async function settings() {
   const plist = plistPath(home);
   const command = schedule.installed ? /<string>-lc<\/string>\s*<string>([^<]*)<\/string>/.exec(readFileSync(plist, "utf8"))?.[1]
     ?.replaceAll("&quot;", "\"").replaceAll("&apos;", "'").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&") ?? null : null;
-  const registryDb = join(home, ".cache", "mlx-bun", "registry.sqlite");
-  const registryBefore = tableCounts(registryDb);
-  let models: number | null = null;
-  if (registryBefore) {
-    const { Registry } = await import("@mlx-bun/hub/registry");
-    const registry = new Registry(registryDb);
-    try { models = registry.list().length; } finally { registry.close(); }
-  }
-  const registryAfter = tableCounts(registryDb);
-  // The adapter stores the chat picker scans, plus `train`'s default output root.
+  // The app's model index (rebuilt by scan; an earlier version's is not carried over).
+  const { openRegistry } = await import("../../src/storage/paths");
+  const registry = openRegistry();
+  let models: number;
+  try { models = registry.list().length; } finally { registry.close(); }
+  // The stores the chat picker catalogs: the app's adapter store, then earlier
+  // versions' stores, read-only. (Its reader loads MLX, which the probe blocks.)
+  const { adapterCatalogDirs } = await import("../../src/server/adapter-routes");
   const adapters: { store: string; id: string; config: "ok" | "missing" | "unreadable"; baseModel: string | null }[] = [];
-  for (const store of [".cache/mlx-bun-finetunes", ".cache/mlx-bun/adapters", ".cache/mlx-bun/mlx-bun-finetunes"]) {
-    const root = join(home, store);
+  for (const root of adapterCatalogDirs()) {
     if (!existsSync(root)) continue;
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
+    for (const entry of readdirSync(root, { withFileTypes: true }).sort((x, y) => x.name < y.name ? -1 : 1)) {
       const dir = join(root, entry.name);
       if (!entry.isDirectory() || !["adapters.safetensors", "adapter_model.safetensors"].some(name => existsSync(join(dir, name)))) continue;
       let config: "ok" | "missing" | "unreadable" = "missing", baseModel: string | null = null;
@@ -237,14 +194,14 @@ async function settings() {
         try { baseModel ??= (JSON.parse(readFileSync(join(dir, name), "utf8")) as Record<string, unknown>)[key] as string ?? null; config = "ok"; }
         catch { config = "unreadable"; break; }
       }
-      adapters.push({ store, id: entry.name, config, baseModel });
+      adapters.push({ store: relative(home, root), id: entry.name, config, baseModel });
     }
   }
   return {
     credentials: { saved, mode: existsSync(tokenFile) ? (statSync(tokenFile).mode & 0o777).toString(8) : null },
     toolApprovals: { version: approvals.version, allowed: Object.keys(approvals.allows).length },
     schedule: { installed: schedule.installed, at: schedule.at, command },
-    registry: { before: registryBefore, after: registryAfter, models },
+    registry: { models },
     adapters,
   };
 }
@@ -252,7 +209,7 @@ async function settings() {
 const section = async <T>(work: () => Promise<T>): Promise<T | { error: string }> => {
   try { return await work(); } catch (error) { return { error: message(error) }; }
 };
-const report = { home, originalHome: originalHome ?? null, sessions: await section(sessions), jobs: await section(jobs),
+const report = { home, sessions: await section(sessions), jobs: await section(jobs),
   vault: await section(vault), settings: await section(settings) };
 await Bun.write(values.report, JSON.stringify(report, null, 2) + "\n");
 // Unrelated handles (timers, SDK services) must not keep the probe alive.
