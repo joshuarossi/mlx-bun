@@ -105,6 +105,34 @@ const defaults: ConvertDependencies = {
   step, box, log: (line = "") => { console.log(line); },
 };
 
+const TRELLIS_OPTIONS = ["trellis-bits", "trellis-k-map", "trellis-k-budget", "trellis-ldlq", "trellis-reuse",
+  "trellis-down-axis", "trellis-interleave", "trellis-layers"] as const;
+
+export interface TrellisSettings {
+  bits: number; downAxis: "out" | "in"; kMap?: string; kBudget: string; ldlq?: string; reuse: string[];
+  interleave: boolean; layers?: number;
+}
+
+/** The `--trellis-*` options of `--q-mode trellis`, checked against the files they name. Paths become absolute for the job child. */
+function parseTrellisOptions(args: CommandArgs): TrellisSettings {
+  const opt = (name: string): string | undefined => { const value = args.values[name]; return typeof value === "string" ? value : undefined; };
+  const bitsRaw = opt("trellis-bits") ?? "3", bits = Number(bitsRaw);
+  if (!Number.isInteger(bits) || bits < 1 || bits > 8) throw new Error(`--trellis-bits must be an integer in [1, 8] (got "${bitsRaw}")`);
+  const downAxis = opt("trellis-down-axis") ?? "out";
+  if (downAxis !== "out" && downAxis !== "in") throw new Error(`--trellis-down-axis must be out or in (got "${downAxis}")`);
+  const layersRaw = opt("trellis-layers"), layers = layersRaw !== undefined ? Number(layersRaw) : undefined;
+  if (layers !== undefined && (!Number.isInteger(layers) || layers < 1)) throw new Error(`--trellis-layers expects a positive integer (got "${layersRaw}")`);
+  const kMap = opt("trellis-k-map"), ldlq = opt("trellis-ldlq");
+  if (kMap !== undefined && !existsSync(kMap)) throw new Error(`--trellis-k-map: ${kMap} does not exist`);
+  if (ldlq !== undefined && !existsSync(ldlq)) throw new Error(`--trellis-ldlq: ${ldlq} does not exist`);
+  if (opt("trellis-k-budget") !== undefined && kMap === undefined) throw new Error("--trellis-k-budget needs --trellis-k-map");
+  const reuse = (opt("trellis-reuse")?.split(",").map((dir) => dir.trim()).filter(Boolean) ?? []);
+  for (const dir of reuse) if (!existsSync(join(dir, "config.json"))) throw new Error(`--trellis-reuse: ${dir} is not a model directory`);
+  return { bits, downAxis, ...(kMap ? { kMap: resolve(kMap) } : {}), kBudget: opt("trellis-k-budget") ?? "3.00",
+    ...(ldlq ? { ldlq: resolve(ldlq) } : {}), reuse: reuse.map((dir) => resolve(dir)),
+    interleave: args.values["trellis-interleave"] === true, ...(layers !== undefined ? { layers } : {}) };
+}
+
 /** Strict parsing would report a generic missing value; main names the expectation. */
 export function parseConvertArgs(args: string[]): CommandArgs {
   const at = args.indexOf("--upload-repo");
@@ -130,7 +158,13 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   if (opt("quant-predicate") !== undefined)
     throw new Error("--quant-predicate: not supported (mlx_lm's mixed_* recipes need 2/3/6-bit; for mixed precision use --target-bpw; see: mlx-bun help convert)");
   const qMode = opt("q-mode") ?? "affine";
-  if (qMode !== "affine") throw new Error(`--q-mode ${qMode}: only "affine" is supported`);
+  if (qMode !== "affine" && qMode !== "trellis") throw new Error(`--q-mode ${qMode}: only "affine" and "trellis" are supported`);
+  const trellis = qMode === "trellis";
+  for (const name of TRELLIS_OPTIONS)
+    if (!trellis && args.values[name] !== undefined) throw new Error(`--${name} needs --q-mode trellis`);
+  if (trellis)
+    for (const name of ["target-bpw", "q-bits", "q-group-size", "dtype", "candidate-bits", "calibration-mix", "n-calibration"])
+      if (args.values[name] !== undefined) throw new Error(`--${name} does not apply to --q-mode trellis (the packed tensors and their affine tiers are fixed)`);
   const hfPath = opt("hf-path") ?? opt("model") ?? args.positionals[0];
   if (!hfPath) throw new Error("usage: mlx-bun convert --hf-path <repo-or-path> [-q] [--q-bits N] [--q-group-size N] [--mlx-path <dir>] [--target-bpw F] [--dtype float16|bfloat16|float32] [-d]");
   const targetBpwRaw = opt("target-bpw");
@@ -140,7 +174,7 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   if (dtype !== undefined && !CONVERT_DTYPES.includes(dtype))
     throw new Error(`--dtype must be ${CONVERT_DTYPES.join(", ")} (got "${dtype}")`);
   const dequantize = flag("dequantize");
-  const quantizing = flag("quantize") || targetBpw !== undefined;
+  const quantizing = flag("quantize") || targetBpw !== undefined || trellis;
   if (quantizing && dequantize) throw new Error("Choose either quantize or dequantize, not both.");
   const qBits = Number(opt("q-bits") ?? "4");
   if (qBits !== 4 && qBits !== 8) throw new Error(`--q-bits must be 4 or 8 (got "${opt("q-bits")}")`);
@@ -149,7 +183,8 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   const candidateBits = opt("candidate-bits")?.split(",").map((item) => Number(item.trim()));
   if (candidateBits && candidateBits.some((bits) => !Number.isInteger(bits) || bits < 2 || bits > 8))
     throw new Error(`--candidate-bits expects a comma list of integers in [2, 8] (got "${opt("candidate-bits")}")`);
-  const rotateWeights = flag("rotate-weights");
+  const trellisSettings = trellis ? parseTrellisOptions(args) : undefined;
+  const rotateWeights = flag("rotate-weights") || trellis;
   if (rotateWeights && !quantizing) throw new Error("--rotate-weights folds a rotation before quantization — pass -q or --target-bpw");
   const rotationSeed = Number(opt("rotation-seed") ?? "42");
   if (!Number.isInteger(rotationSeed)) throw new Error(`--rotation-seed expects an integer (got "${opt("rotation-seed")}")`);
@@ -187,15 +222,26 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
   // Default: `<root>/models/<model>-<bits>bit` (or `-mixed-<bpw>bpw`, `-rot<seed>`),
   // named from the resolved source so a registry query names the real model.
   const mlxPath = explicitPath ?? join(storagePath("models", deps.root()), quantizing
-    ? quantizedModelName(srcDir, { bits: qBits, targetBpw, rotationSeed: rotateWeights ? rotationSeed : undefined })
+    ? quantizedModelName(srcDir, { bits: qBits, targetBpw,
+      rotationSeed: rotateWeights && (!trellis || opt("rotation-seed") !== undefined) ? rotationSeed : undefined,
+      ...(trellisSettings ? { trellis: { bits: trellisSettings.bits, mixed: trellisSettings.kMap !== undefined } } : {}) })
     : convertedModelName(srcDir, { dtype, dequantize }));
   if (explicitPath === undefined) refuseExisting(mlxPath);
   signal?.throwIfAborted();
   const converting = dtype !== undefined || dequantize ? `${dequantize ? "dequantizing" : "casting"}${dtype ? ` to ${dtype}` : ""}` : "copying";
-  const working = deps.step(!quantizing ? `converting (${converting})` : targetBpw !== undefined
+  const working = deps.step(!quantizing ? `converting (${converting})` : trellisSettings
+    ? `quantizing (packed trellis, ${trellisSettings.kMap ? "per-tensor allocation" : `${trellisSettings.bits}-bit`} MLP — Viterbi encode, slow)` : targetBpw !== undefined
     ? `quantizing (mixed, target ${targetBpw} bpw — sensitivity sweep, ~minutes)` : `quantizing (${qBits}-bit, group ${qGroup})`);
   const config: Record<string, unknown> = !quantizing
     ? { src_dir: srcDir, out_dir: mlxPath, quantize: false, ...(dtype ? { dtype } : {}), ...(dequantize ? { dequantize: true } : {}) }
+    : trellisSettings
+    ? { src_dir: srcDir, out_dir: mlxPath, mode: "trellis", rotation_seed: rotationSeed, trellis_bits: trellisSettings.bits,
+      trellis_down_axis: trellisSettings.downAxis,
+      ...(trellisSettings.kMap ? { trellis_k_map: trellisSettings.kMap, trellis_k_budget: trellisSettings.kBudget } : {}),
+      ...(trellisSettings.ldlq ? { trellis_ldlq: trellisSettings.ldlq } : {}),
+      ...(trellisSettings.reuse.length ? { trellis_reuse: trellisSettings.reuse } : {}),
+      ...(trellisSettings.interleave ? { trellis_interleave: true } : {}),
+      ...(trellisSettings.layers !== undefined ? { trellis_layers: trellisSettings.layers } : {}) }
     : { src_dir: srcDir, out_dir: mlxPath, bits: qBits, group_size: qGroup, mode: "affine",
     ...(dtype ? { dtype } : {}),
     ...(targetBpw !== undefined ? { target_bpw: targetBpw } : {}),
@@ -216,7 +262,9 @@ export async function runConvert(args: CommandArgs, supplied: Partial<ConvertDep
     `${style.green("●")} ${style.bold("convert complete")}`, "",
     `source    ${style.dim(srcDir)}`,
     `model     ${style.bold(outDir)}`,
-    `${quantizing ? "quant    " : "convert  "} ${style.dim(!quantizing ? converting : targetBpw !== undefined ? `mixed (target ${targetBpw} bpw)` : `${qBits}-bit g${qGroup} affine`)}`,
+    `${quantizing ? "quant    " : "convert  "} ${style.dim(!quantizing ? converting : trellisSettings
+      ? `packed trellis ${trellisSettings.kMap ? "(per-tensor k-map)" : `${trellisSettings.bits}-bit`} MLP${trellisSettings.ldlq ? ", BlockLDLQ" : ""}`
+      : targetBpw !== undefined ? `mixed (target ${targetBpw} bpw)` : `${qBits}-bit g${qGroup} affine`)}`,
     ...(rotateWeights ? [`transform ${style.dim(`TurboQuant rotation seed ${rotationSeed}`)}`] : []),
     "", `serve it   ${style.accent(`mlx-bun serve ${outDir}`)}`,
   ]);

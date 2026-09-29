@@ -34,6 +34,28 @@ test("producer forwards mixed precision and rotation options and maps library pr
   expect(output).toEqual({ outputPath: "/synthetic/result" });
 });
 
+test("a trellis config reaches the packed-Trellis producer with every option and rejects bad ones before native work", async () => {
+  const events: JobEvent[] = [], calls: unknown[][] = [];
+  const run = createQuantizeRunner({
+    trellis: (async (...args: any[]) => { calls.push(args); args[3]({ stage: "quantizing", progress: 0.5, message: "half" });
+      return { outDir: args[1], nTrellis: 12, nAffine: 29, effectiveBpw: 3.52 }; }) as any,
+    quantize: (async () => { throw new Error("must not run the affine quantizer"); }) as any,
+  });
+  const output = await run(event => events.push(event), { src_dir: "/src", out_dir: "/dst", mode: "trellis", rotation_seed: 7, trellis_bits: 2,
+    trellis_down_axis: "in", trellis_k_map: "/kmap.json", trellis_k_budget: "2.5", trellis_ldlq: "/hessians", trellis_reuse: ["/a", "/b"],
+    trellis_interleave: true, trellis_layers: 6 });
+  expect(calls[0]!.slice(0, 3)).toEqual(["/src", "/dst", { bits: 2, seed: 7, downAxis: "in", kMap: { path: "/kmap.json", budget: "2.5" },
+    ldlq: "/hessians", reuse: ["/a", "/b"], interleave: true, layers: 6 }]);
+  expect(events).toContainEqual({ type: "stage", stage: "quantizing", progress: 0.5, message: "half" });
+  expect(events.at(-1)).toMatchObject({ stage: "done", message: "Quantized 12 trellis + 29 affine modules (3.52 bpw)", output_dir: "/dst" });
+  expect(output).toEqual({ outputPath: "/dst" });
+  await run(() => {}, { src_dir: "/src", out_dir: "/dst2", mode: "trellis" });
+  expect(calls[1]!.slice(0, 3)).toEqual(["/src", "/dst2", { bits: 3, seed: 42, downAxis: "out" }]);
+  const strict = createQuantizeRunner();
+  await expect(strict(() => {}, { src_dir: "/src", out_dir: "x", mode: "trellis", trellis_down_axis: "up" })).rejects.toThrow("trellis_down_axis must be out or in");
+  await expect(strict(() => {}, { src_dir: "/src", out_dir: "x", mode: "trellis", rotation_seed: 0.5 })).rejects.toThrow("rotation_seed must be an integer");
+});
+
 test("invalid producer options reject before loading native libraries", async () => {
   const run = createQuantizeRunner();
   for (const config of [{}, { out_dir: "x", bits: 3 }, { out_dir: "x", group_size: 3 },

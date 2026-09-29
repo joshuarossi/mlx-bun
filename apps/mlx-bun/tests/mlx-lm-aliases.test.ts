@@ -148,7 +148,7 @@ test("mlx-bun.convert: mlx_lm.convert's flags, quantized, cast, or dequantized",
   expect(cast.configs[0]!.out_dir).toBe("/store/models/src-bfloat16");
 
   for (const [argv, message] of [
-    [["--hf-path", local, "-q", "--q-mode", "mxfp4"], '--q-mode mxfp4: only "affine" is supported'],
+    [["--hf-path", local, "-q", "--q-mode", "mxfp4"], '--q-mode mxfp4: only "affine" and "trellis" are supported'],
     [["--hf-path", local, "-q", "--quant-predicate", "mixed_4_6"], "--quant-predicate: not supported"],
     [["--hf-path", local, "-q", "-d"], "Choose either quantize or dequantize, not both."],
     [["--hf-path", local, "-q", "--dtype", "int8"], '--dtype must be float16, bfloat16, float32 (got "int8")'],
@@ -330,7 +330,7 @@ test("spawned aliases resolve mlx_lm's argument forms to the verbs and fail with
   const both = await run("convert", "--hf-path", snapshot, "-q", "-d");
   expect(both.code).toBe(1); expect(both.err).toContain("Choose either quantize or dequantize, not both.");
   const mode = await run("convert", "--hf-path", snapshot, "-q", "--q-mode", "mxfp4");
-  expect(mode.code).toBe(1); expect(mode.err).toContain('--q-mode mxfp4: only "affine" is supported');
+  expect(mode.code).toBe(1); expect(mode.err).toContain('--q-mode mxfp4: only "affine" and "trellis" are supported');
   const token = await run("convert", "--hf-path", snapshot, "--dtype", "float16", "--upload-repo", "org/r");
   expect(token.code).toBe(1); expect(token.err).toContain("--upload-repo needs a Hugging Face WRITE token");
 
