@@ -264,7 +264,7 @@ test("close drains and stops the worker once, removes the socket directory only 
     await closing;
     expect(alive(launched!.pid)).toBe(false);
     expect(existsSync(socketDir)).toBe(false);
-    expect(f.events().map(entry => entry.event)).toEqual(["loading", "ready", "drain", "stop"]);
+    expect(f.events().map(entry => entry.event)).toEqual(["loading", "ready", "drain", "stop", "stopped"]);
     await expect(host.forward(new Request("http://engine/health"))).rejects.toThrow("engine host is closed");
     await expect(host.ready).rejects.toThrow("engine host is closed");
     await expect(createCompletionClient({ baseUrl: "http://engine/v1", host }).complete({ body: {} })).rejects.toThrow("engine host is closed");
