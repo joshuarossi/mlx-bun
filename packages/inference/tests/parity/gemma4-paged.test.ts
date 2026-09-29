@@ -11,10 +11,13 @@
 //   tokens, every sampled full-vocabulary vector, and each retired row's valid
 //   K/V in every layer (main's paged-kv-parity contract, extended to KV planes);
 // - direct reads at B3 over bf16, KV4 and KV8 pages: the direct kernel actually
-//   serves decode (queries of at most 8 tokens without an array mask), every
-//   sampled vector is finite, and greedy tokens equal the gathered arm's
-//   (main's model-level acceptance; the reduction is Lab numerics, so vectors
-//   are not compared);
+//   serves decode (queries of at most 8 tokens without an array mask), and on
+//   every such call its output equals the gathered reader's over the same query
+//   and pages within DIRECT_TOLERANCE of the output's scale (the two differ only
+//   in reduction order and where dequantized values round); every sampled
+//   vector is finite. Greedy tokens are reported, not compared: a one-ULP
+//   attention difference compounds through the layers and can flip a low-margin
+//   step, so token equality is not a contract of the direct reader;
 // - cancellation for every encoding and reader: a row aborted mid-decode in a
 //   B3 cohort rejects with its reason and publishes nothing after the abort,
 //   while the survivors' tokens and vectors equal a control that stops that row
@@ -42,6 +45,12 @@ import { releaseAll, sha256 } from "./real-weight-inputs";
 type A = any;
 const MODEL = "MLX_BUN_TEST_PAGED_MODEL";
 const TOKENS = 12, RETIRE_AT = 5;
+/** Largest direct-vs-gathered attention difference, relative to the gathered
+ * output's largest magnitude: 16 bf16 ULPs at that magnitude (2^-8 each). The
+ * readers differ in reduction order and in where scaled scores and dequantized
+ * values round; Gemma4 E4B and 12B reached 2.2e-2 over bf16, KV4 and KV8 pages
+ * (M1 Max). A wrong block, mask or dequantization is off by O(1). */
+export const DIRECT_TOLERANCE = 2 ** -4;
 const ENCODINGS = ["bf16", 4, 8] as const;
 const READERS = ["gathered", "direct"] as const;
 type Encoding = typeof ENCODINGS[number];
@@ -105,6 +114,7 @@ test.skipIf(!inputs)("Gemma4 paged KV: gathered bf16 equals plain KV; direct rea
   const { PromptCache, TieredPromptCache, SsdCacheStore, KVCache, RotatingKVCache, cloneKvCaches, resolveKvScheme } =
     await import("@mlx-bun/inference/state");
   const { PagedKVCache } = await import("@mlx-bun/inference/state/paged");
+  const { pagedAttentionView } = await import("@mlx-bun/inference/kernels/attention/paged");
   const { model: path, vocab } = inputs!;
   const tensor = (a: MlxArray): Tensor => {
     using c = ops.contiguous(a);
@@ -137,16 +147,30 @@ test.skipIf(!inputs)("Gemma4 paged KV: gathered bf16 equals plain KV; direct rea
     const layers = (() => { const probe: Cache[] = model.makeCache(); try { return probe.length; } finally { releaseAll(probe.map(c => () => c.dispose())); } })();
     const runtimeFor = (reader: Reader) => createRuntimeConfig({ MLX_BUN_COMPILED_DECODE: "0",
       MLX_BUN_PAGED_ATTN: reader === "direct" ? "1" : "0" });
-    // Direct dispatch accounting: every view a direct page hands to attention.
-    let directCalls = 0;
+    // Direct dispatch accounting: every call the direct kernel serves is
+    // checked against the gathered reader over the same query and pages.
+    let directCalls = 0, worstRelative = 0;
     const appendAndFetch = PagedKVCache.prototype.appendAndFetch;
     PagedKVCache.prototype.appendAndFetch = function (this: A, k: MlxArray, v: MlxArray) {
       const view = appendAndFetch.call(this, k, v);
       if (!this.direct) return view;
+      const gathered = pagedAttentionView(this.pool!, [...this.blockTable], this.offset, false);
       return { attend(q: MlxArray, scale: number, mask: A) {
-        if (q.shape[2]! <= 8 && mask.mode !== "array") directCalls++;
-        return view.attend(q, scale, mask);
-      }, dispose() { view.dispose(); } };
+        const out = view.attend(q, scale, mask);
+        if (q.shape[2]! <= 8 && mask.mode !== "array") {
+          directCalls++;
+          using expected = gathered.attend(q, scale, mask);
+          const [x, y] = [out.toFloat32(), expected.toFloat32()];
+          let difference = 0, magnitude = 0;
+          for (let i = 0; i < y.length; i++) {
+            difference = Math.max(difference, Math.abs(x[i]! - y[i]!)); magnitude = Math.max(magnitude, Math.abs(y[i]!));
+          }
+          worstRelative = Math.max(worstRelative, difference / magnitude);
+          if (!(difference <= DIRECT_TOLERANCE * magnitude))
+            throw new Error(`direct paged attention differs from the gathered reader by ${difference} (output scale ${magnitude}, q ${q.shape})`);
+        }
+        return out;
+      }, dispose() { view.dispose(); gathered.dispose(); } };
     };
     releases.push(() => { PagedKVCache.prototype.appendAndFetch = appendAndFetch; });
 
@@ -217,9 +241,9 @@ test.skipIf(!inputs)("Gemma4 paged KV: gathered bf16 equals plain KV; direct rea
     };
     const label = (setup: Setup) => `${setup.paged ? `paged ${setup.reader}` : "plain"} ${setup.encoding} block ${setup.blockSize}`;
     const completed = (setup: Setup, outcomes: Outcome[]) => {
-      for (const outcome of outcomes) expect({ setup: label(setup), status: outcome.status, finish: outcome.finish,
-        generated: outcome.generated, finite: outcome.finite })
-        .toEqual({ setup: label(setup), status: "fulfilled", finish: "length", generated: TOKENS, finite: true });
+      for (const outcome of outcomes) expect({ setup: label(setup), status: outcome.status, reason: outcome.reason,
+        finish: outcome.finish, generated: outcome.generated, finite: outcome.finite })
+        .toEqual({ setup: label(setup), status: "fulfilled", reason: undefined, finish: "length", generated: TOKENS, finite: true });
     };
 
     // 1. Gathered bf16 pages equal plain KV (B1 and B3, both block sizes).
@@ -252,16 +276,18 @@ test.skipIf(!inputs)("Gemma4 paged KV: gathered bf16 equals plain KV; direct rea
 
     const { rows, reuse } = promptsFor(16, vocab);
     for (const encoding of ENCODINGS) {
-      // 2. Direct reads serve decode and keep the gathered arm's greedy tokens.
+      // 2. Direct reads serve decode, each call within tolerance of the gathered reader.
       const gatheredSetup: Setup = { encoding, reader: "gathered", paged: true, blockSize: 16 };
       const directSetup: Setup = { ...gatheredSetup, reader: "direct" };
       const gathered = await runGroup(gatheredSetup, rows.map(prompt => ({ prompt })));
       const before = directCalls;
+      worstRelative = 0;
       const direct = await runGroup(directSetup, rows.map(prompt => ({ prompt })));
       completed(gatheredSetup, gathered.outcomes); completed(directSetup, direct.outcomes);
       expect(directCalls - before).toBeGreaterThan(0);
-      expect({ encoding, direct: direct.outcomes.map(o => o.tokens) }).toEqual({ encoding, direct: gathered.outcomes.map(o => o.tokens) });
-      console.log(`[paged] direct ${encoding}: ${directCalls - before} direct attention calls; tokens equal the gathered arm`);
+      const equalRows = direct.outcomes.map((o, row) => Bun.deepEquals(o.tokens, gathered.outcomes[row]!.tokens));
+      console.log(`[paged] direct ${encoding}: ${directCalls - before} direct attention calls within ${worstRelative.toExponential(2)} ` +
+        `of the gathered reader (relative); greedy tokens equal the gathered arm per row: ${JSON.stringify(equalRows)}`);
 
       for (const reader of READERS) {
         const setup: Setup = { encoding, reader, paged: true, blockSize: 16 };
